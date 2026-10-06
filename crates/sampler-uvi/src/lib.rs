@@ -21,6 +21,8 @@ mod crypto;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
+pub mod script;
+pub mod scripted;
 #[cfg(feature = "library-access")]
 mod ufs;
 
@@ -177,6 +179,15 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
+    translate_full(text, source).map(|(instrument, locations, _)| (instrument, locations))
+}
+
+/// [`translate_with`], plus the IR group of each (layer, oscillator) of a
+/// scripted program (empty when the program has no script).
+fn translate_full(
+    text: &str,
+    source: Source,
+) -> Result<(ir::Instrument, Vec<String>, Vec<OscGroup>), Translate> {
     let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
@@ -221,6 +232,8 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
+        osc_groups: Vec::new(),
+        split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
     // Whatever was neither structure nor consumed is reported once per node.
@@ -248,7 +261,7 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
-    Ok((out.ir, out.locations))
+    Ok((out.ir, out.locations, out.osc_groups))
 }
 
 /// A node's own `SignalConnection`s.
@@ -338,6 +351,18 @@ struct Translation {
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
+    osc_groups: Vec<OscGroup>,
+    /// The layer being translated, when a script may pick its oscillators.
+    split: Option<(usize, ir::Group)>,
+}
+
+/// The IR group holding oscillator `osc` (1-based, counting bypassed ones) of
+/// the keygroups of layer `layer` (1-based, as `Program.layers`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OscGroup {
+    pub layer: u32,
+    pub osc: u32,
+    pub group: u32,
 }
 
 impl Translation {
@@ -391,13 +416,35 @@ impl Translation {
             });
         }
         self.scope_connections(program)?;
-        for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
+        let scripted = !self.ir.behaviors.is_empty();
+        // Program-level aux effects become buses (their own effects are
+        // reported as modules); layers reach them through BusRouters.
+        let mut auxes: Vec<(String, ir::BusRef)> = Vec::new();
+        for aux in program
+            .children()
+            .filter(|n| n.has_tag_name("Auxs"))
+            .flat_map(|a| a.children().filter(|c| c.has_tag_name("AuxEffect")))
+        {
+            let name = aux.attribute("Name").unwrap_or_default().to_owned();
+            self.ir.buses.push(ir::Bus {
+                name: name.clone(),
+                chain: None,
+                sends: Vec::new(),
+                output: ir::Output::Master,
+            });
+            auxes.push((name, ir::BusRef(self.ir.buses.len() - 1)));
+        }
+        for (ordinal, layer) in program
+            .descendants()
+            .filter(|n| n.has_tag_name("Layer"))
+            .enumerate()
+        {
             if number(layer, "Mute", 0.0)? != 0.0 {
                 continue;
             }
             self.scope_connections(layer)?;
             let pan = number(layer, "Pan", 0.0)?;
-            self.ir.groups.push(ir::Group {
+            let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
                 gain: ir::Gain::Linear(gain * number(layer, "Gain", 1.0)?),
                 pan: ir::Pan {
@@ -405,7 +452,48 @@ impl Translation {
                     law: ir::PanLaw::Balance,
                 },
                 ..Default::default()
-            });
+            };
+            // A closed fader with a pre-fader send: the sound is the send's.
+            // (The IR has one output per group: the first such send is used.)
+            if number(layer, "Gain", 1.0)? == 0.0 {
+                let send = layer
+                    .children()
+                    .filter(|n| n.has_tag_name("BusRouters"))
+                    .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+                    .filter(|r| number(*r, "PreFader", 0.0).is_ok_and(|p| p != 0.0))
+                    .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+                    .find_map(|r| {
+                        let to = r.attribute("Destination")?.rsplit('/').next()?;
+                        let bus = auxes.iter().find(|(n, _)| n == to)?.1;
+                        Some((bus, number(r, "Gain", 1.0).ok()?))
+                    });
+                if let Some((bus, send_gain)) = send.filter(|s| s.1 > 0.0) {
+                    base.gain = ir::Gain::Linear(gain * send_gain);
+                    base.output = ir::Output::Bus(bus);
+                    self.unsupported(
+                        &path(layer),
+                        "closed layer fader: its pre-fader send is played as the layer output",
+                        send_gain,
+                    );
+                }
+            }
+            // Oscillators get groups of their own only where a keygroup stacks
+            // several; otherwise the layer's group is oscillator 1.
+            let stacked = layer
+                .descendants()
+                .filter(|n| n.has_tag_name("Keygroup"))
+                .any(|k| k.descendants().filter(|n| n.has_tag_name("SamplePlayer")).count() > 1);
+            self.split = (scripted && stacked).then(|| (ordinal + 1, base.clone()));
+            if self.split.is_none() {
+                self.ir.groups.push(base);
+            }
+            if scripted && !stacked {
+                self.osc_groups.push(OscGroup {
+                    layer: ordinal as u32 + 1,
+                    osc: 1,
+                    group: self.ir.groups.len() as u32 - 1,
+                });
+            }
             if pan != 0.0 {
                 self.unsupported(
                     &path(layer),
@@ -413,7 +501,9 @@ impl Translation {
                     pan,
                 );
             }
-            let group = ir::GroupRef(self.ir.groups.len() - 1);
+            // (Split layers have no group of their own: every zone takes an
+            // oscillator group, see `oscillator_group`.)
+            let group = ir::GroupRef(self.ir.groups.len().saturating_sub(1));
             // A script's playNote can trigger one oscillator of a keygroup
             // (oscIndex); scripts do not run, so every oscillator plays.
             let stacked = layer
@@ -508,13 +598,15 @@ impl Translation {
         };
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
-        for player in keygroup
+        for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
+            .enumerate()
         {
             if number(player, "Bypass", 0.0)? != 0.0 {
                 continue;
             }
+            let group = self.oscillator_group(group, oscillator as u32 + 1);
             let at = path(player);
             let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
                 self.unsupported(&at, "sample player without a sample", "");
@@ -597,6 +689,33 @@ impl Translation {
             });
         }
         Ok(())
+    }
+
+    /// The group a zone of oscillator `osc` goes to: the layer's own, or in a
+    /// scripted program one group per (layer, oscillator) so that `playNote`'s
+    /// `oscIndex` can select it.
+    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32) -> ir::GroupRef {
+        let Some((layer, base)) = &self.split else {
+            return layer_group;
+        };
+        let layer = *layer as u32;
+        if let Some(found) = self
+            .osc_groups
+            .iter()
+            .find(|g| g.layer == layer && g.osc == osc)
+        {
+            return ir::GroupRef(found.group as usize);
+        }
+        let mut group = base.clone();
+        group.name = format!("{} osc {osc}", base.name);
+        self.ir.groups.push(group);
+        let index = self.ir.groups.len() - 1;
+        self.osc_groups.push(OscGroup {
+            layer,
+            osc,
+            group: index as u32,
+        });
+        ir::GroupRef(index)
     }
 
     fn envelope(&mut self, node: Node) -> Result<(ir::ModulatorRef, ir::VelocityResponse), String> {
@@ -909,6 +1028,56 @@ pub fn load_program_with_options(
         })
         .collect();
     assemble(instrument, locations, decoded, options)
+}
+
+/// [`load_program`] with the program's Lua scripts run: the returned
+/// [`scripted::Program`] plays through [`scripted::Player`]. What the scripts
+/// use that is not modeled is added to `instrument.unsupported`.
+#[cfg(feature = "library-access")]
+pub fn load_program_scripted(
+    bank: &Bank,
+    program: &str,
+    rate: u32,
+) -> Result<scripted::Program, Box<dyn std::error::Error>> {
+    let (text, program_path) = bank.program(program)?;
+    let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+        .map_err(|e| describe(Path::new(program), e))?;
+    let decoded = locations
+        .iter()
+        .map(|authored| {
+            bank.resource(&program_path, authored)
+                .map_err(|e| e.to_string())
+                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
+        })
+        .collect();
+    let options = sampler_kontakt::Options { rate, ..Default::default() };
+    let loaded = assemble(instrument, locations, decoded, &options)?;
+    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let mut instrument = loaded.instrument;
+    if host.handles_notes() {
+        // The script picks the oscillators now.
+        instrument
+            .unsupported
+            .retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
+    }
+    // The scripts run; what they use that is not modeled is listed below.
+    instrument
+        .unsupported
+        .retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
+    for finding in host.findings() {
+        instrument.unsupported.push(ir::Unsupported {
+            location: "script".into(),
+            feature: finding.feature,
+            value: format!("{} (x{})", finding.value, finding.count),
+            reason: ir::Reason::NotModeled,
+        });
+    }
+    Ok(scripted::Program {
+        instrument,
+        plan: loaded.plan,
+        host,
+        groups,
+    })
 }
 
 fn read_text(path: &Path) -> Result<String, Error> {

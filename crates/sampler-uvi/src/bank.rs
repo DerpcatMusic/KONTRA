@@ -105,6 +105,34 @@ impl Bank {
             .read_member(member, self.directory.metadata_key, self.content_key)
     }
 
+    /// Every member path in the bank, in directory order.
+    pub fn members(&self) -> Vec<String> {
+        self.directory
+            .files
+            .iter()
+            .filter_map(|m| m.path.clone())
+            .collect()
+    }
+
+    /// Every Lua member of the bank, for a script's `require`.
+    pub fn scripts(&self) -> crate::script::Scripts {
+        let mut scripts = crate::script::Scripts::default();
+        for path in self.members() {
+            if path.to_ascii_lowercase().ends_with(".lua")
+                && let Ok(bytes) = self.file(&path)
+            {
+                scripts.insert(&path, String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        scripts
+    }
+
+    /// The bytes of the member at bank-root `path` (a script, say).
+    pub fn file(&self, path: &str) -> Result<Vec<u8>, String> {
+        let read = || self.read(resolve(&self.directory, path)?);
+        read().map_err(|e| access::failure_reason(&e))
+    }
+
     /// Decode the program at member `name` to its clear XML and its path.
     pub fn program(&self, name: &str) -> Result<(String, String), AccessError> {
         self.program_inner(name)
