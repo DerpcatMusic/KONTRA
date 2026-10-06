@@ -249,6 +249,7 @@ fn rejects_out_of_range_programs() {
             delay: 0,
             fade: 0,
             retrigger: true,
+            shared: false,
         })],
         vec![]
     )));
@@ -353,6 +354,7 @@ fn measure_modulation_cost_per_voice() {
             delay: 0,
             fade: 0,
             retrigger: true,
+            shared: false,
         })
     };
     let mpe = || ModProgram {
@@ -508,4 +510,32 @@ fn release_counter_counts_down_while_held_and_freezes_at_key_up() {
         "{:?}",
         after[64]
     );
+}
+
+#[test]
+fn pitch_bend_drives_non_pitch_routes_from_its_raw_position() {
+    // Bipolar: attenuate reads (bend + 1) / 2, so rest is half gain.
+    let program = program(
+        vec![ModSource::PitchBend],
+        vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+    );
+    let mut rt = Runtime::new(
+        modulated(plan(4096, Envelope::default()), program, 0),
+        limits(),
+    )
+    .unwrap();
+    let note = rt.trigger(input(1), 60, 1.).unwrap();
+    let rest = render(&mut rt, 128, 64);
+    assert!((rest[127][1] - 0.25).abs() < 1e-6, "{:?}", rest[127]);
+    let id = rt.expression_id(note).unwrap();
+    rt.set_expression(
+        id,
+        Expression {
+            bend: 1.,
+            ..Expression::default()
+        },
+    )
+    .unwrap();
+    let full = render(&mut rt, 192, 64);
+    assert!((full[191][1] - 0.5).abs() < 1e-6, "{:?}", full[191]);
 }
