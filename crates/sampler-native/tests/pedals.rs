@@ -215,7 +215,8 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let options = sampler_kontakt::Options {
         keys: setup.keys.0..=setup.keys.1,
-        scripts: setup.scripts,
+        // A substitute script always binds.
+        scripts: setup.scripts || setup.script.is_some(),
         ..Default::default()
     };
     let loaded = match setup.script {
@@ -229,7 +230,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         .iter()
         .filter(|u| u.feature == "script")
         .count();
-    let bound_scripts = if setup.scripts {
+    let bound_scripts = if options.scripts {
         loaded.instrument.behaviors.len() - failed
     } else {
         0
@@ -971,7 +972,14 @@ macro_rules! matrix {
 /// repedalling and release noise ("MAIN", "RESONANCE", "RELEASE", "REPEDAL").
 mod una_corda_pure {
     use super::*;
-    const SETUP: Setup = Setup::new(UNA_CORDA, (60, 67));
+    // Its script owns the pedal (NO_SYS_SCRIPT_PEDAL): it ignores the host
+    // notes and sustains its own, so the per-note gate expectations here do
+    // not apply to the silent host notes. Script-driven pedal behaviour is
+    // the sampler-ksp suite's; these scenarios exercise the native layers.
+    const SETUP: Setup = Setup {
+        scripts: false,
+        ..Setup::new(UNA_CORDA, (60, 67))
+    };
 
     #[test]
     fn profile() {
