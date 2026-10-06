@@ -119,6 +119,16 @@ pub fn real_to_i32(value: f64) -> i32 {
     value as i32
 }
 
+/// Stable opaque module/target index for a name (FNV-1a, 24 bits): what
+/// `find_mod`, `find_target` and `get_mod_idx` return.
+pub fn name_index(name: &str) -> i32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in name.bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    0x0400_0000 | (h & 0x00ff_ffff) as i32
+}
+
 /// Text cell in the program's script instance: a fixed cell or an array element
 /// selected by a register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +146,13 @@ pub enum TextPart {
     Integer(u16),
     /// Real register.
     Real(u16),
+    /// The text constant `base + register`, from a table of `count` consecutive
+    /// constants (group names); out of range appends nothing.
+    Table {
+        base: u16,
+        count: u16,
+        index: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,6 +208,19 @@ pub enum Op {
         rhs: TextRef,
         local: u16,
         comparison: Comparison,
+    },
+    /// local := the index of the text among the `count` consecutive text
+    /// constants from `base` (ASCII case-insensitive), or -1.
+    TextFind {
+        text: TextRef,
+        base: u16,
+        count: u16,
+        local: u16,
+    },
+    /// local := [`name_index`] of the text (find_mod, find_target).
+    TextIndex {
+        text: TextRef,
+        local: u16,
     },
     /// Keyed integer state of the script instance; the key is `STORE_KEY`
     /// registers starting at `key`, each a signed-32 value. A read of a missing
@@ -257,7 +287,11 @@ impl Op {
                 TextPart::Constant(_) => 0,
                 TextPart::Text(r) => reg(r),
                 TextPart::Integer(l) | TextPart::Real(l) => usize::from(*l) + 1,
+                TextPart::Table { index, .. } => usize::from(*index) + 1,
             }),
+            Self::TextFind { text, local, .. } | Self::TextIndex { text, local } => {
+                reg(text).max(usize::from(*local) + 1)
+            }
             Self::CompareText {
                 lhs, rhs, local, ..
             } => reg(lhs).max(reg(rhs)).max(usize::from(*local) + 1),
@@ -289,7 +323,14 @@ impl Op {
                 TextPart::Constant(c) => (cell(text)?, usize::from(*c) + 1),
                 TextPart::Text(r) => (cell(text)?.max(cell(r)?), 0),
                 TextPart::Integer(_) | TextPart::Real(_) => (cell(text)?, 0),
+                TextPart::Table { base, count, .. } => {
+                    (cell(text)?, usize::from(*base) + usize::from(*count))
+                }
             },
+            Self::TextFind {
+                text, base, count, ..
+            } => (cell(text)?, usize::from(*base) + usize::from(*count)),
+            Self::TextIndex { text, .. } => (cell(text)?, 0),
             Self::CompareText { lhs, rhs, .. } => (cell(lhs)?.max(cell(rhs)?), 0),
             Self::Emit { text: Some(t), .. } => (cell(t)?, 0),
             _ => (0, 0),
@@ -473,6 +514,8 @@ impl Default for Frames {
 pub(crate) struct OpState {
     pub effects: std::collections::VecDeque<Effect>,
     pub dropped_effects: u64,
+    /// Text appends cut short at [`TEXT_CAPACITY`].
+    pub truncated_texts: u64,
     pub host: [i64; HOST_VALUES],
     pub random: u64,
 }
@@ -481,6 +524,7 @@ impl Default for OpState {
         Self {
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
+            truncated_texts: 0,
             host: [0; HOST_VALUES],
             random: 0x9e37_79b9_7f4a_7c15,
         }
@@ -505,6 +549,11 @@ impl Runtime {
     /// Effects dropped because the outbox was full.
     pub fn dropped_effects(&self) -> u64 {
         self.ops.dropped_effects
+    }
+
+    /// Runtime text appends that did not fit a text cell and were cut short.
+    pub fn truncated_texts(&self) -> u64 {
+        self.ops.truncated_texts
     }
 
     pub fn set_host_value(&mut self, slot: usize, value: i64) -> Result<(), Error> {
@@ -708,12 +757,30 @@ impl Runtime {
                         let _ = write!(piece, "{}", self.reg(id, local)?);
                     }
                     TextPart::Real(local) => write_real(&mut piece, real(self.reg(id, local)?)),
+                    TextPart::Table { base, count, index } => {
+                        let at = self.reg(id, index)?;
+                        if let Ok(at) = u16::try_from(at)
+                            && at < count
+                        {
+                            let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                            let plan = self.behavior_plan(c.owner)?;
+                            piece = *self.plans.get(plan.0).unwrap().prepared.programs[c.program]
+                                .texts
+                                .get(usize::from(base) + usize::from(at))
+                                .ok_or(Error::InvalidInput)?;
+                        }
+                    }
                 }
-                self.behavior_bank(id)?
+                let target = self
+                    .behavior_bank(id)?
                     .texts
                     .get_mut(cell)
-                    .ok_or(Error::InvalidInput)?
-                    .push(piece.as_str());
+                    .ok_or(Error::InvalidInput)?;
+                let before = target.len;
+                target.push(piece.as_str());
+                if usize::from(target.len - before) < piece.as_str().len() {
+                    self.ops.truncated_texts += 1;
+                }
             }
             Op::CompareText {
                 lhs,
@@ -729,6 +796,39 @@ impl Runtime {
                 );
                 let order = l.as_str().cmp(r.as_str()) as i64;
                 self.set_reg(id, local, i64::from(comparison.apply(order, 0)))?;
+            }
+            Op::TextFind {
+                text,
+                base,
+                count,
+                local,
+            } => {
+                let cell = self.text_cell(id, text)?;
+                let name = *self
+                    .behavior_bank(id)?
+                    .texts
+                    .get(cell)
+                    .ok_or(Error::InvalidInput)?;
+                let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                let plan = self.behavior_plan(c.owner)?;
+                let table = &self.plans.get(plan.0).unwrap().prepared.programs[c.program].texts;
+                let found = table
+                    .get(usize::from(base)..usize::from(base) + usize::from(count))
+                    .ok_or(Error::InvalidInput)?
+                    .iter()
+                    .position(|t| t.as_str().eq_ignore_ascii_case(name.as_str()));
+                self.set_reg(id, local, found.map_or(-1, |i| i as i64))?;
+            }
+            Op::TextIndex { text, local } => {
+                let cell = self.text_cell(id, text)?;
+                let index = name_index(
+                    self.behavior_bank(id)?
+                        .texts
+                        .get(cell)
+                        .ok_or(Error::InvalidInput)?
+                        .as_str(),
+                );
+                self.set_reg(id, local, i64::from(index))?;
             }
             Op::Store { key, local, write } => {
                 let mut k = [0; STORE_KEY];

@@ -1260,11 +1260,7 @@ pub(crate) fn symbol_in<S: AsRef<str>>(symbols: &[S], value: i32) -> Option<Stri
 
 /// Stable opaque module/target index for a name (FNV-1a, 24 bits).
 pub fn lookup_index(name: &str) -> i32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for b in name.bytes() {
-        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
-    }
-    0x0400_0000 | (h & 0x00ff_ffff) as i32
+    sampler_core::name_index(name)
 }
 
 fn placeholder() -> model::Widget {
