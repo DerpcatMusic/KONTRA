@@ -183,6 +183,8 @@ pub struct Prepared {
     regions: Box<[PreparedRegion]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
+    /// CC64 holds no gate: a behavior implements sustain itself.
+    pub(super) script_sustain: bool,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
@@ -335,6 +337,7 @@ impl Prepared {
             regions: prepared_regions.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
+            script_sustain: false,
             region_groups: Box::new([]),
             group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
