@@ -57,8 +57,9 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                     voices: 4,
                     commands: 4,
                     behaviors: 1,
-                    behavior_fuel: 16,
-                    behavior_cells: 4,
+                    // A computed key adds the MIDI range check's fuel and cells.
+                    behavior_fuel: 64,
+                    behavior_cells: 8,
                     note_cells: 0,
                 },
             )
