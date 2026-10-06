@@ -16,6 +16,8 @@ pub enum Reference {
     Chain(usize),
     Bus(usize),
     Control(usize),
+    Route(usize),
+    Shape(usize),
     Processor { chain: usize, index: usize },
 }
 
@@ -86,6 +88,8 @@ impl Check<'_> {
             Reference::Chain(i) => i < ir.chains.len(),
             Reference::Bus(i) => i < ir.buses.len(),
             Reference::Control(i) => i < ir.controls.len(),
+            Reference::Route(i) => i < ir.routes.len(),
+            Reference::Shape(i) => i < ir.shapes.len(),
             Reference::Processor { chain, index } => ir
                 .chains
                 .get(chain)
@@ -283,12 +287,36 @@ impl Instrument {
             if let Some(modulator) = zone.amplitude {
                 check.exists(Reference::Modulator(modulator.0))?;
             }
+            for route in &zone.routes {
+                check.exists(Reference::Route(route.0))?;
+            }
         }
         for (i, modulator) in self.modulators.iter().enumerate() {
             check.owner = format!("modulator {i}");
             check.scope(modulator.scope)?;
-            if let ModulationSource::Envelope(envelope) = &modulator.source {
-                check.envelope(envelope)?;
+            match &modulator.source {
+                ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Lfo(lfo) => {
+                    let rate = match lfo.rate {
+                        crate::Frequency::Hertz(hz) => hz,
+                        crate::Frequency::Beats(beats) => beats,
+                    };
+                    check.within(rate, f64::MIN_POSITIVE..=f64::MAX, "rate")?;
+                    check.time(lfo.delay, "delay")?;
+                    check.time(lfo.fade_in, "fade in")?;
+                    check.within(lfo.phase, 0.0..=1.0, "phase")?;
+                }
+                _ => {}
+            }
+        }
+        for (i, shape) in self.shapes.iter().enumerate() {
+            check.owner = format!("shape {i}");
+            let mut previous = f64::NEG_INFINITY;
+            for &(input, output) in &shape.points {
+                check.within(input, 0.0..=1.0, "input")?;
+                check.finite(output, "output")?;
+                check.range(previous, input, "input")?;
+                previous = input;
             }
         }
         for (i, route) in self.routes.iter().enumerate() {
@@ -302,8 +330,12 @@ impl Instrument {
                     })?;
                 }
                 Target::Control(control) => check.exists(Reference::Control(control.0))?,
-                Target::Amplitude | Target::Pitch | Target::Pan => {}
+                Target::Amplitude | Target::Pitch | Target::Pan | Target::SampleStart => {}
             }
+            if let Some(shape) = route.shape {
+                check.exists(Reference::Shape(shape.0))?;
+            }
+            check.time(route.smoothing, "smoothing")?;
             match route.depth {
                 Depth::Gain(gain) => check.gain(gain, "depth")?,
                 Depth::Pitch(pitch) => check.pitch(pitch, "depth")?,

@@ -251,6 +251,9 @@ impl Runtime {
             voice = state.siblings.next;
             state.envelope.release();
             state.cursor.release();
+            let g = self.plans.get_mut(plan.0).unwrap();
+            g.modulation
+                .release(&g.prepared.voice_modulation, index.get());
             let done = state.chain.map_or_else(
                 || state.envelope.done(),
                 |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
@@ -378,6 +381,16 @@ impl Runtime {
         if let Some(next) = v.siblings.next {
             self.voices.at_mut(next).siblings.previous = v.siblings.previous;
         }
+        let plan = self
+            .notes
+            .get(self.families.get(v.family.0).unwrap().note.0)
+            .unwrap()
+            .plan;
+        self.plans
+            .get_mut(plan.0)
+            .unwrap()
+            .modulation
+            .stop(id.0.index);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;

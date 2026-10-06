@@ -540,7 +540,23 @@ impl Runtime {
                 if r.take != choice.map(|c| c.take) {
                     continue;
                 }
+                let group = prepared
+                    .region_groups
+                    .get(candidate.region)
+                    .copied()
+                    .flatten();
                 let step = prepared.step(candidate, note_pitch);
+                let seed =
+                    self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
+                let n = self.notes.get(note.0).unwrap();
+                let inputs = crate::voice_mod::Inputs::new(
+                    n,
+                    self.expressions.get(n.expression.0).unwrap().value,
+                    &state.controllers,
+                );
+                let start = prepared
+                    .voice_modulation
+                    .start_offset(candidate.region, &inputs, seed);
                 let cursor = if trigger == Trigger::Attack {
                     r.cursor.with_offset(
                         self.note_events[note.0.index].source_offset_micros,
@@ -548,6 +564,11 @@ impl Runtime {
                     )
                 } else {
                     r.cursor
+                };
+                let cursor = if start != 0 {
+                    cursor.skip(start)
+                } else {
+                    cursor
                 };
                 let family = *family.get_or_insert_with(|| {
                     let family = self
@@ -568,10 +589,32 @@ impl Runtime {
                     .expect("prepared and preflighted source admission");
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
+                state.group = group;
                 state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
+                let n = self.notes.get(note.0).unwrap();
+                let controllers = &self.performance_state.states[snapshot].controllers;
+                let inputs = crate::voice_mod::Inputs::new(
+                    n,
+                    self.expressions.get(n.expression.0).unwrap().value,
+                    controllers,
+                );
+                let clock = crate::voice_mod::Clock {
+                    rate: f64::from(self.rate),
+                    tempo: self.tempo,
+                    now: self.now,
+                };
+                let g = self.plans.get_mut(plan.0).unwrap();
+                g.modulation.start(
+                    &g.prepared.voice_modulation,
+                    voice.0.index,
+                    candidate.region,
+                    &inputs,
+                    clock,
+                    seed,
+                );
             }
             if let Some(family) = family {
                 self.finish_family(family).expect("admitted family");

@@ -12,6 +12,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_HEIGHT",
     "$CONTROL_PAR_HIDE",
     "$CONTROL_PAR_TEXT",
+    "$CONTROL_PAR_TEXTLINE",
     "$CONTROL_PAR_HELP",
     "$CONTROL_PAR_UNIT",
     "$CONTROL_PAR_MIN_VALUE",
@@ -33,8 +34,18 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_LABEL",
     "$CONTROL_PAR_PICTURE_STATE",
     "$CONTROL_PAR_SHOW_ARROWS",
+    "$CONTROL_PAR_BASEPATH",
+    "$CONTROL_PAR_FILE_TYPE",
+    "$CONTROL_PAR_COLUMN_WIDTH",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+    "$CONTROL_PAR_MOUSE_MODE",
+    "$CONTROL_PAR_WT_VIS_MODE",
+    "$CONTROL_PAR_PARALLAX_X",
+    "$CONTROL_PAR_PARALLAX_Y",
     "grid_x",
     "grid_y",
+    "table_steps_shown",
 ];
 
 /// `$CONTROL_PAR_*_COLOR` properties by IR colour slot.
@@ -97,6 +108,37 @@ pub fn picture_meta(txt: &str) -> ir::ImageMeta {
     meta
 }
 
+/// Pixel size of a PNG from its header.
+pub fn png_size(png: &[u8]) -> Option<ir::Size> {
+    let header = png.get(..24)?;
+    if &header[..8] != b"\x89PNG\r\n\x1a\n" || &header[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |at: usize| u32::from_be_bytes(header[at..at + 4].try_into().unwrap());
+    Some(ir::Size {
+        width: be(16),
+        height: be(20),
+    })
+}
+
+/// [`picture_meta`] with `size` set to one frame of `png`: the image divided
+/// by its frame count along the animation axis. What a loader's picture
+/// callback returns given the `.txt` (if any) and the `.png` bytes.
+pub fn picture_meta_png(txt: Option<&str>, png: &[u8]) -> ir::ImageMeta {
+    let mut meta = picture_meta(txt.unwrap_or_default());
+    meta.size = png_size(png).map(|s| match meta.axis {
+        ir::Orientation::Horizontal => ir::Size {
+            width: s.width / meta.frames,
+            ..s
+        },
+        ir::Orientation::Vertical => ir::Size {
+            height: s.height / meta.frames,
+            ..s
+        },
+    });
+    meta
+}
+
 struct Builder<'p> {
     ui: ir::Interface,
     assets: HashMap<String, ir::AssetRef>,
@@ -105,10 +147,20 @@ struct Builder<'p> {
 }
 
 impl Builder<'_> {
-    fn asset(&mut self, name: &str) -> ir::AssetRef {
+    /// The picture asset for `name`. An empty name has no file: on a
+    /// control it clears the picture (stock look); on the instrument's
+    /// wallpaper or icon it is a failed lookup in the script and is reported.
+    fn asset(&mut self, widget: Option<usize>, feature: &str, name: &str) -> Option<ir::AssetRef> {
+        if name.is_empty() {
+            if widget.is_none() {
+                let feature = format!("{feature} (empty picture name)");
+                self.unsupported(None, feature, String::new());
+            }
+            return None;
+        }
         let path = picture_path(name);
         if let Some(&a) = self.assets.get(&path) {
-            return a;
+            return Some(a);
         }
         let a = ir::AssetRef(self.ui.assets.len());
         let meta = (self.picture)(&path).unwrap_or_default();
@@ -117,7 +169,7 @@ impl Builder<'_> {
             kind: ir::AssetKind::Image(meta),
         });
         self.assets.insert(path, a);
-        a
+        Some(a)
     }
     fn style(&mut self, font: i32, align: i32) -> ir::StyleRef {
         *self.styles.entry((font, align)).or_insert_with(|| {
@@ -199,9 +251,11 @@ pub fn interface(
     for (&id, props) in &m.instrument {
         for (name, v) in props {
             if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE" {
-                background.image = Some(bld.asset(&text(v)));
+                background.image = bld.asset(None, "$INST_WALLPAPER_ID", &text(v));
             } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_PICTURE" {
-                bld.ui.icon = Some(bld.asset(&text(v)));
+                bld.ui.icon = bld.asset(None, "$INST_ICON_ID", &text(v));
+            } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_HIDE" {
+                bld.ui.icon_hidden = matches!(v, Value::Int(h) if h & b::HIDE_WHOLE_CONTROL != 0);
             } else {
                 let target = if id == b::INST_WALLPAPER_ID {
                     "$INST_WALLPAPER_ID"
@@ -315,12 +369,24 @@ pub fn interface(
                     },
                     bipolar: r < 0,
                     cells,
-                    steps_shown: None,
+                    steps_shown: int("table_steps_shown").and_then(|n| u32::try_from(n).ok()),
                 }
             }
-            WidgetKind::Xy => ir::Kind::Xy { cursors: len / 2, sensitivity: [None; 2], mouse_mode: None },
+            WidgetKind::Xy => ir::Kind::Xy {
+                cursors: len / 2,
+                sensitivity: [
+                    "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
+                    "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
+                ]
+                .map(|p| int(p).map(i32::unsigned_abs)),
+                mouse_mode: int("$CONTROL_PAR_MOUSE_MODE"),
+            },
             WidgetKind::Waveform => ir::Kind::Waveform,
-            WidgetKind::Wavetable => ir::Kind::Wavetable { view_mode: None, parallax: [0; 2] },
+            WidgetKind::Wavetable => ir::Kind::Wavetable {
+                view_mode: int("$CONTROL_PAR_WT_VIS_MODE"),
+                parallax: ["$CONTROL_PAR_PARALLAX_X", "$CONTROL_PAR_PARALLAX_Y"]
+                    .map(|p| int(p).unwrap_or(0)),
+            },
             WidgetKind::LevelMeter => ir::Kind::LevelMeter {
                 orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
                     ir::Orientation::Horizontal
@@ -328,7 +394,17 @@ pub fn interface(
                     ir::Orientation::Vertical
                 },
             },
-            WidgetKind::FileSelector => ir::Kind::FileSelector { base_path: None, files: ir::Files::Any, column_width: None },
+            WidgetKind::FileSelector => ir::Kind::FileSelector {
+                base_path: w.text("$CONTROL_PAR_BASEPATH").map(Into::into),
+                // $NI_FILE_TYPE_MIDI, _AUDIO, _ARRAY.
+                files: match int("$CONTROL_PAR_FILE_TYPE") {
+                    Some(0) => ir::Files::Midi,
+                    Some(1) => ir::Files::Audio,
+                    Some(2) => ir::Files::Data,
+                    _ => ir::Files::Any,
+                },
+                column_width: int("$CONTROL_PAR_COLUMN_WIDTH").and_then(|n| u32::try_from(n).ok()),
+            },
             WidgetKind::TextEdit => ir::Kind::TextEdit,
             WidgetKind::MouseArea => ir::Kind::MouseArea,
         };
@@ -396,6 +472,7 @@ pub fn interface(
         out.text = lines
             .as_deref()
             .or(w.text("$CONTROL_PAR_TEXT"))
+            .or(w.text("$CONTROL_PAR_TEXTLINE"))
             .map_or_else(
                 || match w.kind {
                     WidgetKind::Knob
@@ -418,7 +495,9 @@ pub fn interface(
             let align = int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1);
             out.style = Some(bld.style(font, align));
         }
-        if let Some(p) = w.text("$CONTROL_PAR_PICTURE").filter(|p| !p.is_empty()) {
+        if let Some(p) = w.text("$CONTROL_PAR_PICTURE")
+            && let Some(asset) = bld.asset(Some(i), "$CONTROL_PAR_PICTURE", p)
+        {
             let role = match w.kind {
                 WidgetKind::Knob
                 | WidgetKind::Slider
@@ -429,16 +508,14 @@ pub fn interface(
                 | WidgetKind::LevelMeter => ir::Role::Strip,
                 _ => ir::Role::Background,
             };
-            let mut image = ir::ImageUse::new(bld.asset(p), role);
+            let mut image = ir::ImageUse::new(asset, role);
             image.frame = int("$CONTROL_PAR_PICTURE_STATE").and_then(|f| u32::try_from(f).ok());
             out.images.push(image);
         }
-        if let Some(p) = w
-            .text("$CONTROL_PAR_CURSOR_PICTURE")
-            .filter(|p| !p.is_empty())
+        if let Some(p) = w.text("$CONTROL_PAR_CURSOR_PICTURE")
+            && let Some(asset) = bld.asset(Some(i), "$CONTROL_PAR_CURSOR_PICTURE", p)
         {
-            out.images
-                .push(ir::ImageUse::new(bld.asset(p), ir::Role::Handle));
+            out.images.push(ir::ImageUse::new(asset, ir::Role::Handle));
         }
         if let Some(parent) = int("$CONTROL_PAR_PARENT_PANEL") {
             match by_id.get(&parent) {
