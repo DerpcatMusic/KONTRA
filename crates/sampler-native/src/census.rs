@@ -292,9 +292,11 @@ fn bank(path: &Path) {
     let mut counts = Counts::default();
     let mut decoded = HashMap::<String, Result<(), String>>::new();
     for program in bank.programs() {
+        let opened = bank.program(&program).map_err(|e| e.to_string());
+        let opens = opened.is_ok();
         let mut samples = 0;
         let result = (|| -> Result<(), String> {
-            let (text, member) = bank.program(&program).map_err(|e| e.to_string())?;
+            let (text, member) = opened?;
             let document = sampler_uvi::parse_program_xml(&text).map_err(|e| e.to_string())?;
             for node in document.descendants() {
                 let Some(sample) = node.attribute("SamplePath").filter(|s| !s.is_empty()) else {
@@ -316,8 +318,6 @@ fn bank(path: &Path) {
             }
             Ok(())
         })();
-        // Program opening is independent of sample-resource success.
-        let opens = bank.program(&program).is_ok();
         counts.record(
             "uvi-program",
             &format!("{}::{program}", path.display()),
