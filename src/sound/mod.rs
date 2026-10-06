@@ -128,6 +128,9 @@ pub struct Loaded<P> {
     /// The source's script interfaces, in script order; their image assets
     /// carry the library's own metadata.
     pub interfaces: Vec<sampler_ui_ir::Interface>,
+    /// The part's host-visible controls and their defaults, in id order;
+    /// what [`Core::set_control`] accepts and [`Core::control_value`] reads.
+    pub controls: Vec<(sampler_ui_ir::ControlId, f64)>,
 }
 
 /// Browser-facing facts about a source, read without preparing it.
@@ -188,6 +191,14 @@ pub trait Core: Send {
     fn tapped(&self, frames: usize) -> Option<&[f32]>;
     /// Peaks accumulated since the caller last cleared them.
     fn peaks_mut(&mut self) -> &mut mix::Peaks;
+
+    /// Edit one of `part`'s controls as its widget would: the value is
+    /// clamped to the control's range (integers rounded, toggles at 0.5) and
+    /// the script's `on ui_control` callback runs. False when the part has
+    /// no such control or its callback could not be admitted.
+    fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
+    /// The control's current value, which scripts may also change.
+    fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
 
     fn voices(&self) -> Voices;
     /// `part`'s runtime problems since it was installed.

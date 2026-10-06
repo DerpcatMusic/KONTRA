@@ -278,9 +278,43 @@ pub(crate) struct PartShared {
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
     problems: [AtomicU64; 6],
+    /// The loaded part's controls; the audio thread refreshes their values.
+    pub(crate) controls: Mutex<Arc<[ControlCell]>>,
+}
+
+/// One control's value as last seen (`f64` bits).
+pub(crate) struct ControlCell {
+    pub(crate) id: sampler_ui_ir::ControlId,
+    value: AtomicU64,
+}
+
+impl ControlCell {
+    pub(crate) fn value(&self) -> f64 {
+        f64::from_bits(self.value.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, value: f64) {
+        self.value.store(value.to_bits(), Ordering::Relaxed);
+    }
 }
 
 impl PartShared {
+    /// The part's controls and their values, in id order.
+    pub(crate) fn control_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
+        self.controls.lock().unwrap().iter().map(|c| (c.id, c.value())).collect()
+    }
+
+    /// Audio thread: copy the core's values in, unless the loader holds the lock.
+    fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
+        if let Ok(cells) = self.controls.try_lock() {
+            for cell in cells.iter() {
+                if let Some(v) = value(cell.id) {
+                    cell.set(v);
+                }
+            }
+        }
+    }
+
     pub(crate) fn problems(&self) -> RuntimeProblems {
         let [a, b, c, d, e, f] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
@@ -334,6 +368,8 @@ pub struct Shared {
     pub(crate) bend: AtomicU32,
     pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<Mix>,
+    /// Widget edits for the audio thread: rack slot, control, value.
+    control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// One strip's signal for a spectrum on screen.
@@ -441,6 +477,7 @@ impl Default for Shared {
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
+            control_edits: ArrayQueue::new(256),
             meters: Meters::default(),
             scope: Scope::default(),
             blocks: AtomicU64::new(0),
@@ -776,6 +813,18 @@ impl Shared {
         }
     }
 
+    /// Edit a control of the part in `slot` as its widget would; the
+    /// script's `on ui_control` runs on the audio thread. False when the
+    /// queue is full.
+    pub(crate) fn set_control(&self, slot: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
+        if let Some(part) = self.part(slot)
+            && let Some(cell) = part.controls.lock().unwrap().iter().find(|c| c.id == control)
+        {
+            cell.set(value);
+        }
+        self.control_edits.push((slot, control, value)).is_ok()
+    }
+
     fn reset_midi(&self) {
         while self.keyboard.pop().is_some() {}
         for owner in &self.key_owners {
@@ -1014,6 +1063,11 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.tree = Some(Arc::new(loaded.tree));
             v.report = Some(Arc::new(loaded.report));
             v.interfaces = loaded.interfaces.into();
+            *atoms.controls.lock().unwrap() = loaded
+                .controls
+                .iter()
+                .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
+                .collect();
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
@@ -1331,7 +1385,9 @@ impl PluginLogic for Sampler {
                 tasks.spawn_coalescing(Load);
             }
             for slot in 0..s.core.parts() {
-                part_atoms(&s.shared_parts, shared, slot).unwrap().store_problems(s.core.problems(slot));
+                let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
+                atoms.store_problems(s.core.problems(slot));
+                atoms.refresh_controls(|id| s.core.control_value(slot, id));
             }
             s.until_poll = (rate * 0.1) as usize;
         } else {
@@ -1372,6 +1428,9 @@ impl PluginLogic for Sampler {
             shared.reset_midi();
             s.core.panic();
             s.audition.fill((0, 0));
+        }
+        while let Some((slot, control, value)) = shared.control_edits.pop() {
+            s.core.set_control(slot, control, value);
         }
         while let Some((slot, play)) = shared.keyboard.pop() {
             if slot == EVERY_PART {
