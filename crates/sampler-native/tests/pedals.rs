@@ -158,9 +158,9 @@ fn limits(plan: &sampler_core::Prepared, voices: usize) -> Limits {
         decisions: 256,
         voices,
         commands: 256,
-        behaviors: 16,
+        behaviors: 64,
         behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        behavior_cells: plan.behavior_local_count().saturating_mul(64),
         note_cells: plan.note_cell_count().saturating_mul(64),
     }
 }
@@ -977,7 +977,6 @@ mod una_corda_pure {
     // not apply to the silent host notes. Script-driven pedal behaviour is
     // the sampler-ksp suite's; these scenarios exercise the native layers.
     const SETUP: Setup = Setup {
-        scripts: false,
         ..Setup::new(UNA_CORDA, (60, 67))
     };
 
@@ -1006,7 +1005,6 @@ mod vista_3_cellos {
     // search(%KEY_DOWN, 1), which sampler-ksp does not maintain yet (reads 0,
     // -1): bound, it never plays. Exercise the native release-trigger path.
     const SETUP: Setup = Setup {
-        scripts: false,
         ..Setup::new(CELLOS, (48, 55))
     };
 
@@ -1043,7 +1041,6 @@ mod analog_strings {
     // yet): exercise the native layers.
     const SETUP: Setup = Setup {
         voices: 4096,
-        scripts: false,
         ..Setup::new(ANALOG, (60, 67))
     };
 
