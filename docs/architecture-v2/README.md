@@ -89,6 +89,9 @@ without importing old engine types; container playback admission remains open.
 25. [Native bus DSP](BUS_DSP.md): prepared summed-signal routing, shared kernels,
     independent bus histories, sample-clock controls and generation-owned tails.
 
+26. [Sample streaming work](STREAMING.md): immutable asset IDs and traversal-derived
+    demand; worker cache and paged playback are in progress.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus

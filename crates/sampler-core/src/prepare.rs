@@ -10,8 +10,14 @@ use predicates::Matching;
 #[derive(Clone, Debug)]
 pub struct Pcm(std::sync::Arc<PcmData>);
 
+/// Process-local identity of one immutable decoded asset revision. Clones share it;
+/// a separately constructed revision never reuses an old identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AssetId(u64);
+
 #[derive(Debug)]
 struct PcmData {
+    id: AssetId,
     rate: u32,
     frames: Box<[Frame]>,
 }
@@ -22,7 +28,20 @@ impl Pcm {
         if rate == 0 || frames.is_empty() || frames.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::InvalidInput);
         }
-        Ok(Self(std::sync::Arc::new(PcmData { rate, frames })))
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
+        #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
+        let id = NEXT_ASSET
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .map_err(|_| Error::Capacity)?;
+        Ok(Self(std::sync::Arc::new(PcmData {
+            id: AssetId(id),
+            rate,
+            frames,
+        })))
+    }
+    pub fn asset_id(&self) -> AssetId {
+        self.0.id
     }
     pub fn sample_rate(&self) -> u32 {
         self.0.rate

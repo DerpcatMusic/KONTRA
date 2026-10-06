@@ -46,7 +46,7 @@ pub use behavior::{
 mod stages;
 pub use stages::Stage;
 mod source;
-pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
+pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusSend};
 mod dsp;
@@ -75,7 +75,7 @@ pub use release::{
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
+pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
 mod integer;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod script;
