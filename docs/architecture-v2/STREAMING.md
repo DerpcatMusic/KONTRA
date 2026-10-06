@@ -1,8 +1,9 @@
 # Native sample residency and streaming
 
 V2-11 is in progress. Playback still uses resident PCM. The first executable pieces
-are immutable asset identity and demand prediction; cache ownership, worker transfer,
-paged rendering, onset readiness and starvation policies are not complete.
+are immutable asset identity, demand prediction and bounded decoded-page ownership.
+The cache/worker protocol is executable; paged rendering, actual decoder integration,
+onset readiness and starvation policies are not complete.
 
 ## Asset identity
 
@@ -63,3 +64,43 @@ and its BSD-2-Clause header. It separates preload offsets from asynchronous fill
 and publishes filled-frame progress. Native streaming must additionally account for
 arbitrary traversal windows and explicit immutable page ownership. No source was
 copied or SFZ frontend work resumed.
+
+
+## Bounded decoded-page exchange
+
+`StreamCache::new(pages)` prepares exactly that many 4,096-frame stereo buffers and
+three bounded SPSC channels. The audio cache owns page slots; one worker coordinator
+serializes requests/results and can distribute owned `DecodeJob`s to executors.
+No file API or decoder runs in this kernel. Job ranges include the short final page.
+Workers fill/validate pages and return an explicit success or decode failure.
+Rejected completions retain the job and its result for retry or off-audio disposal.
+
+Cache keys use immutable asset identity and page index. Page readiness is explicit:
+missing, pending, ready or failed. A new request reserves its slot and queue capacity
+before replacing an old entry. Protect all current demand in an epoch before admitting
+replacement requests, so voice visitation order cannot evict another needed page.
+Unprotected entries are eligible in last-use order. A full cache/queue reports capacity;
+it never steals a protected page, waits or silently claims that data is ready.
+
+The worker coalesces superseded slot requests and selects the earliest deadline.
+A priority update does not launch an already-dispatched job again. Each admission
+has a non-reused request sequence; a late completion for a reused or invalidated slot
+returns its buffer instead of publishing stale data. `invalidate` permits explicit
+failed-page retry. A failed decode never publishes partial/nonfinite sample data.
+
+Audio-side eviction, invalidation and discarded/failed completions return buffers
+through the recycle queue. Worker reuse preserves the allocation; cache operations
+never allocate, free or perform an Arc update. Endpoint/cache/job destruction belongs
+off audio. A job deliberately dropped by its worker removes that buffer from the
+pool; production coordinators must complete failed/cancelled jobs rather than drop
+them. Resident pages remain readable after worker disconnect; misses/pending requests
+report the disconnection. Disconnection is not permission for audio-side destruction.
+
+`tests/stream_cache.rs` checks exact buffer-pointer reuse, shared assets, protected
+pages, short pages, deadline updates, queue/cache pressure, stale completion after
+slot reuse, failed-page retry, nonfinite samples, foreign worker rejection and
+endpoint shutdown. An actual worker thread publishes a page that remains owned by
+the cache after that worker exits. Cache transfer paths run under heap guards.
+Native/MSRV, strict Clippy and root boundary checks pass; targeted release checks
+also cover the cache protocol (`artifacts/stream-cache-*`). This is not yet evidence
+of streamed source playback or storage-latency tolerance.

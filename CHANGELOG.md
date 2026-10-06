@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add a bounded decoded-page cache/worker protocol with owned buffer recycling,
+  demand protection, deadline ordering and stale-result rejection. Actual streamed
+  rendering and decoder integration remain in development.
+
 - Add immutable decoded asset IDs and read-only source demand with sample deadlines,
   pitch-dependent interpolation guards and separate crossfade ranges. These are
   streaming foundations; playback still uses resident PCM.

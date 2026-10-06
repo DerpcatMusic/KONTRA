@@ -302,8 +302,10 @@ source semantics and checksum/authentication validation are still required.
 
 - **Partial evidence:** [immutable asset identity and source demand](STREAMING.md)
   now preserve shared decoded revisions, exact traversal/guard ranges and first-use
-  deadlines without mutating playback. Page cache, worker transfer, paged rendering
-  and readiness/starvation behavior remain in progress; playback is still resident.
+  deadlines without mutating playback. A bounded decoded-page cache now transfers
+  worker buffers, protects current demand and rejects stale completions without
+  audio-thread destruction. Paged rendering, decoder integration and readiness/
+  starvation behavior remain in progress; playback is still resident.
 
 - [ ] **P1; dependencies:** V2-09/10.
 - New immutable asset/view identities, decoding, residency, cache and demand service.

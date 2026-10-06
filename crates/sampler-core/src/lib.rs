@@ -45,6 +45,11 @@ pub use behavior::{
 };
 mod stages;
 pub use stages::Stage;
+mod stream;
+pub use stream::{
+    DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
+    StreamCache, StreamError, StreamWorker,
+};
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
