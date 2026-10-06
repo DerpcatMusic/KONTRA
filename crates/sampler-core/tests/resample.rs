@@ -1360,7 +1360,11 @@ fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof()
                                     unrolled.extend_from_slice(&source[start + 1..end]);
                                     unrolled.extend(source[start..end - 1].iter().rev().copied());
                                 }
-                                (_, LoopShape::Crossfade { .. }) => {
+                                (
+                                    _,
+                                    LoopShape::Crossfade { .. }
+                                    | LoopShape::EqualPowerCrossfade { .. },
+                                ) => {
                                     unreachable!("covered by crossfade fixture")
                                 }
                             }

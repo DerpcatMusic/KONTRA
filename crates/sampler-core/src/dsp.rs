@@ -299,9 +299,9 @@ impl PreparedVoiceChain {
             };
             // Frames past the source's output are its zero-input tail, which
             // starts at the first of them and runs for at most `tail_frames`.
-            let tail = voice.tail_remaining.or_else(|| {
-                (produced < chunk.len()).then_some(self.tail_frames)
-            });
+            let tail = voice
+                .tail_remaining
+                .or_else(|| (produced < chunk.len()).then_some(self.tail_frames));
             let len = match (voice.tail_remaining, tail) {
                 (Some(t), _) => chunk.len().min(t as usize),
                 (None, Some(t)) => produced + (chunk.len() - produced).min(t as usize),
@@ -324,15 +324,16 @@ impl PreparedVoiceChain {
                 context.delay,
                 &mut context.filters,
             );
-            for i in 0..len {
+            let [left, right] = &mut block;
+            for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
                 let level = f64::from(
                     voice
                         .envelope
                         .constant_level()
                         .unwrap_or_else(|| voice.envelope.next()),
                 );
-                block[0][i] *= level;
-                block[1][i] *= level;
+                *l *= level;
+                *r *= level;
             }
             fault |= process(
                 &self.post,
@@ -451,10 +452,11 @@ pub(super) fn process(
             }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
-                for i in 0..len {
+                let [left, right] = block;
+                for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
                     let gain = ramp.value(at + i as u64);
-                    block[0][i] *= gain;
-                    block[1][i] *= gain;
+                    *l *= gain;
+                    *r *= gain;
                 }
             }
             PreparedProcessor::Biquad(filter) => {
@@ -542,7 +544,9 @@ mod tests {
     ) -> [f64; 2] {
         let mut block = [[0.; BLOCK]; 2];
         (block[0][0], block[1][0]) = (value[0], value[1]);
-        assert!(!super::process(stages, states, &mut block, 1, parameters, at, delay, filters));
+        assert!(!super::process(
+            stages, states, &mut block, 1, parameters, at, delay, filters
+        ));
         [block[0][0], block[1][0]]
     }
 

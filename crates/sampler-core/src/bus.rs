@@ -2,7 +2,6 @@
 use crate::dsp::{BLOCK, ControlRamp, PreparedProcessor, ProcessorState, allocate};
 use crate::{ControlRange, Error, Frame, Prepared, Processor};
 
-
 /// One post-processing send. `None` targets the runtime's stereo output.
 #[derive(Clone, Copy, Debug)]
 pub struct BusSend {
@@ -210,7 +209,9 @@ impl BusState {
                     },
                 );
                 let finite = !fault
-                    && block.iter().all(|c| c[..produced].iter().all(|v| (*v as f32).is_finite()))
+                    && block
+                        .iter()
+                        .all(|c| c[..produced].iter().all(|v| (*v as f32).is_finite()))
                     && states.iter().all(ProcessorState::finite);
                 if finite {
                     for (i, frame) in buffer.samples[..produced].iter_mut().enumerate() {
