@@ -3,11 +3,12 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute,
-    ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region,
-    SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch,
-    SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControllerCondition, Direction, Driver,
+    Envelope, EnvelopeCurve, Error, FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode,
+    LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback,
+    Prepared, Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope,
+    StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger,
+    VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -421,6 +422,7 @@ impl Lowering<'_> {
             ir::Curve::Exponential(k) => {
                 EnvelopeCurve::exponential(k).map_err(core(Stage::Envelope, owner))
             }
+            ir::Curve::Step => Ok(EnvelopeCurve::step()),
         };
         let envelope = if one_shot {
             // Plays to the end of the audio whatever the gate does.
@@ -539,7 +541,8 @@ impl Lowering<'_> {
                 if m.scope != ir::Scope::Voice {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
-                program.sources.push(self.mod_source(&owner, &m.source)?);
+                let source = self.mod_source(&owner, &m.source, program)?;
+                program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
                 Ok(program.sources.len() - 1)
             };
@@ -632,9 +635,30 @@ impl Lowering<'_> {
         &self,
         owner: &str,
         source: &ir::ModulationSource,
+        program: &mut ModProgram,
     ) -> Result<ModSource, LowerError> {
         Ok(match source {
             ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Breakpoints(b) => {
+                let mut points = Vec::with_capacity(b.points.len());
+                for p in &b.points {
+                    points.push(Breakpoint {
+                        frames: self.frames(p.time),
+                        level: p.level as f32,
+                        curve: match p.shape {
+                            ir::Curve::Linear => EnvelopeCurve::default(),
+                            ir::Curve::Step => EnvelopeCurve::step(),
+                            ir::Curve::Exponential(k) => EnvelopeCurve::exponential(k)
+                                .map_err(core(Stage::Envelope, owner))?,
+                        },
+                    });
+                }
+                program.breakpoints.push(Breakpoints {
+                    points,
+                    sustain: b.sustain,
+                });
+                ModSource::Breakpoints(program.breakpoints.len() - 1)
+            }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
                     ir::LfoShape::Sine => LfoShape::Sine,
