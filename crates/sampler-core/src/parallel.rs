@@ -326,6 +326,7 @@ impl View<'_> {
             };
             render_source(v, &source, segment, chain, states, context, self.kernel)
         };
+        let done = done || super::render::inaudible(v, produced, expression.rendered.gains);
         self.outcomes.claim(i)[0] = Outcome { produced, done, faults, underrun };
     }
 
@@ -450,7 +451,7 @@ impl View<'_> {
             }
             self.outcomes.claim(i)[0] = Outcome {
                 produced,
-                done: chain.done(v),
+                done: chain.done(v) || super::render::inaudible(v, produced, gains[k]),
                 faults: u64::from(fault),
                 underrun: !starved[k] && v.cursor.starved(),
             };
