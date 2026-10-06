@@ -602,3 +602,13 @@ publication. These are native physical addresses, not a claim of KSP multi-port
 
 Validation: 299 native release and Rust 1.92 tests plus strict all-target Clippy
 pass (`artifacts/controller-origin-*`).
+
+
+Routed controller callbacks may now admit parentless generated notes using the
+same selection and ownership path as note callbacks. `PlayMidi` requires a routed
+performance context; gate duration or inherited expression additionally require
+a note. The retained callback supplies plan/address/domain. No fake host input,
+extra note arena or per-format lifetime table is introduced. Scoped hard silence
+cancels controller waits by captured physical origin, while unrelated plan/UI
+callbacks remain independent. See the controller-generated source fixtures in
+[KSP_FRONTEND.md](KSP_FRONTEND.md#controller-generated-notes).

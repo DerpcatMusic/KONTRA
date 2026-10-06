@@ -256,8 +256,14 @@ impl Runtime {
         for slot in &mut self.behaviors.slots {
             if let Some(callback) = &mut slot.value
                 && callback.outcome.is_none()
-                && let super::BehaviorOwner::Note(note) = callback.owner
-                && self.notes.get(note.0).is_some_and(|n| n.address == address)
+                && match callback.owner {
+                    super::BehaviorOwner::Note(note) => {
+                        self.notes.get(note.0).is_some_and(|n| n.address == address)
+                    }
+                    super::BehaviorOwner::Plan(_) => callback
+                        .controller
+                        .is_some_and(|event| event.origin == address),
+                }
             {
                 callback.outcome = Some(super::Outcome::Cancelled);
             }

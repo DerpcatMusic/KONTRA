@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Generate notes directly from routed controller callbacks through shared ownership,
+  retaining original plans and source addresses across waits. Scoped hard silence
+  cancels pending controller generation without affecting unrelated domains.
+
 - Execute evaluated KSP sample offsets through native generated-note admission,
   preserving per-asset source time and fractional phase across reverse/looped
   playback, with explicit exhausted-source cleanup and atomic argument rejection.

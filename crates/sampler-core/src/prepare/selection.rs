@@ -123,24 +123,7 @@ impl Runtime {
         Ok(note)
     }
 
-    pub(crate) fn trigger_child(
-        &mut self,
-        parent: NoteId,
-        pitch: NotePitch,
-        velocity: f64,
-        linked: bool,
-        inheritance: crate::Inheritance,
-        offset_micros: u32,
-    ) -> Result<NoteId, Error> {
-        self.select(
-            NoteOrigin::Child(parent, linked, inheritance),
-            pitch,
-            velocity,
-            offset_micros,
-        )
-    }
-
-    fn select(
+    pub(crate) fn select(
         &mut self,
         origin: NoteOrigin,
         note_pitch: NotePitch,
@@ -153,6 +136,7 @@ impl Runtime {
         }
         let plan = match origin {
             NoteOrigin::Input(..) => self.active_plan,
+            NoteOrigin::Generated(plan, ..) => plan,
             NoteOrigin::Child(parent, ..) => {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
             }
@@ -162,16 +146,11 @@ impl Runtime {
                 self.project_expression(self.modulation_plan(plan), expression, None)?
                     .ratio,
             ),
-            NoteOrigin::Child(_, _, crate::Inheritance::Independent) => {
-                crate::pitch::PitchRange::constant(
-                    self.project_expression(
-                        self.modulation_plan(plan),
-                        Expression::default(),
-                        None,
-                    )?
+            NoteOrigin::Child(_, _, crate::Inheritance::Independent)
+            | NoteOrigin::Generated(..) => crate::pitch::PitchRange::constant(
+                self.project_expression(self.modulation_plan(plan), Expression::default(), None)?
                     .ratio,
-                )
-            }
+            ),
             NoteOrigin::Child(parent, _, inheritance) => {
                 let owner = self.notes.get(parent.0).unwrap().expression;
                 self.pitch_range(owner, inheritance == crate::Inheritance::Linked)?
@@ -179,10 +158,13 @@ impl Runtime {
         };
         let address = match origin {
             NoteOrigin::Input(input, ..) => input.channel_address(),
+            NoteOrigin::Generated(_, address, _) => address,
             NoteOrigin::Child(parent, ..) => self.notes.get(parent.0).unwrap().address,
         };
         let performance = match origin {
-            NoteOrigin::Input(_, _, performance) => performance,
+            NoteOrigin::Input(_, _, performance) | NoteOrigin::Generated(_, _, performance) => {
+                performance
+            }
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
         let snapshot = self.performance_state.current[performance];
@@ -195,7 +177,7 @@ impl Runtime {
                 trigger: Trigger::Attack,
                 snapshot,
                 groups: match origin {
-                    NoteOrigin::Input(..) => None,
+                    NoteOrigin::Input(..) | NoteOrigin::Generated(..) => None,
                     NoteOrigin::Child(parent, ..) => Some((parent.0.index, false)),
                 },
             },
@@ -209,6 +191,7 @@ impl Runtime {
                 velocity,
                 expression,
             )?,
+            NoteOrigin::Generated(..) => self.admit(origin, note_pitch, velocity)?,
             NoteOrigin::Child(parent, linked, inheritance) => {
                 self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }

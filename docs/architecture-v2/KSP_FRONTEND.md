@@ -807,3 +807,34 @@ expressions fail without partial child/timer publication, under heap guards.
 
 Validation: 303 native release/Rust 1.92 tests and strict all-target Clippy pass
 (`artifacts/source-offset-*`).
+
+
+## Controller-generated notes
+
+`on controller` can generate key/velocity/offset expressions with a literal positive
+duration or whole-source duration zero, and store the resulting event ID for
+`note_off`. These notes use the existing arenas, source IDs, selection, expression
+owners and terminal cleanup. They have no physical input or fabricated parent.
+Their plan, performance domain and channel address come from the retained callback,
+including generation replacement during a wait. No automatic host terminal is sent.
+
+A generated root captures current downstream selection state when admitted, with
+independent expression and ordinary group defaults. It does not re-enter its
+creating script. Fixed duration remains independent of callback completion/fault;
+whole-source lifetime retires normally. Scoped hard silence also cancels waiting
+controller callbacks from that exact input address, so delayed generation cannot
+resurrect sound after the stop. Unrouted plan/UI callbacks still cannot invent an
+audio destination. Gate-linked duration/inheritance require a real note owner.
+
+The current KSP dynamic-duration lowering includes a gate branch and consequently
+still requires note context; broader controller duration expressions remain open.
+Script-stage routing, source-specific pedal projection and vendor ordering remain
+unverified. The tests establish native lifecycle/routing, not complete KSP parity.
+
+Fixtures cover two performance domains and distinct port/group/channel origins,
+waits across plan replacement, source offsets, stored-ID stops, admission failure,
+post-generation callback faults, scoped cancellation, generation retirement and
+absence of host terminals. All rendering/cleanup paths are heap guarded.
+
+Validation: 305 native release/Rust 1.92 tests, strict all-target Clippy and both
+root boundary tests pass (`artifacts/controller-notes-*`).
