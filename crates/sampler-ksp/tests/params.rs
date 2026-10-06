@@ -3,7 +3,16 @@
 use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
 
 fn runtime(source: &str) -> Runtime {
-    let script = sampler_ksp::compile(
+    runtime_with(source, Vec::new())
+}
+
+/// Two one-key groups, authored at `bases`.
+fn runtime_with(source: &str, bases: Vec<sampler_core::GroupBase>) -> Runtime {
+    let environment = sampler_ksp::Environment {
+        group_values: bases.clone(),
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
         source,
         48000,
         sampler_ksp::Limits {
@@ -13,6 +22,7 @@ fn runtime(source: &str) -> Runtime {
             array_cells: 16,
         },
         &[],
+        &environment,
     )
     .unwrap();
     let note_cells = script.note_cells() * 8;
@@ -35,7 +45,8 @@ fn runtime(source: &str) -> Runtime {
             Prepared::new(48000, pcm.into(), regions, 2)
                 .unwrap()
                 .with_groups(2, vec![Some(0), Some(1)])
-                .unwrap(),
+                .unwrap()
+                .with_group_bases(bases),
         )
         .unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
@@ -141,4 +152,37 @@ fn volume_envelope_attack_applies_to_voices_that_start_after_it() {
     rt.trigger(input(60), 60, 1.).unwrap();
     let level = level(&mut rt)[0];
     assert!((level - 0.5 * 256. / 480.).abs() < 0.01, "{level}");
+}
+
+#[test]
+fn engine_volume_reads_and_sets_absolute_authored_values() {
+    let authored = sampler_core::GroupBase {
+        decibels: -6.0206,
+        ..Default::default()
+    };
+    let mut rt = runtime_with(
+        "on init
+           declare $v := 0
+           declare $authored := get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1)
+         end on
+         on note
+           if ($EVENT_NOTE = 60)
+             { Writing back what was read leaves the group as authored. }
+             $v := get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1)
+             set_engine_par($ENGINE_PAR_VOLUME, $v, 0, -1, -1)
+           else
+             { 629960 is 0 dB: +6 dB over the authored -6 dB. }
+             set_engine_par($ENGINE_PAR_VOLUME, 629960, 0, -1, -1)
+           end if
+         end on",
+        vec![authored, Default::default()],
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    // The authored base is baked into the voices by lowering, not here: the
+    // layer itself stays neutral.
+    assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
+    rt.trigger(input(61), 61, 1.).unwrap();
+    // Group 0's note now at 0 dB (1.0) plus group 1's own note (0.25).
+    let left = level(&mut rt)[0];
+    assert!((left - 1.25).abs() < 0.01, "{left}");
 }

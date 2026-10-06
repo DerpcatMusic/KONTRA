@@ -38,7 +38,20 @@ impl Default for Layer {
 }
 
 impl Layer {
+    #[cfg(test)]
     pub fn write(&mut self, target: ModTarget, value: i64, relative: bool) -> Result<(), Error> {
+        self.write_from(GroupBase::NEUTRAL, target, value, relative)
+    }
+
+    /// [`write`](Self::write) where absolute values include the authored
+    /// `base`, which the layer's offset is kept relative to.
+    pub fn write_from(
+        &mut self,
+        base: GroupBase,
+        target: ModTarget,
+        value: i64,
+        relative: bool,
+    ) -> Result<(), Error> {
         let v = value as f64;
         let (slot, value, bounds) = match target {
             ModTarget::Decibels => (&mut self.decibels, v / 1000.0, None),
@@ -47,16 +60,24 @@ impl Layer {
             ModTarget::Attenuate => (&mut self.attenuate, v / 1000.0, Some((0.0, 1.0))),
             _ => return Err(Error::InvalidInput),
         };
-        let next = if relative { *slot + value } else { value };
-        *slot = bounds.map_or(next, |(lo, hi)| next.clamp(lo, hi));
+        let base = base.of(target);
+        let next = if relative { *slot + value } else { value - base };
+        *slot = bounds.map_or(next, |(lo, hi)| (next + base).clamp(lo, hi) - base);
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn read(&self, target: ModTarget) -> i64 {
+        self.read_from(GroupBase::NEUTRAL, target)
+    }
+
+    /// The layer's value including the authored `base`, in `write` units.
+    pub fn read_from(&self, base: GroupBase, target: ModTarget) -> i64 {
+        let base = base.of(target);
         (match target {
-            ModTarget::Decibels => self.decibels * 1000.0,
-            ModTarget::Pan => self.pan * 1000.0,
-            ModTarget::Pitch => self.pitch * 100_000.0,
+            ModTarget::Decibels => (self.decibels + base) * 1000.0,
+            ModTarget::Pan => (self.pan + base) * 1000.0,
+            ModTarget::Pitch => (self.pitch + base) * 100_000.0,
             ModTarget::Attenuate => self.attenuate * 1000.0,
             _ => 0.0,
         })
@@ -124,17 +145,49 @@ pub enum EnvelopeStage {
     Release,
 }
 
+/// A group's authored volume, pan and tune, which its script layer is an
+/// offset from: scripts read and set absolute values (`get_engine_par`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroupBase {
+    pub decibels: f64,
+    /// -1 (left) ..= 1 (right).
+    pub pan: f64,
+    pub semitones: f64,
+}
+
+impl GroupBase {
+    pub const NEUTRAL: Self = Self {
+        decibels: 0.0,
+        pan: 0.0,
+        semitones: 0.0,
+    };
+
+    fn of(self, target: ModTarget) -> f64 {
+        match target {
+            ModTarget::Decibels => self.decibels,
+            ModTarget::Pan => self.pan,
+            ModTarget::Pitch => self.semitones,
+            _ => 0.0,
+        }
+    }
+}
+
 /// Per-plan-generation group and instrument layers.
 pub(crate) struct EngineLayers {
     pub instrument: Layer,
     pub groups: Box<[Layer]>,
     /// Per group, script envelope stages indexed like `EnvelopeStage`.
     envelopes: Box<[[Option<u32>; 5]]>,
+    /// Per group, its authored values (neutral when the plan has none).
+    bases: Box<[GroupBase]>,
 }
 
 impl EngineLayers {
-    pub fn new(groups: u32) -> Self {
+    pub fn new(groups: u32, bases: &[GroupBase]) -> Self {
         Self {
+            bases: (0..groups as usize)
+                .map(|g| bases.get(g).copied().unwrap_or_default())
+                .collect(),
             instrument: Layer::default(),
             groups: vec![Layer::default(); groups as usize].into_boxed_slice(),
             envelopes: vec![[None; 5]; groups as usize].into_boxed_slice(),
@@ -180,23 +233,23 @@ impl Runtime {
         plan: crate::PlanId,
         scope: ParamScope,
         index: i64,
-    ) -> Result<Option<&mut Layer>, Error> {
+    ) -> Result<Option<(&mut Layer, GroupBase)>, Error> {
         Ok(match scope {
             ParamScope::Note => {
                 let Ok(id) = i32::try_from(index) else {
                     return Ok(None);
                 };
                 self.resolve_source_event(plan, id)?
-                    .map(|note| &mut self.note_params[note.0.index].layer)
+                    .map(|note| (&mut self.note_params[note.0.index].layer, GroupBase::NEUTRAL))
             }
             ParamScope::Group => {
                 let layers = &mut self.plans.get_mut(plan.0).unwrap().script;
                 if index < 0 {
-                    Some(&mut layers.instrument)
+                    Some((&mut layers.instrument, GroupBase::NEUTRAL))
                 } else {
-                    usize::try_from(index)
-                        .ok()
-                        .and_then(|g| layers.groups.get_mut(g))
+                    let g = usize::try_from(index).unwrap_or(usize::MAX);
+                    let base = layers.bases.get(g).copied().unwrap_or_default();
+                    layers.groups.get_mut(g).map(|layer| (layer, base))
                 }
             }
         })
@@ -213,7 +266,7 @@ impl Runtime {
     ) -> Result<(), Error> {
         self.script_params = true;
         match self.param_layer(plan, scope, index)? {
-            Some(layer) => layer.write(target, value, relative),
+            Some((layer, base)) => layer.write_from(base, target, value, relative),
             None => Ok(()),
         }
     }
@@ -227,7 +280,7 @@ impl Runtime {
     ) -> Result<i64, Error> {
         Ok(self
             .param_layer(plan, scope, index)?
-            .map_or(0, |layer| layer.read(target)))
+            .map_or(0, |(layer, base)| layer.read_from(base, target)))
     }
 
     /// Set a group's envelope stage; out-of-range groups are no-ops.
@@ -297,6 +350,13 @@ mod tests {
         assert!(note.write(ModTarget::Cutoff, 1, false).is_err());
         let gains = note.gains(1.0);
         assert!(gains[0] == 0.0 && (gains[1] - 0.2512).abs() < 1e-3);
+        let base = GroupBase {
+            pan: 0.5,
+            ..GroupBase::NEUTRAL
+        };
+        let mut panned = Layer::default();
+        panned.write_from(base, ModTarget::Pan, 1000, false).unwrap();
+        assert_eq!((panned.read(ModTarget::Pan), panned.read_from(base, ModTarget::Pan)), (500, 1000));
         let mut group = Layer::default();
         group.write(ModTarget::Attenuate, 0, false).unwrap();
         assert_eq!(group.stack(note).gains(1.0), [0.0; 2]);
