@@ -1629,7 +1629,7 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             Instruction::PlayMidi {
                 key: 0,
                 velocity: 1,
-                frames: 2,
+                duration: sampler_core::DurationValue::Frames(2),
                 inheritance: Inheritance::Independent,
             },
         ];
@@ -1663,7 +1663,7 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             Instruction::PlayMidi {
                 key,
                 velocity,
-                frames,
+                duration: sampler_core::DurationValue::Frames(frames),
                 inheritance: Inheritance::Independent,
             },
         ])

@@ -24,7 +24,8 @@ global/polyphonic/control integers. Note-owned values remain shared between the
 originating note and its release callback, including overlapping waits. Generated
 note key, velocity and duration accept evaluated integer expressions; sample offset
 currently requires literal zero. Supported key/velocity ranges are 0–127 and 1–127,
-with positive microsecond duration. Waits accept nonnegative microseconds.
+with positive microsecond duration, `-1` for the originating effective gate, or `0`
+for independent whole-source lifetime. Waits accept nonnegative microseconds.
 
 This subset follows documented command units and distinguishes fixed duration from
 input-linked playback. [Generated notes](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
@@ -46,8 +47,9 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 The compiler rejects real-valued expressions, arrays, real/string values, select/case,
 compound Boolean expressions, other callbacks, multi-slot event forwarding, nested
 comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
-at execution before publishing a child or timer. Input-linked negative duration and
-whole-source duration zero are still unsupported and fault explicitly.
+at execution before publishing a child or timer. Durations below `-1` are invalid.
+Input-linked generation requires the originating effective gate to remain open;
+independent fixed/whole-source notes can be generated after its release.
 Some primitives already exist natively; that alone does not establish their KSP
 semantics. Unknown syntax is never ignored and never sent to the old VM.
 
@@ -427,3 +429,38 @@ The manual inventory now has 27 partial named overrides; none claims vendor pari
 Event-edit validation: all 221 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs use
 `artifacts/event-edits-{debug,release,msrv,clippy,boundary}.log`.
+
+
+## Gate-linked and whole-source generated notes
+
+Evaluated `play_note` duration `-1` now chooses native `Duration::Gate`; duration `0`
+chooses `Duration::UntilSilent`. Positive values retain checked microsecond-to-frame
+conversion. Source sentinel meanings follow the pinned
+[NI general commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands).
+The frontend emits ordinary conditional IR and explicit `DurationValue` policies;
+negative source sentinels do not leak into native duration or scheduler APIs. Literal
+durations use the direct branch when available; dynamic arguments preserve their
+key/velocity registers and use a separate comparison register. All emitted paths
+still count against preparation budgets and runtime instruction fuel.
+
+Whole-source children have an independent gate and no release timer. Their logical
+identity may retire once all families (including effects tails), scheduled work,
+callback/manual pins and descendants finish. Completion does not manufacture a
+musical note-off, release sample, release velocity or approximate event timestamp.
+Unused release reservations are returned at retirement. Normal terminal flushing
+and admission-pressure reclamation use the same owner walk; internal reclamation
+never accepts a physical host terminal. Real physical keys retain their existing
+release/terminal requirements. Unbounded loops deliberately remain live until an
+explicit stop or panic, including when muted.
+
+Checks include literal/dynamic zero and minus-one, blocks 1/7/64, layered source
+ends, unmapped notes, effects-tail retention, muted/infinite loops, panic, exact PCM,
+quota recovery before host-terminal acceptance and no runtime heap operations.
+Current policy follows the parent's effective gate (including pedal holds); precise
+Kontakt pedal/special-duration behavior remains a differential-test obligation.
+Generated event handles, explicit source `note_off`, offsets and ordered script
+stages remain open. No new vendor-fidelity claim or manual override count is added.
+
+Generated-lifetime validation: all 224 native tests pass in debug, release and
+Rust 1.92; strict all-target Clippy and both root boundary tests pass. Logs use
+`artifacts/note-lifetimes-{debug,release,msrv,clippy,boundary}.log`.

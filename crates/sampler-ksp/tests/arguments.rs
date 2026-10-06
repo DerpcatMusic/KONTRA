@@ -171,12 +171,12 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
             sampler_core::Error::InvalidInput,
         ),
         (
-            "play_note(60, 127, 0, 0)",
+            "play_note(60, 127, 0, -2)",
             48000,
             sampler_core::Error::InvalidInput,
         ),
         (
-            "play_note(60, 127, 0, -1)",
+            "play_note(60, 127, 0, -2147483648)",
             48000,
             sampler_core::Error::InvalidInput,
         ),
@@ -400,4 +400,54 @@ fn edits_before_forwarding_map_audio_and_late_edits_only_change_event_values() {
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
+}
+
+#[test]
+fn generated_duration_expressions_choose_gate_or_whole_source_without_timers() {
+    for (duration, end) in [
+        ("-1", 2),
+        ("$EVENT_NOTE - 61", 2),
+        ("0", 256),
+        ("$EVENT_NOTE - 60", 256),
+    ] {
+        for block in [1, 7, 64] {
+            let source =
+                format!("on note ignore_event($EVENT_ID) play_note(60, 127, 0, {duration}) end on");
+            let mut rt = runtime(&source, 48000);
+            support::without_heap(|| {
+                let parent = rt.trigger(input(1), 60, 1.).unwrap();
+                assert_eq!(rt.pending_commands(), 0);
+                rt.schedule_event(2, Event::KeyUp(parent, None)).unwrap();
+                let mut audio = [[0.; 2]; 260];
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                }
+                for (frame, actual) in audio.iter().enumerate() {
+                    assert_eq!(
+                        *actual,
+                        [if frame < end { 1. } else { 0. }; 2],
+                        "{duration}, {block}, {frame}"
+                    );
+                }
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    true
+                });
+                let mut terminals = 0;
+                rt.flush_ended(|_| {
+                    terminals += 1;
+                    true
+                });
+                assert_eq!(
+                    (
+                        terminals,
+                        rt.note_count(),
+                        rt.voice_count(),
+                        rt.pending_commands()
+                    ),
+                    (1, 0, 0, 0)
+                );
+            });
+        }
+    }
 }

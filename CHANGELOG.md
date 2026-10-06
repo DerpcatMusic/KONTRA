@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Support evaluated KSP gate-linked (`-1`) and whole-source (`0`) note durations
+  through explicit native policies. Whole-source notes retain layers/tails and
+  return unused release reservations without fabricating note-off audio; loops
+  remain owned until stopped. Source handles, offsets and vendor fidelity remain open.
+
 - Implement KSP current-event `change_note`/`change_velo` through shared native
   note properties. Pre-forward edits affect mapping; late edits update script reads
   without changing running audio, release mapping or physical-key ownership.

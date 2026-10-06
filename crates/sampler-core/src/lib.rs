@@ -39,8 +39,8 @@ pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapsh
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
-    BehaviorId, BehaviorOwner, Comparison, Duration, Instruction, Outcome, Program, Velocity,
-    WaitLifetime,
+    BehaviorId, BehaviorOwner, Comparison, Duration, DurationValue, Instruction, Outcome, Program,
+    Velocity, WaitLifetime,
 };
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
@@ -180,6 +180,7 @@ struct Note {
     plan: PlanId,
     parent: Option<NoteId>,
     linked_release: bool,
+    retire_when_silent: bool,
     attack: AttackStatus,
     siblings: Siblings,
     first_child: Option<Index>,
@@ -681,6 +682,7 @@ impl Runtime {
             plan,
             parent,
             linked_release,
+            retire_when_silent: false,
             attack: AttackStatus::Pending,
             siblings: Siblings {
                 previous: None,

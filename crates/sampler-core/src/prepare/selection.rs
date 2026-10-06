@@ -284,9 +284,7 @@ impl Runtime {
             }
         }
         let required = attack.plus(release);
-        if required.decisions > self.decisions.available() {
-            self.reclaim_internal_notes(required.decisions);
-        }
+        self.reclaim_internal_notes(required);
         self.check_selection_capacity(required)?;
         Ok(release)
     }

@@ -350,3 +350,199 @@ fn event_edit_instructions_derive_register_and_note_requirements_even_when_unrea
         );
     }
 }
+
+#[test]
+fn source_owned_children_keep_tails_then_return_release_quotas_without_note_off_audio() {
+    use sampler_core::{
+        Duration, Inheritance, Instruction, Program, Velocity, VoiceChain, VoiceProcessor,
+    };
+    let make_plan = || {
+        plan(1.)
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![], vec![VoiceProcessor::Gain(1.)], 3).unwrap()],
+                vec![Some(0), None],
+            )
+            .unwrap()
+            .with_programs(
+                vec![
+                    Program::new(vec![Instruction::Play {
+                        transpose: 0,
+                        velocity: Velocity::Fixed(1.),
+                        inheritance: Inheritance::Independent,
+                        duration: Duration::UntilSilent,
+                    }])
+                    .unwrap(),
+                ],
+                Some(0),
+            )
+            .unwrap()
+    };
+    let mut rt = Runtime::new(
+        make_plan(),
+        Limits {
+            notes: 8,
+            expressions: 8,
+            behaviors: 1,
+            behavior_fuel: 2,
+            ..limits()
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let mut terminals = 0;
+        for id in 0..8 {
+            let parent = rt.trigger(input(id), 60, 1.).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, sampler_core::Outcome::Finished);
+                true
+            });
+            rt.note_off(input(id), None).unwrap();
+            let mut audio = [[0.; 2]; 4];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio, [[1.; 2]; 4]);
+            rt.flush_ended(|_| {
+                terminals += 1;
+                true
+            });
+            assert_eq!(rt.note_count(), 2, "the tail owns its child and parent");
+            assert_eq!(rt.voice_count(), 1);
+            assert_eq!(rt.release_reserve().voices, 1);
+            rt.render(&mut audio[..3]).unwrap();
+            assert_eq!(
+                audio[..3],
+                [[0.; 2]; 3],
+                "source completion must not select release samples"
+            );
+            assert_eq!(rt.voice_count(), 0);
+            // Do not flush terminals here. The next admission must reclaim the
+            // completed internal child's release quota, not consume host terminals.
+            assert!(!rt.key_down(parent).unwrap());
+        }
+        assert_eq!(
+            terminals, 7,
+            "only explicit flushes accept external terminals"
+        );
+        rt.flush_ended(|_| {
+            terminals += 1;
+            true
+        });
+        assert_eq!(terminals, 8);
+        assert_eq!(
+            (rt.note_count(), rt.family_count(), rt.expression_count()),
+            (0, 0, 0)
+        );
+        assert_eq!(rt.release_reserve(), ReleaseReserve::default());
+        assert_eq!(
+            rt.pending_commands(),
+            0,
+            "whole-source lifetime needs no timer"
+        );
+    });
+}
+
+#[test]
+fn whole_source_lifetime_handles_empty_mapping_layers_muting_and_infinite_loops() {
+    use sampler_core::{
+        Duration, Inheritance, Instruction, Loop, LoopMode, LoopShape, Program, Velocity,
+    };
+    for (mapped, looping, gain) in [
+        (false, false, 1.),
+        (true, false, 1.),
+        (true, true, 1.),
+        (true, true, 0.),
+    ] {
+        let region = Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain,
+            envelope: Envelope::default(),
+            playback: Playback {
+                loop_range: looping.then_some(Loop {
+                    start: 0,
+                    end: 3,
+                    mode: LoopMode::Continuous,
+                    shape: LoopShape::Wrap,
+                    passes: None,
+                }),
+                ..Playback::default()
+            },
+        };
+        let prepared = Prepared::new(
+            48000,
+            vec![
+                Pcm::new(48000, Box::from([[1.; 2]; 3])).unwrap(),
+                Pcm::new(48000, Box::from([[1.; 2]; 5])).unwrap(),
+            ],
+            vec![
+                region,
+                Region {
+                    sample: 1,
+                    ..region
+                },
+            ],
+            2,
+        )
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![Instruction::Play {
+                    transpose: if mapped { 0 } else { 1 },
+                    velocity: Velocity::Fixed(1.),
+                    inheritance: Inheritance::Independent,
+                    duration: Duration::UntilSilent,
+                }])
+                .unwrap(),
+            ],
+            Some(0),
+        )
+        .unwrap();
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                behaviors: 1,
+                behavior_fuel: 2,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let parent = rt.trigger(input(1), 60, 1.).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, sampler_core::Outcome::Finished);
+                true
+            });
+            rt.key_up(parent, None).unwrap();
+            let mut first = [[0.; 2]; 3];
+            rt.render(&mut first).unwrap();
+            assert_eq!(first, [[if mapped { 2. * gain } else { 0. }; 2]; 3]);
+            rt.flush_ended(|_| !mapped);
+            assert_eq!(rt.note_count(), if mapped { 2 } else { 0 });
+            let mut rest = [[0.; 2]; 16];
+            rt.render(&mut rest).unwrap();
+            for (frame, actual) in rest.iter().enumerate() {
+                let expected = if !mapped {
+                    0.
+                } else if looping {
+                    2. * gain
+                } else if frame < 2 {
+                    gain
+                } else {
+                    0.
+                };
+                assert_eq!(*actual, [expected; 2]);
+            }
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), if looping { 2 } else { 0 });
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+                (0, 0, 0)
+            );
+        });
+    }
+}

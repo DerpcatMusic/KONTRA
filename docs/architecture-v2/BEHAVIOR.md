@@ -35,7 +35,8 @@ independent of key pitch.
 Generated children select linked, snapshot or independent expression inheritance,
 and fixed or scaled velocity, separately from their explicit duration:
 `Gate` follows the originating effective gate, `Frames` is independent, and
-`FramesOrGate` ends on whichever condition happens first. The default wait lifetime
+`FramesOrGate` ends on whichever condition happens first; `UntilSilent` has an
+independent gate and can retire after all owned sound/work finishes. The default wait lifetime
 is gate-bound; `WaitLifetime::Callback` retains a callback across input release.
 Sustain can keep an effective gate open after physical key-up. Faults and explicit
 abort force root release and cancel pending gate-bound work. Already-admitted
@@ -165,8 +166,8 @@ Frontend research is pinned to the KSP manual showing **Kontakt 8.12**, consulte
 [wait timing](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/time-related-commands),
 and [release callbacks](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks).
 These references motivate distinct ownership policies. No Kontakt binary comparison
-or complete language implementation is implied; source-duration zero and vendor
-microsecond rounding still require separate implementation/evidence.
+or complete language implementation is implied. Source-duration zero is now covered
+by the explicit source-owned lifetime below; vendor rounding/fidelity remain unverified.
 
 ## Generated-note reclamation under pressure
 
@@ -317,11 +318,12 @@ insufficient capacity. Execution uses no temporary heap stack or dynamic dispatc
 
 ## Evaluated time and MIDI arguments
 
-`ReadVelocity7` provides an explicit nearest-integer view of onset velocity without
+`ReadVelocity7` provides an explicit nearest-integer view of script-visible velocity without
 mutating high-resolution note state. `MicrosToFrames` converts nonnegative register
 microseconds to u32 sample frames with checked integer ceil division. `WaitLocal`
 uses the same scheduler as `Wait`. `PlayMidi` reads separate key, seven-bit velocity
-and positive frame-duration registers and calls the same admission implementation as
+and either a positive frame-duration register or an explicit fixed duration policy.
+It calls the same admission implementation as
 native `Play`. Invalid arguments publish no child/timer; wider register values are
 checked, not truncated. KSP uses these operations; no language VM runs on audio.
 
@@ -365,3 +367,21 @@ native domains are 0–127 and 1–127 respectively. These instructions require 
 and contribute register bounds even in unreachable code. The cold view/admission
 bank is allocated once, reset by shared admission and protected by note-generation
 checks; no script edit allocates, locks, or creates a replacement musical identity.
+
+
+## Source-owned generated-note lifetime
+
+`Duration::UntilSilent` is independent of the parent gate and schedules no synthetic
+release. Only generated notes can use this retirement policy. Existing families,
+voices/effects tails, scheduled work, pins and children remain counted owners.
+Retirement can proceed after all of them finish even without a musical gate close;
+it discards unused release quotas instead of selecting release audio. This keeps
+source completion distinct from key-up and avoids inventing a release timestamp.
+Unbounded loops and muted live sources remain owned until explicitly stopped.
+
+`DurationValue::Fixed` and `DurationValue::Frames(register)` let frontend IR choose
+native policy separately from integer time values. Gate/whole-source generation
+needs no timer slot. The shared reclamation fast path now checks all requested
+selection quotas, so completed internal notes can return release reservations under
+voice/family/command pressure as well as note/expression/decision pressure. External
+terminal acceptance remains exclusive to the caller's `flush_ended` sink.

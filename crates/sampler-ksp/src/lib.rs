@@ -666,13 +666,61 @@ impl<'a> Parser<'a> {
             });
         }
         self.symbol(b',')?;
+        let duration_start = self.code.len();
         self.scalar(2)?;
         self.symbol(b')')?;
+        if let [Instruction::SetLocal { local: 2, value }] = self.code[duration_start..] {
+            let duration = match value {
+                0 => sampler_core::DurationValue::Fixed(sampler_core::Duration::UntilSilent),
+                -1 => sampler_core::DurationValue::Fixed(sampler_core::Duration::Gate),
+                _ => {
+                    self.emit(Instruction::MicrosToFrames { local: 2 })?;
+                    sampler_core::DurationValue::Frames(2)
+                }
+            };
+            return self.play_duration(duration);
+        }
+        // Translate KSP sentinel values into explicit native lifetime policies.
+        // Keep key/velocity registers intact while testing the duration.
+        let mut exits = [0; 2];
+        for (exit, (value, duration)) in exits.iter_mut().zip([
+            (0, sampler_core::Duration::UntilSilent),
+            (-1, sampler_core::Duration::Gate),
+        ]) {
+            self.emit(Instruction::SetLocal { local: 3, value })?;
+            self.emit(Instruction::CompareLocal {
+                lhs: 3,
+                rhs: 2,
+                comparison: sampler_core::Comparison::Equal,
+            })?;
+            let branch = self.code.len();
+            self.emit(Instruction::JumpIfZero {
+                local: 3,
+                target: 0,
+            })?;
+            self.play_duration(sampler_core::DurationValue::Fixed(duration))?;
+            *exit = self.code.len();
+            self.emit(Instruction::Jump { target: 0 })?;
+            self.code[branch] = Instruction::JumpIfZero {
+                local: 3,
+                target: self.code.len(),
+            };
+        }
         self.emit(Instruction::MicrosToFrames { local: 2 })?;
+        self.play_duration(sampler_core::DurationValue::Frames(2))?;
+        for exit in exits {
+            self.code[exit] = Instruction::Jump {
+                target: self.code.len(),
+            };
+        }
+        Ok(())
+    }
+
+    fn play_duration(&mut self, duration: sampler_core::DurationValue) -> Result<(), Error> {
         self.emit(Instruction::PlayMidi {
             key: 0,
             velocity: 1,
-            frames: 2,
+            duration,
             inheritance: Inheritance::Independent,
         })
     }
