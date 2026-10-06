@@ -133,12 +133,14 @@ second scope beside the event-rate note projection above, with its own rate.
   per-voice tone low-pass that closes `d·v` semitones below 0.45·rate when the
   sum is negative (bypassed at 0), and sample start `+ d·u × start_range`
   evaluated once at voice start.
-- **Rate**: every source and route is evaluated once per render chunk (at most
-  `dsp::BLOCK` = 64 frames, chunked whenever any plan carries programs), at the
-  chunk end. Gain and pan ramp linearly from the previous control point, so
-  partitions aligned to a knee reproduce it exactly; pitch, cutoff, Q and tone
-  hold the chunk midpoint. Modulated pitch is clamped to the resampler's step
-  range. There is no per-sample enum dispatch.
+- **Rate**: control points sit on the runtime's absolute 64-frame grid
+  (`dsp::BLOCK`; render chunks end on it whenever any plan carries programs)
+  plus the voice onset. A segment entering a grid cell evaluates every source
+  and route once at the cell end; later segments in the cell reuse it, so
+  output is identical for any host block partition. Gain and pan ramp
+  linearly between points; pitch, cutoff, Q and tone hold the cell midpoint.
+  Modulated pitch is clamped to the resampler's step range. There is no
+  per-sample enum dispatch.
 - **Memory**: programs are flat boxed slices; per-voice state (LFO phases,
   envelope states, lagged route values, last control point, tone integrators)
   is structure-of-arrays sized at plan preparation for the largest program and
