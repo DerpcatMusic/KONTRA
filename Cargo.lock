@@ -1862,6 +1862,7 @@ dependencies = [
  "realfft",
  "rfd 0.17.2",
  "rustc-hash 2.1.3",
+ "sampler-core",
  "serde",
  "serde_json",
  "sha2",
@@ -3639,6 +3640,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sampler-core"
+version = "0.1.0"
+dependencies = [
+ "rtrb",
+]
+
+[[package]]
+name = "sampler-kontakt"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+ "sampler-ksp",
+]
+
+[[package]]
+name = "sampler-ksp"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+]
+
+[[package]]
+name = "sampler-midi"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+]
+
+[[package]]
+name = "sampler-native"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+ "sampler-kontakt",
+ "sampler-ksp",
+ "sampler-midi",
 ]
 
 [[package]]

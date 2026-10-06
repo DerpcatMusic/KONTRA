@@ -1,0 +1,357 @@
+use sampler_core::*;
+mod support;
+
+fn limits() -> Limits {
+    Limits {
+        notes: 4,
+        channels: 0,
+        performances: 1,
+        families: 8,
+        voices: 8,
+        expressions: 4,
+        decisions: 0,
+        commands: 8,
+        behaviors: 0,
+        behavior_cells: 0,
+        behavior_fuel: 0,
+        note_cells: 0,
+    }
+}
+fn input(id: i32) -> Input {
+    Input {
+        protocol: Protocol::Clap,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: Some(id),
+    }
+}
+fn plan(samples: Vec<Frame>, regions: usize) -> Prepared {
+    Prepared::new(
+        48000,
+        vec![Pcm::new(48000, samples.into_boxed_slice()).unwrap()],
+        (0..regions)
+            .map(|_| Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            })
+            .collect(),
+        regions,
+    )
+    .unwrap()
+}
+fn send(bus: Option<usize>, gain: f64) -> BusSend {
+    BusSend { bus, gain }
+}
+fn filter() -> Processor {
+    Processor::Biquad(Biquad::new(48000, FilterKind::LowPass, 12000., 1.).unwrap())
+}
+fn filtered(tail: u32) -> Bus {
+    Bus {
+        processors: vec![filter()],
+        sends: vec![send(None, 1.)],
+        tail_frames: tail,
+    }
+}
+fn near(actual: Frame, expected: Frame) {
+    for (a, b) in actual.into_iter().zip(expected) {
+        assert!((a - b).abs() < 2e-7, "{actual:?} != {expected:?}");
+    }
+}
+fn impulse(index: usize) -> f32 {
+    // Independent direct-form recurrence for f=Fs/4, Q=1: a1=0, a2=1/3.
+    let mut y = [0f64; 2];
+    for i in 0..=index {
+        let x = match i {
+            0 | 2 => 1.,
+            1 => 2.,
+            _ => 0.,
+        };
+        let next = (x - y[0]) / 3.;
+        y = [y[1], next];
+    }
+    y[1] as f32
+}
+
+#[test]
+fn summed_bus_dag_fanout_and_tails_are_sample_exact_across_block_partitions() {
+    for block in [1, 7, 64, 129] {
+        let plan = plan(vec![[1., -0.5]], 1)
+            .with_buses(
+                vec![
+                    Bus {
+                        processors: vec![Processor::Gain(2.)],
+                        sends: vec![send(Some(1), 1.)],
+                        tail_frames: 2,
+                    },
+                    Bus {
+                        processors: vec![Processor::Gain(3.)],
+                        sends: vec![send(None, 1.)],
+                        tail_frames: 1,
+                    },
+                    Bus {
+                        processors: vec![filter()],
+                        sends: vec![send(Some(0), 0.25), send(None, 0.5)],
+                        tail_frames: 8,
+                    },
+                ],
+                vec![Some(2)],
+            )
+            .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut audio = [[0.; 2]; 140];
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            rt.trigger(input(2), 60, 0.5).unwrap();
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (i, frame) in audio.iter().enumerate() {
+                let value = if i < 9 { 3. * impulse(i) } else { 0. };
+                near(*frame, [value, -0.5 * value]);
+            }
+            assert_eq!(rt.voice_count(), 0);
+            rt.note_off(input(1), None).unwrap();
+            rt.note_off(input(2), None).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn bus_tail_retains_only_its_generation_after_host_note_retirement() {
+    let prepared = plan(vec![[1., -0.5]], 1)
+        .with_buses(vec![filtered(8)], vec![Some(0)])
+        .unwrap();
+    let (mut rt, mut control) = Runtime::with_plan_updates(prepared, limits(), 2, 1).unwrap();
+    let old = rt.active_plan();
+    let request = control
+        .submit(Box::new(plan(vec![[0.25; 2]; 32], 1)))
+        .unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let mut onset = [[0.; 2]; 1];
+        rt.render(&mut onset).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        let mut ends = 0;
+        rt.flush_ended(|ended| {
+            assert_eq!(ended, input(1));
+            ends += 1;
+            true
+        });
+        assert_eq!((ends, rt.note_count(), rt.voice_count()), (1, 0, 0));
+        assert_eq!(rt.poll_plan_update(), Ok(Some(request)));
+        assert_ne!(rt.active_plan(), old);
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.trigger(input(2), 60, 1.).unwrap();
+        let mut audio = [[0.; 2]; 8];
+        rt.render(&mut audio).unwrap();
+        for (i, frame) in audio.iter().enumerate() {
+            let value = impulse(i + 1);
+            near(*frame, [0.25 + value, 0.25 - value * 0.5]);
+        }
+        assert_eq!(rt.collect_retired_plans(), 1);
+        assert_eq!(rt.plan_count(), 1);
+        let mut after = [[0.; 2]; 1];
+        rt.render(&mut after).unwrap();
+        assert_eq!(after[0], [0.25; 2]);
+    });
+    assert_eq!(control.retired().unwrap().request, 0);
+}
+
+#[test]
+fn voice_and_bus_gains_share_control_values_without_sharing_scope_or_clock() {
+    const LEVEL: ControlId = ControlId(7);
+    for block in [1, 7, 129] {
+        let gain = || {
+            Processor::ControlGain(ControlRange {
+                control: LEVEL,
+                low: 0.,
+                high: 1.,
+                ramp_frames: 4,
+            })
+        };
+        // Reversed builder order must preserve both independently compiled bindings.
+        let prepared = plan(vec![[1.; 2]; 140], 1)
+            .with_controls(vec![ControlDefinition {
+                id: LEVEL,
+                domain: ControlDomain::Real { min: 0., max: 1. },
+                default: ControlValue::Real(0.),
+            }])
+            .unwrap()
+            .with_buses(
+                vec![Bus {
+                    processors: vec![gain()],
+                    sends: vec![send(None, 1.)],
+                    tail_frames: 0,
+                }],
+                vec![Some(0)],
+            )
+            .unwrap()
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![], vec![gain()], 0).unwrap()],
+                vec![Some(0)],
+            )
+            .unwrap();
+        let mut rt = Runtime::new(prepared, limits()).unwrap();
+        let mut audio = [[0.; 2]; 140];
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            rt.trigger(input(2), 60, 1.).unwrap();
+            rt.schedule_event(
+                1,
+                Event::Control(
+                    rt.active_plan(),
+                    ControlWrite {
+                        id: LEVEL,
+                        value: ControlValue::Real(1.),
+                    },
+                ),
+            )
+            .unwrap();
+            rt.schedule_event(
+                70,
+                Event::Control(
+                    rt.active_plan(),
+                    ControlWrite {
+                        id: LEVEL,
+                        value: ControlValue::Real(0.),
+                    },
+                ),
+            )
+            .unwrap();
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (i, frame) in audio.iter().enumerate() {
+                let gain = if i < 70 {
+                    (i.saturating_sub(1) as f32 / 4.).min(1.)
+                } else {
+                    1. - ((i - 70) as f32 / 4.).min(1.)
+                };
+                near(*frame, [2. * gain * gain; 2]);
+            }
+        });
+    }
+}
+
+#[test]
+fn bus_faults_are_contained_and_panic_clears_shared_histories_and_tails() {
+    let prepared = plan(vec![[1.; 2]], 2)
+        .with_buses(
+            vec![
+                Bus {
+                    processors: vec![Processor::Gain(f64::MAX), filter()],
+                    sends: vec![send(None, 1.)],
+                    tail_frames: 8,
+                },
+                filtered(8),
+            ],
+            vec![Some(0), Some(1)],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let mut onset = [[0.; 2]; 1];
+        rt.render(&mut onset).unwrap();
+        near(onset[0], [impulse(0); 2]);
+        assert_eq!(rt.nonfinite_frames(), 1);
+        rt.panic();
+        let mut silence = [[1.; 2]; 16];
+        rt.render(&mut silence).unwrap();
+        assert_eq!(silence, [[0.; 2]; 16]);
+        rt.flush_ended(|_| true);
+        rt.trigger(input(2), 60, 1.).unwrap();
+        rt.render(&mut onset).unwrap();
+        near(onset[0], [impulse(0); 2]);
+    });
+}
+
+#[test]
+fn invalid_bus_graphs_and_controls_fail_before_publication() {
+    let bus = |sends| Bus {
+        processors: vec![],
+        sends,
+        tail_frames: 0,
+    };
+    for buses in [
+        vec![bus(vec![send(Some(0), 0.)])],
+        vec![bus(vec![send(Some(1), 1.)]), bus(vec![send(Some(0), 1.)])],
+        vec![bus(vec![send(Some(1), 1.)])],
+        vec![bus(vec![send(None, f64::NAN)])],
+        vec![Bus {
+            processors: vec![Processor::Gain(f64::INFINITY)],
+            sends: vec![],
+            tail_frames: 0,
+        }],
+        vec![Bus {
+            processors: vec![Processor::Biquad(
+                Biquad::new(96000, FilterKind::LowPass, 12000., 1.).unwrap(),
+            )],
+            sends: vec![],
+            tail_frames: 0,
+        }],
+        vec![Bus {
+            processors: vec![Processor::ControlGain(ControlRange {
+                control: ControlId(1),
+                low: 0.,
+                high: 1.,
+                ramp_frames: 0,
+            })],
+            sends: vec![],
+            tail_frames: 0,
+        }],
+    ] {
+        assert!(matches!(
+            plan(vec![[1.; 2]], 1).with_buses(buses, vec![Some(0)]),
+            Err(Error::InvalidInput)
+        ));
+    }
+    assert!(
+        plan(vec![[1.; 2]], 1)
+            .with_buses(vec![], vec![Some(0)])
+            .is_err()
+    );
+    assert!(plan(vec![[1.; 2]], 1).with_buses(vec![], vec![]).is_err());
+}
+
+#[test]
+fn bus_tail_starts_after_the_last_voice_processor_frame_not_the_host_block() {
+    for block in [1, 7, 64, 129] {
+        let prepared = plan(vec![[1.; 2]], 1)
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![], vec![filter()], 2).unwrap()],
+                vec![Some(0)],
+            )
+            .unwrap()
+            .with_buses(vec![filtered(3)], vec![Some(0)])
+            .unwrap();
+        let mut rt = Runtime::new(prepared, limits()).unwrap();
+        let mut audio = [[0.; 2]; 140];
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (i, frame) in audio.iter().enumerate() {
+                let expected = if i < 6 {
+                    (0..=i.min(2)).map(|j| impulse(j) * impulse(i - j)).sum()
+                } else {
+                    0.
+                };
+                near(*frame, [expected; 2]);
+            }
+            assert_eq!(rt.voice_count(), 0);
+        });
+    }
+}
