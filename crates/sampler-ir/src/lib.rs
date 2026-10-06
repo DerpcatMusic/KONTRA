@@ -64,6 +64,8 @@ pub struct Instrument {
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
     pub buses: Vec<Bus>,
+    /// Impulse responses bus convolutions refer to.
+    pub impulses: Vec<Impulse>,
     pub controls: Vec<Control>,
     pub behaviors: Vec<Behavior>,
     /// Polyphony of the whole instrument.
@@ -744,7 +746,56 @@ pub enum Processor {
     Gain(Gain),
     Pan(Pan),
     Filter(Filter),
-    Delay { time: Time, feedback: f64, mix: f64 },
+    Delay {
+        time: Time,
+        feedback: f64,
+        mix: f64,
+    },
+    /// Linear stereo mix: rows are output left/right, columns input
+    /// left/right. Width, balance, polarity and channel swaps.
+    StereoMatrix([[f64; 2]; 2]),
+    /// Algorithmic stereo reverb over a summed signal: bus and master scope.
+    Reverb(Reverb),
+    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
+    /// master scope. Convolution adds no latency.
+    Convolution {
+        impulse: ImpulseRef,
+        dry: f64,
+        wet: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImpulseRef(pub usize);
+
+/// A stereo impulse response, already shaped (reversed, predelayed, enveloped,
+/// gain-scaled) by the importing profile. A mono response repeats in both
+/// channels; the channels have the same length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Impulse {
+    pub rate: u32,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
+}
+
+/// Physical reverb settings; an importing profile maps its own controls
+/// here. Wet signal only: the dry path is the bus's other send.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reverb {
+    /// Seconds for the tail to fall 60 dB.
+    pub decay_seconds: f64,
+    /// Room size as a scale of the reference line lengths, 0.05..=1.5.
+    pub size: f64,
+    pub damping_hz: f64,
+    pub modulation_seconds: f64,
+    /// Input diffusion, 0..=0.75.
+    pub diffusion: f64,
+    pub predelay_seconds: f64,
+    pub input_cutoff_hz: f64,
+    /// Wet low-frequency change in dB (zero or negative).
+    pub low_shelf_db: f64,
+    /// 0 mono .. 1 full width.
+    pub width: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

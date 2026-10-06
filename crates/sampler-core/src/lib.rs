@@ -60,8 +60,8 @@ pub use bus::{Bus, BusMix, BusSend};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
-    VoiceChain,
+    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;

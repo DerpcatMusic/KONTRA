@@ -3659,6 +3659,7 @@ dependencies = [
 name = "sampler-core"
 version = "0.1.0"
 dependencies = [
+ "realfft",
  "rtrb",
  "sampler-ir",
  "sampler-simd",
