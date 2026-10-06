@@ -277,3 +277,84 @@ fn generated_maps_drive_like_their_keyswitches() {
     eprintln!("{maps} maps, {} failures", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// Diagnostic: `KONTRA_PROBE=<nki>` plays its first free key and prints what
+/// the runtime did, to tell a silent patch from a silent harness.
+#[test]
+#[ignore]
+fn probe_instrument() {
+    let Some(path) = std::env::var_os("KONTRA_PROBE") else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    let ir = sampler_kontakt::read(path).unwrap().instrument;
+    let switch: Vec<u8> = ir
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.clone())
+        .collect();
+    let key = std::env::var("KONTRA_PROBE_KEY")
+        .ok()
+        .and_then(|k| k.parse().ok())
+        .unwrap_or(60u8);
+    eprintln!(
+        "articulations {} switch keys {switch:?} zones {}",
+        ir.articulations.len(),
+        ir.zones.len()
+    );
+    let d = decoded(path, key);
+    eprintln!(
+        "zones at {key}: {} behaviors {}",
+        d.instrument.zones.len(),
+        d.instrument.behaviors.len()
+    );
+    let z = &d.instrument.zones;
+    let vel = z.iter().filter(|z| (z.velocities.low..=z.velocities.high).contains(&100)).count();
+    let mut conds = std::collections::BTreeMap::<String, usize>::new();
+    for z in z {
+        *conds.entry(format!("{:?} {:?}", z.trigger, z.conditions)).or_default() += 1;
+    }
+    eprintln!("velocity-100 zones {vel}; trigger/conditions: {conds:?}");
+    let loaded = d.drive(ir::Driver::Controller);
+    let mut feats = std::collections::BTreeMap::<String, usize>::new();
+    for u in &loaded.instrument.unsupported {
+        if u.feature != "script" {
+            *feats.entry(format!("{:?} {}", u.reason, u.feature)).or_default() += 1;
+        }
+    }
+    eprintln!("non-script reports: {feats:?}");
+    eprintln!("zones after finish: {} pcm {}", loaded.instrument.zones.len(), d.pcm.len());
+    let plan = loaded.plan;
+    let limits = Limits {
+        notes: 64,
+        channels: 16,
+        performances: 1,
+        expressions: 64,
+        families: 64,
+        decisions: 256,
+        voices: 512,
+        commands: 256,
+        behaviors: 16,
+        behavior_fuel: 1 << 20,
+        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        note_cells: plan.note_cell_count().saturating_mul(64),
+    };
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi1);
+    let mut ingress = Ingress::new(0, groups);
+    let mut out = vec![[0.0f32; 2]; 4800];
+    rt.render(&mut out).unwrap();
+    let words = [0x2090_0064 | u32::from(key) << 8];
+    let r = ingress.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap());
+    eprintln!("apply {r:?}");
+    for block in 0..10 {
+        rt.render(&mut out).unwrap();
+        let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+        eprintln!(
+            "block {block}: voices {} notes {} peak {peak}",
+            rt.voice_count(),
+            rt.note_count()
+        );
+    }
+}
