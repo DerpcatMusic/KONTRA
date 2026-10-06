@@ -22,7 +22,7 @@ struct Shared {
 
 impl Shared {
     /// Claim and run tasks of run `generation` until none are left.
-    fn work(&self, generation: u32) {
+    fn work(&self, generation: u32, lane: usize) {
         loop {
             let t = self.ticket.load(Acquire);
             if (t >> 32) as u32 != generation {
@@ -37,9 +37,9 @@ impl Shared {
                 continue;
             }
             // SAFETY: `call` holds a `fn(usize, usize)` stored by `run` for this run.
-            let call: fn(usize, usize) = unsafe { std::mem::transmute(self.call.load(Relaxed)) };
+            let call: fn(usize, usize, usize) = unsafe { std::mem::transmute(self.call.load(Relaxed)) };
             let data = self.data.load(Relaxed);
-            if catch_unwind(AssertUnwindSafe(|| call(data, t as u32 as usize))).is_err() {
+            if catch_unwind(AssertUnwindSafe(|| call(data, t as u32 as usize, lane))).is_err() {
                 self.panicked.store(true, Relaxed);
             }
             self.done.fetch_add(1, Release);
@@ -83,22 +83,24 @@ impl Pool {
         self.workers.len()
     }
 
-    /// Run `f(0..tasks)`, each index once, in any order and on any thread,
-    /// and return when all are done. A panicking task is re-raised here.
-    pub fn run<F: Fn(usize) + Sync>(&mut self, tasks: usize, f: &F) {
+    /// Run `f(task, lane)` for each task in `0..tasks`, once, in any order and
+    /// on any thread, and return when all are done. `lane` identifies the
+    /// executing thread (0 is the caller, workers are 1..=workers) and is
+    /// never used by two threads at once. A panicking task is re-raised here.
+    pub fn run<F: Fn(usize, usize) + Sync>(&mut self, tasks: usize, f: &F) {
         if self.workers.is_empty() || tasks < 2 {
-            (0..tasks).for_each(f);
+            (0..tasks).for_each(|task| f(task, 0));
             return;
         }
-        fn call<F: Fn(usize)>(data: usize, i: usize) {
+        fn call<F: Fn(usize, usize)>(data: usize, task: usize, lane: usize) {
             // SAFETY: `data` is the `&F` that `run` published and keeps alive
             // until every task of the run is done.
-            unsafe { (*(data as *const F))(i) }
+            unsafe { (*(data as *const F))(task, lane) }
         }
         let s = &*self.shared;
         s.total.store(tasks, Relaxed);
         s.done.store(0, Relaxed);
-        s.call.store(call::<F> as fn(usize, usize) as usize, Relaxed);
+        s.call.store(call::<F> as fn(usize, usize, usize) as usize, Relaxed);
         s.data.store(f as *const F as usize, Relaxed);
         self.generation = self.generation.wrapping_add(1);
         s.ticket.store(u64::from(self.generation) << 32, SeqCst);
@@ -107,7 +109,7 @@ impl Pool {
                 handle.thread().unpark();
             }
         }
-        s.work(self.generation);
+        s.work(self.generation, 0);
         let mut spins = 0u32;
         while s.done.load(Acquire) < tasks {
             if spins < 200 {
@@ -129,7 +131,7 @@ fn worker(s: &Shared, id: usize) {
         let generation = (s.ticket.load(Acquire) >> 32) as u32;
         if generation != seen {
             seen = generation;
-            s.work(generation);
+            s.work(generation, id + 1);
             continue;
         }
         if s.quit.load(Acquire) {
