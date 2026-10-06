@@ -209,6 +209,8 @@ pub struct Model {
     pub pgs: BTreeMap<String, Vec<i32>>,
     pub pgs_text: BTreeMap<String, String>,
     pub requests: Vec<Request>,
+    /// Controllers `on init` set (`set_controller`), as (controller, 0..=127).
+    pub controllers: Vec<(u8, u8)>,
 }
 
 /// Assemble the model from resolved declarations and the `on init` result.

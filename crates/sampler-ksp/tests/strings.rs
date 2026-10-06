@@ -90,7 +90,10 @@ fn group_names_and_lookups_take_computed_indices_and_names() {
     );
     assert_eq!(cell(&rt, 0), 2);
     assert_eq!(cell(&rt, 1), 1);
-    assert_eq!(cell(&rt, 2), i64::from(sampler_core::name_index("ENV_AHDSR")));
+    assert_eq!(
+        cell(&rt, 2),
+        i64::from(sampler_core::name_index("ENV_AHDSR"))
+    );
     assert_eq!(cell(&rt, 3), -1);
 }
 
@@ -109,4 +112,55 @@ fn text_longer_than_a_cell_is_cut_and_counted() {
         &[],
     );
     assert!(rt.truncated_texts() > 0);
+}
+
+/// `set_controller` in `on init` is the controller's value before any input.
+#[test]
+fn set_controller_in_init_sets_the_starting_controller_value() {
+    let rt = run(
+        "on init declare $a set_controller(111, 100) end on
+         on note $a := %CC[111] end on",
+        &[],
+    );
+    assert_eq!(cell(&rt, 0), 100);
+}
+
+/// Kontakt ignores a script's call on a note that already ended: a gate-linked
+/// note played after its parent was released is dropped, not a fault.
+#[test]
+fn playing_from_a_released_note_is_ignored_not_a_fault() {
+    let mut rt = run(
+        "on init declare $a end on
+         on note
+           wait(100000)
+           $a := play_note(60, 100, 0, -1)
+         end on",
+        &[],
+    );
+    rt.note_off(
+        sampler_core::Input {
+            protocol: sampler_core::Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(60),
+        },
+        None,
+    )
+    .unwrap();
+    let mut faults = Vec::new();
+    for _ in 0..200 {
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            if !matches!(
+                outcome,
+                sampler_core::Outcome::Finished | sampler_core::Outcome::Cancelled
+            ) {
+                faults.push(format!("{outcome:?}"));
+            }
+            true
+        });
+    }
+    assert_eq!(faults, Vec::<String>::new());
 }
