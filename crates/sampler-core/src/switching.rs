@@ -1,0 +1,131 @@
+//! Non-key articulation drivers, resolved at preparation for input adapters.
+//! The runtime does not read them: an adapter in front of note admission turns
+//! a driver value into a [`Switch`] before the event reaches any behavior.
+use crate::{Error, Prepared, Runtime};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Driver {
+    /// Only keyswitch keys select.
+    #[default]
+    Keys,
+    Velocity,
+    Channel,
+    Controller,
+    Program,
+}
+
+/// What played keyswitch keys do while a non-key driver is active.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchKeys {
+    #[default]
+    Keep,
+    /// Prepared without native switches, so they play notes.
+    Play,
+    /// The adapter drops them and their releases.
+    Swallow,
+}
+
+/// How a driver value selects an articulation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    /// Set the performance's native articulation.
+    Articulation(u32),
+    /// Tap this key (on, then off) so behaviors that own switching see it.
+    Tap(u8),
+}
+
+/// One driver range. `controller` is the CC number for [`Driver::Controller`]
+/// and 0 otherwise; `low..=high` bounds the velocity, channel, CC value or program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selector {
+    pub controller: u8,
+    pub low: u8,
+    pub high: u8,
+    pub switch: Switch,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Switching {
+    driver: Driver,
+    keys: SwitchKeys,
+    /// Bit `k` set for keyswitch key `k`.
+    switch_keys: u128,
+    selectors: Box<[Selector]>,
+}
+
+impl Switching {
+    pub fn new(
+        driver: Driver,
+        keys: SwitchKeys,
+        switch_keys: impl IntoIterator<Item = u8>,
+        selectors: Vec<Selector>,
+    ) -> Result<Self, Error> {
+        let mut table = 0u128;
+        for key in switch_keys {
+            table |= 1u128
+                .checked_shl(u32::from(key))
+                .ok_or(Error::InvalidInput)?;
+        }
+        if selectors.iter().any(|s| {
+            s.low > s.high
+                || s.high > 127
+                || s.controller > 127
+                || matches!(s.switch, Switch::Tap(key) if key > 127)
+        }) {
+            return Err(Error::InvalidInput);
+        }
+        Ok(Self {
+            driver,
+            keys,
+            switch_keys: table,
+            selectors: selectors.into_boxed_slice(),
+        })
+    }
+
+    pub fn driver(&self) -> Driver {
+        self.driver
+    }
+
+    pub fn keys(&self) -> SwitchKeys {
+        self.keys
+    }
+
+    /// Whether `key` is one of the source's keyswitch keys.
+    pub fn is_switch_key(&self, key: u8) -> bool {
+        key < 128 && self.switch_keys >> key & 1 == 1
+    }
+
+    /// Whether a [`Driver::Controller`] selector reads `controller`.
+    pub fn listens(&self, controller: u8) -> bool {
+        self.driver == Driver::Controller
+            && self.selectors.iter().any(|s| s.controller == controller)
+    }
+
+    /// The first selector containing `value` (and naming `controller` for
+    /// [`Driver::Controller`]). Allocation-free.
+    pub fn select(&self, controller: u8, value: u8) -> Option<Switch> {
+        self.selectors
+            .iter()
+            .find(|s| s.controller == controller && (s.low..=s.high).contains(&value))
+            .map(|s| s.switch)
+    }
+}
+
+impl Prepared {
+    pub fn with_switching(mut self, switching: Switching) -> Self {
+        self.switching = switching;
+        self
+    }
+}
+
+impl Runtime {
+    /// The active plan's articulation drivers.
+    pub fn switching(&self) -> &Switching {
+        &self
+            .plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .switching
+    }
+}
