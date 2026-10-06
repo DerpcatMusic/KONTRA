@@ -196,3 +196,74 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+/// Every installed instrument with authored modulation loads, lowers and
+/// renders; prints per-feature report counts. Slow: run with --ignored.
+#[test]
+#[ignore]
+fn survey_modulated_instruments_lower_and_render() {
+    let mut instruments = Vec::new();
+    for root in roots() {
+        collect(&root, &mut instruments);
+    }
+    instruments.sort();
+    let (mut loaded, mut routed, mut failed) = (0, 0, 0);
+    let mut features = std::collections::BTreeMap::<String, usize>::new();
+    for path in &instruments {
+        let Ok(kontakt) = sampler_kontakt::read(path) else {
+            continue;
+        };
+        for u in &kontakt.instrument.unsupported {
+            if u.feature.contains("modulat")
+                || u.feature.contains("LFO")
+                || u.feature.contains("envelope")
+            {
+                *features
+                    .entry(format!("{:?} {}", u.reason, u.feature))
+                    .or_default() += 1;
+            }
+        }
+        if kontakt.instrument.routes.is_empty() {
+            continue;
+        }
+        routed += 1;
+        let options = sampler_kontakt::Options {
+            keys: 60..=60,
+            scripts: false,
+            ..Default::default()
+        };
+        match sampler_kontakt::load(path, &options, |_| {}) {
+            Ok(loaded_plan) => {
+                loaded += 1;
+                let mut rt = match Runtime::new(loaded_plan.plan, limits()) {
+                    Ok(rt) => rt,
+                    Err(error) => {
+                        println!("RUNTIME {}: {error:?}", path.display());
+                        continue;
+                    }
+                };
+                if let Err(error) = rt.trigger(input(60), 60, 0.8) {
+                    println!("TRIGGER {}: {error:?}", path.display());
+                    continue;
+                }
+                let mut out = vec![[0.0; 2]; 9600];
+                rt.render(&mut out).unwrap();
+                let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+                assert!(peak.is_finite());
+                println!(
+                    "ok {peak:.3} {} routes {}",
+                    path.display(),
+                    loaded_plan.instrument.routes.len()
+                );
+            }
+            Err(error) => {
+                failed += 1;
+                println!("FAIL {}: {error}", path.display());
+            }
+        }
+    }
+    for (feature, count) in &features {
+        println!("{count:6} {feature}");
+    }
+    println!("{routed} instruments with routes: {loaded} loaded, {failed} failed");
+}
