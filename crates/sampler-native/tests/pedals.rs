@@ -149,20 +149,7 @@ impl Run {
 }
 
 fn limits(plan: &sampler_core::Prepared, voices: usize) -> Limits {
-    Limits {
-        notes: 64,
-        channels: 16,
-        performances: 1,
-        expressions: 64,
-        families: 256,
-        decisions: 256,
-        voices,
-        commands: 256,
-        behaviors: 64,
-        behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(64),
-        note_cells: plan.note_cell_count().saturating_mul(64),
-    }
+    Limits::for_plan(plan, 64, voices)
 }
 
 /// `sampler_kontakt::load` with the instrument's scripts replaced by `source`.
