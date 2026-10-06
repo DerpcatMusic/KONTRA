@@ -360,3 +360,45 @@ fn survey_reported_features() {
     }
     println!("{} instruments", instruments.len());
 }
+
+/// Remapping Afflatus to each driver gives every articulation a selector that
+/// taps its own switch key (the script owns the switching), and the driver's
+/// value selects it.
+#[test]
+fn afflatus_remaps_to_every_driver() {
+    use sampler_core::{Driver as D, Switch};
+    use sampler_ir::Driver;
+    let Some(path) =
+        find("Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki")
+    else {
+        return;
+    };
+    let mut ir = sampler_kontakt::read(&path).unwrap().instrument;
+    ir.assign_alternatives(32);
+    for (driver, core) in [
+        (Driver::Velocity, D::Velocity),
+        (Driver::Channel, D::Channel),
+        (Driver::Controller, D::Controller),
+        (Driver::Program, D::Program),
+    ] {
+        ir.switching.driver = driver;
+        assert_eq!(ir.validate(), Ok(()));
+        let (_, switching) = sampler_core::lower::switching(&ir, ir.switching).unwrap();
+        assert_eq!(switching.driver(), core);
+        for a in &ir.articulations {
+            let alt = a.alternatives;
+            let (controller, value) = match driver {
+                Driver::Velocity => (0, alt.velocities.unwrap().low),
+                Driver::Channel => (0, alt.channel.unwrap()),
+                Driver::Controller => (32, alt.controller.unwrap().low),
+                _ => (0, alt.program.unwrap()),
+            };
+            assert_eq!(
+                switching.select(controller, value),
+                Some(Switch::Tap(a.switch_keys[0])),
+                "{driver:?} {}",
+                a.name
+            );
+        }
+    }
+}

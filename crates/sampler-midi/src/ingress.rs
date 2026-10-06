@@ -14,6 +14,8 @@ pub struct Ingress {
     groups: [Option<Version>; 16],
     /// Indexed by group * 16 + channel.
     channels: [Channel; 256],
+    /// The user's bend range in semitones; beats RPN 0 and the instrument.
+    bend_override: Option<f64>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,7 +87,15 @@ impl Ingress {
             port,
             groups,
             channels: [Channel::default(); 256],
+            bend_override: None,
         }
+    }
+
+    /// Fix the bend range in semitones for every channel, whatever RPN 0 says;
+    /// `None` returns to RPN 0, else the instrument's own. Held bends keep
+    /// their pitch until the next bend message.
+    pub fn set_bend_range(&mut self, semitones: Option<f64>) {
+        self.bend_override = semitones.filter(|r| (0.0..=96.0).contains(r));
     }
 
     /// Apply at Runtime::now(). The host must split rendering at event timestamps.
@@ -117,7 +127,10 @@ impl Ingress {
         }
         let slot = usize::from(voice.group) * 16 + usize::from(voice.channel);
         let channel = self.channels[slot];
-        let range = channel.range.unwrap_or_else(|| runtime.bend_range());
+        let range = self
+            .bend_override
+            .or(channel.range)
+            .unwrap_or_else(|| runtime.bend_range());
         let input = Input {
             protocol: match voice.version {
                 Version::Midi1 => Protocol::Midi1,
@@ -307,13 +320,16 @@ impl Ingress {
         if range > 96.0 {
             return Ok(());
         }
+        self.channels[slot].range = Some(range);
+        if self.bend_override.is_some() {
+            return Ok(());
+        }
         let bend = self.channels[slot].bend;
         runtime.set_input_expressions(address, None, |e| Expression {
             pitch_semitones: bend * range,
             bend,
             ..e
         })?;
-        self.channels[slot].range = Some(range);
         Ok(())
     }
 }

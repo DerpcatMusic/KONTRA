@@ -188,6 +188,22 @@ pub fn lower(
     lower_with(instrument, rate, pcm, &Options::default(), bind_behaviors)
 }
 
+/// The keyswitch map and driver table `switching` gives `instrument`'s
+/// articulations, for [`crate::Runtime::set_switching`]: a remap changes how
+/// articulations are selected without lowering or loading the plan again.
+pub fn switching(
+    instrument: &ir::Instrument,
+    switching: ir::Switching,
+) -> Result<(Vec<Keyswitch>, Switching), LowerError> {
+    Lowering {
+        ir: instrument,
+        rate: 1,
+        pcm: &[],
+        mpe: None,
+    }
+    .switching(switching)
+}
+
 /// Lower `instrument` for output at `rate`. `pcm[i]` is the decoded audio of
 /// `instrument.assets[i]`. `bind_behaviors` receives every behavior module and
 /// the plan built so far; it compiles them with its language frontend (for
@@ -990,19 +1006,19 @@ impl Lowering<'_> {
             .map_err(core(Stage::Releases, "release zones"))
     }
 
-    fn articulations(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+    /// The native keyswitch map and driver table for `switching`, numbering
+    /// articulations as the plan does.
+    pub(crate) fn switching(
+        &self,
+        switching: ir::Switching,
+    ) -> Result<(Vec<Keyswitch>, Switching), LowerError> {
         let articulations = &self.ir.articulations;
-        if articulations.is_empty() {
-            return Ok(plan);
-        }
-        // The runtime starts in articulation 0: give that number to the default.
         let default = articulations.iter().position(|a| a.default).unwrap_or(0);
         let id = |index: usize| match index {
             i if i == default => 0,
             i if i < default => i as u32 + 1,
             i => i as u32,
         };
-        let switching = self.ir.switching;
         let behavior = switching.owner == ir::SwitchOwner::Behavior;
         // A behavior reads its own switch keys; freed keys play notes.
         let native_keys = !behavior
@@ -1017,12 +1033,6 @@ impl Lowering<'_> {
                     articulation: id(i),
                 })
             })
-            .collect();
-        let tags = self
-            .ir
-            .zones
-            .iter()
-            .map(|z| z.articulation.map(|a| id(a.0)))
             .collect();
         let selectors = articulations
             .iter()
@@ -1070,6 +1080,28 @@ impl Lowering<'_> {
             selectors,
         )
         .map_err(core(Stage::Articulations, "articulation drivers"))?;
+        Ok((switches, switching))
+    }
+
+    fn articulations(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        let articulations = &self.ir.articulations;
+        if articulations.is_empty() {
+            return Ok(plan);
+        }
+        // The runtime starts in articulation 0: give that number to the default.
+        let default = articulations.iter().position(|a| a.default).unwrap_or(0);
+        let id = |index: usize| match index {
+            i if i == default => 0,
+            i if i < default => i as u32 + 1,
+            i => i as u32,
+        };
+        let (switches, switching) = self.switching(self.ir.switching)?;
+        let tags = self
+            .ir
+            .zones
+            .iter()
+            .map(|z| z.articulation.map(|a| id(a.0)))
+            .collect();
         plan.with_articulations(
             tags,
             switches,
