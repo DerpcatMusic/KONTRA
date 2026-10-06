@@ -1,6 +1,6 @@
 //! Resident rendering workload; optional `--transpose SEMITONES` tests the filtered path,
 //! `--pitched` the resampled path at high polyphony (transposed and 44.1 kHz sources,
-//! with and without four voice filters). Setup, validation and sorting are untimed.
+//! with and without four voice filters; `--pitched --mips` uses mipmapped sources). Setup, validation and sorting are untimed.
 //! Run in release mode; this reports local measurements, not a realtime guarantee.
 use sampler_core::{
     Envelope, Input, Limits, Loop, LoopMode, Pcm, Playback, Prepared, Protocol, Region, Runtime,
@@ -19,6 +19,7 @@ struct Processing {
     filters: usize,
     bus: bool,
     automated: bool,
+    mips: bool,
 }
 
 fn prepare(
@@ -35,13 +36,19 @@ fn prepare(
         filters,
         bus,
         automated,
+        mips,
     } = processing;
     let source_rate = if source_rate == 0 { rate } else { source_rate };
     let notes = voices / LAYERS;
     let samples = (0..LAYERS)
         .map(|layer| {
             let value = (layer + 1) as f32 / 4096.;
-            Pcm::new(source_rate, vec![[value, -value]; 4096].into_boxed_slice()).unwrap()
+            let frames = vec![[value, -value]; 4096].into_boxed_slice();
+            if mips {
+                Pcm::mipmapped(source_rate, frames).unwrap()
+            } else {
+                Pcm::new(source_rate, frames).unwrap()
+            }
         })
         .collect();
     let regions = (0..LAYERS)
@@ -229,6 +236,7 @@ fn measure(
         filters,
         bus,
         automated,
+        ..
     } = processing;
     let envelope = if shaped { "sustain" } else { "unity" };
     println!(
@@ -296,8 +304,14 @@ fn main() {
         return;
     }
     if args.first().is_some_and(|arg| arg == "--pitched") {
-        assert_eq!(args.len(), 1, "expected --pitched [--muted]");
-        for (transpose, source_rate) in [(7., 0), (0., 44100)] {
+        let mips = args.get(1).is_some_and(|arg| arg == "--mips");
+        assert_eq!(
+            args.len(),
+            1 + usize::from(mips),
+            "expected --pitched [--mips] [--muted]"
+        );
+        eprintln!("mipmapped sources: {mips}");
+        for (transpose, source_rate) in [(7., 0), (19., 0), (0., 44100)] {
             for (filters, automated) in [(0, false), (4, false), (4, true)] {
                 for block in [64, 256] {
                     for voices in [256, 1024] {
@@ -312,6 +326,7 @@ fn main() {
                                 source_rate,
                                 filters,
                                 automated,
+                                mips,
                                 ..Processing::default()
                             },
                             muted,
