@@ -4,6 +4,8 @@ mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 pub use predicates::ControllerCondition;
 use predicates::Matching;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
+use std::sync::{Mutex, MutexGuard};
 
 /// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -20,9 +22,52 @@ struct PcmData {
     id: AssetId,
     rate: u32,
     frames: Option<Box<[Frame]>>,
-    // Pre-decimated octave levels (level 1 first); empty unless mipmapped.
-    levels: Box<[Box<[Frame]>]>,
+    // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
+    // or `service_mipmaps`. Audio only try-locks: a busy lock reads as none.
+    levels: Levels,
+    // Deepest octave voices asked for, and the runtime clock of the last
+    // render that read this asset.
+    wanted: AtomicU8,
+    used: AtomicU64,
+    // A streamed asset's resident ranges (where voices start); empty when purged.
+    head: Mutex<Ranges>,
+    // A start was refused because its pages were not resident.
+    cold: AtomicBool,
     length: usize,
+}
+type LevelData = Box<[Box<[Frame]>]>;
+/// Resident ranges of a streamed asset: (first frame, frames), ascending and
+/// disjoint.
+pub type Ranges = Box<[(usize, Box<[Frame]>)]>;
+
+/// Calls `f` with each part of `range` outside `ranges`, in order, until it
+/// returns false; returns whether every call returned true.
+pub(crate) fn uncovered(
+    ranges: &[(usize, Box<[Frame]>)],
+    range: std::ops::Range<usize>,
+    mut f: impl FnMut(std::ops::Range<usize>) -> bool,
+) -> bool {
+    let mut at = range.start;
+    let mut i = ranges.partition_point(|(start, frames)| start + frames.len() <= at);
+    while at < range.end {
+        match ranges.get(i) {
+            Some((start, frames)) if *start <= at => at = start + frames.len(),
+            next => {
+                let end = next.map_or(range.end, |(start, _)| (*start).min(range.end));
+                if !f(at..end) {
+                    return false;
+                }
+                at = end;
+            }
+        }
+        i += usize::from(ranges.get(i).is_some_and(|(s, f)| s + f.len() <= at));
+    }
+    true
+}
+type Levels = Mutex<LevelData>;
+/// Control-side lock that survives an audio-thread panic.
+fn lock<T>(data: &Mutex<T>) -> MutexGuard<'_, T> {
+    data.lock().unwrap_or_else(|e| e.into_inner())
 }
 impl Pcm {
     /// Validate once without copying the owned frame buffer. All public access is
@@ -33,15 +78,18 @@ impl Pcm {
         }
         Self::create(rate, frames.len(), Some(frames))
     }
-    /// `new` plus pre-decimated octave levels (about +100% memory, built here).
+    /// `new` plus every octave level, built here (about +100% memory). Prefer
+    /// `service_mipmaps`, which builds levels only for assets played an octave
+    /// or more up, within a budget.
     /// Voices pitched up by an octave or more resample from the coarsest level
     /// at or below their step, so the kernel stays under two octaves wide
     /// instead of stretching to the full step. Windows that touch a loop seam,
     /// crossfade or view edge read the original frames.
     pub fn mipmapped(rate: u32, frames: Box<[Frame]>) -> Result<Self, Error> {
-        let mut pcm = Self::new(rate, frames)?;
-        let data = std::sync::Arc::get_mut(&mut pcm.0).expect("freshly constructed");
-        data.levels = crate::resample::octaves(data.frames.as_deref().unwrap());
+        let pcm = Self::new(rate, frames)?;
+        let depth = crate::resample::OCTAVES;
+        *lock(&pcm.0.levels) = crate::resample::octaves(pcm.0.frames.as_deref().unwrap(), depth);
+        pcm.0.wanted.store(depth as u8, Relaxed);
         Ok(pcm)
     }
     /// Metadata for worker-decoded pages. The worker registry must resolve this
@@ -51,6 +99,58 @@ impl Pcm {
             return Err(Error::InvalidInput);
         }
         Self::create(rate, frames, None)
+    }
+    /// `streamed` with its first frames resident, so starts need no page.
+    pub fn headed(rate: u32, frames: usize, head: &[Frame]) -> Result<Self, Error> {
+        let pcm = Self::streamed(rate, frames)?;
+        pcm.set_ranges(vec![(0, head.into())])?;
+        Ok(pcm)
+    }
+    /// Control side: replace a streamed asset's resident frame ranges,
+    /// typically the first frames of each zone start, so starts need no cache
+    /// page; empty purges them. Ranges ascend, disjoint and non-empty. Returns
+    /// the old ranges to drop here, off audio. A start that finds its frames
+    /// missing fails `NotReady` and marks the asset cold (`take_cold`).
+    pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<Ranges, Error> {
+        let valid = self.0.frames.is_none()
+            && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
+            && ranges.iter().all(|(start, frames)| {
+                !frames.is_empty()
+                    && start
+                        .checked_add(frames.len())
+                        .is_some_and(|end| end <= self.0.length)
+                    && frames.iter().flatten().all(|x| x.is_finite())
+            });
+        if !valid {
+            return Err(Error::InvalidInput);
+        }
+        Ok(std::mem::replace(
+            &mut *lock(&self.0.head),
+            ranges.into_boxed_slice(),
+        ))
+    }
+    /// Frames in resident ranges.
+    pub fn head_frames(&self) -> usize {
+        lock(&self.0.head).iter().map(|(_, f)| f.len()).sum()
+    }
+    /// Whether a start was refused for a missing head since the last call.
+    pub fn take_cold(&self) -> bool {
+        self.0.cold.swap(false, Relaxed)
+    }
+    /// Runtime clock at the end of the last render that read this asset (0 if
+    /// never).
+    pub fn last_played(&self) -> u64 {
+        self.0.used.load(Relaxed)
+    }
+    /// Audio side: the resident ranges unless the control side is swapping them.
+    pub(crate) fn try_head(&self) -> Option<MutexGuard<'_, Ranges>> {
+        self.0.head.try_lock().ok()
+    }
+    pub(crate) fn mark_cold(&self) {
+        self.0.cold.store(true, Relaxed);
+    }
+    pub(crate) fn touch(&self, now: u64) {
+        self.0.used.store(now, Relaxed);
     }
     fn create(rate: u32, length: usize, frames: Option<Box<[Frame]>>) -> Result<Self, Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,7 +163,11 @@ impl Pcm {
             id: AssetId(id),
             rate,
             frames,
-            levels: Box::default(),
+            levels: Levels::default(),
+            wanted: AtomicU8::new(0),
+            used: AtomicU64::new(0),
+            head: Mutex::default(),
+            cold: AtomicBool::new(false),
             length,
         })))
     }
@@ -79,9 +183,85 @@ impl Pcm {
     pub fn resident_frames(&self) -> Option<&[Frame]> {
         self.0.frames.as_deref()
     }
-    pub(crate) fn levels(&self) -> &[Box<[Frame]>] {
-        &self.0.levels
+    /// Audio side: the levels unless the control side is swapping them.
+    pub(crate) fn try_levels(&self) -> Option<MutexGuard<'_, LevelData>> {
+        self.0.levels.try_lock().ok()
     }
+    /// Audio side: record that a voice reads this asset at `step` at `now`.
+    pub(crate) fn want_levels(&self, step: f64, now: u64) {
+        if step >= 2.0 && self.0.frames.is_some() {
+            let depth = (step.log2() as usize).min(crate::resample::OCTAVES);
+            self.0.wanted.fetch_max(depth as u8, Relaxed);
+            self.0.used.store(now, Relaxed);
+        }
+    }
+    fn level_bytes(&self) -> usize {
+        let levels = lock(&self.0.levels);
+        levels.iter().map(|l| l.len()).sum::<usize>() * size_of::<Frame>()
+    }
+    /// Bytes of resident frames, octave levels and any streamed head.
+    pub fn resident_bytes(&self) -> usize {
+        (self.0.frames.as_ref().map_or(0, |f| f.len()) + self.head_frames()) * size_of::<Frame>()
+            + self.level_bytes()
+    }
+}
+
+/// Bytes of octave levels 1..=depth for `frames` frames.
+fn levels_size(frames: usize, depth: usize) -> usize {
+    (1..=depth).map(|k| frames.div_ceil(1 << k)).sum::<usize>() * size_of::<Frame>()
+}
+
+/// Control side, off the audio thread (each UI tick, say): build octave levels
+/// for resident assets that voices played an octave or more up, most recently
+/// played first, within `budget` bytes of levels across `assets`. Room comes
+/// from evicting the least recently played levels, only those idle at least
+/// `idle` frames (runtime clock) longer than the asset needing room, so two
+/// busy assets never evict each other back and forth. Without levels a voice
+/// is still correct, through a wider kernel. Returns the level bytes held.
+pub fn service_mipmaps(assets: &[Pcm], budget: usize, idle: u64) -> usize {
+    let mut held: usize = assets.iter().map(Pcm::level_bytes).sum();
+    // ponytail: quadratic victim search; an ordered index if asset counts and
+    // pass rates make it show up.
+    let mut wanting: Vec<&Pcm> = assets
+        .iter()
+        .filter(|p| {
+            let depth = lock(&p.0.levels).len();
+            usize::from(p.0.wanted.load(Relaxed)) > depth
+        })
+        .collect();
+    wanting.sort_by_key(|p| std::cmp::Reverse(p.0.used.load(Relaxed)));
+    for pcm in wanting {
+        let (frames, depth) = (pcm.0.frames.as_deref().unwrap(), pcm.0.wanted.load(Relaxed));
+        let need = levels_size(frames.len(), depth.into()).saturating_sub(pcm.level_bytes());
+        let used = pcm.0.used.load(Relaxed);
+        while held + need > budget {
+            let victim = assets
+                .iter()
+                .filter(|p| p.0.used.load(Relaxed).saturating_add(idle) <= used)
+                .filter(|p| p.level_bytes() > 0)
+                .min_by_key(|p| p.0.used.load(Relaxed));
+            let Some(victim) = victim else { break };
+            held -= victim.level_bytes();
+            drop(std::mem::take(&mut *lock(&victim.0.levels)));
+        }
+        if held + need <= budget {
+            let built = crate::resample::octaves(frames, depth.into());
+            let old = std::mem::replace(&mut *lock(&pcm.0.levels), built);
+            drop(old);
+            held += need;
+        }
+    }
+    // A lowered budget evicts least recently played levels regardless of idle.
+    while held > budget {
+        let victim = assets
+            .iter()
+            .filter(|p| p.level_bytes() > 0)
+            .min_by_key(|p| p.0.used.load(Relaxed))
+            .expect("held bytes belong to some asset");
+        held -= victim.level_bytes();
+        drop(std::mem::take(&mut *lock(&victim.0.levels)));
+    }
+    held
 }
 
 /// Native tuning offsets in semitones from the nominal 12-tone equal-tempered
