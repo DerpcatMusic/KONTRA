@@ -34,7 +34,8 @@ impl Default for Expression {
             pan: 0.0,
             pitch_semitones: 0.0,
             pressure: 0,
-            timbre: 0,
+            // Centre, so timbre-darkening laws are identity for non-MPE notes.
+            timbre: 0x8000_0000,
         }
     }
 }
