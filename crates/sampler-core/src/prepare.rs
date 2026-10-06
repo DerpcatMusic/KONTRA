@@ -304,7 +304,7 @@ impl Prepared {
     /// the control thread. Generated children select regions without re-entry.
     pub fn with_programs(
         mut self,
-        programs: Vec<super::Program>,
+        mut programs: Vec<super::Program>,
         note_program: Option<usize>,
     ) -> Result<Self, Error> {
         if note_program.is_some_and(|index| index >= programs.len()) {
@@ -312,7 +312,23 @@ impl Prepared {
         }
         self.validate_program_controls(&programs)?;
         self.validate_program_scripts(&programs)?;
-        self.note_cells = programs.iter().map(|p| p.note_cells).max().unwrap_or(0);
+        // One polyphonic bank per script instance, plus the unbound native bank.
+        // Resolve offsets off audio; callback execution never scans other scripts.
+        let bank = |p: &super::Program| p.script_instance.map_or(0, |id| usize::from(id.0) + 1);
+        let mut bases = vec![0usize; self.script_initial.len() + 1];
+        for p in &programs {
+            bases[bank(p)] = bases[bank(p)].max(p.note_cells);
+        }
+        let mut cells = 0usize;
+        for base in &mut bases {
+            let width = *base;
+            *base = cells;
+            cells = cells.checked_add(width).ok_or(Error::Capacity)?;
+        }
+        for p in &mut programs {
+            p.note_base = bases[bank(p)];
+        }
+        self.note_cells = cells;
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         self.release_program = None;
@@ -343,6 +359,11 @@ impl Prepared {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+
+    /// Required cells per logical note across all script-instance namespaces.
+    pub fn note_cell_count(&self) -> usize {
+        self.note_cells
     }
     /// Maximum integer register count required by any callback in this plan.
     pub fn behavior_local_count(&self) -> usize {
