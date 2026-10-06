@@ -199,3 +199,13 @@ Peak over 0.3-3 s after onset (3 s held notes), RMS sqrt((L^2+R^2)/2) over 0.5-2
 | Barbarian Brass key 55 vel 100 | -19.1 | -15.9 | -15.9 | -20.1 | -27.3 |
 
 Vista with no CC sent is far below its CC1 = CC11 = 127 solo levels (section 6): the power-on dynamics state is quiet. Tools: `loud_lr.py`.
+
+## 14. Power-on controller state (fresh load, before any controller message)
+
+- KSP read-back: a script in an empty slot showing `%CC[n]` in labels on the first note (before any CC sent) reads 0 for CC1, CC2, CC4, CC7, CC10, CC11, CC64, pitch bend (`%CC[$VCC_PITCH_BEND]`, centred = 0 in KSP) and channel pressure (`%CC[$VCC_MONO_AT]`). So the engine array has no non-zero power-on value, including CC11 and CC7. `%CC[]` cannot be read in `on init` (compile error); it is readable in `on note`. Not tested: the value after reloading the instrument in the same session.
+- That 0 is not what the modulators see. Barbarian Brass (key 55 vel 100, scripts on, max-channel peak / RMS (L,R) dBFS):
+  - CC11 never sent: -15.9 / -27.3. CC11 = 127: -15.9 / -27.3 (identical). CC11 = 0: silent (-98.8 / -126.5). So an unsent CC11 behaves as full (127), not 0.
+  - CC1 never sent (CC11 = 127): -15.9 / -27.3. CC1 = 0: -27.6 / -38.8; 32: -22.4 / -32.9; 48: -16.9 / -27.2; 64: -13.1 / -23.6; 80: -14.0 / -24.9; 96: -13.0 / -24.7; 127: -7.7 / -18.8. An unsent CC1 reads like CC1 about 48 (the instrument script sets its own default), not like 0 or 127.
+  - The curve over CC1 is not monotonic (script and layer crossfades), so "about 48" is the nearest sampled match, not a measured default.
+- Vista 3 Cellos group g37 (solo, CC100 = 56): level is identical (L -37.0, R -32.4 dBFS) with no CC1/CC11 sent, with CC11 = 127 only, with CC1 = 0 and with CC1 = 127; g37 does not depend on CC1 or CC11. CC100 unsent equals CC100 = 0 (section 6).
+- Full Vista with its own script and no CC sent is -52.5 dBFS RMS (section 13): the instrument's default dynamics is low.
