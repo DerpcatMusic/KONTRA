@@ -233,6 +233,40 @@ impl EngineLayers {
 pub(crate) struct NoteParams {
     pub layer: Layer,
     pub fade: Option<Fade>,
+    pub mods: ModValues,
+}
+
+/// A note's "from script" modulator values by id; unset ids read 0.
+// ponytail: four ids per note (installed scripts use at most three: Pacific
+// 1, 3, 4); further ids are dropped. Grow if a library needs more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModValues {
+    ids: [u16; 4],
+    values: [i32; 4],
+    len: u8,
+}
+
+impl ModValues {
+    pub fn get(&self, id: u16) -> i32 {
+        let len = usize::from(self.len);
+        self.ids[..len]
+            .iter()
+            .position(|&i| i == id)
+            .map_or(0, |at| self.values[at])
+    }
+
+    fn set(&mut self, id: u16, value: i32) {
+        let len = usize::from(self.len);
+        match self.ids[..len].iter().position(|&i| i == id) {
+            Some(at) => self.values[at] = value,
+            None if len < self.ids.len() => {
+                self.ids[len] = id;
+                self.values[len] = value;
+                self.len += 1;
+            }
+            None => {}
+        }
+    }
 }
 
 impl Runtime {
@@ -277,6 +311,42 @@ impl Runtime {
             Some(layer) => layer.write(target, value, relative),
             None => Ok(()),
         }
+    }
+
+    /// Set a source event's "from script" modulator `id` (0..=1000);
+    /// `value` clamps to ±1,000,000. Unknown or retired events are no-ops.
+    pub(crate) fn write_mod_value(
+        &mut self,
+        plan: crate::PlanId,
+        event: i64,
+        id: i64,
+        value: i64,
+    ) -> Result<(), Error> {
+        let (Ok(event), Ok(id)) = (i32::try_from(event), u16::try_from(id)) else {
+            return Ok(());
+        };
+        if id > 1000 {
+            return Ok(());
+        }
+        if let Some(note) = self.resolve_source_event(plan, event)? {
+            let value = value.clamp(-1_000_000, 1_000_000) as i32;
+            self.note_params[note.0.index].mods.set(id, value);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_mod_value(
+        &mut self,
+        plan: crate::PlanId,
+        event: i64,
+        id: i64,
+    ) -> Result<i64, Error> {
+        let (Ok(event), Ok(id)) = (i32::try_from(event), u16::try_from(id)) else {
+            return Ok(0);
+        };
+        Ok(self
+            .resolve_source_event(plan, event)?
+            .map_or(0, |note| self.note_params[note.0.index].mods.get(id).into()))
     }
 
     pub(crate) fn read_param(

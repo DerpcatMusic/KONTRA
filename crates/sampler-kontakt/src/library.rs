@@ -649,6 +649,8 @@ impl Translation {
                             v.rls_trig_counter,
                         )))
                     }
+                    // KSP set_event_par_arr($EVENT_PAR_MOD_VALUE_ID, v, id).
+                    ModSource::Script(id) if id <= 1000 => ir::ModulationSource::Script(id as u16),
                     ModSource::RandomUnipolar => ir::ModulationSource::Random,
                     ModSource::Unassigned => continue,
                     other => {
