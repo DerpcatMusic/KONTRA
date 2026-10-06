@@ -103,7 +103,19 @@ pub struct Play {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Play(Play),
-    Release { id: u64, at_ms: f64 },
+    Release {
+        id: u64,
+        at_ms: f64,
+    },
+    /// `sendScriptModulation(id, value, glide_ms, voice)`: set (gliding to)
+    /// "Script Event Modulation `id`" for one voice, or all when `voice` is None.
+    Modulation {
+        id: u16,
+        value: f64,
+        glide_ms: f64,
+        voice: Option<u64>,
+        at_ms: f64,
+    },
 }
 
 /// What the host left inert or could not run: feature, one example, count.
@@ -461,6 +473,22 @@ impl ScriptHost {
                 });
                 Ok(true)
             })?,
+        )?;
+        let s = shared.clone();
+        globals.raw_set(
+            "sendScriptModulation",
+            lua.create_function(
+                move |_, (id, value, glide, voice): (f64, f64, Option<f64>, Option<f64>)| {
+                    s.command(Command::Modulation {
+                        id: id.clamp(0.0, f64::from(u16::MAX)) as u16,
+                        value,
+                        glide_ms: glide.unwrap_or(0.0).max(0.0),
+                        voice: voice.map(|v| v as u64),
+                        at_ms: s.now.get(),
+                    });
+                    Ok(())
+                },
+            )?,
         )?;
         let s = shared.clone();
         globals.raw_set(
@@ -881,6 +909,17 @@ mod tests {
             matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms == Some(0.0)),
             "{c:?} {:?}",
             h.findings()
+        );
+    }
+
+    #[test]
+    fn send_script_modulation_becomes_a_command() {
+        let mut h = host("function onNote(e) sendScriptModulation(9, 0.4, 1000, nil) end");
+        h.note_on(1, 60, 100, 0);
+        let c = h.take_commands();
+        assert!(
+            matches!(&c[..], [Command::Modulation { id: 9, glide_ms, voice: None, .. }] if *glide_ms == 1000.0),
+            "{c:?}"
         );
     }
 
