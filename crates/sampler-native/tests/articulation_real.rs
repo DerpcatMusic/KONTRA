@@ -436,6 +436,49 @@ fn probe_instrument() {
             &b.state[..b.state.len().min(40)]
         );
     }
+    if std::env::var_os("KONTRA_PROBE_FULL").is_some() {
+        // Whole instrument, scripts on, power-on controllers: L pk / R pk /
+        // mono pk (peak 0.3-3 s) and sqrt((L2+R2)/2) RMS (0.5-2 s), dBFS.
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let mut words = vec![
+            0x2000_0000,
+            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+        ];
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let sr = 48000;
+        let db = |x: f64| 20.0 * (x + 1e-12).log10();
+        let pk = |f: &dyn Fn(&[f32; 2]) -> f32| {
+            out[sr * 3 / 10..(3 * sr).min(out.len())]
+                .iter()
+                .fold(0f32, |p, x| p.max(f(x).abs()))
+        };
+        let seg = &out[sr / 2..2 * sr];
+        let rms = (seg
+            .iter()
+            .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
+            .sum::<f64>()
+            / (2.0 * seg.len() as f64))
+            .sqrt();
+        eprintln!(
+            "FULL key {key} vel {vel}: L {:.1} R {:.1} max {:.1} mono {:.1} rms {:.1}",
+            db(f64::from(pk(&|f| f[0]))),
+            db(f64::from(pk(&|f| f[1]))),
+            db(f64::from(pk(&|f| f[0].max(f[1])))),
+            db(f64::from(pk(&|f| (f[0] + f[1]) / 2.0))),
+            db(rms)
+        );
+    }
     if std::env::var_os("KONTRA_PROBE_GAINS").is_some() {
         let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
             .ok()
