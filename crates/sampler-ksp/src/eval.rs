@@ -1238,6 +1238,11 @@ pub const GRID_Y: i32 = 0x0300_0002;
 pub const TABLE_STEPS_SHOWN: i32 = 0x0300_0003;
 
 pub fn symbol_name(hir: &Hir, value: i32) -> Option<String> {
+    symbol_in(&hir.symbols, value)
+}
+
+/// [`symbol_name`] over a script's symbol table.
+pub(crate) fn symbol_in<S: AsRef<str>>(symbols: &[S], value: i32) -> Option<String> {
     match value {
         GRID_X => Some("grid_x".into()),
         GRID_Y => Some("grid_y".into()),
@@ -1246,9 +1251,9 @@ pub fn symbol_name(hir: &Hir, value: i32) -> Option<String> {
             .get(usize::try_from(value.wrapping_sub(b::SYMBOL_BASE)).ok()?)
             .map(|s| (*s).to_owned())
             .or_else(|| {
-                hir.symbols
+                symbols
                     .get(usize::try_from(value.wrapping_sub(OPAQUE_BASE)).ok()?)
-                    .map(|s| s.to_string())
+                    .map(|s| s.as_ref().to_string())
             }),
     }
 }

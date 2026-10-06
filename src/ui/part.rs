@@ -3,7 +3,7 @@
 //! authored or with our controls) or, without one, what its load decoded and
 //! could not translate.
 
-use super::{Cx, ir_view, pictures, theme::*};
+use super::{Cx, inside, ir_view, pictures, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
@@ -30,6 +30,11 @@ impl Face {
         out
     }
 
+    /// Decoded picture bytes the view keeps.
+    pub fn bytes(&self) -> usize {
+        self.assets.bytes()
+    }
+
     fn sync(&mut self) {
         let source = &mut self.source;
         self.assets.sync(&self.face, self.presentation, |a| source.load(a));
@@ -42,7 +47,7 @@ fn main_face(faces: &[ir::Interface]) -> Option<usize> {
 }
 
 /// `slot`'s library interface, when its scripts declare one.
-fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
     let from = cx.view.parts.get(slot)?.interfaces.clone();
     let main = main_face(&from)?;
     let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
@@ -50,12 +55,14 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if stale {
         // ponytail: reads and decodes on the UI thread, once per load; move to the
         // loader's worker when big libraries make the first frame stall.
-        cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, Presentation::Bitmap));
+        // Vector unless the source needed something we only approximate.
+        let start = if from[main].unsupported.is_empty() { Presentation::Vector } else { Presentation::Bitmap };
+        cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, start));
     }
     let face = cx.state.faces.get_mut(&slot)?;
 
     // Which script's view, when several have one, and how it is drawn.
-    let mut bar = Vec::new();
+    let mut bar: Vec<El> = lead.into_iter().collect();
     let with: Vec<usize> = (0..from.len()).filter(|&n| !from[n].widgets.is_empty()).collect();
     let mut pick = None;
     if with.len() > 1 {
@@ -118,9 +125,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     )
 }
 
-/// Lines of the missing list a part shows before "+N more".
-const MISSING: usize = 6;
-
 /// The empty rack.
 pub fn welcome(cx: &Cx) -> El {
     let mut lines = vec![
@@ -158,32 +162,16 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     (!out.is_empty()).then(|| col(out).gap(0).align(Align::Stretch).shrink(0))
 }
 
-/// The part's interface, else its load report: what was decoded, and what
-/// was not translated.
+/// The part's view switch, then the view: its interface, articulations,
+/// mapping, sound or info.
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
-    if let Some(face) = interface(ui, cx, slot) {
+    let (view, tabs) = inside::bar(ui, cx, slot);
+    if view == inside::View::Interface
+        && let Some(face) = interface(ui, cx, slot, tabs.clone())
+    {
         return face;
     }
-    let v = &cx.view.parts[slot];
-    let mut lines = Vec::new();
-    if let Some(r) = &v.report {
-        let d = &r.decoded;
-        lines.push(
-            caption(format!(
-                "{} · {} zones · {} groups · {} samples · {} scripts",
-                d.format, d.zones, d.groups, d.samples, d.scripts
-            ))
-            .fill(secondary())
-            .lines(1)
-            .min_w(0),
-        );
-        for m in r.missing.iter().take(MISSING) {
-            let text = format!("Not translated: {} {} at {}", m.feature, m.value, m.location);
-            lines.push(caption(text.clone()).fill(secondary()).lines(1).min_w(0).tip(text));
-        }
-        if r.missing.len() > MISSING {
-            lines.push(caption(format!("+{} more not translated", r.missing.len() - MISSING)).fill(secondary()).lines(1));
-        }
-    }
-    col(lines).gap(TIGHT).align(Align::Start).pad((SPACE, INSET)).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"))
+    let tabs = tabs.map(|t| row![t, spacer()].align(Align::Center).pad((TIGHT, INSET)).w(Len::Pct(100.)).shrink(0));
+    let body = inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0));
+    col(tabs.into_iter().chain([body]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"))
 }

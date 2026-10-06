@@ -25,6 +25,13 @@ pub struct PartControls {
     pub aux: u8,
     /// Linear gain of that send.
     pub aux_gain: f32,
+    /// MPE lower zone: manager channel 1, every other channel a member whose
+    /// bend, pressure and timbre reach only its note. Takes every channel.
+    pub mpe: bool,
+    /// Pitch-bend range in semitones (members' in MPE); 0 keeps the default.
+    pub bend_range: u8,
+    /// [`crate::plugin::Part::switching`].
+    pub switching: u8,
 }
 
 /// An output bus's fader: what it does to everything routed to it.
@@ -99,6 +106,9 @@ impl Default for PartControls {
             solo: false,
             aux: NO_AUX,
             aux_gain: 0.0,
+            mpe: false,
+            bend_range: 0,
+            switching: 0,
         }
     }
 }

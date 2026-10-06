@@ -110,7 +110,7 @@ impl Runtime {
                 .iter()
                 .filter(|stage| stage.release.is_some())
                 .count();
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
@@ -139,6 +139,14 @@ impl Runtime {
             }
         };
         let entry = source_stage.map_or(0, |stage| stage.index() + 1);
+        // As in Kontakt, a note a module's note callback plays skips that note
+        // callback but its release runs the module's release callback too (Una
+        // Corda sustains its own notes there). Notes played by a release
+        // callback do not re-enter it.
+        let release_entry = match source_stage {
+            Some(crate::behavior::NoteStage::Attack(stage)) => stage,
+            _ => entry,
+        };
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let routed =
             source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
@@ -149,14 +157,14 @@ impl Runtime {
             .count();
         let callbacks = usize::from(routed) * callbacks
             + if release_route {
-                prepared.stages[entry..]
+                prepared.stages[release_entry..]
                     .iter()
                     .filter(|s| s.release.is_some())
                     .count()
             } else {
                 0
             };
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let pitch = match origin {
@@ -249,7 +257,7 @@ impl Runtime {
         );
         self.project_note(note, origin_stage, entry);
         if release_route {
-            self.reserve_release_callbacks(note, entry);
+            self.reserve_release_callbacks(note, release_entry);
         }
         if routed {
             self.begin_note_stages(note, entry);
@@ -374,6 +382,7 @@ impl Runtime {
         }
         let required = attack.plus(release);
         self.reclaim_internal_notes(required);
+        self.steal_release_reserves(required);
         self.steal_voices(required.voices);
         self.check_selection_capacity(required)?;
         Ok(release)
@@ -418,6 +427,44 @@ impl Runtime {
             }
         }
         self.commit_selection(note, Trigger::Attack, velocity, snapshot);
+    }
+
+    /// When reservations alone keep `required` from fitting, suppress the
+    /// pending release phases of the oldest notes (returning their quotas)
+    /// until it fits, if `set_release_stealing` allows. Nothing is taken
+    /// unless the outstanding reservations could cover the shortfall.
+    fn steal_release_reserves(&mut self, required: ReleaseReserve) {
+        let fits = |rt: &Self, extra: ReleaseReserve| {
+            required.voices <= rt.voices.available() + extra.voices
+                && required.families <= rt.families.available() + extra.families
+                && required.decisions <= rt.decisions.available() + extra.decisions
+                && required.commands <= rt.available_commands() + extra.commands
+        };
+        if !self.steal_releases
+            || fits(self, ReleaseReserve::default())
+            || !fits(self, self.release_reserve())
+        {
+            return;
+        }
+        let pending = |rt: &Self, i: usize| {
+            rt.notes.slots[i].value.is_some()
+                && rt.release_times[i]
+                    .selection
+                    .contains(&ReleaseStatus::Pending)
+        };
+        // ponytail: a scan per stolen note over the bounded note pool.
+        while !fits(self, ReleaseReserve::default()) {
+            let Some(oldest) = (0..self.notes.slots.len())
+                .filter(|&i| pending(self, i))
+                .min_by_key(|&i| self.notes.slots[i].value.unwrap().order)
+            else {
+                return;
+            };
+            let note = NoteId(self.notes.id(oldest));
+            for trigger in [Trigger::KeyRelease, Trigger::GateRelease] {
+                self.run_release(note, trigger, false);
+            }
+        }
     }
 
     fn check_selection_capacity(&self, required: ReleaseReserve) -> Result<(), Error> {
@@ -664,6 +711,7 @@ impl Runtime {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address, owner) = (n.plan, n.pitch, n.address, n.expression);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let musical = musical && !prepared.script_release_triggers;
         let reserve = prepared.release_reserves[note_pitch.key() as usize][index];
         let velocity = prepared
             .release_velocity(

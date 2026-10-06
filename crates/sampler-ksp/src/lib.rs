@@ -4,6 +4,7 @@
 //! callback to bounded sampler-core programs. Not a Kontakt fidelity claim:
 //! services the engine does not own are queued as effects, and every ignored or
 //! approximated call is reported in `Script::warnings` and `Script::coverage`.
+use model::Value;
 use sampler_core::{
     ControlCallback, ControlDefinition, ControlDomain, ControlId, ControlValue, Prepared, Program,
     ScriptInstanceId, ScriptResources,
@@ -24,7 +25,7 @@ pub mod ui;
 
 pub use diag::{Error, Kind};
 pub use eval::Environment;
-pub use lower::{Coverage, PGS_TAG, PROPERTY_TAG};
+pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
 pub const PROFILE: &str = "ksp-8.12-v2";
 
@@ -99,11 +100,14 @@ pub struct Entry {
     /// Program index within this script (offset by earlier modules after binding).
     pub program: usize,
 }
-
 /// A compiled script: programs, initial state after `on init`, and its model.
 pub struct Script {
     programs: Vec<Program>,
     entries: Vec<Entry>,
+    /// Programs started when the plan becomes active (listener timers).
+    starts: Vec<usize>,
+    /// PGS keys this script created, for the plan's shared store.
+    shared: Vec<([i32; 4], i64)>,
     rate: u32,
     cells: Vec<i64>,
     resources: ScriptResources,
@@ -119,6 +123,9 @@ pub struct Script {
     /// `SET_CONDITION(NO_SYS_SCRIPT_PEDAL)`: the script, not the engine,
     /// sustains notes on CC64.
     owns_sustain: bool,
+    /// `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)`: the script plays release
+    /// samples, so native release-trigger groups stay silent.
+    owns_release_triggers: bool,
 }
 
 impl Script {
@@ -171,6 +178,25 @@ impl Script {
         &self.symbols
     }
     /// Install the complete script on a prepared instrument of the compiled rate.
+    /// Apply a `set_control_par*` request this script's callbacks emitted
+    /// (an [`sampler_core::Effect`] whose `instance` is this script's) to its
+    /// model, so [`Script::ui`] shows runtime UI changes such as pages,
+    /// pictures and hidden panels. Returns whether the effect was one.
+    pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
+        apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
+    }
+
+    /// What [`Script::ui`] and [`Script::apply_ui_effect`] need, kept after
+    /// the script is bound.
+    pub fn view(&self) -> ScriptView {
+        ScriptView {
+            model: self.model.clone(),
+            services: self.services.clone(),
+            symbols: self.symbols.clone(),
+            slot: self.slot,
+        }
+    }
+
     pub fn bind(self, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
         bind_modules(vec![self], plan)
     }
@@ -180,6 +206,106 @@ impl Script {
             .find(|e| e.kind == kind)
             .map(|e| e.program)
     }
+}
+
+/// A bound script's interface model: [`Script::view`].
+#[derive(Clone, Debug)]
+pub struct ScriptView {
+    model: model::Model,
+    services: Vec<&'static str>,
+    symbols: Vec<String>,
+    slot: u8,
+}
+
+impl ScriptView {
+    /// The model as runtime effects have left it (keys, widgets).
+    pub fn model(&self) -> &model::Model {
+        &self.model
+    }
+    /// [`Script::apply_ui_effect`].
+    pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
+        apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
+    }
+    /// [`Script::ui`].
+    pub fn ui(
+        &self,
+        picture: &dyn Fn(&str) -> Option<sampler_ui_ir::ImageMeta>,
+    ) -> Result<sampler_ui_ir::Interface, sampler_ui_ir::Error> {
+        ui::interface(&self.model, self.slot, picture)
+    }
+}
+
+fn apply_ui_effect(
+    model: &mut model::Model,
+    services: &[&'static str],
+    symbols: &[String],
+    effect: &sampler_core::Effect,
+) -> bool {
+    let Some(&service) = services.get(usize::from(effect.service)) else {
+        return false;
+    };
+    let args = &effect.args[..usize::from(effect.count)];
+    let arg = |i: usize| args.get(i).map(|&v| v as i32);
+    let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+    if let Some(rest) = service.strip_prefix("set_key_") {
+        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
+        else {
+            return false;
+        };
+        match rest {
+            "color" => key.color = arg(1),
+            "type" => key.kind = arg(1),
+            "pressed" => key.pressed = arg(1),
+            "name" => key.name = text(),
+            _ => return false,
+        }
+        return true;
+    }
+    let (Some(id), Some(par)) = (arg(0), arg(1)) else {
+        return false;
+    };
+    let (value, index) = match service {
+        "set_control_par" => (arg(2).map(Value::Int), None),
+        "set_control_par_real" => (
+            args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
+            None,
+        ),
+        "set_control_par_str" => (text().map(Value::Text), None),
+        "set_control_par_arr" => (arg(2).map(Value::Int), arg(3)),
+        "set_control_par_str_arr" => (text().map(Value::Text), arg(2)),
+        _ => return false,
+    };
+    let (Some(value), Some(name)) = (value, eval::symbol_in(symbols, par)) else {
+        return false;
+    };
+    let interface = &mut model.interface;
+    if let Some(w) = interface.widgets.iter_mut().find(|w| w.ui_id == id) {
+        match index {
+            Some(i) => {
+                w.indexed_properties
+                    .entry(name)
+                    .or_default()
+                    .insert(i, value);
+            }
+            None => {
+                if name == "$CONTROL_PAR_VALUE"
+                    && let (Value::Int(v), model::WidgetValue::Int(_)) = (&value, &w.value)
+                {
+                    w.value = model::WidgetValue::Int(*v);
+                }
+                w.properties.insert(name, value);
+            }
+        }
+    } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
+        interface
+            .instrument
+            .entry(id)
+            .or_default()
+            .insert(name, value);
+    } else {
+        return false;
+    }
+    true
 }
 
 /// Bind ordered controller-only modules with independent script state.
@@ -206,7 +332,11 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut controls = Vec::new();
     let mut callbacks = Vec::new();
     let mut stages = Vec::new();
+    let mut starts = Vec::new();
+    let mut signals = Vec::new();
+    let mut shared = Vec::new();
     let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
+    let owns_release_triggers = scripts.iter().any(|s| s.owns_release_triggers);
     for (index, script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
@@ -229,16 +359,35 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             }
             controls.push(control.definition);
         }
+        signals.extend(
+            script
+                .entries
+                .iter()
+                .filter(|e| e.kind == EntryKind::PgsChanged)
+                .map(|e| sampler_core::SignalProgram {
+                    signal: lower::PGS_SIGNAL,
+                    program: base + e.program,
+                    stage: index,
+                }),
+        );
+        // Keys created by several scripts keep the first script's values.
+        shared.extend(script.shared.iter().copied());
+        starts.extend(script.starts.iter().map(|&p| sampler_core::PlanProgram {
+            program: base + p,
+            stage: index,
+        }));
         programs.extend(
             script
                 .programs
                 .into_iter()
-                .map(|p| p.with_script_instance(instance)),
+                .map(|p| p.with_script_instance(instance).with_program_base(base)),
         );
         instances.push(script.cells);
         resources.push(script.resources);
     }
+    let capacity = shared.len() + 4096;
     plan.with_script_sustain(owns_sustain)
+        .with_script_release_triggers(owns_release_triggers)
         .with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
         // Keep source aliases separate from marked/all-event selectors.
@@ -247,7 +396,11 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_script_resources(resources)?
         .with_programs(programs, None)?
         .with_stages(stages)?
-        .with_control_programs(callbacks)
+        .with_control_programs(callbacks)?
+        .with_plan_programs(starts)?
+        .with_signal_programs(signals)?
+        // ponytail: fixed headroom for keys created at runtime, like the script stores.
+        .with_shared_store(shared, capacity)
 }
 
 /// Compile with no instrument facts and the default script slot.
@@ -370,12 +523,10 @@ pub fn compile_with(
     }
 
     // Lowering.
-    let pgs: BTreeSet<String> = init.model.pgs.keys().cloned().collect();
     let mut unit = lower::Unit {
         hir: &hir,
         controls: &ids,
         groups: &environment.groups,
-        pgs: &pgs,
         slot: environment.slot,
         budget: limits.instructions,
         limit: limits.instructions,
@@ -386,6 +537,7 @@ pub fn compile_with(
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
+    let mut starts = Vec::new();
     for callback in &hir.callbacks {
         use hir::CallbackKind as K;
         let (kind, context) = match callback.kind {
@@ -405,14 +557,46 @@ pub fn compile_with(
             K::Rpn => (EntryKind::Rpn, lower::Context::Plan),
             K::Nrpn => (EntryKind::Nrpn, lower::Context::Plan),
         };
-        let program = unit
-            .program(&callback.body, callback.span, context, callback.kind)
-            .map_err(|f| f.locate(source))?;
-        entries.push(Entry {
-            kind,
-            program: programs.len(),
-        });
-        programs.push(program);
+        // A timer listener body per timer signal set in on init, each
+        // started by a driver program; otherwise one unstarted program.
+        let timers: Vec<i32> = if kind == EntryKind::Listener {
+            init.model
+                .listeners
+                .keys()
+                .copied()
+                .filter(|s| [builtins::signal::TIMER_MS, builtins::signal::TIMER_BEAT].contains(s))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for signal in timers
+            .iter()
+            .map(|s| Some(*s))
+            .chain(timers.is_empty().then_some(None))
+        {
+            let program = unit
+                .program(
+                    &callback.body,
+                    callback.span,
+                    context,
+                    callback.kind,
+                    signal,
+                )
+                .map_err(|f| f.locate(source))?;
+            entries.push(Entry {
+                kind,
+                program: programs.len(),
+            });
+            programs.push(program);
+            if let Some(signal) = signal {
+                let body = programs.len() - 1;
+                let driver = unit
+                    .listener_driver(signal, body, callback.span)
+                    .map_err(|f| f.locate(source))?;
+                starts.push(programs.len());
+                programs.push(driver);
+            }
+        }
     }
     for (ui, control) in &mut host {
         control.callback = entries
@@ -445,10 +629,14 @@ pub fn compile_with(
     for (&key, &value) in &init.engine {
         store.push((key, i64::from(value)));
     }
+    for (&signal, &value) in &init.model.listeners {
+        store.push(([LISTENER_TAG, signal, 0, LISTENER_TAG], i64::from(value)));
+    }
+    let mut shared = Vec::new();
     for (key, values) in &init.model.pgs {
         let hash = lower::name_hash(key);
         for (i, &v) in values.iter().enumerate() {
-            store.push(([PGS_TAG, hash, i as i32, PGS_TAG], i64::from(v)));
+            shared.push(([PGS_TAG, hash, i as i32, PGS_TAG], i64::from(v)));
         }
     }
     // ponytail: fixed headroom for runtime-created keys; size from usage if exceeded.
@@ -481,6 +669,8 @@ pub fn compile_with(
     Ok(Script {
         programs,
         entries,
+        starts,
+        shared,
         rate,
         cells: init.cells,
         resources,
@@ -493,6 +683,7 @@ pub fn compile_with(
         symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
         slot: environment.slot,
         owns_sustain: conditions.contains("NO_SYS_SCRIPT_PEDAL"),
+        owns_release_triggers: conditions.contains("NO_SYS_SCRIPT_RLS_TRIG"),
         usage: Limits {
             source_bytes: source.len(),
             instructions: limits.instructions - unit.budget,

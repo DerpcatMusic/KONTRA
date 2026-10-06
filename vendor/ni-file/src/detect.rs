@@ -43,7 +43,7 @@ impl NIFileType {
     pub(crate) fn read_with_nis<R: ReadBytesExt>(
         mut reader: R,
     ) -> Result<(Self, Option<ItemContainer>), Error> {
-        let magic: u32 = reader.read_le()?;
+        let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
 
         if let Some(nks) = NKSFileType::detect(magic) {
             return Ok((NIFileType::NKSContainer(nks), None));

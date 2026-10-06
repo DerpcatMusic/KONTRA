@@ -34,11 +34,11 @@ impl std::convert::TryFrom<KontaktChunks> for Kon7 {
         Ok(Self {
             program: chunks
                 .first()
-                .ok_or(Error::Static("Could not find Program".into()))?
+                .ok_or(Error::Static("Could not find Program"))?
                 .try_into()?,
             filetable: chunks
                 .last()
-                .ok_or(Error::Static("Could not find FNTableImpl".into()))?
+                .ok_or(Error::Static("Could not find FNTableImpl"))?
                 .try_into()?,
         })
     }
