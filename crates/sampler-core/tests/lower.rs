@@ -136,6 +136,46 @@ fn layers_round_robin_pan_gain_and_release_zones_render() {
     assert!((loud[1] - 0.3 * ir::Gain::Decibels(6.0).linear() as f32).abs() < 1e-4);
 }
 
+/// An AHD (one-shot) envelope on a looped release zone lowers, ignores the
+/// gate and ends its voice after the decay; the loop never sounds past it.
+#[test]
+fn one_shot_envelope_bounds_a_looped_release_zone() {
+    let mut ir = instrument();
+    ir.zones.truncate(1);
+    ir.zones[0].selection = None;
+    ir.sequences.clear();
+    let mut release = ir.zones[0].clone();
+    release.asset = ir::AssetRef(3);
+    release.trigger = ir::Trigger::KeyRelease;
+    release.playback.looping = ir::Looping::Continuous(ir::LoopRange {
+        start: 0,
+        end: 480,
+        crossfade: ir::Span::Frames(0),
+        alternating: false,
+    });
+    ir.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Envelope(ir::Envelope {
+            hold: ir::Time::Milliseconds(1.0),
+            decay: ir::Time::Milliseconds(1.0),
+            sustain: 1.0,
+            release: ir::Time::Seconds(10.0),
+            one_shot: true,
+            ..ir::Envelope::default()
+        }),
+    });
+    release.amplitude = Some(ir::ModulatorRef(0));
+    ir.zones.push(release);
+    let pcm = vec![constant(0.1), constant(0.2), constant(0.3), constant(0.05)];
+    let mut rt = Runtime::new(lower(&ir, 48000, pcm, no_behaviors).unwrap(), limits()).unwrap();
+    assert_eq!(play(&mut rt, 60, 0.3), [0.1; 2]);
+    let mut tail = [[0.0; 2]; 192];
+    rt.render(&mut tail).unwrap();
+    assert_eq!(tail[24], [0.05; 2], "hold at full level");
+    assert_eq!(tail[120], [0.0; 2], "silent after the decay");
+    assert_eq!(rt.voice_count(), 0);
+}
+
 #[test]
 fn amplitude_envelope_converts_source_time_to_frames() {
     let mut ir = instrument();
