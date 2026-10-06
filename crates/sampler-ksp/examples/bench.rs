@@ -137,12 +137,19 @@ fn main() {
                 let _ = rt.edit_controls(generation, None, &[ControlWrite { id: c.id, value }]);
             }
             let _ = rt.render(&mut out);
-            rt.flush_behaviors(|_, _, outcome| {
+            rt.flush_behaviors(|_, owner, outcome| {
                 match outcome {
                     Outcome::FuelExhausted => exhausted += 1,
                     Outcome::Fault(e) => {
                         faults += 1;
-                        *fault_kinds.entry(format!("{e:?}")).or_default() += 1;
+                        let on = if matches!(owner, BehaviorOwner::Note(_)) {
+                            "note"
+                        } else {
+                            "plan"
+                        };
+                        *fault_kinds
+                            .entry(format!("{e:?} in {on} callback"))
+                            .or_default() += 1;
                     }
                     _ => {}
                 }
