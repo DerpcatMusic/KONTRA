@@ -1,4 +1,6 @@
-use crate::render_kontakt::{self, Note};
+use crate::render_kontakt::Note;
+#[cfg(feature = "library-access")]
+use crate::render_kontakt;
 use std::{io, path::Path};
 
 #[cfg(feature = "library-access")]
