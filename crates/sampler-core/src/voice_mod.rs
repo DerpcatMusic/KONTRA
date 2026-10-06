@@ -180,7 +180,24 @@ pub(crate) struct VoiceModulation {
     routes: usize,
 }
 
+/// What sizes a [`VoiceModState`], so it can be built without the plan.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModShape {
+    empty: bool,
+    sources: usize,
+    envelopes: usize,
+    routes: usize,
+}
+
 impl VoiceModulation {
+    pub fn shape(&self) -> ModShape {
+        ModShape {
+            empty: self.is_empty(),
+            sources: self.sources,
+            envelopes: self.envelopes,
+            routes: self.routes,
+        }
+    }
     /// Bytes of [`VoiceModState`] one voice slot needs.
     pub fn bytes_per_voice(&self) -> usize {
         use std::mem::size_of;
@@ -519,8 +536,12 @@ pub(crate) struct VoiceModState {
 
 impl VoiceModState {
     pub fn new(modulation: &VoiceModulation, voices: usize) -> Result<Self, Error> {
+        Self::with_shape(modulation.shape(), voices)
+    }
+
+    pub fn with_shape(modulation: ModShape, voices: usize) -> Result<Self, Error> {
         let slots = |n: usize| n.checked_mul(voices).ok_or(Error::Capacity);
-        if modulation.is_empty() {
+        if modulation.empty {
             return Ok(Self::empty());
         }
         Ok(Self {
@@ -543,6 +564,27 @@ impl VoiceModState {
             )
             .collect(),
         })
+    }
+
+    /// Take the state of `larger` (same shape, more voices), moving every
+    /// voice's state across; the old arrays are left in `larger`. No allocation.
+    pub fn adopt(&mut self, larger: &mut Self) {
+        fn take<T>(old: &mut Box<[T]>, new: &mut Box<[T]>) {
+            let n = old.len();
+            new[..n].swap_with_slice(old);
+            std::mem::swap(old, new);
+        }
+        take(&mut self.program, &mut larger.program);
+        take(&mut self.seed, &mut larger.seed);
+        take(&mut self.age, &mut larger.age);
+        take(&mut self.outputs, &mut larger.outputs);
+        take(&mut self.previous, &mut larger.previous);
+        take(&mut self.times, &mut larger.times);
+        take(&mut self.tone, &mut larger.tone);
+        take(&mut self.phase, &mut larger.phase);
+        take(&mut self.values, &mut larger.values);
+        take(&mut self.lagged, &mut larger.lagged);
+        take(&mut self.envelope, &mut larger.envelope);
     }
 
     fn empty() -> Self {
