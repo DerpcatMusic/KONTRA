@@ -1203,6 +1203,12 @@ impl Runtime {
                 }
             }
             Instruction::SuppressRelease => {
+                // A release the script itself asked for (note_off) cannot be
+                // ignored: nothing would ever resume it.
+                let note = owner.note()?;
+                if self.note_events[note.0.index].script_stop {
+                    return Ok(false);
+                }
                 if let Some(NoteStage::Release(stage)) =
                     self.behaviors.get(id.0).unwrap().note_stage
                 {
