@@ -186,12 +186,10 @@ impl Script for ScriptThread {
         None
     }
 
-    fn take_commands(&mut self) -> Vec<Command> {
-        let mut out = Vec::new();
+    fn drain(&mut self, out: &mut Vec<Command>) {
         while let Ok(command) = self.commands.pop() {
             out.push(command);
         }
-        out
     }
 
     fn tick(&mut self, now_ms: f64) {

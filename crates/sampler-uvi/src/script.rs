@@ -93,6 +93,34 @@ impl Default for Config {
 }
 
 /// One note a script asked for. Times are milliseconds on the host's clock.
+/// 1-based layer numbers as a bit set (1..=64), so a command owns no heap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Layers(pub u64);
+
+impl Layers {
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn insert(&mut self, layer: u32) {
+        if (1..=64).contains(&layer) {
+            self.0 |= 1 << (layer - 1);
+        }
+    }
+
+    pub fn contains(self, layer: u32) -> bool {
+        (1..=64).contains(&layer) && self.0 >> (layer - 1) & 1 != 0
+    }
+}
+
+impl<const N: usize> From<[u32; N]> for Layers {
+    fn from(layers: [u32; N]) -> Self {
+        let mut set = Self::default();
+        layers.into_iter().for_each(|l| set.insert(l));
+        set
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Play {
     /// The voice id `playNote` returned to the script.
@@ -105,7 +133,7 @@ pub struct Play {
     /// note.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
-    pub layers: Vec<u32>,
+    pub layers: Layers,
     /// 1-based oscillator within each keygroup.
     pub osc: Option<u32>,
     pub vol: f64,
@@ -776,15 +804,15 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
         }
     }
     let num = |i: usize| values[i].as_ref().and_then(number);
-    let layers = match &values[3] {
+    let mut layers = Layers::default();
+    match &values[3] {
         Some(Value::Table(t)) => t
             .sequence_values::<f64>()
             .filter_map(Result::ok)
-            .map(|n| n as u32)
-            .collect(),
-        Some(v) => number(v).map(|n| vec![n as u32]).unwrap_or_default(),
-        None => Vec::new(),
-    };
+            .for_each(|n| layers.insert(n as u32)),
+        Some(v) => number(v).into_iter().for_each(|n| layers.insert(n as u32)),
+        None => {}
+    }
     if values[4].is_some() || values[5].is_some() || values[9].is_some() {
         shared.find("lua playNote channel/input/slice", "");
     }
@@ -841,8 +869,8 @@ mod tests {
         assert_eq!(
             plays,
             [
-                (60, 100, Some(1), vec![1], None, Some(1)),
-                (62, 90, Some(2), vec![1], None, Some(2))
+                (60, 100, Some(1), Layers::from([1]), None, Some(1)),
+                (62, 90, Some(2), Layers::from([1]), None, Some(2))
             ]
         );
         assert!(h.findings().is_empty(), "{:?}", h.findings());
