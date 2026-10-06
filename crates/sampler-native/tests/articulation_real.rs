@@ -18,10 +18,21 @@ fn load(driver: ir::Driver) -> Option<sampler_kontakt::Loaded> {
 
 /// Load only the zones under `key`, re-driven by `driver` (keys swallowed).
 fn load_at(path: &std::path::Path, key: u8, driver: ir::Driver) -> sampler_kontakt::Loaded {
+    decoded(path, key).drive(driver)
+}
+
+/// One instrument's zones under `key`, decoded once (in memory) and re-lowered
+/// per driver; `Pcm` clones share the samples.
+struct Decoded {
+    instrument: ir::Instrument,
+    pcm: Vec<sampler_core::Pcm>,
+    labels: Vec<String>,
+    options: sampler_kontakt::Options,
+}
+
+fn decoded(path: &std::path::Path, key: u8) -> Decoded {
     let mut kontakt = sampler_kontakt::read(path).unwrap();
     let mut instrument = kontakt.instrument;
-    instrument.switching.driver = driver;
-    instrument.switching.keys = ir::SwitchKeys::Swallow;
     let kept = instrument.retain_zones(|z| z.keys.low <= key && z.keys.high >= key);
     let pcm = kept
         .iter()
@@ -30,13 +41,31 @@ fn load_at(path: &std::path::Path, key: u8, driver: ir::Driver) -> sampler_konta
             sampler_core::Pcm::new(decoded.rate, decoded.frames.into_boxed_slice()).unwrap()
         })
         .collect();
-    let labels = kept.iter().map(|a| a.to_string()).collect();
-    let options = sampler_kontakt::Options {
-        keys: key..=key,
-        library: Some(path.to_owned()),
-        ..Default::default()
-    };
-    sampler_kontakt::finish(instrument, pcm, labels, &options).unwrap()
+    Decoded {
+        instrument,
+        pcm,
+        labels: kept.iter().map(|a| a.to_string()).collect(),
+        options: sampler_kontakt::Options {
+            keys: key..=key,
+            library: Some(path.to_owned()),
+            ..Default::default()
+        },
+    }
+}
+
+impl Decoded {
+    fn drive(&self, driver: ir::Driver) -> sampler_kontakt::Loaded {
+        let mut instrument = self.instrument.clone();
+        instrument.switching.driver = driver;
+        instrument.switching.keys = ir::SwitchKeys::Swallow;
+        sampler_kontakt::finish(
+            instrument,
+            self.pcm.clone(),
+            self.labels.clone(),
+            &self.options,
+        )
+        .unwrap()
+    }
 }
 
 /// Render `words` (one per 64-frame step) through the articulator and ingress.
@@ -166,7 +195,8 @@ fn generated_maps_drive_like_their_keyswitches() {
                     .count()
             })
             .unwrap();
-        let keys = load_at(path, key, ir::Driver::Keys);
+        let decoded = decoded(path, key);
+        let keys = decoded.drive(ir::Driver::Keys);
         let failed: Vec<_> = keys
             .instrument
             .unsupported
@@ -183,7 +213,7 @@ fn generated_maps_drive_like_their_keyswitches() {
         let off = 0x2080_0000 | u32::from(key) << 8;
         let (mut same, mut distinct) = (0, 0);
         let default = render(
-            load_at(path, key, ir::Driver::Controller),
+            decoded.drive(ir::Driver::Controller),
             &[0x2000_0000, 0x2000_0000, note, off],
         );
         for a in &ir.articulations {
@@ -192,7 +222,7 @@ fn generated_maps_drive_like_their_keyswitches() {
                 continue;
             };
             let by_key = render(
-                load_at(path, key, ir::Driver::Keys),
+                decoded.drive(ir::Driver::Keys),
                 &[
                     0x2090_0064 | u32::from(tap) << 8,
                     0x2080_0000 | u32::from(tap) << 8,
@@ -201,7 +231,7 @@ fn generated_maps_drive_like_their_keyswitches() {
                 ],
             );
             let by_cc = render(
-                load_at(path, key, ir::Driver::Controller),
+                decoded.drive(ir::Driver::Controller),
                 &[
                     0x20b0_0000 | u32::from(cc.controller) << 8 | u32::from(cc.low),
                     0x2000_0000,
