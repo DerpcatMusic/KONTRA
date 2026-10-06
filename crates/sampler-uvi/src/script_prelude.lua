@@ -2,6 +2,7 @@
 -- inert stand-ins for the user interface and for unmodeled engine parts, the
 -- element tree helpers, and the threading helpers built on coroutines.
 -- Anything inert is reported once through __report, never silently.
+local ENV = _G -- the main environment; a coroutine's own is a proxy
 local report, native = __report, __native
 __report, __native = nil, nil
 
@@ -25,8 +26,15 @@ local function zero() return 0 end
 stub_mt.__add, stub_mt.__sub, stub_mt.__mul = zero, zero, zero
 stub_mt.__div, stub_mt.__mod, stub_mt.__pow, stub_mt.__unm = zero, zero, zero, zero
 
+-- Under Luau's sandbox the environment reads through to the libraries.
+local base_mt = getmetatable(_G)
+local base = base_mt and base_mt.__index
 setmetatable(_G, {
   __index = function(_, name)
+    if base then
+      local v = base[name]
+      if v ~= nil then return v end
+    end
     if type(name) ~= "string" then return nil end
     report("global", name)
     local s = stub(name)
@@ -231,13 +239,20 @@ function postEvent(e, delta)
   end
 end
 
+-- Scripts extend the libraries; Luau's are read-only, so they get copies.
+for _, lib in ipairs({ "table", "string", "math" }) do
+  local c = {}
+  for k, v in pairs(_G[lib]) do c[k] = v end
+  _G[lib] = c
+end
+
 -- Helpers UVI provides ------------------------------------------------------
-function table.copy(t)
+_G.table.copy = function(t)
   local c = {}
   for k, v in pairs(t) do c[k] = v end
   return c
 end
-function table.print() end
+_G.table.print = function() end
 function print() end
 
 -- Loading ------------------------------------------------------------------
@@ -269,7 +284,7 @@ end
 function class(name)
   local cls = { __name = name }
   setmetatable(cls, { __call = instantiate })
-  _G[name] = cls
+  ENV[name] = cls
   return function(base)
     if type(base) == "table" then
       setmetatable(cls, { __index = base, __call = instantiate })

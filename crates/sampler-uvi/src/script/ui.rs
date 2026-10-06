@@ -38,7 +38,7 @@ impl ScriptHost {
             source: ui::Source::FalconLua,
             ..Default::default()
         };
-        let Ok(root) = self.lua.globals().raw_get::<Table>("__ui") else {
+        let Ok(root) = self.lua.globals().get::<Table>("__ui") else {
             return out;
         };
         let Ok(list) = root.raw_get::<Table>("widgets") else {
