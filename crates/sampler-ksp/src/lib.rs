@@ -100,7 +100,6 @@ pub struct Entry {
     /// Program index within this script (offset by earlier modules after binding).
     pub program: usize,
 }
-
 /// A compiled script: programs, initial state after `on init`, and its model.
 pub struct Script {
     programs: Vec<Program>,
@@ -178,57 +177,18 @@ impl Script {
     /// model, so [`Script::ui`] shows runtime UI changes such as pages,
     /// pictures and hidden panels. Returns whether the effect was one.
     pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
-        let Some(&service) = self.services.get(usize::from(effect.service)) else {
-            return false;
-        };
-        let args = &effect.args[..usize::from(effect.count)];
-        let arg = |i: usize| args.get(i).map(|&v| v as i32);
-        let (Some(id), Some(par)) = (arg(0), arg(1)) else {
-            return false;
-        };
-        let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
-        let (value, index) = match service {
-            "set_control_par" => (arg(2).map(Value::Int), None),
-            "set_control_par_real" => (
-                args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
-                None,
-            ),
-            "set_control_par_str" => (text().map(Value::Text), None),
-            "set_control_par_arr" => (arg(2).map(Value::Int), arg(3)),
-            "set_control_par_str_arr" => (text().map(Value::Text), arg(2)),
-            _ => return false,
-        };
-        let (Some(value), Some(name)) = (value, eval::symbol_in(&self.symbols, par)) else {
-            return false;
-        };
-        let interface = &mut self.model.interface;
-        if let Some(w) = interface.widgets.iter_mut().find(|w| w.ui_id == id) {
-            match index {
-                Some(i) => {
-                    w.indexed_properties
-                        .entry(name)
-                        .or_default()
-                        .insert(i, value);
-                }
-                None => {
-                    if name == "$CONTROL_PAR_VALUE"
-                        && let (Value::Int(v), model::WidgetValue::Int(_)) = (&value, &w.value)
-                    {
-                        w.value = model::WidgetValue::Int(*v);
-                    }
-                    w.properties.insert(name, value);
-                }
-            }
-        } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
-            interface
-                .instrument
-                .entry(id)
-                .or_default()
-                .insert(name, value);
-        } else {
-            return false;
+        apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
+    }
+
+    /// What [`Script::ui`] and [`Script::apply_ui_effect`] need, kept after
+    /// the script is bound.
+    pub fn view(&self) -> ScriptView {
+        ScriptView {
+            model: self.model.clone(),
+            services: self.services.clone(),
+            symbols: self.symbols.clone(),
+            slot: self.slot,
         }
-        true
     }
 
     pub fn bind(self, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
@@ -240,6 +200,88 @@ impl Script {
             .find(|e| e.kind == kind)
             .map(|e| e.program)
     }
+}
+
+/// A bound script's interface model: [`Script::view`].
+#[derive(Clone, Debug)]
+pub struct ScriptView {
+    model: model::Model,
+    services: Vec<&'static str>,
+    symbols: Vec<String>,
+    slot: u8,
+}
+
+impl ScriptView {
+    /// [`Script::apply_ui_effect`].
+    pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
+        apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
+    }
+    /// [`Script::ui`].
+    pub fn ui(
+        &self,
+        picture: &dyn Fn(&str) -> Option<sampler_ui_ir::ImageMeta>,
+    ) -> Result<sampler_ui_ir::Interface, sampler_ui_ir::Error> {
+        ui::interface(&self.model, self.slot, picture)
+    }
+}
+
+fn apply_ui_effect(
+    model: &mut model::Model,
+    services: &[&'static str],
+    symbols: &[String],
+    effect: &sampler_core::Effect,
+) -> bool {
+    let Some(&service) = services.get(usize::from(effect.service)) else {
+        return false;
+    };
+    let args = &effect.args[..usize::from(effect.count)];
+    let arg = |i: usize| args.get(i).map(|&v| v as i32);
+    let (Some(id), Some(par)) = (arg(0), arg(1)) else {
+        return false;
+    };
+    let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+    let (value, index) = match service {
+        "set_control_par" => (arg(2).map(Value::Int), None),
+        "set_control_par_real" => (
+            args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
+            None,
+        ),
+        "set_control_par_str" => (text().map(Value::Text), None),
+        "set_control_par_arr" => (arg(2).map(Value::Int), arg(3)),
+        "set_control_par_str_arr" => (text().map(Value::Text), arg(2)),
+        _ => return false,
+    };
+    let (Some(value), Some(name)) = (value, eval::symbol_in(symbols, par)) else {
+        return false;
+    };
+    let interface = &mut model.interface;
+    if let Some(w) = interface.widgets.iter_mut().find(|w| w.ui_id == id) {
+        match index {
+            Some(i) => {
+                w.indexed_properties
+                    .entry(name)
+                    .or_default()
+                    .insert(i, value);
+            }
+            None => {
+                if name == "$CONTROL_PAR_VALUE"
+                    && let (Value::Int(v), model::WidgetValue::Int(_)) = (&value, &w.value)
+                {
+                    w.value = model::WidgetValue::Int(*v);
+                }
+                w.properties.insert(name, value);
+            }
+        }
+    } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
+        interface
+            .instrument
+            .entry(id)
+            .or_default()
+            .insert(name, value);
+    } else {
+        return false;
+    }
+    true
 }
 
 /// Bind ordered controller-only modules with independent script state.
