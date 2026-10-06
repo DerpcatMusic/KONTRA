@@ -80,16 +80,36 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
         reason: reason.into(),
     };
     let decode = |what, error| LoadError::decode(&path, what, error);
-    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
-        .map_err(|e| decode("multi bank", e))?;
-    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
+    let bank = Bank::try_from(
+        chunks
+            .find_first(3)
+            .ok_or_else(|| invalid("missing multi bank"))?,
+    )
+    .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank
+        .slot_list()
+        .map_err(|e| decode("multi slots", e))?
+        .slots
+        .into_iter()
+        .collect();
     slots.sort_by_key(|(slot, _)| *slot);
     let mut programs = Vec::new();
     for (_, container) in slots {
-        programs.extend(container.program_list().map_err(|e| decode("multi programs", e))?.programs);
+        programs.extend(
+            container
+                .program_list()
+                .map_err(|e| decode("multi programs", e))?
+                .programs,
+        );
     }
-    let program = programs.into_iter().nth(index).ok_or_else(|| invalid("the multi has no such program"))?;
-    let (table, others) = match chunks.filename_tables().map_err(|e| decode("multi file table", e))? {
+    let program = programs
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| invalid("the multi has no such program"))?;
+    let (table, others) = match chunks
+        .filename_tables()
+        .map_err(|e| decode("multi file table", e))?
+    {
         Some(t) => (t.sample_filetable, t.other_filetable),
         None => (
             chunks
@@ -550,16 +570,10 @@ impl Translation {
                     Modulator::Flex(flex) => {
                         // Point times are deltas from the previous point and
                         // levels linear gain (audits/MODULATION.md, medium).
-                        // The curve parameter's law is not established: 0.5
-                        // is linear, other values play linear and are reported.
-                        if flex.points.iter().any(|p| p.curve != 0.5) {
-                            self.unsupported(
-                                &at,
-                                "flex envelope segment curve (linear used)",
-                                &params.name,
-                                ir::Reason::UnknownLaw,
-                            );
-                        }
+                        // Segment curve s (0..1, 0.5 linear), c = s - 0.5:
+                        // measured on Kontakt 8 flex envelopes, k = BOW_K * |c|
+                        // with positive c starting fast and negative slowly
+                        // (docs/architecture-v2/KONTAKT_REFERENCE.md s.10).
                         let sustain = flex.sustain as usize;
                         if volume {
                             // Held until the release segments end.
@@ -578,7 +592,10 @@ impl Translation {
                                 .map(|p| ir::Breakpoint {
                                     time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
                                     level: f64::from(p.level.clamp(0.0, 1.0)),
-                                    shape: ir::Curve::Linear,
+                                    shape: match f64::from(p.curve) - 0.5 {
+                                        c if c.abs() < 1e-4 => ir::Curve::Linear,
+                                        c => ir::Curve::Exponential(-BOW_K * c),
+                                    },
                                 })
                                 .collect(),
                             sustain: Some(sustain),
@@ -785,21 +802,7 @@ impl Translation {
                             .map(|(n, y)| (n as f64 / last, f64::from(*y)))
                             .collect()
                     }
-                    ShaperCurve::Breakpoints(points) if !points.is_empty() => {
-                        if points.iter().any(|p| p.curve != 0.0) {
-                            // Segment curvature (-1..1) has no known law.
-                            self.unsupported(
-                                at,
-                                "curved modulation shaper segment (linear used)",
-                                &target.param,
-                                ir::Reason::UnknownLaw,
-                            );
-                        }
-                        points
-                            .iter()
-                            .map(|p| (f64::from(p.x), f64::from(p.y)))
-                            .collect()
-                    }
+                    ShaperCurve::Breakpoints(points) if !points.is_empty() => curved_shaper(points),
                     _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
                 };
                 self.ir.shapes.push(ir::Shape { points });
@@ -922,14 +925,6 @@ impl Translation {
                 asset
             }
         };
-        if z.fades != [0; 4] {
-            self.unsupported(
-                &at,
-                "crossfades (low/high velocity, low/high key)",
-                format!("{:?}", z.fades),
-                not_modeled,
-            );
-        }
         if end.is_some_and(|end| end <= z.start) {
             self.unsupported(
                 &at,
@@ -1008,6 +1003,19 @@ impl Translation {
             tune: ir::Pitch::Semitones(semitones),
             gain: ir::Gain::Linear(f64::from(z.gain * program.volume)),
             velocity: group.velocity,
+            // Mapping Editor crossfades: widths in key and velocity steps
+            // inside the zone; the gain law is measured (Kontakt 8,
+            // KONTAKT_REFERENCE.md s.11). Field order low velocity, high
+            // velocity, low key, high key is taken from the v1 importer.
+            fades: {
+                let step = |w: i16| w.clamp(0, 127) as u8;
+                ir::Fades {
+                    velocity_in: step(z.fades[0]),
+                    velocity_out: step(z.fades[1]),
+                    key_in: step(z.fades[2]),
+                    key_out: step(z.fades[3]),
+                }
+            },
             pan: ir::Pan {
                 position: f64::from((z.pan + program.pan).clamp(-1.0, 1.0)),
                 law: ir::PanLaw::Balance,
@@ -1156,7 +1164,9 @@ mod survey {
         files.sort();
         let mut seen = std::collections::BTreeMap::<String, (usize, String)>::new();
         for f in &files {
-            let Ok(chunks) = crate::read_chunks(f) else { continue };
+            let Ok(chunks) = crate::read_chunks(f) else {
+                continue;
+            };
             let Some(program) = chunks.find_first(PROGRAM) else {
                 continue;
             };
@@ -1465,7 +1475,9 @@ mod modulation {
 mod multi_tests {
     #[test]
     fn a_multi_program_translates() {
-        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else { return };
+        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else {
+            return;
+        };
         let path = std::path::Path::new(&root)
             .join("Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm");
         if !path.exists() {
@@ -1474,5 +1486,92 @@ mod multi_tests {
         let k = super::read_program(&path, 0).expect("first program");
         assert!(!k.instrument.groups.is_empty());
         assert!(super::read_program(&path, 999).is_err());
+    }
+}
+
+/// Exponential bow constant for a shaper or flex-envelope segment:
+/// `k = BOW_K * |curvature|`.
+/// Measured, not in the manual: fitted to Kontakt 8 renders of Vista 3 Cellos
+/// group 37 swept over CC100 (0..96), 0.08 dB RMS residual with K = 18; the
+/// Una Corda Cotton "Depth" shaper GUI reading (curvature 0.118, mid value
+/// 0.29) implies K about 15. docs/architecture-v2/KONTAKT_REFERENCE.md.
+const BOW_K: f64 = 17.0;
+const BOW_STEPS: usize = 16;
+
+/// A breakpoint shaper as plain points: each segment's stored curvature
+/// (positive bows below the chord, negative above) expands into `BOW_STEPS`
+/// linear pieces of `y0 + (y1 - y0) f(t)`, with `e(t) = (e^kt - 1)/(e^k - 1)`
+/// and `f = e(t)` when the curvature's sign matches the segment's rise (a
+/// rising positive or falling negative segment), else `1 - e(1 - t)`.
+fn curved_shaper(points: &[ni_file::kontakt::objects::Breakpoint]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (n, p) in points.iter().enumerate() {
+        let (x0, y0, c) = (f64::from(p.x), f64::from(p.y), f64::from(p.curve));
+        out.push((x0, y0));
+        let Some(next) = points.get(n + 1) else {
+            continue;
+        };
+        let (x1, y1) = (f64::from(next.x), f64::from(next.y));
+        let k = BOW_K * c.abs();
+        if k < 1e-6 || x1 <= x0 {
+            continue;
+        }
+        let e = |t: f64| ((k * t).exp() - 1.0) / (k.exp() - 1.0);
+        let same = (c > 0.0) == (y1 > y0);
+        for i in 1..BOW_STEPS {
+            let t = i as f64 / BOW_STEPS as f64;
+            let f = if same { e(t) } else { 1.0 - e(1.0 - t) };
+            out.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * f));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod curved_shaper_tests {
+    use super::curved_shaper;
+    use ni_file::kontakt::objects::Breakpoint;
+
+    fn at(points: &[(f64, f64)], x: f64) -> f64 {
+        let i = points.iter().position(|p| p.0 >= x).unwrap();
+        if i == 0 {
+            return points[0].1;
+        }
+        let (a, b) = (points[i - 1], points[i]);
+        a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0)
+    }
+
+    fn seg(y0: f32, y1: f32, c: f32) -> Vec<(f64, f64)> {
+        curved_shaper(&[
+            Breakpoint {
+                x: 0.0,
+                y: y0,
+                curve: c,
+            },
+            Breakpoint {
+                x: 1.0,
+                y: y1,
+                curve: 0.0,
+            },
+        ])
+    }
+
+    #[test]
+    fn a_positive_rising_segment_bows_below_the_chord_like_unas_depth_shaper() {
+        // Una Corda Cotton "Depth": curvature 0.118, GUI mid value 0.29-0.30.
+        let p = seg(0.0, 1.0, 0.11824325);
+        assert!((at(&p, 0.5) - 0.28).abs() < 0.03, "{}", at(&p, 0.5));
+    }
+
+    #[test]
+    fn curvature_sign_is_geometric_not_directional() {
+        // Vista CC100 shaper: a falling segment with negative curvature
+        // bows above the chord, and mirrors the rising positive one.
+        let up = seg(0.0, 1.0, 0.15);
+        let down = seg(1.0, 0.0, -0.15);
+        assert!(at(&down, 0.5) > 0.5);
+        assert!((at(&up, 0.5) + at(&down, 0.5) - 1.0).abs() < 1e-9);
+        let flat = seg(0.0, 1.0, 0.0);
+        assert_eq!(flat.len(), 2);
     }
 }

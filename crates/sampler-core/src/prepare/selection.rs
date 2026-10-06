@@ -639,7 +639,7 @@ impl Runtime {
                         family,
                         r.sample,
                         self.now,
-                        r.gain * r.velocity_curve.amplitude(velocity),
+                        r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
                         envelope,
                         cursor.with_step(step),
                     )
