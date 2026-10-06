@@ -84,6 +84,7 @@ impl Prepared {
         }
         self.controls = controls.into_boxed_slice();
         self.validate_program_controls(&self.programs)?;
+        self.validate_gain_controls()?;
         for &(control, _) in &self.control_programs {
             self.control_index(control)?;
         }
@@ -115,7 +116,7 @@ impl Prepared {
         &self.controls
     }
 
-    fn control_index(&self, id: ControlId) -> Result<usize, Error> {
+    pub(super) fn control_index(&self, id: ControlId) -> Result<usize, Error> {
         self.controls
             .binary_search_by_key(&id, |c| c.id)
             .map_err(|_| Error::InvalidInput)
@@ -274,6 +275,9 @@ impl Runtime {
             // All lookups/values validated above; one writer, no reentrancy.
             let index = definitions.control_index(write.id).unwrap();
             generation.controls.values[index] = write.value;
+            generation
+                .dsp
+                .edit_control(definitions, index, write.value, self.now);
         }
         generation.controls.revision = revision;
         Ok(revision)

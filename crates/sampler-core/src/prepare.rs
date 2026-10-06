@@ -122,7 +122,9 @@ struct Candidate {
 pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
-    pub(super) voice_chains: Box<[super::VoiceChain]>,
+    pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
+    pub(super) gain_bindings: Box<[super::GainControl]>,
+    pub(super) gain_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -265,6 +267,8 @@ impl Prepared {
             rate,
             pcm: pcm.into_boxed_slice(),
             voice_chains: Box::new([]),
+            gain_bindings: Box::new([]),
+            gain_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -802,14 +806,26 @@ impl Prepared {
                 .iter()
                 .flatten()
                 .any(|index| *index >= chains.len())
-            || chains.iter().any(|chain| !chain.valid_for(self.rate))
         {
             return Err(Error::InvalidInput);
         }
         for (region, chain) in self.regions.iter_mut().zip(bindings) {
             region.chain = chain;
         }
-        self.voice_chains = chains.into_boxed_slice();
+        let mut gains = Vec::new();
+        self.voice_chains = chains
+            .into_iter()
+            .map(|chain| chain.compile(self.rate, &mut gains))
+            .collect::<Result<_, _>>()?;
+        let mut controls: Vec<_> = gains
+            .iter()
+            .enumerate()
+            .map(|(lane, binding)| (binding.control, lane))
+            .collect();
+        controls.sort_unstable();
+        self.gain_controls = controls.into_boxed_slice();
+        self.gain_bindings = gains.into_boxed_slice();
+        self.validate_gain_controls()?;
         Ok(self)
     }
 }

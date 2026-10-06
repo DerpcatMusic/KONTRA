@@ -45,7 +45,7 @@ pub use behavior::{
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
 mod dsp;
-pub use dsp::{Biquad, FilterKind, VoiceChain, VoiceProcessor};
+pub use dsp::{Biquad, FilterKind, GainControl, VoiceChain, VoiceProcessor};
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};

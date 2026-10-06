@@ -78,6 +78,29 @@ pub enum VoiceProcessor {
     /// Linear amplitude, including polarity inversion. Must be finite.
     Gain(f64),
     Biquad(Biquad),
+    ControlGain(GainControl),
+}
+
+mod control;
+pub use control::GainControl;
+use control::GainRamp;
+
+enum Processor {
+    Gain(f64),
+    Biquad(Biquad),
+    ControlGain(usize),
+}
+
+pub(super) struct PreparedVoiceChain {
+    pre: Box<[Processor]>,
+    post: Box<[Processor]>,
+    tail_frames: u32,
+}
+
+pub(super) struct RenderContext<'a> {
+    pub expression: Frame,
+    pub gains: &'a [GainRamp],
+    pub at: u64,
 }
 
 /// Serial, stereo-independent processing with an explicit envelope boundary.
@@ -97,7 +120,11 @@ impl VoiceChain {
         if pre_envelope
             .iter()
             .chain(&post_envelope)
-            .any(|stage| matches!(stage, VoiceProcessor::Gain(gain) if !gain.is_finite()))
+            .any(|stage| match stage {
+                VoiceProcessor::Gain(gain) => !gain.is_finite(),
+                VoiceProcessor::ControlGain(binding) => !binding.valid(),
+                VoiceProcessor::Biquad(_) => false,
+            })
         {
             return Err(Error::InvalidInput);
         }
@@ -111,12 +138,41 @@ impl VoiceChain {
             tail_frames,
         })
     }
-    pub(super) fn valid_for(&self, rate: u32) -> bool {
-        self.pre
-            .iter()
-            .chain(&self.post)
-            .all(|stage| !matches!(stage, VoiceProcessor::Biquad(filter) if filter.rate != rate))
+    pub(super) fn compile(
+        self,
+        rate: u32,
+        bindings: &mut Vec<GainControl>,
+    ) -> Result<PreparedVoiceChain, Error> {
+        let mut compile = |stages: Box<[VoiceProcessor]>| -> Result<Box<[Processor]>, Error> {
+            stages
+                .into_vec()
+                .into_iter()
+                .map(|stage| {
+                    Ok(match stage {
+                        VoiceProcessor::Gain(gain) => Processor::Gain(gain),
+                        VoiceProcessor::Biquad(filter) => {
+                            if filter.rate != rate {
+                                return Err(Error::InvalidInput);
+                            }
+                            Processor::Biquad(filter)
+                        }
+                        VoiceProcessor::ControlGain(binding) => {
+                            let lane = bindings.len();
+                            bindings.push(binding);
+                            Processor::ControlGain(lane)
+                        }
+                    })
+                })
+                .collect()
+        };
+        Ok(PreparedVoiceChain {
+            pre: compile(self.pre)?,
+            post: compile(self.post)?,
+            tail_frames: self.tail_frames,
+        })
     }
+}
+impl PreparedVoiceChain {
     pub(super) fn stages(&self) -> usize {
         self.pre.len() + self.post.len()
     }
@@ -127,12 +183,12 @@ impl VoiceChain {
         pcm: &[Frame],
         output: &mut [Frame],
         states: &mut [FilterState],
-        gains: Frame,
+        context: RenderContext<'_>,
         kernel: &crate::resample::Kernel,
     ) -> u64 {
         let mut faults = 0;
         let mut unity = EnvelopeState::new(Envelope::default());
-        for chunk in output.chunks_mut(64) {
+        for (chunk_index, chunk) in output.chunks_mut(64).enumerate() {
             if self.done(voice) {
                 break;
             }
@@ -154,6 +210,7 @@ impl VoiceChain {
                 )
             };
             for (index, frame) in chunk.iter_mut().enumerate() {
+                let at = context.at + (chunk_index * 64 + index) as u64;
                 let ended = index >= produced || voice.envelope.done();
                 if ended && voice.tail_remaining.is_none() {
                     voice.tail_remaining = Some(self.tail_frames);
@@ -170,18 +227,20 @@ impl VoiceChain {
                     } else {
                         raw[index].map(f64::from)
                     },
+                    context.gains,
+                    at,
                 );
                 let level = voice
                     .envelope
                     .constant_level()
                     .unwrap_or_else(|| voice.envelope.next());
                 value = value.map(|v| v * f64::from(level));
-                value = process(&self.post, post, value);
+                value = process(&self.post, post, value, context.gains, at);
                 let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
                     f64::from(initial) * f64::from(voice.tail_remaining.unwrap()) / f64::from(total)
                 });
                 let result = std::array::from_fn::<_, 2, _>(|channel| {
-                    (value[channel] * f64::from(gains[channel]) * fade) as f32
+                    (value[channel] * f64::from(context.expression[channel]) * fade) as f32
                 });
                 if result.iter().all(|v| v.is_finite()) && states.iter().all(FilterState::finite) {
                     for channel in 0..2 {
@@ -218,11 +277,21 @@ impl FilterState {
         self.z.iter().flatten().all(|v| v.is_finite())
     }
 }
-fn process(stages: &[VoiceProcessor], states: &mut [FilterState], mut value: [f64; 2]) -> [f64; 2] {
+fn process(
+    stages: &[Processor],
+    states: &mut [FilterState],
+    mut value: [f64; 2],
+    gains: &[GainRamp],
+    at: u64,
+) -> [f64; 2] {
     for (stage, state) in stages.iter().zip(states) {
         match stage {
-            VoiceProcessor::Gain(gain) => value = value.map(|v| v * gain),
-            VoiceProcessor::Biquad(filter) => {
+            Processor::Gain(gain) => value = value.map(|v| v * gain),
+            Processor::ControlGain(lane) => {
+                let gain = gains[*lane].value(at);
+                value = value.map(|v| v * gain);
+            }
+            Processor::Biquad(filter) => {
                 for (sample, z) in value.iter_mut().zip(&mut state.z) {
                     let output = filter.b[0] * *sample + z[0];
                     z[0] = filter.b[1] * *sample - filter.a[0] * output + z[1];
@@ -243,13 +312,14 @@ fn process(stages: &[VoiceProcessor], states: &mut [FilterState], mut value: [f6
 pub(super) struct VoiceDspState {
     pub stride: usize,
     pub cells: Box<[FilterState]>,
+    pub gains: Box<[GainRamp]>,
 }
 impl VoiceDspState {
     pub fn new(plan: &Prepared, voices: usize) -> Result<Self, Error> {
         let stride = plan
             .voice_chains
             .iter()
-            .map(VoiceChain::stages)
+            .map(PreparedVoiceChain::stages)
             .max()
             .unwrap_or(0);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
@@ -262,6 +332,7 @@ impl VoiceDspState {
         Ok(Self {
             stride,
             cells: values.into_boxed_slice(),
+            gains: Self::initial_gains(plan),
         })
     }
     pub fn reset(&mut self, voice: usize) {
@@ -302,8 +373,13 @@ mod tests {
                         - filter.a[1] * y[1];
                     x = [input, x[0]];
                     y = [expected, y[0]];
-                    let actual =
-                        process(&[VoiceProcessor::Biquad(filter)], &mut state, [input, 0.]);
+                    let actual = process(
+                        &[Processor::Biquad(filter)],
+                        &mut state,
+                        [input, 0.],
+                        &[],
+                        0,
+                    );
                     assert!((actual[0] - expected).abs() < 1e-13);
                     assert_eq!(actual[1], 0., "stereo channels must not share state");
                     for (index, omega) in [0., std::f64::consts::TAU / 8., std::f64::consts::PI]
