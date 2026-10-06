@@ -8,8 +8,8 @@ use crate::hir::*;
 use crate::sema::fold;
 use sampler_core::{
     Comparison as Cmp, ControlId, Duration, DurationValue, Inheritance, Instruction as I,
-    IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, Op, Program, RealBinary, RealUnary,
-    ScriptArray, TextPart, TextRef, WaitLifetime, real_bits,
+    IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op, ParamScope, Program,
+    RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime, real_bits,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -1401,6 +1401,89 @@ impl Gen<'_, '_> {
                 self.cover(builtin, Coverage::Approximate);
                 return Ok(());
             }
+            ChangeVol | ChangeTune | ChangePan if !self.selects_many(builtin, args, 0) => {
+                let target = match builtin {
+                    ChangeVol => ModTarget::Decibels,
+                    ChangeTune => ModTarget::Pitch,
+                    _ => ModTarget::Pan,
+                };
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.write_param(ParamScope::Note, target, dst, args, Some(2))?;
+                true
+            }
+            SetEventPar | GetEventPar
+                if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
+            {
+                let target = self.event_param(args).unwrap();
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventPar {
+                    self.arg(args, 2, t)?;
+                    self.write_param(ParamScope::Note, target, dst, args, None)?;
+                } else {
+                    self.emit(I::ReadParam {
+                        scope: ParamScope::Note,
+                        index: dst,
+                        target,
+                        local: dst,
+                    })?;
+                }
+                true
+            }
+            FadeIn | FadeOut if !self.selects_many(builtin, args, 0) => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.emit(I::MicrosToFrames { local: t })?;
+                let fade = |stop| I::FadeEvent {
+                    event: dst,
+                    frames: t,
+                    out: builtin == FadeOut,
+                    stop,
+                };
+                match (builtin, self.const_int(args, 2)) {
+                    (FadeIn, _) => self.emit(fade(false))?,
+                    (_, Some(stop)) => self.emit(fade(stop != 0))?,
+                    _ => {
+                        let flag = reg(dst, 2)?;
+                        self.arg(args, 2, flag)?;
+                        let keep = self.jump_if_zero(flag)?;
+                        self.emit(fade(true))?;
+                        let end = self.jump()?;
+                        self.land(keep);
+                        self.emit(fade(false))?;
+                        self.land(end);
+                    }
+                }
+                true
+            }
+            PurgeGroup => {
+                // Purged groups are silent; the host still frees their samples.
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.clamp(t, 0, 1)?;
+                let thousand = reg(dst, 2)?;
+                self.set(thousand, 1000)?;
+                self.emit(I::Binary32 {
+                    lhs: t,
+                    rhs: thousand,
+                    operation: IB::Multiply,
+                })?;
+                self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
+                self.effect(builtin, args, dst)?;
+                true
+            }
+            SetEnginePar if self.engine_param(args).is_some() => {
+                // Mirror for get_engine_par, then drive the group or instrument layer.
+                self.arg(args, 1, dst)?;
+                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
+                let target = self.engine_param(args).unwrap();
+                self.arg(args, 1, t)?;
+                self.engine_units(target, t)?;
+                self.arg(args, 2, dst)?;
+                self.write_param(ParamScope::Group, target, dst, args, None)?;
+                self.set(dst, 0)?;
+                true
+            }
             GetEnginePar => {
                 self.set(dst, 0)?;
                 self.store(args, [0, 1, 2, 3].map(Key::Arg), dst, false)?;
@@ -1481,7 +1564,6 @@ impl Gen<'_, '_> {
             | SetListener
             | ChangeListenerPar
             | SetZonePar
-            | PurgeGroup
             | SetVoiceLimit
             | LoadIrSample
             | AttachLevelMeter
@@ -1577,6 +1659,115 @@ impl Gen<'_, '_> {
             }))?;
         }
         Ok(())
+    }
+
+    /// `value` in `index + 1`; `relative` is a constant or runtime flag argument.
+    fn write_param(
+        &mut self,
+        scope: ParamScope,
+        target: ModTarget,
+        index: u16,
+        args: &[Arg],
+        relative: Option<usize>,
+    ) -> Result<()> {
+        let local = reg(index, 1)?;
+        let write = |relative| I::WriteParam {
+            scope,
+            index,
+            target,
+            local,
+            relative,
+        };
+        let Some(arg) = relative else {
+            return self.emit(write(false));
+        };
+        if let Some(flag) = self.const_int(args, arg) {
+            return self.emit(write(flag != 0));
+        }
+        let flag = reg(index, 2)?;
+        self.arg(args, arg, flag)?;
+        let absolute = self.jump_if_zero(flag)?;
+        self.emit(write(true))?;
+        let end = self.jump()?;
+        self.land(absolute);
+        self.emit(write(false))?;
+        self.land(end);
+        Ok(())
+    }
+
+    /// `$EVENT_PAR_VOLUME/TUNE/PAN` as a script layer target.
+    fn event_param(&self, args: &[Arg]) -> Option<ModTarget> {
+        match self.const_int(args, 1)? {
+            b::event_par::VOLUME => Some(ModTarget::Decibels),
+            b::event_par::TUNE => Some(ModTarget::Pitch),
+            b::event_par::PAN => Some(ModTarget::Pan),
+            _ => None,
+        }
+    }
+
+    /// Group/instrument volume, pan and tune: `set_engine_par(p, v, group, -1, -1)`.
+    // ponytail: writes are offsets from the authored group values, assumed
+    // neutral (0 dB, centre, 0 st); pass authored values in when a library
+    // authors non-neutral groups and also sets them from script.
+    fn engine_param(&self, args: &[Arg]) -> Option<ModTarget> {
+        if self.const_int(args, 3) != Some(-1) || self.const_int(args, 4) != Some(-1) {
+            return None;
+        }
+        match self.const_text(args, 0)?.trim_start_matches('$') {
+            "ENGINE_PAR_VOLUME" => Some(ModTarget::Decibels),
+            "ENGINE_PAR_PAN" => Some(ModTarget::Pan),
+            "ENGINE_PAR_TUNE" => Some(ModTarget::Pitch),
+            _ => None,
+        }
+    }
+
+    /// Kontakt engine units (0..=1000000) to `WriteParam` units in place. The
+    /// laws are the ones shipping library scripts display: volume
+    /// 18 dB per octave of value, 0 dB at 629960 (+12 dB at full); pan linear
+    /// about 500000; tune ±36 semitones linear about 500000.
+    fn engine_units(&mut self, target: ModTarget, local: u16) -> Result<()> {
+        self.clamp(local, 0, 1_000_000)?;
+        let t = reg(local, 1)?;
+        match target {
+            ModTarget::Decibels => {
+                // millidecibels = 18000·log2(max(v, 1)) − 346768.2342
+                self.clamp(local, 1, 1_000_000)?;
+                self.emit(I::Op(Op::IntegerToReal { local }))?;
+                self.emit(I::Op(Op::RealUnary {
+                    local,
+                    operation: RealUnary::Ln,
+                }))?;
+                for (value, operation) in [
+                    (18000.0 / std::f64::consts::LN_2, RealBinary::Multiply),
+                    (346_768.234_247_835_1, RealBinary::Subtract),
+                ] {
+                    self.set(t, real_bits(value))?;
+                    self.emit(I::Op(Op::Real {
+                        lhs: local,
+                        rhs: t,
+                        operation,
+                    }))?;
+                }
+                self.emit(I::Op(Op::RealToInteger { local }))
+            }
+            _ => {
+                // pan: (v − 500000) / 500; tune millicents: (v − 500000) · 36 / 5
+                let steps: &[(i64, IB)] = if target == ModTarget::Pan {
+                    &[(500_000, IB::Subtract), (500, IB::Divide)]
+                } else {
+                    &[(500_000, IB::Subtract), (36, IB::Multiply), (5, IB::Divide)]
+                };
+                for &(value, operation) in steps {
+                    self.set(t, value)?;
+                    self.emit(I::Binary32 {
+                        lhs: local,
+                        rhs: t,
+                        operation,
+                    })?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn event_write(

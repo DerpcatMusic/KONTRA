@@ -222,6 +222,32 @@ pub enum Instruction {
     },
     /// Reals, text, subroutines, keyed state and effects; see `ops`.
     Op(super::ops::Op),
+    /// Set (or with `relative`, add to) a script voice parameter. `index` holds
+    /// the source event ID or group index (see [`super::ParamScope`]); `target`
+    /// is Decibels (millidecibels), Pan (-1000..=1000), Pitch (millicents) or
+    /// Attenuate (0..=1000 gain factor), with [`super::ModTarget`]'s laws.
+    WriteParam {
+        scope: super::ParamScope,
+        index: u16,
+        target: super::ModTarget,
+        local: u16,
+        relative: bool,
+    },
+    /// Read a script layer's own value, in `WriteParam` units.
+    ReadParam {
+        scope: super::ParamScope,
+        index: u16,
+        target: super::ModTarget,
+        local: u16,
+    },
+    /// Fade a source event in from silence, or out from its current level,
+    /// over the frame count in `frames`. With `stop`, its voices end at silence.
+    FadeEvent {
+        event: u16,
+        frames: u16,
+        out: bool,
+        stop: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,6 +436,28 @@ impl Program {
             }
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
+            }
+            if let Instruction::WriteParam {
+                index,
+                target,
+                local,
+                ..
+            }
+            | Instruction::ReadParam {
+                index,
+                target,
+                local,
+                ..
+            } = *op
+            {
+                use super::ModTarget as T;
+                if !matches!(target, T::Decibels | T::Pan | T::Pitch | T::Attenuate) {
+                    return Err(Error::InvalidInput);
+                }
+                locals = locals.max(usize::from(index.max(local)) + 1);
+            }
+            if let Instruction::FadeEvent { event, frames, .. } = *op {
+                locals = locals.max(usize::from(event.max(frames)) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
@@ -1262,6 +1310,40 @@ impl Runtime {
                     return Err(Error::InvalidInput);
                 };
                 *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::WriteParam {
+                scope,
+                index,
+                target,
+                local,
+                relative,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let index = *self.local_cell_mut(id, index)?;
+                let value = *self.local_cell_mut(id, local)?;
+                self.write_param(plan, scope, index, target, value, relative)?;
+            }
+            Instruction::ReadParam {
+                scope,
+                index,
+                target,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let index = *self.local_cell_mut(id, index)?;
+                *self.local_cell_mut(id, local)? = self.read_param(plan, scope, index, target)?;
+            }
+            Instruction::FadeEvent {
+                event,
+                frames,
+                out,
+                stop,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                self.fade_event(plan, event, frames, out, stop)?;
             }
             Instruction::WriteControl { control, local } => {
                 let plan = self.behavior_plan(owner)?;
