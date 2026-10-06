@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add prepared stereo bus routing with shared processor kernels, independent summed
+  histories, sample-clock controls and tails that retain plans without retaining host
+  notes. Validate routing cycles and preserve per-voice processing as its own scope.
+
 - Follow generated notes from their creating module's release, preserving downstream
   holds and pedal behavior without fabricated host inputs. Bounded native release
   jobs and late-fault cleanup retain the original owners and first release records.

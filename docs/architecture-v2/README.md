@@ -86,12 +86,16 @@ without importing old engine types; container playback admission remains open.
 24. [Native voice DSP chains](VOICE_DSP.md): gain/biquad processors, pre/post-envelope
     order, independent state, retained tails and bounded whole-chain choke.
 
+25. [Native bus DSP](BUS_DSP.md): prepared summed-signal routing, shared kernels,
+    independent bus histories, sample-clock controls and generation-owned tails.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
   effective gates, retained key/gate release context, direct ownership release traversal,
   bounded scheduling/behaviors,
-  resident selection, curved DAHDSR/AHD, voice-local gain/biquad chains and scheduled family chokes,
+  resident selection, curved DAHDSR/AHD, voice-local gain/biquad chains, shared bus DAGs
+  and scheduled family chokes,
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
   pressure/timbre modulation to gain, balance and pitch.

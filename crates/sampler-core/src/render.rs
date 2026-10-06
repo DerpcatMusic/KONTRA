@@ -32,6 +32,29 @@ impl Runtime {
     }
 
     fn render_segment(&mut self, output: &mut [Frame]) {
+        let routed = self.plans.slots.iter().any(|s| {
+            s.value
+                .as_ref()
+                .is_some_and(|g| g.prepared.buses.len() != 0)
+        });
+        if !routed {
+            self.render_voices(output, self.now);
+            return;
+        }
+        for (chunk, output) in output.chunks_mut(64).enumerate() {
+            let at = self.now + (chunk * 64) as u64;
+            for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+                g.dsp.buses.begin();
+            }
+            self.render_voices(output, at);
+            for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+                let faults = g.dsp.buses.render(&g.prepared.buses, output, at);
+                self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
+            }
+        }
+    }
+
+    fn render_voices(&mut self, output: &mut [Frame], at: u64) {
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
         for word in 0..self.voice_activity.len() {
@@ -47,14 +70,14 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
-                    self.render_voice(i, output);
+                    self.render_voice(i, output, at);
                 }
             }
         }
     }
 
     #[inline]
-    fn render_voice(&mut self, i: usize, segment: &mut [Frame]) {
+    fn render_voice(&mut self, i: usize, segment: &mut [Frame], at: u64) {
         let Some(v) = &mut self.voices.slots[i].value else {
             return;
         };
@@ -72,23 +95,33 @@ impl Runtime {
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         let pcm = plan.prepared.pcm[v.sample].frames();
-        let done = if let Some(index) = v.chain {
+        let bus = v.bus;
+        let segment = if let Some(bus) = bus {
+            plan.dsp.buses.input(bus, segment.len())
+        } else {
+            segment
+        };
+        let (produced, done) = if let Some(index) = v.chain {
             let chain = &plan.prepared.voice_chains[index];
             let begin = i * plan.dsp.stride;
             let states = &mut plan.dsp.cells[begin..begin + chain.stages()];
             let context = super::dsp::RenderContext {
                 expression: gains,
                 gains: &plan.dsp.gains,
-                at: self.now,
+                at,
             };
-            let faults = chain.render(v, pcm, segment, states, context, self.kernel);
+            let (produced, faults) = chain.render(v, pcm, segment, states, context, self.kernel);
             self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
-            chain.done(v)
+            (produced, chain.done(v))
         } else {
-            v.cursor
-                .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
-            v.cursor.done() || v.envelope.done()
+            let produced =
+                v.cursor
+                    .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
+            (produced, v.cursor.done() || v.envelope.done())
         };
+        if let Some(bus) = bus {
+            plan.dsp.buses.fed(bus, produced);
+        }
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
         }

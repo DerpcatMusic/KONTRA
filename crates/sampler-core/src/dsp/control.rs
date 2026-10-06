@@ -83,30 +83,30 @@ impl GainRamp {
 
 impl Prepared {
     pub(crate) fn validate_gain_controls(&self) -> Result<(), Error> {
-        for binding in &self.gain_bindings {
+        for binding in self.gain_bindings.iter().chain(self.buses.gains.iter()) {
             self.control_index(binding.control)?;
         }
         Ok(())
     }
 }
 
-impl super::VoiceDspState {
-    pub(super) fn initial_gains(plan: &Prepared) -> Box<[GainRamp]> {
-        plan.gain_bindings
-            .iter()
-            .map(|binding| {
-                let definition = plan.controls[plan.control_index(binding.control).unwrap()];
-                let target = binding.target(normalized(definition.domain, definition.default));
-                GainRamp {
-                    from: target,
-                    target,
-                    start: 0,
-                    frames: 0,
-                }
-            })
-            .collect()
-    }
+pub(crate) fn initial_gains(plan: &Prepared, bindings: &[GainControl]) -> Box<[GainRamp]> {
+    bindings
+        .iter()
+        .map(|binding| {
+            let definition = plan.controls[plan.control_index(binding.control).unwrap()];
+            let target = binding.target(normalized(definition.domain, definition.default));
+            GainRamp {
+                from: target,
+                target,
+                start: 0,
+                frames: 0,
+            }
+        })
+        .collect()
+}
 
+impl super::DspState {
     pub(crate) fn edit_control(
         &mut self,
         plan: &Prepared,
@@ -115,19 +115,38 @@ impl super::VoiceDspState {
         at: u64,
     ) {
         let definition = plan.controls[index];
-        let from = plan
-            .gain_controls
-            .partition_point(|(id, _)| *id < definition.id);
-        let until = plan
-            .gain_controls
-            .partition_point(|(id, _)| *id <= definition.id);
-        if from == until {
-            return;
-        }
-        let value = normalized(definition.domain, value);
-        for &(_, lane) in &plan.gain_controls[from..until] {
-            let binding = plan.gain_bindings[lane];
-            self.gains[lane].set(at, binding.target(value), binding.ramp_frames);
-        }
+        edit_gains(
+            &mut self.gains,
+            &plan.gain_bindings,
+            &plan.gain_controls,
+            definition,
+            value,
+            at,
+        );
+        edit_gains(
+            &mut self.buses.gains,
+            &plan.buses.gains,
+            &plan.buses.controls,
+            definition,
+            value,
+            at,
+        );
+    }
+}
+
+fn edit_gains(
+    gains: &mut [GainRamp],
+    bindings: &[GainControl],
+    controls: &[(ControlId, usize)],
+    definition: crate::ControlDefinition,
+    value: ControlValue,
+    at: u64,
+) {
+    let from = controls.partition_point(|(id, _)| *id < definition.id);
+    let until = controls.partition_point(|(id, _)| *id <= definition.id);
+    let value = normalized(definition.domain, value);
+    for &(_, lane) in &controls[from..until] {
+        let binding = bindings[lane];
+        gains[lane].set(at, binding.target(value), binding.ramp_frames);
     }
 }

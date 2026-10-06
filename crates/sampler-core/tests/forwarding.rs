@@ -452,12 +452,12 @@ fn event_edit_instructions_derive_register_and_note_requirements_even_when_unrea
 #[test]
 fn source_owned_children_keep_tails_then_return_release_quotas_without_note_off_audio() {
     use sampler_core::{
-        Duration, Inheritance, Instruction, Program, Velocity, VoiceChain, VoiceProcessor,
+        Duration, Inheritance, Instruction, Processor, Program, Velocity, VoiceChain,
     };
     let make_plan = || {
         plan(1.)
             .with_voice_chains(
-                vec![VoiceChain::new(vec![], vec![VoiceProcessor::Gain(1.)], 3).unwrap()],
+                vec![VoiceChain::new(vec![], vec![Processor::Gain(1.)], 3).unwrap()],
                 vec![Some(0), None],
             )
             .unwrap()

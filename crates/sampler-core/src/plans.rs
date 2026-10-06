@@ -35,7 +35,7 @@ pub struct PlanTransfer {
     sequences: super::variation::SequenceState,
     controls: super::control::ControlState,
     scripts: Box<[Box<[i64]>]>,
-    dsp: super::dsp::VoiceDspState,
+    dsp: super::dsp::DspState,
     groups: super::groups::GroupState,
     controllers: super::controller_event::ControllerState,
     projections: super::note_event::NoteProjections,
@@ -49,7 +49,7 @@ pub(super) struct Generation {
     pub sequences: super::variation::SequenceState,
     pub controls: super::control::ControlState,
     pub scripts: Box<[Box<[i64]>]>,
-    pub dsp: super::dsp::VoiceDspState,
+    pub dsp: super::dsp::DspState,
     pub groups: super::groups::GroupState,
     pub controllers: super::controller_event::ControllerState,
     pub projections: super::note_event::NoteProjections,
@@ -95,7 +95,7 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
-        let dsp = match super::dsp::VoiceDspState::new(&prepared, self.voices) {
+        let dsp = match super::dsp::DspState::new(&prepared, self.voices) {
             Ok(dsp) => dsp,
             Err(_) => {
                 return Err(RejectedPlan {
@@ -236,10 +236,12 @@ impl Runtime {
         for index in 0..self.plans.slots.len() {
             let slot = &self.plans.slots[index];
             if index == self.active_plan.0.index
-                || !slot
-                    .value
-                    .as_ref()
-                    .is_some_and(|g| g.notes == 0 && g.callbacks == 0 && g.controls.pending == 0)
+                || !slot.value.as_ref().is_some_and(|g| {
+                    g.notes == 0
+                        && g.callbacks == 0
+                        && g.controls.pending == 0
+                        && !g.dsp.buses.active()
+                })
             {
                 continue;
             }
