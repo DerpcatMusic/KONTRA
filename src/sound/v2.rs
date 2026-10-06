@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use sampler_core::{
-    BusMix, ChannelAddress, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
+    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
     Region, Runtime,
 };
 use sampler_ir as ir;
@@ -537,6 +537,34 @@ impl Core for V2Core {
     fn latency(&self) -> u32 {
         0
     }
+
+    fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return false };
+        let rt = &mut p.runtime;
+        let (plan, id) = (rt.active_plan(), sampler_core::ControlId(control.0));
+        let Ok(ControlDefinition { domain, .. }) = rt.control_definition(plan, id) else { return false };
+        let value = match domain {
+            ControlDomain::Integer { min, max } => ControlValue::Integer((value.round() as i64).clamp(min, max)),
+            ControlDomain::Real { min, max } => ControlValue::Real(value.clamp(min, max)),
+            ControlDomain::Toggle => ControlValue::Toggle(value >= 0.5),
+        };
+        let Ok(performance) = rt.performance(0) else { return false };
+        let context = ControlContext { performance, origin: WIRE, channels: 1 };
+        rt.invoke_control(context, plan, None, ControlWrite { id, value }).is_ok()
+    }
+
+    fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64> {
+        let rt = &self.parts.get(part)?.as_ref()?.runtime;
+        rt.control_value(rt.active_plan(), sampler_core::ControlId(control.0)).ok().map(number)
+    }
+}
+
+fn number(value: ControlValue) -> f64 {
+    match value {
+        ControlValue::Integer(n) => n as f64,
+        ControlValue::Real(r) => r,
+        ControlValue::Toggle(on) => f64::from(u8::from(on)),
+    }
 }
 
 /// Prepares [`V2Core`] parts from Kontakt instruments and WAV files.
@@ -658,7 +686,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces })
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new() })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -709,7 +737,7 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     report.decoded.zones = 1;
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
-    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new() })
+    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new() })
 }
 
 impl CoreLoader for V2Loader {
@@ -722,7 +750,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: prepared, tree, report, interfaces } = if is_kontakt(&request.path) {
+        let Loaded { part: prepared, tree, report, interfaces, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -732,6 +760,11 @@ impl CoreLoader for V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let controls = prepared
+            .controls()
+            .iter()
+            .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
+            .collect();
         let limits = limits(&prepared);
         let runtime = Runtime::new(prepared, limits).map_err(core)?;
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
@@ -743,7 +776,7 @@ impl CoreLoader for V2Loader {
         }
         let part = Part::new(runtime, tree.clone())?;
         progress(Progress::DONE);
-        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces })
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -958,6 +991,35 @@ mod tests {
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
+    }
+
+    #[test]
+    fn a_widget_edit_runs_the_scripts_ui_control_callback() {
+        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_knob $echo(0, 1000, 1)\nend on\n\
+                      on ui_control($k)\n $echo := $k + 1\nend on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let id = |name: &str| {
+            let c = script.controls().iter().find(|c| c.variable.ends_with(name)).unwrap();
+            sampler_ui_ir::ControlId(c.definition.id.0)
+        };
+        let (k, echo) = (id("$k"), id("$echo"));
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan);
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        assert!(core.set_control(0, k, 41.6), "rounded into the knob's integer range");
+        core.render(16);
+        assert_eq!((core.control_value(0, k), core.control_value(0, echo)), (Some(42.0), Some(43.0)));
+        assert!(core.set_control(0, k, 500.0));
+        core.render(16);
+        assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
+        assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
     }
 
     #[test]
