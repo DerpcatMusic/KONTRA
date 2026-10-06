@@ -700,8 +700,13 @@ fn is_kontakt(path: &Path) -> bool {
     path.extension().is_some_and(|e| ["nki", "nkm", "nkb", "nksn"].iter().any(|k| e.eq_ignore_ascii_case(k)))
 }
 
+fn is_uvi(path: &Path) -> bool {
+    path.ancestors().any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+        || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("uvip"))
+}
+
 fn unsupported(path: &Path) -> CoreError {
-    if is_kontakt(path) || is_wav(path) {
+    if is_kontakt(path) || is_uvi(path) || is_wav(path) {
         CoreError::Invalid("unreadable instrument".into())
     } else {
         CoreError::Unsupported("translating this instrument format to sampler-core")
@@ -819,6 +824,30 @@ fn kontakt(
     })
 }
 
+/// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
+/// decode up front (no streaming yet).
+fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
+    let load = |e: &dyn std::fmt::Display| CoreError::Load(e.to_string());
+    let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
+    let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
+    let tree = nest(&mut t.instrument);
+    let loaded = sampler_uvi::assemble_translated(t, request.sample_rate as u32).map_err(|e| load(&*e))?;
+    report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
+    report.decoded.zones = loaded.instrument.zones.len();
+    report.decoded.keys = super::report::key_bits(&loaded.instrument);
+    report.decoded.samples = loaded.plan.sample_count();
+    Ok(Loaded {
+        part: (loaded.plan, None),
+        tree,
+        report,
+        interfaces: loaded.interfaces,
+        controls: Vec::new(),
+        instrument: Some(Arc::new(loaded.instrument)),
+        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        stream: None,
+    })
+}
+
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
     let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
     let spec = reader.spec();
@@ -891,6 +920,8 @@ impl CoreLoader for V2Loader {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let Loaded { part: (prepared, cache), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
+        } else if is_uvi(&request.path) {
+            uvi(request)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -1405,6 +1436,27 @@ mod tests {
             })
             .collect();
         assert_ne!(names[0], names[1]);
+    }
+
+    /// A UVI bank program loads through the host and its layers are mixer nodes.
+    #[test]
+    fn real_uvi_layers_become_mixer_nodes() {
+        let relative = "UVI/VWinds - Clarinets/VWinds-AClarinet.ufs";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
+        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let loaded = match V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                eprintln!("skipped: {e:?}");
+                return;
+            }
+        };
+        let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
+        assert!(groups > 0, "layers are nodes");
     }
 
     #[test]
