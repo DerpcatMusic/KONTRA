@@ -415,11 +415,36 @@ impl StreamCache {
             }
         }
     }
+    /// The read-only view rendering uses; shareable across render threads.
+    pub fn reader(&self) -> PageReader<'_> {
+        PageReader { entries: &self.entries, index: &self.index }
+    }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
-        self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
+        self.reader().frame(asset, frame)
     }
     /// Borrow only an entirely resident, contiguous range within one page.
     pub fn span(&self, asset: AssetId, frames: Range<usize>) -> Option<&[Frame]> {
+        self.reader().span(asset, frames)
+    }
+}
+
+/// Resident pages, read-only.
+#[derive(Clone, Copy)]
+pub struct PageReader<'a> {
+    entries: &'a [Option<Entry>],
+    index: &'a [(PageKey, usize)],
+}
+impl<'a> PageReader<'a> {
+    fn find(&self, key: PageKey) -> Option<usize> {
+        self.index
+            .binary_search_by_key(&key, |(key, _)| *key)
+            .ok()
+            .map(|i| self.index[i].1)
+    }
+    pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
+        self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
+    }
+    pub fn span(&self, asset: AssetId, frames: Range<usize>) -> Option<&'a [Frame]> {
         if frames.start > frames.end {
             return None;
         }
@@ -442,6 +467,7 @@ impl StreamCache {
         }
     }
 }
+
 impl StreamWorker {
     /// Recycle returned buffers, coalesce superseded slot requests, then choose
     /// the earliest deadline. All worker storage is bounded by cache capacity.

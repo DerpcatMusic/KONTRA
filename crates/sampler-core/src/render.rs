@@ -135,6 +135,7 @@ impl Runtime {
 
     fn render_segment(&mut self, output: &mut [Frame], outs: &mut [&mut [Frame]], offset: usize) {
         let chunked = self.script_params
+            || self.parallel.is_some()
             || self.plans.slots.iter().any(|s| {
                 s.value.as_ref().is_some_and(|g| {
                     g.prepared.buses.len() != 0
@@ -171,6 +172,9 @@ impl Runtime {
     }
 
     fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+        if self.render_voices_parallel(output, at) {
+            return;
+        }
         let mut batch: (Option<(usize, usize)>, [usize; VOICES], usize) = (None, [0; VOICES], 0);
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
@@ -206,7 +210,7 @@ impl Runtime {
 
     /// Voices batch when consecutive in slot order, started, and running the
     /// same delay-free chain of the same plan over at most one block.
-    fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
+    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
         if !v.started || frames > super::dsp::BLOCK {
@@ -272,7 +276,8 @@ impl Runtime {
                     cache: self
                         .stream_cache
                         .as_ref()
-                        .expect("preflighted stream cache"),
+                        .expect("preflighted stream cache")
+                        .reader(),
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
                 };
@@ -498,7 +503,8 @@ impl Runtime {
                 cache: self
                     .stream_cache
                     .as_ref()
-                    .expect("preflighted stream cache"),
+                    .expect("preflighted stream cache")
+                    .reader(),
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
@@ -537,7 +543,7 @@ fn ramp_mix(chunk: &[Frame], output: &mut [Frame], from: [f32; 2], to: [f32; 2])
     }
 }
 
-fn render_source(
+pub(super) fn render_source(
     voice: &mut super::Voice,
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],
