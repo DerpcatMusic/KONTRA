@@ -196,3 +196,38 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
         }
     }
 }
+
+/// Afflatus' multi-articulation patch switches in KSP: `on note` reads keys
+/// `%KS_keys[$KS_Base]` onward into `$articulation`. The generated map taps
+/// those keys, and its alternatives follow key order.
+#[test]
+fn afflatus_keyswitch_script_yields_an_articulation_map() {
+    let Some(path) =
+        find("Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki")
+    else {
+        return;
+    };
+    let ir = sampler_kontakt::read(&path).unwrap().instrument;
+    for a in &ir.articulations {
+        eprintln!(
+            "{:>20} keys {:?} default {} -> {:?}",
+            a.name, a.switch_keys, a.default, a.alternatives
+        );
+    }
+    assert_eq!(ir.switching.owner, sampler_ir::SwitchOwner::Behavior);
+    let names: Vec<_> = ir.articulations.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names.len(), 11);
+    assert_eq!(&names[..3], ["Sustain + Legato", "Flutter", "Marcato"]);
+    let keys: Vec<_> = ir.articulations.iter().map(|a| a.switch_keys[0]).collect();
+    assert_eq!(keys, (24..=34).collect::<Vec<_>>());
+    assert!(ir.articulations[0].default);
+    let marcato = ir.articulations[2].alternatives;
+    assert_eq!(
+        marcato.controller.map(|c| (c.controller, c.low)),
+        Some((32, 2))
+    );
+    assert_eq!((marcato.channel, marcato.program), (Some(2), Some(2)));
+    let mut driven = ir.clone();
+    driven.switching.driver = sampler_ir::Driver::Velocity;
+    assert_eq!(driven.validate(), Ok(()));
+}
