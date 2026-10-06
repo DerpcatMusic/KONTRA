@@ -24,7 +24,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
               <SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="0.5"/>
             </Connections>
             <Oscillators>
-              <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Gain="0.8">
+              <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Pitch="0.25" Gain="0.8">
                 <PlaybackOptions Start="10" Stop="47000"><Loop Start="1000" End="9000" Type="0"/></PlaybackOptions>
               </SamplePlayer>
               <SamplePlayer Name="Bank" SamplePath="$Bank.ufs/Samples/x.wav"/>
@@ -89,7 +89,7 @@ fn authored_program_translates_loads_and_renders() {
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
     assert_eq!(zone.pitch, ir::KeyTracking::Tracked { root: 60 });
-    assert_eq!(zone.tune, ir::Pitch::Semitones(1.5));
+    assert_eq!(zone.tune, ir::Pitch::Semitones(1.75));
     assert_eq!(zone.gain, ir::Gain::Linear(0.8));
     assert_eq!(zone.velocity, ir::VelocityResponse::Power(2.0));
     assert_eq!((zone.playback.start, zone.playback.end), (10, Some(47000)));
