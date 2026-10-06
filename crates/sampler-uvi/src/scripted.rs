@@ -201,7 +201,8 @@ impl Player {
         self.rt.forward_attack(note)?;
         let now = self.now_ms();
         match play.duration_ms {
-            Some(ms) => self.release(note, now + ms)?,
+            Some(ms) if ms > 0.0 => self.release(note, now + ms)?,
+            Some(_) => {}
             None if parent.is_none() || closing => self.release(note, now + DETACHED_MS)?,
             None => {}
         }
