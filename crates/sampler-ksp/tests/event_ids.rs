@@ -498,3 +498,28 @@ fn a_release_the_script_asked_for_cannot_be_ignored_by_its_own_release_callback(
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
 }
+
+#[test]
+fn play_note_outside_the_midi_ranges_is_ignored_and_returns_minus_one() {
+    // Vista plays its "no key held" sentinel -1.
+    let source = "on init declare $a declare $b declare $c end on
+      on note
+        $a := play_note(-1,100,0,0)
+        $b := play_note(60,0,0,0)
+        $c := play_note(128,100,0,-1)
+      end on";
+    let mut rt = runtime(source);
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut audio = [[0.; 2]; 4];
+    rt.render(&mut audio).unwrap();
+    for cell in 0..3 {
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), cell),
+            Ok(-1)
+        );
+    }
+    rt.flush_behaviors(|_, _, outcome| {
+        assert_eq!(outcome, Outcome::Finished);
+        true
+    });
+}

@@ -1206,11 +1206,7 @@ impl Runtime {
                 // A release the script itself asked for (note_off) cannot be
                 // ignored: nothing would ever resume it.
                 let note = owner.note()?;
-                if self
-                    .notes
-                    .get(note.0)
-                    .is_some_and(|n| n.key_release == Some(super::ReleaseCause::Script))
-                {
+                if self.note_events[note.0.index].script_stop {
                     return Ok(false);
                 }
                 if let Some(NoteStage::Release(stage)) =
