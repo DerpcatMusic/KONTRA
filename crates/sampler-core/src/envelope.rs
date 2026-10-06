@@ -14,10 +14,28 @@ impl EnvelopeCurve {
         }
         Ok(Self(curvature))
     }
+
+    /// Holds the stage's starting level until the stage ends, then steps.
+    pub fn step() -> Self {
+        Self(f64::INFINITY)
+    }
+
+    /// Normalized position at stage fraction `t` (0..=1).
+    pub(crate) fn value(self, t: f64) -> f64 {
+        if self.0 == 0.0 {
+            t
+        } else if self.0.is_infinite() {
+            if t >= 1.0 { 1.0 } else { 0.0 }
+        } else {
+            (self.0 * t).exp_m1() / self.0.exp_m1()
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Curve {
+    /// Position 0 until the stage ends (a step).
+    step: bool,
     curvature: f64,
     denominator: f64,
     multiplier: f64,
@@ -34,12 +52,19 @@ impl Curve {
     }
 
     fn new(curve: EnvelopeCurve, duration: u32) -> Self {
+        if curve.0.is_infinite() && duration != 0 {
+            return Self {
+                step: true,
+                ..Self::default()
+            };
+        }
         if curve.0 == 0.0 || duration == 0 {
             return Self::default();
         }
         let denominator = Self::exprel(curve.0);
         let step = curve.0 / f64::from(duration);
         Self {
+            step: false,
             curvature: curve.0,
             denominator,
             multiplier: step.exp(),
@@ -246,7 +271,7 @@ impl EnvelopeState {
 
     fn level(&self) -> f32 {
         let e = self.shape;
-        let curved = self.curve().curvature != 0.0;
+        let curved = self.curve().curvature != 0.0 || self.curve().step;
         let position = self.progress.clamp(0.0, 1.0);
         match self.phase {
             Phase::Delay | Phase::Done => 0.0,
@@ -289,6 +314,15 @@ impl EnvelopeState {
         self.shape.release = frames;
         self.shape.curves[2] = Curve::default();
         self.enter(Phase::Release);
+    }
+
+    pub(super) fn releasing(&self) -> bool {
+        matches!(self.phase, Phase::Release | Phase::Done)
+    }
+
+    /// The level the next frame starts from.
+    pub(super) fn current(&self) -> f32 {
+        self.level()
     }
 
     pub(super) fn done(&self) -> bool {
