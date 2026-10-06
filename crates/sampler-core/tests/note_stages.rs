@@ -337,3 +337,59 @@ fn native_release_completion_does_not_implicitly_forward_a_frontend_event() {
         assert_eq!(completed, 2);
     });
 }
+
+#[test]
+fn linked_generated_chains_release_on_a_small_stack_without_release_callbacks() {
+    const COUNT: usize = 512;
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    I::SuppressAttack,
+                    I::Play {
+                        transpose: 0,
+                        velocity: Velocity::Fixed(1.),
+                        inheritance: Inheritance::Independent,
+                        duration: Duration::Gate,
+                    },
+                ])
+                .unwrap(),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_stages(vec![
+            Stage {
+                note: Some(0),
+                ..Stage::default()
+            };
+            COUNT
+        ])
+        .unwrap();
+    let mut budget = limits(&prepared, COUNT);
+    budget.notes = COUNT + 1;
+    budget.expressions = COUNT + 1;
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            support::without_heap(|| {
+                rt.trigger(input(1), 60, 1.).unwrap();
+                assert_eq!(rt.note_count(), COUNT + 1);
+                rt.note_off(input(1), None).unwrap();
+                let mut completed = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    completed += 1;
+                    true
+                });
+                assert_eq!(completed, COUNT);
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

@@ -172,6 +172,13 @@ enum NoteOrigin {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseLink {
+    None,
+    Gate,
+    Stage(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AttackStatus {
     Pending,
     Forwarded,
@@ -185,7 +192,7 @@ struct Note {
     address: ChannelAddress,
     plan: PlanId,
     parent: Option<NoteId>,
-    linked_release: bool,
+    release_link: ReleaseLink,
     retire_when_silent: bool,
     attack: AttackStatus,
     siblings: Siblings,
@@ -429,8 +436,11 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
-        // Release completion belongs to its native route, not an extra VM frame.
-        let ready_capacity = limits.behaviors;
+        // One frame per callback plus one queued native release per logical note.
+        let ready_capacity = limits
+            .behaviors
+            .checked_add(limits.notes)
+            .ok_or(Error::Capacity)?;
         std::alloc::Layout::array::<behavior::Ready>(ready_capacity)
             .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
@@ -717,7 +727,11 @@ impl Runtime {
             address,
             plan,
             parent,
-            linked_release,
+            release_link: if linked_release {
+                ReleaseLink::Gate
+            } else {
+                ReleaseLink::None
+            },
             retire_when_silent: false,
             attack: AttackStatus::Pending,
             siblings: Siblings {
@@ -985,14 +999,28 @@ impl Runtime {
 
     fn close_gate(&mut self, id: NoteId, cause: ReleaseCause) {
         let note = self.notes.get_mut(id.0).unwrap();
-        if note.gate() {
+        let first = note.gate();
+        if first {
             self.release_times[id.0.index].gate_at = self.now;
             self.release_times[id.0.index].held = false;
             note.gate_release = Some(cause);
-            // Each live note enters at most once; cleanup drains before notes can
-            // retire or slots can be reused. Storage was reserved for every note.
-            assert!(self.closed_notes.len() < self.closed_notes.capacity());
-            self.closed_notes.push(id);
+        }
+        let times = &mut self.release_times[id.0.index];
+        let hard = !cause.musical() && !times.cleanup_hard;
+        times.cleanup_hard |= !cause.musical();
+        if first || hard {
+            // First-transition records are immutable. A later fault still has to
+            // visit linked descendants that a downstream module kept alive.
+            let queued = &mut times.cleanup;
+            if queued.is_none() {
+                assert!(self.closed_notes.len() < self.closed_notes.capacity());
+                self.closed_notes.push(id);
+            }
+            if queued.is_none() || !cause.musical() {
+                *queued = Some(cause);
+            }
+        }
+        if first {
             self.run_release_behavior(id, false);
             self.release_note_callbacks(id);
             // Forced closure must return any suppressed physical-release quota.
@@ -1042,7 +1070,7 @@ impl Runtime {
     fn cleanup_closed_notes(&mut self) {
         while let Some(note) = self.closed_notes.pop() {
             let n = self.notes.get(note.0).unwrap();
-            let cause = n.gate_release.unwrap();
+            let cause = self.release_times[note.0.index].cleanup.take().unwrap();
             let child_cause = if cause.musical() {
                 ReleaseCause::Parent
             } else {
@@ -1052,7 +1080,9 @@ impl Runtime {
             while let Some(index) = child {
                 let state = self.notes.at_mut(index);
                 child = state.siblings.next;
-                if state.linked_release {
+                if state.release_link == ReleaseLink::Gate
+                    || (!cause.musical() && state.release_link != ReleaseLink::None)
+                {
                     state.sostenuto = false;
                     self.release_key(NoteId(self.notes.id(index.get())), child_cause, None);
                     self.close_gate(NoteId(self.notes.id(index.get())), child_cause);

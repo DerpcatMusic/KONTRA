@@ -360,3 +360,193 @@ fn consumed_notes_release_only_reached_modules_and_generated_notes_skip_the_crea
         );
     });
 }
+
+#[test]
+fn parent_release_reaches_linked_children_before_the_creating_callback() {
+    let plan = plan(&[
+        "on init declare $released end on
+        on note ignore_event($EVENT_ID) play_note(64,127,0,-1) end on
+        on release inc($released) end on",
+        "on init declare $notes declare $released end on
+        on note inc($notes) end on
+        on release
+            inc($released)
+            ignore_event($EVENT_ID)
+            wait(125)
+            note_off($EVENT_ID)
+        end on",
+    ]);
+    let budget = limits(&plan, 4);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let parent = rt.trigger(input(1), 60, 1.).unwrap();
+        let generation = rt.active_plan();
+        assert_eq!(rt.note_event_at(parent, 1), Ok(None));
+        rt.note_off(input(1), None).unwrap();
+        assert!(rt.release_context(parent).unwrap().gate.is_some());
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(1));
+        let mut audio = [[0.; 2]; 7];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[0], [0.375; 2]);
+        assert_eq!(audio[6], [0.; 2]);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+}
+
+#[test]
+fn child_created_during_release_runs_its_note_route_before_its_release_route() {
+    let plan = plan(&[
+        "on release play_note(64,127,0,-1) end on",
+        "on init declare $notes declare $released declare $seen end on
+        on note inc($notes) end on
+        on release inc($released) $seen := $seen * 10 + $notes end on",
+    ]);
+    let budget = limits(&plan, 6);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let generation = rt.active_plan();
+        rt.note_off(input(1), None).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(2));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(2));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 2), Ok(22));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+}
+
+#[test]
+fn stage_linked_children_obey_pedals_without_fabricating_host_inputs() {
+    for sostenuto in [false, true] {
+        let plan = plan(&[
+            "on note ignore_event($EVENT_ID) play_note(64,127,0,-1) end on",
+            "on init declare $released end on on release inc($released) end on",
+        ]);
+        let budget = limits(&plan, 3);
+        let mut rt = Runtime::new(plan, budget).unwrap();
+        support::without_heap(|| {
+            let channel = rt.register_channel(input(1).channel_address()).unwrap();
+            rt.trigger(input(1), 60, 1.).unwrap();
+            if sostenuto {
+                rt.sostenuto(channel, true).unwrap();
+            } else {
+                rt.sustain(channel, true).unwrap();
+            }
+            rt.note_off(input(1), None).unwrap();
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(1), 0),
+                Ok(1)
+            );
+            let mut audio = [[0.; 2]; 1];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio[0], [0.375; 2]);
+            if sostenuto {
+                rt.sostenuto(channel, false).unwrap();
+            } else {
+                rt.sustain(channel, false).unwrap();
+            }
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio[0], [0.; 2]);
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            let mut external = 0;
+            rt.flush_ended(|ended| {
+                assert_eq!(ended, input(1));
+                external += 1;
+                true
+            });
+            assert_eq!(external, 1);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
+    let plan = plan(&[
+        "on note ignore_event($EVENT_ID) play_note(64,127,0,-1) end on
+        on release wait(125) while (1 = 1) end while end on",
+        "on release ignore_event($EVENT_ID) wait(1000) note_off($EVENT_ID) end on",
+    ]);
+    let budget = limits(&plan, 3);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let parent = rt.trigger(input(1), 60, 1.).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        let first = rt.release_context(parent).unwrap();
+        assert!(first.gate.is_some());
+        let mut audio = [[0.; 2]; 7];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[0], [0.375; 2]);
+        assert_eq!(audio[6], [0.; 2]);
+        assert_eq!(rt.release_context(parent).unwrap(), first);
+        // Callback-lifetime work remains owned after forced gate closure.
+        rt.render(&mut [[0.; 2]; 48]).unwrap();
+        let mut faults = 0;
+        rt.flush_behaviors(|_, _, outcome| {
+            if outcome == Outcome::FuelExhausted {
+                faults += 1;
+            }
+            true
+        });
+        assert_eq!(faults, 1);
+        assert_eq!(rt.pending_commands(), 0);
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}
+
+#[test]
+fn generated_note_fault_cannot_orphan_its_already_queued_parent_release() {
+    let plan = plan(&[
+        "on release play_note(64,127,0,-1) end on",
+        "on init declare $released end on
+        on note if ($EVENT_NOTE = 64) while (1 = 1) end while end if end on
+        on release inc($released) end on",
+    ]);
+    let budget = limits(&plan, 6);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(1), 0),
+            Ok(1)
+        );
+        let mut faults = 0;
+        rt.flush_behaviors(|_, _, outcome| {
+            if outcome == Outcome::FuelExhausted {
+                faults += 1;
+            } else {
+                assert_eq!(outcome, Outcome::Finished);
+            }
+            true
+        });
+        assert_eq!(faults, 1);
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+}

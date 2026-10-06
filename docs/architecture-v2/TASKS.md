@@ -183,8 +183,9 @@ source semantics and checksum/authentication validation are still required.
   copy per-module properties/groups and reserve downstream callbacks. Generated
   notes/CCs enter the following module, retaining creator views and old plans.
   Reached-stage release callbacks now reserve owned capacity, retain separate group
-  drafts and expose local logical held state. Stage-scoped scripted stops and
-  generated parent-follow links remain open. Controller callbacks now generate parentless notes in their retained
+  drafts and expose local logical held state. Generated parent-follow links now
+  follow the creating module's release with independent downstream holds, pedal
+  handling and bounded native dispatch/cleanup. Stage-scoped scripted stops remain open. Controller callbacks now generate parentless notes in their retained
   plan/domain, including source offsets and stored-ID stops; no fake host input is used.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
