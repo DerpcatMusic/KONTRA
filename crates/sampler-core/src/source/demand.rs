@@ -88,6 +88,9 @@ pub(crate) struct VoiceDemand {
     pub asset: AssetId,
 }
 
+/// Up to four physical ranges, each with the output offset first needing it.
+pub(crate) type LoopReach = [Option<(Range<usize>, u32)>; 4];
+
 impl Cursor {
     /// Physical frames a stretch of `frames` output frames may read, when that
     /// stretch maps linearly (before any loop boundary or crossfade): a
@@ -120,6 +123,59 @@ impl Cursor {
             self.direction,
             self.position as f64 + self.fraction + radius,
         ))
+    }
+
+    /// Physical ranges a looping stretch of `frames` output frames may read,
+    /// each with the output offset it may first be needed: up to the loop
+    /// boundary, within the loop (wrapping), and a crossfade's other leg. A
+    /// superset of `visit_demand`'s ranges, ignoring envelope ends; `None` for
+    /// ping-pong loops and a loop exit within reach.
+    pub(crate) fn loop_reach(&self, frames: u32) -> Option<LoopReach> {
+        let r = self.loop_range?;
+        let fade = match r.shape {
+            crate::LoopShape::PingPong => return None,
+            crate::LoopShape::Wrap => 0,
+            crate::LoopShape::Crossfade { frames }
+            | crate::LoopShape::EqualPowerCrossfade { frames } => frames as u64,
+        };
+        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        let lead = self.position as f64 + self.fraction + radius;
+        let low = (self.position as f64 - radius).max(0.) as u64;
+        let high = (lead + f64::from(frames) * self.step + 1.).ceil() as u64;
+        if self.exit.is_some_and(|exit| high > exit) {
+            return None;
+        }
+        // Virtual offsets: past the first boundary, offsets wrap into the loop.
+        let first = self.first_boundary(r);
+        let length = (r.end - r.start) as u64;
+        let base = first - length;
+        let when = |v: u64| (((v as f64 - lead) / self.step).floor() - 1.).max(0.) as u32;
+        let mut out: [Option<(Range<u64>, u32)>; 4] = Default::default();
+        out[0] = Some((low..high.min(first), when(low)));
+        if high > first {
+            let start = low.max(first);
+            let extent = high - start;
+            let at = when(start);
+            if extent >= length {
+                out[1] = Some((base..first, at));
+            } else {
+                let from = base + (start - first) % length;
+                out[1] = Some((from..(from + extent).min(first), at));
+                out[2] = Some((base..(from + extent).saturating_sub(length).max(base), at));
+            }
+        }
+        if fade > 0 && high + fade > first {
+            out[3] = Some((base.saturating_sub(fade)..base, when(first - fade)));
+        }
+        let view = (self.end - self.start) as u64;
+        Some(out.map(|part| {
+            let (range, at) = part?;
+            let (from, to) = (range.start as usize, range.end.min(view) as usize);
+            (from < to).then(|| match self.direction {
+                Direction::Forward => (self.start + from..self.start + to, at),
+                Direction::Reverse => (self.end - to..self.end - from, at),
+            })
+        }))
     }
 
     /// Output frames until a linear stretch (see `linear_reach`) first reads
@@ -247,6 +303,59 @@ mod tests {
                         true
                     }));
                     assert!(!looped || cursor.linear_reach(20_000).is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_reach_covers_every_read_no_later_than_its_first_use() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [LoopShape::Wrap, LoopShape::Crossfade { frames: 40 }] {
+                for (step, advance, frames) in
+                    [(1., 900, 300), (1.37, 1000, 2000), (0.5, 1500, 300)]
+                {
+                    for passes in [None, std::num::NonZeroU32::new(9)] {
+                        let mut cursor = Playback {
+                            start: 3,
+                            end: Some(4000),
+                            direction,
+                            loop_range: Some(Loop {
+                                start: 600,
+                                end: 1100,
+                                shape,
+                                mode: LoopMode::UntilRelease,
+                                passes,
+                            }),
+                            ..Playback::default()
+                        }
+                        .cursor(4096, 48000, 48000)
+                        .unwrap()
+                        .with_step(step);
+                        for _ in 0..advance {
+                            cursor.advance();
+                        }
+                        let Some(reach) = cursor.loop_reach(frames) else {
+                            assert!(passes.is_some());
+                            continue;
+                        };
+                        let envelope = EnvelopeState::new(Envelope::one_shot(0, 10_000, 0));
+                        let mut seen = 0;
+                        assert!(cursor.visit_demand(frames, envelope, |frame, range| {
+                            for index in range {
+                                seen += 1;
+                                assert!(
+                                    reach
+                                        .iter()
+                                        .flatten()
+                                        .any(|(r, at)| r.contains(&index) && *at <= frame),
+                                    "{direction:?} {shape:?} {step} {index} at {frame}: {reach:?}"
+                                );
+                            }
+                            true
+                        }));
+                        assert!(seen > 0);
+                    }
                 }
             }
         }

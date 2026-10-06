@@ -616,6 +616,13 @@ impl crate::Runtime {
                             break;
                         }
                     }
+                } else if let Some(reach) = cursor.loop_reach(demand.frames) {
+                    // A loop: its few ranges, each at its first deadline.
+                    for (range, at) in reach.into_iter().flatten() {
+                        if !visit(range, demand.at + u64::from(at)) {
+                            break;
+                        }
+                    }
                 } else {
                     let complete =
                         cursor.visit_demand(demand.frames, demand.envelope, |offset, frames| {
