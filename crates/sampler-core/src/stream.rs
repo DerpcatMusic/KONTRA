@@ -126,6 +126,8 @@ pub struct StreamCache {
     /// Decoder threads to unpark after a service pushed requests.
     wake: Vec<std::thread::Thread>,
     pushed: bool,
+    /// Set by a start that found an asset cold; wakes the reloader.
+    cold: std::sync::atomic::AtomicBool,
     /// Where the eviction sweep resumes.
     hand: usize,
 }
@@ -185,6 +187,7 @@ impl StreamCache {
                 store,
                 wake: Vec::new(),
                 pushed: false,
+                cold: std::sync::atomic::AtomicBool::new(false),
                 hand: 0,
             },
             StreamWorker {
@@ -206,7 +209,7 @@ impl StreamCache {
     }
     /// Unpark the decoder threads if requests were queued since the last call.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed) {
+        if std::mem::take(&mut self.pushed) | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed) {
             for thread in &self.wake {
                 thread.unpark();
             }
@@ -720,6 +723,7 @@ impl crate::Runtime {
             return Ok(false);
         }
         asset.mark_cold();
+        cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
         if self.cold_starts {
             Ok(true)
         } else {
