@@ -1,5 +1,5 @@
 //! Source inspection only: decoding never silently admits an instrument for audio.
-use sampler_kontakt::{Chunks, Limits, Nks42, Script, nis::Item};
+use sampler_kontakt::{Chunks, Group, Limits, Loops, Nks42, Script, Zone, nis::Item};
 use std::{
     io::{self, Read, Write},
     path::Path,
@@ -123,6 +123,55 @@ fn report(bytes: &[u8], limits: Limits, out: &mut impl Write) -> io::Result<()> 
                         if child.id == 0x33 { "groups" } else { "zones" },
                         records.len()
                     )?;
+                    for (index, record) in records.iter().enumerate() {
+                        if record.group.is_none() {
+                            let group = Group::parse(record).map_err(source)?;
+                            writeln!(
+                                out,
+                                "    group {index}: gain {}, pan {}, tune ratio {}, tracking {}, reverse {}, release {}",
+                                group.gain,
+                                group.pan,
+                                group.tune,
+                                group.key_tracking,
+                                group.reverse,
+                                group.release_trigger
+                            )?;
+                        } else {
+                            let zone = Zone::parse(record).map_err(source)?;
+                            writeln!(
+                                out,
+                                "    zone {index}: group {}, sample ID {}, keys {:?}, velocities {:?}, root {}, start {}, end {}, fades {:?}",
+                                zone.group,
+                                zone.filename_id,
+                                zone.keys,
+                                zone.velocity,
+                                zone.root_key,
+                                zone.start,
+                                zone.end,
+                                zone.fades
+                            )?;
+                            for child in zone.object.children(limits).map_err(source)?.iter() {
+                                if child.id != 0x39 {
+                                    continue;
+                                }
+                                let loops = Loops::parse(child, limits).map_err(source)?;
+                                for slot in loops.slots().iter().flatten() {
+                                    writeln!(
+                                        out,
+                                        "      loop slot {}: mode {}, start {}, length {}, count {}, alternating {}, tune ratio {}, crossfade {}",
+                                        slot.slot,
+                                        slot.mode,
+                                        slot.start,
+                                        slot.length,
+                                        slot.count,
+                                        slot.alternating,
+                                        slot.tune,
+                                        slot.crossfade
+                                    )?;
+                                }
+                            }
+                        }
+                    }
                 }
                 0x06 => {
                     let script = Script::parse(child, limits).map_err(source)?;

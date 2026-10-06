@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Retain Kontakt group/zone mapping units and sparse loop slot identities in the
+  native source reader, including disabled, counted, tuned and alternating loops.
+  Inspection reports source values without silently substituting playback defaults.
+
 - Add prepared stereo matrix stages to shared voice DSP for explicit channel
   routing, width and pan-law coefficients, retaining stage order, filter tails
   and existing voice ownership without a separate format-specific processor.

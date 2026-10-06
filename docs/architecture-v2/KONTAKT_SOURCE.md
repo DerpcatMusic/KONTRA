@@ -133,3 +133,32 @@ encryption children. These remain parsing/ownership checks, not library fidelity
 ```sh
 cargo run --locked -p sampler-native -- inspect-kontakt-nis INPUT.nki
 ```
+
+## Group, zone and loop source scalars
+
+The reader now exposes the reviewed group v0x95 prefix and zone v0x95/0x98/0x9a
+mapping prefixes. Group gain/tune ratios, pan, tracking/reverse/release flags,
+MIDI/voice-group fields and the amplifier split retain their source values. Names
+remain UTF-16LE bytes. Zone key/velocity/fade ranges stay signed until semantic
+validation; start/end/modulation fields, sample IDs and the v0x9a filename prefix
+are retained. Sample metadata and remaining public/private state stay opaque.
+
+Loop-array v0x60 records preserve all eight original slots, including holes and
+disabled entries. Structured and fixed-length unstructured loop records are
+decoded separately. Count, tuning, crossfade, alternating and mode fields are never
+silently skipped, clamped or relabeled as a supported native loop. Structured
+extensions, private data and children remain available. The old importer's
+first-loop fallback and skipped counted/tuned loops are not reused.
+
+These are source views, not validated audio parameters. Even invalid signed
+ranges or nonfinite source scalars remain inspectable for diagnostics; no function
+in this crate publishes a playback plan. Semantic admission must validate against
+decoded assets, preserve source units/ordering, resolve every required feature and
+reject unsupported execution. Unknown record versions fail interpretation while
+their original raw records remain accessible.
+
+Fixtures check exact ratios and signed/bit-preserving values, truncation at every
+required prefix byte, original sparse loop indices and retained structured data.
+The CLI now prints decoded group/zone/loop scalars for these profiles alongside
+the explicit unadmitted-playback status. This does not establish vendor loop mode,
+fade curve, end-offset, interpolation or source-engine equivalence.
