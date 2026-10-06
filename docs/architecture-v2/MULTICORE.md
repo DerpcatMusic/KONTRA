@@ -56,3 +56,20 @@ Per-voice DSP state is claimed through checked slabs on both paths; claim confli
 Measured (1024 voices x 4 SVF at +7 st, 64-frame blocks, loaded machine, thread CPU):
 median wall 1264 / 702 / 423 / 317 us at 1 / 2 / 4 / 8 threads; CPU per voice-block
 1430 / 1545 / 1621 / 2136 ns. Idle process CPU at 4 threads: 0.14% (no notes), 0.37% (one note).
+
+## UVI streaming (resident memory, release build, separate processes)
+
+UVI members stream through the Kontakt page cache (resident heads, budgeted
+pool, eviction). Bytes are decrypted in memory per 512-byte block and never
+persisted. Streamed reads were identical to a full decode on 60 real
+FLAC/WAV members of Augmented Orchestra.
+
+| Bank | Zones | Full decode RSS | Streamed RSS | Heads |
+|---|---|---|---|---|
+| Augmented Orchestra, V Strings Bartok | 6984 | +1805 MB | +35 MB | 4.1 MB |
+| VWinds A Clarinet | 188 | +314 MB | +27 MB | 0.3 MB |
+| VWinds Bassoon | 189 | +315 MB | +27 MB | 0.3 MB |
+| VWinds Alto Flute | 285 | +443 MB | +28 MB | 0.7 MB |
+
+Streamed load takes 0.2-1.2 s against 0.9-4.3 s. Cache pool is 25 MB by
+default. Head-read latency p95 is under 215 us.
