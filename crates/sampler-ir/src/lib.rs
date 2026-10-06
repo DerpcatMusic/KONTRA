@@ -679,7 +679,14 @@ pub enum Processor {
     Gain(Gain),
     Pan(Pan),
     Filter(Filter),
-    Delay { time: Time, feedback: f64, mix: f64 },
+    Delay {
+        time: Time,
+        feedback: f64,
+        mix: f64,
+    },
+    /// Linear stereo mix: rows are output left/right, columns input
+    /// left/right. Width, balance, polarity and channel swaps.
+    StereoMatrix([[f64; 2]; 2]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

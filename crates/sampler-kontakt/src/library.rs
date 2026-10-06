@@ -308,6 +308,8 @@ struct GroupInfo {
     velocity: ir::VelocityResponse,
     /// Modulation routes every zone of the group carries.
     routes: Vec<ir::RouteRef>,
+    /// Its insert rack as a voice chain.
+    chain: Option<ir::ChainRef>,
 }
 
 struct Translation {
@@ -344,9 +346,12 @@ impl Translation {
                 &format!("{at} slot {}", fx.slot),
                 "effect",
                 format!(
-                    "{} v{:#x}",
+                    "{} v{:#x} {:?} wet {} dry {}",
                     crate::effects::module_name(fx.module),
-                    fx.version
+                    fx.version,
+                    fx.params(),
+                    fx.output_gain,
+                    fx.dry_level
                 ),
                 ir::Reason::NotModeled,
             );
@@ -398,8 +403,20 @@ impl Translation {
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
+        let mut chain = None;
         if let Ok(array) = group.insert_fx() {
-            self.effects(&format!("{at} insert"), crate::effects::rack(&array));
+            let (processors, notes) = crate::effects::group_inserts(&crate::effects::rack(&array));
+            for (slot, feature, value, reason) in notes {
+                self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
+            }
+            if !processors.is_empty() {
+                self.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Voice,
+                    pre_amplitude: processors,
+                    post_amplitude: Vec::new(),
+                });
+                chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+            }
         }
         let mut envelope = None;
         let mut routes = Vec::new();
@@ -579,6 +596,7 @@ impl Translation {
             envelope,
             velocity,
             routes,
+            chain,
         }))
     }
 
@@ -870,6 +888,7 @@ impl Translation {
             },
             amplitude: group.envelope,
             routes: group.routes.clone(),
+            chain: group.chain,
             ..ir::Zone::new(asset)
         });
     }

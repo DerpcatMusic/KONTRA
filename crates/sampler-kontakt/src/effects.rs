@@ -143,3 +143,262 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
     }
     out
 }
+
+/// A module's stored parameters, where the layout is known (byte-exact on
+/// every local instance in v1's survey).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Params {
+    /// Linear gain.
+    Gainer { gain: f32 },
+    /// `$ENGINE_PAR_STEREO` (offset from 100% width), `$ENGINE_PAR_STEREO_PAN`,
+    /// `$ENGINE_PAR_STEREO_PSEUDO`.
+    StereoModeller { spread: f32, pan: f32, pseudo: bool },
+    /// `$ENGINE_PAR_PHASE_INVERT`, `$ENGINE_PAR_LR_SWAP`.
+    Inverter { invert: bool, swap: bool },
+    /// Linear level into each instrument send slot; a second table (17
+    /// levels, 1.0 locally) of unknown meaning.
+    SendLevels { sends: Vec<f32>, outputs: Vec<f32> },
+    /// Kontakt filter type (stored twice), normalized cutoff/resonance and
+    /// up to three further values.
+    Filter {
+        kind: i32,
+        cutoff: f32,
+        resonance: f32,
+        extra: Vec<f32>,
+    },
+    /// 1-3 band EQ (filter types 22..=24): Hz, octaves, dB.
+    Eq { bands: Vec<[f32; 3]> },
+}
+
+impl Slot {
+    pub(crate) fn params(&self) -> Option<Params> {
+        let mut r = Reader(&self.public);
+        let params = match self.module {
+            0x13 => Params::Gainer { gain: r.f32()? },
+            0x1f => Params::StereoModeller {
+                spread: r.f32()?,
+                pan: r.f32()?,
+                pseudo: r.flag()?,
+            },
+            0x1a => Params::Inverter {
+                invert: r.flag()?,
+                swap: r.flag()?,
+            },
+            0x17 => Params::SendLevels {
+                sends: r.list()?,
+                outputs: r.list()?,
+            },
+            0x18 => {
+                let kind = r.i32()?;
+                if r.i32()? != kind {
+                    return None;
+                }
+                if (22..=24).contains(&kind) {
+                    let bands = (21..kind)
+                        .map(|_| Some([r.f32()?, r.f32()?, r.f32()?]))
+                        .collect::<Option<_>>()?;
+                    Params::Eq { bands }
+                } else {
+                    // Ladder (70, 71) stores a leading value first.
+                    let leading = if matches!(kind, 70 | 71) {
+                        Some(r.f32()?)
+                    } else {
+                        None
+                    };
+                    let (cutoff, resonance) = (r.f32()?, r.f32()?);
+                    let mut extra: Vec<f32> = leading.into_iter().collect();
+                    while let Some(x) = r.f32() {
+                        extra.push(x);
+                    }
+                    Params::Filter {
+                        kind,
+                        cutoff,
+                        resonance,
+                        extra,
+                    }
+                }
+            }
+            _ => return None,
+        };
+        r.0.is_empty().then_some(params)
+    }
+}
+
+struct Reader<'a>(&'a [u8]);
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let (head, rest) = self.0.split_first_chunk::<N>()?;
+        self.0 = rest;
+        Some(*head)
+    }
+    fn f32(&mut self) -> Option<f32> {
+        self.take()
+            .map(f32::from_le_bytes)
+            .filter(|x| x.is_finite())
+    }
+    fn i32(&mut self) -> Option<i32> {
+        self.take().map(i32::from_le_bytes)
+    }
+    fn flag(&mut self) -> Option<bool> {
+        self.take::<1>().map(|[b]| b != 0)
+    }
+    /// `u32` count, then that many `f32`s.
+    fn list(&mut self) -> Option<Vec<f32>> {
+        let n = u32::from_le_bytes(self.take()?) as usize;
+        (n <= self.0.len() / 4).then_some(())?;
+        (0..n).map(|_| self.f32()).collect()
+    }
+}
+
+/// A report entry: slot, feature, value, reason.
+pub(crate) type Note = (usize, String, String, sampler_ir::Reason);
+
+type Matrix = [[f64; 2]; 2];
+const IDENTITY: Matrix = [[1.0, 0.0], [0.0, 1.0]];
+
+fn product(a: Matrix, b: Matrix) -> Matrix {
+    std::array::from_fn(|i| std::array::from_fn(|j| a[i][0] * b[0][j] + a[i][1] * b[1][j]))
+}
+
+/// The stereo matrix of a linear module, and what it leaves out.
+fn matrix(
+    params: &Params,
+    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
+) -> Option<Matrix> {
+    use sampler_ir::Reason::{NotModeled, UnknownLaw};
+    Some(match *params {
+        Params::Gainer { gain } => [[f64::from(gain), 0.0], [0.0, f64::from(gain)]],
+        Params::Inverter { invert, swap } => {
+            if invert || swap {
+                // Field order follows the KSP parameter list; not verified
+                // against a rendering.
+                notes.push((
+                    "inverter flag order".into(),
+                    format!("invert {invert} swap {swap}"),
+                    UnknownLaw,
+                ));
+            }
+            let sign = if invert { -1.0 } else { 1.0 };
+            if swap {
+                [[0.0, sign], [sign, 0.0]]
+            } else {
+                [[sign, 0.0], [0.0, sign]]
+            }
+        }
+        Params::StereoModeller {
+            spread,
+            pan,
+            pseudo,
+        } => {
+            if pseudo {
+                notes.push((
+                    "stereo modeller pseudo stereo".into(),
+                    "on".into(),
+                    NotModeled,
+                ));
+            }
+            if spread != 0.0 || pan != 0.0 {
+                // Mid/side width 1 + spread and balance pan: v1's law, not
+                // verified against Kontakt.
+                notes.push((
+                    "stereo modeller width/pan law".into(),
+                    format!("spread {spread} pan {pan}"),
+                    UnknownLaw,
+                ));
+            }
+            let width = (1.0 + f64::from(spread)).clamp(0.0, 2.0);
+            let pan = f64::from(pan);
+            let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
+            let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
+            [
+                [same * gains[0], other * gains[0]],
+                [other * gains[1], same * gains[1]],
+            ]
+        }
+        _ => return None,
+    })
+}
+
+/// A group insert rack as voice-scope processors (Kontakt runs group
+/// inserts per voice, before the amplifier), plus what it leaves out.
+///
+/// Each slot scales its output by the slot's output gain. The slot's dry
+/// level is not mixed back: local presets store 1.0 on Stereo Modeller,
+/// Inverter and EQ slots used as gain trims (output gains in whole-dB steps),
+/// where an added dry path would contradict the trim.
+pub(crate) fn group_inserts(slots: &[Slot]) -> (Vec<sampler_ir::Processor>, Vec<Note>) {
+    let mut notes = Vec::new();
+    let mut combined = IDENTITY;
+    for fx in slots.iter().filter(|fx| !fx.bypass) {
+        let name = module_name(fx.module);
+        let mut slot_notes = Vec::new();
+        let params = fx.params();
+        match params.as_ref().and_then(|p| matrix(p, &mut slot_notes)) {
+            Some(m) => {
+                let wet = f64::from(fx.output_gain);
+                combined = product(m.map(|row| row.map(|x| x * wet)), combined);
+            }
+            // Linear filters applied alike to both channels commute with
+            // the matrices, so leaving one out does not reorder the rest.
+            None => notes.push((
+                fx.slot,
+                "effect".into(),
+                format!("{name} v{:#x} {params:?}", fx.version),
+                sampler_ir::Reason::NotModeled,
+            )),
+        }
+        notes.extend(
+            slot_notes
+                .into_iter()
+                .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
+        );
+    }
+    let processors = if combined == IDENTITY {
+        Vec::new()
+    } else {
+        vec![sampler_ir::Processor::StereoMatrix(combined)]
+    };
+    (processors, notes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(module: u16, public: Vec<u8>, gain: f32) -> Slot {
+        Slot {
+            slot: 0,
+            module,
+            version: 0x50,
+            bypass: false,
+            output_gain: gain,
+            dry_level: 1.0,
+            public,
+            private: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
+        let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        let inverter = slot(0x1a, vec![1, 1], 0.5);
+        let mut modeller = 0.0f32.to_le_bytes().to_vec();
+        modeller.extend(0.0f32.to_le_bytes());
+        modeller.push(0);
+        let modeller = slot(0x1f, modeller, 2.0);
+        let (processors, notes) = group_inserts(&[gainer, inverter, modeller]);
+        // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
+        assert_eq!(
+            processors,
+            vec![sampler_ir::Processor::StereoMatrix([
+                [0.0, -2.0],
+                [-2.0, 0.0]
+            ])]
+        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        // Unity everything: no processor at all.
+        let (processors, _) = group_inserts(&[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)]);
+        assert!(processors.is_empty());
+    }
+}
