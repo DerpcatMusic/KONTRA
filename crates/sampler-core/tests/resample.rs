@@ -1343,6 +1343,9 @@ fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof()
                                     unrolled.extend_from_slice(&source[start + 1..end]);
                                     unrolled.extend(source[start..end - 1].iter().rev().copied());
                                 }
+                                (_, LoopShape::Crossfade { .. }) => {
+                                    unreachable!("covered by crossfade fixture")
+                                }
                             }
                         }
                     }
@@ -1406,6 +1409,121 @@ fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof()
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn crossfade_guards_match_a_preblended_asset_at_fractional_and_multi_wrap_rates() {
+    let source: Vec<_> = (0..32)
+        .map(|i| [(i * 7 % 17) as f32 / 20., -(i * 3 % 13) as f32 / 16.])
+        .collect();
+    for direction in [Direction::Forward, Direction::Reverse] {
+        let ordered: Vec<_> = match direction {
+            Direction::Forward => source[2..30].to_vec(),
+            Direction::Reverse => source[2..30].iter().rev().copied().collect(),
+        };
+        for (start, end, fade) in [(10, 18, 1), (10, 18, 4), (10, 18, 8), (14, 15, 1)] {
+            let prefix = if direction == Direction::Forward {
+                start - 2
+            } else {
+                30 - end
+            };
+            let length = end - start;
+            for passes in [1, 2, 5] {
+                let mut unrolled = ordered[..prefix].to_vec();
+                for pass in 0..passes {
+                    for i in 0..length {
+                        let mut sample = ordered[prefix + i];
+                        if pass + 1 < passes && i >= length - fade {
+                            let phase = i - (length - fade);
+                            let partner = ordered[prefix - fade + phase];
+                            let gain = phase as f64 / fade as f64;
+                            for channel in 0..2 {
+                                sample[channel] = ((1. - gain) * f64::from(sample[channel])
+                                    + gain * f64::from(partner[channel]))
+                                    as f32;
+                            }
+                        }
+                        unrolled.push(sample);
+                    }
+                }
+                unrolled.extend_from_slice(&ordered[prefix + length..]);
+                for rate in [12000, 48000, 156000, 768000] {
+                    for block in [1, 7, 64] {
+                        let playback = Playback {
+                            start: 2,
+                            end: Some(30),
+                            direction,
+                            loop_range: Some(Loop {
+                                start,
+                                end,
+                                mode: LoopMode::Continuous,
+                                shape: sampler_core::LoopShape::Crossfade { frames: fade },
+                                passes: std::num::NonZeroU32::new(passes),
+                            }),
+                            ..Playback::default()
+                        };
+                        let mut actual = runtime(
+                            prepare(
+                                Pcm::new(rate, source.clone().into_boxed_slice()).unwrap(),
+                                48000,
+                                playback,
+                            )
+                            .unwrap(),
+                        );
+                        let mut reference = runtime(
+                            prepare(
+                                Pcm::new(rate, unrolled.clone().into_boxed_slice()).unwrap(),
+                                48000,
+                                Playback::default(),
+                            )
+                            .unwrap(),
+                        );
+                        let (mut output, mut expected) = ([[0.; 2]; 512], [[0.; 2]; 512]);
+                        support::without_heap(|| {
+                            let a = actual.trigger(input(), 60, 1.).unwrap();
+                            let b = reference.trigger(input(), 60, 1.).unwrap();
+                            for (a, b) in output.chunks_mut(block).zip(expected.chunks_mut(block)) {
+                                actual.render(a).unwrap();
+                                reference.render(b).unwrap();
+                            }
+                            assert_eq!((actual.voice_count(), reference.voice_count()), (0, 0));
+                            actual.key_up(a, None).unwrap();
+                            reference.key_up(b, None).unwrap();
+                            actual.flush_ended(|_| true);
+                            reference.flush_ended(|_| true);
+                        });
+                        assert_eq!(
+                            output, expected,
+                            "{direction:?}, {start}..{end}, fade {fade}, passes {passes}, rate {rate}, block {block}"
+                        );
+                    }
+                }
+            }
+        }
+        for (start, end, fade) in [(10, 18, 0), (10, 18, 9), (3, 29, 4)] {
+            let playback = Playback {
+                start: 2,
+                end: Some(30),
+                direction,
+                loop_range: Some(Loop {
+                    start,
+                    end,
+                    mode: LoopMode::Continuous,
+                    shape: sampler_core::LoopShape::Crossfade { frames: fade },
+                    passes: None,
+                }),
+                ..Playback::default()
+            };
+            assert!(
+                prepare(
+                    Pcm::new(48000, source.clone().into_boxed_slice()).unwrap(),
+                    48000,
+                    playback
+                )
+                .is_err()
+            );
         }
     }
 }

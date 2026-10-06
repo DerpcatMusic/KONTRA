@@ -24,7 +24,8 @@ Loops use half-open ranges and two explicit native policies:
 The first pass includes the material before entering the loop (after the loop
 when playing in reverse). Subsequent passes traverse only the loop range. A
 one-frame loop is valid. Wrap is deferred until the next read: a release exactly
-at the loop boundary enters the source tail immediately, without an extra loop.
+at a plain wrap boundary enters the source tail immediately, without an extra loop.
+Crossfaded wraps use the explicit completion policy below.
 Source EOF still retires audio independently of a held logical note; NOTE_END
 continues to require gate closure and complete ownership retirement.
 
@@ -149,3 +150,41 @@ with zero command slots. Execution and retirement are allocation/deallocation ch
 Validation: all 194 native tests pass in debug, release and Rust 1.92; strict
 all-target Clippy and both root boundary tests pass. Logs are retained under
 `artifacts/counted-loops-{debug,release,msrv,clippy,boundary}.log`.
+
+
+## Linear crossfaded wraps
+
+`LoopShape::Crossfade { frames }` keeps the wrap period and blends the outgoing
+loop end into the guard immediately preceding the loop. Reverse traversal uses
+the guard after the loop. The nonzero fade length must fit both the loop and the
+required guard **inside the selected source view**. Missing guard data is rejected,
+not replaced by zeros or an unrelated asset region. The final finite pass does not
+blend, so it proceeds into the original source tail.
+
+The fade is linear and complementary, at integer source positions from weight 0
+at the window start toward 1 at its exclusive boundary. Both channels use the same
+weight. The complete blended virtual source is then bandlimited, including every
+interpolation guard that crosses a wrap; it is not a second cursor with a mismatched
+fractional phase. Unity-rate/integer-phase reads blend directly. Other loop shapes
+retain their contiguous or existing resampling paths. No blended asset is allocated.
+
+A sustain-loop release before the fade window exits at the upcoming boundary. At
+or inside that window, including the exact wrap, it completes the entered wrap and
+exits after the next pass. This preserves every past crossfade guard. Repeated
+release never extends a finite exit; an existing pass limit always wins. This is an
+explicit native policy, requiring profile comparison before claiming vendor behavior.
+
+One-frame fades/loops, full-loop-length fades, first/final passes, forward/reverse
+views and source rates 0.25/1/3.25/16 times output rate match independently preblended
+finite assets exactly at blocks 1/7/64. Preparation rejects zero/oversized fades and
+missing view guards. Unit checks independently enumerate release boundaries and
+compare past/future reads, including fractional positions and finite limits.
+Runtime interpolation/retirement checks have zero heap activity.
+
+Still open: reflected/ping-pong crossfades, overlap models that shorten the period,
+equal-power or source-specific curves, streaming dual-window demand and vendor
+profile fidelity. A linear complementary fade is not an equal-power or spectral
+morph implementation.
+
+Validation: 283 native tests pass in debug, release and Rust 1.92; strict all-target
+Clippy and both root boundary tests pass (`artifacts/loop-crossfade-*`).
