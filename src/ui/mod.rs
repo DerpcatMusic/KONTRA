@@ -554,8 +554,11 @@ impl Cx<'_> {
     /// Add an instrument to the first free slot and show it.
     fn add(&mut self, path: String) {
         self.remember(&path);
-        let part = new_part(&self.selection, &self.settings, path);
-        let slot = add_part(&mut self.selection, part);
+        let mut slot = 0;
+        for program in 0..program_count(&path) {
+            let part = Part { program, ..new_part(&self.selection, &self.settings, path.clone()) };
+            slot = add_part(&mut self.selection, part);
+        }
         self.ensure_parts();
         self.show(slot);
     }
@@ -624,6 +627,15 @@ fn replace_part(part: &mut Part, path: String) {
     part.name.clear();
     // Another instrument has another output tree.
     part.nodes.clear();
+}
+
+/// How many rack parts `path` opens as: one per program of a Kontakt multi.
+fn program_count(path: &str) -> u32 {
+    let path = Path::new(path);
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm")) {
+        return 1;
+    }
+    sampler_kontakt::read_multi(path).map_or(1, |m| m.programs.len().max(1) as u32)
 }
 
 /// A part for `path` on the input and output the settings give new parts.
@@ -763,8 +775,13 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
                     slot
                 }
                 None => {
-                    let part = new_part(&selection, &p.shared.libraries.settings(), path);
-                    add_part(&mut selection, part)
+                    let settings = p.shared.libraries.settings();
+                    let mut slot = 0;
+                    for program in 0..program_count(&path) {
+                        let part = Part { program, ..new_part(&selection, &settings, path.clone()) };
+                        slot = add_part(&mut selection, part);
+                    }
+                    slot
                 }
             };
             p.shared.focus_request.store(slot as u64, Ordering::Relaxed);
