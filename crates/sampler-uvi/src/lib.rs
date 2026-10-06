@@ -923,16 +923,22 @@ impl Translated {
     /// Start the program's Lua scripts on their own thread and mark the
     /// instrument as scripted: what they replace is no longer reported, what
     /// they use that is not modeled is. `None` when the program has none.
+    #[track_caller]
     pub fn attach_script(
         &mut self,
         rate: u32,
         config: script::Config,
-    ) -> Result<Option<AttachedScript>, String> {
+    ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
         let (thread, loaded) =
-            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config)?;
+            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config).map_err(
+                |reason| {
+                    sampler_kontakt::LoadError::Invalid { path: "script".into(), reason }
+                        .at(sampler_kontakt::Stage::ScriptCompile)
+                },
+            )?;
         let unsupported = &mut self.instrument.unsupported;
         if scripted::Script::handles_notes(&thread) {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
@@ -956,7 +962,33 @@ impl Translated {
 
 /// Translate what [`load`] accepts without decoding samples, so a host can
 /// shape the instrument (mixer buses) before [`assemble_translated`].
+#[track_caller]
 pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Error>> {
+    translate_untagged(path).map_err(|e| staged(e, path, sampler_kontakt::Stage::Translate))
+}
+
+/// Tag `error` with the load `stage` and the caller's location, as the other
+/// loaders do ([`sampler_kontakt::LoadError::at`]); reading failures are the
+/// container's.
+#[track_caller]
+fn staged(
+    error: Box<dyn std::error::Error>,
+    path: &Path,
+    stage: sampler_kontakt::Stage,
+) -> Box<dyn std::error::Error> {
+    use sampler_kontakt::{LoadError, Stage};
+    let (load, stage) = match error.downcast::<Error>() {
+        Ok(e) => match *e {
+            Error::Io { path, error } => (LoadError::Io { path, error }, Stage::Container),
+            Error::Xml { path, error } => (LoadError::Invalid { path, reason: error.to_string() }, stage),
+            Error::Invalid { path, reason } => (LoadError::Invalid { path, reason }, stage),
+        },
+        Err(other) => (LoadError::Invalid { path: path.into(), reason: other.to_string() }, stage),
+    };
+    Box::new(load.at(stage))
+}
+
+fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Error>> {
     if let Some(bank_path) = path
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
@@ -998,10 +1030,12 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.
+#[track_caller]
 pub fn assemble_translated(
     t: Translated,
     rate: u32,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
     let decoded = t
         .locations
         .iter()
@@ -1022,15 +1056,18 @@ pub fn assemble_translated(
             ..Default::default()
         },
     )
+    .map_err(|e| staged(e, &named, sampler_kontakt::Stage::Prepare))
 }
 
 /// [`assemble_translated`], streamed: only the frames where zones start and a
 /// page pool are resident; the rest is read from the bank or file on demand.
+#[track_caller]
 pub fn assemble_translated_streamed(
     t: Translated,
     rate: u32,
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    let named = t.locations.first().map(PathBuf::from).unwrap_or_default();
     let sources = t
         .locations
         .iter()
@@ -1043,6 +1080,7 @@ pub fn assemble_translated_streamed(
         })
         .collect();
     assemble_streamed(t.instrument, t.locations, sources, rate, policy)
+        .map_err(|e| staged(e, &named, sampler_kontakt::Stage::Prepare))
 }
 
 /// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
