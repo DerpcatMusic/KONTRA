@@ -656,8 +656,8 @@ fn sustain_and_sostenuto(setup: Setup) {
 
 /// Channel-mode messages under the sustain pedal. All Notes Off releases held
 /// keys but the pedal still holds them; All Sound Off silences at once with no
-/// release phase, before or after the late key-up. Reset All Controllers is
-/// not interpreted: the pedal stays down until an explicit CC64 lift.
+/// release phase, before or after the late key-up. Reset All Controllers
+/// lifts the pedal (RP-015), releasing the held notes before the CC64 lift.
 fn channel_mode(setup: Setup) {
     let (a, b, c) = (setup.keys.0, setup.keys.0 + 4, setup.keys.0 + 7);
     let Some(run) = play(
@@ -689,10 +689,11 @@ fn channel_mode(setup: Setup) {
         ]
     );
     assert_eq!(run.other[0].2, Ok(Applied::AllNotesOff { released: 1 }));
-    assert_eq!(run.other[1].2, Ok(Applied::Unsupported));
+    // Reset All Controllers lifts the pedal (RP-015): the held notes go.
+    assert_eq!(run.other[1].2, Ok(Applied::ResetControllers));
     assert!(matches!(run.other[2].2, Ok(Applied::AllSoundOff { stopped }) if stopped > 0));
-    assert_gate(&run, name, a, 0, 0.2, 0.6);
-    assert_gate(&run, name, b, 0, 0.3, 0.6);
+    assert_gate(&run, name, a, 0, 0.2, 0.4);
+    assert_gate(&run, name, b, 0, 0.3, 0.4);
     let p = run.note(c, 0);
     assert_eq!(
         (p.key_at, p.gate_at),
@@ -1007,12 +1008,14 @@ mod vista_3_cellos {
             return;
         };
         record("Vista 3 Cellos", &plain);
-        // Kontakt release-trigger groups lower to KeyRelease: one release
-        // phase per released key, at key-up even while the pedal holds it.
+        // Kontakt release-trigger groups lower to GateRelease: one release
+        // phase per released key, when the pedal lets the note go, not at
+        // key-up (Kontakt's system pedal script holds the note-off).
         assert!(plain.release_zones);
         for p in &plain.played {
-            assert_eq!(p.release_trigger, Some(Trigger::KeyRelease));
-            assert_eq!(p.fired, [block_of(p.key_at.unwrap() as usize)]);
+            assert_eq!(p.release_trigger, Some(Trigger::GateRelease));
+            assert!(p.key_at < p.gate_at);
+            assert_eq!(p.fired, [block_of(p.gate_at.unwrap() as usize)]);
         }
         assert!(plain.peak() < 1.5, "peak {}", plain.peak());
     }
