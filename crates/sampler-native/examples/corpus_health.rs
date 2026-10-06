@@ -79,15 +79,25 @@ fn roots(explicit: &[String]) -> Vec<PathBuf> {
     roots
 }
 
-fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+/// Collect library files. A directory is visited once (by canonical path), and
+/// `KONTRA project recovery` folders are skipped: they hold recursive copies
+/// of the library tree plus saved presets, not library content.
+fn walk(dir: &Path, files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     if dir.is_file() {
         files.push(dir.to_owned());
+        return;
+    }
+    if dir
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().contains("KONTRA project recovery"))
+        || !seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.to_owned()))
+    {
         return;
     }
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk(&path, files);
+            walk(&path, files, seen);
         } else if path.extension().is_some_and(|e| {
             ["nki", "nkm", "ufs", "uvip"]
                 .iter()
@@ -100,8 +110,9 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
 
 fn items(roots: &[PathBuf]) -> Vec<Item> {
     let mut files = Vec::new();
+    let mut seen = HashSet::new();
     for root in roots {
-        walk(root, &mut files);
+        walk(root, &mut files, &mut seen);
     }
     files.sort();
     files.dedup();
@@ -423,6 +434,7 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, u8)>) {
 fn check(item: &Item) -> Value {
     let start = Instant::now();
     let (load, loaded) = load_item(item);
+    let load_ms = start.elapsed().as_millis() as u64;
     let mut record = json!({
         "id": item.id(),
         "kind": item.kind(),
@@ -456,6 +468,7 @@ fn check(item: &Item) -> Value {
             Err(e) => record["sound"] = json!({"error": normalize(&e)}),
         }
     }
+    record["load_ms"] = json!(load_ms);
     record["ms"] = json!(start.elapsed().as_millis() as u64);
     record
 }
@@ -475,6 +488,20 @@ fn run(out: &Path, shard: Option<(usize, usize)>, explicit: &[String]) {
     }
     let mut finished = HashSet::new();
     let mut crashed = Vec::new();
+    // Results from sibling shard files of earlier runs are reused, so changing
+    // the item list or shard count does not redo finished work.
+    if let Some(dir) = out.parent() {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let sibling = entry.path();
+            if sibling != out && sibling.extension().is_some_and(|e| e == "jsonl") {
+                for r in read_records(&sibling) {
+                    if r["status"] != "started" {
+                        finished.insert(r["id"].as_str().unwrap_or_default().to_string());
+                    }
+                }
+            }
+        }
+    }
     let records = read_records(out);
     let mut started = HashSet::new();
     for r in &records {
@@ -526,10 +553,41 @@ fn run(out: &Path, shard: Option<(usize, usize)>, explicit: &[String]) {
     }
 }
 
+/// One `OUT.jsonl`, or every `*.jsonl` in a directory (the shard files).
+fn all_records(out: &Path) -> Vec<Value> {
+    if !out.is_dir() {
+        return read_records(out);
+    }
+    let mut files: Vec<_> = std::fs::read_dir(out)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .collect();
+    files.sort();
+    let mut seen = HashSet::new();
+    files
+        .iter()
+        .flat_map(|f| read_records(f))
+        // A result supersedes a crash marker only if it came later; keep the first
+        // finished record per id.
+        .filter(|r| {
+            r["status"] == "started" || seen.insert(r["id"].as_str().unwrap_or("").to_string())
+        })
+        .collect()
+}
+
 fn summary(out: &Path, md: &Path) {
-    let records: Vec<Value> = read_records(out)
+    let records: Vec<Value> = all_records(out)
         .into_iter()
         .filter(|r| r["status"] != "started")
+        .filter(|r| {
+            !r["id"]
+                .as_str()
+                .unwrap_or("")
+                .contains("KONTRA project recovery")
+        })
         .collect();
     let total = records.len();
     let mut by_kind = BTreeMap::<String, [usize; 5]>::new(); // total, loaded, sounds, scripts failed, clean
