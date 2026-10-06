@@ -897,6 +897,7 @@ fn pending_pitch_constrains_late_sources_and_detachment_keeps_admission_atomic()
 fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
     use sampler_core::{Duration, Instruction, Outcome, Program, Velocity};
     let initial = Expression {
+        bend: 0.0,
         gain: 0.5,
         pan: 0.25,
         pitch_semitones: 12.0,

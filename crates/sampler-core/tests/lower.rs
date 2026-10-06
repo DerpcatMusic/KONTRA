@@ -322,13 +322,8 @@ fn zone_routes_lower_to_voice_modulation() {
 
     ir.routes[1].target = ir::Target::Pan;
     ir.routes[1].depth = ir::Depth::Normalized(1.0);
-    assert!(matches!(
-        rejected(&ir, vec![constant(0.5)]),
-        LowerError::Unsupported {
-            feature: Feature::PitchBendSource,
-            ..
-        }
-    ));
+    // Bend anywhere else is a bipolar voice modulation source.
+    assert!(lower(&ir, 48000, vec![constant(0.5)], no_behaviors).is_ok());
 }
 
 #[test]
