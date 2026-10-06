@@ -136,9 +136,7 @@ pub struct Prepared {
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     pub(super) script_initial: Box<[Box<[i64]>]>,
-    note_program: Option<usize>,
-    pub(super) release_program: Option<usize>,
-    pub(super) controller_programs: Box<[usize]>,
+    pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[(super::ControlId, usize)]>,
@@ -284,9 +282,7 @@ impl Prepared {
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             script_initial: Box::new([]),
-            note_program: None,
-            release_program: None,
-            controller_programs: Box::new([]),
+            stages: Box::new([]),
             note_cells: 0,
             controls: Box::new([]),
             control_programs: Box::new([]),
@@ -334,9 +330,10 @@ impl Prepared {
         }
         self.note_cells = cells;
         self.programs = programs.into_boxed_slice();
-        self.note_program = note_program;
-        self.release_program = None;
-        self.controller_programs = Box::new([]);
+        self.stages = Box::new([super::Stage {
+            note: note_program,
+            ..super::Stage::default()
+        }]);
         self.control_programs = Box::new([]);
         Ok(self)
     }
@@ -350,7 +347,10 @@ impl Prepared {
         }) {
             return Err(Error::InvalidInput);
         }
-        self.release_program = Some(program);
+        if self.stages.is_empty() {
+            self.stages = Box::new([super::Stage::default()]);
+        }
+        self.stages[0].release = Some(program);
         Ok(self)
     }
 

@@ -43,6 +43,8 @@ pub use behavior::{
     BehaviorId, BehaviorOwner, Comparison, Duration, DurationValue, Instruction, Outcome, Program,
     Velocity, WaitLifetime,
 };
+mod stages;
+pub use stages::Stage;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
 mod dsp;

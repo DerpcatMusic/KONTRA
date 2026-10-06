@@ -612,14 +612,6 @@ impl Runtime {
             outcome: None,
         })?);
         generation.callbacks += 1;
-        if let Some(event) = controller {
-            if event.stage == 0 {
-                self.performance_state.input_controllers[event.performance]
-                    [usize::from(event.number)] = event.value;
-            } else {
-                generation.controllers.receive(event);
-            }
-        }
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
         self.resume_behavior(id);
@@ -645,12 +637,8 @@ impl Runtime {
         self.behaviors.unreserve(1);
         if musical {
             let plan = self.notes.get(note.0).unwrap().plan;
-            let program = self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .prepared
-                .release_program
+            let program = self.plans.get(plan.0).unwrap().prepared.stages[0]
+                .release
                 .unwrap();
             self.start_behavior_now(note, program)
                 .expect("owned release continuation reservation");

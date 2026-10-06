@@ -649,11 +649,20 @@ root boundary tests pass (`artifacts/controller-stages-*`). A strengthened nativ
 ordering assertion confirms downstream callbacks finish before the generating
 callback's following instruction reads shared state.
 
-The next routing step must preserve source module identity independently of the
-controller-handler ordinal: a module can have no controller callback yet still
-own note/release/UI callbacks. Existing `ScriptInstanceId` retains module order
-and state ownership, while controller stage indices currently enumerate handlers.
-Full routing must carry the creating module boundary across event kinds, copy
-projections only on forwarding, and reserve release callbacks only for reached
-note stages. Concatenating programs or sharing one mutable event/group projection
-across suspended source slots would violate these requirements.
+The prepared `Stage` table now preserves every source module position, including
+modules without a controller callback. Each position declares its note, release
+and controller program indices; `ScriptInstanceId` separately owns script state.
+The KSP binder retains init/UI-only modules and relocates their callbacks without
+compressing the route. Controller admission counts actual callbacks for capacity,
+while incoming CC projections update every crossed module boundary. Empty leading,
+intermediate and trailing positions do not consume callback slots.
+
+Downstream note/release bindings still fail explicitly. Full routing must carry
+the creating module boundary across event kinds, copy projections only on
+forwarding, and reserve release callbacks only for reached note stages.
+Concatenating programs or sharing one mutable event/group projection across
+suspended source slots would violate these requirements.
+
+Module-position validation: 315 native release tests and strict all-target Clippy
+pass (`artifacts/module-stages-*`). Fixtures cover sparse callback routes, exact
+CC projection, failed-admission atomicity, context validation and UI ownership.
