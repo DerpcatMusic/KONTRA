@@ -160,6 +160,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   Raw external key pairing now survives downstream script note-off and callback
   fault/cancellation; logical held-state and MPE's physical input projection are
   separate, including same-key FIFO and independent host/script deadlines.
+  Nested release callbacks now use preallocated dispatch frames instead of recursive
+  interpreter calls, preserving per-callback fuel, wait ordering and release completion.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
 

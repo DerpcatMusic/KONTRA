@@ -455,3 +455,99 @@ fn script_deadline_replacement_cannot_consume_scheduled_physical_keyups() {
         });
     }
 }
+
+#[test]
+fn thousands_of_nested_release_callbacks_use_reserved_frames_on_a_small_thread_stack() {
+    const COUNT: usize = 4096;
+    let release = Program::new(vec![
+        Instruction::ReadEventId { local: 0 },
+        Instruction::AddLocal { local: 0, value: 1 },
+        Instruction::KeyUpEvent {
+            event: 0,
+            delay: None,
+        },
+        Instruction::ReadScriptCell { local: 1, cell: 0 },
+        Instruction::AddLocal { local: 1, value: 1 },
+        Instruction::WriteScriptCell { cell: 0, local: 1 },
+    ])
+    .unwrap()
+    .with_script_instance(ScriptInstanceId(0))
+    .with_wait_lifetime(WaitLifetime::Callback);
+    let p = plan()
+        .with_script_instances(vec![vec![0]])
+        .unwrap()
+        .with_programs(vec![release], None)
+        .unwrap()
+        .with_release_program(0)
+        .unwrap();
+    let mut rt = Runtime::new(
+        p,
+        Limits {
+            behavior_fuel: 6,
+            ..limits(COUNT)
+        },
+    )
+    .unwrap();
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            let mut notes = Vec::with_capacity(COUNT);
+            support::without_heap(|| {
+                for index in 0..COUNT {
+                    let n = rt
+                        .trigger(
+                            Input {
+                                external_id: Some(index as i32),
+                                ..input()
+                            },
+                            60,
+                            1.,
+                        )
+                        .unwrap();
+                    assert_eq!(rt.source_event_id(n).unwrap(), index as i32 + 1);
+                    notes.push(n);
+                }
+                rt.key_up(notes[0], None).unwrap();
+                assert_eq!(
+                    rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+                    Ok(COUNT as i64)
+                );
+                let mut callbacks = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    callbacks += 1;
+                    true
+                });
+                assert_eq!(callbacks, COUNT);
+                let mut ends = 0;
+                rt.flush_ended(|_| {
+                    ends += 1;
+                    true
+                });
+                assert_eq!(
+                    (ends, rt.note_count(), rt.pending_commands()),
+                    (1, COUNT - 1, 0)
+                );
+                for &note in &notes[1..] {
+                    assert!(!rt.key_down(note).unwrap() && rt.input_held(note).unwrap());
+                    rt.key_up(note, None).unwrap();
+                }
+                rt.flush_ended(|_| true);
+                assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+                let fresh = rt.trigger(input(), 60, 1.).unwrap();
+                rt.key_up(fresh, None).unwrap();
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!(
+                    rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+                    Ok(COUNT as i64 + 1)
+                );
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

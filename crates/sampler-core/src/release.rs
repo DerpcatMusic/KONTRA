@@ -56,6 +56,7 @@ impl Note {
 pub(super) struct ReleaseTimes {
     pub groups_forwarded: bool,
     pub held: bool,
+    pub finishing: bool,
     pub admitted_at: u64,
     pub key_at: u64,
     pub gate_at: u64,
@@ -73,7 +74,12 @@ pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
 }
 
 impl Runtime {
-    pub(super) fn release_key(&mut self, id: NoteId, cause: ReleaseCause, velocity: Option<f64>) {
+    pub(super) fn release_key(
+        &mut self,
+        id: NoteId,
+        cause: ReleaseCause,
+        velocity: Option<f64>,
+    ) -> bool {
         let note = self.notes.get_mut(id.0).unwrap();
         if matches!(
             cause,
@@ -89,24 +95,23 @@ impl Runtime {
             times.key_at = self.now;
             times.velocity = velocity;
             note.key_release = Some(cause);
-            self.run_release_behavior(
-                id,
-                matches!(
-                    cause,
-                    ReleaseCause::KeyUp | ReleaseCause::Script | ReleaseCause::AllNotesOff
-                ),
-            );
+            let musical = cause.triggers_key_release();
+            if musical && times.release_behavior {
+                times.finishing = true;
+                note.work = note
+                    .work
+                    .checked_add(1)
+                    .expect("reserved release completion");
+                self.push_behavior_work(super::behavior::Ready::FinishKeyUp(id, cause));
+                self.run_release_behavior(id, true);
+                return true;
+            }
+            self.run_release_behavior(id, musical);
             if !self.release_times[id.0.index].held {
-                self.run_release(
-                    id,
-                    Trigger::KeyRelease,
-                    matches!(
-                        cause,
-                        ReleaseCause::KeyUp | ReleaseCause::Script | ReleaseCause::AllNotesOff
-                    ),
-                );
+                self.run_release(id, Trigger::KeyRelease, musical);
             }
         }
+        self.release_times[id.0.index].finishing
     }
 
     /// Stop a pending release before its script forwarding boundary. Physical key
@@ -135,8 +140,7 @@ impl Runtime {
         }
         self.release_times[note.0.index].held = false;
         self.forward_release_groups(note)?;
-        self.run_release(note, Trigger::KeyRelease, true);
-        self.key_up_with_cause(note, None, ReleaseCause::Script)?;
+        self.finish_key_release(note, ReleaseCause::Script);
         Ok(true)
     }
 
@@ -237,6 +241,9 @@ impl ReleaseReserve {
 }
 
 impl ReleaseCause {
+    pub(super) fn triggers_key_release(self) -> bool {
+        matches!(self, Self::KeyUp | Self::Script | Self::AllNotesOff)
+    }
     pub(super) fn musical(self) -> bool {
         matches!(
             self,

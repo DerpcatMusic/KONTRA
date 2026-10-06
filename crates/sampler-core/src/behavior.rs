@@ -391,6 +391,12 @@ pub(super) struct Continuation {
     pub outcome: Option<Outcome>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Ready {
+    Resume(BehaviorId, usize),
+    FinishKeyUp(NoteId, super::ReleaseCause),
+}
+
 impl Runtime {
     /// Run against an existing logical note. A caller can suppress default playback
     /// by admitting with note_on instead of trigger. Completion owns a private pin
@@ -567,10 +573,29 @@ impl Runtime {
     }
 
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
-        for _ in 0..self.behavior_fuel {
+        self.push_behavior_work(Ready::Resume(id, self.behavior_fuel));
+        if self.dispatching_behavior {
+            return;
+        }
+        self.dispatching_behavior = true;
+        // A bounded explicit stack preserves synchronous nested callback ordering.
+        // Each suspended caller retains its own remaining fuel, never a Rust frame.
+        while let Some(ready) = self.behavior_ready.last().copied() {
+            let index = self.behavior_ready.len() - 1;
+            let (id, fuel) = match ready {
+                Ready::Resume(id, fuel) => (id, fuel),
+                Ready::FinishKeyUp(note, cause) => {
+                    self.behavior_ready.pop();
+                    self.release_times[note.0.index].finishing = false;
+                    self.finish_key_release(note, cause);
+                    self.notes.get_mut(note.0).unwrap().work -= 1;
+                    continue;
+                }
+            };
             let c = *self.behaviors.get(id.0).unwrap();
             if c.outcome.is_some() {
-                return;
+                self.behavior_ready.pop();
+                continue;
             }
             let plan = &self
                 .plans
@@ -579,29 +604,36 @@ impl Runtime {
                 .prepared;
             let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
-                return;
+                self.behavior_ready.pop();
+                continue;
             };
+            if fuel == 0 {
+                self.fail_behavior(id, Outcome::FuelExhausted);
+                self.behavior_ready.remove(index);
+                continue;
+            }
+            self.behavior_ready[index] = Ready::Resume(id, fuel - 1);
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             match self.behavior_step(id, c.owner, op) {
-                Ok(true) => return,
+                Ok(true) => {
+                    self.behavior_ready.remove(index);
+                }
                 Ok(false) => {}
                 Err(error) => {
                     self.fail_behavior(id, Outcome::Fault(error));
-                    return;
+                    self.behavior_ready.remove(index);
                 }
             }
         }
-        let c = *self.behaviors.get(id.0).unwrap();
-        let plan = &self
-            .plans
-            .get(self.behavior_plan(c.owner).unwrap().0)
-            .unwrap()
-            .prepared;
-        if c.pc == plan.programs[c.program].code.len() {
-            self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
-        } else {
-            self.fail_behavior(id, Outcome::FuelExhausted);
-        }
+        self.dispatching_behavior = false;
+    }
+
+    pub(super) fn push_behavior_work(&mut self, ready: Ready) {
+        assert!(
+            self.behavior_ready.len() < self.behavior_ready.capacity(),
+            "reserved callback dispatch capacity"
+        );
+        self.behavior_ready.push(ready);
     }
 
     /// true means suspended or finished, false means continue synchronously.

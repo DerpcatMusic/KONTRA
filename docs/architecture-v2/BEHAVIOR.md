@@ -22,7 +22,7 @@ The current instructions are deliberately concrete:
 - `End`: finish the callback. Reaching the instruction array's end also finishes.
 - `SetLocal` / `AddLocal`: callback-local signed 64-bit integers with checked addition.
 - `ReadKey`: read the originating note's logical key into a local.
-- `ReadKeyDown`: read that owner's physical key state, independently of its gate.
+- `ReadKeyDown`: read that owner's downstream logical key state, independently of its gate.
 - `CompareLocal`: compare two signed locals and replace the left with 0/1; all six
   equality/order relations work at i64 extrema without subtracting or wrapping.
 - `ReadNoteCell` / `WriteNoteCell`: transfer a local to/from note-owned integer state.
@@ -527,3 +527,23 @@ physical commands intact; both retain their complete target handles. A pending s
 key-up can also resume a subsequently suppressed release without another callback.
 All-sound-off retains raw keys as before. MPE member expression now consults the same
 raw projection, with no parallel adapter-side ownership table.
+
+
+## Bounded callback dispatch
+
+Nested native release callbacks run on an explicit LIFO work stack prepared with
+two entries per continuation slot: its instruction frame and possible key-release
+completion. Dispatch never recursively invokes the interpreter. Suspended callers
+keep their remaining fuel; waits retain the existing fresh budget on resume. A
+completion privately pins its note while callback side effects determine release
+groups and the final pedal-aware gate state. Explicit forwarding inside a suppressed
+release still closes its gate before the next instruction observes it.
+
+A 4,096-note release chain runs on a 128 KiB thread stack without runtime heap
+activity. Source fixtures cover nested side-effect ordering, wait boundaries, gate
+closure before subsequent generated notes, raw input retention and arena reuse.
+This preserves the tested native synchronous policy; it does not establish vendor
+callback ordering or implement ordered script slots.
+
+Validation: 272 native tests pass in debug, release and Rust 1.92; strict all-target
+Clippy and both root boundary tests pass (`artifacts/callback-dispatch-*`).

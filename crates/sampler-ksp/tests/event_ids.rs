@@ -284,3 +284,62 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         true
     });
 }
+
+#[test]
+fn nested_release_dispatch_preserves_side_effect_order_and_wait_resume_boundaries() {
+    let source = "on init declare %ids[2] declare $order end on
+      on note %ids[$EVENT_NOTE - 60] := $EVENT_ID end on
+      on release
+        if ($EVENT_NOTE = 60)
+          note_off(%ids[1])
+          $order := $order * 10 + 1
+        else
+          $order := $order * 10 + 2
+          wait(125)
+          $order := $order * 10 + 3
+        end if
+      end on";
+    let mut rt = runtime(source);
+    support::without_heap(|| {
+        let a = rt.trigger(input(60), 60, 1.).unwrap();
+        let b = rt.trigger(input(61), 61, 1.).unwrap();
+        rt.key_up(a, None).unwrap();
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2),
+            Ok(21)
+        );
+        assert!(rt.release_context(b).unwrap().gate.is_some());
+        assert!(rt.input_held(b).unwrap());
+        rt.render(&mut [[0.; 2]; 6]).unwrap();
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2),
+            Ok(21)
+        );
+        rt.render(&mut []).unwrap();
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 2),
+            Ok(213)
+        );
+        rt.key_up(b, None).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+    });
+    let mut rt = runtime(
+        "on release ignore_event($EVENT_ID) note_off($EVENT_ID) play_note(60,127,0,-1) end on",
+    );
+    support::without_heap(|| {
+        let n = rt.trigger(input(60), 60, 1.).unwrap();
+        rt.key_up(n, None).unwrap();
+        assert_eq!(rt.voice_count(), 0);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Fault(Error::ClosedNote));
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}
