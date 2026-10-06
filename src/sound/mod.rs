@@ -50,9 +50,38 @@ pub enum CoreError {
     /// The request or its source data is invalid.
     Invalid(String),
     /// Reading or decoding the source failed.
-    Load(String),
+    Load(LoadFailure),
     /// The caller canceled the preparation.
     Canceled,
+}
+
+/// A failed load: the message and, when the source tagged it, where in loading
+/// it happened (typed, for reports and the corpus harness).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadFailure {
+    pub message: String,
+    pub stage: Option<sampler_kontakt::Stage>,
+    pub kind: Option<sampler_kontakt::Kind>,
+    /// File and line in the loader that tagged the error.
+    pub at: Option<(&'static str, u32)>,
+}
+
+impl LoadFailure {
+    /// A failure with only a message (a source that does not stage its errors).
+    pub fn message(message: impl fmt::Display) -> Self {
+        Self { message: message.to_string(), stage: None, kind: None, at: None }
+    }
+}
+
+impl From<&sampler_kontakt::LoadError> for LoadFailure {
+    fn from(e: &sampler_kontakt::LoadError) -> Self {
+        Self {
+            message: e.to_string(),
+            stage: e.stage(),
+            kind: Some(e.kind()),
+            at: e.location().map(|l| (l.file(), l.line())),
+        }
+    }
 }
 
 impl fmt::Display for CoreError {
@@ -61,7 +90,7 @@ impl fmt::Display for CoreError {
             Self::Unsupported(what) => write!(f, "{what} is not supported by this sound core"),
             Self::Capacity(what) => write!(f, "{what} capacity exhausted"),
             Self::Invalid(why) => write!(f, "invalid input: {why}"),
-            Self::Load(why) => write!(f, "load failed: {why}"),
+            Self::Load(why) => write!(f, "load failed: {}", why.message),
             Self::Canceled => f.write_str("load canceled"),
         }
     }
