@@ -540,7 +540,7 @@ impl Cursor {
             let source = if self.step == 1.0 && self.fraction == 0.0 {
                 self.read(pcm, position)
             } else {
-                let radius = Kernel::radius(self.step);
+                let radius = kernel.window(self.step);
                 let left = self.index(position - i128::from(radius));
                 let right = self.index(position + i128::from(radius));
                 let contiguous = if self.crossfaded() {
