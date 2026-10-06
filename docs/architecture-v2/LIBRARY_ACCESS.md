@@ -50,6 +50,11 @@ The older Areia NKR also has plaintext PNGs bearing a library-key hint. Only
 complete PNG framing with intact chunk CRCs overrides that hint; explicitly
 encrypted headers still require local access. All 2,220 pictures in the 12
 installed NKR containers return recognizable image buffers.
+Plaintext picture-layout companions are recognized only as numeric/boolean
+property lists with animation metadata, at most 64 KiB and 32 unique fields.
+Arbitrary text and KSP scripts do not override protection. The installed survey
+also returns all 2,203 picture-layout companions as valid UTF-8 buffers,
+including all 127 from the older Areia NKR.
 
 ## UVI programs
 
