@@ -568,6 +568,7 @@ impl Prepared {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
                 && region.cursor.unbounded_loop()
+                && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
             }
