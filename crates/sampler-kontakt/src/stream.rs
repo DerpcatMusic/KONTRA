@@ -338,10 +338,9 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
         reader.read(range.start, &mut frames)?;
         resident.push((range.start, frames.into_boxed_slice()));
     }
-    let bytes = resident.iter().map(|(_, f)| f.len()).sum::<usize>() * size_of::<Frame>();
     pcm.set_ranges(resident)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    Ok(bytes)
+    Ok(pcm.head_bytes())
 }
 
 /// Control side: where every streamed asset lives, its start ranges, and the
@@ -489,7 +488,7 @@ impl Streamer {
     /// `assets` take at most `budget` bytes; only assets not played since
     /// `before` are purged. Returns the bytes freed.
     pub fn trim(&self, assets: &[Pcm], budget: usize, before: u64) -> usize {
-        let bytes = |pcm: &Pcm| pcm.head_frames() * size_of::<Frame>();
+        let bytes = |pcm: &Pcm| pcm.head_bytes();
         let mut held: usize = assets.iter().map(bytes).sum();
         let mut idle: Vec<&Pcm> = assets
             .iter()
@@ -502,7 +501,7 @@ impl Streamer {
                 break;
             }
             let old = pcm.set_ranges(Vec::new()).expect("no ranges are valid");
-            let n = old.iter().map(|(_, f)| f.len()).sum::<usize>() * size_of::<Frame>();
+            let n = old.iter().map(|(_, f)| f.bytes()).sum::<usize>();
             (held, freed) = (held - n, freed + n);
         }
         freed
@@ -677,7 +676,9 @@ mod tests {
         let (_, worker) = StreamCache::new(1).unwrap();
         let (streamer, _) =
             Streamer::start(HashMap::new(), &assets, vec![vec![]; 3], worker, 1).unwrap();
-        let size = 1000 * size_of::<Frame>();
+        // Packed: 16-bit mono.
+        let size = assets[0].head_bytes();
+        assert_eq!(size, 1000 * 2);
         // Nothing has played since 0: nothing is idle before it.
         assert_eq!(streamer.trim(&assets, 0, 0), 0);
         assert_eq!(streamer.trim(&assets, size * 3 / 2, 1), 2 * size);
