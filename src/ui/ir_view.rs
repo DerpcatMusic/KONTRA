@@ -94,7 +94,49 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
     wall.and_then(|img| luma(img, x, y + f64::from(page.background.offset_y))).unwrap_or(false)
 }
 
-/// `page` at `scale` points per source pixel.
+/// Kontakt's layout grid (`move_control`): column and row pitch, and the
+/// first cell's corner; `set_ui_height` rows are [`GRID_ROW_HEIGHT`] tall.
+const GRID: (i32, i32, i32, i32) = (92, 21, 66, 2);
+const GRID_ROW_HEIGHT: u32 = 68;
+
+/// A widget's size where its source left it to the host: Kontakt's stock sizes.
+// ponytail: KSP stock sizes for every source; per-source tables once Falcon UIs arrive.
+fn default_size(kind: &Kind) -> (u32, u32) {
+    match kind {
+        Kind::Knob { .. } => (85, 52),
+        Kind::Table { .. } | Kind::Xy { .. } | Kind::MouseArea => (92, 92),
+        Kind::Waveform | Kind::Wavetable => (184, 92),
+        Kind::FileSelector => (184, 184),
+        Kind::LevelMeter { orientation: ir::Orientation::Vertical } => (8, 92),
+        Kind::Panel => (0, 0),
+        _ => (85, 18),
+    }
+}
+
+/// `face` with grid placement, grid page heights and host-sized widgets
+/// turned into pixels.
+pub fn resolved(face: &Interface) -> Interface {
+    let mut face = face.clone();
+    for p in &mut face.pages {
+        if let Some(rows) = p.height_rows.take() {
+            p.size.height = rows * GRID_ROW_HEIGHT;
+        }
+    }
+    for w in &mut face.widgets {
+        if let ir::Placement::Grid { column, row } = w.placement {
+            w.rect.x = (column as i32 - 1) * GRID.0 + GRID.2;
+            w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
+            w.placement = ir::Placement::Pixels;
+        }
+        if w.auto_size {
+            (w.rect.width, w.rect.height) = default_size(&w.kind);
+            w.auto_size = false;
+        }
+    }
+    face
+}
+
+/// `page` at `scale` points per source pixel; `face` already [`resolved`].
 pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(p.size.height) * scale);
@@ -133,6 +175,7 @@ fn widget(
     let id = format!("ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap).and_then(|a| assets.get(a));
+    let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
         _ => None,
@@ -153,7 +196,7 @@ fn widget(
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, frame(v, range.min, range.max, p.frames.len())).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(v, range.min, range.max, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 None if matches!(wd.kind, Kind::Knob { .. }) || (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)),
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
@@ -165,7 +208,7 @@ fn widget(
         Kind::Button { momentary: true } => {
             v = if ui.get(id.as_str()).held { 1. } else { 0. };
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, switch_frame(v > 0.5, p.frames.len())).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())].align(Align::Center).justify(Justify::Center).radius(1).fill(Role::Ink.alpha(0.08 + 0.2 * v as f32)),
             }
             .focusable()
@@ -177,7 +220,7 @@ fn widget(
             }
             let on = v > 0.5;
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, switch_frame(on, p.frames.len())).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())]
                     .align(Align::Center)
                     .justify(Justify::Center)
@@ -207,7 +250,7 @@ fn widget(
             .focusable()
             .a11y(A11y::Button)
         }
-        Kind::ValueEdit { range, display } => {
+        Kind::ValueEdit { range, display, .. } => {
             drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, true, range.default);
             let shown = v / if display.ratio == 0. { 1. } else { display.ratio };
             row![words(format!("{shown} {}", display.unit).trim().to_owned())]
@@ -241,11 +284,12 @@ fn widget(
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let mut el = face_el.w(w).h(h).shrink(0).id(id).named(wd.automation_name.clone().unwrap_or_else(|| wd.name.clone()));
+    let mut el = face_el.w(w).h(h).shrink(0).id(id).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }
-    match wd.image(Use::Background).and_then(|a| assets.get(a)).and_then(|p| picture(p, 0)) {
+    let bg = wd.images.iter().find(|i| i.role == Use::Background);
+    match bg.and_then(|i| assets.get(i.asset).and_then(|p| picture(p, i.frame.unwrap_or(0) as usize))) {
         Some(bg) if !wd.hide.background => stack![block(w, h).radius(0).fill(bg), el].w(w).h(h).shrink(0),
         _ => el,
     }
