@@ -706,12 +706,25 @@ impl Cursor {
         if self.step >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
-        let count = output.len().min(envelope.remaining());
+        let mut count = output.len().min(envelope.remaining());
         let radius = kernel.window(self.step);
         let bank = kernel.polyphase(self.step);
         let taps = 2 * radius as usize + 1;
         // Frames read per output frame: the bank reads whole chunks.
         let width = bank.map_or(taps, |bank| bank.width());
+        // Stop the run short of the next boundary (loop end or crossfade)
+        // instead of rendering every frame before it one at a time.
+        let (_, contiguous, _) = self.span();
+        let fade = match self.loop_range.map(|r| r.shape) {
+            Some(LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) => {
+                frames as usize
+            }
+            _ => 0,
+        };
+        let margin = radius as usize + width - taps + fade + 2;
+        if let Some(room) = contiguous.checked_sub(margin) {
+            count = count.min((room as f64 / self.step) as usize);
+        }
         // Upper bound on the frames advanced by `count` steps.
         let advance = (count as f64 * self.step).ceil() as i64 + 1;
         let position = i128::from(self.position);
@@ -1272,20 +1285,20 @@ impl ReadFrames for [Frame] {
 pub(super) struct PagedFrames<'a> {
     pub cache: &'a crate::StreamCache,
     pub asset: crate::AssetId,
-    pub head: &'a [(usize, Box<[Frame]>)],
+    pub head: &'a [(usize, crate::Packed)],
 }
 impl PagedFrames<'_> {
     /// The resident range holding frame `index`, and its first frame.
-    fn range(&self, index: usize) -> Option<(usize, &[Frame])> {
+    fn range(&self, index: usize) -> Option<(usize, &crate::Packed)> {
         let i = self.head.partition_point(|(start, _)| *start <= index);
         let (start, frames) = self.head.get(i.checked_sub(1)?)?;
-        (index - start < frames.len()).then_some((*start, &**frames))
+        (index - start < frames.len()).then_some((*start, frames))
     }
 }
 impl ReadFrames for PagedFrames<'_> {
     fn frame(&self, index: usize) -> Option<Frame> {
         match self.range(index) {
-            Some((start, frames)) => Some(frames[index - start]),
+            Some((start, frames)) => Some(frames.frame(index - start)),
             None => self.cache.frame(self.asset, index),
         }
     }
@@ -1293,7 +1306,8 @@ impl ReadFrames for PagedFrames<'_> {
         if !range.is_empty()
             && let Some((start, frames)) = self.range(range.start)
         {
-            return frames.get(range.start - start..range.end - start);
+            // Packed ranges convert through `copy`.
+            return frames.frames()?.get(range.start - start..range.end - start);
         }
         self.cache.span(self.asset, range)
     }
@@ -1304,7 +1318,9 @@ impl ReadFrames for PagedFrames<'_> {
             let (part, end) = match self.range(at) {
                 Some((start, frames)) => {
                     let end = (start + frames.len()).min(range.end);
-                    (&frames[at - start..end - start], end)
+                    frames.copy(at - start, &mut out[o..o + end - at]);
+                    at = end;
+                    continue;
                 }
                 None => {
                     // Up to the page end or the next resident range.
