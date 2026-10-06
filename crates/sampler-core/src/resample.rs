@@ -3,6 +3,8 @@ use std::{f64::consts::PI, sync::OnceLock};
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
+/// Octave levels that cover steps up to MAX_STEP.
+pub(super) const OCTAVES: usize = 4;
 const RADIUS: usize = 48;
 const SHORT_RADIUS: usize = 12;
 const RESOLUTION: usize = 1024;
@@ -93,10 +95,10 @@ pub(super) const DECIMATION_REACH: i64 = 2 * RADIUS as i64;
 /// Octave levels 1..=log2(MAX_STEP), each the previous low-passed by the long
 /// kernel (0.9 of the new Nyquist) and decimated by two, sample j centered on
 /// frame 2j of the finer level. Control-side only.
-pub(super) fn octaves(frames: &[[f32; 2]]) -> Box<[Box<[[f32; 2]]>]> {
+pub(super) fn octaves(frames: &[[f32; 2]], depth: usize) -> Box<[Box<[[f32; 2]]>]> {
     let table = Kernel::new(ResampleQuality::High).long;
     let mut levels: Vec<Box<[[f32; 2]]>> = Vec::new();
-    for _ in 0..MAX_STEP.log2() as usize {
+    for _ in 0..depth.min(OCTAVES) {
         let finer = levels.last().map_or(frames, |level| level);
         if finer.len() < 2 {
             break;

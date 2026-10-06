@@ -223,9 +223,11 @@ impl Runtime {
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
             begun[lane] = if let Some(frames) = asset.resident_frames() {
+                asset.want_levels(v.cursor.step(), at);
+                let guard = asset.try_levels();
                 let pcm = super::source::Resident {
                     frames,
-                    levels: asset.levels(),
+                    levels: guard.as_deref().map_or(&[], |l| l),
                 };
                 chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
             } else {
@@ -363,9 +365,11 @@ impl Runtime {
             at,
         };
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+            asset.want_levels(v.cursor.step(), at);
+            let guard = asset.try_levels();
             let pcm = super::source::Resident {
                 frames,
-                levels: asset.levels(),
+                levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
