@@ -201,6 +201,7 @@ pub struct Prepared {
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
+    pub(super) voice_modulation: super::voice_mod::VoiceModulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
     pub(super) sequence_cells: usize,
     pub(super) shuffle_entries: usize,
@@ -350,6 +351,7 @@ impl Prepared {
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
+            voice_modulation: Default::default(),
             sequences: Box::new([]),
             sequence_cells: 0,
             shuffle_entries: 0,
@@ -409,6 +411,22 @@ impl Prepared {
             self.stages = Box::new([super::Stage::default()]);
         }
         self.stages[0].release = Some(program);
+        Ok(self)
+    }
+
+    /// Bind per-voice modulation programs: one optional program per authored
+    /// region, and per region the source frames a full sample-start route spans.
+    pub fn with_voice_modulation(
+        mut self,
+        programs: Vec<super::ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
+    ) -> Result<Self, Error> {
+        if regions.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        self.voice_modulation =
+            super::voice_mod::VoiceModulation::new(programs, regions, start_ranges)?;
         Ok(self)
     }
 
