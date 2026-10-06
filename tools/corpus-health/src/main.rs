@@ -16,6 +16,8 @@
 //! A crash (abort, OOM kill) leaves a `started` line without a result. On
 //! resume that item is recorded as `crash` and skipped, so one bad library
 //! cannot stall the run.
+mod heap;
+
 use sampler_core::{Limits, Outcome, Runtime};
 use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
 use serde_json::{Value, json};
@@ -44,9 +46,10 @@ fn faults() -> (u64, u64) {
     (f.first().copied().unwrap_or(0), f.get(2).copied().unwrap_or(0))
 }
 
-/// Start a fresh measurement window: peak RSS restarts here.
+/// Start a fresh measurement window: peak RSS and peak heap restart here.
 fn reset_peaks() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
+    heap::reset_peak();
 }
 
 const HOLD_SECONDS: f64 = 1.0;
@@ -280,6 +283,27 @@ fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize
     map
 }
 
+/// What a load produced: a Kontakt/UVI-loose plan played through MIDI ingress,
+/// or a UVI program whose Lua scripts run through `scripted::Player`.
+enum Subject {
+    Plan(sampler_kontakt::Loaded),
+    Scripted(sampler_uvi::scripted::Program),
+}
+
+impl Subject {
+    fn instrument(&self) -> &sampler_ir::Instrument {
+        match self {
+            Subject::Plan(l) => &l.instrument,
+            Subject::Scripted(p) => &p.instrument,
+        }
+    }
+}
+
+enum Rig {
+    Midi(Box<Runtime>, Ingress),
+    Scripted(Box<sampler_uvi::scripted::Player>),
+}
+
 struct Sound {
     perf: Value,
     note: String,
@@ -291,9 +315,16 @@ struct Sound {
     faults: Vec<String>,
 }
 
-fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
-    let plan = loaded.plan;
-    let rate = plan.sample_rate();
+fn play(subject: Subject, pick: Pick) -> Result<Sound, String> {
+    let (plan_rate, behavior_locals, note_cells) = match &subject {
+        Subject::Plan(l) => (
+            l.plan.sample_rate(),
+            l.plan.behavior_local_count(),
+            l.plan.note_cell_count(),
+        ),
+        Subject::Scripted(p) => (p.plan.sample_rate(), 0, 0),
+    };
+    let rate = plan_rate;
     let limits = Limits {
         notes: 64,
         channels: 16,
@@ -305,15 +336,27 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
         commands: 256,
         behaviors: 16,
         behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
-        note_cells: plan.note_cell_count().saturating_mul(64),
+        behavior_cells: behavior_locals.saturating_mul(16),
+        note_cells: note_cells.saturating_mul(64),
     };
-    let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
-    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
-        rt.sample_rate(),
-        limits.voices,
-    )))
-    .map_err(|e| format!("runtime: {e}"))?;
+    let mut rig = match subject {
+        Subject::Plan(loaded) => {
+            let mut rt = Runtime::new(loaded.plan, limits)
+                .map_err(|e| format!("prepare: runtime: {e}"))?;
+            rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+                rt.sample_rate(),
+                limits.voices,
+            )))
+            .map_err(|e| format!("prepare: runtime: {e}"))?;
+            let mut groups = [None; 16];
+            groups[0] = Some(Version::Midi1);
+            Rig::Midi(Box::new(rt), Ingress::new(0, groups))
+        }
+        Subject::Scripted(program) => Rig::Scripted(Box::new(
+            sampler_uvi::scripted::Player::new(program, limits, rate)
+                .map_err(|e| format!("prepare: player: {e}"))?,
+        )),
+    };
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
     let total = release_at + frame(TAIL_SECONDS);
@@ -328,14 +371,10 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
         .next()
         .unwrap()
         .map_err(|e| format!("{e:?}"))?;
-    let mut groups = [None; 16];
-    groups[0] = Some(Version::Midi1);
-    #[allow(unused_mut)]
-    let mut ingress = Ingress::new(0, groups);
     let mut buffer = [[0.0f32; 2]; 64];
     let deadline = buffer.len() as f64 / f64::from(rate);
     let mut block_times: Vec<f64> = Vec::with_capacity(total / buffer.len() + 1);
-    let mut peak_voices = 0usize;
+    let (mut peak_voices, mut audio_allocs) = (0usize, 0usize);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
     let switch_words: Vec<[u32; 1]> = if pick.switch.is_some() {
@@ -348,46 +387,92 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
     let mut faults = Vec::new();
     for begin in (0..total).step_by(buffer.len()) {
         let len = buffer.len().min(total - begin);
-        let mut batch = Vec::new();
-        if begin == 0 {
-            for word in &switch_words {
-                batch.push(TimedPacket {
-                    offset: 0,
-                    packet: Packets::new(word)
-                        .next()
-                        .unwrap()
-                        .map_err(|e| format!("{e:?}"))?,
-                });
-            }
-            batch.push(TimedPacket {
-                offset: 0,
-                packet: on,
-            });
-        }
-        if (begin..begin + len).contains(&release_at) {
-            batch.push(TimedPacket {
-                offset: release_at - begin,
-                packet: off,
-            });
-        }
-        let t0 = Instant::now();
-        ingress
-            .render(
-                &mut rt,
-                &mut buffer[..len],
-                &batch,
-                batch.len(),
-                |i, result| {
-                    if begin == 0 && i == note_index {
-                        note = match result {
-                            Ok(Applied::Started(_)) => "started".into(),
-                            other => format!("{other:?}"),
-                        };
+        let (t0, a0);
+        match &mut rig {
+            Rig::Midi(rt, ingress) => {
+                let mut batch = Vec::new();
+                if begin == 0 {
+                    for word in &switch_words {
+                        batch.push(TimedPacket {
+                            offset: 0,
+                            packet: Packets::new(word)
+                                .next()
+                                .unwrap()
+                                .map_err(|e| format!("{e:?}"))?,
+                        });
                     }
-                },
-            )
-            .map_err(|e| format!("block: {e:?}"))?;
+                    batch.push(TimedPacket {
+                        offset: 0,
+                        packet: on,
+                    });
+                }
+                if (begin..begin + len).contains(&release_at) {
+                    batch.push(TimedPacket {
+                        offset: release_at - begin,
+                        packet: off,
+                    });
+                }
+                (t0, a0) = (Instant::now(), heap::calls());
+                ingress
+                    .render(
+                        rt,
+                        &mut buffer[..len],
+                        &batch,
+                        batch.len(),
+                        |i, result| {
+                            if begin == 0 && i == note_index {
+                                note = match result {
+                                    Ok(Applied::Started(_)) => "started".into(),
+                                    other => format!("{other:?}"),
+                                };
+                            }
+                        },
+                    )
+                    .map_err(|e| format!("render: {e:?}"))?;
+            }
+            Rig::Scripted(player) => {
+                if begin == 0 {
+                    note = match player.note_on(key, f64::from(pick.velocity) / 127.0) {
+                        Ok(()) => "started".into(),
+                        Err(e) => format!("{e:?}"),
+                    };
+                }
+                (t0, a0) = (Instant::now(), heap::calls());
+                let cut = if (begin..begin + len).contains(&release_at) {
+                    release_at - begin
+                } else {
+                    len
+                };
+                player
+                    .render(&mut buffer[..cut])
+                    .map_err(|e| format!("render: {e:?}"))?;
+                if cut < len {
+                    player.note_off(key).map_err(|e| format!("release: {e:?}"))?;
+                    player
+                        .render(&mut buffer[cut..len])
+                        .map_err(|e| format!("render: {e:?}"))?;
+                }
+            }
+        }
         block_times.push(t0.elapsed().as_secs_f64());
+        audio_allocs += heap::calls() - a0;
+        let rt: &mut Runtime = match &mut rig {
+            Rig::Midi(rt, _) => rt,
+            Rig::Scripted(_) => {
+                peak_voices = peak_voices.max(match &rig {
+                    Rig::Scripted(p) => p.runtime().voice_count(),
+                    _ => 0,
+                });
+                for x in buffer[..len].iter().flatten() {
+                    finite &= x.is_finite();
+                    peak = peak.max(x.abs());
+                    if begin + len > total - frame(1.0) {
+                        tail_peak = tail_peak.max(x.abs());
+                    }
+                }
+                continue;
+            }
+        };
         peak_voices = peak_voices.max(rt.voice_count());
         rt.flush_behaviors(|_, _, outcome| {
             if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
@@ -405,6 +490,10 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
             }
         }
     }
+    let rt: &Runtime = match &rig {
+        Rig::Midi(rt, _) => rt,
+        Rig::Scripted(p) => p.runtime(),
+    };
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
     let st = rt.stats();
@@ -417,6 +506,7 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
         "deadline_misses": block_times.iter().filter(|t| **t > deadline).count(),
         "blocks": block_times.len(),
         "peak_voices": peak_voices,
+        "audio_thread_allocs": audio_allocs,
         "stream_underruns": st.stream_underruns,
         "cold_starts": st.cold_starts,
         "voice_drops": st.voice_drops,
@@ -435,8 +525,8 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
     })
 }
 
-fn scripts(loaded: &sampler_kontakt::Loaded) -> Value {
-    let ir = &loaded.instrument;
+fn scripts(subject: &Subject) -> Value {
+    let ir = subject.instrument();
     let failed: Vec<String> = ir
         .unsupported
         .iter()
@@ -450,16 +540,20 @@ fn scripts(loaded: &sampler_kontakt::Loaded) -> Value {
             *warnings.entry(kind.to_string()).or_default() += 1;
         }
     }
+    let bound = match subject {
+        Subject::Plan(l) => l.scripts.len(),
+        Subject::Scripted(p) => usize::from(p.host.handles_notes()),
+    };
     json!({
         "declared": ir.behaviors.len(),
-        "bound": loaded.scripts.len(),
+        "bound": bound,
         "compile_failed": failed.len(),
         "compile_errors": failed.into_iter().take(3).collect::<Vec<_>>(),
         "warnings": warnings,
     })
 }
 
-fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
+fn load_item(item: &Item) -> (Value, Option<(Subject, Pick)>) {
     let failed = |stage: &str, kind: String, reason: String| {
         (
             json!({"ok": false, "stage": stage, "kind": kind, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
@@ -483,7 +577,7 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
             match sampler_kontakt::load(path, &options, |_| {}) {
                 Ok(loaded) => (
                     json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
-                    Some((loaded, pick)),
+                    Some((Subject::Plan(loaded), pick)),
                 ),
                 Err(e) => failed("load", kind_of(&format!("{e:?}")), e.to_string()),
             }
@@ -501,14 +595,12 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                 Ok(b) => b,
                 Err(e) => return failed("container/decrypt", kind_of(&format!("{e:?}")), e.to_string()),
             };
-            let options = sampler_kontakt::Options {
-                keys: pick.key..=pick.key,
-                ..Default::default()
-            };
-            match sampler_uvi::load_program_with_options(&bank, program, &options) {
-                Ok(loaded) => (
-                    json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
-                    Some((loaded, pick)),
+            // Scripts may play keys outside the picked one: keep every zone.
+            let options = sampler_kontakt::Options::default();
+            match sampler_uvi::load_program_scripted_with_options(&bank, program, &options) {
+                Ok(program) => (
+                    json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": program.instrument.zones.len()}),
+                    Some((Subject::Scripted(program), pick)),
                 ),
                 Err(e) => failed("load", kind_of(&format!("{e:?}")), e.to_string()),
             }
@@ -524,7 +616,7 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                 Ok(loaded) => match pick_key(&loaded.instrument) {
                     Some(pick) => (
                         json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
-                        Some((loaded, pick)),
+                        Some((Subject::Plan(loaded), pick)),
                     ),
                     None => failed("note-on/selection", "NoZone".into(), "no zone covers any key at any velocity".into()),
                 },
@@ -585,6 +677,7 @@ fn check(item: &Item) -> Value {
     let start = Instant::now();
     let (load, loaded) = load_item(item);
     let load_ms = start.elapsed().as_millis() as u64;
+    let heap_after_load = heap::live();
     let mut record = json!({
         "id": item.id(),
         "kind": item.kind(),
@@ -593,8 +686,8 @@ fn check(item: &Item) -> Value {
     });
     if let Some((loaded, pick)) = loaded {
         record["scripts"] = scripts(&loaded);
-        record["unsupported"] = json!(categories(&loaded.instrument.unsupported));
-        record["unsupported_total"] = json!(loaded.instrument.unsupported.len());
+        record["unsupported"] = json!(categories(&loaded.instrument().unsupported));
+        record["unsupported_total"] = json!(loaded.instrument().unsupported.len());
         match play(loaded, pick) {
             Ok(s) => {
                 let db = |p: f32| {
@@ -623,6 +716,10 @@ fn check(item: &Item) -> Value {
     record["perf"] = json!({
         "load_ms": load_ms,
         "peak_rss_kib": proc_field("/proc/self/status", "VmHWM:"),
+        "peak_heap_bytes": heap::peak(),
+        "heap_bytes_after_load": heap_after_load,
+        // Timing is evidence only when nothing else was running.
+        "timing_exclusive": std::env::var("KONTRA_CORPUS_EXCLUSIVE").is_ok_and(|v| v == "1"),
         "disk_read_bytes": proc_field("/proc/self/io", "read_bytes:") - io0,
         "minor_faults": faults().0 - minflt0,
         "major_faults": faults().1 - majflt0,
