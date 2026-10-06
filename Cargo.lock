@@ -3663,6 +3663,7 @@ version = "0.1.0"
 dependencies = [
  "sampler-core",
  "sampler-ui-ir",
+ "serde_json",
 ]
 
 [[package]]
