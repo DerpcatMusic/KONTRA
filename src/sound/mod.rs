@@ -21,6 +21,7 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod event;
+pub mod mics;
 pub mod mix;
 pub mod report;
 pub mod tree;
