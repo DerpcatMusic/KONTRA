@@ -122,6 +122,11 @@ second scope beside the event-rate note projection above, with its own rate.
   timbre, per-voice random and constant. LFOs are bipolar, the rest unipolar.
 - **Route pipeline**: invert (unipolar `1 − v`, bipolar `−v`), piecewise-linear
   shape, one-pole lag reaching 99% in the authored time (Kontakt's lag law).
+  An optional route scale multiplies the depth by `shape(x)` of a second
+  source's unipolar value (modulator × modulator products such as Falcon's
+  LFO depth by mod wheel or ratio by key).
+- **Controllers** start at the MIDI RP-015 reset state (CC11 expression full),
+  so expression-to-volume routes are identity until the controller moves.
 - **Targets and laws**: attenuate `gain × (1 − d(1 − u))` (Kontakt volume),
   decibels `gain × 10^(d·v/20)`, pan `+ d·v` (balance, saturated), pitch
   `+ d·v` semitones, chain SVF cutoff `× 2^(d·v/12)` and Q `× 10^(d·v/20)`, a
