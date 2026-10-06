@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Isolate polyphonic cells by script instance in the prepared native layout. Programs
+  share state only within their instance, retain old layouts across plan replacement,
+  and account for the sum of namespace sizes before activation.
+
 - Add stored-ID KSP note_off with explicit duration overrides through native key-up
   scheduling. Deadline replacement preserves ownership and capacity on failure;
   queued note ends retain silent-source owners until execution or cancellation.

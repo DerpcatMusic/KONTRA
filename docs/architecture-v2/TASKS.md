@@ -142,7 +142,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   scalar conditionals, while/continue and callback exit now execute with bounded code/registers
   and heap-checked overlapping-owner fixtures. Separate script-instance integer banks
   now execute ordinary KSP globals across note/release/UI callbacks and retain old
-  generations independently from new initial values. Signed-32 arithmetic, bitwise
+  generations independently from new initial values. Polyphonic ranges now isolate
+  those instances on each note, with preparation-time offsets and summed capacity;
+  ordered multi-script event execution remains open. Signed-32 arithmetic, bitwise
   expressions and scalar inc/dec now execute through explicit native instructions
   with bounded expression depth and register requirements. Integer constants, bounded
   script-instance arrays, indexed inc/dec and num_elements now share those services.

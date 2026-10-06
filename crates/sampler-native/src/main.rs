@@ -59,10 +59,6 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     let scripted = matches!(&mode, Mode::Script(_));
     let replacing = matches!(&mode, Mode::Replace(_));
     let rate = sample.sample_rate();
-    let note_cells = match &mode {
-        Mode::Script(script) => script.note_cells(),
-        _ => 0,
-    };
     if replacing && rate < 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -131,7 +127,8 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             .behavior_local_count()
             .checked_mul(2)
             .ok_or_else(|| io::Error::other("callback register budget overflow"))?,
-        note_cells: note_cells
+        note_cells: plan
+            .note_cell_count()
             .checked_mul(32)
             .ok_or_else(|| io::Error::other("note-state budget overflow"))?,
     };

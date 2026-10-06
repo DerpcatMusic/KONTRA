@@ -470,3 +470,26 @@ generated fixed-duration policy; an explicit delay overrides queued ends. Fixed
 policy is admission metadata, separate from host scheduling and source completion.
 Register layout is prepared off audio. Key-up reuses existing pedal, release callback
 and release-region behavior; it does not invent a second release implementation.
+
+
+## Polyphonic state across script instances
+
+Prepared programs now derive one note-state range per `ScriptInstanceId`, plus an
+unbound native range. Callbacks in one instance share the maximum cell requirement
+of their programs; distinct instances add their requirements. Preparation checks the
+sum and assigns each program a fixed base. Read/write instructions use that base and
+their own declared bounds, with no instance lookup or allocation during execution.
+
+`Prepared::note_cell_count()` reports the total per-note requirement. Runtime and
+replacement-plan budgets use this total, and the native CLI sizes its note pool from
+the bound plan. `program_note_cell` inspects a program's namespace in the queried
+note's original generation. `note_cell` remains raw flattened-layout inspection.
+Children and reused slots start with zero state; retained callbacks preserve old
+ranges after a new plan changes program order, namespace sizes or instance bindings.
+
+Two native fixtures cover concurrent scripts on overlapping notes, same-instance
+sharing, unbound-native isolation, post-release waits, old/new layouts, empty child
+state, invalid program/cell/context, summed capacity rejection and all u16 cells in
+each of two independent namespaces. This establishes state isolation, not ordered
+Kontakt/Falcon script execution. Validation: 263 native tests in debug/release/MSRV,
+strict Clippy and both root boundary tests (`artifacts/polyphonic-instances-*`).

@@ -205,6 +205,7 @@ pub struct Program {
     pub(super) code: Box<[Instruction]>,
     pub(super) locals: usize,
     pub(super) note_cells: usize,
+    pub(super) note_base: usize,
     pub(super) script_cells: usize,
     pub(super) script_instance: Option<super::ScriptInstanceId>,
     pub(super) wait_lifetime: WaitLifetime,
@@ -347,6 +348,7 @@ impl Program {
             code: code.into_boxed_slice(),
             locals,
             note_cells,
+            note_base: 0,
             script_cells,
             script_instance: None,
             wait_lifetime: WaitLifetime::Gate,
@@ -722,7 +724,8 @@ impl Runtime {
                 self.edit_note_event(note, event)?;
             }
             Instruction::ReadNoteCell { local, cell } => {
-                *self.local_cell_mut(id, local)? = self.note_cell(owner.note()?, cell)?;
+                let index = self.behavior_note_cell_index(id, cell)?;
+                *self.local_cell_mut(id, local)? = self.note_values[index];
             }
             Instruction::ReadKeyDown { local } => {
                 *self.local_cell_mut(id, local)? = i64::from(self.key_down(owner.note()?)?);
@@ -737,7 +740,7 @@ impl Runtime {
                 *left = i64::from(comparison.apply(*left, right));
             }
             Instruction::WriteNoteCell { cell, local } => {
-                let index = self.note_cell_index(owner.note()?, cell)?;
+                let index = self.behavior_note_cell_index(id, cell)?;
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
             }
             Instruction::ReadScriptCell { local, cell } => {
@@ -911,18 +914,52 @@ impl Runtime {
     }
 
     /// Note-owned integer state survives callback completion and release until the
-    /// logical note retires. Its original prepared plan defines the cell bounds.
+    /// logical note retires. This inspects the flattened native layout; use
+    /// program_note_cell for a program's script-instance namespace.
     pub fn note_cell(&self, note: NoteId, cell: u16) -> Result<i64, Error> {
-        let index = self.note_cell_index(note, cell)?;
+        let index = self.note_cell_index(note, usize::from(cell))?;
         Ok(self.note_values[index])
     }
 
-    fn note_cell_index(&self, note: NoteId, cell: u16) -> Result<usize, Error> {
+    /// Read a cell in a program's script-instance namespace, using the note's
+    /// original plan. Programs in one instance share cells; other instances do not.
+    pub fn program_note_cell(&self, note: NoteId, program: usize, cell: u16) -> Result<i64, Error> {
+        let index = self.program_note_cell_index(note, program, cell)?;
+        Ok(self.note_values[index])
+    }
+
+    fn behavior_note_cell_index(&self, id: BehaviorId, cell: u16) -> Result<usize, Error> {
+        let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        self.program_note_cell_index(c.owner.note()?, c.program, cell)
+    }
+
+    fn program_note_cell_index(
+        &self,
+        note: NoteId,
+        program: usize,
+        cell: u16,
+    ) -> Result<usize, Error> {
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
-        if usize::from(cell) >= self.plans.get(n.plan.0).unwrap().prepared.note_cells {
+        let p = self
+            .plans
+            .get(n.plan.0)
+            .unwrap()
+            .prepared
+            .programs
+            .get(program)
+            .ok_or(Error::InvalidInput)?;
+        if usize::from(cell) >= p.note_cells {
             return Err(Error::InvalidInput);
         }
-        Ok(note.0.index * self.note_stride + usize::from(cell))
+        self.note_cell_index(note, p.note_base + usize::from(cell))
+    }
+
+    fn note_cell_index(&self, note: NoteId, cell: usize) -> Result<usize, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if cell >= self.plans.get(n.plan.0).unwrap().prepared.note_cells {
+            return Err(Error::InvalidInput);
+        }
+        Ok(note.0.index * self.note_stride + cell)
     }
 
     fn local_cell_mut(&mut self, id: BehaviorId, local: u16) -> Result<&mut i64, Error> {
