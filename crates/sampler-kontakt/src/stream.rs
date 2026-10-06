@@ -11,7 +11,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     ops::Range,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -227,6 +227,8 @@ pub struct StreamPolicy {
     pub slack: Duration,
     /// Voices that can stream at once; each needs a few pool pages.
     pub voices: usize,
+    /// Decode threads.
+    pub decoders: usize,
 }
 
 impl Default for StreamPolicy {
@@ -236,6 +238,7 @@ impl Default for StreamPolicy {
             max_step: 4.0,
             slack: Duration::from_millis(10),
             voices: 256,
+            decoders: 4,
         }
     }
 }
@@ -349,7 +352,7 @@ pub struct Streamer {
     sources: Arc<HashMap<AssetId, Source>>,
     ranges: HashMap<AssetId, Vec<Range<usize>>>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl Streamer {
@@ -416,13 +419,14 @@ impl Streamer {
         })
     }
 
-    /// Read every asset's `ranges` and start the decode thread for `worker`.
+    /// Read every asset's `ranges` and start `decoders` threads for `worker`.
     /// Returns the streamer and the resident bytes of those ranges.
     pub(crate) fn start(
         sources: HashMap<AssetId, Source>,
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
         worker: StreamWorker,
+        decoders: usize,
     ) -> io::Result<(Self, usize)> {
         let mut bytes = 0;
         let mut table = HashMap::with_capacity(assets.len());
@@ -435,18 +439,25 @@ impl Streamer {
         }
         let sources = Arc::new(sources);
         let stop = Arc::new(AtomicBool::new(false));
-        let thread = std::thread::Builder::new()
-            .name("sampler-stream".into())
-            .spawn({
-                let (sources, stop) = (sources.clone(), stop.clone());
-                move || decode(worker, &sources, &stop)
-            })?;
-        let streamer = Self {
+        // Several decoders overlap reads, so one slow read does not hold up
+        // the pages queued behind it; they share the single worker endpoint.
+        let worker = Arc::new(Mutex::new(worker));
+        let mut streamer = Self {
             sources,
             ranges: table,
             stop,
-            thread: Some(thread),
+            threads: Vec::new(),
         };
+        for _ in 0..decoders.max(1) {
+            let thread = std::thread::Builder::new()
+                .name("sampler-stream".into())
+                .spawn({
+                    let (sources, stop) = (streamer.sources.clone(), streamer.stop.clone());
+                    let worker = worker.clone();
+                    move || decode(&worker, &sources, &stop)
+                })?;
+            streamer.threads.push(thread);
+        }
         Ok((streamer, bytes))
     }
 
@@ -486,22 +497,28 @@ impl Streamer {
 impl Drop for Streamer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
+        for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
     }
 }
 
-/// Open readers kept between pages of the same assets.
-const OPEN_READERS: usize = 64;
+/// Open readers kept per decode thread between pages of the same assets
+/// (each holds a 64 KiB read buffer).
+const OPEN_READERS: usize = 32;
 
-fn decode(mut worker: StreamWorker, sources: &HashMap<AssetId, Source>, stop: &AtomicBool) {
+fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop: &AtomicBool) {
+    let worker = || {
+        worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
     // ponytail: linear LRU over a few dozen readers; a map if that shows up.
     let mut readers: Vec<(AssetId, SampleReader, u64)> = Vec::new();
     let mut tick = 0u64;
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
-        let Some(mut job) = held.take().or_else(|| worker.next_job()) else {
+        let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
             // ponytail: polling; a wake from the audio side if 0.5 ms matters.
             std::thread::sleep(Duration::from_micros(500));
             continue;
@@ -533,7 +550,8 @@ fn decode(mut worker: StreamWorker, sources: &HashMap<AssetId, Source>, stop: &A
             }
             None => Err(DecodeFailure::Unavailable),
         };
-        if let Err(rejected) = worker.complete(job, result) {
+        let completed = worker().complete(job, result);
+        if let Err(rejected) = completed {
             if rejected.reason != sampler_core::StreamError::Capacity {
                 return;
             }
@@ -581,8 +599,8 @@ impl Streamed {
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
-        let (streamer, bytes) =
-            Streamer::start(sources, &kept, ranges, worker).map_err(|e| invalid(e.to_string()))?;
+        let (streamer, bytes) = Streamer::start(sources, &kept, ranges, worker, policy.decoders)
+            .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
         drop(assets);
         Ok(Self {

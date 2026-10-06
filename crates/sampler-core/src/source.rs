@@ -683,7 +683,7 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.crossfaded() || self.step >= 2.0 && !pcm.levels().is_empty() {
+        if self.step >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
         let count = output.len().min(envelope.remaining());
@@ -702,6 +702,18 @@ impl Cursor {
             return 0;
         };
         if count == 0 || right.checked_sub(left) != Some(advance as usize + width - 1) {
+            return 0;
+        }
+        // A window without a wrap lies within one loop pass, whose crossfade
+        // is at its end: clear at both ends means clear throughout.
+        if self.crossfaded()
+            && [
+                position - i128::from(radius),
+                position + i128::from(advance + radius) + (width - taps) as i128,
+            ]
+            .into_iter()
+            .any(|p| self.address(p).is_some_and(|a| a.crossfade.is_some()))
+        {
             return 0;
         }
         let Some(span) = pcm.span(left..right + 1) else {
