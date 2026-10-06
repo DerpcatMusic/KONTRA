@@ -1,7 +1,7 @@
 //! Context menus: one open at a time, floated over everything where it was
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
-use super::{Cx, mixer::{self, Strip}, theme::*};
+use super::{Cx, theme::*};
 use crate::sound::BUSES;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
@@ -25,14 +25,10 @@ pub enum Target {
     App,
     /// A part's MIDI input: its channel and port.
     Midi(usize),
-    /// A part's output bus, its aux send bus; a bus's host port.
+    /// A part's output pair.
     Output(usize),
-    Aux(usize),
-    BusPort(usize),
     /// The mixer's routing: the Outputs mode and the one-click actions.
     Routing,
-    /// A mixer strip.
-    Strip(Strip),
 }
 
 #[derive(Clone, Debug)]
@@ -98,13 +94,6 @@ pub enum Command {
     Appearance(super::Appearance),
     StickyHeaders,
     ArtworkBlur,
-    /// A part's send bus, -1 for none.
-    Aux(usize, i16),
-    /// A bus's host port, -1 for its own.
-    BusPort(usize, i16),
-    StripRename(Strip),
-    StripReset(Strip),
-    StripRoute(Strip),
 }
 
 enum Item {
@@ -285,21 +274,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             }));
             items
         }
-        Target::Strip(strip) => {
-            let strip = *strip;
-            if let Strip::Part(slot) = strip
-                && cx.selection.parts.get(slot).is_none_or(|p| p.path.is_empty())
-            {
-                return Vec::new();
-            }
-            let items = vec![
-                act("Rename…", "", Command::StripRename(strip)),
-                act("Reset", "", Command::StripReset(strip)),
-                Item::Rule,
-                act("Route to…", "", Command::StripRoute(strip)),
-            ];
-            items
-        }
         Target::Output(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
                 return Vec::new();
@@ -326,27 +300,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("All Omni", "", Command::AllOmni),
             ]);
             items
-        }
-        Target::Aux(slot) => {
-            let Some(part) = cx.selection.parts.get(*slot) else {
-                return Vec::new();
-            };
-            let mut items = vec![check("No send", part.aux < 0, Command::Aux(*slot, -1)), Item::Rule];
-            items.extend((0..BUSES).map(|n| {
-                check(bus_item(cx, n), part.aux == n as i16, Command::Aux(*slot, n as i16))
-            }));
-            items
-        }
-        Target::BusPort(n) => {
-            let bus = cx.selection.bus(*n);
-            let port = if bus.port < 0 { *n } else { bus.port as usize };
-            (0..BUSES)
-                .map(|k| {
-                    let label = format!("Host out {}", mixer::port_text(k));
-                    let to = if k == *n { -1 } else { k as i16 };
-                    check(label, port == k, Command::BusPort(*n, to))
-                })
-                .collect()
         }
         Target::App => {
             let mut items = vec![
@@ -603,22 +556,6 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::AllOmni => crate::routing::all_omni(&mut cx.selection),
         Command::NameOutputs => crate::routing::name_outputs(&mut cx.selection),
         Command::ResetRouting => crate::routing::reset(&mut cx.selection),
-        Command::Aux(slot, n) => {
-            if let Some(part) = cx.selection.parts.get_mut(slot) {
-                part.aux = n;
-            }
-        }
-        Command::BusPort(n, port) => cx.selection.bus_mut(n).port = port,
-        Command::StripRename(strip) => mixer::start_rename(cx, strip),
-        Command::StripReset(strip) => mixer::reset(cx, strip),
-        Command::StripRoute(strip) => open(
-            ui,
-            cx,
-            match strip {
-                Strip::Part(slot) => Target::Output(slot),
-                Strip::Bus(n) => Target::BusPort(n),
-            },
-        ),
     }
 }
 
