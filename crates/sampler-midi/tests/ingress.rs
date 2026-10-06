@@ -866,19 +866,19 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
 #[test]
 fn reset_all_controllers_follows_rp015() {
     let mut rt = runtime();
-    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
     let p = rt.performance(0).unwrap();
     for (cc, value) in [(64, 127), (66, 127), (1, 100), (11, 20), (7, 90), (10, 30)] {
-        apply(&ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
+        apply(&mut ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
     }
-    let Applied::Started(note) = apply(&ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
         panic!()
     };
-    apply(&ingress, &mut rt, &[0x2080_3c00]).unwrap();
+    apply(&mut ingress, &mut rt, &[0x2080_3c00]).unwrap();
     assert!(rt.release_context(note).unwrap().gate.is_none(), "sustained");
     let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
     assert_eq!(
-        apply(&ingress, &mut rt, &[0x20b0_7900]),
+        apply(&mut ingress, &mut rt, &[0x20b0_7900]),
         Ok(Applied::ResetControllers)
     );
     assert!(rt.release_context(note).unwrap().gate.is_some(), "pedal released");
@@ -888,5 +888,5 @@ fn reset_all_controllers_follows_rp015() {
     assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
     assert_eq!((rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()), (volume, pan));
     // A non-zero value is not a channel mode message.
-    assert_eq!(apply(&ingress, &mut rt, &[0x20b0_7901]), Ok(Applied::Unsupported));
+    assert_eq!(apply(&mut ingress, &mut rt, &[0x20b0_7901]), Ok(Applied::Unsupported));
 }
