@@ -37,6 +37,7 @@ pub struct PlanTransfer {
     scripts: Box<[Box<[i64]>]>,
     dsp: super::dsp::VoiceDspState,
     groups: super::groups::GroupState,
+    controllers: super::controller_event::ControllerState,
 }
 
 pub(super) struct Generation {
@@ -49,6 +50,7 @@ pub(super) struct Generation {
     pub scripts: Box<[Box<[i64]>]>,
     pub dsp: super::dsp::VoiceDspState,
     pub groups: super::groups::GroupState,
+    pub controllers: super::controller_event::ControllerState,
 }
 
 pub(super) struct PlanQueues {
@@ -66,6 +68,7 @@ pub struct PlanControl {
     note_cells: usize,
     voices: usize,
     notes: usize,
+    performances: usize,
     sequence: u64,
 }
 
@@ -108,6 +111,16 @@ impl PlanControl {
                 });
             }
         };
+        let controllers =
+            match super::controller_event::ControllerState::new(&prepared, self.performances) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Err(RejectedPlan {
+                        reason: PlanError::Capacity,
+                        prepared,
+                    });
+                }
+            };
         let request = self.sequence + 1;
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
@@ -120,6 +133,7 @@ impl PlanControl {
             scripts,
             dsp,
             groups,
+            controllers,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -169,6 +183,7 @@ impl Runtime {
             note_cells: runtime.note_stride,
             voices: limits.voices,
             notes: limits.notes,
+            performances: limits.performances,
             sequence: 0,
         };
         runtime.plan_queues = Some(PlanQueues {
@@ -226,6 +241,7 @@ impl Runtime {
                 scripts: generation.scripts,
                 dsp: generation.dsp,
                 groups: generation.groups,
+                controllers: generation.controllers,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -239,6 +255,7 @@ impl Runtime {
                             scripts: plan.scripts,
                             dsp: plan.dsp,
                             groups: plan.groups,
+                            controllers: plan.controllers,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -281,6 +298,7 @@ impl Runtime {
                     scripts: plan.scripts,
                     dsp: plan.dsp,
                     groups: plan.groups,
+                    controllers: plan.controllers,
                     notes: 0,
                     callbacks: 0,
                 })

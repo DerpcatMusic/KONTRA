@@ -138,7 +138,7 @@ pub struct Prepared {
     pub(super) script_initial: Box<[Box<[i64]>]>,
     note_program: Option<usize>,
     pub(super) release_program: Option<usize>,
-    pub(super) controller_program: Option<usize>,
+    pub(super) controller_programs: Box<[usize]>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[(super::ControlId, usize)]>,
@@ -286,7 +286,7 @@ impl Prepared {
             script_initial: Box::new([]),
             note_program: None,
             release_program: None,
-            controller_program: None,
+            controller_programs: Box::new([]),
             note_cells: 0,
             controls: Box::new([]),
             control_programs: Box::new([]),
@@ -336,7 +336,7 @@ impl Prepared {
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         self.release_program = None;
-        self.controller_program = None;
+        self.controller_programs = Box::new([]);
         self.control_programs = Box::new([]);
         Ok(self)
     }

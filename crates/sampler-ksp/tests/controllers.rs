@@ -3,6 +3,12 @@ use sampler_core::*;
 mod support;
 
 fn compile(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
+    compile_bound(source, &[])
+}
+fn compile_bound(
+    source: &str,
+    bindings: &[(&str, ControlId)],
+) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
     sampler_ksp::compile(
         source,
         48000,
@@ -12,7 +18,7 @@ fn compile(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
             variables: 16,
             array_cells: 16,
         },
-        &[],
+        bindings,
     )
 }
 fn plan(source: &str) -> Prepared {
@@ -69,6 +75,110 @@ fn origin() -> ChannelAddress {
         group: 2,
         channel: 3,
     }
+}
+
+#[test]
+fn source_controller_modules_keep_ordered_cc_views_globals_and_ui_bindings() {
+    let first = "on init declare $value := 11 end on
+        on controller
+            $value := %CC[1]
+            ignore_controller
+            set_controller(2,%CC[1])
+        end on";
+    let second = "on init declare $value := 22 declare $seen
+            declare ui_button $button
+        end on
+        on ui_control($button) $value := 77 end on
+        on controller
+            $value := %CC[1]
+            $seen := %CC[2]
+            ignore_controller
+            wait(125)
+            set_controller(3,$seen / 2)
+        end on";
+    let third = "on init declare $value := 33 end on
+        on controller $value := %CC[3] end on";
+    let button = ControlId(12);
+    let prepared = sampler_ksp::bind_controller_chain(
+        vec![
+            compile(first).unwrap(),
+            compile_bound(second, &[("$button", button)]).unwrap(),
+            compile(third).unwrap(),
+        ],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let budget = limits(&prepared);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let generation = rt.active_plan();
+        let domain = rt.performance(1).unwrap();
+        rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(127));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(0));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(127));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(2), 0), Ok(33));
+        assert_eq!(rt.controller(domain, 3), Ok(0));
+        rt.render(&mut [[0.; 2]; 7]).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(2), 0), Ok(63));
+        assert_eq!(
+            rt.controller(domain, 3),
+            Ok((u64::from(u32::MAX) * 63 / 127) as u32)
+        );
+        assert_eq!(rt.controller(domain, 1), Ok(0));
+        assert_eq!(rt.controller(domain, 2), Ok(0));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.invoke_control(
+            generation,
+            None,
+            ControlWrite {
+                id: button,
+                value: ControlValue::Integer(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(127));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(77));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(2), 0), Ok(63));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+    for source in ["on note end on", "on release end on"] {
+        assert!(matches!(
+            sampler_ksp::bind_controller_chain(
+                vec![compile(first).unwrap(), compile(source).unwrap()],
+                Prepared::new(48000, vec![], vec![], 0).unwrap()
+            ),
+            Err(Error::InvalidInput)
+        ));
+    }
+    assert!(matches!(
+        sampler_ksp::bind_controller_chain(
+            vec![
+                compile_bound(second, &[("$button", button)]).unwrap(),
+                compile_bound(second, &[("$button", button)]).unwrap()
+            ],
+            Prepared::new(48000, vec![], vec![], 0).unwrap()
+        ),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        sampler_ksp::bind_controller_chain(
+            vec![compile(first).unwrap()],
+            Prepared::new(44100, vec![], vec![], 0).unwrap()
+        ),
+        Err(Error::InvalidInput)
+    ));
 }
 
 #[test]

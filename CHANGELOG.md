@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add ordered native controller stages with independent incoming CC projections,
+  downstream-only generated writes and reserved continuation capacity. KSP
+  controller modules share this path with isolated state and relocated UI callbacks.
+
 - Support stored individual event IDs in KSP pitch/velocity edits through shared
   native event projections, preserving running audio, physical key pairing and
   generation isolation when old IDs outlive their note slots.

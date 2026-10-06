@@ -71,37 +71,69 @@ impl Script {
 
     /// Install the complete script on a prepared instrument of the compiled rate.
     pub fn bind(self, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
-        if plan.sample_rate() != self.rate {
+        bind_modules(vec![self], plan)
+    }
+}
+
+/// Bind ordered controller-only modules with independent script state. Note/release
+/// stage routing is not yet implemented and is rejected, never silently flattened.
+pub fn bind_controller_chain(
+    scripts: Vec<Script>,
+    plan: Prepared,
+) -> Result<Prepared, sampler_core::Error> {
+    if scripts
+        .iter()
+        .any(|s| s.on_note.is_some() || s.on_release.is_some())
+    {
+        return Err(sampler_core::Error::InvalidInput);
+    }
+    bind_modules(scripts, plan)
+}
+
+fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
+    let mut programs = Vec::new();
+    let mut instances = Vec::new();
+    let mut controls = Vec::new();
+    let mut callbacks = Vec::new();
+    let mut controllers = Vec::new();
+    let on_note = scripts.first().and_then(|s| s.on_note);
+    let on_release = scripts.first().and_then(|s| s.on_release);
+    for (index, script) in scripts.into_iter().enumerate() {
+        if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
         }
-        let callbacks = self
-            .controls
-            .iter()
-            .filter_map(|c| c.callback.map(|program| (c.definition.id, program)))
-            .collect();
-        let plan = plan
-            .with_programs(Vec::new(), None)?
-            .with_script_instances(vec![self.globals])?
-            // Keep the upper source-ID bits available for marked/all-event selectors.
-            .with_source_event_limit(0x0fff_ffff)?;
-        let plan = plan.with_controls(self.controls.into_iter().map(|c| c.definition).collect())?;
-        let plan = plan
-            .with_programs(
-                self.programs
-                    .into_iter()
-                    .map(|p| p.with_script_instance(ScriptInstanceId(0)))
-                    .collect(),
-                self.on_note,
-            )?
-            .with_control_programs(callbacks)?;
-        let plan = match self.on_release {
-            Some(program) => plan.with_release_program(program)?,
-            None => plan,
-        };
-        match self.on_controller {
-            Some(program) => plan.with_controller_program(program),
-            None => Ok(plan),
+        let instance =
+            ScriptInstanceId(u16::try_from(index).map_err(|_| sampler_core::Error::Capacity)?);
+        let base = programs.len();
+        if let Some(program) = script.on_controller {
+            controllers.push(base + program);
         }
+        for control in script.controls {
+            if let Some(program) = control.callback {
+                callbacks.push((control.definition.id, base + program));
+            }
+            controls.push(control.definition);
+        }
+        programs.extend(
+            script
+                .programs
+                .into_iter()
+                .map(|p| p.with_script_instance(instance)),
+        );
+        instances.push(script.globals);
+    }
+    let plan = plan
+        .with_programs(Vec::new(), None)?
+        .with_script_instances(instances)?
+        // Keep source aliases separate from marked/all-event selectors.
+        .with_source_event_limit(0x0fff_ffff)?
+        .with_controls(controls)?
+        .with_programs(programs, on_note)?
+        .with_control_programs(callbacks)?
+        .with_controller_programs(controllers)?;
+    match on_release {
+        Some(program) => plan.with_release_program(program),
+        None => Ok(plan),
     }
 }
 
