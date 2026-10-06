@@ -3799,6 +3799,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ui-ir",
  "serde_json",
  "sha2",
  "symphonia",
