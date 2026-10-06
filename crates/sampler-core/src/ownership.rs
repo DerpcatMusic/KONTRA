@@ -444,6 +444,22 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
+            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
+            if quiet
+                && n.children == 0
+                && n.gate()
+                && !n.key_down()
+                && self.release_times[id.0.index].held
+            {
+                // Nothing can resume an audible release: close the held gate
+                // without release triggers and retire below.
+                // ponytail: a script that kept this ID to note_off it later
+                // (to fire native release groups) finds it gone; keep such
+                // notes while a script holds the ID if a library needs that.
+                self.close_gate(id, super::ReleaseCause::Silent);
+                self.cleanup_closed_notes();
+                continue;
+            }
             if (n.gate() && !n.retire_when_silent)
                 || n.input_down
                 || n.pins != 0

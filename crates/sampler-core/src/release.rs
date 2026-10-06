@@ -14,6 +14,9 @@ pub enum ReleaseCause {
     AllNotesOff,
     AllSoundOff,
     Panic,
+    /// A script held the release (`ignore_event` in `on release`) and nothing
+    /// of the note sounds or can sound; like a Kontakt event, it just ends.
+    Silent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
