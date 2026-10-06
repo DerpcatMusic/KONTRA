@@ -1,5 +1,12 @@
 # V2 handoff — 2026-10-06
 
+> **Frozen 2026-10-06.** An audit found the code honest but not usable: it can't run
+> real KSP scripts or load commercial Kontakt libraries (no NCW, 24-bit, monolith or
+> encrypted content), and the per-sample voice interpreter can't meet polyphony
+> deadlines. Work moved to v1 (`src/`): fixes for the two confirmed v1 defects, block
+> voice DSP, MIDI ingress fixes and an audio-thread heap guard. Only reusable pieces
+> (filters, FastLZ, UMP decoding, heap guard) should be ported, behind v1's seams.
+
 Work paused at the user's request after completing the expression-to-filter change.
 Latest implementation commit: `62d94904` (`feat(core): bind expressive filters to retained note owners`).
 The subsequent documentation commit contains this handoff. No implementation remains
