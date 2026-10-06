@@ -108,3 +108,30 @@ fn installed_afflatus_wallpaper_is_a_memory_buffer() {
 fn resource_access_has_a_disabled_stand_in() {
     assert!(ResourceContainer::open(std::path::Path::new("absent.nicnt")).is_err());
 }
+
+#[cfg(feature = "library-access")]
+#[test]
+fn installed_encrypted_nkr_picture_is_a_memory_buffer() {
+    let path = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").and_then(|roots| {
+        std::env::split_paths(&roots)
+            .map(|root| root.join("Solo/Samples/Pyramid v1.0.6.nkr"))
+            .find(|path| path.is_file())
+    });
+    let Some(path) = path else {
+        eprintln!("skipped: installed Solo NKR is absent");
+        return;
+    };
+    let mut resources = ResourceContainer::open(&path).unwrap();
+    let name = resources
+        .names()
+        .into_iter()
+        .find(|name| name.to_ascii_lowercase().ends_with(".png"))
+        .unwrap()
+        .to_owned();
+    let picture = resources.read(&name).unwrap().unwrap();
+    assert!(picture.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert!(picture.ends_with(b"IEND\xaeB`\x82"));
+    let mut file = std::fs::File::open(&path).unwrap();
+    let archive = ni_file::nkr::Archive::read_index(&mut file).unwrap();
+    assert!(archive.read_entry(&mut file, &name).is_err());
+}
