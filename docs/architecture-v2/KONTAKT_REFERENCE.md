@@ -185,3 +185,17 @@ Linear amplitude ramp, in integer steps, with a nonzero first step: for a note v
   - g37: L - R = -4.4 dB (-4.6 at CC100 0-8). Example CC100 56: L -37.0, R -32.6, combined -34.3. CC100 96 is still audible at combined -45.7.
   - The shape over CC100 is the same on both channels, so the split is a constant gain difference per group, not a CC-dependent pan.
 - Run through `scenarios/vista_g36_lr.txt` (CC20 selects the solo group: 36 or 37) and `lr_report.py`.
+
+## 13. Full-note levels per channel (real instruments, Kontakt scripts ON, fresh load, no controller sent)
+
+Peak over 0.3-3 s after onset (3 s held notes), RMS sqrt((L^2+R^2)/2) over 0.5-2 s, dBFS, instrument volume 0.0 dB. `monopk` is the (L+R)/2 peak that sections 2/4 report.
+
+| Instrument, note | L pk | R pk | max(L,R) pk | mono pk | RMS (L,R) |
+|---|---|---|---|---|---|
+| Vista 3 Cellos key 48 vel 100 | -44.5 | -38.6 | -38.6 | -45.0 | -52.5 |
+| Una Corda Cotton key 60 vel 64 | -27.1 | -24.7 | -24.7 | -25.8 | -53.5 |
+| Una Corda Cotton key 60 vel 100 | -17.5 | -14.7 | -14.7 | -16.1 | -44.1 |
+| Una Corda Cotton key 60 vel 127 | -11.3 | -8.6 | -8.6 | -9.9 | -40.3 |
+| Barbarian Brass key 55 vel 100 | -19.1 | -15.9 | -15.9 | -20.1 | -27.3 |
+
+Vista with no CC sent is far below its CC1 = CC11 = 127 solo levels (section 6): the power-on dynamics state is quiet. Tools: `loud_lr.py`.
