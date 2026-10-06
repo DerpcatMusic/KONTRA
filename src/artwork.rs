@@ -1,5 +1,4 @@
 //! Read local library artwork once, on the import worker. No copies on disk.
-use crate::resources::{Resources as Pictures, read_file};
 use moose::mui::mui::scene::Image;
 use std::{
     collections::HashMap,
@@ -113,274 +112,27 @@ pub fn own_hue(dir: &Path) -> Option<f32> {
     hues.get(hues.len() / 2).copied()
 }
 
+fn read_file(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// A PNG or JPEG picture the player chose, at most 32 MiB.
 pub fn decode_file(path: &Path) -> Option<Image> {
     decode_report(&read_file(path).ok()?).ok()
 }
 
-/// Resolve the selected preset's named wallpaper, never an arbitrary picture in its NKR.
-pub fn performance(
-    instrument: &crate::import::Instrument,
-    computed: Option<&crate::ksp::Interface>,
-) -> Result<Option<Arc<Picture>>, String> {
-    let Some(name) = computed
-        .map(|i| i.wallpaper.clone()).filter(|s| !s.is_empty())
-        .or_else(|| wallpaper(&instrument.scripts))
-    else {
-        return Ok(None);
-    };
-    let filename = picture_name(&name).ok_or("Invalid instrument wallpaper name")?;
-    let mut source = Pictures::of(&instrument.path, "pictures");
-    let bytes = source
-        .read(&filename)?
-        .ok_or_else(|| format!("Instrument wallpaper {filename} was not found"))?;
-    let image = decode_report(&bytes).map_err(|e| format!("Instrument wallpaper {filename}: {e}"))?;
-    let text = source
-        .read(&format!("{}.txt", filename.rsplit_once('.').unwrap().0))?
-        .unwrap_or_default();
-    let layout = Layout::parse(&String::from_utf8_lossy(&text));
-    let (fw, fh) = layout.frame_size(&image);
-    if fw == 0 || fh == 0 {
-        return Err("Invalid instrument wallpaper frames".into());
-    }
-    // Retain the original atlas once. Pixel offsets can start between animation frames.
-    Ok(Some(Arc::new(Picture {
-        frames: vec![Arc::new(image)],
-        stretch: layout.stretch,
-        atlas: Some([fw, fh]),
-    })))
-}
 
-/// `name` as a picture file name, unless it tries to leave the pictures folder.
-fn picture_name(name: &str) -> Option<String> {
-    if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
-        return None;
-    }
-    let lower = name.to_ascii_lowercase();
-    Some(if [".png", ".jpg", ".jpeg"].iter().any(|suffix| lower.ends_with(suffix)) {
-        name.to_owned()
-    } else {
-        format!("{name}.png")
-    })
-}
 
-/// A control picture, cut into its animation frames.
-#[derive(Debug)]
-pub struct Picture {
-    pub frames: Vec<Arc<Image>>,
-    /// Stretches to the control across and down (its sidecar's
-    /// "Horizontal" and "Vertical Resizable"); otherwise it keeps its own
-    /// size that way.
-    pub stretch: [bool; 2],
-    /// Wallpaper frame dimensions in the full image retained in `frames[0]`.
-    /// Control pictures use separate frames and leave this unset.
-    pub atlas: Option<[u32; 2]>,
-}
 
-impl Picture {
-    /// Select a wallpaper frame and an additional authored vertical pixel offset.
-    /// The returned origin is sampled/drawn from the same image, without copying pixels.
-    pub fn wallpaper(&self, state: i32, offset: i32) -> Option<(Arc<Image>, [u32; 2])> {
-        if let Some([fw, fh]) = self.atlas {
-            let image = self.frames.first()?.clone();
-            if fw == 0 || fh == 0 { return None; }
-            let across = (image.width / fw).max(1);
-            let down = (image.height / fh).max(1);
-            let state = (state.max(0) as u32).min(across.saturating_mul(down).saturating_sub(1));
-            let origin = [state % across * fw, (state / across * fh).saturating_add(offset.max(0) as u32).min(image.height)];
-            Some((image, origin))
-        } else {
-            let frame = self.frames.get((state.max(0) as usize).min(self.frames.len().saturating_sub(1)))?.clone();
-            let y = (offset.max(0) as u32).min(frame.height);
-            Some((frame, [0, y]))
-        }
-    }
 
-    /// The size it draws at on a control `w` by `h`: its own, but along a
-    /// way it stretches.
-    pub fn size(&self, w: f64, h: f64) -> (f64, f64) {
-        let f = &self.frames[0];
-        let [fw, fh] = self.atlas.unwrap_or([f.width, f.height]);
-        (
-            if self.stretch[0] { w } else { f64::from(fw) },
-            if self.stretch[1] { h } else { f64::from(fh) },
-        )
-    }
-}
 
-/// The control pictures named in `names` that the preset's library has.
-pub fn pictures<'a>(path: &Path, names: impl IntoIterator<Item = &'a str>) -> HashMap<String, Arc<Picture>> {
-    pictures_report(path, names).0
-}
 
-/// Font resources share the existing off-thread picture loading/cache path.
-/// The internal prefix cannot collide with a valid plain picture filename.
-pub fn font_key(name: &str) -> String { format!("@font/{name}") }
 
-pub fn picture_names(interface: &crate::ksp::Interface) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
-    interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-        Some(crate::ksp::Value::Text(name)) if !name.is_empty() => Some(std::borrow::Cow::Borrowed(name.as_str())),
-        _ => None,
-    }).chain(interface.fonts.iter().map(|name| std::borrow::Cow::Owned(font_key(name))))
-}
 
-/// Kontakt bitmap fonts place 256 Windows-1252 glyphs side by side. A
-/// fully red pixel starts each glyph on the metadata row, which is not drawn.
-/// https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands
-pub(crate) fn font_frames(image: &Image) -> Result<Vec<Arc<Image>>, String> {
-    if image.height < 2 { return Err("bitmap font has no glyph rows".into()); }
-    let starts: Vec<u32> = (0..image.width).filter(|&x| {
-        let at = x as usize * 4;
-        image.rgba[at..at + 3] == [255, 0, 0]
-    }).collect();
-    if starts.len() != 256 || starts[0] != 0 {
-        return Err(format!("bitmap font needs 256 red glyph markers starting at x=0; found {}", starts.len()));
-    }
-    starts.iter().enumerate().map(|(n, &x)| {
-        crop(image, x, 1, starts.get(n + 1).copied().unwrap_or(image.width) - x, image.height - 1)
-            .ok_or_else(|| "invalid bitmap glyph dimensions".into())
-    }).collect()
-}
 
-/// Unicode text is indexed by the font's documented Windows-1252 byte order.
-/// Characters outside that alphabet use its authored question-mark glyph.
-pub(crate) fn font_glyph(c: char) -> usize {
-    const EXTENDED: [char; 32] = [
-        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
-        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
-    ];
-    match c as u32 {
-        0..=127 | 160..=255 => c as usize,
-        _ => EXTENDED.iter().position(|&glyph| glyph == c).map_or(b'?' as usize, |n| n + 128),
-    }
-}
 
-/// Preserve why a named control picture failed instead of silently discarding it.
-pub fn pictures_report<'a>(
-    path: &Path,
-    names: impl IntoIterator<Item = &'a str>,
-) -> (HashMap<String, Arc<Picture>>, Vec<String>) {
-    let mut source = Pictures::of(path, "pictures");
-    let mut out = HashMap::new();
-    let mut errors = Vec::new();
-    let mut attempted = std::collections::HashSet::new();
-    for name in names {
-        if name.is_empty() || !attempted.insert(name) { continue; }
-        let result = (|| -> Result<Picture, String> {
-            let font = name.strip_prefix("@font/");
-            let file = picture_name(font.unwrap_or(name)).ok_or_else(|| format!("Picture {name:?}: invalid resource name"))?;
-            let bytes = source.read(&file)?.ok_or_else(|| format!("Picture {file:?}: not found in the library resources or archives"))?;
-            let image = decode_report(&bytes).map_err(|e| format!("Picture {file:?}: {e}"))?;
-            let sidecar = format!("{}.txt", file.rsplit_once('.').unwrap().0);
-            let text = source.read(&sidecar)?;
-            if font.is_some() && text.is_none() { return Err(format!("Bitmap font {file:?}: required {sidecar:?} is missing")); }
-            let layout = Layout::parse(&String::from_utf8_lossy(&text.unwrap_or_default()));
-            let frames = if font.is_some() {
-                if layout.frames != 1 { return Err(format!("Bitmap font {file:?}: animated font strips are unsupported")); }
-                font_frames(&image).map_err(|e| format!("Bitmap font {file:?}: {e}"))?
-            } else { layout.cut(&image) };
-            if frames.is_empty() { return Err(format!("Picture {file:?}: invalid frame dimensions in {sidecar:?}")); }
-            Ok(Picture { frames, stretch: layout.stretch, atlas: None })
-        })();
-        match result {
-            Ok(picture) => { out.insert(name.to_owned(), Arc::new(picture)); }
-            Err(e) => errors.push(if name.starts_with("@font/") {
-                format!("{name}: {e}; using bundled Noto Sans")
-            } else { format!("{name}: {e}") }),
-        }
-    }
-    (out, errors)
-}
 
-/// A copy of the `w` by `h` pixels at `x`, `y`; `None` when empty.
-pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
-    if w == 0 || h == 0 || x.checked_add(w)? > image.width || y.checked_add(h)? > image.height {
-        return None;
-    }
-    if x == 0 && y == 0 && w == image.width && h == image.height {
-        return Some(Arc::new(image.clone()));
-    }
-    let stride = image.width as usize * 4;
-    let mut rgba = Vec::new();
-    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
-    for row in y as usize..(y + h) as usize {
-        let at = row * stride + x as usize * 4;
-        rgba.extend_from_slice(&image.rgba[at..at + w as usize * 4]);
-    }
-    Image::rgba(w, h, rgba).map(Arc::new)
-}
 
-/// A picture's sidecar `.txt`: how many frames it holds and how they run.
-#[derive(Debug, PartialEq)]
-struct Layout {
-    frames: u32,
-    horizontal: bool,
-    stretch: [bool; 2],
-}
-
-impl Layout {
-    fn parse(text: &str) -> Self {
-        let mut layout = Self {
-            frames: 1,
-            horizontal: false,
-            stretch: [false; 2],
-        };
-        for (key, value) in text.lines().filter_map(|l| l.split_once(':')) {
-            let value = value.trim();
-            let yes = value.eq_ignore_ascii_case("yes");
-            let number = value.parse().unwrap_or(0);
-            match key.trim().to_lowercase().as_str() {
-                "number of animations" => layout.frames = number,
-                "horizontal animation" => layout.horizontal = yes,
-                "horizontal resizable" => layout.stretch[0] = yes,
-                "vertical resizable" => layout.stretch[1] = yes,
-                _ => {}
-            }
-        }
-        layout.frames = layout.frames.max(1);
-        layout
-    }
-
-    fn frame_size(&self, image: &Image) -> (u32, u32) {
-        if self.horizontal { (image.width / self.frames, image.height) }
-        else { (image.width, image.height / self.frames) }
-    }
-
-    fn cut(&self, image: &Image) -> Vec<Arc<Image>> {
-        let n = self.frames;
-        let (fw, fh) = self.frame_size(image);
-        (0..n)
-            .map_while(|f| {
-                let (x, y) = if self.horizontal {
-                    (f * fw, 0)
-                } else {
-                    (0, f * fh)
-                };
-                crop(image, x, y, fw, fh)
-            })
-            .collect()
-    }
-}
-
-fn wallpaper(scripts: &[String]) -> Option<String> {
-    scripts
-        .iter()
-        .flat_map(|s| s.lines())
-        .filter_map(|line| {
-            let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-            let value = compact
-                .strip_prefix("set_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,\"")?;
-            // Preserve spaces in the original filename.
-            if !value.ends_with("\")") {
-                return None;
-            }
-            let start = line.find('"')? + 1;
-            let end = line.rfind('"')?;
-            Some(line[start..end].to_owned())
-        })
-        .last()
-        .filter(|name| !name.is_empty())
-}
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }
@@ -447,12 +199,6 @@ pub fn thumbnail(image: &Image, w: u32, h: u32) -> Option<Image> {
     let (cw, ch) = (f64::from(w) / scale, f64::from(h) / scale);
     let (x0, y0) = ((sw - cw) / 2., (sh - ch) / 2.);
     resample(image, w, h, x0, y0, cw, ch)
-}
-
-/// Resize the complete picture, retaining its edges even when its aspect changes.
-pub fn resize(image: &Image, w: u32, h: u32) -> Option<Image> {
-    if w == 0 || h == 0 || image.width == 0 || image.height == 0 { return None; }
-    resample(image, w, h, 0., 0., image.width as f64, image.height as f64)
 }
 
 fn resample(image: &Image, w: u32, h: u32, x0: f64, y0: f64, cw: f64, ch: f64) -> Option<Image> {
@@ -650,21 +396,6 @@ fn oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn named_wallpaper() {
-        assert_eq!(
-            super::wallpaper(&[
-                "set_control_par_str($INST_WALLPAPER_ID, $CONTROL_PAR_PICTURE, \"A B\")".into()
-            ]),
-            Some("A B".into())
-        );
-        assert_eq!(
-            super::wallpaper(&[
-                "set_control_par_str($INST_WALLPAPER_ID,$CONTROL_PAR_PICTURE,@dynamic)".into()
-            ]),
-            None
-        );
-    }
-    #[test]
     fn png_decode_checks_input_and_keeps_alpha() {
         let mut bytes = Vec::new();
         {
@@ -682,53 +413,6 @@ mod tests {
         assert!(super::decode_report(b"not an image").err().unwrap().starts_with("Unsupported image format:"));
     }
 
-    #[test]
-    fn declared_png_and_jpeg_resources_keep_names_metadata_and_failure_reasons() {
-        let root = std::env::temp_dir().join(format!("kontra-artwork-formats-{}", std::process::id()));
-        let folder = root.join("Resources/pictures");
-        std::fs::create_dir_all(&folder).unwrap();
-        let instrument = crate::import::Instrument { path: root.join("Patch.nki"), ..Default::default() };
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, 2, 2);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.write_header().unwrap().write_image_data(&[24, 96, 176, 78].repeat(4)).unwrap();
-        }
-        // Authored 2x2 solid-color JPEG, with no library asset contents.
-        let jpeg = include_bytes!("../tests/fixtures/wallpaper-solid.jpg");
-        for (name, bytes, alpha) in [("wall.PNG", png.as_slice(), 78), ("wall.jpg", jpeg.as_slice(), 255), ("wall.jpeg", jpeg.as_slice(), 255)] {
-            std::fs::write(folder.join(name), bytes).unwrap();
-            std::fs::write(folder.join("wall.txt"), "Number of Animations: 2\nHorizontal Animation: yes\nHorizontal Resizable: yes\n").unwrap();
-            let mut ui = crate::ksp::Interface::default();
-            ui.wallpaper = name.into();
-            let wall = super::performance(&instrument, Some(&ui)).unwrap().unwrap();
-            assert_eq!(wall.atlas, Some([1, 2]), "{name}: the stem's sidecar is read even for .jpeg");
-            assert_eq!(wall.stretch, [true, false]);
-            assert!(wall.frames[0].rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == alpha));
-            let (pictures, errors) = super::pictures_report(&instrument.path, [name]);
-            assert!(errors.is_empty(), "{name}: {errors:?}");
-            assert_eq!(pictures[name].frames.len(), 2);
-        }
-        let mut ui = crate::ksp::Interface::default();
-        for name in ["../wall.jpg", r"..\wall.jpg", "/wall.jpg"] {
-            ui.wallpaper = name.into();
-            assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("Invalid instrument wallpaper name"));
-        }
-        ui.wallpaper = "absent.jpg".into();
-        assert!(super::performance(&instrument, Some(&ui)).err().unwrap().contains("absent.jpg was not found"));
-        std::fs::write(folder.join("bad.jpg"), &jpeg[..20]).unwrap();
-        std::fs::write(folder.join("bad.png"), &png[..12]).unwrap();
-        for (name, kind) in [("bad.jpg", "JPEG header:"), ("bad.png", "PNG header:")] {
-            ui.wallpaper = name.into();
-            let reason = super::performance(&instrument, Some(&ui)).err().unwrap();
-            assert!(reason.contains(name) && reason.contains(kind), "{reason}");
-            let (pictures, errors) = super::pictures_report(&instrument.path, [name]);
-            assert!(pictures.is_empty());
-            assert_eq!(errors.len(), 1);
-            assert!(errors[0].contains(kind), "{}", errors[0]);
-        }
-        std::fs::remove_dir_all(root).unwrap();
-    }
 
     #[test]
     fn png_filmstrips_have_no_fixed_size_ceiling() {
@@ -744,72 +428,9 @@ mod tests {
         assert_eq!(image.rgba.len(), w as usize * h as usize * 4);
         assert_eq!(&image.rgba[..4], &[123, 123, 123, 255]);
         assert_eq!(&image.rgba[image.rgba.len() - 4..], &[123, 123, 123, 255]);
-        let frame = super::Layout::parse("").cut(&image).pop().unwrap();
-        assert!(std::sync::Arc::ptr_eq(&frame.rgba, &image.rgba), "a full frame shares its pixels");
-        assert!(super::crop(&image, u32::MAX, 0, 2, 1).is_none());
     }
 
-    #[test]
-    fn wallpaper_atlases_keep_exact_offsets_without_frame_copies() {
-        use std::sync::Arc;
-        let image = Arc::new(super::Image::rgba(2, 6, [10, 20, 30, 255].repeat(12)).unwrap());
-        let vertical = super::Picture { frames: vec![image.clone()], stretch: [false; 2], atlas: Some([2, 3]) };
-        let (same, origin) = vertical.wallpaper(0, 2).unwrap();
-        assert!(Arc::ptr_eq(&same, &image));
-        assert_eq!(origin, [0, 2], "offset need not be a frame boundary");
-        assert_eq!(vertical.wallpaper(1, 1).unwrap().1, [0, 4]);
-        assert_eq!(vertical.wallpaper(-1, -20).unwrap().1, [0, 0]);
-        assert_eq!(vertical.wallpaper(i32::MAX, i32::MAX).unwrap().1, [0, 6]);
-        let across = super::Picture { frames: vec![image], stretch: [false; 2], atlas: Some([1, 6]) };
-        assert_eq!(across.wallpaper(1, 2).unwrap().1, [1, 2], "horizontal animation state remains independent of vertical pixel offset");
-    }
 
-    #[test]
-    fn picture_frames() {
-        let layout = super::Layout::parse(
-            "Has Alpha Channel: yes\nNumber of Animations: 3\nHorizontal Animation: no\nVertical Resizable: no\nHorizontal Resizable: no\n",
-        );
-        assert_eq!(
-            layout,
-            super::Layout {
-                frames: 3,
-                horizontal: false,
-                stretch: [false; 2],
-            }
-        );
-        // Windows line ends, spacing and case as libraries write them.
-        let strip = super::Layout::parse("Has Alpha Channel: yes\r\nnumber of animations : 4\r\nHorizontal Animation: YES\r\nVertical Resizable: yes\r\nHorizontal Resizable: no\r\n");
-        assert_eq!(strip, super::Layout { frames: 4, horizontal: true, stretch: [false, true] }, "a divider stretches down only");
-        let across = super::Image::rgba(4, 1, (0..16).collect::<Vec<u8>>()).unwrap();
-        assert_eq!(strip.cut(&across).iter().map(|f| f.rgba[0]).collect::<Vec<_>>(), [0, 4, 8, 12], "horizontal frames run left to right");
-        assert_eq!(super::Layout::parse("Number of Animations: 0").frames, 1, "none is one");
-        // A 1x3 strip: red, green, blue.
-        let image =
-            super::Image::rgba(1, 3, vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255]).unwrap();
-        let frames = layout.cut(&image);
-        assert_eq!(frames.len(), 3);
-        assert_eq!(frames[1].rgba.as_ref(), &[0, 255, 0, 255]);
-        assert_eq!(super::Layout::parse("").frames, 1);
-        assert_eq!(super::picture_name("../x"), None);
-        assert_eq!(super::picture_name("knob").as_deref(), Some("knob.png"));
-    }
-
-    #[test]
-    fn fractional_resizing_preserves_coverage_and_transparent_edge_color() {
-        let stripes: Vec<u8> = (0..8).flat_map(|x| [if x % 2 == 0 { 0 } else { 255 }; 3]
-            .into_iter().chain([255])).collect();
-        let image = super::Image::rgba(8, 1, stripes).unwrap();
-        let resized = super::resize(&image, 7, 1).unwrap();
-        for (pixel, expected) in resized.rgba.as_chunks::<4>().0.iter().zip([31, 191, 95, 127, 159, 63, 223]) {
-            assert!(pixel[..3].iter().all(|&c| c.abs_diff(expected) <= 1), "fractional coverage: {pixel:?} vs {expected}");
-            assert_eq!(pixel[3], 255);
-        }
-        assert_eq!(super::resize(&image, 4, 1).unwrap().rgba.as_ref(), &[127, 127, 127, 255].repeat(4), "whole-area averages remain unchanged");
-        let edge = super::Image::rgba(2, 1, vec![255, 80, 20, 255, 0, 0, 0, 0]).unwrap();
-        assert_eq!(super::resize(&edge, 1, 1).unwrap().rgba.as_ref(), &[255, 80, 20, 127], "transparent black must not darken visible color");
-        let clear = super::Image::rgba(1, 1, vec![90, 80, 70, 0]).unwrap();
-        assert_eq!(super::resize(&clear, 1, 1).unwrap().rgba.as_ref(), &[0, 0, 0, 0]);
-    }
 
     #[test]
     fn thumbnails_cover_from_the_middle() {
