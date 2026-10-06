@@ -271,7 +271,7 @@ See [control interaction admission](CONTROL_STATE.md#instrument-owned-ui-callbac
 
 ## Script-instance integer state
 
-`Prepared::with_script_instances` defines initialized scalar banks, each identified
+`Prepared::with_script_instances` defines initialized integer banks, each identified
 by a dense `ScriptInstanceId` scoped to that plan. `Program::with_script_instance`
 binds a callback program to exactly one bank. `ReadScriptCell`/`WriteScriptCell`
 operands can address cells only in that binding; they cannot switch instances.
@@ -292,8 +292,12 @@ live runtime memory or a complete language-state snapshot.
 Heap-audited native checks cover independent instances, overlapping notes/UI callbacks,
 waits, generation replacement, terminal/outcome backpressure, stale handles, cancellation,
 arithmetic faults, callback slot reuse and schema/local-capacity rejection. KSP ordinary
-integer variables now lower into this service. The 16-bit bank and scalar-cell addresses
-are not a proposed bound for future language arrays; array/string/real/object storage,
+integer variables and arrays now lower into this service. Instance IDs are 16-bit;
+cell addresses are 32-bit. `ScriptArray` is a nonempty bounded view in the same bank.
+`ReadScriptArray`/`WriteScriptArray` validate evaluated indices before any destination
+mutation; preparation checks the entire view even in unreachable code. Indexed reads
+may reuse the index register as their destination. No runtime allocation or separate
+array owner is introduced. String/real/object storage,
 script-module registration, persistence and ordered source event stages remain open.
 
 Script-state validation: all 203 native tests pass in debug, release and Rust 1.92;

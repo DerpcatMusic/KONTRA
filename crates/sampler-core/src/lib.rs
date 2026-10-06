@@ -73,7 +73,7 @@ pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCu
 mod integer;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod script;
-pub use script::ScriptInstanceId;
+pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
 mod variation;
 use gate::Channel;

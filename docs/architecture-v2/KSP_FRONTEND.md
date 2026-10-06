@@ -11,16 +11,16 @@ manual surface. This subset is not the product's completion target.
 
 ## Accepted shape
 
-An optional first `on init` declares ordinary/script-instance and polyphonic integer variables and supported scalar
+An optional first `on init` declares ordinary/script-instance and polyphonic integer variables, integer constants/arrays and supported scalar
 UI controls. Optional `on note` and/or `on release` follows; duplicate or misplaced callbacks fail compilation.
 A note callback may suppress its original attack with `ignore_event($EVENT_ID)`. Release-only scripts keep
-ordinary native attack selection. Init accepts declarations, `make_perfview` and literal scalar initialization, including inline `declare $name := value`.
+ordinary native attack selection. Init accepts declarations, `make_perfview` and constant-expression initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
 
 Note/release bodies accept `wait` and bare `play_note` calls, assignments, integer
 expressions and the control flow described below. Expressions can read signed
 32-bit literals, `$EVENT_NOTE`, `$EVENT_VELOCITY`, `$NOTE_HELD` and declared
-global/polyphonic/control integers. Note-owned values remain shared between the
+global/polyphonic/control integers, constants and indexed integer arrays. Note-owned values remain shared between the
 originating note and its release callback, including overlapping waits. Generated
 note key, velocity and duration accept evaluated integer expressions; sample offset
 currently requires literal zero. Supported key/velocity ranges are 0–127 and 1–127,
@@ -44,7 +44,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 
 ## Explicit rejection and limits
 
-The compiler rejects real-valued expressions, arrays, real/string values, select/case,
+The compiler rejects real-valued expressions, real/string arrays and values, select/case,
 compound Boolean expressions, other callbacks, multi-slot event forwarding, nested
 comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
 at execution before publishing a child or timer. Durations below `-1` are invalid.
@@ -54,7 +54,9 @@ Some primitives already exist natively; that alone does not establish their KSP
 semantics. Unknown syntax is never ignored and never sent to the old VM.
 
 `Limits.source_bytes`, `Limits.instructions` and `Limits.variables` bound source,
-total emitted code across callbacks and declarations. Symbol resolution happens on
+total emitted code across callbacks and declaration symbols. `Limits.array_cells` separately
+bounds the aggregate declared array elements. Temporary constant-expression lowering
+also obeys the instruction budget before its instructions are discarded. Symbol resolution happens on
 control using a bounded standard-library map; names do not enter audio execution.
 The parser walks input without a token-array allocation. Statements use iterative
 block patching; integer expressions use precedence climbing with a fixed 64-level
@@ -263,8 +265,8 @@ native service integration, not Kontakt scheduling/gesture equivalence.
 
 ## Script-instance globals
 
-Ordinary `declare $name` variables start at zero; inline signed literal initializers
-and literal assignments in `on init` prepare their values off audio. Note, release
+Ordinary `declare $name` variables start at zero; inline constant-expression initializers
+and constant-expression assignments in `on init` prepare their values off audio. Note, release
 and UI callbacks share the same instance bank, including across waits. Polyphonic
 variables retain their separate per-note cells. This follows the distinctions in
 [NI's variable reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables).
@@ -281,7 +283,7 @@ The authored fixture combines two same-key note callbacks, a waiting UI callback
 global sharing, per-note memory, release reads and exact independently expected PCM
 across blocks 1/7/64 under allocator instrumentation. Declarations also reject duplicate
 names, malformed/range-invalid initialization and exhausted variable budgets. Full
-init execution, constants, arrays, persistence and Kontakt differential
+init execution beyond constant preparation, persistence and Kontakt differential
 fidelity remain required work.
 
 ## Integer expressions
@@ -475,3 +477,35 @@ note continues sounding. Both assignments update the existing shared control own
 and its native gain ramp. Independent expected PCM matches blocks 1/7/64 with no
 heap work and no synthetic UI note. The production UI and vendor engine-parameter
 commands are still separate open tasks; no widget renderer is claimed here.
+
+
+## Bounded integer arrays and constants
+
+`declare const $SIZE := 2 * 64` substitutes a read-only signed-32 value during
+control-side compilation. `declare %notes[$SIZE]` prepares an array in the same
+script-instance bank as globals. Arrays accept 1–1,000,000 elements, within the
+caller-provided aggregate `Limits.array_cells` budget. The native CLI permits
+1,000,000 total array elements. Dimensions and init writes require constant integer
+expressions; ordinary globals/event reads are not constants. Omitted initialization
+zeros the array; `(1, 2)` repeats its final value through the remaining elements.
+The maximum and repeat behavior follow the [NI variables reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables);
+rejecting zero-length arrays is an explicit native policy awaiting vendor probes.
+
+Callbacks evaluate `%notes[index]` reads/writes, including nested indices, through
+bounded native array instructions. `inc`/`dec` retain signed-32 wrapping;
+`num_elements(%notes)` lowers to the declared count. Constants cannot be written,
+and reserved host arrays are rejected until their own semantics exist. Continuation
+markers (`...`) are accepted. Real/string arrays, bulk operations, persistence and
+host-provided arrays remain open.
+
+Arrays are bounded views, not another runtime owner. All views and register operands
+validate before activation; each access validates its evaluated index before changing
+a destination. A callback fault preserves earlier writes but cannot reach adjacent
+state. Native instance IDs remain 16-bit, while cell offsets are 32-bit. Native
+heap-guarded checks cover cross-instance isolation, waits, old-generation retention,
+invalid indices, and dead-code bounds. Source checks cover overlapping note/release
+callbacks driving PCM at blocks 1/7/64 and a million-element array followed by a scalar.
+Kontakt fidelity remains unverified.
+
+Validation: 239 native tests pass in debug/release and Rust 1.92; strict all-target Clippy and both
+root boundary tests pass. Logs: `artifacts/script-arrays-*`.

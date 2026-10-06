@@ -17,6 +17,7 @@ fn limits() -> Limits {
         source_bytes: 4096,
         instructions: 32,
         variables: 8,
+        array_cells: 0,
     }
 }
 
@@ -370,6 +371,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             48000,
             Limits {
                 variables: 0,
+                array_cells: 0,
                 ..limits()
             }
         )
@@ -381,6 +383,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
             48000,
             Limits {
                 variables: 1,
+                array_cells: 0,
                 instructions: 3,
                 ..limits()
             }
@@ -596,6 +599,7 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
         source_bytes: source.len(),
         instructions: 4098,
         variables: 0,
+        array_cells: 0,
     };
     assert!(compile(&source, 48000, budget).is_ok());
     assert!(

@@ -119,6 +119,10 @@
     "dec": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "num_elements": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -323,7 +327,9 @@
               "num_elements"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#num_elements--"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/array-commands#num_elements--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "search--",
@@ -4305,7 +4311,9 @@
           "anchor": "---integer-array-",
           "title": "% (integer array)",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-array-"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-array-",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "---real-variable-",
@@ -4335,7 +4343,9 @@
           "anchor": "const----constant-integer-",
           "title": "const $ (constant integer)",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#const----constant-integer-"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#const----constant-integer-",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "const----real-constant-",

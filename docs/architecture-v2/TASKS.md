@@ -144,7 +144,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   now execute ordinary KSP globals across note/release/UI callbacks and retain old
   generations independently from new initial values. Signed-32 arithmetic, bitwise
   expressions and scalar inc/dec now execute through explicit native instructions
-  with bounded expression depth and register requirements. Broader typed arithmetic and
+  with bounded expression depth and register requirements. Integer constants, bounded
+  script-instance arrays, indexed inc/dec and num_elements now share those services.
+  Broader typed arithmetic and
   language/state/controller work stay open.
 
 - [ ] **P0; dependencies:** V2-03/04.

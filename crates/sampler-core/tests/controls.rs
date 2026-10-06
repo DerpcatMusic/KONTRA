@@ -678,10 +678,11 @@ fn script_state_layout_and_callback_binding_are_validated_before_activation() {
         p.with_script_instances(vec![vec![1]]),
         Err(Error::InvalidInput)
     ));
-    assert!(matches!(
-        plan(vec![]).with_script_instances(vec![vec![0; 65537]]),
-        Err(Error::Capacity)
-    ));
+    assert!(
+        plan(vec![])
+            .with_script_instances(vec![vec![0; 65537]])
+            .is_ok()
+    );
     assert!(matches!(
         plan(vec![]).with_script_instances(vec![vec![]; 65537]),
         Err(Error::Capacity)

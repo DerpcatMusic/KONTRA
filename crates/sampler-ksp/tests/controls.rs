@@ -42,6 +42,7 @@ fn limits() -> sampler_ksp::Limits {
         source_bytes: 4096,
         instructions: 64,
         variables: 8,
+        array_cells: 0,
     }
 }
 fn plan() -> Prepared {
@@ -495,6 +496,7 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
             48000,
             sampler_ksp::Limits {
                 variables: 1,
+                array_cells: 0,
                 ..limits()
             },
             &[]

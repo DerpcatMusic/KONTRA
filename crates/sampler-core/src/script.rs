@@ -5,12 +5,38 @@ use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScriptInstanceId(pub u16);
 
+/// Bounded integer-array view in the program's own script-instance bank.
+/// Preparation validates the entire view, including unreachable instructions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptArray {
+    pub offset: u32,
+    pub len: u32,
+}
+impl ScriptArray {
+    pub(super) fn end(self) -> Result<usize, Error> {
+        if self.len == 0 {
+            return Err(Error::InvalidInput);
+        }
+        let end = self.offset.checked_add(self.len).ok_or(Error::Capacity)?;
+        usize::try_from(end).map_err(|_| Error::Capacity)
+    }
+    pub(super) fn cell(self, index: i64) -> Result<u32, Error> {
+        let index = u32::try_from(index).map_err(|_| Error::InvalidInput)?;
+        if index >= self.len {
+            return Err(Error::InvalidInput);
+        }
+        self.offset.checked_add(index).ok_or(Error::InvalidInput)
+    }
+}
+
 impl Prepared {
     /// Initial integer banks for independently owned script instances. Shared
     /// callbacks bind explicitly to one bank; no instruction can select another.
     pub fn with_script_instances(mut self, instances: Vec<Vec<i64>>) -> Result<Self, Error> {
         let addressable = usize::from(u16::MAX) + 1;
-        if instances.len() > addressable || instances.iter().any(|v| v.len() > addressable) {
+        if instances.len() > addressable
+            || instances.iter().any(|v| u32::try_from(v.len()).is_err())
+        {
             return Err(Error::Capacity);
         }
         let instances: Box<[_]> = instances.into_iter().map(Vec::into_boxed_slice).collect();
@@ -45,14 +71,15 @@ impl Runtime {
         &self,
         plan: PlanId,
         instance: ScriptInstanceId,
-        cell: u16,
+        cell: u32,
     ) -> Result<i64, Error> {
+        let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         self.plans
             .get(plan.0)
             .ok_or(Error::StaleHandle)?
             .scripts
             .get(usize::from(instance.0))
-            .and_then(|bank| bank.get(usize::from(cell)))
+            .and_then(|bank| bank.get(cell))
             .copied()
             .ok_or(Error::InvalidInput)
     }
@@ -60,8 +87,9 @@ impl Runtime {
     pub(super) fn behavior_script_cell_mut(
         &mut self,
         id: BehaviorId,
-        cell: u16,
+        cell: u32,
     ) -> Result<&mut i64, Error> {
+        let cell = usize::try_from(cell).map_err(|_| Error::InvalidInput)?;
         let continuation = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let plan = self.behavior_plan(continuation.owner)?;
         let program = continuation.program;
@@ -72,7 +100,7 @@ impl Runtime {
         generation
             .scripts
             .get_mut(usize::from(instance.0))
-            .and_then(|bank| bank.get_mut(usize::from(cell)))
+            .and_then(|bank| bank.get_mut(cell))
             .ok_or(Error::InvalidInput)
     }
 }
