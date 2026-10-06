@@ -613,8 +613,12 @@ impl Runtime {
         })?);
         generation.callbacks += 1;
         if let Some(event) = controller {
-            self.performance_state.input_controllers[event.performance]
-                [usize::from(event.number)] = event.value;
+            if event.stage == 0 {
+                self.performance_state.input_controllers[event.performance]
+                    [usize::from(event.number)] = event.value;
+            } else {
+                generation.controllers.receive(event);
+            }
         }
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
@@ -706,6 +710,7 @@ impl Runtime {
             if !accept(id, c.owner, outcome) {
                 return;
             }
+            self.release_controller_reserve(id);
             self.behaviors.remove(id.0);
             match c.owner {
                 BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -736,6 +741,7 @@ impl Runtime {
             };
             let c = *self.behaviors.get(id.0).unwrap();
             if c.outcome.is_some() {
+                self.release_controller_reserve(id);
                 self.behavior_ready.pop();
                 continue;
             }
@@ -746,6 +752,7 @@ impl Runtime {
                 .prepared;
             let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
+                self.release_controller_reserve(id);
                 self.behavior_ready.pop();
                 continue;
             };
@@ -758,6 +765,9 @@ impl Runtime {
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             match self.behavior_step(id, c.owner, op) {
                 Ok(true) => {
+                    if self.behaviors.get(id.0).unwrap().outcome.is_some() {
+                        self.release_controller_reserve(id);
+                    }
                     self.behavior_ready.remove(index);
                 }
                 Ok(false) => {}
@@ -791,6 +801,7 @@ impl Runtime {
             }
             Instruction::SuppressController => {
                 self.controller_event_mut(id)?.pending = false;
+                self.release_controller_reserve(id);
             }
             Instruction::ReadControllerNumber { local } => {
                 let value = self.controller_event_mut(id)?.number;
@@ -813,20 +824,18 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadInputController { controller, local } => {
-                let number = *self.local_cell_mut(id, controller)?;
-                let (performance, _) = self.behavior_performance(id)?;
-                let value = self.performance_state.input_controllers[performance]
-                    .get(usize::try_from(number).map_err(|_| Error::InvalidInput)?)
-                    .ok_or(Error::InvalidInput)?;
-                *self.local_cell_mut(id, local)? = i64::from(*value);
+                let number = u8::try_from(*self.local_cell_mut(id, controller)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let value = self.behavior_input_controller(id, number)?;
+                *self.local_cell_mut(id, local)? = i64::from(value);
             }
+
             Instruction::WriteController { controller, value } => {
                 let number = u8::try_from(*self.local_cell_mut(id, controller)?)
                     .map_err(|_| Error::InvalidInput)?;
                 let value = u32::try_from(*self.local_cell_mut(id, value)?)
                     .map_err(|_| Error::InvalidInput)?;
-                let (performance, scope) = self.behavior_performance(id)?;
-                self.publish_controller(performance, scope, number, value)?;
+                self.write_behavior_controller(id, number, value)?;
             }
             Instruction::ControllerToMidi7 { local } => {
                 let cell = self.local_cell_mut(id, local)?;
@@ -1248,5 +1257,6 @@ impl Runtime {
                 .expect("continuation retains originating note");
         }
         self.cancel_closed_work();
+        self.release_controller_reserve(id);
     }
 }

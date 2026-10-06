@@ -454,6 +454,7 @@ impl Runtime {
             scripts: plan.script_initial.clone(),
             dsp: dsp::VoiceDspState::new(&plan, limits.voices)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes)?,
+            controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,

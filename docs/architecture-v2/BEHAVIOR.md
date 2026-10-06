@@ -575,7 +575,8 @@ callback; pedal writes reuse transactional channel-capacity and gate services.
 Fixtures cover low-bit MIDI 2 precision, overlapping waits, latest-input versus
 captured-event reads, generation retirement/backpressure, pool and pedal capacity,
 faults/panic, source remapping and lower/upper MPE manager scope, all without runtime
-heap activity. Ordered multi-stage controller projections remain open.
+heap activity. Ordered controller projections are implemented below; note/release
+stage projections remain open.
 
 Validation: 279 native tests pass in debug/release/Rust 1.92, strict all-target
 Clippy and both root boundary tests pass (`artifacts/controller-events-*`).
@@ -612,3 +613,47 @@ extra note arena or per-format lifetime table is introduced. Scoped hard silence
 cancels controller waits by captured physical origin, while unrelated plan/UI
 callbacks remain independent. See the controller-generated source fixtures in
 [KSP_FRONTEND.md](KSP_FRONTEND.md#controller-generated-notes).
+
+
+## Ordered controller stages
+
+`with_controller_programs` binds an ordered native program list. Each admitted
+event reserves its remaining downstream continuation slots before publishing the
+raw input. Forwarding transfers those reservations and the captured address/mask
+to the next stage. Generated CC writes enter the following stage with an independent
+reservation. Consumption, completion, faults and cancellation return unused slots;
+completed callback records still await the existing outcome acknowledgement.
+
+Each later stage has a generation-owned input CC bank per performance domain. It
+updates only when an event reaches that stage. Stage zero reads the shared raw
+input bank; final accepted output reaches the ordinary controller/pedal services.
+A consumed CC cannot leak into a later input view. Remaps retain full 32-bit values
+when explicitly forwarded; source-language conversions remain frontend operations.
+Banks allocate on preparation/submission and retire with the original generation
+on the control side. New generations start with empty downstream input views.
+
+The existing bounded callback work stack orders nested forwarding and writes; no
+recursive interpreter or second scheduler is added. A 4,096-stage chain executes
+on a 128 KiB thread stack with heap guards. Construction occurs off audio on the
+ordinary worker stack. Tests also cover failed admission, exact projections, waits
+across plan adoption, reclamation/backpressure and all cancellation paths.
+
+This closes the controller-only routing slice, not ordered note/release execution.
+The latter still needs reached-stage note projections, per-stage logical key and
+group state, generated-note downstream entry, release continuation reservations
+and stage-specific source-ID observation. Controller-generated notes still select
+native regions directly. No multi-slot Kontakt playback claim is made.
+
+Validation: 312 native release/Rust 1.92 tests, strict all-target Clippy and both
+root boundary tests pass (`artifacts/controller-stages-*`). A strengthened native
+ordering assertion confirms downstream callbacks finish before the generating
+callback's following instruction reads shared state.
+
+The next routing step must preserve source module identity independently of the
+controller-handler ordinal: a module can have no controller callback yet still
+own note/release/UI callbacks. Existing `ScriptInstanceId` retains module order
+and state ownership, while controller stage indices currently enumerate handlers.
+Full routing must carry the creating module boundary across event kinds, copy
+projections only on forwarding, and reserve release callbacks only for reached
+note stages. Concatenating programs or sharing one mutable event/group projection
+across suspended source slots would violate these requirements.

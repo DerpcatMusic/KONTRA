@@ -307,10 +307,14 @@ impl Runtime {
 
     pub(super) fn cancel_closed_work(&mut self) {
         let notes = &mut self.notes;
+        let mut controller_reserves = 0;
         self.commands.retain(|c| match c.action {
             Action::Resume(id) => {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
+                    if let Some(event) = c.controller.as_mut() {
+                        controller_reserves += std::mem::take(&mut event.reserved);
+                    }
                     false
                 } else {
                     let keep = match c.owner {
@@ -365,6 +369,7 @@ impl Runtime {
                 | Event::Controller(..),
             ) => true,
         });
+        self.behaviors.unreserve(controller_reserves);
     }
 
     /// Remove queued control writes, including an unexecuted boundary event. Does not change

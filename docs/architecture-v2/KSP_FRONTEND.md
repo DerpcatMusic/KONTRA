@@ -864,3 +864,29 @@ budgets. Runtime paths remain heap guarded.
 
 Validation: 307 native release/Rust 1.92 tests and strict all-target Clippy pass
 (`artifacts/event-target-edits-*`).
+
+
+## Controller-only module chains
+
+`bind_controller_chain` binds separately compiled controller modules in source
+order using native controller stages. Globals/polyphonic ranges retain separate
+script-instance ownership; native program indices and UI callback bindings relocate
+when tables combine. Control IDs remain caller-supplied, stable and unique across
+the instrument. Duplicate controls or incompatible sample rates fail preparation.
+Single-script `bind` uses the same module installation path.
+
+Generated `set_controller` events enter the following module, while `%CC` reads
+that module's incoming projection. A defined callback can consume/remap before
+its first wait; the next stage sees only explicitly forwarded/generated events.
+Source fixtures cover delayed remaps, independent same-named globals, native CC
+precision/quantization boundaries and a UI callback relocated into the second
+module. The shared runtime's slot reservations keep forwarding bounded.
+
+The chain entry point explicitly rejects modules with note/release callbacks.
+Those stages are still under implementation; accepting and flattening them would
+misrepresent library behavior. UI rendering, full stage/event semantics and
+Kontakt/Falcon fidelity remain open. This is an executable controller slice, not
+full multi-script support.
+
+Validation: 312 native release/Rust 1.92 tests, strict all-target Clippy and both
+root boundary tests pass (`artifacts/controller-stages-*`).
