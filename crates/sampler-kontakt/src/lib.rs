@@ -26,7 +26,7 @@ pub use container::{Multi, read_chunks, read_multi};
 pub use library::{Kontakt, read, read_program};
 pub use load::{
     Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_read_streamed,
-    load_streamed, prepare,
+    load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
@@ -34,7 +34,7 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use stream::{SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
+pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]

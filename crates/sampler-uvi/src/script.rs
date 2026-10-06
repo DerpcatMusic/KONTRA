@@ -16,6 +16,8 @@ use std::{
     rc::Rc,
 };
 
+mod ui;
+
 const PRELUDE: &str = include_str!("script_prelude.lua");
 /// Instructions between two budget checks of the VM hook.
 const TICK: u32 = 10_000;
@@ -23,6 +25,12 @@ const TICK: u32 = 10_000;
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
+}
+
+impl<T: Files> Files for std::rc::Rc<T> {
+    fn script(&self, module: &str) -> Option<String> {
+        (**self).script(module)
+    }
 }
 
 /// A bank's Lua members, by path.
@@ -85,8 +93,9 @@ pub struct Play {
     pub at_ms: f64,
     pub key: u8,
     pub velocity: u8,
-    /// Milliseconds until its own release; `None` (a duration of 0 or less, the
-    /// default) follows the originating note.
+    /// Milliseconds until its own release; `Some(0.0)` sends only the note-on
+    /// (the script releases it); `None` (-1, or unset) follows the originating
+    /// note.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Vec<u32>,
@@ -102,7 +111,19 @@ pub struct Play {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Play(Play),
-    Release { id: u64, at_ms: f64 },
+    Release {
+        id: u64,
+        at_ms: f64,
+    },
+    /// `sendScriptModulation(id, value, glide_ms, voice)`: set (gliding to)
+    /// "Script Event Modulation `id`" for one voice, or all when `voice` is None.
+    Modulation {
+        id: u16,
+        value: f64,
+        glide_ms: f64,
+        voice: Option<u64>,
+        at_ms: f64,
+    },
 }
 
 /// What the host left inert or could not run: feature, one example, count.
@@ -463,6 +484,22 @@ impl ScriptHost {
         )?;
         let s = shared.clone();
         globals.raw_set(
+            "sendScriptModulation",
+            lua.create_function(
+                move |_, (id, value, glide, voice): (f64, f64, Option<f64>, Option<f64>)| {
+                    s.command(Command::Modulation {
+                        id: id.clamp(0.0, f64::from(u16::MAX)) as u16,
+                        value,
+                        glide_ms: glide.unwrap_or(0.0).max(0.0),
+                        voice: voice.map(|v| v as u64),
+                        at_ms: s.now.get(),
+                    });
+                    Ok(())
+                },
+            )?,
+        )?;
+        let s = shared.clone();
+        globals.raw_set(
             "spawn",
             lua.create_function(move |lua, (f, args): (Function, MultiValue)| {
                 let thread = lua.create_thread(f)?;
@@ -752,7 +789,9 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
     if values[4].is_some() || values[5].is_some() || values[9].is_some() {
         shared.find("lua playNote channel/input/slice", "");
     }
-    let duration = num(2).filter(|d| *d > 0.0);
+    // lua.uvi.net: > 0 releases after that long, -1 with the originating note,
+    // 0 sends only the note-on (the script ends it with releaseVoice).
+    let duration = num(2).filter(|d| *d >= 0.0);
     Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
@@ -875,10 +914,36 @@ mod tests {
         h.note_on(1, 62, 100, 0);
         let c = h.take_commands();
         assert!(
-            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms.is_none()),
+            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms == Some(0.0)),
             "{c:?} {:?}",
             h.findings()
         );
+    }
+
+    #[test]
+    fn send_script_modulation_becomes_a_command() {
+        let mut h = host("function onNote(e) sendScriptModulation(9, 0.4, 1000, nil) end");
+        h.note_on(1, 60, 100, 0);
+        let c = h.take_commands();
+        assert!(
+            matches!(&c[..], [Command::Modulation { id: 9, glide_ms, voice: None, .. }] if *glide_ms == 1000.0),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn widgets_export_to_the_ui_ir() {
+        let h = host(
+            "setSize(400, 200)\n\
+             local p = Panel('main')\n\
+             p:Knob('gain', 0.5, 0, 1)\n\
+             p:Menu{name='mode', items={'a','b'}}\n\
+             p:OnOffButton('on', true)",
+        );
+        let ui = h.interface();
+        assert_eq!(ui.source, sampler_ui_ir::Source::FalconLua);
+        assert!(ui.widgets.len() >= 4, "{}", ui.widgets.len());
+        assert_eq!(ui.pages.len(), 1);
     }
 
     #[test]

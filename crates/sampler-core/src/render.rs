@@ -15,6 +15,10 @@ pub struct RuntimeStats {
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
     pub voices: usize,
+    /// Voice slots now, how often the pool grew, and growths refused.
+    pub voice_capacity: usize,
+    pub voice_growths: u64,
+    pub growth_failures: u64,
     /// Wall time of the last `render` call, and the peak since `reset_peak`.
     pub render_nanos_last: u64,
     pub render_nanos_peak: u64,
@@ -33,6 +37,9 @@ impl Runtime {
             cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
+            voice_capacity: self.voices.slots.len(),
+            voice_growths: self.voice_growths,
+            growth_failures: self.growth_failures,
             render_nanos_last: self.render_time[0],
             render_nanos_peak: self.render_time[1],
             render_frames_last: self.render_time[2] as u32,
@@ -112,6 +119,7 @@ impl Runtime {
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
         self.start_plan_programs();
+        self.apply_growth();
         self.resume_yielded();
         self.apply_due();
         let mut offset = 0;
@@ -136,6 +144,7 @@ impl Runtime {
 
     fn render_segment(&mut self, output: &mut [Frame], outs: &mut [&mut [Frame]], offset: usize) {
         let chunked = self.script_params
+            || self.parallel.is_some()
             || self.plans.slots.iter().any(|s| {
                 s.value.as_ref().is_some_and(|g| {
                     g.prepared.buses.len() != 0
@@ -172,6 +181,9 @@ impl Runtime {
     }
 
     fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+        if self.render_voices_parallel(output, at) {
+            return;
+        }
         let mut batch: (Option<(usize, usize)>, [usize; VOICES], usize) = (None, [0; VOICES], 0);
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
@@ -207,7 +219,7 @@ impl Runtime {
 
     /// Voices batch when consecutive in slot order, started, and running the
     /// same delay-free chain of the same plan over at most one block.
-    fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
+    pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
         if !v.started || frames > super::dsp::BLOCK {
@@ -236,7 +248,6 @@ impl Runtime {
         let mut block = [[0.; lanes::LANES]; super::dsp::BLOCK];
         let mut batch = lanes::Batch {
             count: voices.len(),
-            cells: [0; VOICES],
             expressions: [None; VOICES],
             ends: [0; lanes::LANES],
             len: 0,
@@ -257,7 +268,6 @@ impl Runtime {
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
             let asset = &plan.prepared.pcm[v.sample];
             starved[lane] = v.cursor.starved();
-            batch.cells[lane] = i * plan.dsp.stride;
             batch.expressions[lane] = Some((n.expression, expression.value));
             let mut planar = [[0.; super::dsp::BLOCK]; 2];
             begun[lane] = if let Some(frames) = asset.resident_frames() {
@@ -275,7 +285,8 @@ impl Runtime {
                     cache: self
                         .stream_cache
                         .as_ref()
-                        .expect("preflighted stream cache"),
+                        .expect("preflighted stream cache")
+                        .reader(),
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
                 };
@@ -299,18 +310,21 @@ impl Runtime {
         let first = self.voices.slots[voices[0]].value.as_ref().unwrap();
         let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
         let dsp = &mut plan.dsp;
+        let mut cells: lanes::Cells<'_> =
+            std::array::from_fn(|lane| voices.get(lane).map(|&i| dsp.cells.claim(i)));
+        let bank = &mut dsp.filters.as_mut_slice()[0];
         sampler_simd::dispatch(
             #[inline(always)]
             || {
                 lanes::process(
                     chain.pre(),
                     0,
-                    &mut dsp.cells,
+                    &mut cells,
                     &batch,
                     &mut block,
                     &dsp.parameters,
                     at,
-                    &mut dsp.filters,
+                    bank,
                 )
             },
         );
@@ -325,12 +339,12 @@ impl Runtime {
                 lanes::process(
                     chain.post(),
                     chain.pre().len(),
-                    &mut dsp.cells,
+                    &mut cells,
                     &batch,
                     &mut block,
                     &dsp.parameters,
                     at,
-                    &mut dsp.filters,
+                    bank,
                 )
             },
         );
@@ -347,13 +361,13 @@ impl Runtime {
                     Some(bus) => dsp.buses.input(bus, output.len()),
                     None => &mut *output,
                 };
-                let cells = batch.cells[lane]..batch.cells[lane] + chain.stages();
+                let states = &mut cells[lane].as_mut().expect("batch voice")[..chain.stages()];
                 let fault = chain.finish(
                     v,
                     b,
                     &planar,
                     false,
-                    &mut dsp.cells[cells],
+                    states,
                     gains[lane],
                     destination,
                 );
@@ -368,6 +382,7 @@ impl Runtime {
             }
             done[lane] = chain.done(v);
         }
+        drop(cells);
         for (lane, &i) in voices.iter().enumerate() {
             if done[lane] {
                 self.end_voice(VoiceId(self.voices.id(i)));
@@ -414,7 +429,7 @@ impl Runtime {
                 .modulation
                 .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
             let (from, to) = (ramp.from, ramp.to);
-            plan.dsp.filters.modulation = [
+            plan.dsp.filters.as_mut_slice()[0].modulation = [
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
             ];
@@ -472,16 +487,15 @@ impl Runtime {
             (target, None)
         };
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
-        let begin = i * plan.dsp.stride;
-        let states = &mut plan.dsp.cells[begin..begin + chain.map_or(0, |c| c.stages())];
-        let delay_begin = i * plan.dsp.delay_stride;
+        let mut claimed = plan.dsp.cells.claim(i);
+        let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
+        let mut delay = plan.dsp.delay_samples.claim(i);
         let context = super::dsp::RenderContext {
-            delay: &mut plan.dsp.delay_samples
-                [delay_begin..delay_begin + chain.map_or(0, |c| c.delay_frames)],
+            delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters: &plan.dsp.parameters,
             filters: super::dsp::svf::FilterContext {
-                bank: &mut plan.dsp.filters,
+                bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
                 reverbs: &mut [],
                 convolutions: &mut [],
@@ -503,14 +517,16 @@ impl Runtime {
                 cache: self
                     .stream_cache
                     .as_ref()
-                    .expect("preflighted stream cache"),
+                    .expect("preflighted stream cache")
+                    .reader(),
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
             render_source(v, &source, segment, chain, states, context, &self.kernel)
         };
+        drop((claimed, delay));
         if let (Some(ramp), Some(target)) = (points, mixed) {
-            plan.dsp.filters.modulation = [1.0; 2];
+            plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
                 plan.modulation
                     .mix(i, segment, target, ramp, at, f64::from(self.rate));
@@ -543,7 +559,7 @@ fn ramp_mix(chunk: &[Frame], output: &mut [Frame], ramp: super::voice_mod::Ramp,
     }
 }
 
-fn render_source(
+pub(super) fn render_source(
     voice: &mut super::Voice,
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],

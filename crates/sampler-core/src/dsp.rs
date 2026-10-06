@@ -1,5 +1,6 @@
 //! Prepared voice-local processing. No vendor objects or mutable shared filter state.
 use crate::{Envelope, EnvelopeState, Error, Frame, Prepared, Voice};
+use sampler_pool::Slab;
 
 /// Native RBJ biquad responses. Band-pass has unity peak gain.
 #[derive(Clone, Copy, Debug)]
@@ -657,43 +658,113 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
     Ok(values.into_boxed_slice())
 }
 
+/// Most render lanes: the audio thread and its workers.
+pub(crate) const MAX_LANES: usize = 8;
+
 pub(super) struct DspState {
+    /// Voice slots `cells` and `delay_samples` are sized for.
+    pub voices: usize,
     pub stride: usize,
-    pub cells: Box<[ProcessorState]>,
+    /// One `stride` of chain state per voice slot; claimed per voice.
+    pub cells: Slab<ProcessorState>,
     pub parameters: Box<[ControlRamp]>,
-    pub delay_stride: usize,
-    pub delay_samples: Box<[[f64; 2]]>,
-    pub filters: svf::FilterBank,
+    pub delay_samples: Slab<[f64; 2]>,
+    /// Filter coefficient caches, one per render lane. Lane 0 is the audio
+    /// thread's (and the whole of single-threaded rendering).
+    pub filters: Slab<svf::FilterBank>,
     pub buses: crate::bus::BusState,
 }
 impl DspState {
-    pub fn new(plan: &Prepared, voices: usize, expressions: usize) -> Result<Self, Error> {
+    pub fn new(
+        plan: &Prepared,
+        voices: usize,
+        expressions: usize,
+        lanes: usize,
+    ) -> Result<Self, Error> {
+        let (stride, delay_stride) = Self::shape(plan);
+        let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        Ok(Self {
+            voices,
+            stride,
+            cells: Slab::new(allocate(cells)?, stride),
+            filters: Slab::new(
+                (0..lanes.clamp(1, MAX_LANES))
+                    .map(|_| svf::FilterBank::new(&plan.filters, expressions))
+                    .collect::<Result<_, _>>()?,
+                1,
+            ),
+            delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
+            parameters: control::initial_parameters(plan, &plan.dsp_bindings),
+            buses: crate::bus::BusState::new(plan)?,
+        })
+    }
+    /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).
+    pub fn shape(plan: &Prepared) -> (usize, usize) {
         let stride = plan
             .voice_chains
             .iter()
             .map(PreparedVoiceChain::stages)
             .max()
             .unwrap_or(0);
-        let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
-        let delay_stride = plan
+        let delay = plan
             .voice_chains
             .iter()
             .map(|chain| chain.delay_frames)
             .max()
             .unwrap_or(0);
-        let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
-        Ok(Self {
-            stride,
-            cells: allocate(cells)?,
-            delay_stride,
-            filters: svf::FilterBank::new(&plan.filters, expressions)?,
-            delay_samples: allocate(delay_count)?,
-            parameters: control::initial_parameters(plan, &plan.dsp_bindings),
-            buses: crate::bus::BusState::new(plan)?,
-        })
+        (stride, delay)
+    }
+    /// Per-voice storage for `voices` slots of a plan of this `shape`.
+    pub fn voice_storage(
+        (stride, delay): (usize, usize),
+        voices: usize,
+    ) -> Result<(Slab<ProcessorState>, Slab<[f64; 2]>), Error> {
+        let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        let delays = delay.checked_mul(voices).ok_or(Error::Capacity)?;
+        Ok((Slab::new(allocate(cells)?, stride), Slab::new(allocate(delays)?, delay)))
+    }
+    /// Take the larger per-voice storage `cells`/`delays` (from
+    /// `voice_storage`), moving every live voice's state across; the old
+    /// storage is left in the arguments. No allocation.
+    pub fn adopt(
+        &mut self,
+        voices: usize,
+        cells: &mut Slab<ProcessorState>,
+        delays: &mut Slab<[f64; 2]>,
+    ) {
+        let n = self.cells.len();
+        cells.as_mut_slice()[..n].swap_with_slice(self.cells.as_mut_slice());
+        std::mem::swap(&mut self.cells, cells);
+        let n = self.delay_samples.len();
+        delays.as_mut_slice()[..n].swap_with_slice(self.delay_samples.as_mut_slice());
+        std::mem::swap(&mut self.delay_samples, delays);
+        self.voices = voices;
+    }
+    /// Make sure there is a filter cache for each of `lanes` render lanes.
+    /// Control side: allocates.
+    pub fn ensure_lanes(
+        &mut self,
+        plan: &Prepared,
+        expressions: usize,
+        lanes: usize,
+    ) -> Result<(), Error> {
+        let lanes = lanes.clamp(1, MAX_LANES);
+        if self.filters.len() >= lanes {
+            return Ok(());
+        }
+        let empty = Slab::new(Box::new([]), 1);
+        let mut banks = std::mem::replace(&mut self.filters, empty).into_items().into_vec();
+        while banks.len() < lanes {
+            banks.push(svf::FilterBank::new(&plan.filters, expressions)?);
+        }
+        self.filters = Slab::new(banks.into_boxed_slice(), 1);
+        Ok(())
     }
     pub fn reset(&mut self, voice: usize) {
-        self.cells[voice * self.stride..(voice + 1) * self.stride].fill(ProcessorState::default());
+        let stride = self.stride;
+        self.cells.as_mut_slice()[voice * stride..(voice + 1) * stride]
+            .fill(ProcessorState::default());
     }
 }
 
