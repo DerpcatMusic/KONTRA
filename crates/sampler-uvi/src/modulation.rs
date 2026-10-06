@@ -591,7 +591,7 @@ impl Translation {
         } else {
             ir::Frequency::Hertz(freq)
         };
-        if !(freq > 0.0) {
+        if freq <= 0.0 {
             return Ok(Err(gap(
                 "LFO Freq",
                 freq.to_string(),

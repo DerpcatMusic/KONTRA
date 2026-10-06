@@ -148,7 +148,9 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
     let options = ParsingOptions {
         allow_dtd: false,
-        nodes_limit: 200_000,
+        // Augmented Orchestra programs reach ~97k elements (~200k nodes with
+        // their whitespace); XML_LIMIT bounds the text either way.
+        nodes_limit: 1_000_000,
         ..Default::default()
     };
     let doc = Document::parse_with_options(text, options).map_err(Translate::Xml)?;
@@ -472,11 +474,9 @@ impl Translation {
             let Some(asset) = self.asset(&at, sample) else {
                 continue;
             };
-            for (name, default) in [("Pitch", 0.0), ("SampleStart", 0.0)] {
-                let value = number(player, name, default)?;
-                if value != default {
-                    self.unsupported(&at, name, value);
-                }
+            let start = number(player, "SampleStart", 0.0)?;
+            if start != 0.0 {
+                self.unsupported(&at, "SampleStart", start);
             }
             let tracking = number(player, "NoteTracking", 1.0)?;
             let root = midi(player, "BaseNote", 60)?;
@@ -529,8 +529,10 @@ impl Translation {
                 },
                 pitch,
                 tune: ir::Pitch::Semitones(
+                    // Pitch is the semitone base the Pitch connections add to.
                     number(player, "CoarseTune", 0.0)?
                         + number(player, "FineTune", 0.0)? / 100.0
+                        + number(player, "Pitch", 0.0)?
                         + modulation.pitch,
                 ),
                 gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)? * modulation.gain),
@@ -826,39 +828,109 @@ fn assemble(
 }
 
 #[cfg(all(test, feature = "library-access"))]
-mod dump {
-    #[test]
-    #[ignore]
-    fn dump_programs() {
-        let root = std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap());
-        let out = std::path::PathBuf::from(std::env::var("DUMP").unwrap());
-        let mut stack = vec![root];
+mod survey {
+    use sampler_ir as ir;
+    use std::collections::BTreeMap;
+
+    /// Every program under `KONTRA_UVI_LIBRARIES`: `.ufs` banks, or clear
+    /// `.uvip` files (e.g. decoded copies), as `(name, xml)`.
+    pub(crate) fn programs(mut each: impl FnMut(&str, &str)) {
+        let root = std::env::var("KONTRA_UVI_LIBRARIES").unwrap();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let mut files = Vec::new();
         while let Some(dir) = stack.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let p = e.path();
                 if p.is_dir() {
                     stack.push(p)
-                } else if p.extension().is_some_and(|e| e == "ufs") {
-                    let bank = match crate::Bank::open(&p) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            eprintln!("{}: {e}", p.display());
-                            continue;
-                        }
+                } else if p.extension().is_some_and(|e| e == "ufs" || e == "uvip") {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        for f in files {
+            if f.extension().is_some_and(|e| e == "uvip") {
+                each(
+                    &f.display().to_string(),
+                    &std::fs::read_to_string(&f).unwrap(),
+                );
+                continue;
+            }
+            let Ok(bank) = crate::Bank::open(&f) else {
+                continue;
+            };
+            for program in bank.programs() {
+                if let Ok((text, _)) = bank.program(&program) {
+                    each(&format!("{} {program}", f.display()), &text);
+                }
+            }
+        }
+    }
+
+    /// Which modulation translates and what stays reported, across the
+    /// installed banks: `KONTRA_UVI_LIBRARIES=... cargo test -p sampler-uvi
+    /// --lib survey_modulation -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn survey_modulation() {
+        let (mut total, mut routed) = (0, 0);
+        let mut routes = BTreeMap::<String, (usize, usize, String)>::new();
+        let mut gaps = BTreeMap::<String, (usize, usize)>::new();
+        programs(|name, text| {
+            total += 1;
+            let ir = match crate::translate_bank(text) {
+                Ok((ir, _)) => ir,
+                Err(e) => return println!("{name}: {e:?}"),
+            };
+            routed += usize::from(ir.zones.iter().any(|z| !z.routes.is_empty()));
+            let mut seen = std::collections::HashSet::new();
+            for zone in &ir.zones {
+                for r in &zone.routes {
+                    let route = &ir.routes[r.0];
+                    let source = match &ir.modulators[route.source.0].source {
+                        ir::ModulationSource::Lfo(l) => format!("Lfo {:?}", l.shape),
+                        ir::ModulationSource::Envelope(_) => "Envelope".into(),
+                        other => format!("{other:?}"),
                     };
-                    let stem = p.file_stem().unwrap().to_string_lossy().into_owned();
-                    for prog in bank.programs() {
-                        match bank.program(&prog) {
-                            Ok((text, _)) => {
-                                let f = out.join(&stem).join(prog.trim_start_matches('/'));
-                                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-                                std::fs::write(f, text).unwrap();
-                            }
-                            Err(e) => eprintln!("{prog}: {e}"),
-                        }
+                    let key = format!("{source} -> {:?}", route.target);
+                    let entry = routes
+                        .entry(key.clone())
+                        .or_insert_with(|| (0, 0, name.to_owned()));
+                    entry.1 += 1;
+                    if seen.insert(key) {
+                        entry.0 += 1;
                     }
                 }
             }
+            let mut seen = std::collections::HashSet::new();
+            for u in &ir.unsupported {
+                let value = u.value.split_once(": ").map_or(u.value.as_str(), |v| v.1);
+                let value = if u.feature == "module"
+                    || u.feature.contains("modulat")
+                    || u.feature.starts_with("LFO")
+                {
+                    value
+                } else {
+                    ""
+                };
+                let key = format!("{:?} {} {}", u.reason, u.feature, value);
+                let entry = gaps.entry(key.clone()).or_default();
+                entry.1 += 1;
+                if seen.insert(key) {
+                    entry.0 += 1;
+                }
+            }
+        });
+        println!(
+            "{routed}/{total} programs have modulation routes\n\nroutes (programs, zone bindings):"
+        );
+        for (k, (p, n, example)) in &routes {
+            println!("{p:5} {n:9} {k}  e.g. {example}");
+        }
+        println!("\nreported (programs, entries):");
+        for (k, (p, n)) in &gaps {
+            println!("{p:5} {n:9} {k}");
         }
     }
 }
