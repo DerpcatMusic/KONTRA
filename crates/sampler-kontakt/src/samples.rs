@@ -46,16 +46,28 @@ impl Samples {
         // Kontakt resolves relative names from the instrument folder, and
         // monolith paths also from the library folders above it.
         let mut bases = vec![parent.to_path_buf()];
-        bases.extend(parent.ancestors().skip(1).take_while(|at| at.starts_with(&self.root)).map(Path::to_path_buf));
+        bases.extend(
+            parent
+                .ancestors()
+                .skip(1)
+                .take_while(|at| at.starts_with(&self.root))
+                .map(Path::to_path_buf),
+        );
         for base in &bases {
             let candidate = base.join(&name);
             if let Some((archive, member)) = archive_member(&candidate) {
-                let archive = archive.canonicalize().map_err(|e| LoadError::io(&archive, e))?;
-                if archive.starts_with(&self.root) && self.archive(&archive)?.find(&member).is_some() {
+                let archive = archive
+                    .canonicalize()
+                    .map_err(|e| LoadError::io(&archive, e))?;
+                if archive.starts_with(&self.root)
+                    && self.archive(&archive)?.find(&member).is_some()
+                {
                     return Ok(Some(archive.join(member)));
                 }
             } else if candidate.is_file() {
-                let file = candidate.canonicalize().map_err(|e| LoadError::io(&candidate, e))?;
+                let file = candidate
+                    .canonicalize()
+                    .map_err(|e| LoadError::io(&candidate, e))?;
                 if file.starts_with(&self.root) {
                     return Ok(Some(file));
                 }
@@ -73,19 +85,30 @@ impl Samples {
             });
             index
         });
-        let Some(matches) = loose.get(&basename) else { return Ok(None) };
+        let Some(matches) = loose.get(&basename) else {
+            return Ok(None);
+        };
         if let [only] = matches.as_slice() {
             return Ok(Some(only.clone()));
         }
-        let parts: Vec<_> = name.split('/').filter(|s| !s.is_empty() && *s != "..").collect();
+        let parts: Vec<_> = name
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != "..")
+            .collect();
         for n in (2..=parts.len()).rev() {
             let suffix = parts[parts.len() - n..].join("/").to_lowercase();
-            let found: Vec<_> = matches.iter().filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix)).collect();
+            let found: Vec<_> = matches
+                .iter()
+                .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix))
+                .collect();
             if let [only] = found.as_slice() {
                 return Ok(Some((*only).clone()));
             }
         }
-        Err(LoadError::Invalid { path: parent.join(name), reason: format!("{} files share this sample's name", matches.len()) })
+        Err(LoadError::Invalid {
+            path: parent.join(name),
+            reason: format!("{} files share this sample's name", matches.len()),
+        })
     }
 
     /// Decode a sample [`Samples::resolve`] returned.
@@ -103,7 +126,10 @@ impl Samples {
             }
             None => std::fs::read(location).map_err(|e| LoadError::io(location, e))?,
         };
-        decode(&bytes).map_err(|reason| LoadError::Invalid { path: location.into(), reason })
+        decode(&bytes).map_err(|reason| LoadError::Invalid {
+            path: location.into(),
+            reason,
+        })
     }
 
     /// Frame count of a sample, reading only its header: the first 64 KiB
@@ -118,29 +144,54 @@ impl Samples {
                     None => self.encrypted(&archive, &member)?,
                 };
                 let mut file = File::open(&archive).map_err(|e| LoadError::io(&archive, e))?;
-                let entry = self.archive(&archive)?.member(&mut file, &member).map_err(|e| LoadError::decode(&archive, "archive member header", e))?;
-                let entry = entry.filter(|e| e.valid).ok_or_else(|| LoadError::Invalid { path: location.into(), reason: "invalid archive member".into() })?;
-                file.seek(SeekFrom::Start(entry.offset)).and_then(|_| file.take(entry.size.min(1 << 16)).read_to_end(&mut head)).map_err(|e| LoadError::io(&archive, e))?;
+                let entry = self
+                    .archive(&archive)?
+                    .member(&mut file, &member)
+                    .map_err(|e| LoadError::decode(&archive, "archive member header", e))?;
+                let entry = entry
+                    .filter(|e| e.valid)
+                    .ok_or_else(|| LoadError::Invalid {
+                        path: location.into(),
+                        reason: "invalid archive member".into(),
+                    })?;
+                file.seek(SeekFrom::Start(entry.offset))
+                    .and_then(|_| file.take(entry.size.min(1 << 16)).read_to_end(&mut head))
+                    .map_err(|e| LoadError::io(&archive, e))?;
                 if let Some(key) = key {
                     key.apply(&mut head);
                 }
             }
             None => {
                 let file = File::open(location).map_err(|e| LoadError::io(location, e))?;
-                file.take(1 << 16).read_to_end(&mut head).map_err(|e| LoadError::io(location, e))?;
+                file.take(1 << 16)
+                    .read_to_end(&mut head)
+                    .map_err(|e| LoadError::io(location, e))?;
             }
         }
-        frames(&head).ok_or_else(|| LoadError::Invalid { path: location.into(), reason: "unreadable sample header".into() })
+        frames(&head).ok_or_else(|| LoadError::Invalid {
+            path: location.into(),
+            reason: "unreadable sample header".into(),
+        })
     }
 
     /// The archive key `member` needs, if it is encrypted.
-    fn encrypted(&mut self, archive: &Path, member: &str) -> Result<Option<Arc<dyn LibraryKey>>, LoadError> {
+    fn encrypted(
+        &mut self,
+        archive: &Path,
+        member: &str,
+    ) -> Result<Option<Arc<dyn LibraryKey>>, LoadError> {
         let file = File::open(archive).map_err(|e| LoadError::io(archive, e))?;
-        let entry = self.archive(archive)?.member(file, member).map_err(|e| LoadError::decode(archive, "archive member header", e))?;
+        let entry = self
+            .archive(archive)?
+            .member(file, member)
+            .map_err(|e| LoadError::decode(archive, "archive member header", e))?;
         if !entry.is_some_and(|e| e.encoded && e.key_index != 0xff) {
             return Ok(None);
         }
-        let key = crate::library_key(archive).map_err(|reason| LoadError::Access { path: archive.into(), reason })?;
+        let key = crate::library_key(archive).map_err(|reason| LoadError::Access {
+            path: archive.into(),
+            reason,
+        })?;
         self.keys.insert(archive.into(), key.clone());
         Ok(Some(key))
     }
@@ -148,7 +199,8 @@ impl Samples {
     fn archive(&mut self, path: &Path) -> Result<&Archive, LoadError> {
         if !self.archives.contains_key(path) {
             let file = File::open(path).map_err(|e| LoadError::io(path, e))?;
-            let index = Archive::read_index(file).map_err(|e| LoadError::decode(path, "archive directory", e))?;
+            let index = Archive::read_index(file)
+                .map_err(|e| LoadError::decode(path, "archive directory", e))?;
             self.archives.insert(path.into(), index);
         }
         Ok(&self.archives[path])
@@ -158,14 +210,22 @@ impl Samples {
 /// `(archive, member)` when an ancestor of `path` is an NKX/NKR file.
 fn archive_member(path: &Path) -> Option<(PathBuf, String)> {
     path.ancestors().skip(1).find_map(|parent| {
-        let archive = parent.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"));
-        let member = path.strip_prefix(parent).ok()?.to_string_lossy().replace('\\', "/");
+        let archive = parent
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nkx") || e.eq_ignore_ascii_case("nkr"));
+        let member = path
+            .strip_prefix(parent)
+            .ok()?
+            .to_string_lossy()
+            .replace('\\', "/");
         (archive && parent.is_file()).then(|| (parent.into(), member))
     })
 }
 
 fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         match entry.file_type() {
             Ok(kind) if kind.is_dir() => walk(&entry.path(), found),
@@ -178,13 +238,22 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
 /// Frame count from the start of a WAV or NCW file.
 fn frames(head: &[u8]) -> Option<u64> {
     if !head.starts_with(b"RIFF") {
-        return ncw::NcwHeader::read(&mut &head[..]).ok().map(|h| u64::from(h.num_samples));
+        return ncw::NcwHeader::read(&mut &head[..])
+            .ok()
+            .map(|h| u64::from(h.num_samples));
     }
-    let u32le = |at: usize| head.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u32le = |at: usize| {
+        head.get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
     let (mut align, mut at) = (None, 12);
     while let (Some(id), Some(len)) = (head.get(at..at + 4), u32le(at + 4)) {
         match id {
-            b"fmt " => align = head.get(at + 20..at + 22).map(|b| u16::from_le_bytes([b[0], b[1]])),
+            b"fmt " => {
+                align = head
+                    .get(at + 20..at + 22)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            }
             b"data" => return Some(u64::from(len) / u64::from(align.filter(|a| *a > 0)?)),
             _ => {}
         }
@@ -198,18 +267,45 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     if bytes.starts_with(b"RIFF") {
         return wav(bytes);
     }
-    let mut reader = ncw::NcwReader::read(Cursor::new(bytes)).map_err(|e| format!("not WAV or NCW: {e}"))?;
-    let (channels, bits, rate) = (reader.header.channels as usize, reader.header.bits_per_sample, reader.header.sample_rate);
+    let mut reader =
+        ncw::NcwReader::read(Cursor::new(bytes)).map_err(|e| format!("not WAV or NCW: {e}"))?;
+    let (channels, bits, rate) = (
+        reader.header.channels as usize,
+        reader.header.bits_per_sample,
+        reader.header.sample_rate,
+    );
     let float = reader.sample_format == ncw::SampleFormat::Float;
     let samples = reader.decode_samples().map_err(|e| format!("NCW: {e}"))?;
     let scale = 2f32.powi(i32::from(bits) - 1);
-    let convert = |s: i32| if float { Some(f32::from_bits(s as u32)).filter(|x| x.is_finite()).unwrap_or(0.0) } else { s as f32 / scale };
-    Ok(Decoded { rate, frames: samples.chunks_exact(channels).map(|f| [convert(f[0]), convert(f[channels.min(2) - 1])]).collect() })
+    let convert = |s: i32| {
+        if float {
+            Some(f32::from_bits(s as u32))
+                .filter(|x| x.is_finite())
+                .unwrap_or(0.0)
+        } else {
+            s as f32 / scale
+        }
+    };
+    Ok(Decoded {
+        rate,
+        frames: samples
+            .chunks_exact(channels)
+            .map(|f| [convert(f[0]), convert(f[channels.min(2) - 1])])
+            .collect(),
+    })
 }
 
 fn wav(bytes: &[u8]) -> Result<Decoded, String> {
-    let u16le = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
-    let u32le = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u16le = |at: usize| {
+        bytes
+            .get(at..at + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let u32le = |at: usize| {
+        bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
     if bytes.get(8..12) != Some(b"WAVE") {
         return Err("RIFF without WAVE".into());
     }
@@ -235,7 +331,9 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
     }
     let width = bits.div_ceil(8);
     if channels == 0 || !matches!((tag, width), (1, 1..=4) | (3, 4)) {
-        return Err(format!("unsupported WAV format {tag} with {bits}-bit samples"));
+        return Err(format!(
+            "unsupported WAV format {tag} with {bits}-bit samples"
+        ));
     }
     let sample = |s: &[u8]| match (tag, width) {
         (3, _) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
@@ -248,7 +346,12 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
     };
     let frames = bytes[data]
         .chunks_exact(width * channels)
-        .map(|frame| [sample(&frame[..width]), sample(&frame[(channels.min(2) - 1) * width..][..width])])
+        .map(|frame| {
+            [
+                sample(&frame[..width]),
+                sample(&frame[(channels.min(2) - 1) * width..][..width]),
+            ]
+        })
         .collect();
     Ok(Decoded { rate, frames })
 }
@@ -262,7 +365,9 @@ mod tests {
         out.extend(tag.to_le_bytes());
         out.extend(channels.to_le_bytes());
         out.extend(44100u32.to_le_bytes());
-        out.extend([0; 6]);
+        let align = channels * bits.div_ceil(8);
+        out.extend((44100 * u32::from(align)).to_le_bytes());
+        out.extend(align.to_le_bytes());
         out.extend(bits.to_le_bytes());
         out.extend(b"data");
         out.extend((data.len() as u32).to_le_bytes());
@@ -285,13 +390,20 @@ mod tests {
     #[test]
     fn ncw_round_trips_through_the_vendored_codec() {
         let pcm: Vec<i32> = (0..1000).map(|i| (i * 37 % 2000) - 1000).collect();
-        let spec = ncw::PcmSpec { channels: 2, bits_per_sample: 16, sample_rate: 48000 };
+        let spec = ncw::PcmSpec {
+            channels: 2,
+            bits_per_sample: 16,
+            sample_rate: 48000,
+        };
         let bytes = ncw::encode_pcm(&pcm, spec, ncw::StereoMode::Direct).unwrap();
         let decoded = decode(&bytes).unwrap();
         assert_eq!(decoded.rate, 48000);
         assert_eq!(decoded.frames.len(), 500);
         assert_eq!(frames(&bytes[..120]), Some(500));
         assert_eq!(frames(&wav_bytes(1, 2, 24, &[0; 12])), Some(2));
-        assert_eq!(decoded.frames[1], [pcm[2] as f32 / 32768.0, pcm[3] as f32 / 32768.0]);
+        assert_eq!(
+            decoded.frames[1],
+            [pcm[2] as f32 / 32768.0, pcm[3] as f32 / 32768.0]
+        );
     }
 }

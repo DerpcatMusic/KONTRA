@@ -15,7 +15,10 @@ pub fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
         let mut files: Vec<_> = std::fs::read_dir(parent)
             .map_err(|e| format!("reading {}: {e}", parent.display()))?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|file| file.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")))
+            .filter(|file| {
+                file.extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+            })
             .collect();
         files.sort();
         for file in files {
@@ -24,10 +27,15 @@ pub fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
             File::open(&file)
                 .and_then(|f| f.take(64 * 1024).read_to_end(&mut bytes))
                 .map_err(|e| format!("reading {}: {e}", file.display()))?;
-            if let (Some(key), Some(iv)) = (field::<32>(&bytes, b"<JDX>"), field::<16>(&bytes, b"<HU>")) {
+            if let (Some(key), Some(iv)) =
+                (field::<32>(&bytes, b"<JDX>"), field::<16>(&bytes, b"<HU>"))
+            {
                 return Ok(Arc::new(Keystream::new(key, iv)));
             }
-            checked.push(format!("{}: no access fields in its first 64 KiB", file.display()));
+            checked.push(format!(
+                "{}: no access fields in its first 64 KiB",
+                file.display()
+            ));
         }
         if parent.join("Samples").is_dir() {
             break;
@@ -44,13 +52,17 @@ pub fn library_key(path: &Path) -> Result<Arc<dyn LibraryKey>, String> {
 fn field<const N: usize>(bytes: &[u8], tag: &[u8]) -> Option<[u8; N]> {
     let start = bytes.windows(tag.len()).position(|w| w == tag)? + tag.len();
     let closing = [b"</".as_slice(), tag.get(1..)?].concat();
-    let end = bytes.get(start..)?.windows(closing.len()).position(|w| w == closing)? + start;
+    let end = bytes
+        .get(start..)?
+        .windows(closing.len())
+        .position(|w| w == closing)?
+        + start;
     let text = bytes.get(start..end)?.trim_ascii();
     if text.len() != N * 2 {
         return None;
     }
     let mut out = [0; N];
-    for (dest, pair) in out.iter_mut().zip(text.chunks_exact(2)) {
+    for (dest, pair) in out.iter_mut().zip(text.as_chunks::<2>().0) {
         *dest = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
@@ -70,7 +82,7 @@ impl Keystream {
         let mut counter = u128::from_be_bytes(iv);
         let mut stream = Box::new([0u8; 65536]);
         let mut seed = 0x608da0a2u32;
-        for chunk in stream.chunks_exact_mut(16) {
+        for chunk in stream.as_chunks_mut::<16>().0 {
             let mut block = counter.to_be_bytes().into();
             cipher.encrypt_block(&mut block);
             for (out, value) in chunk.iter_mut().zip(block) {
@@ -122,8 +134,17 @@ mod tests {
     #[test]
     fn access_fields_need_their_closing_tag() {
         let hex = "ab".repeat(16);
-        assert_eq!(field::<16>(format!("<HU> \n{hex}\n </HU>").as_bytes(), b"<HU>"), Some([0xab; 16]));
-        assert_eq!(field::<16>(format!("<HU>{hex}</JDX>").as_bytes(), b"<HU>"), None);
-        assert_eq!(field::<16>(format!("<HU>{hex}ab</HU>").as_bytes(), b"<HU>"), None);
+        assert_eq!(
+            field::<16>(format!("<HU> \n{hex}\n </HU>").as_bytes(), b"<HU>"),
+            Some([0xab; 16])
+        );
+        assert_eq!(
+            field::<16>(format!("<HU>{hex}</JDX>").as_bytes(), b"<HU>"),
+            None
+        );
+        assert_eq!(
+            field::<16>(format!("<HU>{hex}ab</HU>").as_bytes(), b"<HU>"),
+            None
+        );
     }
 }

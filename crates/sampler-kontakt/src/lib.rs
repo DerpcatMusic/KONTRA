@@ -25,29 +25,55 @@ pub use script::{Script, Strings};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]
-pub fn library_key(_: &std::path::Path) -> Result<std::sync::Arc<dyn ni_file::nis::LibraryKey>, String> {
+pub fn library_key(
+    _: &std::path::Path,
+) -> Result<std::sync::Arc<dyn ni_file::nis::LibraryKey>, String> {
     Err("encrypted library content needs the library-access feature".into())
 }
 
 /// Why a real instrument could not be loaded, with the file it concerns.
 #[derive(Debug)]
 pub enum LoadError {
-    Io { path: std::path::PathBuf, error: std::io::Error },
+    Io {
+        path: std::path::PathBuf,
+        error: std::io::Error,
+    },
     /// A vendored decoder rejected a record.
-    Decode { path: std::path::PathBuf, what: &'static str, error: ni_file::Error },
+    Decode {
+        path: std::path::PathBuf,
+        what: &'static str,
+        error: ni_file::Error,
+    },
     /// Encrypted content without usable local access data.
-    Access { path: std::path::PathBuf, reason: String },
-    Invalid { path: std::path::PathBuf, reason: String },
+    Access {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+    Invalid {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     /// The translated instrument could not be lowered to a playable plan.
     Lower(sampler_core::lower::LowerError),
 }
 
 impl LoadError {
     pub(crate) fn io(path: &std::path::Path, error: std::io::Error) -> Self {
-        Self::Io { path: path.into(), error }
+        Self::Io {
+            path: path.into(),
+            error,
+        }
     }
-    pub(crate) fn decode(path: &std::path::Path, what: &'static str, error: ni_file::Error) -> Self {
-        Self::Decode { path: path.into(), what, error }
+    pub(crate) fn decode(
+        path: &std::path::Path,
+        what: &'static str,
+        error: ni_file::Error,
+    ) -> Self {
+        Self::Decode {
+            path: path.into(),
+            what,
+            error,
+        }
     }
 }
 
@@ -56,7 +82,9 @@ impl std::fmt::Display for LoadError {
         match self {
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Self::Decode { path, what, error } => write!(f, "{}: {what}: {error}", path.display()),
-            Self::Access { path, reason } => write!(f, "{}: encrypted, no access: {reason}", path.display()),
+            Self::Access { path, reason } => {
+                write!(f, "{}: encrypted, no access: {reason}", path.display())
+            }
             Self::Invalid { path, reason } => write!(f, "{}: {reason}", path.display()),
             Self::Lower(error) => write!(f, "lowering: {error}"),
         }

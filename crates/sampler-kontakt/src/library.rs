@@ -9,8 +9,8 @@ use ni_file::{
     kontakt::{
         KontaktChunks, StructuredObject,
         objects::{
-            BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList, InternalModArray16, LoopArray,
-            ModSource, Modulator, Program,
+            BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList,
+            InternalModArray16, LoopArray, ModSource, Modulator, Program,
         },
     },
     nis::schema::{NISObject, PresetChunkItem, Repository},
@@ -45,88 +45,172 @@ pub struct Kontakt {
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = chunks(&path)?;
-    let invalid = |reason: &str| LoadError::Invalid { path: path.clone(), reason: reason.into() };
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: path.clone(),
+        reason: reason.into(),
+    };
     let decode = |what, error| LoadError::decode(&path, what, error);
-    let program = Program::try_from(chunks.find_first(PROGRAM).ok_or_else(|| invalid("not a single-instrument preset"))?)
-        .map_err(|e| decode("program", e))?;
-    let params = program.params().map_err(|e| decode("program parameters", e))?;
+    let program = Program::try_from(
+        chunks
+            .find_first(PROGRAM)
+            .ok_or_else(|| invalid("not a single-instrument preset"))?,
+    )
+    .map_err(|e| decode("program", e))?;
+    let params = program
+        .params()
+        .map_err(|e| decode("program parameters", e))?;
     let table = match chunks.find_first(FILE_TABLE) {
-        Some(chunk) => FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?.sample_filetable,
+        Some(chunk) => {
+            FNTableImpl::try_from(chunk)
+                .map_err(|e| decode("sample file table", e))?
+                .sample_filetable
+        }
         None => {
-            let chunk = chunks.find_first(LEGACY_FILE_TABLE).ok_or_else(|| invalid("missing sample file table"))?;
-            FileNameListPreK51::try_from(chunk).map_err(|e| decode("legacy file table", e))?.sample_filetable
+            let chunk = chunks
+                .find_first(LEGACY_FILE_TABLE)
+                .ok_or_else(|| invalid("missing sample file table"))?;
+            FileNameListPreK51::try_from(chunk)
+                .map_err(|e| decode("legacy file table", e))?
+                .sample_filetable
         }
     };
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
-            source: ir::SourceFormat::Kontakt { version: program.version() },
+            source: ir::SourceFormat::Kontakt {
+                version: program.version(),
+            },
             ..Default::default()
         },
         assets: HashMap::new(),
         locations: Vec::new(),
     };
-    let groups = GroupList::try_from(program.0.find_first(GROUP_LIST).ok_or_else(|| invalid("missing group list"))?)
-        .map_err(|e| decode("group list", e))?;
+    let groups = GroupList::try_from(
+        program
+            .0
+            .find_first(GROUP_LIST)
+            .ok_or_else(|| invalid("missing group list"))?,
+    )
+    .map_err(|e| decode("group list", e))?;
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
     }
-    for (slot, chunk) in program.0.children.iter().filter(|c| c.id == SCRIPT).enumerate() {
-        let script = BParScript::try_from(chunk).and_then(|s| s.params()).map_err(|e| decode("script", e))?;
+    for (slot, chunk) in program
+        .0
+        .children
+        .iter()
+        .filter(|c| c.id == SCRIPT)
+        .enumerate()
+    {
+        let script = BParScript::try_from(chunk)
+            .and_then(|s| s.params())
+            .map_err(|e| decode("script", e))?;
         let location = format!("script slot {slot}");
         match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
                 if !script.persistent.is_empty() {
-                    out.unsupported(&location, "saved persistent values", script.persistent.len(), ir::Reason::NotModeled);
+                    out.unsupported(
+                        &location,
+                        "saved persistent values",
+                        script.persistent.len(),
+                        ir::Reason::NotModeled,
+                    );
                 }
                 out.ir.behaviors.push(ir::Behavior {
-                    name: script.description.filter(|d| !d.is_empty()).unwrap_or(location),
+                    name: script
+                        .description
+                        .filter(|d| !d.is_empty())
+                        .unwrap_or(location),
                     language: ir::Language::Ksp,
                     source: text,
                     state: Vec::new(),
                     requires: Vec::new(),
                 });
             }
-            _ => out.unsupported(&location, "linked script file", script.textfile_name.unwrap_or_default(), ir::Reason::NotModeled),
+            // Neither text nor a linked file: an empty slot.
+            _ => {
+                if let Some(name) = script.textfile_name.filter(|name| !name.is_empty()) {
+                    out.unsupported(
+                        &location,
+                        "linked script file",
+                        name,
+                        ir::Reason::NotModeled,
+                    );
+                }
+            }
         }
     }
-    let parent = path.parent().ok_or_else(|| invalid("instrument has no folder"))?;
-    let root = path.ancestors().find(|p| p.join("Samples").is_dir()).unwrap_or(parent);
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("instrument has no folder"))?;
+    let root = path
+        .ancestors()
+        .find(|p| p.join("Samples").is_dir())
+        .unwrap_or(parent);
     let mut samples = Samples::new(root);
     let mut resolved = HashMap::new();
-    let data = &program.0.find_first(ZONE_LIST).ok_or_else(|| invalid("missing zone list"))?.data;
+    let data = &program
+        .0
+        .find_first(ZONE_LIST)
+        .ok_or_else(|| invalid("missing zone list"))?
+        .data;
     let mut r = Cursor::new(data.as_slice());
     let count = u32le(&mut r).map_err(|e| LoadError::io(&path, e))? as usize;
     if count > data.len() / 8 {
         return Err(invalid("zone count exceeds the zone list"));
     }
     for index in 0..count {
-        let zone = raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
-        let Some(group) = translated.get(zone.group).ok_or_else(|| invalid(&format!("zone {index} refers to missing group {}", zone.group)))?
+        let zone =
+            raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
+        let Some(group) = translated.get(zone.group).ok_or_else(|| {
+            invalid(&format!(
+                "zone {index} refers to missing group {}",
+                zone.group
+            ))
+        })?
         else {
             continue; // Muted group: never sounds.
         };
-        let name = table.get(&(zone.file as u32)).ok_or_else(|| invalid(&format!("zone {index} sample is absent from the file table")))?;
+        let name = table.get(&(zone.file as u32)).ok_or_else(|| {
+            invalid(&format!(
+                "zone {index} sample is absent from the file table"
+            ))
+        })?;
         let location = match resolved.get(name) {
             Some(location) => location,
-            None => resolved.entry(name.clone()).or_insert(samples.resolve(parent, name)?),
+            None => resolved
+                .entry(name.clone())
+                .or_insert(samples.resolve(parent, name)?),
         };
         let Some(location) = location else {
-            out.unsupported(&format!("zone {index}"), "missing sample", name, ir::Reason::InvalidValue);
+            out.unsupported(
+                &format!("zone {index}"),
+                "missing sample",
+                name,
+                ir::Reason::InvalidValue,
+            );
             continue;
         };
         // Kontakt stores the end relative to the end of the sample.
         let end = match zone.end {
             0 => None,
-            end => Some(samples.frames(location)?.saturating_sub(u64::from(end.unsigned_abs()))),
+            end => Some(
+                samples
+                    .frames(location)?
+                    .saturating_sub(u64::from(end.unsigned_abs())),
+            ),
         };
         out.zone(index, zone, end, group, &params, location.clone());
     }
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
-    Ok(Kontakt { instrument: out.ir, locations: out.locations, samples })
+    Ok(Kontakt {
+        instrument: out.ir,
+        locations: out.locations,
+        samples,
+    })
 }
 
 /// The Kontakt chunk stream inside an NKS or NIS (Kontakt 5+) container.
@@ -134,35 +218,76 @@ fn chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
     let decode = |what, error| LoadError::decode(path, what, error);
     let mut file = std::fs::File::open(path).map_err(|e| LoadError::io(path, e))?;
     if file.metadata().map_err(|e| LoadError::io(path, e))?.len() > 128 << 20 {
-        return Err(LoadError::Invalid { path: path.into(), reason: "instrument exceeds 128 MiB".into() });
+        return Err(LoadError::Invalid {
+            path: path.into(),
+            reason: "instrument exceeds 128 MiB".into(),
+        });
     }
     let bytes = match NIFile::read(&mut file).map_err(|e| decode("container", e))? {
-        NIFile::NKSContainer(nks) => nks.decompressed_preset().map_err(|e| decode("NKS preset", e))?,
+        NIFile::NKSContainer(nks) => nks
+            .decompressed_preset()
+            .map_err(|e| decode("NKS preset", e))?,
         NIFile::NISoundContainer(nis) => nis_payload(nis, path, 0)?,
-        _ => return Err(LoadError::Invalid { path: path.into(), reason: "not an instrument container".into() }),
+        _ => {
+            return Err(LoadError::Invalid {
+                path: path.into(),
+                reason: "not an instrument container".into(),
+            });
+        }
     };
     KontaktChunks::read(Cursor::new(bytes)).map_err(|e| decode("Kontakt chunks", e))
 }
 
-fn nis_payload(container: ni_file::nis::ItemContainer, path: &Path, depth: usize) -> Result<Vec<u8>, LoadError> {
+fn nis_payload(
+    container: ni_file::nis::ItemContainer,
+    path: &Path,
+    depth: usize,
+) -> Result<Vec<u8>, LoadError> {
     let decode = |what, error| LoadError::decode(path, what, error);
     if depth > 3 {
-        return Err(LoadError::Invalid { path: path.into(), reason: "too many nested NIS wrappers".into() });
+        return Err(LoadError::Invalid {
+            path: path.into(),
+            reason: "too many nested NIS wrappers".into(),
+        });
     }
     if let Some(data) = container.find_data(&ni_file::nis::ItemType::AppSpecific) {
-        let app = ni_file::nis::AppSpecificProperties::try_from(data).map_err(|e| decode("NIS app wrapper", e))?;
-        return nis_payload(app.subtree_item.item().map_err(|e| decode("NIS subtree", e))?, path, depth + 1);
+        let app = ni_file::nis::AppSpecificProperties::try_from(data)
+            .map_err(|e| decode("NIS app wrapper", e))?;
+        return nis_payload(
+            app.subtree_item
+                .item()
+                .map_err(|e| decode("NIS subtree", e))?,
+            path,
+            depth + 1,
+        );
     }
     let NISObject::BNISoundPreset(preset) = Repository::from(container).infer_schema() else {
-        return Err(LoadError::Invalid { path: path.into(), reason: "unsupported NIS preset structure".into() });
+        return Err(LoadError::Invalid {
+            path: path.into(),
+            reason: "unsupported NIS preset structure".into(),
+        });
     };
     let key = match preset.is_encrypted().map_err(|e| decode("NIS preset", e))? {
-        true => Some(crate::library_key(path).map_err(|reason| LoadError::Access { path: path.into(), reason })?),
+        true => Some(
+            crate::library_key(path).map_err(|reason| LoadError::Access {
+                path: path.into(),
+                reason,
+            })?,
+        ),
         false => None,
     };
-    let item = preset.encryption_item_with_key(key.as_deref()).map_err(|e| decode("NIS preset subtree", e))?;
-    let chunk = PresetChunkItem::from(item.subtree.item().map_err(|e| decode("NIS preset subtree", e))?);
-    Ok(chunk.properties().map_err(|e| decode("NIS preset chunk", e))?.0)
+    let item = preset
+        .encryption_item_with_key(key.as_deref())
+        .map_err(|e| decode("NIS preset subtree", e))?;
+    let chunk = PresetChunkItem::from(
+        item.subtree
+            .item()
+            .map_err(|e| decode("NIS preset subtree", e))?,
+    );
+    Ok(chunk
+        .properties()
+        .map_err(|e| decode("NIS preset chunk", e))?
+        .0)
 }
 
 /// Group settings every zone of the group inherits.
@@ -183,8 +308,19 @@ struct Translation {
 }
 
 impl Translation {
-    fn unsupported(&mut self, location: &str, feature: &str, value: impl std::fmt::Display, reason: ir::Reason) {
-        self.ir.unsupported.push(ir::Unsupported { location: location.into(), feature: feature.into(), value: value.to_string(), reason });
+    fn unsupported(
+        &mut self,
+        location: &str,
+        feature: &str,
+        value: impl std::fmt::Display,
+        reason: ir::Reason,
+    ) {
+        self.ir.unsupported.push(ir::Unsupported {
+            location: location.into(),
+            feature: feature.into(),
+            value: value.to_string(),
+            reason,
+        });
     }
 
     /// A group's settings, or `None` for a muted group.
@@ -196,9 +332,14 @@ impl Translation {
         }
         let not_modeled = ir::Reason::NotModeled;
         if v.release_trigger && v.rls_trig_counter != 0 {
-            self.unsupported(&at, "release trigger counter decay", v.rls_trig_counter, not_modeled);
+            self.unsupported(
+                &at,
+                "release trigger counter decay",
+                v.rls_trig_counter,
+                not_modeled,
+            );
         }
-        if v.release_trigger_note_monophonic {
+        if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
         if v.voice_group_index >= 0 {
@@ -208,13 +349,30 @@ impl Translation {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
         if !v.start_criteria.items.is_empty() {
-            let modes: Vec<_> = v.start_criteria.items.iter().map(|c| (c.mode, c.next_criteria, c.cycle_class)).collect();
-            self.unsupported(&at, "group start options (mode, next, cycle class)", format!("{modes:?}"), not_modeled);
+            let modes: Vec<_> = v
+                .start_criteria
+                .items
+                .iter()
+                .map(|c| (c.mode, c.next_criteria, c.cycle_class))
+                .collect();
+            self.unsupported(
+                &at,
+                "group start options (mode, next, cycle class)",
+                format!("{modes:?}"),
+                not_modeled,
+            );
         }
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
-            Ok(source) if source.mode == 9 => self.unsupported(&at, "wavetable source", source.mode, not_modeled),
-            Ok(source) if source.mode != 0 => self.unsupported(&at, "source mode (played as a sampler)", source.mode, not_modeled),
+            Ok(source) if source.mode == 9 => {
+                self.unsupported(&at, "wavetable source", source.mode, not_modeled)
+            }
+            Ok(source) if source.mode != 0 => self.unsupported(
+                &at,
+                "source mode (played as a sampler)",
+                source.mode,
+                not_modeled,
+            ),
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
@@ -224,7 +382,12 @@ impl Translation {
                     && !params.bypass
                 {
                     let kind = fx.effect().map_or(0, |c| c.id);
-                    self.unsupported(&format!("{at} insert slot {slot}"), "insert effect (serialization type)", format!("{kind:#x}"), not_modeled);
+                    self.unsupported(
+                        &format!("{at} insert slot {slot}"),
+                        "insert effect (serialization type)",
+                        format!("{kind:#x}"),
+                        not_modeled,
+                    );
                 }
             }
         }
@@ -233,17 +396,29 @@ impl Translation {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                 let params = modulator.params()?;
                 let targets: Vec<_> = params.targets.iter().map(|t| t.param.as_str()).collect();
-                let volume = targets == ["volume"] && params.targets[0].intensity == 1.0 && !params.targets[0].invert;
+                let volume = targets == ["volume"]
+                    && params.targets[0].intensity == 1.0
+                    && !params.targets[0].invert;
                 match params.modulator {
                     Modulator::Ahdsr(env) if volume && envelope.is_none() => {
                         if env.unknown_flag != 0 {
-                            self.unsupported(&at, "AHD-only envelope mode", env.unknown_flag, not_modeled);
+                            self.unsupported(
+                                &at,
+                                "AHD-only envelope mode",
+                                env.unknown_flag,
+                                not_modeled,
+                            );
                         }
                         // Kontakt's stages are exponential (decay and release
                         // fall to 3/43 in their stage time; the attack bends
                         // with its curve). The IR states the authored times;
                         // the stage law is reported, not guessed.
-                        self.unsupported(&at, "AHDSR stage law", format!("attack curve {}", env.attack_curve), not_modeled);
+                        self.unsupported(
+                            &at,
+                            "AHDSR stage law",
+                            format!("attack curve {}", env.attack_curve),
+                            not_modeled,
+                        );
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
                         self.ir.modulators.push(ir::Modulator {
                             scope: ir::Scope::Voice,
@@ -263,9 +438,16 @@ impl Translation {
                             Modulator::Ahdsr(_) => "internal AHDSR modulation".into(),
                             Modulator::Flex(_) => "internal flex envelope modulation".into(),
                             Modulator::Lfo(_) => "internal LFO modulation".into(),
-                            Modulator::Other { chunk_id } => format!("internal modulator chunk {chunk_id:#x}"),
+                            Modulator::Other { chunk_id } => {
+                                format!("internal modulator chunk {chunk_id:#x}")
+                            }
                         };
-                        self.unsupported(&format!("{at} modulator slot {slot}"), &kind, format!("{:?} -> {targets:?}", params.name), not_modeled);
+                        self.unsupported(
+                            &format!("{at} modulator slot {slot}"),
+                            &kind,
+                            format!("{:?} -> {targets:?}", params.name),
+                            not_modeled,
+                        );
                     }
                 }
             }
@@ -274,8 +456,13 @@ impl Translation {
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
                 let params = modulation.params()?;
-                let targets: Vec<_> = params.targets.iter().map(|t| (t.param.as_str(), t.intensity)).collect();
-                if let (ModSource::Velocity, [("volume", intensity)]) = (&params.source, targets.as_slice())
+                let targets: Vec<_> = params
+                    .targets
+                    .iter()
+                    .map(|t| (t.param.as_str(), t.intensity))
+                    .collect();
+                if let (ModSource::Velocity, [("volume", intensity)]) =
+                    (&params.source, targets.as_slice())
                     && velocity == ir::VelocityResponse::None
                 {
                     // Kontakt's velocity-to-volume law is not decoded; the
@@ -284,21 +471,36 @@ impl Translation {
                         velocity = ir::VelocityResponse::Linear;
                     }
                     if *intensity != 0.0 && *intensity != 1.0 {
-                        self.unsupported(&at, "velocity to volume intensity", intensity, not_modeled);
+                        self.unsupported(
+                            &at,
+                            "velocity to volume intensity",
+                            intensity,
+                            not_modeled,
+                        );
                     }
                     continue;
                 }
                 let at = format!("{at} external modulation slot {slot}");
-                self.unsupported(&at, &format!("external modulation from {:?}", params.source), format!("{:?} -> {targets:?}", params.name), not_modeled);
+                self.unsupported(
+                    &at,
+                    &format!("external modulation from {:?}", params.source),
+                    format!("{:?} -> {targets:?}", params.name),
+                    not_modeled,
+                );
             }
         }
         if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
-            return Err(ni_file::Error::Generic(format!("{at}: invalid gain, pan or tune")));
+            return Err(ni_file::Error::Generic(format!(
+                "{at}: invalid gain, pan or tune"
+            )));
         }
         self.ir.groups.push(ir::Group {
             name: v.name,
             gain: ir::Gain::Linear(f64::from(v.volume)),
-            pan: ir::Pan { position: f64::from(v.pan.clamp(-1.0, 1.0)), law: ir::PanLaw::Balance },
+            pan: ir::Pan {
+                position: f64::from(v.pan.clamp(-1.0, 1.0)),
+                law: ir::PanLaw::Balance,
+            },
             tune: ir::Pitch::Ratio(f64::from(v.tune)),
             ..Default::default()
         });
@@ -313,13 +515,25 @@ impl Translation {
         }))
     }
 
-    fn zone(&mut self, index: usize, z: RawZone, end: Option<u64>, group: &GroupInfo, program: &ni_file::kontakt::objects::ProgramPublicParams, location: PathBuf) {
+    fn zone(
+        &mut self,
+        index: usize,
+        z: RawZone,
+        end: Option<u64>,
+        group: &GroupInfo,
+        program: &ni_file::kontakt::objects::ProgramPublicParams,
+        location: PathBuf,
+    ) {
         let at = format!("zone {index} (group {})", group.index);
         let not_modeled = ir::Reason::NotModeled;
         let asset = match self.assets.get(&location) {
             Some(&asset) => asset,
             None => {
-                let encoding = match location.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref() {
+                let encoding = match location
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .as_deref()
+                {
                     Some("ncw") => ir::Encoding::Ncw,
                     Some("wav") => ir::Encoding::Wav,
                     Some("aif" | "aiff") => ir::Encoding::Aiff,
@@ -338,20 +552,44 @@ impl Translation {
             }
         };
         if z.fades != [0; 4] {
-            self.unsupported(&at, "crossfades (low/high velocity, low/high key)", format!("{:?}", z.fades), not_modeled);
+            self.unsupported(
+                &at,
+                "crossfades (low/high velocity, low/high key)",
+                format!("{:?}", z.fades),
+                not_modeled,
+            );
         }
         if end.is_some_and(|end| end <= z.start) {
-            self.unsupported(&at, "empty sample range (start, end)", format!("{}, {end:?}", z.start), ir::Reason::InvalidValue);
+            self.unsupported(
+                &at,
+                "empty sample range (start, end)",
+                format!("{}, {end:?}", z.start),
+                ir::Reason::InvalidValue,
+            );
             return;
         }
         let mut looping = ir::Looping::None;
         for (slot, l) in z.loops.iter().enumerate().filter(|(_, l)| l.mode != 0) {
             if looping != ir::Looping::None {
-                self.unsupported(&at, "additional loop", slot, not_modeled);
+                self.unsupported(
+                    &at,
+                    "additional loop",
+                    format!("slot {slot}: {l:?}"),
+                    not_modeled,
+                );
                 continue;
             }
-            if l.loop_count != 0 || (l.loop_tuning - 1.0).abs() > 0.001 || l.loop_start < 0 || l.loop_length <= 0 {
-                self.unsupported(&at, "counted, tuned or invalid loop", format!("{l:?}"), not_modeled);
+            if l.loop_count != 0
+                || (l.loop_tuning - 1.0).abs() > 0.001
+                || l.loop_start < 0
+                || l.loop_length <= 0
+            {
+                self.unsupported(
+                    &at,
+                    "counted, tuned or invalid loop",
+                    format!("{l:?}"),
+                    not_modeled,
+                );
                 continue;
             }
             let range = ir::LoopRange {
@@ -370,18 +608,41 @@ impl Translation {
                 }
             };
         }
-        let semitones = 12.0 * f64::from(z.tune * program.tune).log2() + f64::from(program.transpose);
+        let semitones =
+            12.0 * f64::from(z.tune * program.tune).log2() + f64::from(program.transpose);
         self.ir.zones.push(ir::Zone {
             group: Some(group.group),
-            keys: ir::KeyRange { low: z.keys[0], high: z.keys[1] },
-            velocities: ir::VelocityRange { low: z.velocities[0].max(1), high: z.velocities[1].max(1) },
-            trigger: if group.release { ir::Trigger::KeyRelease } else { ir::Trigger::Attack },
-            pitch: if group.tracking { ir::KeyTracking::Tracked { root: z.root } } else { ir::KeyTracking::Fixed },
+            keys: ir::KeyRange {
+                low: z.keys[0],
+                high: z.keys[1],
+            },
+            velocities: ir::VelocityRange {
+                low: z.velocities[0].max(1),
+                high: z.velocities[1].max(1),
+            },
+            trigger: if group.release {
+                ir::Trigger::KeyRelease
+            } else {
+                ir::Trigger::Attack
+            },
+            pitch: if group.tracking {
+                ir::KeyTracking::Tracked { root: z.root }
+            } else {
+                ir::KeyTracking::Fixed
+            },
             tune: ir::Pitch::Semitones(semitones),
             gain: ir::Gain::Linear(f64::from(z.gain * program.volume)),
             velocity: group.velocity,
-            pan: ir::Pan { position: f64::from((z.pan + program.pan).clamp(-1.0, 1.0)), law: ir::PanLaw::Balance },
-            playback: ir::Playback { start: z.start, end, reverse: group.reverse, looping },
+            pan: ir::Pan {
+                position: f64::from((z.pan + program.pan).clamp(-1.0, 1.0)),
+                law: ir::PanLaw::Balance,
+            },
+            playback: ir::Playback {
+                start: z.start,
+                end,
+                reverse: group.reverse,
+                looping,
+            },
             amplitude: group.envelope,
             ..ir::Zone::new(asset)
         });
@@ -427,13 +688,32 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     };
     let (start, end, ranges, gain, pan, tune, file) = read(&mut z).map_err(|e| e.to_string())?;
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
-    let midi = |value: i16, what| u8::try_from(value).ok().filter(|v| *v < 128).ok_or(format!("{what} {value} is outside 0..=127"));
-    let (lk, hk, lv, hv) = (midi(lk, "low key")?, midi(hk, "high key")?, midi(lv, "low velocity")?, midi(hv, "high velocity")?);
+    let midi = |value: i16, what| {
+        u8::try_from(value)
+            .ok()
+            .filter(|v| *v < 128)
+            .ok_or(format!("{what} {value} is outside 0..=127"))
+    };
+    let (lk, hk, lv, hv) = (
+        midi(lk, "low key")?,
+        midi(hk, "high key")?,
+        midi(lv, "low velocity")?,
+        midi(hv, "high velocity")?,
+    );
     if lk > hk || lv > hv {
-        return Err(format!("inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"));
+        return Err(format!(
+            "inverted range: keys {lk}..={hk}, velocities {lv}..={hv}"
+        ));
     }
-    if start < 0 || end > 0 || !gain.is_finite() || !pan.is_finite() || !(tune.is_finite() && tune > 0.0) {
-        return Err(format!("start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"));
+    if start < 0
+        || end > 0
+        || !gain.is_finite()
+        || !pan.is_finite()
+        || !(tune.is_finite() && tune > 0.0)
+    {
+        return Err(format!(
+            "start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"
+        ));
     }
     let loops = match so.find_first(LOOPS) {
         Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?.items,
