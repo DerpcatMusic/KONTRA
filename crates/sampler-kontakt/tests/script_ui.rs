@@ -11,7 +11,7 @@ fn a_bound_script_hands_back_its_interface() {
         state: Vec::new(),
         requires: Vec::new(),
     });
-    let loaded = sampler_kontakt::prepare(instrument, 48000, Vec::new(), true).unwrap();
+    let loaded = sampler_kontakt::prepare(instrument, Vec::new(), &Default::default()).unwrap();
     assert_eq!(loaded.interfaces.len(), 1);
     assert!(!loaded.interfaces[0].widgets.is_empty(), "the knob is a widget");
     assert_eq!(loaded.interfaces[0].source, sampler_ui_ir::Source::Ksp { slot: 0 });
@@ -37,7 +37,7 @@ fn a_failing_script_leaves_the_others_bound_in_their_slots() {
         state: vec![("$tone".into(), ir::Saved::Int(42))],
         requires: Vec::new(),
     });
-    let loaded = sampler_kontakt::prepare(instrument, 48000, Vec::new(), true).unwrap();
+    let loaded = sampler_kontakt::prepare(instrument, Vec::new(), &Default::default()).unwrap();
     assert!(loaded.instrument.unsupported.iter().any(|u| u.feature == "script" && u.location == "bad"));
     assert_eq!(loaded.interfaces.len(), 1, "the good script keeps its interface");
     assert_eq!(loaded.interfaces[0].source, sampler_ui_ir::Source::Ksp { slot: 3 });

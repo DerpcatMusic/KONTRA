@@ -7,6 +7,7 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+pub mod keyswitch;
 mod library;
 mod load;
 mod mapping;
@@ -18,7 +19,7 @@ mod script;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use library::{Kontakt, read};
-pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, load_read, prepare, prepare_with};
+pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, load_read, prepare};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
 pub use resources::Resources;

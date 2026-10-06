@@ -38,6 +38,8 @@ pub use control::{
 mod controller_event;
 mod performance;
 pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
+mod switching;
+pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
@@ -69,7 +71,7 @@ mod modulation;
 mod script_params;
 mod voice_mod;
 pub use script_params::{EnvelopeStage, GroupBase, ParamScope};
-pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
+pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
