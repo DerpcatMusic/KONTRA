@@ -3650,6 +3650,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-ir"
+version = "0.1.0"
+
+[[package]]
 name = "sampler-kontakt"
 version = "0.1.0"
 dependencies = [
