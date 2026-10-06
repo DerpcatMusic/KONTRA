@@ -1,3 +1,4 @@
+pub mod sound;
 pub mod ksp;
 pub mod build_info;
 pub mod import;
