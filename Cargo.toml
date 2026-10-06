@@ -27,6 +27,7 @@ shots = ["plugin", "dep:mui"]
 sampler-core = { path = "crates/sampler-core", optional = true }
 sampler-ir = { path = "crates/sampler-ir", optional = true }
 sampler-kontakt = { path = "crates/sampler-kontakt", optional = true }
+sampler-ui-ir = { path = "crates/sampler-ui-ir" }
 sampler-midi = { path = "crates/sampler-midi", optional = true }
 rustc-hash = "=2.1.3"
 anyhow = "1"
