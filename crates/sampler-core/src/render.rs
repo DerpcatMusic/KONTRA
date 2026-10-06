@@ -231,12 +231,15 @@ impl Runtime {
                 };
                 chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
             } else {
+                asset.touch(at + output.len() as u64);
+                let head = asset.try_head();
                 let pcm = super::source::PagedFrames {
                     cache: self
                         .stream_cache
                         .as_ref()
                         .expect("preflighted stream cache"),
                     asset: asset.asset_id(),
+                    head: head.as_deref().map_or(&[], |h| h),
                 };
                 chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
             };
@@ -373,12 +376,15 @@ impl Runtime {
             };
             render_source(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
+            asset.touch(at + segment.len() as u64);
+            let head = asset.try_head();
             let source = super::source::PagedFrames {
                 cache: self
                     .stream_cache
                     .as_ref()
                     .expect("preflighted stream cache"),
                 asset: asset.asset_id(),
+                head: head.as_deref().map_or(&[], |h| h),
             };
             render_source(v, &source, segment, chain, states, context, &self.kernel)
         };

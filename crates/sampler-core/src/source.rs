@@ -1195,15 +1195,23 @@ impl ReadFrames for [Frame] {
         self.get(range)
     }
 }
+/// Cache pages after any resident head.
 pub(super) struct PagedFrames<'a> {
     pub cache: &'a crate::StreamCache,
     pub asset: crate::AssetId,
+    pub head: &'a [Frame],
 }
 impl ReadFrames for PagedFrames<'_> {
     fn frame(&self, index: usize) -> Option<Frame> {
-        self.cache.frame(self.asset, index)
+        self.head
+            .get(index)
+            .copied()
+            .or_else(|| self.cache.frame(self.asset, index))
     }
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        if range.end <= self.head.len() {
+            return self.head.get(range);
+        }
         self.cache.span(self.asset, range)
     }
 }

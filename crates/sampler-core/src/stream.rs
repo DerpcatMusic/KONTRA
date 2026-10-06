@@ -548,18 +548,22 @@ impl crate::Runtime {
                 if asset.resident_frames().is_some() {
                     continue;
                 }
+                // A busy head lock reads as none: its pages are merely requested.
+                let head = asset.try_head().map_or(0, |h| h.len());
                 let mut failure = None;
                 let complete = self
                     .visit_voice_demand(crate::VoiceId(self.voices.id(index)), frames, |demand| {
+                        let frames = demand.frames.start.max(head)..demand.frames.end;
+                        if frames.is_empty() {
+                            return true;
+                        }
                         if !requesting {
                             cache
-                                .protect(asset, demand.frames)
+                                .protect(asset, frames)
                                 .expect("validated source demand");
                             return true;
                         }
-                        for page in demand.frames.start / PAGE_FRAMES
-                            ..=(demand.frames.end - 1) / PAGE_FRAMES
-                        {
+                        for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
                             match cache.request(asset, page, demand.deadline) {
                                 Ok(status) => ready &= status == PageStatus::Ready,
                                 Err(error) => {
@@ -590,14 +594,22 @@ impl crate::Runtime {
             return Ok(());
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        let head = asset.try_head().map_or(0, |h| h.len());
         let ready = cursor.visit_demand(1, crate::EnvelopeState::new(envelope), |_, range| {
-            (range.start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES).all(|index| {
-                cache.status(PageKey {
-                    asset: asset.asset_id(),
-                    index,
-                }) == PageStatus::Ready
-            })
+            let start = range.start.max(head);
+            start >= range.end
+                || (start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES).all(|index| {
+                    cache.status(PageKey {
+                        asset: asset.asset_id(),
+                        index,
+                    }) == PageStatus::Ready
+                })
         });
-        if ready { Ok(()) } else { Err(Error::NotReady) }
+        if ready {
+            Ok(())
+        } else {
+            asset.mark_cold();
+            Err(Error::NotReady)
+        }
     }
 }
