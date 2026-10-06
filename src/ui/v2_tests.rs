@@ -226,18 +226,41 @@ fn ir_view_real_instrument_memory() {
     let patch = std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH");
     // ponytail: the v1 reader supplies script text and pictures until the v2 Kontakt loader exposes both.
     let i = crate::import::read(Path::new(&patch)).unwrap();
-    let face = i
+    let faces: Vec<ir::Interface> = i
         .scripts
         .iter()
         .filter_map(|s| sampler_ksp::compile(s, 48000, NO_LIMITS, &[]).ok())
         .filter_map(|s| s.ui(&|_| None).ok())
-        .max_by_key(|u| u.widgets.len())
-        .expect("a script with an interface");
+        .collect();
+    let mut face = faces.iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface").clone();
+    // A wallpaper chosen by a persistent control resolves only after the saved state is
+    // restored, which `Script::ui` does not do yet; name a stand-in to measure.
+    if let (Some(a), Ok(n)) = (face.pages[0].background.image, std::env::var("KONTRA_UI_IR_WALLPAPER"))
+        && face.assets[a.0].path.ends_with("/.png")
+    {
+        face.assets[a.0].path = format!("Resources/pictures/{n}.png");
+    }
     let name = |path: &str| path.trim_start_matches("Resources/pictures/").trim_end_matches(".png").to_owned();
     let names: Vec<String> = face.assets.iter().map(|a| name(&a.path)).collect();
     let pictures = crate::artwork::pictures(&i.path, names.iter().map(String::as_str));
-    let wallpaper = face.pages[0].background.image.map(|a| names[a.0].clone());
+    // What the v2 loader's picture callback will supply: frame size and stretch from the file.
+    for (a, n) in face.assets.iter_mut().zip(&names) {
+        if let (ir::AssetKind::Image(m), Some(p)) = (&mut a.kind, pictures.get(n)) {
+            m.size = p.frames.first().map(|f| ir::Size { width: f.width, height: f.height });
+            m.stretch = p.stretch;
+        }
+    }
     let wall = crate::artwork::performance(&i, None).ok().flatten();
+    // The instrument's own wallpaper when no script sets one.
+    let wallpaper = match face.pages[0].background.image {
+        Some(a) => Some(names[a.0].clone()),
+        None if wall.is_some() => {
+            face.assets.push(ir::Asset { path: "wallpaper".into(), kind: ir::AssetKind::Image(ir::ImageMeta::default()) });
+            face.pages[0].background.image = Some(ir::AssetRef(face.assets.len() - 1));
+            Some("wallpaper".to_owned())
+        }
+        None => None,
+    };
     let load = |a: &ir::Asset| {
         let n = name(&a.path);
         if wallpaper.as_ref() == Some(&n) { wall.clone().or_else(|| pictures.get(&n).cloned()) } else { pictures.get(&n).cloned() }
