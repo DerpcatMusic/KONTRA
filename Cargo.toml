@@ -130,6 +130,7 @@ opt-level = "s"
 
 [dev-dependencies]
 sampler-core = { path = "crates/sampler-core" }
+sampler-ksp = { path = "crates/sampler-ksp" }
 mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"] }
 moose-test = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497" }
 
