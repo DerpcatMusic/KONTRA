@@ -33,6 +33,8 @@ pub struct Detected {
     pub keys: Vec<(u8, Option<String>)>,
     /// The key selected before any switch is played, when evaluable.
     pub default: Option<u8>,
+    /// Further switch patterns the one articulation set does not carry.
+    pub unmapped: Vec<String>,
 }
 
 /// What a script says about keyswitching.
@@ -128,7 +130,7 @@ pub(crate) fn translate(
             value,
             reason: ir::Reason::NotModeled,
         };
-        match detect(&behavior.source) {
+        match detect(&behavior.source, &behavior.state) {
             Detection::None => {}
             Detection::Unrecognized(why) => instrument.unsupported.push(unsupported(why)),
             Detection::Found(found) if !instrument.articulations.is_empty() => {
@@ -142,6 +144,8 @@ pub(crate) fn translate(
             }
             Detection::Found(found) => {
                 owner = Some(behavior.name.clone());
+                let reports: Vec<_> = found.unmapped.iter().cloned().map(unsupported).collect();
+                instrument.unsupported.extend(reports);
                 instrument.articulations = found
                     .keys
                     .iter()
@@ -157,6 +161,19 @@ pub(crate) fn translate(
         }
     }
     instrument.assign_alternatives(CONTROLLER);
+}
+
+/// Saved scalar values from a script's persistent table (`"<name> <value>"`
+/// entries); arrays and strings are left out.
+pub(crate) fn saved_scalars(entries: &[String]) -> Vec<(String, i64)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let mut words = entry.split_whitespace();
+            let (name, value) = (words.next()?, words.next()?.parse().ok()?);
+            (name.starts_with('$') && words.next().is_none()).then(|| (name.to_string(), value))
+        })
+        .collect()
 }
 
 fn keys(found: &Detected) -> Vec<u8> {
@@ -177,24 +194,30 @@ fn key_name(key: u8) -> String {
 
 // ---------------------------------------------------------------- detection
 
-/// Find the keyswitch keys of a KSP script.
-pub fn detect(source: &str) -> Detection {
+/// One switch pattern in `on note`: its keys, or why they are unknown.
+struct Pattern {
+    /// A range indexed by `$var := $EVENT_NOTE - LOW`, versus single keys.
+    range: bool,
+    keys: Result<Vec<u8>, String>,
+    /// The range's selection variable and low key.
+    index: Option<(String, i64)>,
+}
+
+/// Find the keyswitch keys of a KSP script. `saved` holds the instrument's
+/// saved persistent values, which replace what `on init` assigns.
+pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
     let lines = statements(source);
     let init = callback(&lines, "init");
-    let env = Env::from_init(init.unwrap_or(&[]));
+    let env = Env::from_init(init.unwrap_or(&[]), saved);
     let note = callback(&lines, "note").unwrap_or(&[]);
-    let mut keys: Vec<(u8, Option<String>)> = Vec::new();
-    let mut default = None;
-    let mut problems = Vec::new();
-    let mut add = |key: i64, problems: &mut Vec<String>| match u8::try_from(key) {
-        Ok(key) if key < 128 => {
-            if !keys.iter().any(|k| k.0 == key) {
-                keys.push((key, None));
-            }
+    let mut patterns = Vec::new();
+    let span = |low: Option<i64>, high: Option<i64>, what: &str, line: &str| match (low, high) {
+        (Some(low), Some(high)) if (0..=high).contains(&low) && high <= 127 => {
+            Ok((low as u8..=high as u8).collect())
         }
-        _ => problems.push(format!("key {key} out of range")),
+        (Some(_), Some(_)) => Err(format!("{what} {line:?} is outside 0..=127")),
+        _ => Err(format!("{what} in {line:?} depends on runtime state")),
     };
-    let mut offset_of_range: Option<i64> = None; // articulation index = key - offset
     for (i, line) in note.iter().enumerate() {
         let lower = line.to_ascii_lowercase();
         let body = || branch(&note[i + 1..]);
@@ -204,31 +227,30 @@ pub fn detect(source: &str) -> Detection {
         {
             let at = rest.find("in_range(").unwrap() + "in_range(".len();
             let args = arguments(&line[2 + at..]);
-            let Some(var_offset) = body().iter().find_map(|l| note_assignment(l)) else {
-                continue; // A playable-range check, not a switch.
+            // `$var := $EVENT_NOTE - LOW`: the index of the key within the
+            // range selects. Any other range check is a playable range.
+            let squash = |t: &str| t.split_whitespace().collect::<String>();
+            let Some(low_text) = args.get(1) else {
+                continue;
             };
-            match (
-                args.get(1).and_then(|a| env.eval(a)),
-                args.get(2).and_then(|a| env.eval(a)),
-            ) {
-                (Some(low), Some(high)) if low <= high && high - low < 128 => {
-                    let (var, offset) = var_offset;
-                    let Some(offset) = offset.map_or(Some(0), |o| env.eval(&o)) else {
-                        problems.push(format!(
-                            "switch offset in {line:?} depends on runtime state"
-                        ));
-                        continue;
-                    };
-                    for key in low..=high {
-                        add(key, &mut problems);
-                    }
-                    if let Some(value) = env.scalars.get(&var) {
-                        default = u8::try_from(value + offset).ok();
-                    }
-                    offset_of_range = Some(offset);
-                }
-                _ => problems.push(format!("switch range in {line:?} depends on runtime state")),
-            }
+            let Some(var) = body().iter().find_map(|l| {
+                note_assignment(l)
+                    .filter(|(_, offset)| squash(offset) == squash(low_text))
+                    .map(|(var, _)| var)
+            }) else {
+                continue;
+            };
+            let low = env.eval(low_text);
+            patterns.push(Pattern {
+                range: true,
+                keys: span(
+                    low,
+                    args.get(2).and_then(|a| env.eval(a)),
+                    "switch range",
+                    line,
+                ),
+                index: low.map(|low| (var, low)),
+            });
         } else if let Some(cond) = lower
             .strip_prefix("if")
             .map(str::trim)
@@ -238,13 +260,12 @@ pub fn detect(source: &str) -> Detection {
             .and_then(|c| c.trim().strip_prefix('='))
         {
             if switches(body()) {
-                let cond = &line[line.len() - 1 - cond.len()..line.len() - 1];
-                match env.eval(cond) {
-                    Some(key) => add(key, &mut problems),
-                    None => {
-                        problems.push(format!("switch key in {line:?} depends on runtime state"))
-                    }
-                }
+                let key = env.eval(&line[line.len() - 1 - cond.len()..line.len() - 1]);
+                patterns.push(Pattern {
+                    range: false,
+                    keys: span(key, key, "switch key", line),
+                    index: None,
+                });
             }
         } else if lower.starts_with("select") && lower.contains("$event_note") {
             let mut depth = 0;
@@ -274,24 +295,38 @@ pub fn detect(source: &str) -> Detection {
                     Some((a, b)) => (env.eval(a), env.eval(b)),
                     None => (env.eval(case), env.eval(case)),
                 };
-                match (low, high) {
-                    (Some(low), Some(high)) if low <= high && high - low < 128 => {
-                        for key in low..=high {
-                            add(key, &mut problems);
-                        }
-                    }
-                    _ => problems.push(format!("switch case {case:?} depends on runtime state")),
-                }
+                patterns.push(Pattern {
+                    range: false,
+                    keys: span(low, high, "switch case", case),
+                    index: None,
+                });
             }
         }
     }
-    let hinted = hints(&lines, &env);
-    if !problems.is_empty() {
-        return Detection::Unrecognized(problems.join("; "));
+    // The first indexed range is the articulation set; without one, all
+    // single-key switches together. Anything else is a further switch set.
+    let primary: Vec<usize> = match patterns.iter().position(|p| p.range) {
+        Some(first) => vec![first],
+        None => (0..patterns.len()).collect(),
+    };
+    let mut keys: Vec<u8> = Vec::new();
+    let mut unmapped = Vec::new();
+    for (i, pattern) in patterns.iter().enumerate() {
+        match (&pattern.keys, primary.contains(&i)) {
+            (Ok(found), true) => keys.extend(
+                found
+                    .iter()
+                    .filter(|k| !keys.contains(k))
+                    .collect::<Vec<_>>(),
+            ),
+            (Err(why), true) => return Detection::Unrecognized(why.clone()),
+            (Ok(found), false) => unmapped.push(format!("further switch keys {found:?}")),
+            (Err(why), false) => unmapped.push(why.clone()),
+        }
     }
     if keys.len() < 2 {
-        return match (keys.first(), hinted) {
-            (Some((key, _)), _) => {
+        return match (keys.first(), hints(&lines, &env)) {
+            (Some(key), _) => {
                 Detection::Unrecognized(format!("single switch key {key}: a toggle, not a set"))
             }
             (None, Some(hint)) => Detection::Unrecognized(format!(
@@ -300,19 +335,31 @@ pub fn detect(source: &str) -> Detection {
             (None, None) => Detection::None,
         };
     }
-    keys.sort_by_key(|k| k.0);
+    keys.sort_unstable();
+    let index = primary
+        .first()
+        .and_then(|&i| patterns[i].index.clone())
+        .filter(|_| patterns[primary[0]].range);
     // Names: literal set_key_name(KEY, "..."), or an init string array that a
-    // set_key_name call indexes, read by articulation index for range patterns.
-    for (key, name) in &mut keys {
-        *name = env.names.get(key).cloned().or_else(|| {
-            let index = usize::try_from(i64::from(*key) - offset_of_range?).ok()?;
-            env.name_array.as_ref()?.get(index)?.clone()
-        });
-    }
-    if default.is_some_and(|d| !keys.iter().any(|k| k.0 == d)) {
-        default = None;
-    }
-    Detection::Found(Detected { keys, default })
+    // set_key_name call indexes, read by articulation index for a range.
+    let keys = keys
+        .into_iter()
+        .map(|key| {
+            let name = env.names.get(&key).cloned().or_else(|| {
+                let index = usize::try_from(i64::from(key) - index.as_ref()?.1).ok()?;
+                env.name_array.as_ref()?.get(index)?.clone()
+            });
+            (key, name.filter(|n| !n.trim().is_empty()))
+        })
+        .collect::<Vec<_>>();
+    let default = index
+        .and_then(|(var, low)| u8::try_from(env.scalars.get(&var)? + low).ok())
+        .filter(|d| keys.iter().any(|k| k.0 == *d));
+    Detection::Found(Detected {
+        keys,
+        default,
+        unmapped,
+    })
 }
 
 /// Comment-free statements, one per line, continuations joined.
@@ -383,20 +430,28 @@ fn branch(rest: &[String]) -> &[String] {
     rest
 }
 
-/// Whether a branch selects groups or sets a selection variable to a constant.
+/// Whether a branch selects groups or sets a selection variable to a
+/// constant, and plays nothing: a key that sounds is not a switch.
 fn switches(body: &[String]) -> bool {
-    body.iter().any(|l| {
-        let lower = l.to_ascii_lowercase();
-        lower.starts_with("allow_group")
-            || lower.starts_with("disallow_group")
-            || lower.split_once(":=").is_some_and(|(left, right)| {
-                left.trim().starts_with('$') && right.trim().parse::<i64>().is_ok()
-            })
-    })
+    let lower = |l: &String| l.to_ascii_lowercase();
+    let silent = body.iter().all(|l| !lower(l).contains("play_note("))
+        && body.iter().any(|l| {
+            let l = lower(l);
+            l == "exit" || l.starts_with("ignore_event")
+        });
+    silent
+        && body.iter().any(|l| {
+            let lower = l.to_ascii_lowercase();
+            lower.starts_with("allow_group")
+                || lower.starts_with("disallow_group")
+                || lower.split_once(":=").is_some_and(|(left, right)| {
+                    left.trim().starts_with('$') && right.trim().parse::<i64>().is_ok()
+                })
+        })
 }
 
-/// `$var := $EVENT_NOTE [- OFFSET]`: the variable and the offset expression.
-fn note_assignment(line: &str) -> Option<(String, Option<String>)> {
+/// `$var := $EVENT_NOTE - OFFSET`: the variable and the offset expression.
+fn note_assignment(line: &str) -> Option<(String, String)> {
     let (left, right) = line.split_once(":=")?;
     let var = left.trim();
     if !var.starts_with('$') {
@@ -407,11 +462,7 @@ fn note_assignment(line: &str) -> Option<(String, Option<String>)> {
         .get(..11)
         .filter(|r| r.eq_ignore_ascii_case("$event_note"))
         .map(|_| right[11..].trim())?;
-    if rest.is_empty() {
-        return Some((var.into(), None));
-    }
-    let offset = rest.strip_prefix('-')?.trim();
-    Some((var.into(), Some(format!("({offset})"))))
+    Some((var.into(), rest.strip_prefix('-')?.trim().into()))
 }
 
 /// Top-level comma-separated arguments up to the closing parenthesis.
@@ -478,7 +529,7 @@ struct Env {
 }
 
 impl Env {
-    fn from_init(init: &[String]) -> Self {
+    fn from_init(init: &[String], saved: &[(String, i64)]) -> Self {
         let mut env = Self::default();
         let mut depth = 0;
         for line in init {
@@ -499,7 +550,18 @@ impl Env {
             } else {
                 line.clone()
             };
-            if lower.starts_with("set_key_name") {
+            // Kontakt restores saved values here, or else after `on init`.
+            if let Some(var) = lower.strip_prefix("read_persistent_var").map(|_| {
+                line[line.find('(').map_or(0, |i| i + 1)..]
+                    .trim_end_matches(')')
+                    .trim()
+            }) {
+                if let Some(&(_, value)) = saved.iter().find(|(name, _)| name == var) {
+                    env.scalars.insert(var.into(), value);
+                }
+                continue;
+            }
+            if lower.starts_with("set_key_name") && !nested {
                 let args = arguments(&line[line.find('(').map_or(0, |i| i + 1)..]);
                 if let [key, name] = args[..] {
                     if let (Some(key), Some(name)) = (env.eval(key), literal(name)) {
@@ -583,6 +645,9 @@ impl Env {
                 }
                 _ => {}
             }
+        }
+        for (name, value) in saved {
+            env.scalars.insert(name.clone(), *value);
         }
         // Any `set_key_name(.., !array[..])` names keys by array index.
         env.name_array = init
@@ -745,7 +810,7 @@ mod tests {
     use super::*;
 
     fn found(source: &str) -> Detected {
-        match detect(source) {
+        match detect(source, &[]) {
             Detection::Found(found) => found,
             other => panic!("{other:?}"),
         }
@@ -778,6 +843,10 @@ on note
         $articulation := $EVENT_NOTE - %KS_keys[$KS_Base]
         exit
     end if
+    if (in_range($EVENT_NOTE, 100, 101))
+        $syllable := $EVENT_NOTE - 100
+        exit
+    end if
     if (not(in_range($EVENT_NOTE,$range_min,$range_max)))
         exit
     end if
@@ -793,15 +862,24 @@ end on
             ]
         );
         assert_eq!(found.default, Some(25));
+        assert_eq!(found.unmapped, ["further switch keys [100, 101]"]);
+        // Saved persistent values replace the init defaults.
+        let saved = [("$KS_Base".into(), 1), ("$articulation".into(), 2)];
+        let Detection::Found(found) = detect(source, &saved) else {
+            panic!()
+        };
+        assert_eq!(found.keys[0], (12, Some("Sustain".into())));
+        assert_eq!(found.default, Some(14));
     }
 
     #[test]
     fn equality_and_select_patterns_with_group_selection() {
         let source = "on init\n declare $art\nend on\non note\n\
-            if ($EVENT_NOTE = 36)\n disallow_group($ALL_GROUPS)\n allow_group(0)\n end if\n\
-            if ($EVENT_NOTE = 37)\n $art := 1\n end if\n\
-            select ($EVENT_NOTE)\n case 38 to 39\n disallow_group($ALL_GROUPS)\n\
-            case 60\n play_note(60, 100, 0, -1)\n end select\nend on\n";
+            if ($EVENT_NOTE = 36)\n disallow_group($ALL_GROUPS)\n allow_group(0)\n exit\n end if\n\
+            if ($EVENT_NOTE = 37)\n ignore_event($EVENT_ID)\n $art := 1\n end if\n\
+            if ($EVENT_NOTE = 91)\n disallow_group($ALL_GROUPS)\n play_note(91, 100, 0, -1)\n exit\n end if\n\
+            select ($EVENT_NOTE)\n case 38 to 39\n disallow_group($ALL_GROUPS)\n exit\n\
+            case 60\n allow_group(1)\n end select\nend on\n";
         let found = found(source);
         assert_eq!(
             found.keys.iter().map(|k| k.0).collect::<Vec<_>>(),
@@ -814,17 +892,20 @@ end on
     fn runtime_keys_and_bare_hints_are_reported_not_guessed() {
         let runtime = "on init\nend on\non note\n\
             if (in_range($EVENT_NOTE, $ks_low, $ks_high))\n $ks := $EVENT_NOTE - $ks_low\n end if\nend on";
-        assert!(matches!(detect(runtime), Detection::Unrecognized(why) if why.contains("runtime")));
+        assert!(
+            matches!(detect(runtime, &[]), Detection::Unrecognized(why) if why.contains("runtime"))
+        );
         let hinted = "on init\n declare $base := 24\n set_key_type($base, $NI_KEY_TYPE_CONTROL)\nend on\n\
             on note\n if ($EVENT_NOTE = $base)\n call toggle\n end if\nend on";
         assert!(
-            matches!(detect(hinted), Detection::Unrecognized(why) if why.contains("control keys [24]"))
+            matches!(detect(hinted, &[]), Detection::Unrecognized(why) if why.contains("control keys [24]"))
         );
-        let toggle =
-            "on init\nend on\non note\n if ($EVENT_NOTE = 24)\n $legato := 1\n end if\nend on";
-        assert!(matches!(detect(toggle), Detection::Unrecognized(why) if why.contains("single")));
+        let toggle = "on init\nend on\non note\n if ($EVENT_NOTE = 24)\n $legato := 1\n exit\n end if\nend on";
+        assert!(
+            matches!(detect(toggle, &[]), Detection::Unrecognized(why) if why.contains("single"))
+        );
         let plain = "on init\n declare $x := 1\nend on\non note\n if (in_range($EVENT_NOTE, 0, 10))\n exit\n end if\nend on";
-        assert_eq!(detect(plain), Detection::None);
+        assert_eq!(detect(plain, &[]), Detection::None);
     }
 
     #[test]
