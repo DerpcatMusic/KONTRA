@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add prepared per-region constant, linear and power velocity response through shared attack/release admission, preserving raw velocity and layer predicates. Defer other format frontends in favor of full Kontakt/Falcon, DSP, MIDI, core and UI completion.
+
 - Compile finite wrap/ping-pong pass counts into shared source traversal boundaries. Release can shorten but never restart or extend the limit; counted release layers can finish naturally without a duration command. Independent finite PCM references cover interpolation through the final tail and EOF.
 
 - Execute KSP scalar UI handlers through native plan-owned callbacks, sharing the bounded scheduler without fabricated notes. Control interaction admission is atomic with callback capacity; waits, generation replacement, fault isolation and outcome backpressure retain explicit ownership.
