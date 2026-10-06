@@ -3721,6 +3721,7 @@ dependencies = [
  "realfft",
  "rtrb",
  "sampler-ir",
+ "sampler-pool",
  "sampler-simd",
 ]
 
@@ -3772,6 +3773,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-pool"
+version = "0.1.0"
+
+[[package]]
 name = "sampler-simd"
 version = "0.1.0"
 
@@ -3794,6 +3799,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ui-ir",
  "serde_json",
  "sha2",
  "symphonia",

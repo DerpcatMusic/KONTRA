@@ -178,7 +178,10 @@ pub fn load_read_streamed(
     let mut sources = Vec::with_capacity(kept.len());
     for &asset in &kept {
         let location = &locations[asset];
-        sources.push((samples.source(location)?, location.as_path()));
+        sources.push((
+            std::sync::Arc::new(samples.source(location)?) as std::sync::Arc<dyn crate::AssetSource>,
+            location.as_path(),
+        ));
     }
     let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
     let pcm = opened.assets.clone();
@@ -187,6 +190,29 @@ pub fn load_read_streamed(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    crate::Streamed::new(loaded, opened, kept)
+}
+
+/// Stream an instrument translated by another loader: `sources[i]` and
+/// `labels[i]` belong to asset `i`. As [`load_streamed`], without the Kontakt
+/// container: only zone starts and a page pool are resident.
+pub fn stream_instrument(
+    mut instrument: ir::Instrument,
+    sources: Vec<std::sync::Arc<dyn crate::AssetSource>>,
+    labels: Vec<String>,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+) -> Result<crate::Streamed, LoadError> {
+    let (low, high) = (*options.keys.start(), *options.keys.end());
+    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let listed = kept
+        .iter()
+        .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
+        .collect();
+    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32)?;
+    let pcm = opened.assets.clone();
+    let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
     crate::Streamed::new(loaded, opened, kept)
 }
