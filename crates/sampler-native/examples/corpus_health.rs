@@ -174,32 +174,71 @@ fn normalize(message: &str) -> String {
     text.chars().take(140).collect()
 }
 
-/// The key most Attack zones cover at the test velocity, nearest middle C,
-/// outside the articulation switch keys.
-fn pick_key(ir: &sampler_ir::Instrument) -> Option<u8> {
+/// What to play: a key, a velocity, and an articulation switch key to tap first.
+#[derive(Clone, Copy)]
+struct Pick {
+    key: u8,
+    velocity: u8,
+    switch: Option<u8>,
+}
+
+impl Pick {
+    fn warning(&self) -> Option<String> {
+        match (self.switch, self.velocity != VELOCITY) {
+            (Some(s), _) => Some(format!(
+                "played at vel {} after switch key {s} (no plain zone at {VELOCITY})",
+                self.velocity
+            )),
+            (None, true) => Some(format!(
+                "played at vel {} (no zone at {VELOCITY})",
+                self.velocity
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// The key most zones cover at the test velocity, nearest middle C, outside
+/// the articulation switch keys. Falls back to the velocity nearest 64 that
+/// any zone covers, then to playing a switch key first.
+fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
     let switch: HashSet<u8> = ir
         .articulations
         .iter()
         .flat_map(|a| a.switch_keys.iter().copied())
         .collect();
-    let velocity = f64::from(VELOCITY) / 127.0;
-    let _ = velocity;
-    (0..=127u8)
-        .filter(|k| !switch.contains(k))
-        .map(|k| {
-            let count = ir
-                .zones
-                .iter()
-                .filter(|z| {
-                    (z.keys.low..=z.keys.high).contains(&k)
-                        && (z.velocities.low..=z.velocities.high).contains(&VELOCITY)
-                })
-                .count();
-            (count, std::cmp::Reverse(k.abs_diff(60)), k)
-        })
-        .filter(|(count, ..)| *count > 0)
-        .max()
-        .map(|(.., k)| k)
+    let best = |v: u8, allow_switch: bool| {
+        (0..=127u8)
+            .filter(|k| allow_switch || !switch.contains(k))
+            .map(|k| {
+                let count = ir
+                    .zones
+                    .iter()
+                    .filter(|z| {
+                        (z.keys.low..=z.keys.high).contains(&k)
+                            && (z.velocities.low..=z.velocities.high).contains(&v)
+                    })
+                    .count();
+                (count, std::cmp::Reverse(k.abs_diff(60)), k)
+            })
+            .filter(|(count, ..)| *count > 0)
+            .max()
+            .map(|(.., k)| k)
+    };
+    let mut velocities: Vec<u8> = (1..=127).collect();
+    velocities.sort_by_key(|v| (v.abs_diff(VELOCITY), *v));
+    for v in &velocities {
+        if let Some(key) = best(*v, false) {
+            return Some(Pick { key, velocity: *v, switch: None });
+        }
+    }
+    let first = ir.articulations.iter().flat_map(|a| a.switch_keys.iter().copied()).next()?;
+    for v in &velocities {
+        if let Some(key) = best(*v, true) {
+            return Some(Pick { key, velocity: *v, switch: Some(first) });
+        }
+    }
+    None
 }
 
 fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize> {
@@ -220,7 +259,7 @@ struct Sound {
     faults: Vec<String>,
 }
 
-fn play(loaded: sampler_kontakt::Loaded, key: u8) -> Result<Sound, String> {
+fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
     let plan = loaded.plan;
     let rate = plan.sample_rate();
     let limits = Limits {
@@ -246,7 +285,8 @@ fn play(loaded: sampler_kontakt::Loaded, key: u8) -> Result<Sound, String> {
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
     let total = release_at + frame(TAIL_SECONDS);
-    let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(VELOCITY)];
+    let key = pick.key;
+    let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
     let on = Packets::new(&on)
         .next()
@@ -262,12 +302,28 @@ fn play(loaded: sampler_kontakt::Loaded, key: u8) -> Result<Sound, String> {
     let mut ingress = Ingress::new(0, groups);
     let mut buffer = [[0.0f32; 2]; 256];
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
+    let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
+    let switch_words: Vec<[u32; 1]> = if pick.switch.is_some() {
+        vec![[0x2090_0000 | sw | 64], [0x2080_0000 | sw]]
+    } else {
+        vec![]
+    };
+    let note_index = if pick.switch.is_some() { 2 } else { 0 };
     let mut note = String::from("not sent");
     let mut faults = Vec::new();
     for begin in (0..total).step_by(buffer.len()) {
         let len = buffer.len().min(total - begin);
         let mut batch = Vec::new();
         if begin == 0 {
+            for word in &switch_words {
+                batch.push(TimedPacket {
+                    offset: 0,
+                    packet: Packets::new(word)
+                        .next()
+                        .unwrap()
+                        .map_err(|e| format!("{e:?}"))?,
+                });
+            }
             batch.push(TimedPacket {
                 offset: 0,
                 packet: on,
@@ -286,7 +342,7 @@ fn play(loaded: sampler_kontakt::Loaded, key: u8) -> Result<Sound, String> {
                 &batch,
                 batch.len(),
                 |i, result| {
-                    if begin == 0 && i == 0 {
+                    if begin == 0 && i == note_index {
                         note = match result {
                             Ok(Applied::Started(_)) => "started".into(),
                             other => format!("{other:?}"),
@@ -346,7 +402,7 @@ fn scripts(loaded: &sampler_kontakt::Loaded) -> Value {
     })
 }
 
-fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, u8)>) {
+fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
     let failed = |reason: String| {
         (
             json!({"ok": false, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
@@ -359,18 +415,18 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, u8)>) {
                 Ok(read) => read.instrument,
                 Err(e) => return failed(e.to_string()),
             };
-            let Some(key) = pick_key(&ir) else {
-                return failed("no zone sounds at middle velocity".into());
+            let Some(pick) = pick_key(&ir) else {
+                return failed("no zone covers any key at any velocity".into());
             };
             let options = sampler_kontakt::Options {
-                keys: key..=key,
+                keys: pick.key..=pick.key,
                 scripts: true,
                 ..Default::default()
             };
             match sampler_kontakt::load(path, &options, |_| {}) {
                 Ok(loaded) => (
-                    json!({"ok": true, "key": key, "zones": loaded.instrument.zones.len()}),
-                    Some((loaded, key)),
+                    json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
+                    Some((loaded, pick)),
                 ),
                 Err(e) => failed(e.to_string()),
             }
@@ -381,21 +437,21 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, u8)>) {
                 Ok(t) => t.instrument,
                 Err(e) => return failed(e.to_string()),
             };
-            let Some(key) = pick_key(&ir) else {
-                return failed("no zone sounds at middle velocity".into());
+            let Some(pick) = pick_key(&ir) else {
+                return failed("no zone covers any key at any velocity".into());
             };
             let bank = match sampler_uvi::Bank::open(bank) {
                 Ok(b) => b,
                 Err(e) => return failed(e.to_string()),
             };
             let options = sampler_kontakt::Options {
-                keys: key..=key,
+                keys: pick.key..=pick.key,
                 ..Default::default()
             };
             match sampler_uvi::load_program_with_options(&bank, program, &options) {
                 Ok(loaded) => (
-                    json!({"ok": true, "key": key, "zones": loaded.instrument.zones.len()}),
-                    Some((loaded, key)),
+                    json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
+                    Some((loaded, pick)),
                 ),
                 Err(e) => failed(e.to_string()),
             }
@@ -409,11 +465,11 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, u8)>) {
             }
             match sampler_uvi::load(path, 48000) {
                 Ok(loaded) => match pick_key(&loaded.instrument) {
-                    Some(key) => (
-                        json!({"ok": true, "key": key, "zones": loaded.instrument.zones.len()}),
-                        Some((loaded, key)),
+                    Some(pick) => (
+                        json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
+                        Some((loaded, pick)),
                     ),
-                    None => failed("no zone sounds at middle velocity".into()),
+                    None => failed("no zone covers any key at any velocity".into()),
                 },
                 Err(e) => failed(e.to_string()),
             }
@@ -441,11 +497,11 @@ fn check(item: &Item) -> Value {
         "status": "done",
         "load": load,
     });
-    if let Some((loaded, key)) = loaded {
+    if let Some((loaded, pick)) = loaded {
         record["scripts"] = scripts(&loaded);
         record["unsupported"] = json!(categories(&loaded.instrument.unsupported));
         record["unsupported_total"] = json!(loaded.instrument.unsupported.len());
-        match play(loaded, key) {
+        match play(loaded, pick) {
             Ok(s) => {
                 let db = |p: f32| {
                     if p > 0.0 {
