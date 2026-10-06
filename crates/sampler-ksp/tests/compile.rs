@@ -1074,10 +1074,13 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
         array_cells: 0,
     };
     let env = sampler_ksp::Environment {
-        performance_view: vec![
-            PerformanceControl::assumed("$Cut", WidgetKind::Slider),
-            PerformanceControl::assumed("$Mode", WidgetKind::Menu),
-        ],
+        performance_view: sampler_ksp::model::PerformanceView {
+            controls: vec![
+                PerformanceControl::assumed("$Cut", WidgetKind::Slider),
+                PerformanceControl::assumed("$Mode", WidgetKind::Menu),
+            ],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let script = sampler_ksp::compile_with(source, 48000, limits, &[], &env).unwrap();
