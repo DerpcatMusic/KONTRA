@@ -110,7 +110,7 @@ impl Runtime {
                 .iter()
                 .filter(|stage| stage.release.is_some())
                 .count();
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
@@ -156,7 +156,7 @@ impl Runtime {
             } else {
                 0
             };
-        if self.behaviors.available() < callbacks {
+        if !self.behavior_room(callbacks) {
             return Err(Error::Capacity);
         }
         let pitch = match origin {
