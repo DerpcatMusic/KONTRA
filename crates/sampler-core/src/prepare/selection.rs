@@ -8,6 +8,7 @@ struct Selection {
     plan: PlanId,
     note_pitch: NotePitch,
     velocity: f64,
+    offset_micros: u32,
     address: crate::ChannelAddress,
     trigger: Trigger,
     snapshot: usize,
@@ -194,6 +195,7 @@ impl Runtime {
                     note_pitch,
                     velocity,
                     address,
+                    offset_micros,
                     trigger: Trigger::Attack,
                     snapshot,
                     groups: match origin {
@@ -299,6 +301,7 @@ impl Runtime {
             plan: n.plan,
             note_pitch: event.pitch,
             velocity: event.velocity,
+            offset_micros: self.note_events[note.0.index].source_offset_micros,
             address: n.address,
             trigger: Trigger::Attack,
             snapshot,
@@ -441,6 +444,7 @@ impl Runtime {
             trigger,
             snapshot,
             groups,
+            offset_micros,
         } = selection;
         let key = note_pitch.key();
         let generation = self.plans.get(plan.0).unwrap();
@@ -460,7 +464,14 @@ impl Runtime {
             let mut count = 0;
             while let Some(c) = candidate {
                 if prepared.regions[c.region].take == choice.map(|c| c.take) {
-                    pitch.apply(prepared.step(c, note_pitch))?;
+                    let r = prepared.regions[c.region];
+                    let step = pitch.apply(prepared.step(c, note_pitch))?;
+                    let asset = &prepared.pcm[r.sample];
+                    let cursor = r
+                        .cursor
+                        .with_offset(offset_micros, asset.sample_rate())
+                        .with_step(step);
+                    self.check_source_ready(asset, cursor, r.envelope)?;
                     count += 1;
                 }
                 candidate = matching.next_in_groups(prepared, state, velocity, groups);
@@ -614,6 +625,7 @@ impl Runtime {
                         velocity,
                         address,
                         trigger,
+                        offset_micros: 0,
                         snapshot,
                         groups: Some((note.0.index, crate::groups::GroupView::Committed)),
                     },

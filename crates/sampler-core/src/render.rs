@@ -1,4 +1,4 @@
-//! Sample-time segmentation and deterministic resident voice rendering.
+//! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId};
 
 impl Runtime {
@@ -94,36 +94,68 @@ impl Runtime {
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
-        let pcm = plan.prepared.pcm[v.sample].frames();
+        let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
         let segment = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())
         } else {
             segment
         };
-        let (produced, done) = if let Some(index) = v.chain {
-            let chain = &plan.prepared.voice_chains[index];
-            let begin = i * plan.dsp.stride;
-            let states = &mut plan.dsp.cells[begin..begin + chain.stages()];
-            let context = super::dsp::RenderContext {
-                expression: gains,
-                gains: &plan.dsp.gains,
-                at,
-            };
-            let (produced, faults) = chain.render(v, pcm, segment, states, context, self.kernel);
-            self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
-            (produced, chain.done(v))
-        } else {
-            let produced =
-                v.cursor
-                    .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
-            (produced, v.cursor.done() || v.envelope.done())
+        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        let begin = i * plan.dsp.stride;
+        let states = &mut plan.dsp.cells[begin..begin + chain.map_or(0, |c| c.stages())];
+        let context = super::dsp::RenderContext {
+            expression: gains,
+            gains: &plan.dsp.gains,
+            at,
         };
+        let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {
+            render_source(v, pcm, segment, chain, states, context, self.kernel)
+        } else {
+            let source = super::source::PagedFrames {
+                cache: self
+                    .stream_cache
+                    .as_ref()
+                    .expect("preflighted stream cache"),
+                asset: asset.asset_id(),
+            };
+            render_source(v, &source, segment, chain, states, context, self.kernel)
+        };
+        self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
+        self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
         if let Some(bus) = bus {
             plan.dsp.buses.fed(bus, produced);
         }
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
         }
+    }
+}
+
+fn render_source(
+    voice: &mut super::Voice,
+    source: &(impl super::source::ReadFrames + ?Sized),
+    output: &mut [Frame],
+    chain: Option<&super::dsp::PreparedVoiceChain>,
+    states: &mut [super::dsp::FilterState],
+    context: super::dsp::RenderContext<'_>,
+    kernel: &super::resample::Kernel,
+) -> (usize, bool, u64, bool) {
+    if let Some(chain) = chain {
+        let (produced, faults, underrun) =
+            chain.render(voice, source, output, states, context, kernel);
+        (produced, chain.done(voice), faults, underrun)
+    } else {
+        let produced = voice.cursor.render(
+            source,
+            output,
+            &mut voice.envelope,
+            voice.gain,
+            context.expression,
+            kernel,
+        );
+        let ended = voice.cursor.done() || voice.envelope.done();
+        let underrun = produced < output.len() && !ended;
+        (produced, ended || underrun, 0, underrun)
     }
 }

@@ -70,7 +70,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         usize::try_from(u64::from(rate) * 2)
             .map_err(|_| io::Error::other("two-second render exceeds platform frame capacity"))?
     } else {
-        sample.frames().len()
+        sample.frame_count()
     };
     let mut plan = prepare_sample(sample, scripted, demo)?;
     let mut replacement_sample = None;

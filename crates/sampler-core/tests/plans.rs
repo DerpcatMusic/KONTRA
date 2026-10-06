@@ -323,12 +323,14 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
     let frames: Box<[sampler_core::Frame]> = Box::from([[0.25, -0.25]; 4]);
     let original = frames.as_ptr();
     let pcm = Pcm::new(48000, frames).unwrap();
-    assert_eq!(pcm.frames().as_ptr(), original);
+    assert_eq!(pcm.resident_frames().unwrap().as_ptr(), original);
     let alias = pcm.clone();
-    assert_eq!(alias.frames().as_ptr(), original);
+    assert_eq!(alias.resident_frames().unwrap().as_ptr(), original);
     assert_eq!(alias.asset_id(), pcm.asset_id());
     assert_ne!(
-        Pcm::new(48000, pcm.frames().into()).unwrap().asset_id(),
+        Pcm::new(48000, pcm.resident_frames().unwrap().into())
+            .unwrap()
+            .asset_id(),
         pcm.asset_id()
     );
     assert_eq!(alias.sample_rate(), 48000);

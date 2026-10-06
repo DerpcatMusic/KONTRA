@@ -314,20 +314,23 @@ impl Cursor {
     }
 
     /// Read the virtual source before resampling: both legs use the same phase.
-    fn read(&self, pcm: &[Frame], position: i128) -> Frame {
+    fn read(&self, pcm: &(impl ReadFrames + ?Sized), position: i128) -> Option<Frame> {
         match self.address(position) {
-            None => [0.; 2],
+            None => Some([0.; 2]),
             Some(ReadAddress {
-                primary: index,
+                primary,
                 crossfade: None,
-            }) => pcm[index],
+            }) => pcm.frame(primary),
             Some(ReadAddress {
-                primary: index,
+                primary,
                 crossfade: Some((partner, blend)),
-            }) => std::array::from_fn(|channel| {
-                ((1. - blend) * f64::from(pcm[index][channel])
-                    + blend * f64::from(pcm[partner][channel])) as f32
-            }),
+            }) => {
+                let a = pcm.frame(primary)?;
+                let b = pcm.frame(partner)?;
+                Some(std::array::from_fn(|channel| {
+                    ((1. - blend) * f64::from(a[channel]) + blend * f64::from(b[channel])) as f32
+                }))
+            }
         }
     }
 
@@ -388,7 +391,7 @@ impl Cursor {
     #[inline]
     pub(super) fn render(
         &mut self,
-        pcm: &[Frame],
+        pcm: &(impl ReadFrames + ?Sized),
         output: &mut [Frame],
         envelope: &mut EnvelopeState,
         gain: f32,
@@ -403,22 +406,29 @@ impl Cursor {
             while offset < output.len() && !self.done() && !envelope.done() {
                 let (index, count, direction) = self.span();
                 let count = count.min(output.len() - offset).min(envelope.remaining());
+                let range = match direction {
+                    Direction::Forward => index..index + count,
+                    Direction::Reverse => index + 1 - count..index + 1,
+                };
+                let Some(span) = pcm.span(range) else {
+                    // A page boundary or miss uses the same scalar path. Only
+                    // fully available frames commit cursor/envelope/output state.
+                    return offset
+                        + self.render_filtered(
+                            pcm,
+                            &mut output[offset..],
+                            envelope,
+                            gain,
+                            gains,
+                            kernel,
+                        );
+                };
                 let destination = &mut output[offset..offset + count];
                 match direction {
-                    Direction::Forward => mix(
-                        pcm[index..index + count].iter(),
-                        destination,
-                        envelope,
-                        gain,
-                        gains,
-                    ),
-                    Direction::Reverse => mix(
-                        pcm[index + 1 - count..=index].iter().rev(),
-                        destination,
-                        envelope,
-                        gain,
-                        gains,
-                    ),
+                    Direction::Forward => mix(span.iter(), destination, envelope, gain, gains),
+                    Direction::Reverse => {
+                        mix(span.iter().rev(), destination, envelope, gain, gains)
+                    }
                 }
                 self.position = self.position.saturating_add(count as u64);
                 offset += count;
@@ -467,7 +477,7 @@ impl Cursor {
 
     fn render_filtered(
         &mut self,
-        pcm: &[Frame],
+        pcm: &(impl ReadFrames + ?Sized),
         output: &mut [Frame],
         envelope: &mut EnvelopeState,
         gain: f32,
@@ -482,37 +492,48 @@ impl Cursor {
             let position = i128::from(self.position);
             let source = if self.step == 1.0 && self.fraction == 0.0 {
                 self.read(pcm, position)
-            } else if self.crossfaded() {
-                kernel.sample(self.fraction, self.step, |offset| {
-                    self.read(pcm, position + i128::from(offset))
-                })
             } else {
                 let radius = Kernel::radius(self.step);
                 let left = self.index(position - i128::from(radius));
                 let right = self.index(position + i128::from(radius));
-                match (left, right) {
-                    (Some(left), Some(right))
-                        if right.checked_sub(left) == Some(2 * radius as usize) =>
-                    {
-                        let span = &pcm[left..=right];
-                        kernel.sample(self.fraction, self.step, |offset| {
-                            span[(offset + radius) as usize]
-                        })
+                let contiguous = if self.crossfaded() {
+                    None
+                } else {
+                    match (left, right) {
+                        (Some(left), Some(right))
+                            if right.checked_sub(left) == Some(2 * radius as usize) =>
+                        {
+                            pcm.span(left..right + 1).map(|s| (s, false))
+                        }
+                        (Some(left), Some(right))
+                            if left.checked_sub(right) == Some(2 * radius as usize) =>
+                        {
+                            pcm.span(right..left + 1).map(|s| (s, true))
+                        }
+                        _ => None,
                     }
-                    (Some(left), Some(right))
-                        if left.checked_sub(right) == Some(2 * radius as usize) =>
-                    {
-                        let span = &pcm[right..=left];
-                        kernel.sample(self.fraction, self.step, |offset| {
-                            span[(radius - offset) as usize]
-                        })
-                    }
-                    _ => kernel.sample(self.fraction, self.step, |offset| {
-                        self.index(position + i128::from(offset))
-                            .map_or([0.0; 2], |i| pcm[i])
-                    }),
+                };
+                if let Some((span, reverse)) = contiguous {
+                    Some(kernel.sample(self.fraction, self.step, |offset| {
+                        span[(if reverse {
+                            radius - offset
+                        } else {
+                            offset + radius
+                        }) as usize]
+                    }))
+                } else {
+                    let mut ready = true;
+                    let sample = kernel.sample(self.fraction, self.step, |offset| {
+                        self.read(pcm, position + i128::from(offset))
+                            .unwrap_or_else(|| {
+                                ready = false;
+                                [0.; 2]
+                            })
+                    });
+                    ready.then_some(sample)
                 }
             };
+            let Some(source) = source else { break };
             let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
             for channel in 0..2 {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
@@ -789,8 +810,8 @@ mod tests {
                         );
                         for i in 0..=position {
                             assert_eq!(
-                                cursor.read(&pcm, i128::from(i)),
-                                before.read(&pcm, i128::from(i))
+                                cursor.read(pcm.as_slice(), i128::from(i)),
+                                before.read(pcm.as_slice(), i128::from(i))
                             );
                         }
                         let ordered: Vec<_> = match direction {
@@ -821,7 +842,7 @@ mod tests {
                                 .copied()
                                 .unwrap_or([0.; 2]);
                             assert_eq!(
-                                cursor.read(&pcm, i),
+                                cursor.read(pcm.as_slice(), i).unwrap(),
                                 frame,
                                 "{direction:?}, {position}, {fraction}, {passes:?}, read {i}"
                             );
@@ -835,3 +856,29 @@ mod tests {
 
 mod demand;
 pub use demand::SampleDemand;
+
+/// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
+pub(super) trait ReadFrames {
+    fn frame(&self, index: usize) -> Option<Frame>;
+    fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+}
+impl ReadFrames for [Frame] {
+    fn frame(&self, index: usize) -> Option<Frame> {
+        self.get(index).copied()
+    }
+    fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        self.get(range)
+    }
+}
+pub(super) struct PagedFrames<'a> {
+    pub cache: &'a crate::StreamCache,
+    pub asset: crate::AssetId,
+}
+impl ReadFrames for PagedFrames<'_> {
+    fn frame(&self, index: usize) -> Option<Frame> {
+        self.cache.frame(self.asset, index)
+    }
+    fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        self.cache.span(self.asset, range)
+    }
+}

@@ -304,8 +304,10 @@ source semantics and checksum/authentication validation are still required.
   now preserve shared decoded revisions, exact traversal/guard ranges and first-use
   deadlines without mutating playback. A bounded decoded-page cache now transfers
   worker buffers, protects current demand and rejects stale completions without
-  audio-thread destruction. Paged rendering, decoder integration and readiness/
-  starvation behavior remain in progress; playback is still resident.
+  audio-thread destruction. Paged/resident rendering now shares source and DSP
+  kernels, rejects missing onset guards atomically and reports live misses while
+  draining owned DSP tails. Decoder integration, demand scheduling, preventive
+  fades/recovery and offline readiness remain open.
 
 - [ ] **P1; dependencies:** V2-09/10.
 - New immutable asset/view identities, decoding, residency, cache and demand service.

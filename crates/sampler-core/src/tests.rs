@@ -1139,7 +1139,7 @@ fn prepared_selection_matches_independent_linear_reference() {
                 {
                     selected += 1;
                     for (c, out) in expected.iter_mut().enumerate() {
-                        *out += samples[r.sample].frames()[0][c] * (r.gain * velocity as f32);
+                        *out += samples[r.sample].resident_frames().unwrap()[0][c] * (r.gain * velocity as f32);
                     }
                 }
             }

@@ -208,7 +208,7 @@ fn compiled_selection_matches_independent_scoped_multimic_reference() {
                 && velocity <= r.velocity_high
                 && tag.is_none_or(|t| expected_takes[t.sequence] == Some(t.index))
             {
-                expected += pcm[r.sample].frames()[0][0] * velocity as f32;
+                expected += pcm[r.sample].resident_frames().unwrap()[0][0] * velocity as f32;
                 sources += 1;
             }
         }

@@ -28,6 +28,9 @@ impl Runtime {
             .checked_add(u64::from(frames))
             .ok_or(Error::ClockOverflow)?;
         let v = self.voices.get(voice.0).ok_or(Error::StaleHandle)?;
+        if v.source_failed {
+            return Ok(true);
+        }
         let family = self.families.get(v.family.0).unwrap();
         let note = self.notes.get(family.note.0).unwrap();
         let at = if v.started {
@@ -58,7 +61,7 @@ impl Runtime {
 }
 
 impl Cursor {
-    fn visit_demand(
+    pub(crate) fn visit_demand(
         mut self,
         frames: u32,
         mut envelope: EnvelopeState,
