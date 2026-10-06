@@ -7,21 +7,56 @@ use sampler_core::{
 };
 use std::collections::BTreeMap;
 mod ast;
+mod builtins;
 mod diag;
+mod eval;
+mod hir;
+pub mod model;
+mod sema;
 mod expression;
 mod functions;
 mod lexer;
 mod parser;
 mod state;
 
-/// Parse-only check used by the corpus harness while the pipeline is rebuilt.
+/// Front-end statistics for the corpus harness.
 #[doc(hidden)]
-pub fn parse_only(source: &str) -> Result<usize, diag::Error> {
+#[derive(Debug, Default)]
+pub struct Summary {
+    pub variables: usize,
+    pub widgets: usize,
+    pub functions: usize,
+    pub callbacks: usize,
+    pub call_depth: usize,
+    pub warnings: usize,
+    pub symbols: Vec<String>,
+}
+
+#[doc(hidden)]
+pub fn analyze(source: &str) -> Result<Summary, diag::Error> {
     let mut syms = lexer::Interner::default();
-    let mut run = || -> diag::Result<usize> {
+    let mut run = || -> diag::Result<Summary> {
         let mut toks = lexer::lex(source, &mut syms)?;
         lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        Ok(parser::parse(&toks, &syms)?.items.len())
+        let ast = parser::parse(&toks, &syms)?;
+        let hir = sema::analyze(
+            ast,
+            &syms,
+            sema::Budget {
+                variables: usize::MAX,
+                array_cells: usize::MAX,
+            },
+        )?;
+        let init = eval::run(&hir, &eval::Environment::default())?;
+        Ok(Summary {
+            variables: hir.vars.len(),
+            widgets: hir.uis.len(),
+            functions: hir.functions.len(),
+            callbacks: hir.callbacks.len(),
+            call_depth: hir.call_depth,
+            warnings: hir.warnings.len() + init.warnings.len(),
+            symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
+        })
     };
     run().map_err(|f| f.locate(source))
 }
