@@ -37,7 +37,7 @@ use super::mix::{Mix, PartControls, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadFailure, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
 };
 
@@ -901,7 +901,7 @@ fn kontakt(
 ) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: sampler_kontakt::LoadError| match e {
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
-        e => CoreError::Load(e.to_string()),
+        e => CoreError::Load((&e).into()),
     };
     let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
     let mut source = if multi {
@@ -951,7 +951,7 @@ fn kontakt(
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
 /// decode up front (no streaming yet).
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
-    let load = |e: &dyn std::fmt::Display| CoreError::Load(e.to_string());
+    let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     let rate = request.sample_rate as u32;
     let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
@@ -981,7 +981,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
-    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     if channels == 0 {
@@ -994,7 +994,7 @@ fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
             reader.samples::<i32>().map(|s| s.map(|s| s as f32 * scale)).collect::<Result<_, _>>()
         }
     }
-    .map_err(|e| CoreError::Load(e.to_string()))?;
+    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let frames = samples.chunks_exact(channels).map(|f| [f[0], f[channels.min(2) - 1]]).collect();
     Ok((spec.sample_rate, frames))
 }
@@ -1107,7 +1107,7 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(e.to_string()))?.instrument;
+            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -1118,7 +1118,7 @@ impl CoreLoader for V2Loader {
         if !is_wav(path) {
             return Err(unsupported(path));
         }
-        hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+        hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
         Ok(Description { name: stem(path), zones: 1, scripts: 0, missing: Vec::new() })
     }
 }
