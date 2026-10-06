@@ -951,6 +951,10 @@ pub enum Saved {
     Int(i64),
     Real(f64),
     Text(String),
+    /// An integer array (`%name`), in element order.
+    Ints(Vec<i64>),
+    /// A real array (`?name`), in element order.
+    Reals(Vec<f64>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
