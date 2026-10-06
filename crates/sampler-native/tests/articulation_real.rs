@@ -509,10 +509,13 @@ fn probe_instrument() {
                 / (2.0 * seg.len() as f64))
                 .sqrt();
             let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            let lr = |c: usize| out.iter().fold(0f32, |p, f| p.max(f[c].abs()));
             eprintln!(
-                "SOLO group {g} zones {zones} peak {:.1} rms {:.1}",
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1}",
                 db(f64::from(pk)),
-                db(rms)
+                db(rms),
+                db(f64::from(lr(0))),
+                db(f64::from(lr(1)))
             );
         }
     }
