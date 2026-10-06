@@ -39,3 +39,12 @@ Program XML is bounded to 32 MiB and one million nodes, with DTDs disabled.
 This admits the installed Augmented Orchestra programs with more than
 200,000 nodes. Explicit `$Bank.ufs/` resources resolve within their named bank.
 XML bounds: `f24c85c6`; resource paths: `2b9a8b3d`; memory-only access: `2a6ba617`.
+Protected and clear XML share the parser and byte bounds: `9309bf5a`.
+
+## Verification on the shared machine
+
+Wrap every Cargo command and real-library census/render with
+`flock --close /home/derpcat/.cache/kontakto-heavy.lock COMMAND ...`.
+Use the target directory and sccache from `~/.cargo/config.toml`; do not set
+`CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. `--close` keeps persistent child daemons
+such as sccache from inheriting the lock after the job finishes.
