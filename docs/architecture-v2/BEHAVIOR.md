@@ -704,3 +704,15 @@ notes, creator-only late stored-ID edits, cross-kind CC/note routing, retained p
 generations, capacity atomicity and cleanup. A 4,096-note-stage chain runs on a
 128 KiB thread stack. These are native correctness checks, not vendor audio or
 performance comparisons.
+
+
+Release callbacks now have a distinct native callback phase and their own bounded
+per-module group draft. The current module-zero release service initializes that
+draft at callback entry, forwards it to release selection once, and gives generated
+children that release draft. It leaves a suspended note callback's group view
+unchanged. Physical identity, event properties and plan ownership remain shared
+at their existing scopes. The new source fixture covers a held release, delayed
+child generation and separate parent/child masks with exact rendered samples.
+This is preparation for multi-module release routing, which remains rejected.
+Validation: the native debug suite plus the new source fixture cover 322 tests;
+strict all-target Clippy passes (`artifacts/release-projections-*`).

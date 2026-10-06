@@ -80,8 +80,12 @@ impl crate::Runtime {
     fn start_note_stage(&mut self, note: crate::NoteId, stage: usize, program: usize) {
         self.note_events[note.0.index].pending_callbacks -= 1;
         self.behaviors.unreserve(1);
-        self.start_note_context(note, program, Some(stage))
-            .expect("reserved note stage callback");
+        self.start_note_context(
+            note,
+            program,
+            Some(crate::behavior::NoteStage::Attack(stage)),
+        )
+        .expect("reserved note stage callback");
     }
 
     pub(super) fn forward_note_stage(

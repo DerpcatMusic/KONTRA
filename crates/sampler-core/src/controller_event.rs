@@ -192,7 +192,7 @@ impl Runtime {
                     channels: 1 << n.address.channel,
                     number,
                     value,
-                    stage: stage + 1,
+                    stage: stage.index() + 1,
                     pending: true,
                     reserved: 0,
                 },

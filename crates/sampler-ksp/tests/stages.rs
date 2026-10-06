@@ -229,3 +229,41 @@ fn generated_notes_and_controllers_cross_the_same_module_boundaries() {
         });
     });
 }
+
+#[test]
+fn release_group_edits_and_generated_children_do_not_overwrite_a_waiting_note_view() {
+    let plan = plan(&["on init declare $child end on
+        on note
+            disallow_group($ALL_GROUPS) allow_group(0)
+            wait(1000)
+        end on
+        on release
+            ignore_event($EVENT_ID)
+            disallow_group($ALL_GROUPS) allow_group(1)
+            wait(125)
+            $child := play_note(64,127,0,1000)
+            note_off($EVENT_ID)
+        end on"]);
+    let budget = limits(&plan, 2);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let parent = rt.trigger(input(1), 60, 1.).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        assert!(rt.note_group_allowed(parent, 0).unwrap());
+        assert!(!rt.note_group_allowed(parent, 1).unwrap());
+        let mut audio = [[0.; 2]; 8];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[0], [0.125; 2]);
+        assert_eq!(audio[7], [0.25; 2]);
+        let generation = rt.active_plan();
+        let alias = rt.script_cell(generation, ScriptInstanceId(0), 0).unwrap() as i32;
+        let child = rt.resolve_source_event(generation, alias).unwrap().unwrap();
+        assert!(!rt.note_group_allowed(child, 0).unwrap());
+        assert!(rt.note_group_allowed(child, 1).unwrap());
+        assert!(rt.note_group_allowed(parent, 0).unwrap());
+        rt.flush_behaviors(|_, _, outcome| {
+            assert!(matches!(outcome, Outcome::Finished | Outcome::Cancelled));
+            true
+        });
+    });
+}
