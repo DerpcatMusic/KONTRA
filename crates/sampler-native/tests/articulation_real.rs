@@ -460,6 +460,15 @@ fn probe_instrument() {
                 .or_default() += 1;
         }
     }
+    let mut warns = std::collections::BTreeMap::<String, usize>::new();
+    for u in &loaded.instrument.unsupported {
+        if u.feature.starts_with("script") {
+            *warns.entry(format!("{} {}", u.feature, u.value)).or_default() += 1;
+        }
+    }
+    for (w, n) in warns.iter().take(60) {
+        eprintln!("WARN {n} {w}");
+    }
     eprintln!("non-script reports: {feats:?}");
     eprintln!(
         "zones after finish: {} pcm {}",
