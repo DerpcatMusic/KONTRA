@@ -67,6 +67,11 @@ pub enum Instruction {
         controller: u16,
         local: u16,
     },
+    /// Whether an input note on key `key` is held (`%KEY_DOWN[key]`); 0 or 1.
+    ReadKeyHeld {
+        key: u16,
+        local: u16,
+    },
     /// Publish a full-resolution CC downstream without reentering the creating callback.
     WriteController {
         controller: u16,
@@ -438,6 +443,10 @@ impl Program {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
             }
             if let Instruction::ReadInputController { controller, local }
+            | Instruction::ReadKeyHeld {
+                key: controller,
+                local,
+            }
             | Instruction::WriteController {
                 controller,
                 value: local,
@@ -1067,6 +1076,15 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
 
+            Instruction::ReadKeyHeld { key, local } => {
+                let key = *self.local_cell_mut(id, key)?;
+                let held = self.notes.slots.iter().any(|slot| {
+                    slot.value.as_ref().is_some_and(|n| {
+                        n.input_down && n.input.is_some_and(|i| i64::from(i.key) == key)
+                    })
+                });
+                *self.local_cell_mut(id, local)? = i64::from(held);
+            }
             Instruction::WriteController { controller, value } => {
                 let number = u8::try_from(*self.local_cell_mut(id, controller)?)
                     .map_err(|_| Error::InvalidInput)?;
