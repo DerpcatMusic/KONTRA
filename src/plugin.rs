@@ -71,9 +71,9 @@ pub struct Part {
     pub mpe: bool,
     /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
     pub bend_range: u8,
-    /// What selects articulations ([`crate::sound::driver`]): 0 keyswitches,
-    /// 1 velocity, 2 channel, 3 CC 32, 4 program change.
-    pub driver: u8,
+    /// How articulations are selected, as `sampler_ir::Switching::to_bits`
+    /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
+    pub switching: u8,
 }
 
 impl Default for Part {
@@ -98,7 +98,7 @@ impl Default for Part {
             nodes: Vec::new(),
             mpe: false,
             bend_range: 0,
-            driver: 0,
+            switching: 0,
         }
     }
 }
@@ -468,7 +468,7 @@ pub struct Shared {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64, u8, bool)>,
+    pub(crate) attempted: Option<(String, u32, u64, bool)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -706,6 +706,7 @@ pub(crate) fn rack_controls(selection: &Selection) -> Vec<PartControls> {
                     aux_gain: db_gain(p.aux_gain),
                     mpe: p.mpe,
                     bend_range: p.bend_range.min(96),
+                    switching: p.switching,
                 })
                 .unwrap_or_default()
         })
@@ -1099,7 +1100,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     let atoms = shared.part(slot).unwrap();
     let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits(), part.driver, part.mpe);
+    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1138,7 +1139,6 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         path: part.path.clone().into(),
         program: part.program,
         sample_rate: rate,
-        driver: crate::sound::driver(part.driver),
         mpe: part.mpe,
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
