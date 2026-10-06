@@ -117,9 +117,6 @@ pub struct LoadRequest {
     /// Program index inside a bank/multi file.
     pub program: u32,
     pub sample_rate: f64,
-    /// What selects articulations; other than keys, each articulation gets
-    /// its own velocity split, channel, CC 32 value or program.
-    pub driver: sampler_ir::Driver,
     /// Per-note pressure and timbre reach every zone (louder, brighter), for
     /// MPE controllers; otherwise only routes the instrument authored do.
     pub mpe: bool,
@@ -144,12 +141,6 @@ pub struct Loaded<P> {
     pub scripts: ScriptUi,
     /// The streamed samples, when the part reads them from disk as it plays.
     pub stream: Option<std::sync::Arc<Stream>>,
-}
-
-/// [`crate::plugin::Part::driver`] as the translator's driver.
-pub fn driver(n: u8) -> sampler_ir::Driver {
-    use sampler_ir::Driver::*;
-    [Keys, Velocity, Channel, Controller, Program].get(usize::from(n)).copied().unwrap_or(Keys)
 }
 
 /// A part's streamed samples: their decode threads and resident start data.

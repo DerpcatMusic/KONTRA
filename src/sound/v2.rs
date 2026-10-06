@@ -64,6 +64,12 @@ pub struct Part {
     problems: RuntimeProblems,
     /// Velocity, channel, CC or program selecting articulations, when not keys.
     articulator: Option<Articulator>,
+    /// The part's switching for each driver, from its instrument, and which
+    /// [`PartControls::switching`] byte is applied.
+    drivers: Vec<(sampler_core::Switching, Vec<sampler_core::Keyswitch>)>,
+    switching: u8,
+    /// The instrument's own driver, for [`Self::drivers`].
+    inherited: usize,
     /// The instrument's default articulation, when the runtime holds the
     /// articulation (it numbers that one 0).
     articulations: Option<usize>,
@@ -81,10 +87,8 @@ impl Part {
     fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe = Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
-        let articulator = (runtime.switching().driver() != sampler_core::Driver::Keys)
-            .then(|| Articulator::new(&runtime, runtime.performance(0)?, WIRE.port))
-            .transpose()
-            .map_err(core)?;
+        // Plans without articulations have nothing to drive.
+        let articulator = runtime.performance(0).and_then(|p| Articulator::new(&runtime, p, WIRE.port)).ok();
         let count = tree.nodes.len();
         Ok(Self {
             runtime,
@@ -97,6 +101,9 @@ impl Part {
             direct: 0,
             problems: RuntimeProblems::default(),
             articulator,
+            drivers: Vec::new(),
+            switching: 0,
+            inherited: 0,
             articulations: None,
             mpe_zone: false,
             bend_range: 0,
@@ -110,16 +117,38 @@ impl Part {
         if self.tune != c.tune && self.mpe.transpose(&mut self.runtime, f64::from(c.tune)).is_ok() {
             self.tune = c.tune;
         }
-        let changed = (self.mpe_zone, self.bend_range) != (c.mpe, c.bend_range);
-        self.mpe_zone = c.mpe;
-        if changed && c.bend_range > 0 {
-            // Registered controller 0:0 on the manager and a member channel
-            // (members share one range), semitones in the top seven bits.
-            for channel in [0, 1] {
-                wire_packet(self, &[0x4020_0000 | channel << 16, u32::from(c.bend_range) << 25]);
+        if c.switching != self.switching && !self.drivers.is_empty() {
+            self.switching = c.switching;
+            // The instrument's own driver until the player remaps.
+            let driver = if c.switching & 0x80 != 0 { usize::from(c.switching >> 1 & 7) } else { self.inherited };
+            if let Some((switching, keys)) = self.drivers.get(driver) {
+                // ponytail: set_switching frees its key table on this thread; a few hundred bytes per remap.
+                let _ = self.runtime.set_switching(switching.clone(), keys.clone());
             }
         }
-        self.bend_range = c.bend_range;
+        self.mpe_zone = c.mpe;
+        if self.bend_range != c.bend_range {
+            // 0 keeps what the instrument and the player's controller say.
+            self.mpe.set_bend_range((c.bend_range > 0).then_some(c.bend_range));
+            self.bend_range = c.bend_range;
+        }
+    }
+
+    /// Keep one switching table per driver for `instrument`'s articulations,
+    /// for a remap to swap in without lowering the plan again.
+    fn set_drivers(&mut self, instrument: &ir::Instrument) {
+        if instrument.articulations.is_empty() {
+            return;
+        }
+        let mut with_alternatives = instrument.clone();
+        with_alternatives.assign_alternatives(32);
+        self.inherited = instrument.switching.driver as usize;
+        self.drivers.clear();
+        for driver in [ir::Driver::Keys, ir::Driver::Velocity, ir::Driver::Channel, ir::Driver::Controller, ir::Driver::Program] {
+            let switching = ir::Switching { driver, ..instrument.switching };
+            let Ok((keys, switching)) = sampler_core::lower::switching(&with_alternatives, switching) else { break };
+            self.drivers.push((switching, keys));
+        }
     }
 
     /// Apply node settings to the runtime's buses.
@@ -746,11 +775,6 @@ fn kontakt(
         e => CoreError::Load(e.to_string()),
     };
     let mut source = sampler_kontakt::read(&request.path).map_err(load)?;
-    if request.driver != ir::Driver::Keys {
-        source.instrument.switching.driver = request.driver;
-        // "CC 32" in the articulation view.
-        source.instrument.assign_alternatives(32);
-    }
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
@@ -892,6 +916,9 @@ impl CoreLoader for V2Loader {
             )));
         }
         let mut part = Part::new(runtime, tree.clone())?;
+        if let Some(inst) = instrument.as_deref() {
+            part.set_drivers(inst);
+        }
         part.articulations = instrument.as_deref().filter(|i| {
             !i.articulations.is_empty() && i.switching.owner == ir::SwitchOwner::Native
         }).map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
@@ -1100,7 +1127,7 @@ mod tests {
             root_key: None,
             loops: Vec::new(),
         };
-        let mut instrument = ir::Instrument {
+        let instrument = ir::Instrument {
             assets: (0..3).map(asset).collect(),
             zones: (0..3).map(|a| zone(a, a)).collect(),
             articulations: (0..3u8)
@@ -1108,14 +1135,17 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        instrument.switching.driver = crate::sound::driver(1);
-        instrument.assign_alternatives(32);
         let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
-        let plan = sampler_kontakt::prepare(instrument, pcm, &Default::default()).unwrap().plan;
+        let plan = sampler_kontakt::prepare(instrument.clone(), pcm, &Default::default()).unwrap().plan;
         let limits = limits(&plan);
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
+        part.set_drivers(&instrument);
         let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default();
+        // Remap to velocity: the writer's Switching bits, driver in bits 1..4.
+        mix.parts[0].switching = 0x80 | (ir::Driver::Velocity as u8) << 1;
+        core.set_mix(&mix);
         core.install(0, Some(Box::new(part)));
         assert_eq!(core.articulation(0), Some(1), "the default plays first");
         // Velocities split 1..=127 in three by lowest switch key.
