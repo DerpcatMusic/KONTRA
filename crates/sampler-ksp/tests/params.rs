@@ -288,3 +288,17 @@ fn runtime_ui_requests_update_the_model() {
         Some(&sampler_ksp::model::Value::Text("online".into()))
     );
 }
+
+#[test]
+fn key_down_reads_held_input_keys() {
+    let mut rt = runtime(
+        "on note
+           ignore_event($EVENT_ID)
+           if (%KEY_DOWN[60] = 1 and %KEY_DOWN[61] = 0)
+             play_note(61, 127, 0, 100000)
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}

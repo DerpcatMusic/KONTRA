@@ -841,6 +841,10 @@ impl Gen<'_, '_> {
             })?;
             return self.emit(I::ControllerToMidi7 { local: dst });
         }
+        if array == SysArray::KeyDown {
+            self.value(index, dst)?;
+            return self.emit(I::ReadKeyHeld { local: dst });
+        }
         self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
         self.set(dst, 0)
     }
