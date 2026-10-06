@@ -312,15 +312,35 @@ fn unit_scale(value: f64) -> u32 {
     (value.clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32
 }
 
-/// `expression` on one held note.
+/// `expression` on one held note, and on the notes a script played from it.
 fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
     let tune = f64::from(part.tune);
-    express(&mut part.runtime, id, |e| match expression {
-        NoteExpression::Tune(semitones) => e.pitch_semitones = semitones + tune,
-        NoteExpression::Gain(gain) => e.gain = gain,
-        NoteExpression::Pan(pan) => e.pan = pan,
-        NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
-        NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
+    let apply = |runtime: &mut Runtime, note: NoteId| {
+        express(runtime, note, |e| match expression {
+            NoteExpression::Tune(semitones) => e.pitch_semitones = semitones + tune,
+            NoteExpression::Gain(gain) => e.gain = gain,
+            NoteExpression::Pan(pan) => e.pan = pan,
+            NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
+            NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
+        })
+    };
+    apply(&mut part.runtime, id);
+    if let Some(script) = part.script.as_ref() {
+        script.family(id, |child| apply(&mut part.runtime, child));
+    }
+}
+
+/// Bring the notes the part's scripts played under its MPE zone, so bend,
+/// pressure and timbre reach them too.
+fn adopt_spawns(part: &mut Part, index: usize, held: &[Held]) {
+    let Part { script: Some(script), mpe, runtime, .. } = part else { return };
+    script.drain_spawns(|spawn| {
+        let channel = spawn
+            .parent
+            .and_then(|p| held.iter().find(|h| h.part == index && h.id == p))
+            .map_or(WIRE.channel, |h| h.input.channel);
+        // A full zone leaves the note without gestures, not silent.
+        let _ = mpe.adopt(runtime, channel, spawn.note, spawn.tune);
     });
 }
 
@@ -378,6 +398,7 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                             Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
                             _ => {}
                         }
+                        adopt_spawns(part, index, held);
                     }
                     Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
                     Err(_) => {}
@@ -537,6 +558,7 @@ impl Core for V2Core {
             }
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
+                adopt_spawns(part, index, &self.held);
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
@@ -1091,7 +1113,10 @@ impl CoreLoader for V2Loader {
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.grower = Some(grower);
-        part.script = script.map(Box::new);
+        part.script = script.map(|mut s| {
+            s.track_spawns();
+            Box::new(s)
+        });
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
@@ -1772,6 +1797,44 @@ mod tests {
             }
         });
         assert_eq!(allocations, 0, "the audio thread allocated or freed memory");
+    }
+
+    #[test]
+    fn pitch_bend_reaches_notes_a_lua_script_played() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| (), &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 40, id: 1, clap: true }));
+        // Zero crossings of the left channel over `blocks` blocks, scripts given a moment each.
+        let crossings = |core: &mut V2Core, blocks: usize| {
+            let (mut n, mut last) = (0usize, 0.0f32);
+            for _ in 0..blocks {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let r = core.render(128);
+                for x in &r.buses[0][0][..128] {
+                    n += usize::from(last <= 0.0 && *x > 0.0);
+                    last = *x;
+                }
+            }
+            n
+        };
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard);
+        let before = crossings(&mut core, 150);
+        core.event(0, Event::Ump([0x40e0_0000, 0xffff_ffff]));
+        let after = crossings(&mut core, 150);
+        assert!(before > 20, "{before} crossings");
+        // The default bend range is two semitones: about 12% higher.
+        assert!(after as f64 > before as f64 * 1.05, "{before} crossings before the bend, {after} after");
     }
 
     #[test]

@@ -101,6 +101,21 @@ pub struct Driver<S: Script> {
     /// audio thread allocates nothing once warm.
     inbox: Vec<Command>,
     ended: Vec<u64>,
+    /// Notes played since the host last looked, when it asked to hear of them.
+    adopt: bool,
+    spawned: Vec<Spawn>,
+    /// (physical note, note played from it), for per-note expression.
+    family: Vec<(NoteId, NoteId)>,
+}
+
+/// A note a script played, for a host that carries bend and MPE to it.
+#[derive(Clone, Copy, Debug)]
+pub struct Spawn {
+    pub note: NoteId,
+    /// The physical note it was played from, if any.
+    pub parent: Option<NoteId>,
+    /// Its script `tune` in semitones, which the host's gestures must keep.
+    pub tune: f64,
 }
 
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
@@ -123,6 +138,28 @@ impl<S: Script> Driver<S> {
             glide_at: 0,
             inbox: Vec::with_capacity(256),
             ended: Vec::with_capacity(TRACKED),
+            adopt: false,
+            spawned: Vec::with_capacity(256),
+            family: Vec::with_capacity(TRACKED),
+        }
+    }
+
+    /// Record the notes scripts play for [`Self::drain_spawns`].
+    pub fn track_spawns(&mut self) {
+        self.adopt = true;
+    }
+
+    /// The notes played since the last call.
+    pub fn drain_spawns(&mut self, mut each: impl FnMut(Spawn)) {
+        self.spawned.drain(..).for_each(&mut each);
+    }
+
+    /// The notes played from `parent` that still may sound.
+    pub fn family(&self, parent: NoteId, mut each: impl FnMut(NoteId)) {
+        for (p, child) in &self.family {
+            if *p == parent {
+                each(*child);
+            }
         }
     }
 
@@ -224,7 +261,7 @@ impl<S: Script> Driver<S> {
         closing: bool,
         inbox: &mut Vec<Command>,
     ) -> Result<(), Error> {
-        if !inbox.is_empty() && self.notes.len() >= TRACKED / 2 {
+        if !inbox.is_empty() && (self.notes.len() >= TRACKED / 2 || self.family.len() >= TRACKED / 2) {
             self.prune(rt);
         }
         for command in inbox.drain(..) {
@@ -250,6 +287,7 @@ impl<S: Script> Driver<S> {
     /// Forget notes the runtime no longer holds.
     fn prune(&mut self, rt: &Runtime) {
         self.notes.retain(|_, note| rt.note(*note).is_ok());
+        self.family.retain(|(_, child)| rt.note(*child).is_ok());
         let notes = &self.notes;
         self.voice_values.retain(|(v, _), _| notes.contains_key(v));
     }
@@ -377,6 +415,12 @@ impl<S: Script> Driver<S> {
             Err(e) => return Err(e),
         };
         self.notes.insert(play.id, note);
+        if self.adopt && self.spawned.len() < self.spawned.capacity() {
+            self.spawned.push(Spawn { note, parent, tune: play.tune });
+            if let (Some(parent), true) = (parent, self.family.len() < TRACKED) {
+                self.family.push((parent, note));
+            }
+        }
         self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
