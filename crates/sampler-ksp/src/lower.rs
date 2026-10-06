@@ -1757,9 +1757,8 @@ impl Gen<'_, '_> {
     }
 
     /// Group/instrument volume, pan and tune: `set_engine_par(p, v, group, -1, -1)`.
-    // ponytail: writes are offsets from the authored group values, assumed
-    // neutral (0 dB, centre, 0 st); pass authored values in when a library
-    // authors non-neutral groups and also sets them from script.
+    // Absolute values: the runtime keeps the layer relative to the group's
+    // authored values (`sampler_core::GroupBase`).
     fn engine_param(&self, args: &[Arg]) -> Option<ModTarget> {
         if self.const_int(args, 3) != Some(-1) || self.const_int(args, 4) != Some(-1) {
             return None;

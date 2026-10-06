@@ -211,6 +211,20 @@ pub fn lower(
             .with_velocity_curves(curves)
             .map_err(core(Stage::Regions, "velocity responses"))?;
     }
+    if !instrument.groups.is_empty() {
+        // Scripts address groups by index (`disallow_group`, `set_engine_par`).
+        let count = u32::try_from(instrument.groups.len()).unwrap_or(u32::MAX);
+        let members = instrument
+            .zones
+            .iter()
+            .map(|z| z.group.map(|g| g.0 as u32))
+            .collect();
+        let bases = instrument.groups.iter().map(Into::into).collect();
+        plan = plan
+            .with_groups(count, members)
+            .map_err(core(Stage::Regions, "groups"))?
+            .with_group_bases(bases);
+    }
     plan = lowering.buses(plan)?;
     plan = lowering.modulation(plan)?;
     plan = lowering.variation(plan)?;
@@ -221,6 +235,16 @@ pub fn lower(
         Ok(plan)
     } else {
         bind_behaviors(&instrument.behaviors, plan)
+    }
+}
+
+impl From<&ir::Group> for crate::GroupBase {
+    fn from(group: &ir::Group) -> Self {
+        Self {
+            decibels: 20.0 * group.gain.linear().max(1e-12).log10(),
+            pan: group.pan.position,
+            semitones: group.tune.semitones(),
+        }
     }
 }
 

@@ -295,8 +295,37 @@ pub fn prepare_with(
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
+    let resources = resources.map(std::cell::RefCell::new);
     let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
+    let group_values: Vec<sampler_core::GroupBase> =
+        instrument.groups.iter().map(Into::into).collect();
+    let mut views = Vec::new();
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
+        let mut performance_view = Default::default();
+        if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
+            let path = format!("Resources/performance_view/{name}.nckp");
+            let parsed = match resources.as_ref().and_then(|r| r.borrow_mut().read(&path)) {
+                Some(bytes) => sampler_ksp::nckp::parse(&bytes),
+                None => Err("not found in the library".into()),
+            };
+            match parsed {
+                Ok((view, skipped)) => {
+                    performance_view = view;
+                    views.extend(skipped.into_iter().map(|value| ir::Unsupported {
+                        location: path.clone(),
+                        feature: "performance view control".into(),
+                        value,
+                        reason: ir::Reason::NotModeled,
+                    }));
+                }
+                Err(value) => views.push(ir::Unsupported {
+                    location: behavior.name.clone(),
+                    feature: "performance view".into(),
+                    value: format!("{path}: {value}"),
+                    reason: ir::Reason::InvalidValue,
+                }),
+            }
+        }
         let environment = sampler_ksp::Environment {
             groups: groups.clone(),
             slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
@@ -312,7 +341,8 @@ pub fn prepare_with(
                     (name.clone(), value)
                 })
                 .collect(),
-            ..Default::default()
+            performance_view,
+            group_values: group_values.clone(),
         };
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
@@ -344,7 +374,7 @@ pub fn prepare_with(
             }),
         }
     }
-    let resources = resources.map(std::cell::RefCell::new);
+    instrument.unsupported.append(&mut views);
     let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
     for (script, name) in compiled.iter().zip(&names) {
