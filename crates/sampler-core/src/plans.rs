@@ -153,7 +153,7 @@ impl PlanControl {
                 }
             };
         let request = self.sequence + 1;
-        let script = super::script_params::EngineLayers::new(prepared.group_count, &prepared.group_bases);
+        let script = super::script_params::EngineLayers::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
