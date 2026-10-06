@@ -52,9 +52,6 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             .ok_or_else(|| invalid("not a single-instrument preset"))?,
     )
     .map_err(|e| decode("program", e))?;
-    let params = program
-        .params()
-        .map_err(|e| decode("program parameters", e))?;
     let (table, others) = match chunks.find_first(FILE_TABLE) {
         Some(chunk) => {
             let t = FNTableImpl::try_from(chunk).map_err(|e| decode("sample file table", e))?;
@@ -69,6 +66,56 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             (t.sample_filetable, t.other_filetable)
         }
     };
+    translate(path, program, table, others)
+}
+
+/// Translate program `index` (0-based, in slot order) of the multi at `path`;
+/// the programs of a `.nkm` are the instruments of a rack.
+pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
+    use ni_file::kontakt::objects::Bank;
+    let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
+    let chunks = crate::read_chunks(&path)?;
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: path.clone(),
+        reason: reason.into(),
+    };
+    let decode = |what, error| LoadError::decode(&path, what, error);
+    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
+        .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
+    slots.sort_by_key(|(slot, _)| *slot);
+    let mut programs = Vec::new();
+    for (_, container) in slots {
+        programs.extend(container.program_list().map_err(|e| decode("multi programs", e))?.programs);
+    }
+    let program = programs.into_iter().nth(index).ok_or_else(|| invalid("the multi has no such program"))?;
+    let (table, others) = match chunks.filename_tables().map_err(|e| decode("multi file table", e))? {
+        Some(t) => (t.sample_filetable, t.other_filetable),
+        None => (
+            chunks
+                .filename_table()
+                .ok_or_else(|| invalid("missing multi sample table"))?
+                .map_err(|e| decode("multi file table", e))?,
+            Default::default(),
+        ),
+    };
+    translate(path, program, table, others)
+}
+
+fn translate(
+    path: PathBuf,
+    program: Program,
+    table: HashMap<u32, String>,
+    others: HashMap<u32, String>,
+) -> Result<Kontakt, LoadError> {
+    let invalid = |reason: &str| LoadError::Invalid {
+        path: path.clone(),
+        reason: reason.into(),
+    };
+    let decode = |what, error| LoadError::decode(&path, what, error);
+    let params = program
+        .params()
+        .map_err(|e| decode("program parameters", e))?;
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
@@ -1413,5 +1460,21 @@ mod modulation {
                 .is_none()
         );
         assert_eq!(t.ir.unsupported.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod multi_tests {
+    #[test]
+    fn a_multi_program_translates() {
+        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else { return };
+        let path = std::path::Path::new(&root)
+            .join("Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm");
+        if !path.exists() {
+            return;
+        }
+        let k = super::read_program(&path, 0).expect("first program");
+        assert!(!k.instrument.groups.is_empty());
+        assert!(super::read_program(&path, 999).is_err());
     }
 }

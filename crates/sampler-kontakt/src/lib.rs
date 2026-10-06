@@ -23,7 +23,7 @@ mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
-pub use library::{Kontakt, read};
+pub use library::{Kontakt, read, read_program};
 pub use load::{
     Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_read_streamed,
     load_streamed, prepare,
