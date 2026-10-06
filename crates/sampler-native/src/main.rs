@@ -376,11 +376,21 @@ fn run() -> io::Result<()> {
             let sequence = sequence.map_or(Some(render_kontakt::DEFAULT_SEQUENCE), |s| s.to_str());
             let notes = render_kontakt::parse(sequence.unwrap_or(""))
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            render_kontakt::run(Path::new(instrument), Path::new(output), &notes, scripts)
+            let messages = render_kontakt::note_messages(&notes);
+            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts)
+        }
+        // A Standard MIDI File: notes, controllers, pedal, bend, program changes.
+        [command, instrument, output, midi, rest @ ..]
+            if command == "render-kontakt-midi" && rest.len() <= 1 =>
+        {
+            let scripts = !rest.iter().any(|a| a == "--no-scripts");
+            let messages = render_kontakt::midi_file(&std::fs::read(midi)?)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts)
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
+            "usage: sampler-native census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | render-kontakt-midi INPUT.nki OUTPUT.wav SCENARIO.mid [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }
