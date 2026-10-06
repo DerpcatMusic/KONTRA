@@ -1293,6 +1293,39 @@ mod tests {
     }
 
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
+    /// Scripted instruments must sound: with their scripts on, a played note is
+    /// audible within a few seconds. Set `KONTRA_KONTAKT_LIBRARIES` to run.
+    #[test]
+    fn real_scripted_instruments_are_not_silent() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let mut silent = Vec::new();
+        for (relative, key) in [
+            ("Performance Samples Vista/Instruments/Vista - 3 Cellos.nki", 48),
+            ("Una Corda Library/Instruments/Una Corda Pure.nki", 60),
+            ("Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki", 48),
+            ("Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki", 48),
+        ] {
+            let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+                eprintln!("skipped: {relative} is not installed");
+                continue;
+            };
+            let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+            let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+            let mut core = V2Core::with_parts(1, 48000.0);
+            core.install(0, loaded.part);
+            core.event(0, on(HostNote { port: 0, channel: 0, key, id: 1, clap: true }));
+            // Streamed pages arrive from disk threads: give them real time.
+            let heard = (0..300).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                loud(&core.render(128), 0, 128)
+            });
+            if !heard {
+                silent.push(format!("{relative} (missing: {:?}, callbacks {})", loaded.report.missing, loaded.report.decoded.script_callbacks));
+            }
+        }
+        assert!(silent.is_empty(), "silent with scripts on: {silent:#?}");
+    }
+
     #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
