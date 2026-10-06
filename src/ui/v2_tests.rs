@@ -223,7 +223,7 @@ fn from_v1(u: &crate::ksp::Interface, pictures: &std::collections::HashMap<Strin
             background: ir::Background {
                 color: u.background_color.map(ir::Rgba::rgb),
                 image: wallpaper.then_some(ir::AssetRef(0)),
-                offset_y: u.skin_offset,
+                offset_y: u.skin_offset + super::perf_view::HEADER as i32,
             },
         }],
         ..Default::default()

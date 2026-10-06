@@ -14,7 +14,7 @@ use super::perf_view::{frame, switch_frame};
 use super::theme::*;
 use crate::artwork::Picture;
 use moose::mui::mui::prelude::*;
-use moose::mui::mui::scene::Fit;
+use moose::mui::mui::scene::{Fit, Image};
 use sampler_ui_ir::{self as ir, Binding, ControlId, Interface, Kind, PageRef, Presentation, Role as Use, WidgetRef};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,16 +64,48 @@ fn picture(p: &Picture, n: usize) -> Option<Fill> {
     Some(Fill::Image(f.clone(), Fit::Fill))
 }
 
+/// Whether the art under the middle of `n` is light: the nearest containing
+/// panel's background picture there, else the wallpaper.
+fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
+    let r = face.page_rect(n);
+    let (x, y) = (f64::from(r.x) + f64::from(r.width) / 2., f64::from(r.y) + f64::from(r.height) / 2.);
+    let luma = |img: &Image, u: f64, v: f64| {
+        if u < 0. || v < 0. || u >= f64::from(img.width) || v >= f64::from(img.height) {
+            return None;
+        }
+        let i = (v as usize * img.width as usize + u as usize) * 4;
+        let c = img.rgba.get(i..i + 4)?;
+        (c[3] >= 128).then(|| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]) > 140.)
+    };
+    let mut at = face.widgets[n.0].parent;
+    while let Some(p) = at {
+        let pr = face.page_rect(p);
+        if let Some(img) = face.widgets[p.0].image(Use::Background).and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
+            let u = (x - f64::from(pr.x)) / f64::from(pr.width.max(1)) * f64::from(img.width);
+            let v = (y - f64::from(pr.y)) / f64::from(pr.height.max(1)) * f64::from(img.height);
+            if let Some(l) = luma(img, u, v) {
+                return l;
+            }
+        }
+        at = face.widgets[p.0].parent;
+    }
+    let page = &face.pages[face.widgets[n.0].page.0];
+    let wall = page.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first());
+    wall.and_then(|img| luma(img, x, y + f64::from(page.background.offset_y))).unwrap_or(false)
+}
+
 /// `page` at `scale` points per source pixel.
 pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(p.size.height) * scale);
     let mut layers = Vec::new();
-    let mut ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
-    if let Some(f) = p.background.image.and_then(|a| assets.get(a)).and_then(|pic| picture(pic, 0)) {
-        ground = ground.fill(f);
-    }
+    let ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
     layers.push(ground.at(0., 0.));
+    // The wallpaper at its own size; the page shows it from `offset_y` down.
+    if let Some(img) = p.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
+        let (iw, ih) = (f64::from(img.width) * scale, f64::from(img.height) * scale);
+        layers.push(block(iw, ih).radius(0).fill(Fill::Image(img.clone(), Fit::Fill)).at(0., -f64::from(p.background.offset_y) * scale));
+    }
     for n in face.draw_order(page) {
         if !face.visible(n) {
             continue;
@@ -122,7 +154,8 @@ fn widget(
             let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
             match strip {
                 Some(p) => block(w, h).radius(0).fill(picture(p, frame(v, range.min, range.max, p.frames.len())).unwrap_or(Fill::from(Role::Field))),
-                None if matches!(wd.kind, Kind::Knob { .. }) => dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)),
+                // A slider about as tall as wide was drawn as a knob by its strip.
+                None if matches!(wd.kind, Kind::Knob { .. }) || (0.75..=1.33).contains(&(w / h.max(1.))) => dial_face(unit(v), unit(range.min.max(0.).min(range.max)), lift, ui.focus_visible(&id)),
                 None => fader_face(unit(v), 0., None, vertical, lift, ui.focus_visible(&id)),
             }
             .cursor(if vertical { Cursor::ResizeV } else { Cursor::ResizeH })
@@ -203,6 +236,11 @@ fn widget(
     if let Some(c) = control {
         values.insert(c, v);
     }
+    // Our faces are light-on-dark; over light art they sit on a dark plate.
+    let plate = !bitmap
+        && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
+        && light_under(face, assets, n);
+    let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
     let mut el = face_el.w(w).h(h).shrink(0).id(id).named(wd.automation_name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
