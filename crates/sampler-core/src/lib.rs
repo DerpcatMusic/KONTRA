@@ -344,8 +344,6 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
-    /// Script-layer gains at the end of the last rendered chunk.
-    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1208,7 +1206,6 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
-            script_gains: None,
         })?);
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
