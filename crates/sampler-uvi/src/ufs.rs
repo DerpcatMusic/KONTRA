@@ -545,14 +545,16 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let fixture = Fixture(std::env::temp_dir().join(format!(
+        let fixture = Fixture(
+            std::env::temp_dir().join(format!(
                 "uvi-reopened-bank-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
-            )));
+            )),
+        );
         std::fs::create_dir(&fixture.0).unwrap();
         let path = fixture.0.join("bank.ufs");
         let replacement = fixture.0.join("replacement.ufs");
