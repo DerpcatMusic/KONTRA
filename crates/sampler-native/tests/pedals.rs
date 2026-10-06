@@ -25,6 +25,10 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn find(relative: &str) -> Option<PathBuf> {
     let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        assert!(
+            std::env::var_os("KONTRA_REQUIRE_LIBRARIES").is_none(),
+            "KONTRA_REQUIRE_LIBRARIES is set but KONTRA_KONTAKT_LIBRARIES is not"
+        );
         eprintln!("skipped: KONTRA_KONTAKT_LIBRARIES is unset");
         return None;
     };
@@ -32,6 +36,10 @@ fn find(relative: &str) -> Option<PathBuf> {
         .map(|root| root.join(relative))
         .find(|p| p.is_file());
     if found.is_none() {
+        assert!(
+            std::env::var_os("KONTRA_REQUIRE_LIBRARIES").is_none(),
+            "{relative} is not installed but KONTRA_REQUIRE_LIBRARIES is set"
+        );
         eprintln!("skipped: {relative} is not installed");
     }
     found
@@ -77,7 +85,15 @@ struct Setup {
     /// Per-note gates are then asserted on those generated notes and on what
     /// is audible, not on the silent host note.
     owned: bool,
+    /// Owned, and the script holds its notes' gates open itself (it ends them
+    /// with `note_off`); otherwise its notes end by themselves and only the
+    /// audible output is asserted.
+    gated: bool,
     port: Port,
+    /// Voices added to the owned voice-limit pool: one script-played note
+    /// reserves its release voices up front (24 on Vista), so a pool below
+    /// that never admits one.
+    pool_pad: usize,
     voices: usize,
     block: usize,
     /// Replace the instrument's own scripts with this KSP.
@@ -90,7 +106,9 @@ impl Setup {
             keys,
             scripts: true,
             owned: false,
+            gated: false,
             port: Port::Channel,
+            pool_pad: 0,
             voices: 1024,
             block: BLOCK,
             script: None,
@@ -126,6 +144,7 @@ struct Gen {
 struct Run {
     gens: Vec<Gen>,
     owned: bool,
+    gated: bool,
     out: Vec<[f32; 2]>,
     played: Vec<Played>,
     /// Message, frame and outcome for everything not Started/Released/Pedal.
@@ -268,6 +287,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
     let mut run = Run {
         gens: Vec::new(),
         owned: setup.owned && setup.scripts && setup.script.is_none(),
+        gated: setup.gated,
         out: Vec::new(),
         played: Vec::new(),
         other: Vec::new(),
@@ -419,19 +439,19 @@ fn sane(run: &Run, name: &str) {
     );
     let idle = run.idle_at.unwrap_or_else(|| {
         panic!(
-            "{name}: stuck: notes/voices/families still alive {TAIL}s after the last event; {:?}",
+            "{name}: stuck: notes/voices/families still alive {TAIL}s after the last event; {:?}; script outcomes {:?}",
             run.played
                 .iter()
                 .filter(|p| p.id.is_some())
                 .map(|p| (p.key, p.channel, p.on, p.key_at, p.gate_at))
-                .chain(run.gens.iter().filter(|g| g.id.is_some()).map(|g| (
-                    g.key,
-                    255,
-                    g.admitted as usize,
-                    g.key_at,
-                    g.gate_at
-                )))
-                .collect::<Vec<_>>()
+                .chain(
+                    run.gens
+                        .iter()
+                        .filter(|g| g.id.is_some())
+                        .map(|g| (g.key, 255, g.admitted as usize, g.key_at, g.gate_at))
+                )
+                .collect::<Vec<_>>(),
+            run.script_outcomes
         )
     });
     assert!(idle > run.last_event);
@@ -522,7 +542,8 @@ fn assert_audible(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate:
         .collect();
     let tolerance = 4 * run.block;
     assert!(
-        gates
+        !run.gated
+            || gates
             .iter()
             .flatten()
             .any(|&g| (g as usize).abs_diff(gate) <= tolerance),
@@ -704,9 +725,16 @@ fn sostenuto(setup: Setup) {
     let name = "sostenuto";
     sane(&run, name);
     assert_gate(&run, name, c, 0, 0.05, 0.05);
+    // Una Corda's MAIN script (0_MAIN.ksp, `case 66`) recaptures every held key
+    // on each pedal-down value >= 64, with no SostenutoPedalDown guard, so the
+    // repeated value at 0.25 captures `b` as well; the native core does not.
+    let b_gate = if run.owned { 1.0 } else { 0.4 };
     assert_gate(&run, name, a, 0, 0.3, 1.0);
-    assert_gate(&run, name, b, 0, 0.4, 0.4);
-    assert_gate(&run, name, a, 1, 0.6, 0.6);
+    assert_gate(&run, name, b, 0, 0.4, b_gate);
+    // The re-struck `a` is still captured (`%SostenutoID[a]` stays set until the
+    // lift), so its key-up is ignored and the note ends with the pedal.
+    let again = if run.owned { 1.0 } else { 0.6 };
+    assert_gate(&run, name, a, 1, 0.6, again);
 }
 
 /// Both pedals: sustain holds everything until its lift, sostenuto keeps its
@@ -861,7 +889,11 @@ fn retrigger(setup: Setup) {
     assert_eq!(run.played.len(), 4);
     assert_gate(&run, name, a, 0, 0.2, 0.8);
     assert_gate(&run, name, a, 1, 0.4, 0.8);
-    assert_gate(&run, name, b, 0, 1.2, 1.2);
+    // Una Corda's MAIN keeps one child id per key (0_MAIN.ksp, on note:
+    // `%KeyDownID[128 + n]`): the first key-up of a re-struck key does not match
+    // it and is ignored, and the second releases both children.
+    let first = if run.owned { 1.3 } else { 1.2 };
+    assert_gate(&run, name, b, 0, 1.2, first);
     assert_gate(&run, name, b, 1, 1.3, 1.3);
     assert_eq!(
         run.other,
@@ -961,7 +993,11 @@ fn voice_limit(setup: Setup) {
     sane(&two, "voice probe");
     // Polyphony (voices less a quarter of headroom) is 1.5 times what two
     // notes use under the pedal: four notes cannot all fit.
-    let voices = 2 * two.peak_voices.max(2);
+    let voices = if two.owned {
+        two.peak_voices.max(2) + setup.pool_pad
+    } else {
+        2 * two.peak_voices.max(2)
+    };
     let setup = Setup { voices, ..setup };
     let keys = [a, a + 2, a + 4, a + 7];
     let mut events = vec![(0.0, Cc(0, 64, 127))];
@@ -981,11 +1017,7 @@ fn voice_limit(setup: Setup) {
     assert!(run.peak_voices <= voices);
     assert_eq!(run.other, [], "{name}: no admission is rejected");
     let admitted: Vec<u8> = run.played.iter().map(|p| p.key).collect();
-    assert_eq!(
-        admitted,
-        [a, a + 2, a + 4, a + 7, a],
-        "{name}: admitted keys"
-    );
+    assert_eq!(admitted, [a, a + 2, a + 4, a + 7, a], "{name}: admitted keys");
     // Stolen voices fade: they outlive the stealing block, and every one is
     // gone within the fade (plus the block it started in and the next).
     let fade = Stealing::for_limits(RATE as u32, voices).fade as usize;
@@ -1021,9 +1053,12 @@ fn determinism(setup: Setup) {
         return;
     };
     let n = first.out.len().min(split.out.len());
+    let differs = (0..n).find(|&i| split.out[i] != first.out[i]);
     assert!(
-        split.out[..n] == first.out[..n],
-        "block partition changes PCM"
+        differs.is_none(),
+        "block partition changes PCM: first difference at frame {differs:?} ({:?} vs {:?})",
+        differs.map(|i| first.out[i]),
+        differs.map(|i| split.out[i])
     );
     let Some(unbound) = sustain_run(Setup {
         scripts: false,
@@ -1064,6 +1099,7 @@ mod una_corda_pure {
     // the sampler-ksp suite's; these scenarios exercise the native layers.
     const SETUP: Setup = Setup {
         owned: true,
+        gated: true,
         ..Setup::new(UNA_CORDA, (60, 67))
     };
 
@@ -1089,10 +1125,11 @@ mod una_corda_pure {
 mod vista_3_cellos {
     use super::*;
     // Its legato script tracks held keys through %KEY_DOWN and
-    // search(%KEY_DOWN, 1), which sampler-ksp does not maintain yet (reads 0,
-    // -1): bound, it never plays. Exercise the native release-trigger path.
+    // search(%KEY_DOWN, 1); one note-off clears a key however many presses
+    // stacked, so the script ends its generated notes (checked in Kontakt 8).
     const SETUP: Setup = Setup {
         owned: true,
+        pool_pad: 32,
         ..Setup::new(CELLOS, (48, 55))
     };
 
@@ -1268,3 +1305,4 @@ fn scripted(setup: Setup) {
 fn block_of(frame: usize) -> usize {
     frame / BLOCK * BLOCK
 }
+
