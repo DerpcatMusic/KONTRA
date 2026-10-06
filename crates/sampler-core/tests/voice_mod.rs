@@ -483,3 +483,29 @@ fn breakpoint_envelope_glides_holds_at_sustain_and_releases() {
         assert!(audio[128..].iter().all(|f| f[1].abs() < 1e-6));
     }
 }
+
+#[test]
+fn release_counter_counts_down_while_held_and_freezes_at_key_up() {
+    let program = program(
+        vec![ModSource::ReleaseCounter { frames: 256 }],
+        vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+    );
+    let gate = Envelope::new(0, 0, 0, 1., 512).unwrap().with_curves(
+        EnvelopeCurve::default(),
+        EnvelopeCurve::default(),
+        EnvelopeCurve::step(),
+    );
+    let mut rt = Runtime::new(modulated(plan(4096, gate), program, 0), limits()).unwrap();
+    rt.trigger(input(1), 60, 1.).unwrap();
+    let held = render(&mut rt, 128, 64);
+    // Counting down: louder at the start than near key-up.
+    assert!(held[0][1] > held[127][1] + 0.1);
+    rt.note_off(input(1), None).unwrap();
+    // Frozen at 1 − 128/256 once the ramp into it completes.
+    let after = render(&mut rt, 256, 64);
+    assert!(
+        after[64..].iter().all(|f| (f[1] - 0.25).abs() < 1e-6),
+        "{:?}",
+        after[64]
+    );
+}
