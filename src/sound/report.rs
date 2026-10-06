@@ -44,6 +44,13 @@ pub struct Decoded {
     pub controls: usize,
     /// Keys the zones map, one bit per MIDI key, for the keyboard.
     pub keys: u128,
+    /// Script callbacks the part can run at once, sized from its scripts.
+    #[serde(default)]
+    pub script_callbacks: usize,
+    /// Bytes the samples take fully decoded; a streamed part holds only
+    /// their start data. 0 when not counted.
+    #[serde(default)]
+    pub full_bytes: u64,
 }
 
 impl Decoded {
@@ -80,6 +87,9 @@ pub struct RuntimeProblems {
     /// program changes): counted, never silently dropped.
     pub narrowed_input: u64,
     pub ignored_input: u64,
+    /// Voices faded out to make room at full polyphony.
+    #[serde(default)]
+    pub stolen_voices: u64,
 }
 
 /// A part's load report.
@@ -130,6 +140,8 @@ impl LoadReport {
                 articulations: instrument.articulations.len(),
                 controls: instrument.controls.len(),
                 keys: key_bits(instrument),
+                script_callbacks: 0,
+                full_bytes: 0,
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
@@ -140,8 +152,8 @@ impl LoadReport {
     pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
         let d = &self.decoded;
         std::iter::once(format!(
-            "{} ({}): {} zones, {} groups, {} samples, {} buses, {} scripts, {} articulations, {} controls",
-            self.name, d.format, d.zones, d.groups, d.samples, d.buses, d.scripts, d.articulations, d.controls
+            "{} ({}): {} zones, {} groups, {} samples, {} buses, {} scripts ({} callbacks at once), {} articulations, {} controls",
+            self.name, d.format, d.zones, d.groups, d.samples, d.buses, d.scripts, d.script_callbacks, d.articulations, d.controls
         ))
         .chain(self.missing.iter().map(|m| {
             format!("missing ({:?}): {} = {:?} at {}", m.reason, m.feature, m.value, m.location)

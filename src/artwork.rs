@@ -37,6 +37,14 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
                 candidates.extend(containers);
             }
             for path in candidates {
+                // A `.nicnt` names its pictures: the library's browser image,
+                // else its artwork, plugin picture or logo, read in memory.
+                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")) {
+                    if let Some(image) = nicnt_picture(&path) {
+                        return Some((name, Arc::new(image)));
+                    }
+                    continue;
+                }
                 let mut bytes = Vec::new();
                 if File::open(path)
                     .and_then(|mut f| f.read_to_end(&mut bytes))
@@ -61,6 +69,26 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
         })
         .collect()
 }
+/// The widest wallpaper-sized picture `nicnt` names, preferring its browser image.
+fn nicnt_picture(nicnt: &Path) -> Option<Image> {
+    let mut container = sampler_kontakt::ResourceContainer::open(nicnt).ok()?;
+    let mut names: Vec<String> = container
+        .names()
+        .into_iter()
+        .filter(|n| n.to_ascii_lowercase().ends_with(".png"))
+        .map(String::from)
+        .collect();
+    let rank = |n: &str| {
+        let n = n.to_ascii_lowercase();
+        ["libbrowser", "artwork", "plugin", "logo"].iter().position(|k| n.contains(k)).unwrap_or(4)
+    };
+    names.sort_by_key(|n| (rank(n), n.clone()));
+    names.iter().find_map(|n| {
+        let image = decode(&container.read(n).ok()??)?;
+        (image.width >= 180 && image.height >= 60).then_some(image)
+    })
+}
+
 /// The dominant hue of a library's own pictures, for a library with no
 /// artwork: loose pictures in its `Resources` folders, else those in a
 /// resource container it can read. At most a dozen are looked at.
@@ -396,6 +424,19 @@ fn oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
+    #[test]
+    fn a_nicnt_names_its_library_picture() {
+        let relative = "Afflatus Chapter II Brass/Afflatus Chapter II Brass.nicnt";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let image = super::nicnt_picture(&path).expect("the library has a picture");
+        assert!(image.width >= 180 && image.height >= 60);
+    }
+
     #[test]
     fn png_decode_checks_input_and_keeps_alpha() {
         let mut bytes = Vec::new();

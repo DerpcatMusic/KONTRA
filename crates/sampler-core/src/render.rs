@@ -1,5 +1,76 @@
 //! Sample-time segmentation and deterministic voice rendering.
-use super::{Error, Frame, Runtime, VoiceId};
+use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
+
+/// Runtime health counters as plain data, for load reports and meters.
+/// Counters are cumulative since construction; timings cover `render` calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeStats {
+    /// Voices that ran out of resident stream pages and faded out.
+    pub stream_underruns: u64,
+    /// Voice starts rejected because every voice was busy and audible.
+    pub voice_drops: u64,
+    /// Voices started silent because their first frames were not resident
+    /// (`set_cold_starts`); they fade in when their pages arrive.
+    pub cold_starts: u64,
+    /// Output frames silenced because they were not finite.
+    pub nonfinite_frames: u64,
+    pub voices: usize,
+    /// Wall time of the last `render` call, and the peak since `reset_peak`.
+    pub render_nanos_last: u64,
+    pub render_nanos_peak: u64,
+    /// Frames of the last `render` call (its real-time budget is
+    /// frames / sample rate).
+    pub render_frames_last: u32,
+    /// Bytes of stream cache pages, allocated whether resident or not.
+    pub stream_cache_bytes: usize,
+}
+
+impl Runtime {
+    pub fn stats(&self) -> RuntimeStats {
+        RuntimeStats {
+            stream_underruns: self.stream_underruns,
+            voice_drops: self.voice_drops,
+            cold_starts: self.cold_started,
+            nonfinite_frames: self.nonfinite_frames,
+            voices: self.voices.count(),
+            render_nanos_last: self.render_time[0],
+            render_nanos_peak: self.render_time[1],
+            render_frames_last: self.render_time[2] as u32,
+            stream_cache_bytes: self.stream_cache.as_ref().map_or(0, |c| c.bytes()),
+        }
+    }
+
+    pub fn reset_peak(&mut self) {
+        self.render_time[1] = 0;
+    }
+
+    /// Resident PCM bytes (frames and octave levels) of every live plan, each
+    /// asset once. Control side: linear in assets per plan.
+    pub fn resident_bytes(&self) -> usize {
+        let plans: Vec<_> = self
+            .plans
+            .slots
+            .iter()
+            .filter_map(|s| s.value.as_ref())
+            .collect();
+        let mut bytes = 0;
+        for (i, plan) in plans.iter().enumerate() {
+            for pcm in &plan.prepared.pcm {
+                // ponytail: quadratic dedupe, only paid while plans overlap.
+                let shared = plans[..i].iter().any(|p| {
+                    p.prepared
+                        .pcm
+                        .iter()
+                        .any(|q| q.asset_id() == pcm.asset_id())
+                });
+                if !shared {
+                    bytes += pcm.resident_bytes();
+                }
+            }
+        }
+        bytes
+    }
+}
 
 impl Runtime {
     /// Events at the exclusive block end stay pending until the next render (including
@@ -19,11 +90,28 @@ impl Runtime {
         if outs.iter().any(|o| o.len() < output.len()) {
             return Err(Error::InvalidInput);
         }
+        let start = std::time::Instant::now();
+        self.render_inner(output, outs)?;
+        let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.render_time = [
+            nanos,
+            self.render_time[1].max(nanos),
+            output.len().min(u32::MAX as usize) as u64,
+        ];
+        Ok(())
+    }
+
+    fn render_inner(
+        &mut self,
+        output: &mut [Frame],
+        outs: &mut [&mut [Frame]],
+    ) -> Result<(), Error> {
         let end = self
             .now
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
+        self.start_plan_programs();
         self.resume_yielded();
         self.apply_due();
         let mut offset = 0;
@@ -51,7 +139,7 @@ impl Runtime {
             || self.plans.slots.iter().any(|s| {
                 s.value.as_ref().is_some_and(|g| {
                     g.prepared.buses.len() != 0
-                        || !g.dsp.filters.is_empty()
+                        || !g.prepared.voice_chains.is_empty()
                         || !g.prepared.voice_modulation.is_empty()
                 })
             });
@@ -84,6 +172,7 @@ impl Runtime {
     }
 
     fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+        let mut batch: (Option<(usize, usize)>, [usize; VOICES], usize) = (None, [0; VOICES], 0);
         // Skip empty slots a word at a time. Ascending set bits preserve the
         // original slot-order sum even after holes and generational slot reuse.
         for word in 0..self.voice_activity.len() {
@@ -99,8 +188,189 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
-                    self.render_voice(i, output, at);
+                    let key = self.batch_key(i, output.len());
+                    if key.is_none() || key != batch.0 || batch.2 == VOICES {
+                        self.render_run(&batch.1[..batch.2], output, at);
+                        batch = (key, [0; VOICES], 0);
+                    }
+                    if key.is_none() {
+                        self.render_voice(i, output, at);
+                    } else {
+                        batch.1[batch.2] = i;
+                        batch.2 += 1;
+                    }
                 }
+            }
+        }
+        self.render_run(&batch.1[..batch.2], output, at);
+    }
+
+    /// Voices batch when consecutive in slot order, started, and running the
+    /// same delay-free chain of the same plan over at most one block.
+    fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
+        let v = self.voices.slots[i].value.as_ref()?;
+        let chain = v.chain?;
+        if !v.started || frames > super::dsp::BLOCK {
+            return None;
+        }
+        let f = self.families.get(v.family.0).unwrap();
+        let plan = self.notes.get(f.note.0).unwrap().plan.0;
+        let prepared = &self.plans.get(plan).unwrap().prepared;
+        prepared.voice_chains[chain]
+            .batches()
+            .then_some((plan.index, chain))
+    }
+
+    fn render_run(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+        match voices {
+            [] => {}
+            [i] => self.render_voice(*i, output, at),
+            _ => self.render_batch(voices, output, at),
+        }
+    }
+
+    /// [`Self::render_voice`] for a batch: sources and the epilogue per voice
+    /// in slot order, every stage across the batch's lanes.
+    fn render_batch(&mut self, voices: &[usize], output: &mut [Frame], at: u64) {
+        use super::dsp::lanes;
+        let mut block = [[0.; lanes::LANES]; super::dsp::BLOCK];
+        let mut batch = lanes::Batch {
+            count: voices.len(),
+            cells: [0; VOICES],
+            expressions: [None; VOICES],
+            ends: [0; lanes::LANES],
+            len: 0,
+        };
+        let mut begun = [None; VOICES];
+        let mut gains = [[0.; 2]; VOICES];
+        let mut starved = [false; VOICES];
+        let mut plan_id = None;
+        for (lane, &i) in voices.iter().enumerate() {
+            let v = self.voices.slots[i].value.as_mut().unwrap();
+            let f = self.families.get(v.family.0).unwrap();
+            let n = self.notes.get(f.note.0).unwrap();
+            let expression = self.expressions.get(n.expression.0).unwrap();
+            gains[lane] = expression.rendered.gains;
+            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            let plan = self.plans.get(n.plan.0).unwrap();
+            plan_id = Some(n.plan.0);
+            let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
+            let asset = &plan.prepared.pcm[v.sample];
+            starved[lane] = v.cursor.starved();
+            batch.cells[lane] = i * plan.dsp.stride;
+            batch.expressions[lane] = Some((n.expression, expression.value));
+            let mut planar = [[0.; super::dsp::BLOCK]; 2];
+            begun[lane] = if let Some(frames) = asset.resident_frames() {
+                asset.want_levels(v.cursor.step(), at);
+                let guard = asset.try_levels();
+                let pcm = super::source::Resident {
+                    frames,
+                    levels: guard.as_deref().map_or(&[], |l| l),
+                };
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+            } else {
+                asset.touch(at + output.len() as u64);
+                let head = asset.try_head();
+                let pcm = super::source::PagedFrames {
+                    cache: self
+                        .stream_cache
+                        .as_ref()
+                        .expect("preflighted stream cache"),
+                    asset: asset.asset_id(),
+                    head: head.as_deref().map_or(&[], |h| h),
+                };
+                chain.begin(v, &pcm, output.len(), &self.kernel, &mut planar)
+            };
+            let len = begun[lane].map_or(0, |b: super::dsp::Begun| b.len);
+            for (frame, x) in block[..len].iter_mut().enumerate() {
+                (x[2 * lane], x[2 * lane + 1]) = (planar[0][frame], planar[1][frame]);
+            }
+            batch.ends[2 * lane] = len;
+            batch.ends[2 * lane + 1] = len;
+        }
+        batch.len = batch.ends.iter().copied().max().unwrap_or(0);
+        for end in &mut batch.ends[2 * voices.len()..] {
+            *end = batch.len;
+        }
+        let plan = self
+            .plans
+            .get_mut(plan_id.expect("a batch has a voice"))
+            .unwrap();
+        let first = self.voices.slots[voices[0]].value.as_ref().unwrap();
+        let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
+        let dsp = &mut plan.dsp;
+        sampler_simd::dispatch(
+            #[inline(always)]
+            || {
+                lanes::process(
+                    chain.pre(),
+                    0,
+                    &mut dsp.cells,
+                    &batch,
+                    &mut block,
+                    &dsp.parameters,
+                    at,
+                    &mut dsp.filters,
+                )
+            },
+        );
+        for (lane, &i) in voices.iter().enumerate() {
+            let v = self.voices.slots[i].value.as_mut().unwrap();
+            let len = batch.ends[2 * lane];
+            lanes::scale(&mut block, lane, &super::dsp::levels(v, len), len);
+        }
+        sampler_simd::dispatch(
+            #[inline(always)]
+            || {
+                lanes::process(
+                    chain.post(),
+                    chain.pre().len(),
+                    &mut dsp.cells,
+                    &batch,
+                    &mut block,
+                    &dsp.parameters,
+                    at,
+                    &mut dsp.filters,
+                )
+            },
+        );
+        let mut done = [false; VOICES];
+        for (lane, &i) in voices.iter().enumerate() {
+            let v = self.voices.slots[i].value.as_mut().unwrap();
+            let mut produced = 0;
+            if let Some(b) = begun[lane] {
+                let mut planar = [[0.; super::dsp::BLOCK]; 2];
+                for (frame, x) in block[..b.len].iter().enumerate() {
+                    (planar[0][frame], planar[1][frame]) = (x[2 * lane], x[2 * lane + 1]);
+                }
+                let destination = match v.bus {
+                    Some(bus) => dsp.buses.input(bus, output.len()),
+                    None => &mut *output,
+                };
+                let cells = batch.cells[lane]..batch.cells[lane] + chain.stages();
+                let fault = chain.finish(
+                    v,
+                    b,
+                    &planar,
+                    false,
+                    &mut dsp.cells[cells],
+                    gains[lane],
+                    destination,
+                );
+                self.nonfinite_frames = self.nonfinite_frames.saturating_add(u64::from(fault));
+                produced = b.len;
+            }
+            self.stream_underruns = self
+                .stream_underruns
+                .saturating_add(u64::from(!starved[lane] && v.cursor.starved()));
+            if let Some(bus) = v.bus {
+                dsp.buses.fed(bus, produced);
+            }
+            done[lane] = chain.done(v);
+        }
+        for (lane, &i) in voices.iter().enumerate() {
+            if done[lane] {
+                self.end_voice(VoiceId(self.voices.id(i)));
             }
         }
     }
@@ -133,6 +403,7 @@ impl Runtime {
                 expression.value,
                 &self.performance_state.current(performance).controllers,
                 self.release_times[f.note.0.index].held(n.key_down(), at),
+                self.note_params[f.note.0.index].mods,
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -211,22 +482,29 @@ impl Runtime {
             filters: super::dsp::svf::FilterContext {
                 bank: &mut plan.dsp.filters,
                 expression: Some((n.expression, expression.value)),
+                reverbs: &mut [],
+                convolutions: &mut [],
             },
             at,
         };
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+            asset.want_levels(v.cursor.step(), at);
+            let guard = asset.try_levels();
             let pcm = super::source::Resident {
                 frames,
-                levels: asset.levels(),
+                levels: guard.as_deref().map_or(&[], |l| l),
             };
             render_source(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
+            asset.touch(at + segment.len() as u64);
+            let head = asset.try_head();
             let source = super::source::PagedFrames {
                 cache: self
                     .stream_cache
                     .as_ref()
                     .expect("preflighted stream cache"),
                 asset: asset.asset_id(),
+                head: head.as_deref().map_or(&[], |h| h),
             };
             render_source(v, &source, segment, chain, states, context, &self.kernel)
         };

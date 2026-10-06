@@ -29,6 +29,9 @@ pub struct Expression {
     pub pitch_semitones: f64,
     pub pressure: u32,
     pub timbre: u32,
+    /// Raw pitch-bend position, -1..=1, independent of the bend range that
+    /// turns it into `pitch_semitones`; read by pitch-bend modulation routes.
+    pub bend: f64,
 }
 
 impl Default for Expression {
@@ -40,6 +43,7 @@ impl Default for Expression {
             pressure: 0,
             // Centre, so timbre-darkening laws are identity for non-MPE notes.
             timbre: 0x8000_0000,
+            bend: 0.0,
         }
     }
 }
@@ -51,6 +55,7 @@ impl Expression {
             && self.pan.is_finite()
             && (-1.0..=1.0).contains(&self.pan)
             && self.pitch_semitones.is_finite()
+            && (-1.0..=1.0).contains(&self.bend)
     }
 
     pub(super) fn gains(self) -> [f32; 2] {
@@ -140,6 +145,60 @@ impl Runtime {
             owner.value = value;
         }
         Ok(())
+    }
+
+    /// Rewrite every expression owner of a live note (held or releasing)
+    /// admitted from `address`, or only from `key` there. Channel-wide gestures
+    /// (plain MIDI bend and pressure) use this; owners shared by several notes
+    /// change once. All-or-nothing like [`Self::set_expressions`] and
+    /// allocation-free. Returns the number of owners changed.
+    pub fn set_input_expressions(
+        &mut self,
+        address: super::ChannelAddress,
+        key: Option<u8>,
+        update: impl Fn(Expression) -> Expression,
+    ) -> Result<usize, Error> {
+        self.apply_due();
+        self.expression_changes.fill(None);
+        let mut pitch_changed = false;
+        let mut changed = 0;
+        for i in 0..self.notes.slots.len() {
+            let Some(note) = &self.notes.slots[i].value else {
+                continue;
+            };
+            if !note.input.is_some_and(|input| {
+                input.channel_address() == address && key.is_none_or(|key| input.key == key)
+            }) {
+                continue;
+            }
+            let id = note.expression;
+            if self.expression_changes[id.0.index].is_some() {
+                continue;
+            }
+            let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            let value = update(owner.value);
+            if !value.valid() {
+                return Err(Error::InvalidInput);
+            }
+            let rendered = self.project_expression(owner.program, value, Some(owner))?;
+            pitch_changed |= rendered.ratio != owner.rendered.ratio;
+            self.expression_changes[id.0.index] = Some(rendered);
+            changed += 1;
+        }
+        if pitch_changed {
+            self.validate_source_pitches(|id| {
+                self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
+            })?;
+        }
+        for index in 0..self.expression_changes.len() {
+            if let Some(rendered) = self.expression_changes[index] {
+                // `update` is pure over the unchanged owner value.
+                let owner = self.expressions.slots[index].value.as_mut().unwrap();
+                owner.value = update(owner.value);
+                owner.rendered = rendered;
+            }
+        }
+        Ok(changed)
     }
 
     pub(super) fn set_expression_now(
@@ -272,6 +331,13 @@ impl Runtime {
 
     pub fn family_note(&self, id: FamilyId) -> Result<NoteId, Error> {
         Ok(self.families.get(id.0).ok_or(Error::StaleHandle)?.note)
+    }
+
+    /// Every live logical note, input and behavior-generated, in slot order.
+    pub fn live_notes(&self) -> impl Iterator<Item = NoteId> + '_ {
+        (0..self.notes.slots.len())
+            .filter(|&i| self.notes.slots[i].value.is_some())
+            .map(|i| NoteId(self.notes.id(i)))
     }
 
     /// Borrow the note's currently retained families without exposing slot indices.
@@ -444,6 +510,22 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
+            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
+            if quiet
+                && n.children == 0
+                && n.gate()
+                && !n.key_down()
+                && self.release_times[id.0.index].held
+            {
+                // Nothing can resume an audible release: close the held gate
+                // without release triggers and retire below.
+                // ponytail: a script that kept this ID to note_off it later
+                // (to fire native release groups) finds it gone; keep such
+                // notes while a script holds the ID if a library needs that.
+                self.close_gate(id, super::ReleaseCause::Silent);
+                self.cleanup_closed_notes();
+                continue;
+            }
             if (n.gate() && !n.retire_when_silent)
                 || n.input_down
                 || n.pins != 0

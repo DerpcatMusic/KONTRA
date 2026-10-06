@@ -100,7 +100,7 @@ impl ItemContainer {
     }
 
     pub fn first_child(&self) -> Option<&ItemContainer> {
-        self.children.get(0)
+        self.children.first()
     }
 
     pub fn id(&self) -> ItemType {
@@ -111,7 +111,7 @@ impl ItemContainer {
     pub fn find(&self, kind: &ItemType) -> Option<&ItemContainer> {
         // Check this Item first
         if &self.data.header.item_type() == kind {
-            return Some(&self);
+            return Some(self);
         }
         // Recursively search the children
         for item in &self.children {
@@ -142,7 +142,7 @@ impl ItemContainer {
     where
         I: TryFrom<&'a ItemData, Error = NIFileError>,
     {
-        self.find_data(&kind).map(I::try_from)
+        self.find_data(kind).map(I::try_from)
     }
 
     fn read_children(

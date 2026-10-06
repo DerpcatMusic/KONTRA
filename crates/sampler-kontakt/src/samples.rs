@@ -18,12 +18,24 @@ pub struct Decoded {
     pub frames: Vec<[f32; 2]>,
 }
 
+/// A sample's bytes: a whole file, or an archive member and the keystream it
+/// is encrypted under.
+#[derive(Clone)]
+pub struct Source {
+    pub(crate) path: PathBuf,
+    pub(crate) offset: u64,
+    pub(crate) size: u64,
+    pub(crate) key: Option<Arc<dyn LibraryKey>>,
+}
+
 /// Resolves and decodes the samples of one library, opening each archive's
 /// directory and each library key once.
 pub struct Samples {
     root: PathBuf,
     archives: HashMap<PathBuf, Archive>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
+    /// Numeric headers only; repeated zone trims need no additional disk reads.
+    frame_counts: HashMap<PathBuf, u64>,
     /// Lower-case basename to loose files under `root`, built on first miss.
     loose: Option<HashMap<String, Vec<PathBuf>>>,
 }
@@ -35,6 +47,7 @@ impl Samples {
             root: root.canonicalize().unwrap_or_else(|_| root.into()),
             archives: HashMap::new(),
             keys: HashMap::new(),
+            frame_counts: HashMap::new(),
             loose: None,
         }
     }
@@ -132,10 +145,55 @@ impl Samples {
         })
     }
 
+    /// Where a resolved sample's bytes live, for random-access streaming.
+    pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
+        let Some((archive, member)) = archive_member(location) else {
+            let size = std::fs::metadata(location)
+                .map_err(|e| LoadError::io(location, e))?
+                .len();
+            return Ok(Source {
+                path: location.into(),
+                offset: 0,
+                size,
+                key: None,
+            });
+        };
+        let key = match self.keys.get(&archive) {
+            Some(key) => Some(key.clone()),
+            None => self.encrypted(&archive, &member)?,
+        };
+        let file = File::open(&archive).map_err(|e| LoadError::io(&archive, e))?;
+        let entry = self
+            .archive(&archive)?
+            .member(file, &member)
+            .map_err(|e| LoadError::decode(&archive, "archive member header", e))?
+            .filter(|e| e.valid)
+            .ok_or_else(|| LoadError::Invalid {
+                path: location.into(),
+                reason: "invalid archive member".into(),
+            })?;
+        let key = key.filter(|_| entry.encoded && entry.key_index != 0xff);
+        if entry.encoded && entry.key_index != 0xff && entry.key_index != 0x100 {
+            return Err(LoadError::Invalid {
+                path: location.into(),
+                reason: "unsupported legacy NKX cipher".into(),
+            });
+        }
+        Ok(Source {
+            path: archive,
+            offset: entry.offset,
+            size: entry.size,
+            key,
+        })
+    }
+
     /// Frame count of a sample, reading only its header: the first 64 KiB
     /// of a WAV or the 120-byte NCW header.
     pub fn frames(&mut self, location: &Path) -> Result<u64, LoadError> {
         use std::io::{Read, Seek, SeekFrom};
+        if let Some(&count) = self.frame_counts.get(location) {
+            return Ok(count);
+        }
         let mut head = Vec::new();
         match archive_member(location) {
             Some((archive, member)) => {
@@ -157,7 +215,10 @@ impl Samples {
                 file.seek(SeekFrom::Start(entry.offset))
                     .and_then(|_| file.take(entry.size.min(1 << 16)).read_to_end(&mut head))
                     .map_err(|e| LoadError::io(&archive, e))?;
-                if let Some(key) = key {
+                if entry.encoded
+                    && entry.key_index != 0xff
+                    && let Some(key) = key
+                {
                     key.apply(&mut head);
                 }
             }
@@ -168,10 +229,12 @@ impl Samples {
                     .map_err(|e| LoadError::io(location, e))?;
             }
         }
-        frames(&head).ok_or_else(|| LoadError::Invalid {
+        let count = frames(&head).ok_or_else(|| LoadError::Invalid {
             path: location.into(),
             reason: "unreadable sample header".into(),
-        })
+        })?;
+        self.frame_counts.insert(location.into(), count);
+        Ok(count)
     }
 
     /// The archive key `member` needs, if it is encrypted.
@@ -274,18 +337,8 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
         reader.header.bits_per_sample,
         reader.header.sample_rate,
     );
-    let float = reader.sample_format == ncw::SampleFormat::Float;
+    let convert = ncw_sample(reader.sample_format, bits);
     let samples = reader.decode_samples().map_err(|e| format!("NCW: {e}"))?;
-    let scale = 2f32.powi(i32::from(bits) - 1);
-    let convert = |s: i32| {
-        if float {
-            Some(f32::from_bits(s as u32))
-                .filter(|x| x.is_finite())
-                .unwrap_or(0.0)
-        } else {
-            s as f32 / scale
-        }
-    };
     Ok(Decoded {
         rate,
         frames: samples
@@ -295,7 +348,65 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     })
 }
 
+/// NCW integer or float-bit samples to f32.
+pub(crate) fn ncw_sample(format: ncw::SampleFormat, bits: u16) -> impl Fn(i32) -> f32 {
+    let float = format == ncw::SampleFormat::Float;
+    let scale = 2f32.powi(i32::from(bits) - 1);
+    move |s: i32| {
+        if float {
+            Some(f32::from_bits(s as u32))
+                .filter(|x| x.is_finite())
+                .unwrap_or(0.0)
+        } else {
+            s as f32 / scale
+        }
+    }
+}
+
+/// A WAV's sample layout: `data` is the declared data chunk, which may extend
+/// past the bytes parsed.
+pub(crate) struct Wav {
+    pub rate: u32,
+    pub channels: usize,
+    pub width: usize,
+    tag: u16,
+    pub data: std::ops::Range<usize>,
+}
+
+impl Wav {
+    /// One interleaved frame's bytes to a stereo frame (mono duplicated).
+    pub fn frame(&self, frame: &[u8]) -> [f32; 2] {
+        let width = self.width;
+        let sample = |s: &[u8]| match (self.tag, width) {
+            (3, _) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
+            (_, 1) => (f32::from(s[0]) - 128.0) / 128.0,
+            _ => {
+                let mut word = [0u8; 4];
+                word[4 - width..].copy_from_slice(s);
+                i32::from_le_bytes(word) as f32 / 2_147_483_648.0
+            }
+        };
+        [
+            sample(&frame[..width]),
+            sample(&frame[(self.channels.min(2) - 1) * width..][..width]),
+        ]
+    }
+}
+
 fn wav(bytes: &[u8]) -> Result<Decoded, String> {
+    let layout = wav_layout(bytes)?;
+    let data = layout.data.start.min(bytes.len())..layout.data.end.min(bytes.len());
+    let frames = bytes[data]
+        .chunks_exact(layout.width * layout.channels)
+        .map(|frame| layout.frame(frame))
+        .collect();
+    Ok(Decoded {
+        rate: layout.rate,
+        frames,
+    })
+}
+
+pub(crate) fn wav_layout(bytes: &[u8]) -> Result<Wav, String> {
     let u16le = |at: usize| {
         bytes
             .get(at..at + 2)
@@ -311,13 +422,16 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
     }
     let (mut format, mut data, mut at) = (None, None, 12);
     while let (Some(id), Some(len)) = (bytes.get(at..at + 4), u32le(at + 4)) {
-        let body = at + 8..(at + 8 + len as usize).min(bytes.len());
+        let body = at + 8..at + 8 + len as usize;
         match id {
             b"fmt " => format = Some(body.start),
-            b"data" => data = Some(body.clone()),
+            b"data" => {
+                data = Some(body.clone());
+                break; // Samples follow; a streamed parse has only the head.
+            }
             _ => {}
         }
-        at = body.start + len as usize + (len as usize & 1);
+        at = body.end + (len as usize & 1);
     }
     let fmt = format.ok_or("WAV without fmt")?;
     let data = data.ok_or("WAV without data")?;
@@ -335,25 +449,13 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
             "unsupported WAV format {tag} with {bits}-bit samples"
         ));
     }
-    let sample = |s: &[u8]| match (tag, width) {
-        (3, _) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
-        (_, 1) => (f32::from(s[0]) - 128.0) / 128.0,
-        _ => {
-            let mut word = [0u8; 4];
-            word[4 - width..].copy_from_slice(s);
-            i32::from_le_bytes(word) as f32 / 2_147_483_648.0
-        }
-    };
-    let frames = bytes[data]
-        .chunks_exact(width * channels)
-        .map(|frame| {
-            [
-                sample(&frame[..width]),
-                sample(&frame[(channels.min(2) - 1) * width..][..width]),
-            ]
-        })
-        .collect();
-    Ok(Decoded { rate, frames })
+    Ok(Wav {
+        rate,
+        channels,
+        width,
+        tag,
+        data,
+    })
 }
 
 #[cfg(test)]
@@ -405,5 +507,62 @@ mod tests {
             decoded.frames[1],
             [pcm[2] as f32 / 32768.0, pcm[3] as f32 / 32768.0]
         );
+    }
+
+    #[test]
+    fn a_cached_archive_key_does_not_decrypt_clear_member_headers() {
+        struct TestKey;
+        impl LibraryKey for TestKey {
+            fn apply_at(&self, _: u64, bytes: &mut [u8]) {
+                for byte in bytes {
+                    *byte ^= 0x55;
+                }
+            }
+        }
+        let names = ["clear.wav", "protected.wav"];
+        let wav = wav_bytes(1, 1, 16, &[0, 0x40]);
+        let mut bytes = 0x5e70ac54u32.to_le_bytes().to_vec();
+        bytes.extend(0x110u16.to_le_bytes());
+        bytes.extend([0; 8]);
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend([0; 4]);
+        let mut offset = 22 + names.iter().map(|n| 8 + (n.len() + 1) * 2).sum::<usize>();
+        for (index, name) in names.iter().enumerate() {
+            bytes.extend(((8 + (name.len() + 1) * 2) as u16).to_le_bytes());
+            bytes.extend((offset as u32).to_le_bytes());
+            bytes.extend(0u16.to_le_bytes());
+            for c in name.encode_utf16().chain([0]) {
+                bytes.extend(c.to_le_bytes());
+            }
+            offset += if index == 0 { 22 } else { 31 } + wav.len();
+        }
+        for (magic, size, key) in [(0x2ae905fau32, 22, 0xffu32), (0x16ccf80a, 31, 0x100)] {
+            let mut header = vec![0; size];
+            header[..4].copy_from_slice(&magic.to_le_bytes());
+            header[4..6].copy_from_slice(&0x110u16.to_le_bytes());
+            header[10..14].copy_from_slice(&key.to_le_bytes());
+            let at = if size == 22 { 14 } else { 19 };
+            header[at..at + 4].copy_from_slice(&(wav.len() as u32).to_le_bytes());
+            bytes.extend(header);
+            let mut payload = wav.clone();
+            if key == 0x100 {
+                TestKey.apply(&mut payload);
+            }
+            bytes.extend(payload);
+        }
+        let root = std::env::temp_dir().join(format!("v2-mixed-nkx-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("authored.nkx");
+        std::fs::write(&archive, bytes).unwrap();
+        let mut samples = Samples::new(&root);
+        samples.keys.insert(archive.clone(), Arc::new(TestKey));
+        for name in names {
+            assert_eq!(samples.frames(&archive.join(name)).unwrap(), 1);
+            assert_eq!(
+                samples.decode(&archive.join(name)).unwrap().frames,
+                [[0.5, 0.5]]
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

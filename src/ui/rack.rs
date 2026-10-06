@@ -248,7 +248,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     // All of it: the header, then its notices and controls.
     let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
     // A click anywhere on the part that no control takes selects it.
-    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
+    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}"), format!("inside-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
         cx.state.select(slot);
     }
     let r = ui.get(edge_id.as_str());
@@ -545,7 +545,11 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let midi_id = format!("midi-{slot}");
     let output_id = format!("output-{slot}");
     let part = &cx.selection.parts[slot];
-    let channel = if part.channel < 0 { "Omni".to_owned() } else { (part.channel + 1).to_string() };
+    let channel = match (part.mpe, part.channel < 0) {
+        (true, _) => "MPE".to_owned(),
+        (false, true) => "Omni".to_owned(),
+        (false, false) => (part.channel + 1).to_string(),
+    };
     // Port A is the usual one and goes unsaid.
     let midi_text = if part.port == 0 {
         channel

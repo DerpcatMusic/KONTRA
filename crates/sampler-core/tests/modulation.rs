@@ -110,6 +110,7 @@ fn projected_expression_is_sample_exact_and_keeps_raw_values() {
         let mut reference =
             Runtime::new(plan(vec![], Playback::default(), false), limits()).unwrap();
         let raw = Expression {
+            bend: 0.0,
             gain: 0.5,
             pan: 0.125,
             pitch_semitones: 3.0,

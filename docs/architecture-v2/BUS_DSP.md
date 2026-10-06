@@ -50,8 +50,9 @@ to control for destruction. Global panic clears all bus histories and tail budge
 Channel sound-off cannot selectively erase a mixed shared tail without also changing
 other contributors; domain-specific routing/cleanup profiles remain frontend work.
 
-A nonfinite/unrepresentable bus output or poisoned state clears that bus's processor
-history and suppresses the frame, incrementing the existing observable fault counter.
+A nonfinite/unrepresentable bus output or poisoned state in a block (up to 64 frames)
+clears that bus's processor history and suppresses that bus block, incrementing the
+observable fault counter once.
 Other bus histories continue. The final output retains the existing finite-sum guard.
 The native graph rejects feedback: feedback delays, latency compensation, multichannel
 layouts, dynamic routing and family-specific graphs remain required extensions.
@@ -79,3 +80,22 @@ bus filters and 64-frame blocks measured 31.811 μs median and 59.551 μs p99 ac
 512 checked callbacks. At 256 frames: 128.193/228.914 μs. This constant-input workload
 has no proprietary DSP, active modulation or storage pressure; it is a local baseline,
 not a worst-case deadline or competitor comparison. Broader product conformance, proprietary DSP matching and production host/UI wiring remain open.
+
+## Bus reverb and convolution
+
+Bus processors include an algorithmic stereo `Reverb` (8-line FDN, v1's design) and a
+`Convolution` (`dry * x + wet * (x * impulse)`). Both are bus-scope only: a voice or
+group chain that contains one is refused (`Feature::VoiceReverb`). The convolver is a
+zero-latency non-uniform partitioned FFT (a 64-frame direct head, then stages of
+growing partitions up to 8,192 frames); the spectral multiply-add dispatches to the
+CPU's widest level. Impulse responses live in `ir::Instrument::impulses`, are shaped
+by the importing profile (reverse, predelay, volume envelope, auto gain), resampled to
+the output rate at lowering (Blackman-windowed sinc) and held by the plan
+(`Prepared::with_impulses`); allocation happens at runtime construction only. A
+convolution bus's tail is the response length plus two largest stage blocks.
+
+Kontakt translation (`sampler-kontakt/src/effects.rs`) maps the instrument insert,
+send and main racks to buses. Unmodelled parameters are listed in the load report by
+module and parameter: IR size, early/late filtering and decimation, reverb and EQ laws
+(`UnknownLaw`), and every other module (`NotModeled`). Bus (`InsertBus`) racks and
+group-insert Filter slots are still report-only.

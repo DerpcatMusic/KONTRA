@@ -14,6 +14,9 @@ pub enum ReleaseCause {
     AllNotesOff,
     AllSoundOff,
     Panic,
+    /// A script held the release (`ignore_event` in `on release`) and nothing
+    /// of the note sounds or can sound; like a Kontakt event, it just ends.
+    Silent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,6 +302,14 @@ impl Runtime {
             decisions: self.decisions.reserved,
             commands: self.reserved_commands,
         }
+    }
+
+    /// Let an attack that only outstanding release reservations keep from
+    /// fitting suppress the pending release phases of the oldest notes (their
+    /// release samples will not sound) instead of failing `Capacity`. Off by
+    /// default: reservations are then strictly owned.
+    pub fn set_release_stealing(&mut self, on: bool) {
+        self.steal_releases = on;
     }
 
     pub fn release_status(&self, note: NoteId, trigger: Trigger) -> Result<ReleaseStatus, Error> {

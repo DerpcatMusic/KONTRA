@@ -15,6 +15,9 @@ pub(super) struct NoteEvent {
     pub release_start: usize,
     pub release_routed: bool,
     pub release_queued: bool,
+    /// A script asked for this note's end (`note_off`): its release callback
+    /// can no longer ignore the release.
+    pub script_stop: bool,
     pub entry: usize,
     pub routed: bool,
     /// The generated event was admitted with a positive/fixed duration policy.
@@ -33,6 +36,7 @@ impl NoteEvent {
             release_start: 0,
             release_routed: false,
             release_queued: false,
+            script_stop: false,
             entry: 0,
             routed: false,
             fixed_duration: false,
@@ -51,6 +55,21 @@ impl Prepared {
         }
         self.source_event_limit = maximum;
         Ok(self)
+    }
+
+    /// The sustain pedal (CC64) holds no gates; its value still reaches
+    /// controllers and behaviors, which implement sustain themselves
+    /// (Kontakt's `NO_SYS_SCRIPT_PEDAL`). Sostenuto is unaffected.
+    pub fn with_script_sustain(mut self, script: bool) -> Self {
+        self.script_sustain = script;
+        self
+    }
+
+    /// Release-trigger families never fire on note release; behaviors that
+    /// own release samples play them (Kontakt's `NO_SYS_SCRIPT_RLS_TRIG`).
+    pub fn with_script_release_triggers(mut self, script: bool) -> Self {
+        self.script_release_triggers = script;
+        self
     }
 }
 

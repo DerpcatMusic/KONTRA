@@ -3,9 +3,9 @@
 //! carried over is returned with the plan, never dropped silently.
 
 use crate::{Kontakt, LoadError, Resources, read};
-use sampler_ksp::model::Value;
 use sampler_core::{Pcm, Prepared, lower::LowerError};
 use sampler_ir as ir;
+use sampler_ksp::model::Value;
 use std::{ops::RangeInclusive, path::Path};
 
 #[derive(Clone, Debug)]
@@ -58,6 +58,12 @@ pub struct Loaded {
     /// The bound scripts' interfaces, in script order. Image assets carry
     /// the library's picture layouts when [`Options::library`] is known.
     pub interfaces: Vec<sampler_ui_ir::Interface>,
+    /// Every bound script's interface model, indexed by its
+    /// [`sampler_core::ScriptInstanceId`]: apply the runtime's UI effects to
+    /// it and rebuild the interface with [`Loaded::resources`].
+    pub scripts: Vec<sampler_ksp::ScriptView>,
+    /// The library's pictures and resources, when [`Options::library`] is known.
+    pub resources: Option<Resources>,
 }
 
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
@@ -134,15 +140,76 @@ pub fn load_read(
     finish(instrument, pcm, labels, options)
 }
 
+/// Load the Kontakt instrument at `path` streamed: only the frames where
+/// zones start (sized from read latency measured on up to 32 samples) and a
+/// page pool are resident.
+pub fn load_streamed(
+    path: &Path,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+    progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
+    let options = Options {
+        library: options.library.clone().or_else(|| Some(path.into())),
+        ..options.clone()
+    };
+    load_read_streamed(read(path)?, &options, policy, progress)
+}
+
+/// [`load_streamed`] for an instrument already [`read`]; pictures and
+/// resources come from [`Options::library`].
+pub fn load_read_streamed(
+    kontakt: Kontakt,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+    mut progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
+    let Kontakt {
+        mut instrument,
+        locations,
+        mut samples,
+    } = kontakt;
+    let (low, high) = (*options.keys.start(), *options.keys.end());
+    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    progress(Progress::Translated {
+        zones: instrument.zones.len(),
+        assets: kept.len(),
+    });
+    let mut sources = Vec::with_capacity(kept.len());
+    for &asset in &kept {
+        let location = &locations[asset];
+        sources.push((samples.source(location)?, location.as_path()));
+    }
+    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
+    let pcm = opened.assets.clone();
+    progress(Progress::Lowering);
+    let labels = kept
+        .iter()
+        .map(|&a| locations[a].display().to_string())
+        .collect();
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    crate::Streamed::new(loaded, opened, kept)
+}
+
 /// Fit each zone to its decoded audio (`pcm[i]` and `labels[i]` belong to
 /// asset `i`), drop zones left with nothing to play, and prepare the plan.
 /// Every adjustment is added to `instrument.unsupported`.
 pub fn finish(
-    mut instrument: ir::Instrument,
+    instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     labels: Vec<String>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
+    finish_kept(instrument, pcm, labels, options).map(|(loaded, _)| loaded)
+}
+
+/// [`finish`], also returning the assets the plan kept, in its order.
+fn finish_kept(
+    mut instrument: ir::Instrument,
+    pcm: Vec<Pcm>,
+    labels: Vec<String>,
+    options: &Options,
+) -> Result<(Loaded, Vec<Pcm>), LoadError> {
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
         let mut report = Vec::new();
@@ -173,8 +240,9 @@ pub fn finish(
         .enumerate()
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
-        .collect();
-    prepare(instrument, pcm, options)
+        .collect::<Vec<_>>();
+    let kept = pcm.clone();
+    Ok((prepare(instrument, pcm, options)?, kept))
 }
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
@@ -345,15 +413,17 @@ pub fn prepare(
         };
         match result {
             Ok(script) => {
-                instrument.unsupported.extend(script.warnings().iter().map(|w| ir::Unsupported {
-                    location: format!("{} line {}", behavior.name, w.line),
-                    feature: match w.builtin {
-                        Some(builtin) => format!("script {:?}: {builtin}", w.kind),
-                        None => format!("script {:?}", w.kind),
-                    },
-                    value: w.message.clone(),
-                    reason: ir::Reason::NotModeled,
-                }));
+                instrument
+                    .unsupported
+                    .extend(script.warnings().iter().map(|w| ir::Unsupported {
+                        location: format!("{} line {}", behavior.name, w.line),
+                        feature: match w.builtin {
+                            Some(builtin) => format!("script {:?}: {builtin}", w.kind),
+                            None => format!("script {:?}", w.kind),
+                        },
+                        value: w.message.clone(),
+                        reason: ir::Reason::NotModeled,
+                    }));
                 names.push(behavior.name.clone());
                 compiled.push(script);
             }
@@ -387,12 +457,17 @@ pub fn prepare(
         let behaviors = std::mem::take(&mut instrument.behaviors);
         let owned = instrument.switching.owner == ir::SwitchOwner::Behavior;
         let (articulations, switching) = if owned {
-            (std::mem::take(&mut instrument.articulations), std::mem::take(&mut instrument.switching))
+            (
+                std::mem::take(&mut instrument.articulations),
+                std::mem::take(&mut instrument.switching),
+            )
         } else {
             Default::default()
         };
         let lowered =
-            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| Ok(plan));
+            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+                Ok(plan)
+            });
         instrument.behaviors = behaviors;
         if owned {
             instrument.articulations = articulations;
@@ -402,17 +477,23 @@ pub fn prepare(
             plan: lowered.map_err(LoadError::Lower)?,
             instrument,
             interfaces,
+            scripts: Vec::new(),
+            resources: resources.map(std::cell::RefCell::into_inner),
         });
     }
-    let lowered = sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
-        sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
-            module: "KSP".into(),
-            message: e.to_string(),
-        })
-    });
+    let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
+    let lowered =
+        sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+            sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
+                module: "KSP".into(),
+                message: e.to_string(),
+            })
+        });
     Ok(Loaded {
         plan: lowered.map_err(LoadError::Lower)?,
         instrument,
         interfaces,
+        scripts,
+        resources: resources.map(std::cell::RefCell::into_inner),
     })
 }

@@ -285,6 +285,17 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    /// Start silent, waiting for its stream window (a cold start).
+    pub(super) fn cold(mut self) -> Self {
+        self.starvation = Some(0);
+        self
+    }
+
+    /// Faded out and silently waiting for its stream window.
+    pub(super) fn waiting(&self) -> bool {
+        self.starvation == Some(0)
+    }
+
     /// One millisecond of native fade from the last complete resampled frame.
     /// No incomplete resampler frame is published. The cursor keeps advancing in
     /// time, so the source stays aligned with its envelope and demand.
@@ -446,7 +457,9 @@ impl Cursor {
 
     fn advance(&mut self) {
         let phase = self.fraction + self.step;
-        let whole = phase.floor();
+        // Truncation is floor here (phase >= 0) and, unlike f64::floor on the
+        // SSE2 baseline, needs no libm call.
+        let whole = (phase as i64) as f64;
         self.fraction = phase - whole;
         self.position = self.position.saturating_add(whole as u64);
     }
@@ -594,8 +607,11 @@ impl Cursor {
     // 16x) never take this path; per-level loop traversal if that matters.
     fn sample_level(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         let levels = pcm.levels();
+        if levels.is_empty() || self.step < 2.0 || self.crossfaded() {
+            return None;
+        }
         let k = (self.step.log2().floor() as usize).min(levels.len());
-        if k == 0 || self.crossfaded() {
+        if k == 0 {
             return None;
         }
         let scale = 1_i64 << k;
@@ -618,7 +634,7 @@ impl Cursor {
         let j = x.floor();
         let first = usize::try_from(j as i64 - radius).ok()?;
         let taps = levels[k - 1].get(first..=first + 2 * radius as usize)?;
-        Some(kernel.sample(x - j, step, |offset| taps[(offset + radius) as usize]))
+        Some(kernel.sample_window(x - j, step, taps))
     }
 
     /// One complete output frame at the cursor, or None if any tap is missing.
@@ -649,7 +665,9 @@ impl Cursor {
                     _ => None,
                 }
             };
-            if let Some((span, reverse)) = contiguous {
+            if let Some((span, false)) = contiguous {
+                Some(kernel.sample_window(self.fraction, self.step, span))
+            } else if let Some((span, reverse)) = contiguous {
                 Some(kernel.sample(self.fraction, self.step, |offset| {
                     span[(if reverse {
                         radius - offset
@@ -671,6 +689,142 @@ impl Cursor {
         }
     }
 
+    /// Frames whose kernel windows all lie in one forward contiguous span,
+    /// resolved once; each frame then slices that span directly. Identical
+    /// arithmetic to the per-frame path, which handles everything else.
+    // ponytail: reverse spans and octave levels stay per-frame; add runs for
+    // them if reverse or mipmapped pitched voices dominate a profile.
+    fn render_run(
+        &mut self,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) -> usize {
+        if self.step >= 2.0 && !pcm.levels().is_empty() {
+            return 0;
+        }
+        let mut count = output.len().min(envelope.remaining());
+        let radius = kernel.window(self.step);
+        let bank = kernel.polyphase(self.step);
+        let taps = 2 * radius as usize + 1;
+        // Frames read per output frame: the bank reads whole chunks.
+        let width = bank.map_or(taps, |bank| bank.width());
+        // Stop the run short of the next boundary (loop end or crossfade)
+        // instead of rendering every frame before it one at a time.
+        let (_, contiguous, _) = self.span();
+        let fade = match self.loop_range.map(|r| r.shape) {
+            Some(LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) => {
+                frames as usize
+            }
+            _ => 0,
+        };
+        let margin = radius as usize + width - taps + fade + 2;
+        if let Some(room) = contiguous.checked_sub(margin) {
+            count = count.min((room as f64 / self.step) as usize);
+        }
+        // Upper bound on the frames advanced by `count` steps.
+        let advance = (count as f64 * self.step).ceil() as i64 + 1;
+        let position = i128::from(self.position);
+        let (Some(left), Some(right)) = (
+            self.index(position - i128::from(radius)),
+            self.index(position + i128::from(advance + radius) + (width - taps) as i128),
+        ) else {
+            return 0;
+        };
+        if count == 0 || right.checked_sub(left) != Some(advance as usize + width - 1) {
+            return 0;
+        }
+        // A window without a wrap lies within one loop pass, whose crossfade
+        // is at its end: clear at both ends means clear throughout.
+        if self.crossfaded()
+            && [
+                position - i128::from(radius),
+                position + i128::from(advance + radius) + (width - taps) as i128,
+            ]
+            .into_iter()
+            .any(|p| self.address(p).is_some_and(|a| a.crossfade.is_some()))
+        {
+            return 0;
+        }
+        // A window across pages or resident ranges is gathered on the stack.
+        let mut gathered = [[0.0f32; 2]; GATHER];
+        let span = match pcm.span(left..right + 1) {
+            Some(span) => span,
+            None if right + 1 - left <= GATHER => {
+                let out = &mut gathered[..right + 1 - left];
+                if !pcm.copy(left..right + 1, out) {
+                    return 0;
+                }
+                &*out
+            }
+            None => return 0,
+        };
+        let output = &mut output[..count];
+        match bank {
+            Some(bank) => sampler_simd::dispatch(
+                #[inline(always)]
+                || {
+                    self.run(
+                        span,
+                        width,
+                        output,
+                        envelope,
+                        gain,
+                        gains,
+                        #[inline(always)]
+                        |f, w| bank.dot(f, w),
+                    )
+                },
+            ),
+            None => {
+                let step = self.step;
+                self.run(span, width, output, envelope, gain, gains, |f, w| {
+                    kernel.sample_window(f, step, w)
+                })
+            }
+        }
+        count
+    }
+
+    /// The [`Self::render_run`] frame loop over one contiguous span, with the
+    /// cursor in locals; same arithmetic as [`Self::advance`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        sample: impl Fn(f64, &[Frame]) -> Frame,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step, 0, self.last);
+        for frame in output {
+            let source = sample(fraction, &span[offset..offset + width]);
+            last = if source.iter().all(|value| value.is_finite()) {
+                source
+            } else {
+                [0.; 2]
+            };
+            let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+            for channel in 0..2 {
+                frame[channel] += source[channel] * gain * gains[channel] * level;
+            }
+            let phase = fraction + step;
+            let whole = phase as i64;
+            fraction = phase - whole as f64;
+            offset += whole as usize;
+        }
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
+    }
+
     fn render_filtered(
         &mut self,
         pcm: &(impl ReadFrames + ?Sized),
@@ -684,6 +838,14 @@ impl Cursor {
         while rendered < output.len() {
             if self.done() || envelope.done() {
                 break;
+            }
+            if self.fade_in == 0 {
+                let run =
+                    self.render_run(pcm, &mut output[rendered..], envelope, gain, gains, kernel);
+                if run > 0 {
+                    rendered += run;
+                    continue;
+                }
             }
             let Some(source) = self.sample(pcm, kernel) else {
                 self.starvation = Some(self.fade_frames);
@@ -1068,9 +1230,28 @@ mod demand;
 pub use demand::SampleDemand;
 
 /// Borrowed decoded data. Missing physical frames differ from out-of-view zeros.
+/// Largest window `render_run` gathers across storage boundaries.
+const GATHER: usize = 1024;
+
 pub(super) trait ReadFrames {
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+    /// Copy `range` into `out` (its length), across storage boundaries;
+    /// `false` if any frame is missing.
+    fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
+        match self.span(range.clone()) {
+            Some(span) => out.copy_from_slice(span),
+            None => {
+                for (index, frame) in range.zip(out) {
+                    let Some(value) = self.frame(index) else {
+                        return false;
+                    };
+                    *frame = value;
+                }
+            }
+        }
+        true
+    }
     /// Pre-decimated octave levels, level 1 first.
     fn levels(&self) -> &[Box<[Frame]>] {
         &[]
@@ -1100,15 +1281,62 @@ impl ReadFrames for [Frame] {
         self.get(range)
     }
 }
+/// The asset's resident pages, then cache pages.
 pub(super) struct PagedFrames<'a> {
     pub cache: &'a crate::StreamCache,
     pub asset: crate::AssetId,
+    pub head: &'a [(usize, crate::Packed)],
+}
+impl PagedFrames<'_> {
+    /// The resident range holding frame `index`, and its first frame.
+    fn range(&self, index: usize) -> Option<(usize, &crate::Packed)> {
+        let i = self.head.partition_point(|(start, _)| *start <= index);
+        let (start, frames) = self.head.get(i.checked_sub(1)?)?;
+        (index - start < frames.len()).then_some((*start, frames))
+    }
 }
 impl ReadFrames for PagedFrames<'_> {
     fn frame(&self, index: usize) -> Option<Frame> {
-        self.cache.frame(self.asset, index)
+        match self.range(index) {
+            Some((start, frames)) => Some(frames.frame(index - start)),
+            None => self.cache.frame(self.asset, index),
+        }
     }
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        if !range.is_empty()
+            && let Some((start, frames)) = self.range(range.start)
+        {
+            // Packed ranges convert through `copy`.
+            return frames.frames()?.get(range.start - start..range.end - start);
+        }
         self.cache.span(self.asset, range)
+    }
+    fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
+        let mut at = range.start;
+        while at < range.end {
+            let o = at - range.start;
+            let (part, end) = match self.range(at) {
+                Some((start, frames)) => {
+                    let end = (start + frames.len()).min(range.end);
+                    frames.copy(at - start, &mut out[o..o + end - at]);
+                    at = end;
+                    continue;
+                }
+                None => {
+                    // Up to the page end or the next resident range.
+                    let next = self.head.partition_point(|(start, _)| *start <= at);
+                    let end = ((at / crate::PAGE_FRAMES + 1) * crate::PAGE_FRAMES)
+                        .min(range.end)
+                        .min(self.head.get(next).map_or(usize::MAX, |(start, _)| *start));
+                    match self.cache.span(self.asset, at..end) {
+                        Some(part) => (part, end),
+                        None => return false,
+                    }
+                }
+            };
+            out[o..o + part.len()].copy_from_slice(part);
+            at = end;
+        }
+        true
     }
 }
