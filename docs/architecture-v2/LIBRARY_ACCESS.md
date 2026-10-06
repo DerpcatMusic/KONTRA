@@ -196,6 +196,15 @@ user settings and presets are unaffected. Clear banks receive no access warning.
 The authored clear-bank playback test embeds a sine sample, deletes its loose
 source, then uses the product's catalog, V2 loader, MIDI note and audio output.
 Protected and clear XML share the parser and byte bounds: `9309bf5a`.
+Missing lossless audio references can resolve to a unique member with the same
+directory and sample stem; exact paths take priority and ambiguity is rejected
+(`c5b0bf8a`). This handles the installed WAV reference backed by a FLAC member.
+
+Full installed UVI census on 2026-10-06: 26/26 banks and 660/660 programs open.
+Programs decoding every referenced sample improved from 40/660 to 660/660;
+banks with every program decoding improved from 25/26 to 26/26. All 620 XML
+admission failures and the subsequently exposed audio-format reference failure
+are resolved. The census stores status only, without program or sample bytes.
 
 ## Verification on the shared machine
 
