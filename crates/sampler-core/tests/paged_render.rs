@@ -549,3 +549,48 @@ fn a_full_pool_reclaims_a_voice_waiting_on_its_stream_before_dropping_starts() {
     });
     assert_eq!(rt.resident_bytes(), 1000 * 8);
 }
+
+#[test]
+fn a_resident_head_starts_cold_voices_and_streams_the_rest() {
+    let data: Vec<Frame> = (0..PAGE_FRAMES * 2 + 100)
+        .map(|i| [i as f32 / 1e4, -(i as f32) / 1e4])
+        .collect();
+    let asset = Pcm::headed(48000, data.len(), data[..PAGE_FRAMES].into()).unwrap();
+    assert_eq!(asset.resident_bytes(), PAGE_FRAMES * 8);
+    let (cache, mut worker) = StreamCache::new(2).unwrap();
+    let mut rt =
+        runtime(vec![asset.clone()], vec![region(0, Playback::default())]).with_stream_cache(cache);
+    let mut output = vec![[0.; 2]; PAGE_FRAMES + 200];
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        assert!(!rt.service_streaming(PAGE_FRAMES as u32 + 200).unwrap());
+    });
+    // The head never travels through the cache: only page 1 is requested.
+    let mut job = worker.next_job().unwrap();
+    assert_eq!(job.range(), PAGE_FRAMES..PAGE_FRAMES * 2);
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    assert!(worker.next_job().is_none());
+    support::without_heap(|| {
+        assert!(rt.service_streaming(PAGE_FRAMES as u32 + 200).unwrap());
+        rt.render(&mut output).unwrap();
+    });
+    assert_eq!(rt.stream_underruns(), 0);
+    let reference = {
+        let resident = Pcm::new(48000, data.clone().into()).unwrap();
+        let mut rt = runtime(vec![resident], vec![region(0, Playback::default())]);
+        let mut output = vec![[0.; 2]; PAGE_FRAMES + 200];
+        rt.trigger(input(), 60, 1.).unwrap();
+        rt.render(&mut output).unwrap();
+        output
+    };
+    assert_eq!(output, reference);
+    // A purged head refuses starts and marks the asset for reloading.
+    rt.note_off(input(), None).unwrap();
+    assert_eq!(asset.set_head(Box::default()).unwrap().len(), PAGE_FRAMES);
+    assert!(!asset.take_cold());
+    assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
+    assert!(asset.take_cold() && !asset.take_cold());
+    assert!(asset.last_played() > 0);
+}
