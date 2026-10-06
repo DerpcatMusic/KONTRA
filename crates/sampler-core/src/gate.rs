@@ -318,12 +318,12 @@ impl Runtime {
             );
         }
         let n = self.notes.get(note.0).unwrap();
-        let sustained = n.input.is_some_and(|i| {
-            self.channels.slots.iter().any(|s| {
-                s.value
-                    .is_some_and(|c| c.address == i.channel_address() && c.sustain)
-            })
-        });
+        let sustained = self.follows_pedals(note.0.index)
+            && self
+                .channels
+                .slots
+                .iter()
+                .any(|s| s.value.is_some_and(|c| c.address == n.address && c.sustain));
         let held = !self.selections[note.0.index].consumed_switch && (sustained || n.sostenuto);
         if !held && !self.release_times[note.0.index].held {
             self.close_gate(note, cause);
@@ -356,6 +356,14 @@ impl Runtime {
         self.update_pedal_notes(scope, sustained, rising, sostenuto, down);
     }
 
+    fn follows_pedals(&self, index: usize) -> bool {
+        self.notes.slots[index].value.as_ref().is_some_and(|n| {
+            n.input.is_some()
+                || (matches!(n.release_link, super::ReleaseLink::Stage(_))
+                    && !self.note_events[index].fixed_duration)
+        })
+    }
+
     fn update_pedal_notes(
         &mut self,
         scope: ChannelScope,
@@ -365,18 +373,22 @@ impl Runtime {
         down: bool,
     ) {
         for i in 0..self.notes.slots.len() {
-            let Some(n) = &mut self.notes.slots[i].value else {
+            if !self.follows_pedals(i) {
                 continue;
-            };
-            let Some(input) = n
-                .input
-                .filter(|input| scope.contains(input.channel_address()))
-            else {
+            }
+            let n = self.notes.slots[i].value.as_mut().unwrap();
+            if !scope.contains(n.address) {
                 continue;
+            }
+            let bit = 1 << n.address.channel;
+            // Host notes retain physical capture semantics; generated notes have
+            // a channel and logical key but never acquire an external input.
+            let capture = if n.input.is_some() {
+                n.input_down
+            } else {
+                n.key_down()
             };
-            let bit = 1 << input.channel;
-            if rising & bit != 0 && n.input_down && n.gate() && !self.selections[i].consumed_switch
-            {
+            if rising & bit != 0 && capture && n.gate() && !self.selections[i].consumed_switch {
                 n.sostenuto = true;
             }
             if sostenuto && !down {

@@ -21,7 +21,8 @@ The records own logical key/gate state. A separate `input_down` bit owns the raw
 external key pairing; generated notes never acquire that bit. Script note-off and
 callback faults can end the downstream event without consuming its host input.
 FIFO matching, physical sostenuto capture and MPE member tracking use the raw
-projection. Source admission, child release and script `$NOTE_HELD` use the logical
+projection. Indefinite module-linked generated notes use their logical key for
+sostenuto and retained channel for pedals, without a fabricated input. Source admission, child release and script `$NOTE_HELD` use the logical
 projection. Retirement requires both external input consumption and completed logical
 ownership; these are distinct lifecycle facts, not competing copies of one state.
 
@@ -47,7 +48,7 @@ Old or foreign handles cannot access a replacement note's context.
 | `KeyUp` | Direct, scheduled or adapter-delivered physical key release; consumes the raw input and closes the gate if no hold remains |
 | `Script` | Downstream scripted note end/forwarding; retains the raw external key pairing |
 | `Pedal` | A held release becomes effective after sustain/sostenuto allows it |
-| `Explicit` | Native explicit or scheduled release, including generated duration expiry |
+| `Explicit` | Native explicit or scheduled gate release; generated duration expiry now uses scripted key-up routing |
 | `BehaviorCancelled` | Explicit abort of a pending native behavior |
 | `BehaviorFault` | Behavior execution fault or fuel exhaustion closes its origin |
 | `Parent` | Linked descendant closes with its parent |

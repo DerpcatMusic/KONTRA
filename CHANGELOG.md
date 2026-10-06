@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Follow generated notes from their creating module's release, preserving downstream
+  holds and pedal behavior without fabricated host inputs. Bounded native release
+  jobs and late-fault cleanup retain the original owners and first release records.
+
 - Route release callbacks across reached modules with reserved capacity, local
   held state and independent group drafts. Generated duration deadlines now use
   native note-off routing; explicit IR forwarding replaces VM completion frames.

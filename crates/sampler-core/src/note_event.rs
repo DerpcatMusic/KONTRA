@@ -13,6 +13,8 @@ pub(super) struct NoteEvent {
     pub pending_callbacks: usize,
     pub pending_releases: usize,
     pub release_start: usize,
+    pub release_routed: bool,
+    pub release_queued: bool,
     pub entry: usize,
     pub routed: bool,
     /// The generated event was admitted with a positive/fixed duration policy.
@@ -29,6 +31,8 @@ impl NoteEvent {
             pending_callbacks: 0,
             pending_releases: 0,
             release_start: 0,
+            release_routed: false,
+            release_queued: false,
             entry: 0,
             routed: false,
             fixed_duration: false,

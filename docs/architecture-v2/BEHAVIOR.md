@@ -34,7 +34,8 @@ independent of key pitch.
 
 Generated children select linked, snapshot or independent expression inheritance,
 and fixed or scaled velocity, separately from their explicit duration:
-`Gate` follows the originating effective gate, `Frames` is independent, and
+`Gate` follows the originating effective gate for directly started native callbacks
+or the creating module's release for routed callbacks; `Frames` is independent, and
 `FramesOrGate` ends on whichever condition happens first; `UntilSilent` has an
 independent gate and can retire after all owned sound/work finishes. The default wait lifetime
 is gate-bound; `WaitLifetime::Callback` retains a callback across input release.
@@ -693,7 +694,8 @@ These paths use the existing bounded dispatcher and native source/voice ownershi
 `sampler_ksp::bind_modules` exposes ordered note/controller modules with isolated
 globals/polyphonic ranges and relocated controls. Ordered release routing is
 described below. UI callback performance/module routing, stage-scoped scripted
-stop/parent-follow semantics and complete Kontakt/Falcon fidelity remain open.
+stops and complete Kontakt/Falcon fidelity remain open. Module-specific parent
+release links are described below.
 
 Validation: 321 native release/Rust 1.92 tests, strict all-target Clippy and both
 root boundary tests pass (`artifacts/note-stages-*`). New heap-guarded fixtures cover
@@ -739,7 +741,8 @@ KSP's compiler already emits forwarding at its first yield/end and suppression
 blocks that forwarding. This leaves other frontend event policies out of the kernel.
 Final release forwarding completes the ordinary native key/gate services immediately.
 The former VM-only release-completion frame and extra note work pin are removed;
-the dispatcher needs one frame per continuation. Fixed-duration generated notes now
+that version needed one frame per continuation. The parent-follow service below
+adds bounded native release jobs without synthesizing VM callbacks. Fixed-duration generated notes now
 schedule a native scripted key-up so downstream release callbacks receive their
 note-off, instead of bypassing them with a direct gate close.
 
@@ -750,11 +753,42 @@ notes, explicit native forwarding, capacity rejection/reclamation and 4,096 rele
 stages on a 128 KiB stack under heap guards. Existing nested stop/query ordering is
 retained, including immediate gate closure after resuming a suppressed release.
 
-Remaining profile work includes stage-scoped `note_off` injection and generated
-parent-follow links. Parent-linked children currently follow the native parent gate;
-they do not yet follow a particular source module's release boundary. The v1
-reference routes these child releases at their creating slot, but its mutable event
-object and fixed child array are not suitable for reuse. Official NI command docs
-specify note-off generation/release behavior without resolving all cross-slot
-ordering cases; matched Kontakt runs remain necessary. These native fixtures are
-not proof of full Kontakt/Falcon event parity or superior performance.
+## Parent release links across modules
+
+Generated `Gate`/`FramesOrGate` notes from a routed callback now follow the creating
+module's release projection. The structural parent, expression inheritance and
+release link remain distinct. A consumed original can therefore release its child
+through later modules even though the original never reached them. Downstream child
+release holds remain independent of the original's final audio gate.
+
+At a reached release stage, existing linked children enter their downstream release
+routes before the creating module's release callback executes. A child created after
+that stage's release has arrived enters its note route first, then receives immediate
+scripted key-up. This includes creation from `on release`. Modules with no release
+handler still advance their release projection and linked children.
+
+The existing dispatcher owns these native jobs, with at most one queued release
+job per note plus one frame per callback. Native jobs privately pin the note and its
+original generation; no recursive Rust calls, extra VM continuation, heap allocation
+or fixed-size child array is used. Closure skips a queued release but still consumes
+its pin. Forced cleanup can revisit a musically closed parent to end a linked child
+held downstream; it retains the first key/gate records and deduplicates hard subtree
+cleanup. Callback-lifetime work retains the existing cancellation policy.
+
+Indefinite module-linked children use their retained channel for sustain/sostenuto,
+without acquiring an external input. Physical notes keep physical sostenuto capture;
+generated notes capture their logical held state. Fixed-duration notes retain an
+explicit deadline that pedals do not extend. These are current native/profile
+policies that still require matched vendor evidence.
+
+Validation: 333 native tests pass on Rust 1.92; the release suite plus the final
+source-stage fixtures, strict all-target Clippy and both root boundary tests pass
+(`artifacts/parent-stages-*`). New heap-guarded fixtures cover independent child
+release holds, release-time creation ordering, pedals, late parent faults, a fault
+with a queued child release, and a 512-generated-note chain on a 128 KiB stack.
+
+Stage-scoped source `note_off` injection remains open. The v1 reference routes
+parent-follow releases at the creating slot, but its mutable event object and fixed
+child array are not reused. Official NI command docs specify note-off generation
+without resolving all cross-slot ordering; these native fixtures do not establish
+full Kontakt/Falcon parity or superior performance.

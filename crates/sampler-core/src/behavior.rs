@@ -527,9 +527,9 @@ pub(super) struct Continuation {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Ready {
-    id: BehaviorId,
-    fuel: usize,
+pub(super) enum Ready {
+    Resume { id: BehaviorId, fuel: usize },
+    Release { note: NoteId, stage: Option<usize> },
 }
 
 impl Runtime {
@@ -546,6 +546,17 @@ impl Runtime {
     }
 
     pub(super) fn start_note_context(
+        &mut self,
+        note: NoteId,
+        program: usize,
+        note_stage: Option<NoteStage>,
+    ) -> Result<BehaviorId, Error> {
+        let id = self.admit_note_context(note, program, note_stage)?;
+        self.resume_behavior(id);
+        Ok(id)
+    }
+
+    pub(super) fn admit_note_context(
         &mut self,
         note: NoteId,
         program: usize,
@@ -571,7 +582,6 @@ impl Runtime {
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + plan.programs[program].locals].fill(0);
-        self.resume_behavior(id);
         Ok(id)
     }
 
@@ -733,10 +743,18 @@ impl Runtime {
     }
 
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
-        self.push_behavior_work(Ready {
+        self.queue_behavior(id);
+        self.drain_behavior();
+    }
+
+    pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
+        self.push_behavior_work(Ready::Resume {
             id,
             fuel: self.behavior_fuel,
         });
+    }
+
+    pub(super) fn drain_behavior(&mut self) {
         if self.dispatching_behavior {
             return;
         }
@@ -745,7 +763,23 @@ impl Runtime {
         // Each suspended caller retains its own remaining fuel, never a Rust frame.
         while let Some(ready) = self.behavior_ready.last().copied() {
             let index = self.behavior_ready.len() - 1;
-            let Ready { id, fuel } = ready;
+            let (id, fuel) = match ready {
+                Ready::Resume { id, fuel } => (id, fuel),
+                Ready::Release { note, stage } => {
+                    self.behavior_ready.pop();
+                    self.note_events[note.0.index].release_queued = false;
+                    if self.notes.get(note.0).unwrap().gate() {
+                        if let Some(stage) = stage {
+                            self.advance_release_stage(note, stage);
+                        } else {
+                            self.key_up_with_cause(note, None, super::ReleaseCause::Script)
+                                .expect("retained generated note release");
+                        }
+                    }
+                    self.notes.get_mut(note.0).unwrap().work -= 1;
+                    continue;
+                }
+            };
             let c = *self.behaviors.get(id.0).unwrap();
             if c.outcome.is_some() {
                 self.release_controller_reserve(id);
@@ -768,7 +802,7 @@ impl Runtime {
                 self.behavior_ready.remove(index);
                 continue;
             }
-            self.behavior_ready[index] = Ready { id, fuel: fuel - 1 };
+            self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             match self.behavior_step(id, c.owner, op) {
                 Ok(true) => {
@@ -1237,7 +1271,7 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let linked = matches!(duration, Duration::Gate | Duration::FramesOrGate(_));
-        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let source_stage = callback
             .note_stage
             .or(callback.controller.map(|e| NoteStage::Attack(e.stage)));
@@ -1256,9 +1290,27 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
+        let ready_begin = self.behavior_ready.len();
         let child = self.select(origin, pitch, velocity, offset_micros, source_stage);
         self.reserved_commands -= command;
         let child = child?;
+        if linked && let Some(stage) = source_stage {
+            let parent = callback.owner.note()?;
+            self.notes.get_mut(child.0).unwrap().release_link =
+                super::ReleaseLink::Stage(stage.index());
+            let plan = self.notes.get(parent.0).unwrap().plan;
+            if self
+                .plans
+                .get(plan.0)
+                .unwrap()
+                .projections
+                .get(parent.0.index, stage.index())?
+                .release
+                != super::note_event::ReleaseStage::Unreached
+            {
+                self.queue_note_release(child, None, ready_begin);
+            }
+        }
         self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
         if let Some(at) = at {

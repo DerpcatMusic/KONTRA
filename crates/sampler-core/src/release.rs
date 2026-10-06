@@ -62,6 +62,8 @@ pub(super) struct ReleaseTimes {
     pub velocity: Option<f64>,
     pub selection: [super::ReleaseStatus; 2],
     pub release_stage: Option<usize>,
+    pub cleanup: Option<ReleaseCause>,
+    pub cleanup_hard: bool,
 }
 
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
@@ -103,7 +105,7 @@ impl Runtime {
             times.velocity = velocity;
             note.key_release = Some(cause);
             let musical = cause.triggers_key_release();
-            if musical && self.note_events[id.0.index].pending_releases != 0 {
+            if musical && self.note_events[id.0.index].release_routed {
                 times.held = true;
                 self.run_release_behavior(id, true);
                 return true;
@@ -326,6 +328,7 @@ impl Runtime {
             }
         }
         self.note_events[note.0.index].release_start = entry;
+        self.note_events[note.0.index].release_routed = true;
         self.note_events[note.0.index].pending_releases = count;
         self.behaviors.reserve(count);
     }
@@ -351,7 +354,7 @@ impl Runtime {
     }
 
     pub(super) fn run_release_behavior(&mut self, note: NoteId, musical: bool) {
-        if !musical || self.note_events[note.0.index].pending_releases == 0 {
+        if !musical || !self.note_events[note.0.index].release_routed {
             self.trim_release_callbacks(note, true);
             return;
         }
@@ -359,16 +362,35 @@ impl Runtime {
         self.advance_release_stage(note, entry);
     }
 
-    fn advance_release_stage(&mut self, note: NoteId, from: usize) {
+    pub(super) fn queue_note_release(&mut self, note: NoteId, stage: Option<usize>, at: usize) {
+        assert!(
+            !self.note_events[note.0.index].release_queued,
+            "one native release frame per note"
+        );
+        assert!(
+            self.behavior_ready.len() < self.behavior_ready.capacity(),
+            "reserved native release capacity"
+        );
+        self.note_events[note.0.index].release_queued = true;
+        let n = self.notes.get_mut(note.0).unwrap();
+        n.work = n.work.checked_add(1).expect("bounded native release pin");
+        self.behavior_ready
+            .insert(at, super::behavior::Ready::Release { note, stage });
+    }
+
+    pub(super) fn advance_release_stage(&mut self, note: NoteId, from: usize) {
         use super::{behavior::NoteStage, note_event::ReleaseStage};
-        let plan = self.notes.get(note.0).unwrap().plan;
-        let generation = self.plans.get_mut(plan.0).unwrap();
-        for stage in from..=generation.prepared.stages.len() {
+        let n = self.notes.get(note.0).unwrap();
+        let plan = n.plan;
+        let first_child = n.first_child;
+        let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+        for stage in from..=end {
+            let generation = self.plans.get_mut(plan.0).unwrap();
             let view = generation.projections.get_mut(note.0.index, stage).unwrap();
             if view.properties.is_none() {
                 break;
             }
-            if view.release_reserved {
+            let callback = if view.release_reserved {
                 view.release_reserved = false;
                 view.release = ReleaseStage::Pending;
                 let program = generation.prepared.stages[stage].release.unwrap();
@@ -376,11 +398,38 @@ impl Runtime {
                 self.note_events[note.0.index].pending_releases -= 1;
                 self.behaviors.unreserve(1);
                 self.release_times[note.0.index].release_stage = Some(stage);
-                self.start_note_context(note, program, Some(NoteStage::Release(stage)))
-                    .expect("owned reached-stage release callback");
+                Some(
+                    self.admit_note_context(note, program, Some(NoteStage::Release(stage)))
+                        .expect("owned reached-stage release callback"),
+                )
+            } else {
+                view.release = ReleaseStage::Forwarded;
+                None
+            };
+            if let Some(id) = callback {
+                self.queue_behavior(id);
+            }
+            let mut child = first_child;
+            let mut queued = false;
+            while let Some(index) = child {
+                let state = self.notes.at_mut(index);
+                child = state.siblings.next;
+                if state.release_link == super::ReleaseLink::Stage(stage)
+                    && state.key_down()
+                    && state.gate()
+                {
+                    if !queued && callback.is_none() {
+                        self.queue_note_release(note, Some(stage + 1), self.behavior_ready.len());
+                    }
+                    let child = NoteId(self.notes.id(index.get()));
+                    self.queue_note_release(child, None, self.behavior_ready.len());
+                    queued = true;
+                }
+            }
+            if callback.is_some() || queued {
+                self.drain_behavior();
                 return;
             }
-            view.release = ReleaseStage::Forwarded;
         }
         self.release_times[note.0.index].held = false;
         self.release_times[note.0.index].groups_forwarded = true;
