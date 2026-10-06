@@ -1,11 +1,34 @@
 use sampler_kontakt::ResourceContainer;
 
 #[cfg(feature = "library-access")]
+fn authored_png() -> Vec<u8> {
+    // A black 1x1 RGBA pixel, using a stored DEFLATE block and Adler checksum.
+    let ihdr = [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0];
+    let idat = [0x78, 1, 1, 5, 0, 0xfa, 0xff, 0, 0, 0, 0, 0, 0, 5, 0, 1];
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    for (kind, data) in [(b"IHDR", ihdr.as_slice()), (b"IDAT", &idat), (b"IEND", &[])] {
+        bytes.extend((data.len() as u32).to_be_bytes());
+        bytes.extend(kind);
+        bytes.extend(data);
+        let mut crc = u32::MAX;
+        for byte in kind.iter().chain(data) {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 * (crc & 1));
+            }
+        }
+        bytes.extend((!crc).to_be_bytes());
+    }
+    bytes
+}
+
+#[cfg(feature = "library-access")]
 #[test]
 fn authored_resource_containers_are_bounded_and_case_insensitive() {
     let root = std::env::temp_dir().join(format!("v2-resource-containers-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    let picture = b"\x89PNG\r\n\x1a\nauthored picture bytes";
+    let png = authored_png();
+    let picture = png.as_slice();
     let name = "Resources|pictures|Wallpaper.png";
     let mut container = b"/\\ NI FC MTD  /\\".to_vec();
     container.extend([0; 256]);
@@ -55,7 +78,12 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
     assert!(
         ni_file::file_container::NIFileContainer::read(std::io::Cursor::new(container)).is_err()
     );
-    for version in [0x110u16, 0x111] {
+    for (version, hint) in [
+        (0x110u16, 0xffu32),
+        (0x111, 0xff),
+        (0x110, 0x100),
+        (0x111, 0x100),
+    ] {
         let name = "Wallpaper.png";
         let mut nkr = 0x5e70ac54u32.to_le_bytes().to_vec();
         nkr.extend(version.to_le_bytes());
@@ -72,14 +100,20 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         nkr.extend(0x2ae905fau32.to_le_bytes());
         nkr.extend(version.to_le_bytes());
         nkr.extend([0; 4]);
-        nkr.extend(0xffu32.to_le_bytes());
+        nkr.extend(hint.to_le_bytes());
         nkr.extend((picture.len() as u32).to_le_bytes());
         nkr.extend([0; 4]);
         nkr.extend(picture);
         let path = root.join(format!("authored-{version}.nkr"));
-        std::fs::write(&path, nkr).unwrap();
+        std::fs::write(&path, &nkr).unwrap();
         let mut resources = ResourceContainer::open(&path).unwrap();
         assert_eq!(resources.read("wallpaper.PNG").unwrap().unwrap(), picture);
+        if hint == 0x100 {
+            // A signature without intact framing/CRCs cannot override protection.
+            *nkr.last_mut().unwrap() ^= 1;
+            std::fs::write(&path, &nkr).unwrap();
+            assert!(ResourceContainer::open(&path).unwrap().read(name).is_err());
+        }
     }
     std::fs::remove_dir_all(root).unwrap();
 }
