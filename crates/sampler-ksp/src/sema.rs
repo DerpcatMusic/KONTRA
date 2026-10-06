@@ -66,12 +66,14 @@ pub fn analyze(ast: ast::Ast, syms: &Interner<'_>, budget: Budget) -> Result<Hir
     }
     // Declarations live in `on init`; resolve it first so functions and
     // callbacks see every variable regardless of source order.
-    let init = callbacks
-        .iter()
-        .position(|c| syms.name(c.name) == "init");
+    let init = callbacks.iter().position(|c| syms.name(c.name) == "init");
     if let Some(index) = init {
-        if callbacks[..index].iter().any(|c| syms.name(c.name) == "init")
-            || callbacks[index + 1..].iter().any(|c| syms.name(c.name) == "init")
+        if callbacks[..index]
+            .iter()
+            .any(|c| syms.name(c.name) == "init")
+            || callbacks[index + 1..]
+                .iter()
+                .any(|c| syms.name(c.name) == "init")
         {
             return fault(callbacks[index].span, "duplicate callback");
         }
@@ -373,13 +375,14 @@ impl<'a> Sema<'a, '_> {
             &mut self.hir.cells
         };
         let offset = *counter;
-        *counter = counter
-            .checked_add(len)
-            .filter(|n| *n < u32::MAX)
-            .ok_or(crate::diag::Fault {
-                span,
-                message: "script cell range exceeded".into(),
-            })?;
+        *counter =
+            counter
+                .checked_add(len)
+                .filter(|n| *n < u32::MAX)
+                .ok_or(crate::diag::Fault {
+                    span,
+                    message: "script cell range exceeded".into(),
+                })?;
         Ok(offset)
     }
 
@@ -393,6 +396,16 @@ impl<'a> Sema<'a, '_> {
             || SysArray::from_name(text).is_some()
             || builtins::constant(text).is_some()
             || builtins::control_par(text).is_some()
+            || [
+                "NI_",
+                "CONTROL_PAR_",
+                "EVENT_PAR_",
+                "ENGINE_PAR_",
+                "ZONE_PAR_",
+                "LOOP_PAR_",
+            ]
+            .iter()
+            .any(|p| text[1..].starts_with(p))
         {
             return fault(span, "invalid or reserved variable name");
         }
@@ -484,12 +497,10 @@ impl<'a> Sema<'a, '_> {
                     return fault(span, "polyphonic strings are unsupported");
                 }
                 let cell = self.hir.note_cells;
-                self.hir.note_cells = cell
-                    .checked_add(1)
-                    .ok_or(crate::diag::Fault {
-                        span,
-                        message: "note cell range exceeded".into(),
-                    })?;
+                self.hir.note_cells = cell.checked_add(1).ok_or(crate::diag::Fault {
+                    span,
+                    message: "note cell range exceeded".into(),
+                })?;
                 Home::Note(cell)
             }
             (_, Storage::Polyphonic, Some(_)) => {
@@ -532,6 +543,10 @@ impl<'a> Sema<'a, '_> {
             return Ok(None);
         }
         if d.storage == Storage::Polyphonic {
+            self.hir.warnings.push(crate::diag::Fault {
+                span,
+                message: "polyphonic variables start at 0; initializer ignored".into(),
+            });
             return Ok(None);
         }
         let mut values = Vec::with_capacity(d.init.len());
@@ -553,7 +568,9 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn function(&self, sym: Sym) -> Option<FnId> {
-        self.functions.get(&self.name(sym).to_ascii_lowercase()).copied()
+        self.functions
+            .get(&self.name(sym).to_ascii_lowercase())
+            .copied()
     }
 
     /// KSP variable names are case-insensitive.
@@ -561,7 +578,9 @@ impl<'a> Sema<'a, '_> {
         if let Some(&v) = self.names.get(&sym) {
             return Some(v);
         }
-        self.folded.get(&self.name(sym).to_ascii_lowercase()).copied()
+        self.folded
+            .get(&self.name(sym).to_ascii_lowercase())
+            .copied()
     }
 
     fn lookup(&self, sym: Sym, span: Span) -> Result<VarId> {
@@ -581,7 +600,10 @@ impl<'a> Sema<'a, '_> {
             {
                 return fault(target.span, "built-in variables are read-only");
             }
-            return fault(target.span, format!("undeclared variable {}", self.name(*sym)));
+            return fault(
+                target.span,
+                format!("undeclared variable {}", self.name(*sym)),
+            );
         };
         let is_array = self.hir.vars[var.0 as usize].len.is_some();
         match (index, is_array) {
@@ -702,11 +724,17 @@ impl<'a> Sema<'a, '_> {
             }
             A::Unary(UnOp::BitNot, inner) => {
                 let inner = self.expr(inner)?;
-                (Ty::Int, ExprKind::BitNot(Box::new(self.coerce(inner, Ty::Int)?)))
+                (
+                    Ty::Int,
+                    ExprKind::BitNot(Box::new(self.coerce(inner, Ty::Int)?)),
+                )
             }
             A::Unary(UnOp::Not, inner) => {
                 let inner = self.expr(inner)?;
-                (Ty::Bool, ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)))
+                (
+                    Ty::Bool,
+                    ExprKind::Not(Box::new(self.coerce(inner, Ty::Bool)?)),
+                )
             }
             A::Binary(op, l, r) => return self.binary(*op, l, r, span),
         };
@@ -757,8 +785,16 @@ impl<'a> Sema<'a, '_> {
         };
         // Conditions compare as integers.
         let unify = |s: &Self, l: Expr, r: Expr| -> Result<(Expr, Expr)> {
-            let l = if l.ty == Ty::Bool { s.coerce(l, Ty::Int)? } else { l };
-            let r = if r.ty == Ty::Bool { s.coerce(r, Ty::Int)? } else { r };
+            let l = if l.ty == Ty::Bool {
+                s.coerce(l, Ty::Int)?
+            } else {
+                l
+            };
+            let r = if r.ty == Ty::Bool {
+                s.coerce(r, Ty::Int)?
+            } else {
+                r
+            };
             if l.ty == Ty::Str || r.ty == Ty::Str {
                 let l = s.coerce(l, Ty::Str)?;
                 let r = s.coerce(r, Ty::Str)?;
@@ -767,11 +803,7 @@ impl<'a> Sema<'a, '_> {
             if l.ty != r.ty {
                 return fault(
                     r.span,
-                    format!(
-                        "operands differ: {} and {}",
-                        ty_name(l.ty),
-                        ty_name(r.ty)
-                    ),
+                    format!("operands differ: {} and {}", ty_name(l.ty), ty_name(r.ty)),
                 );
             }
             Ok((l, r))
@@ -801,7 +833,10 @@ impl<'a> Sema<'a, '_> {
         let (l, r) = unify(self, l, r)?;
         let integer_only = !matches!(arith, Arith::Add | Arith::Sub | Arith::Mul | Arith::Div);
         if l.ty == Ty::Str || (l.ty == Ty::Real && integer_only) {
-            return fault(span, format!("operator requires integers, found {}", ty_name(l.ty)));
+            return fault(
+                span,
+                format!("operator requires integers, found {}", ty_name(l.ty)),
+            );
         }
         let ty = l.ty;
         let e = Expr {
@@ -896,6 +931,14 @@ impl<'a> Sema<'a, '_> {
                 None if name.starts_with('$')
                     && name.as_bytes().get(1).is_some_and(u8::is_ascii_uppercase) =>
                 {
+                    if !self.symbols.contains_key(&sym) {
+                        self.hir.warnings.push(crate::diag::Fault {
+                            span,
+                            message: format!(
+                                "undeclared {name} treated as an opaque vendor constant"
+                            ),
+                        });
+                    }
                     Some(self.symbol(sym))
                 }
                 None => None,
@@ -935,7 +978,11 @@ impl<'a> Sema<'a, '_> {
         if !(min..=max).contains(&args.len()) {
             return fault(
                 span,
-                format!("{} expects {min}..={max} arguments, got {}", b.name(), args.len()),
+                format!(
+                    "{} expects {min}..={max} arguments, got {}",
+                    b.name(),
+                    args.len()
+                ),
             );
         }
         let mut num = None;
@@ -984,7 +1031,9 @@ impl<'a> Sema<'a, '_> {
             });
         }
         if b == Builtin::GetUiId {
-            let Arg::Var(v, s) = out[0] else { unreachable!() };
+            let Arg::Var(v, s) = out[0] else {
+                unreachable!()
+            };
             if self.hir.vars[v.0 as usize].ui.is_none() {
                 return fault(s, "get_ui_id requires a UI control");
             }
@@ -1101,6 +1150,11 @@ pub fn fold(hir: &Hir, e: &Expr) -> Option<Const> {
                 Builtin::Max if e.ty == Ty::Int => Int(int(0)?.max(int(1)?)),
                 Builtin::Min => Real(real(0)?.min(real(1)?)),
                 Builtin::Max => Real(real(0)?.max(real(1)?)),
+                Builtin::InRange => match (int(0), real(0)) {
+                    (Some(x), _) => Int(i32::from(int(1)? <= x && x <= int(2)?)),
+                    (_, Some(x)) => Int(i32::from(real(1)? <= x && x <= real(2)?)),
+                    _ => return None,
+                },
                 Builtin::NumElements => match args.first()? {
                     Arg::Var(v, _) => Int(hir.vars[v.0 as usize].len? as i32),
                     Arg::SysArray(a, _) => Int(a.len() as i32),

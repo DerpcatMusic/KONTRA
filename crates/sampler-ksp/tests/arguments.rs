@@ -222,12 +222,32 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
         )
         .is_err()
     );
+    let limits = sampler_ksp::Limits {
+        source_bytes: 4096,
+        instructions: 128,
+        variables: 4,
+        array_cells: 0,
+    };
+    // v2: release-callback event writes compile like Kontakt; multi-event
+    // selectors compile with a warning and have no effect.
     for source in [
         "on release change_note($EVENT_ID, 61) end on",
         "on release change_velo($EVENT_ID, 64) end on",
-        "on note change_note($ALL_EVENTS, 61) end on",
-        "on note change_velo($missing, 64) end on",
     ] {
+        assert!(
+            sampler_ksp::compile(source, 48000, limits, &[]).is_ok(),
+            "{source}"
+        );
+    }
+    let script = sampler_ksp::compile(
+        "on note change_note($ALL_EVENTS, 61) end on",
+        48000,
+        limits,
+        &[],
+    )
+    .unwrap();
+    assert!(!script.warnings().is_empty());
+    for source in ["on note change_velo($missing, 64) end on"] {
         assert!(
             sampler_ksp::compile(
                 source,

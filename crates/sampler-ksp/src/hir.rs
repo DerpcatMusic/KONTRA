@@ -30,10 +30,16 @@ pub enum Home {
     /// Script-instance integer cell; reals are stored as IEEE-754 bits.
     Cell(u32),
     /// Contiguous script cells.
-    Cells { offset: u32, len: u32 },
+    Cells {
+        offset: u32,
+        len: u32,
+    },
     /// Script-instance text cell(s).
     Text(u32),
-    Texts { offset: u32, len: u32 },
+    Texts {
+        offset: u32,
+        len: u32,
+    },
     /// Note-owned (polyphonic) cell.
     Note(u16),
     /// Value owned by a host-visible control; index into `Hir::uis`.

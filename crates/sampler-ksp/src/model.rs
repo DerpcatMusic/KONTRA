@@ -68,7 +68,10 @@ impl Widget {
     }
     /// Pixel position, when the script placed the widget.
     pub fn position(&self) -> Option<(i32, i32)> {
-        Some((self.int("$CONTROL_PAR_POS_X")?, self.int("$CONTROL_PAR_POS_Y")?))
+        Some((
+            self.int("$CONTROL_PAR_POS_X")?,
+            self.int("$CONTROL_PAR_POS_Y")?,
+        ))
     }
     pub fn hidden(&self) -> bool {
         self.int("$CONTROL_PAR_HIDE")
@@ -96,9 +99,15 @@ pub struct KeyRange {
 pub enum Location {
     Control(ControlId),
     /// Script cells in this script's instance bank (reals are IEEE-754 bits).
-    Cells { offset: u32, len: u32 },
+    Cells {
+        offset: u32,
+        len: u32,
+    },
     /// Text cells in this script's instance bank.
-    Texts { offset: u32, len: u32 },
+    Texts {
+        offset: u32,
+        len: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,7 +168,10 @@ pub(crate) fn assemble(
     let name = |par: i32| crate::eval::symbol_name(hir, par).unwrap_or_else(|| par.to_string());
     let mut properties: BTreeMap<i32, BTreeMap<String, Value>> = BTreeMap::new();
     for (&(id, par), &v) in &init.properties {
-        properties.entry(id).or_default().insert(name(par), Value::Int(v));
+        properties
+            .entry(id)
+            .or_default()
+            .insert(name(par), Value::Int(v));
     }
     for ((id, par), v) in &init.text_properties {
         properties

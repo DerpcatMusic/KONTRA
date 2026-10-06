@@ -172,7 +172,9 @@ pub fn lex<'a>(source: &'a str, syms: &mut Interner<'a>) -> Result<Vec<Token>> {
                     }
                 }
             }
-            b'$' | b'%' | b'@' | b'~' | b'?' | b'!' if s.get(i + 1).is_some_and(|&c| ident_byte(c)) => {
+            b'$' | b'%' | b'@' | b'~' | b'?' | b'!'
+                if s.get(i + 1).is_some_and(|&c| ident_byte(c)) =>
+            {
                 i += 1;
                 while i < s.len() && ident_byte(s[i]) {
                     i += 1;
@@ -190,7 +192,6 @@ pub fn lex<'a>(source: &'a str, syms: &mut Interner<'a>) -> Result<Vec<Token>> {
                     (b':', Some(b'=')) => (Punct::Assign, 2),
                     (b'<', Some(b'=')) => (Punct::Le, 2),
                     (b'>', Some(b'=')) => (Punct::Ge, 2),
-                    (b'!', Some(b'=')) => (Punct::Ne, 2),
                     (b'(', _) => (Punct::LParen, 1),
                     (b')', _) => (Punct::RParen, 1),
                     (b'[', _) => (Punct::LBracket, 1),
@@ -246,7 +247,11 @@ pub fn preprocess(
         let span = tokens[read].span;
         if matches!(
             name,
-            "SET_CONDITION" | "RESET_CONDITION" | "USE_CODE_IF" | "USE_CODE_IF_NOT" | "END_USE_CODE"
+            "SET_CONDITION"
+                | "RESET_CONDITION"
+                | "USE_CODE_IF"
+                | "USE_CODE_IF_NOT"
+                | "END_USE_CODE"
         ) {
             if name == "END_USE_CODE" {
                 if regions.pop().is_none() {
@@ -312,12 +317,16 @@ mod tests {
 
     fn kinds(source: &str) -> Vec<Tok> {
         let mut syms = Interner::default();
-        lex(source, &mut syms).unwrap().into_iter().map(|t| t.tok).collect()
+        lex(source, &mut syms)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.tok)
+            .collect()
     }
 
     #[test]
     fn literals_operators_comments_and_continuations() {
-        let toks = kinds("if ($a<=0FFh .and. 1.5e2) { c\n }...\n\"x y\" !s != 7");
+        let toks = kinds("if ($a<=0FFh .and. 1.5e2) { c\n }...\n\"x y\" !s # 7");
         assert!(matches!(toks[4], Tok::Int(255, true)));
         assert!(matches!(toks[6], Tok::Real(r) if r == 150.0));
         assert!(matches!(toks[8], Tok::Str(_)));
@@ -327,6 +336,7 @@ mod tests {
         assert!(lex("\"open", &mut syms).is_err());
         assert!(lex("{ open", &mut syms).is_err());
         assert!(lex("0FFFFFFFFFh", &mut syms).is_err());
+        assert!(lex("1 != 2", &mut syms).is_err());
     }
 
     #[test]

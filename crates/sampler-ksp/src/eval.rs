@@ -281,7 +281,13 @@ impl Eval<'_> {
         let len = v.len.unwrap_or(0);
         let Some(i) = u32::try_from(index).ok().filter(|i| *i < len) else {
             self.warn(span, format!("array index {index} out of bounds"));
-            return if v.ty == Ty::Str { V::S(String::new()) } else if v.ty == Ty::Real { V::R(0.0) } else { V::I(0) };
+            return if v.ty == Ty::Str {
+                V::S(String::new())
+            } else if v.ty == Ty::Real {
+                V::R(0.0)
+            } else {
+                V::I(0)
+            };
         };
         match v.home {
             Home::Cells { offset, .. } => {
@@ -310,9 +316,21 @@ impl Eval<'_> {
             Home::Control(ui) => {
                 let mut n = value.int();
                 if let Some((lo, hi)) = declared_range(&self.hir.uis[ui as usize]) {
-                    n = n.clamp(lo.min(hi), hi.max(lo));
+                    let clamped = n.clamp(lo.min(hi), hi.max(lo));
+                    if clamped != n {
+                        let span = v.span;
+                        self.warn(span, format!("{} clamped to its declared range", v.name));
+                    }
+                    n = clamped;
                 }
                 self.st.controls[ui as usize] = n;
+            }
+            Home::Note(_) => {
+                let span = v.span;
+                self.warn(
+                    span,
+                    "polyphonic variables have no value in on init; write ignored",
+                );
             }
             _ => {}
         }
@@ -358,7 +376,13 @@ impl Eval<'_> {
                 let i = self.expr(i)?.int();
                 self.read_elem(*v, i, e.span)
             }
-            ExprKind::Sys(sys) => V::I(self.sys(*sys)),
+            ExprKind::Sys(sys) => {
+                use b::SysVar::*;
+                if matches!(sys, EventId | EventNote | EventVelocity | NoteHeld | CcNum) {
+                    self.warn(e.span, format!("{sys:?} has no event in on init; reads 0"));
+                }
+                V::I(self.sys(*sys))
+            }
             ExprKind::SysElem(array, i) => {
                 let i = self.expr(i)?.int();
                 if !(0..array.len() as i32).contains(&i) {
@@ -374,7 +398,11 @@ impl Eval<'_> {
             ExprKind::Not(inner) => V::I(i32::from(self.expr(inner)?.int() == 0)),
             ExprKind::Cast(inner) => {
                 let v = self.expr(inner)?.int();
-                V::I(if e.ty == Ty::Bool { i32::from(v != 0) } else { v })
+                V::I(if e.ty == Ty::Bool {
+                    i32::from(v != 0)
+                } else {
+                    v
+                })
             }
             ExprKind::Arith(op, l, r) => {
                 let (l, r) = (self.expr(l)?, self.expr(r)?);
@@ -503,7 +531,14 @@ impl Eval<'_> {
         if par == b::CONTROL_PAR_NUM_ITEMS
             && let Some(ui) = self.ui_index(id)
         {
-            return V::I(self.st.model.interface.widgets.get(ui).map_or(0, |w| w.menu.len()) as i32);
+            return V::I(
+                self.st
+                    .model
+                    .interface
+                    .widgets
+                    .get(ui)
+                    .map_or(0, |w| w.menu.len()) as i32,
+            );
         }
         if let Some(n) = self.st.properties.get(&(id, par)) {
             return V::I(*n);
@@ -560,7 +595,9 @@ impl Eval<'_> {
         Ok(match builtin {
             Exit | Continue => V::I(0),
             Inc | Dec => {
-                let Arg::Place(place) = &args[0] else { unreachable!() };
+                let Arg::Place(place) = &args[0] else {
+                    unreachable!()
+                };
                 let current = match place {
                     Place::Var(v) => self.read_var(*v),
                     Place::Elem(v, i) => {
@@ -578,7 +615,11 @@ impl Eval<'_> {
             },
             Min | Max => match (self.arg(args, 0)?, self.arg(args, 1)?) {
                 (V::R(a), V::R(b)) => V::R(if builtin == Min { a.min(b) } else { a.max(b) }),
-                (a, b) => V::I(if builtin == Min { a.int().min(b.int()) } else { a.int().max(b.int()) }),
+                (a, b) => V::I(if builtin == Min {
+                    a.int().min(b.int())
+                } else {
+                    a.int().max(b.int())
+                }),
             },
             InRange => {
                 let (x, lo, hi) = (self.arg(args, 0)?, self.arg(args, 1)?, self.arg(args, 2)?);
@@ -588,7 +629,13 @@ impl Eval<'_> {
                 }))
             }
             Sgn => match self.arg(args, 0)? {
-                V::R(r) => V::I(if r > 0.0 { 1 } else if r < 0.0 { -1 } else { 0 }),
+                V::R(r) => V::I(if r > 0.0 {
+                    1
+                } else if r < 0.0 {
+                    -1
+                } else {
+                    0
+                }),
                 v => V::I(v.int().signum()),
             },
             Signbit => match self.arg(args, 0)? {
@@ -634,7 +681,11 @@ impl Eval<'_> {
             Lsb => V::I(self.int(args, 0)? & 127),
             MsToTicks => V::I((i64::from(self.int(args, 0)?) * 960 / 500_000) as i32),
             TicksToMs => V::I((i64::from(self.int(args, 0)?) * 500_000 / 960) as i32),
-            NumElements => V::I(self.hir.vars[Self::var(args, 0).0 as usize].len.unwrap_or(1) as i32),
+            NumElements => V::I(
+                self.hir.vars[Self::var(args, 0).0 as usize]
+                    .len
+                    .unwrap_or(1) as i32,
+            ),
             Search => {
                 let var = Self::var(args, 0);
                 let needle = self.arg(args, 1)?;
@@ -669,7 +720,8 @@ impl Eval<'_> {
                     (0, len - 1)
                 };
                 if lo <= hi {
-                    let mut items: Vec<V> = (lo..=hi).map(|i| self.read_elem(var, i, span)).collect();
+                    let mut items: Vec<V> =
+                        (lo..=hi).map(|i| self.read_elem(var, i, span)).collect();
                     items.sort_by(|a, b| match (a, b) {
                         (V::R(a), V::R(b)) => a.total_cmp(b),
                         (V::S(a), V::S(b)) => a.cmp(b),
@@ -689,7 +741,8 @@ impl Eval<'_> {
                 let len = self.hir.vars[a.0 as usize].len.unwrap_or(0);
                 let equal = len == self.hir.vars[b2.0 as usize].len.unwrap_or(0)
                     && (0..len as i32).all(|i| {
-                        format!("{:?}", self.read_elem(a, i, span)) == format!("{:?}", self.read_elem(b2, i, span))
+                        format!("{:?}", self.read_elem(a, i, span))
+                            == format!("{:?}", self.read_elem(b2, i, span))
                     });
                 V::I(i32::from(equal))
             }
@@ -748,7 +801,9 @@ impl Eval<'_> {
                         _ => TABLE_STEPS_SHOWN,
                     };
                     let value = self.int(args, 1)?;
-                    self.st.properties.insert((b::FIRST_UI_ID + ui as i32, par), value);
+                    self.st
+                        .properties
+                        .insert((b::FIRST_UI_ID + ui as i32, par), value);
                 }
                 V::I(0)
             }
@@ -882,8 +937,13 @@ impl Eval<'_> {
                 )
             }
             SetKeyrange => {
-                let (low, high, name) = (self.int(args, 0)?, self.int(args, 1)?, self.text(args, 2)?);
-                self.st.model.interface.key_ranges.push(KeyRange { low, high, name });
+                let (low, high, name) =
+                    (self.int(args, 0)?, self.int(args, 1)?, self.text(args, 2)?);
+                self.st
+                    .model
+                    .interface
+                    .key_ranges
+                    .push(KeyRange { low, high, name });
                 V::I(0)
             }
             RemoveKeyrange => {
@@ -949,7 +1009,8 @@ impl Eval<'_> {
                 V::I(i32::from(self.st.model.pgs_text.contains_key(&key)))
             }
             PgsSetKeyVal => {
-                let (key, index, value) = (self.text(args, 0)?, self.int(args, 1)?, self.int(args, 2)?);
+                let (key, index, value) =
+                    (self.text(args, 0)?, self.int(args, 1)?, self.int(args, 2)?);
                 if let Some(slot) = self
                     .st
                     .model
@@ -981,7 +1042,14 @@ impl Eval<'_> {
             }
             PgsGetStrKeyVal => {
                 let key = self.text(args, 0)?;
-                V::S(self.st.model.pgs_text.get(&key).cloned().unwrap_or_default())
+                V::S(
+                    self.st
+                        .model
+                        .pgs_text
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_default(),
+                )
             }
             SetListener | ChangeListenerPar => {
                 let (signal, value) = (self.int(args, 0)?, self.int(args, 1)?);
@@ -1001,7 +1069,12 @@ impl Eval<'_> {
                 V::I(0)
             }
             GetEnginePar => {
-                let key = [self.int(args, 0)?, self.int(args, 1)?, self.int(args, 2)?, self.int(args, 3)?];
+                let key = [
+                    self.int(args, 0)?,
+                    self.int(args, 1)?,
+                    self.int(args, 2)?,
+                    self.int(args, 3)?,
+                ];
                 V::I(self.st.engine.get(&key).copied().unwrap_or(0))
             }
             GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
@@ -1037,12 +1110,11 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
-            PlayNote | NoteOff | IgnoreEvent | ChangeVol | ChangeTune | ChangePan
-            | ChangeVelo | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr
-            | AllowGroup | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds
-            | IgnoreController | SetController | SetNoteController | SetRpn | SetNrpn
-            | ResetRlsTrigCounter | WillNeverTerminate | RedirectOutput | Wait | WaitTicks
-            | WaitAsync | StopWait => {
+            PlayNote | NoteOff | IgnoreEvent | ChangeVol | ChangeTune | ChangePan | ChangeVelo
+            | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
+            | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
+            | SetController | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter
+            | WillNeverTerminate | RedirectOutput | Wait | WaitTicks | WaitAsync | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }
