@@ -300,6 +300,11 @@ source semantics and checksum/authentication validation are still required.
 
 ### V2-11 — Implement asset storage and streaming
 
+- **Partial evidence:** [immutable asset identity and source demand](STREAMING.md)
+  now preserve shared decoded revisions, exact traversal/guard ranges and first-use
+  deadlines without mutating playback. Page cache, worker transfer, paged rendering
+  and readiness/starvation behavior remain in progress; playback is still resident.
+
 - [ ] **P1; dependencies:** V2-09/10.
 - New immutable asset/view identities, decoding, residency, cache and demand service.
   Select queue/cache layout through measurements, independently of old implementation.

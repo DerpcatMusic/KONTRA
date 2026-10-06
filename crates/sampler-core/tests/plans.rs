@@ -326,6 +326,11 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
     assert_eq!(pcm.frames().as_ptr(), original);
     let alias = pcm.clone();
     assert_eq!(alias.frames().as_ptr(), original);
+    assert_eq!(alias.asset_id(), pcm.asset_id());
+    assert_ne!(
+        Pcm::new(48000, pcm.frames().into()).unwrap().asset_id(),
+        pcm.asset_id()
+    );
     assert_eq!(alias.sample_rate(), 48000);
     let prepare = |gain| {
         Prepared::new(

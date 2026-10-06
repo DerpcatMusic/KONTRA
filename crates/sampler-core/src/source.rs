@@ -162,6 +162,11 @@ pub(super) struct Cursor {
     exit: Option<u64>,
 }
 
+struct ReadAddress {
+    primary: usize,
+    crossfade: Option<(usize, f64)>,
+}
+
 impl Cursor {
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
@@ -264,19 +269,22 @@ impl Cursor {
         })
     }
 
-    /// Read the virtual source before resampling: both crossfade legs therefore use
-    /// the same kernel phase, including guards on either side of the wrap.
-    fn read(&self, pcm: &[Frame], position: i128) -> Frame {
-        let Some(index) = self.index(position) else {
-            return [0.; 2];
-        };
+    /// Resolve both source legs once for rendering and residency prediction.
+    fn address(&self, position: i128) -> Option<ReadAddress> {
+        let index = self.index(position)?;
         let Some(r) = self.loop_range else {
-            return pcm[index];
+            return Some(ReadAddress {
+                primary: index,
+                crossfade: None,
+            });
         };
         let LoopShape::Crossfade { frames } = r.shape else {
-            return pcm[index];
+            return Some(ReadAddress {
+                primary: index,
+                crossfade: None,
+            });
         };
-        let offset = position as u64; // index() validated the nonnegative traversal.
+        let offset = position as u64;
         let first = self.first_boundary(r);
         let length = (r.end - r.start) as u64;
         let remaining = if offset < first {
@@ -289,17 +297,38 @@ impl Cursor {
                 .exit
                 .is_some_and(|exit| offset >= exit || remaining >= exit - offset)
         {
-            return pcm[index];
+            return Some(ReadAddress {
+                primary: index,
+                crossfade: None,
+            });
         }
         let partner = match self.direction {
             Direction::Forward => index - length as usize,
             Direction::Reverse => index + length as usize,
         };
         let blend = (frames as u64 - remaining) as f64 / frames as f64;
-        std::array::from_fn(|channel| {
-            ((1. - blend) * f64::from(pcm[index][channel])
-                + blend * f64::from(pcm[partner][channel])) as f32
+        Some(ReadAddress {
+            primary: index,
+            crossfade: Some((partner, blend)),
         })
+    }
+
+    /// Read the virtual source before resampling: both legs use the same phase.
+    fn read(&self, pcm: &[Frame], position: i128) -> Frame {
+        match self.address(position) {
+            None => [0.; 2],
+            Some(ReadAddress {
+                primary: index,
+                crossfade: None,
+            }) => pcm[index],
+            Some(ReadAddress {
+                primary: index,
+                crossfade: Some((partner, blend)),
+            }) => std::array::from_fn(|channel| {
+                ((1. - blend) * f64::from(pcm[index][channel])
+                    + blend * f64::from(pcm[partner][channel])) as f32
+            }),
+        }
     }
 
     fn crossfaded(&self) -> bool {
@@ -803,3 +832,6 @@ mod tests {
         }
     }
 }
+
+mod demand;
+pub use demand::SampleDemand;
