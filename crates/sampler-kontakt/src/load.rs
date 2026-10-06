@@ -58,6 +58,12 @@ pub struct Loaded {
     /// The bound scripts' interfaces, in script order. Image assets carry
     /// the library's picture layouts when [`Options::library`] is known.
     pub interfaces: Vec<sampler_ui_ir::Interface>,
+    /// Every bound script's interface model, indexed by its
+    /// [`sampler_core::ScriptInstanceId`]: apply the runtime's UI effects to
+    /// it and rebuild the interface with [`Loaded::resources`].
+    pub scripts: Vec<sampler_ksp::ScriptView>,
+    /// The library's pictures and resources, when [`Options::library`] is known.
+    pub resources: Option<Resources>,
 }
 
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
@@ -460,8 +466,11 @@ pub fn prepare(
             plan: lowered.map_err(LoadError::Lower)?,
             instrument,
             interfaces,
+            scripts: Vec::new(),
+            resources: resources.map(std::cell::RefCell::into_inner),
         });
     }
+    let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lowered =
         sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
             sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
@@ -473,5 +482,7 @@ pub fn prepare(
         plan: lowered.map_err(LoadError::Lower)?,
         instrument,
         interfaces,
+        scripts,
+        resources: resources.map(std::cell::RefCell::into_inner),
     })
 }
