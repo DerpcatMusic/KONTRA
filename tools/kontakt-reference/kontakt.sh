@@ -24,7 +24,7 @@ start)
     xdotool search --name '^Progress$' >/dev/null 2>&1 || break; sleep 2
   done
   sleep 5
-  "$0" setup
+  "$0" setup; sleep 3; "$0" setup
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
