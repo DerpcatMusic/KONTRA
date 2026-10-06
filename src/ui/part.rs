@@ -52,7 +52,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if stale {
         // ponytail: reads and decodes on the UI thread, once per load; move to the
         // loader's worker when big libraries make the first frame stall.
-        cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, Presentation::Bitmap));
+        // Vector unless the source needed something we only approximate.
+        let start = if from[main].unsupported.is_empty() { Presentation::Vector } else { Presentation::Bitmap };
+        cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, start));
     }
     let face = cx.state.faces.get_mut(&slot)?;
 
