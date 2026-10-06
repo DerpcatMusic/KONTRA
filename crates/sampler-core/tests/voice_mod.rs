@@ -249,6 +249,7 @@ fn rejects_out_of_range_programs() {
             delay: 0,
             fade: 0,
             retrigger: true,
+            shared: false,
         })],
         vec![]
     )));
@@ -353,6 +354,7 @@ fn measure_modulation_cost_per_voice() {
             delay: 0,
             fade: 0,
             retrigger: true,
+            shared: false,
         })
     };
     let mpe = || ModProgram {
