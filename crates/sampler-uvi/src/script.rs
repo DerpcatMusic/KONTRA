@@ -25,6 +25,32 @@ pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
 }
 
+/// A bank's Lua members, by path.
+#[derive(Default)]
+pub struct Scripts {
+    files: Vec<(String, String)>,
+}
+
+impl Scripts {
+    pub fn insert(&mut self, path: &str, source: String) {
+        self.files
+            .push((path.to_lowercase().replace('\\', "/"), source));
+    }
+}
+
+impl Files for Scripts {
+    /// `require 'a/b'` finds the member `.../a/b.lua`; the shortest path wins.
+    fn script(&self, module: &str) -> Option<String> {
+        let wanted = format!("{}.lua", module.to_lowercase().replace('\\', "/"));
+        let tail = format!("/{wanted}");
+        self.files
+            .iter()
+            .filter(|(path, _)| *path == wanted || path.ends_with(&tail))
+            .min_by_key(|(path, _)| path.len())
+            .map(|(_, source)| source.clone())
+    }
+}
+
 impl Files for () {
     fn script(&self, _: &str) -> Option<String> {
         None
@@ -164,8 +190,26 @@ fn field(table: &Table, name: &str) -> Option<f64> {
 }
 
 fn lua_error(e: mlua::Error) -> String {
-    // The first line only: stack traces repeat library code.
-    e.to_string().lines().next().unwrap_or("").to_owned()
+    // The message plus the innermost frames (file:line), not the whole trace.
+    let text = e.to_string();
+    let mut lines = text.lines();
+    let mut out = lines.next().unwrap_or("").to_owned();
+    for frame in lines
+        .filter(|l| l.contains(".lua") || l.contains("[string"))
+        .take(4)
+    {
+        out.push_str(" < ");
+        out.push_str(
+            frame
+                .trim()
+                .split(':')
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(":")
+                .as_str(),
+        );
+    }
+    out
 }
 
 /// The elements of a program the scripts can reach (`Program.layers[i]`...).
@@ -201,11 +245,13 @@ fn element(
             "Keygroups" => "keygroups",
             "Oscillators" => "oscillators",
             "Inserts" => "inserts",
-            "Auxs" => "auxs",
+            "Auxs" | "Chains" => "auxs",
+            "BusRouters" => "sends",
             "ControlSignalSources" => "modulations",
             _ => continue,
         };
         let list = lua.create_table()?;
+        list.set_metatable(Some(lua.globals().raw_get("__list_mt")?))?;
         for child in container.children().filter(|n| n.is_element()) {
             list.raw_push(element(lua, tree, child, Some(&table))?)?;
         }
@@ -259,6 +305,14 @@ impl ScriptHost {
             .ok_or_else(|| mlua::Error::runtime("no Program"))?;
         let mut tree = Tree { params: Vec::new() };
         let root = element(&self.lua, &mut tree, program, None)?;
+        // The part the program sits in (MidiChannel, MidiInput...): inert.
+        let part = self.lua.create_table()?;
+        part.raw_set("__id", tree.params.len())?;
+        tree.params.push(Vec::new());
+        part.raw_set("type", "Part")?;
+        part.raw_set("name", "")?;
+        part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
+        root.raw_set("parent", part)?;
         *self.shared.params.borrow_mut() = tree.params;
         self.lua.globals().raw_set("Program", root)
     }
@@ -294,6 +348,19 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
+        let s = shared.clone();
+        native.set(
+            "paramNames",
+            lua.create_function(move |lua, id: usize| {
+                let names = lua.create_table()?;
+                if let Some(p) = s.params.borrow().get(id) {
+                    for (k, _) in p {
+                        names.raw_push(k.as_str())?;
+                    }
+                }
+                Ok(names)
+            })?,
+        )?;
         let s = shared.clone();
         native.set(
             "param",
@@ -626,7 +693,17 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
             .iter()
             .enumerate()
             {
-                values[i] = t.get::<Value>(*name).ok().filter(|v| !v.is_nil());
+                values[i] = t
+                    .get::<Value>(*name)
+                    .ok()
+                    .filter(|v| !v.is_nil())
+                    .or_else(|| {
+                        if i < 3 {
+                            t.get::<Value>(i as i64 + 1).ok().filter(|v| !v.is_nil())
+                        } else {
+                            None
+                        }
+                    });
             }
         }
         _ => {
@@ -757,6 +834,26 @@ mod tests {
         );
         // The host is still usable.
         h.note_on(2, 60, 100, 0);
+    }
+
+    #[test]
+    fn classes_tables_and_playnote_tables_work() {
+        let mut h = host(
+            "class 'A'\nfunction A:__init(x) self.x = x end\n\
+             class 'B'(A)\nlocal b = B(7)\nassert(b.x == 7)\n\
+             local t = Table{'t', 4, 1, 0, 9, true}\n\
+             t.changed = function(self, i) lastIndex = i end\n\
+             t:setValue(2, 5)\nassert(lastIndex == 2 and t:getValue(2) == 5)\n\
+             assert(type(Program.layers[1]) == 'userdata')\n\
+             function onNote(e) playNote{e.note, 90, 0, layer=1} end",
+        );
+        h.note_on(1, 62, 100, 0);
+        let c = h.take_commands();
+        assert!(
+            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms == Some(0.0)),
+            "{c:?} {:?}",
+            h.findings()
+        );
     }
 
     #[test]
