@@ -275,8 +275,23 @@ pub fn prepare(
     } else {
         instrument.unsupported.append(&mut failed);
         let behaviors = std::mem::take(&mut instrument.behaviors);
+        // Switching the scripts owned goes with them.
+        let owned = instrument.switching.owner == ir::SwitchOwner::Behavior;
+        let articulations = if owned {
+            std::mem::take(&mut instrument.articulations)
+        } else {
+            Vec::new()
+        };
+        let switching = std::mem::take(&mut instrument.switching);
+        if !owned {
+            instrument.switching = switching;
+        }
         let lowered = sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| Ok(plan));
         instrument.behaviors = behaviors;
+        if owned {
+            instrument.articulations = articulations;
+            instrument.switching = switching;
+        }
         lowered
     };
     Ok(Loaded {
