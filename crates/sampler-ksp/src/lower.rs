@@ -469,15 +469,7 @@ impl Gen<'_, '_> {
             Home::Control(ui) => {
                 let (lo, hi) = self.range(ui);
                 if clamp && (lo, hi) != (i32::MIN, i32::MAX) {
-                    let t = reg(local, 1)?;
-                    for (bound, op) in [(lo, IntegerExtra::Max), (hi, IntegerExtra::Min)] {
-                        self.set(t, i64::from(bound))?;
-                        self.emit(I::Op(Op::Integer {
-                            lhs: local,
-                            rhs: t,
-                            operation: op,
-                        }))?;
-                    }
+                    self.clamp(local, lo, hi)?;
                 }
                 let control = self.u.controls[ui as usize].expect("control-backed variable");
                 self.emit(I::WriteControl { control, local })
@@ -1573,6 +1565,20 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    /// Clamp register `local` into `lo..=hi`, using `local + 1` as scratch.
+    fn clamp(&mut self, local: u16, lo: i32, hi: i32) -> Result<()> {
+        let t = reg(local, 1)?;
+        for (bound, op) in [(lo, IntegerExtra::Max), (hi, IntegerExtra::Min)] {
+            self.set(t, i64::from(bound))?;
+            self.emit(I::Op(Op::Integer {
+                lhs: local,
+                rhs: t,
+                operation: op,
+            }))?;
+        }
+        Ok(())
+    }
+
     fn event_write(
         &mut self,
         note: bool,
@@ -1598,6 +1604,8 @@ impl Gen<'_, '_> {
         }
         let local = reg(dst, u16::from(event.is_some()))?;
         self.arg(args, value, local)?;
+        // Kontakt clamps: keys to 0..=127, velocities to 1..=127.
+        self.clamp(local, i32::from(!note), 127)?;
         self.emit(if note {
             I::WriteEventKey { event, local }
         } else {

@@ -47,7 +47,13 @@ fn main() {
         let mut script = None;
         for _ in 0..3 {
             let t = Instant::now();
-            let s = sampler_ksp::compile(&source, 48000, limits, &[]);
+            let s = sampler_ksp::compile_with(
+                &source,
+                48000,
+                limits,
+                &[],
+                &environment(path.parent().unwrap(), &source),
+            );
             compile = compile.min(t.elapsed());
             script = s.ok();
         }
@@ -187,4 +193,18 @@ fn main() {
             all.last().unwrap().as_secs_f64() * 1e6,
         );
     }
+}
+
+/// The script's performance view from `<dir>/<name>.nckp`, if present.
+fn environment(dir: &std::path::Path, source: &str) -> sampler_ksp::Environment {
+    let mut env = sampler_ksp::Environment::default();
+    if let Some(name) = sampler_ksp::nckp::view_name(source)
+        && let Ok(bytes) = std::fs::read(dir.join(format!("{name}.nckp")))
+    {
+        match sampler_ksp::nckp::parse(&bytes) {
+            Ok((view, _)) => env.performance_view = view,
+            Err(e) => println!("{name}.nckp: {e}"),
+        }
+    }
+    env
 }
