@@ -116,6 +116,7 @@ fn authored_program_translates_loads_and_renders() {
         "HighKeyFade",
         "modulation source",
         "sample outside the program's bank",
+        "keygroup oscillators all play (the script may pick one per note)",
     ] {
         assert!(
             features.contains(&expected),

@@ -390,6 +390,26 @@ impl Translation {
                 );
             }
             let group = ir::GroupRef(self.ir.groups.len() - 1);
+            // A script's playNote can trigger one oscillator of a keygroup
+            // (oscIndex); scripts do not run, so every oscillator plays.
+            let stacked = layer
+                .descendants()
+                .filter(|n| n.has_tag_name("Keygroup"))
+                .map(|k| {
+                    k.descendants()
+                        .filter(|n| n.has_tag_name("SamplePlayer"))
+                        .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+                        .count()
+                })
+                .filter(|&n| n > 1);
+            let (keygroups, most) = stacked.fold((0, 0), |(k, m), n| (k + 1, m.max(n)));
+            if keygroups > 0 && !self.ir.behaviors.is_empty() {
+                self.unsupported(
+                    &path(layer),
+                    "keygroup oscillators all play (the script may pick one per note)",
+                    format!("{keygroups} keygroups, up to {most} oscillators"),
+                );
+            }
             let keys = (midi(layer, "LowKey", 0)?, midi(layer, "HighKey", 127)?);
             for keygroup in layer.descendants().filter(|n| n.has_tag_name("Keygroup")) {
                 self.keygroup(keygroup, group, keys)?;
