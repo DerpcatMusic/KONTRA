@@ -407,7 +407,12 @@ impl Runtime {
                 None
             };
             if let Some(id) = callback {
+                // Children this stage played with a gate-linked duration release
+                // only when its release callback forwards the event: a script that
+                // ignores the release (sustain) keeps them, as in Kontakt.
                 self.queue_behavior(id);
+                self.drain_behavior();
+                return;
             }
             let mut child = first_child;
             let mut queued = false;
@@ -418,7 +423,7 @@ impl Runtime {
                     && state.key_down()
                     && state.gate()
                 {
-                    if !queued && callback.is_none() {
+                    if !queued {
                         self.queue_note_release(note, Some(stage + 1), self.behavior_ready.len());
                     }
                     let child = NoteId(self.notes.id(index.get()));
@@ -426,7 +431,7 @@ impl Runtime {
                     queued = true;
                 }
             }
-            if callback.is_some() || queued {
+            if queued {
                 self.drain_behavior();
                 return;
             }
@@ -451,7 +456,8 @@ impl Runtime {
         }
         view.release = ReleaseStage::Forwarded;
         generation.groups.commit_release(note.0.index, stage);
-        self.advance_release_stage(note, stage + 1);
+        // Revisit this stage: it now releases its linked children, then moves on.
+        self.advance_release_stage(note, stage);
         Ok(true)
     }
 
