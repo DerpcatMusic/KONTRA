@@ -265,6 +265,11 @@ pub enum Instruction {
     Signal {
         signal: u16,
     },
+    /// 1 when an input key equal to `local`'s value is held on a note of
+    /// this callback's plan, else 0 (KSP `%KEY_DOWN`).
+    ReadKeyHeld {
+        local: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,6 +419,7 @@ impl Program {
             | Instruction::WaitLocal { local }
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
+            | Instruction::ReadKeyHeld { local }
             | Instruction::ReadNoteCell { local, .. }
             | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
@@ -1373,6 +1379,22 @@ impl Runtime {
                 let group = *self.local_cell_mut(id, group)?;
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_envelope(plan, group, stage, value)?;
+            }
+            Instruction::ReadKeyHeld { local } => {
+                let plan = self.behavior_plan(owner)?;
+                let key = *self.local_cell_mut(id, local)?;
+                // ponytail: scans every note slot; a per-key count if notes grow large.
+                let held = self
+                    .notes
+                    .slots
+                    .iter()
+                    .filter_map(|s| s.value.as_ref())
+                    .any(|n| {
+                        n.plan == plan
+                            && n.key_down()
+                            && n.input.is_some_and(|i| i64::from(i.key) == key)
+                    });
+                *self.local_cell_mut(id, local)? = i64::from(held);
             }
             Instruction::Signal { signal } => {
                 let plan = self.behavior_plan(owner)?;
