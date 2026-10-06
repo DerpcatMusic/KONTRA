@@ -107,3 +107,53 @@ history stays per voice. This is a separate explicitly voice-scoped destination,
 not an extension that changes the existing gain/balance/pitch projection contract.
 Native link/snapshot/detach and MPE released-member reuse checks cover audible output.
 Full modulation graphs and source-profile parameter laws remain required work.
+
+## Per-voice modulation programs
+
+`crates/sampler-core/src/voice_mod.rs` executes voice-scoped modulation lowered
+from the IR (`Zone::routes`, `Instrument::routes/shapes/modulators`). It is a
+second scope beside the event-rate note projection above, with its own rate.
+
+- **Sources**: LFOs (sine, triangle, square, saw up/down, sample-and-hold, random
+  ramp; Hz or beats at `Runtime::set_tempo`; start phase, delay, fade-in;
+  retriggered per voice or free-running on the runtime clock), extra
+  delay-attack-hold-decay-sustain-release envelopes gated by the voice's family,
+  velocity, key, controller (effective performance CC), note pressure, note
+  timbre, per-voice random and constant. LFOs are bipolar, the rest unipolar.
+- **Route pipeline**: invert (unipolar `1 − v`, bipolar `−v`), piecewise-linear
+  shape, one-pole lag reaching 99% in the authored time (Kontakt's lag law).
+- **Targets and laws**: attenuate `gain × (1 − d(1 − u))` (Kontakt volume),
+  decibels `gain × 10^(d·v/20)`, pan `+ d·v` (balance, saturated), pitch
+  `+ d·v` semitones, chain SVF cutoff `× 2^(d·v/12)` and Q `× 10^(d·v/20)`, a
+  per-voice tone low-pass that closes `d·v` semitones below 0.45·rate when the
+  sum is negative (bypassed at 0), and sample start `+ d·u × start_range`
+  evaluated once at voice start.
+- **Rate**: every source and route is evaluated once per render chunk (at most
+  `dsp::BLOCK` = 64 frames, chunked whenever any plan carries programs), at the
+  chunk end. Gain and pan ramp linearly from the previous control point, so
+  partitions aligned to a knee reproduce it exactly; pitch, cutoff, Q and tone
+  hold the chunk midpoint. Modulated pitch is clamped to the resampler's step
+  range. There is no per-sample enum dispatch.
+- **Memory**: programs are flat boxed slices; per-voice state (LFO phases,
+  envelope states, lagged route values, last control point, tone integrators)
+  is structure-of-arrays sized at plan preparation for the largest program and
+  the voice limit. Rendering and starting voices never allocate (heap-guarded
+  tests in `tests/voice_mod.rs`).
+- **Cutoff/Q** reach the voice chain through `FilterBank::modulation`, which
+  bypasses the shared coefficient cache only for a modulated voice. Lowering
+  accepts cutoff/Q routes only when the zone chain has exactly one 2-pole SVF.
+
+## Native MPE defaults
+
+`lower::Options::default()` adds to every zone: note pressure → `+6 dB` gain at
+full pressure, and timbre → the tone low-pass, open from centre (CC74 64) up and
+closing to 60 semitones below open at CC74 0. Per-note pitch bend is the note's
+native expression bend (sampler-midi member-channel bend), so IR pitch-bend →
+pitch routes are not lowered as modulation. All defaults are identity at rest;
+`Expression::default().timbre` is centre. `Options { mpe: None }` (and
+`sampler_kontakt::Options::mpe`) turns them off.
+
+Measured on the ignored `measure_modulation_cost_per_voice` (64 looping
+resampled voices, release build): plain voice 24.7 ns per voice-frame; with the
+pressure route 26.5; with a closed tone filter 31.3; an SVF voice chain 32.3,
+plus LFO pitch/pan, envelope gain and LFO cutoff 35.0.
