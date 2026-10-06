@@ -108,6 +108,15 @@ impl Bank {
             .map_err(|e| access::failure_reason(&e))
     }
 
+    /// Decode a resource or mono-channel bundle without translating the program.
+    pub fn decode_resource(
+        &self,
+        program_path: &str,
+        path: &str,
+    ) -> Result<sampler_kontakt::Decoded, String> {
+        crate::audio::decode(&self.resource(program_path, path)?).map(|(audio, _)| audio)
+    }
+
     fn resource_inner(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>> {
         resources(&self.directory, program_path, path)?
             .iter()
