@@ -1,6 +1,5 @@
 //! `KONTRA_IMPORT_HASH`: a hash of the sources that decide what an import
-//! produces, so the instrument cache (`src/cache.rs`) drops entries written
-//! by any other importer.
+//! produces, recorded in load diagnostics.
 
 use std::path::Path;
 use std::{
@@ -10,14 +9,9 @@ use std::{
 };
 
 const SOURCES: &[&str] = &[
-    "src/import.rs",
-    "src/modulation.rs",
-    "src/cache.rs",
-    "src/audio.rs",
-    "src/fx",
-    "src/ksp/mod.rs",
-    "src/engine/filter.rs",
-    "vendor/ni-file/src",
+    "crates/sampler-ir/src",
+    "crates/sampler-kontakt/src",
+    "crates/sampler-core/src/lower.rs",
 ];
 
 fn main() {

@@ -22,16 +22,35 @@ pub enum Value {
     Bits32(u32),
 }
 impl Value {
-    // Exact full-scale projection to the native domain, not UMP bit-depth translation.
-    // Decoded wire values have already passed their bit-range validation.
+    /// MIDI 2.0 (M2-104) min-center-max upscaling to 32 bits: zero, center
+    /// and maximum land exactly on 0, 0x8000_0000 and u32::MAX, and the high
+    /// bits still read back the original value.
     fn full_scale(self) -> u32 {
-        let (value, max) = match self {
-            Self::Bits7(v) => (u64::from(v), 127),
-            Self::Bits14(v) => (u64::from(v), 16383),
-            Self::Bits16(v) => (u64::from(v), 65535),
+        let (value, bits) = match self {
+            Self::Bits7(v) => (u32::from(v), 7),
+            Self::Bits14(v) => (u32::from(v), 14),
+            Self::Bits16(v) => (u32::from(v), 16),
             Self::Bits32(v) => return v,
         };
-        (value * u64::from(u32::MAX) / max) as u32
+        let scale = 32 - bits;
+        let shifted = value << scale;
+        if value <= 1 << (bits - 1) {
+            return shifted;
+        }
+        // Above center, repeat the low source bits through the new low bits.
+        let repeat_bits = bits - 1;
+        let low = value & ((1 << repeat_bits) - 1);
+        let mut repeat = if scale > repeat_bits {
+            low << (scale - repeat_bits)
+        } else {
+            low >> (repeat_bits - scale)
+        };
+        let mut out = shifted;
+        while repeat != 0 {
+            out |= repeat;
+            repeat >>= repeat_bits;
+        }
+        out
     }
 
     /// Exact integer precision is retained until a consumer asks for normalization.

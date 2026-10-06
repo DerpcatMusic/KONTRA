@@ -24,8 +24,8 @@ Full input address and protocol reach the core's physical-note matching; note-of
 uses its FIFO overlap policy. Optional normalized release velocity reaches the
 [note-owned release context](RELEASE_CONTEXT.md); raw velocity and attributes are
 also returned to the caller. Both ordinary ingress and fixed-zone MPE preserve
-missing velocity separately from zero. Unknown release attributes do not strand a note. Unsupported Note On
-attributes return `Unsupported` without creating a partial note.
+missing velocity separately from zero. Unknown release attributes do not strand a note. Note On attribute
+types other than Pitch 7.9 are ignored and the note plays at its key.
 
 This is partial V2-02/V2-15 evidence, **not full MIDI 2.0 support**. Per-note and
 channel expression in ordinary ingress, management, program selection, MIDI-CI,
@@ -236,8 +236,8 @@ Channel pressure combines by maximum; CC74 combines as member plus manager minus
 member unchanged. Manager notes use neutral member values, avoiding double
 application. These are explicit native receiver choices under Appendix D, not
 claims that every vendor instrument uses the same mappings. Original 7-bit values
-remain in channel/member snapshots. Native expression receives the exact integer
-projection `floor(value * u32::MAX / 127)`; this is not UMP bit-depth translation.
+remain in channel/member snapshots. Native expression and controllers receive the
+MIDI 2.0 min-center-max upscaling, so 64 is exactly `0x8000_0000` and 127 is `u32::MAX`.
 
 As with pitch, member pressure/timbre freezes at physical key-up, and new notes use
 current idle controller state. Manager controls combine with each retained member
