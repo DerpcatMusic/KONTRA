@@ -40,12 +40,12 @@ pub struct Kontakt {
 /// and reported; a malformed container or zone table is an error.
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    let chunks = crate::read_chunks(&path)?;
+    let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
     let program = Program::try_from(
         chunks
             .find_first(PROGRAM)
@@ -66,7 +66,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             (t.sample_filetable, t.other_filetable)
         }
     };
-    translate(path, program, table, others)
+    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
@@ -74,12 +74,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
 pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    let chunks = crate::read_chunks(&path)?;
+    let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
     let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
         .map_err(|e| decode("multi bank", e))?;
     let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
@@ -99,7 +99,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
-    translate(path, program, table, others)
+    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
@@ -112,7 +112,7 @@ fn translate(
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
     let params = program
         .params()
         .map_err(|e| decode("program parameters", e))?;
