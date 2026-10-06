@@ -1433,6 +1433,31 @@ impl Gen<'_, '_> {
                 self.write_param(ParamScope::Note, target, dst, args, Some(2))?;
                 true
             }
+            // "From script" modulator values (Kontakt 6.6+), per source event.
+            SetEventParArr | GetEventParArr
+                if self.const_int(args, 1) == Some(b::event_par::MOD_VALUE_ID)
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                let id = reg(dst, 2)?;
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventParArr {
+                    self.arg(args, 2, t)?;
+                    self.arg(args, 3, id)?;
+                    self.emit(I::WriteModValue {
+                        event: dst,
+                        id,
+                        local: t,
+                    })?;
+                } else {
+                    self.arg(args, 2, id)?;
+                    self.emit(I::ReadModValue {
+                        event: dst,
+                        id,
+                        local: dst,
+                    })?;
+                }
+                true
+            }
             SetEventPar | GetEventPar
                 if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
             {
