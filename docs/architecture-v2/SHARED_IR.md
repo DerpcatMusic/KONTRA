@@ -16,7 +16,8 @@ clarification makes it explicit. Do not build a complete engine per format.
 
 Current code implements pieces of the semantic/prepared representations through
 `Region`, `Playback`, `Envelope`, `Modulation`, control definitions, selection
-policies, `Program`/`Instruction` and `Prepared`. These are real shared execution
+policies, independently bound script-instance integer banks, `Program`/`Instruction`
+and `Prepared`. These are real shared execution
 paths, not a completed universal instrument schema. KSP already lowers to the
 native behavior instruction set. A new source frontend must use those same owners.
 Kontakt-container and UVI source frontends are active required work. SFZ and all

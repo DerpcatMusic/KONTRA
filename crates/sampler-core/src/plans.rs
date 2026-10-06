@@ -34,6 +34,7 @@ pub struct PlanTransfer {
     pub prepared: Box<Prepared>,
     sequences: super::variation::SequenceState,
     controls: super::control::ControlState,
+    scripts: Box<[Box<[i64]>]>,
 }
 
 pub(super) struct Generation {
@@ -43,6 +44,7 @@ pub(super) struct Generation {
     pub callbacks: usize,
     pub sequences: super::variation::SequenceState,
     pub controls: super::control::ControlState,
+    pub scripts: Box<[Box<[i64]>]>,
 }
 
 pub(super) struct PlanQueues {
@@ -85,11 +87,13 @@ impl PlanControl {
         let request = self.sequence + 1;
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
+        let scripts = prepared.script_initial.clone();
         match self.pending.push(PlanTransfer {
             request,
             prepared,
             sequences,
             controls,
+            scripts,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -191,6 +195,7 @@ impl Runtime {
                 prepared: generation.prepared,
                 sequences: generation.sequences,
                 controls: generation.controls,
+                scripts: generation.scripts,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -201,6 +206,7 @@ impl Runtime {
                             prepared: plan.prepared,
                             sequences: plan.sequences,
                             controls: plan.controls,
+                            scripts: plan.scripts,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -240,6 +246,7 @@ impl Runtime {
                     prepared: plan.prepared,
                     sequences: plan.sequences,
                     controls: plan.controls,
+                    scripts: plan.scripts,
                     notes: 0,
                     callbacks: 0,
                 })

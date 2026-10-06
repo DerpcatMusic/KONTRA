@@ -67,6 +67,15 @@ pub enum Instruction {
         cell: u16,
         local: u16,
     },
+    /// Access the program's own script instance, shared across its callbacks.
+    ReadScriptCell {
+        local: u16,
+        cell: u16,
+    },
+    WriteScriptCell {
+        cell: u16,
+        local: u16,
+    },
     /// Read/write integer controls in the originating plan generation.
     ReadControl {
         local: u16,
@@ -99,10 +108,17 @@ pub struct Program {
     pub(super) code: Box<[Instruction]>,
     pub(super) locals: usize,
     pub(super) note_cells: usize,
+    pub(super) script_cells: usize,
+    pub(super) script_instance: Option<super::ScriptInstanceId>,
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
 }
 impl Program {
+    pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
+        self.script_instance = Some(instance);
+        self
+    }
+
     /// Whether any instruction needs a musical note context, including dead code.
     pub fn requires_note(&self) -> bool {
         self.requires_note
@@ -116,6 +132,7 @@ impl Program {
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
         let mut locals = 0;
         let mut note_cells = 0;
+        let mut script_cells = 0;
         for op in &code {
             match *op {
                 Instruction::Play {
@@ -133,6 +150,8 @@ impl Program {
             }
             if let Instruction::SetLocal { local, .. }
             | Instruction::AddLocal { local, .. }
+            | Instruction::ReadScriptCell { local, .. }
+            | Instruction::WriteScriptCell { local, .. }
             | Instruction::ReadControl { local, .. }
             | Instruction::WriteControl { local, .. }
             | Instruction::ReadKey { local }
@@ -151,6 +170,11 @@ impl Program {
             {
                 note_cells = note_cells.max(usize::from(cell) + 1);
             }
+            if let Instruction::ReadScriptCell { cell, .. }
+            | Instruction::WriteScriptCell { cell, .. } = *op
+            {
+                script_cells = script_cells.max(usize::from(cell) + 1);
+            }
         }
         let requires_note = code.iter().any(|op| {
             matches!(
@@ -167,6 +191,8 @@ impl Program {
             code: code.into_boxed_slice(),
             locals,
             note_cells,
+            script_cells,
+            script_instance: None,
             wait_lifetime: WaitLifetime::Gate,
         })
     }
@@ -288,7 +314,7 @@ impl Runtime {
         Ok(id)
     }
 
-    fn behavior_plan(&self, owner: BehaviorOwner) -> Result<super::PlanId, Error> {
+    pub(super) fn behavior_plan(&self, owner: BehaviorOwner) -> Result<super::PlanId, Error> {
         match owner {
             BehaviorOwner::Note(note) => self.note_plan(note),
             BehaviorOwner::Plan(plan) => {
@@ -466,6 +492,14 @@ impl Runtime {
             Instruction::WriteNoteCell { cell, local } => {
                 let index = self.note_cell_index(owner.note()?, cell)?;
                 self.note_values[index] = *self.local_cell_mut(id, local)?;
+            }
+            Instruction::ReadScriptCell { local, cell } => {
+                let value = *self.behavior_script_cell_mut(id, cell)?;
+                *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::WriteScriptCell { cell, local } => {
+                let value = *self.local_cell_mut(id, local)?;
+                *self.behavior_script_cell_mut(id, cell)? = value;
             }
             Instruction::ReadControl { local, control } => {
                 let plan = self.behavior_plan(owner)?;

@@ -530,3 +530,225 @@ fn plan_callback_faults_cancel_without_touching_musical_owners_or_leaking_work()
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn script_instances_share_only_their_own_generation_across_notes_and_ui_callbacks() {
+    let note_code = vec![
+        Instruction::ReadKey { local: 0 },
+        Instruction::WriteScriptCell { cell: 0, local: 0 },
+        Instruction::Wait(4),
+        Instruction::ReadScriptCell { local: 1, cell: 0 },
+    ];
+    let ui_code = vec![
+        Instruction::ReadScriptCell { local: 0, cell: 0 },
+        Instruction::AddLocal { local: 0, value: 3 },
+        Instruction::WriteScriptCell { cell: 0, local: 0 },
+        Instruction::Wait(2),
+        Instruction::ReadScriptCell { local: 1, cell: 0 },
+    ];
+    let prepared = plan(vec![])
+        .with_script_instances(vec![vec![5], vec![100]])
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(note_code)
+                    .unwrap()
+                    .with_script_instance(ScriptInstanceId(0)),
+                Program::new(ui_code.clone())
+                    .unwrap()
+                    .with_script_instance(ScriptInstanceId(0))
+                    .with_wait_lifetime(WaitLifetime::Callback),
+                Program::new(ui_code)
+                    .unwrap()
+                    .with_script_instance(ScriptInstanceId(1))
+                    .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap();
+    let (mut rt, mut transfer) = Runtime::with_plan_updates(
+        prepared,
+        Limits {
+            behaviors: 4,
+            commands: 4,
+            behavior_cells: 8,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
+    let old = rt.active_plan();
+    let mut notes = [None; 2];
+    let mut callbacks = [None; 4];
+    support::without_heap(|| {
+        for i in 0..2 {
+            let key = 60 + i as u8;
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key,
+                external_id: Some(i as i32),
+            };
+            let note = rt.note_on(input, key, 1.).unwrap();
+            notes[i] = Some(note);
+            callbacks[i] = Some(rt.start_behavior(note, 0).unwrap());
+        }
+        callbacks[2] = Some(rt.start_plan_behavior(old, 1).unwrap());
+        callbacks[3] = Some(rt.start_plan_behavior(old, 2).unwrap());
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(0), 0), Ok(64));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(1), 0), Ok(103));
+        assert_eq!(
+            rt.script_cell(old, ScriptInstanceId(2), 0),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(
+            rt.script_cell(old, ScriptInstanceId(0), 1),
+            Err(Error::InvalidInput)
+        );
+    });
+    transfer
+        .submit(Box::new(
+            plan(vec![])
+                .with_script_instances(vec![vec![-1], vec![-2]])
+                .unwrap(),
+        ))
+        .unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        let new = rt.active_plan();
+        rt.render(&mut [[0.; 2]; 5]).unwrap();
+        for (i, expected) in [64, 64, 64, 103].into_iter().enumerate() {
+            assert_eq!(rt.behavior_local(callbacks[i].unwrap(), 1), Ok(expected));
+            assert_eq!(
+                rt.behavior_outcome(callbacks[i].unwrap()),
+                Ok(Some(Outcome::Finished))
+            );
+        }
+        for (i, expected) in [60, 61, 64, 103].into_iter().enumerate() {
+            assert_eq!(rt.behavior_local(callbacks[i].unwrap(), 0), Ok(expected));
+        }
+        assert_eq!(rt.script_cell(new, ScriptInstanceId(0), 0), Ok(-1));
+        assert_eq!(rt.script_cell(new, ScriptInstanceId(1), 0), Ok(-2));
+        for note in notes {
+            rt.key_up(note.unwrap(), None).unwrap();
+        }
+        rt.flush_behaviors(|_, _, _| false);
+        rt.flush_ended(|_| panic!("script callbacks still pin their notes"));
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.collect_retired_plans(), 1);
+        assert_eq!(
+            rt.script_cell(old, ScriptInstanceId(0), 0),
+            Err(Error::StaleHandle)
+        );
+        assert_eq!(rt.script_cell(new, ScriptInstanceId(0), 0), Ok(-1));
+    });
+    drop(transfer.retired().unwrap());
+}
+
+#[test]
+fn script_state_layout_and_callback_binding_are_validated_before_activation() {
+    let code = || Program::new(vec![Instruction::ReadScriptCell { local: 0, cell: 1 }]).unwrap();
+    assert!(matches!(
+        plan(vec![]).with_programs(vec![code()], None),
+        Err(Error::InvalidInput)
+    ));
+    for (instance, banks) in [(0, vec![]), (0, vec![vec![1]]), (1, vec![vec![1, 2]])] {
+        assert!(matches!(
+            plan(vec![])
+                .with_script_instances(banks)
+                .unwrap()
+                .with_programs(
+                    vec![code().with_script_instance(ScriptInstanceId(instance))],
+                    None
+                ),
+            Err(Error::InvalidInput)
+        ));
+    }
+    let p = plan(vec![])
+        .with_script_instances(vec![vec![1, 2]])
+        .unwrap()
+        .with_programs(vec![code().with_script_instance(ScriptInstanceId(0))], None)
+        .unwrap();
+    assert!(matches!(
+        p.with_script_instances(vec![vec![1]]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        plan(vec![]).with_script_instances(vec![vec![0; 65537]]),
+        Err(Error::Capacity)
+    ));
+    assert!(matches!(
+        plan(vec![]).with_script_instances(vec![vec![]; 65537]),
+        Err(Error::Capacity)
+    ));
+    let p = plan(vec![])
+        .with_script_instances(vec![vec![0]])
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![Instruction::ReadScriptCell { local: 2, cell: 0 }])
+                    .unwrap()
+                    .with_script_instance(ScriptInstanceId(0)),
+            ],
+            None,
+        )
+        .unwrap();
+    assert!(matches!(Runtime::new(p, limits()), Err(Error::Capacity)));
+}
+
+#[test]
+fn script_writes_survive_callback_fault_cancel_and_slot_reuse_without_resetting_the_instance() {
+    let programs = vec![
+        vec![
+            Instruction::SetLocal { local: 0, value: 7 },
+            Instruction::WriteScriptCell { cell: 0, local: 0 },
+            Instruction::Wait(10),
+            Instruction::SetLocal { local: 0, value: 9 },
+            Instruction::WriteScriptCell { cell: 0, local: 0 },
+        ],
+        vec![
+            Instruction::ReadScriptCell { local: 0, cell: 1 },
+            Instruction::AddLocal { local: 0, value: 1 },
+        ],
+        vec![Instruction::ReadScriptCell { local: 0, cell: 0 }],
+    ]
+    .into_iter()
+    .map(|code| {
+        Program::new(code)
+            .unwrap()
+            .with_script_instance(ScriptInstanceId(0))
+            .with_wait_lifetime(WaitLifetime::Callback)
+    })
+    .collect();
+    let p = plan(vec![])
+        .with_script_instances(vec![vec![0, i64::MAX]])
+        .unwrap()
+        .with_programs(programs, None)
+        .unwrap();
+    let mut rt = Runtime::new(p, limits()).unwrap();
+    support::without_heap(|| {
+        let plan = rt.active_plan();
+        let writer = rt.start_plan_behavior(plan, 0).unwrap();
+        let fault = rt.start_plan_behavior(plan, 1).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(fault),
+            Ok(Some(Outcome::Fault(Error::ArithmeticOverflow)))
+        );
+        rt.cancel_behavior(writer).unwrap();
+        assert_eq!(rt.pending_commands(), 0);
+        rt.render(&mut [[0.; 2]; 11]).unwrap();
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(7));
+        assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(i64::MAX));
+        rt.flush_behaviors(|_, _, _| true);
+        let reader = rt.start_plan_behavior(plan, 2).unwrap();
+        assert_eq!(rt.behavior_local(reader, 0), Ok(7));
+        assert_eq!(rt.behavior_local(writer, 0), Err(Error::StaleHandle));
+        rt.flush_behaviors(|_, _, _| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+}

@@ -48,7 +48,9 @@ native services. No compatibility path to the old KONTRA engine is introduced.
   polyphonic declarations, scalar assignment and note/release source dispatch now
   exercise these services. Native physical-held queries and signed comparisons
   also back nested scalar conditionals and callback exit, with retained waits.
-  Typed arithmetic and remaining state semantics stay open.
+  Script-instance integer globals now share state across note/release/UI callbacks
+  and waits without sharing polyphonic cells. Typed arithmetic, initialization
+  execution, persistence and remaining state semantics stay open.
   [NI variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#polyphonic----polyphonic-integer-).
 - Callback identity and event identity are separate; waits need retained callback
   context and cancellation. Controller callbacks must not require fabricated note

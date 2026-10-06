@@ -140,7 +140,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   The new KSP frontend now lowers polyphonic declarations, scalar assignment and
   note/release callbacks onto those services. Physical held-state reads, nested
   scalar conditionals, while/continue and callback exit now execute with bounded code/registers
-  and heap-checked overlapping-owner fixtures. Full typed arithmetic and broader
+  and heap-checked overlapping-owner fixtures. Separate script-instance integer banks
+  now execute ordinary KSP globals across note/release/UI callbacks and retain old
+  generations independently from new initial values. Full typed arithmetic and broader
   language/state/controller work stay open.
 
 - [ ] **P0; dependencies:** V2-03/04.

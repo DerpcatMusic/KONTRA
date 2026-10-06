@@ -171,6 +171,7 @@ for source in sources:
         section['source'] = BASE + page + ('#' + section['anchor'] if section['anchor'] else '')
         if (page, section['title']) in [
             ('callbacks', 'on note'), ('callbacks', 'on release'), ('callbacks', 'on init'),
+            ('variables', '$ (integer variable)'),
             ('variables', 'polyphonic $ (polyphonic integer)'),
             ('general-commands', 'play_note()'), ('general-commands', 'exit'),
             ('control-statements', 'Boolean Operators'),
