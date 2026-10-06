@@ -697,6 +697,8 @@ pub(crate) fn rack_controls(selection: &Selection) -> Vec<PartControls> {
                     solo: p.solo,
                     aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
                     aux_gain: db_gain(p.aux_gain),
+                    mpe: p.mpe,
+                    bend_range: p.bend_range.min(96),
                 })
                 .unwrap_or_default()
         })

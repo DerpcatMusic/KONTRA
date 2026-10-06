@@ -13,8 +13,10 @@
 //! Kontakt samples stream: start data stays resident and the rest is read
 //! from disk ahead of each voice.
 //!
-//! Not yet: member-channel MPE (every channel plays the zone's manager channel),
-//! per-note controllers and program changes (counted), a sample-rate change
+//! A part plays its MIDI on the zone's manager channel, or as an MPE lower
+//! zone with member channels at its bend range.
+//!
+//! Not yet: per-note controllers and program changes (counted), a sample-rate change
 //! without reloading.
 
 use std::path::Path;
@@ -28,7 +30,7 @@ use sampler_ir as ir;
 use sampler_midi::{ApplyError, Mpe, Packets, Zone};
 
 use super::event::{Event, HostNote, NoteExpression};
-use super::mix::{Mix, Peaks, balance};
+use super::mix::{Mix, PartControls, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
@@ -60,6 +62,10 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    /// Notes keep their member channel ([`PartControls::mpe`]).
+    mpe_zone: bool,
+    /// The bend range last sent to the zone, 0 for its default.
+    bend_range: u8,
     /// Frames ahead of the clock that streamed voices read, if any stream.
     horizon: Option<u32>,
     /// Kept alive while the part plays; dropped with it, off the audio thread.
@@ -81,9 +87,28 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            mpe_zone: false,
+            bend_range: 0,
             horizon: None,
             _stream: None,
         })
+    }
+
+    /// Follow the part's tuning, MPE and bend range settings.
+    fn configure(&mut self, c: &PartControls) {
+        if self.tune != c.tune && self.mpe.transpose(&mut self.runtime, f64::from(c.tune)).is_ok() {
+            self.tune = c.tune;
+        }
+        let changed = (self.mpe_zone, self.bend_range) != (c.mpe, c.bend_range);
+        self.mpe_zone = c.mpe;
+        if changed && c.bend_range > 0 {
+            // Registered controller 0:0 on the manager and a member channel
+            // (members share one range), semitones in the top seven bits.
+            for channel in [0, 1] {
+                wire_packet(self, &[0x4020_0000 | channel << 16, u32::from(c.bend_range) << 25]);
+            }
+        }
+        self.bend_range = c.bend_range;
     }
 
     /// Apply node settings to the runtime's buses.
@@ -148,22 +173,29 @@ fn wire(key: u8, external_id: Option<i32>) -> Input {
 }
 
 /// A host note's owner on the wire, distinct from MIDI notes by its ID; notes
-/// without one (VST3) get a negative ID per channel.
-fn host_input(note: HostNote) -> Input {
-    wire(note.key, Some(if note.id >= 0 { note.id } else { -1 - i32::from(note.channel) }))
+/// without one (VST3) get a negative ID per channel. In an MPE zone it keeps
+/// its member channel.
+fn host_input(note: HostNote, mpe: bool) -> Input {
+    let id = if note.id >= 0 { note.id } else { -1 - i32::from(note.channel) };
+    Input { channel: if mpe { note.channel & 15 } else { WIRE.channel }, ..wire(note.key, Some(id)) }
 }
 
 fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |p, x| p.max(x.abs()))
 }
 
-/// A MIDI 1.0 channel voice message into `part`'s zone, on its manager channel.
+/// A MIDI 1.0 channel voice message into `part`'s zone, on its manager
+/// channel, or in an MPE zone on its own.
 fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
-    wire_packet(part, &[0x2000_0000 | u32::from(status & 0xf0) << 16 | u32::from(a & 127) << 8 | u32::from(b & 127)]);
+    wire_packet(part, &[0x2000_0000 | u32::from(status) << 16 | u32::from(a & 127) << 8 | u32::from(b & 127)]);
 }
 
-/// A channel voice packet into `part`'s zone as is, on its group and manager channel.
+/// A channel voice packet into `part`'s zone on its group, and on its manager
+/// channel unless the zone is MPE.
 fn wire_packet(part: &mut Part, words: &[u32]) {
+    let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
+    words[0] &= if part.mpe_zone { 0xf0ff_ffff } else { 0xf0f0_ffff };
+    let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
     if let Some(Ok(packet)) = Packets::new(words).next()
         && let Err(ApplyError::Core(sampler_core::Error::Capacity)) = part.mpe.apply(&mut part.runtime, packet)
     {
@@ -220,9 +252,9 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         (2 | 4, 0xb0) if a == 123 => {
             let _ = part.runtime.all_notes_off(WIRE);
         }
-        (2, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0) => wire_event(part, status, a, b),
+        (2, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0) => wire_event(part, status | channel, a, b),
         // Notes, controllers, registered controllers (bend range), pressure, bend.
-        (4, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word & 0xf0f0_ffff, data]),
+        (4, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word, data]),
         _ => part.problems.ignored_input += 1,
     }
 }
@@ -235,8 +267,8 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 *overflow += 1;
                 return;
             }
-            let input = host_input(note);
-            let id = match part.mpe.trigger(&mut part.runtime, WIRE.channel, input, velocity.clamp(0.0, 1.0)) {
+            let input = host_input(note, part.mpe_zone);
+            let id = match part.mpe.trigger(&mut part.runtime, input.channel, input, velocity.clamp(0.0, 1.0)) {
                 Ok(id) => id,
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
                     part.problems.capacity_drops += 1;
@@ -304,7 +336,7 @@ impl V2Core {
 
     fn reaches(&self, part: usize, port: u8, channel: Option<u8>) -> bool {
         self.mix.parts.get(part).is_some_and(|c| {
-            c.port == port && (c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
+            c.port == port && (c.mpe || c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
         })
     }
 
@@ -344,12 +376,8 @@ impl Core for V2Core {
         for held in self.held.iter_mut().filter(|h| h.part == part) {
             held.part = ORPHAN;
         }
-        let tune = self.mix.parts.get(part).map_or(0.0, |c| c.tune);
-        if let Some(p) = prepared.as_mut()
-            && tune != 0.0
-            && p.mpe.transpose(&mut p.runtime, f64::from(tune)).is_ok()
-        {
-            p.tune = tune;
+        if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
+            p.configure(c);
         }
         Retired(std::mem::replace(slot, prepared))
     }
@@ -498,9 +526,7 @@ impl Core for V2Core {
         self.mix.buses = mix.buses;
         for (index, (p, c)) in self.parts.iter_mut().zip(&self.mix.parts).enumerate() {
             let Some(p) = p else { continue };
-            if p.tune != c.tune && p.mpe.transpose(&mut p.runtime, f64::from(c.tune)).is_ok() {
-                p.tune = c.tune;
-            }
+            p.configure(c);
             p.mix_nodes(mix.nodes.get(index).map_or(&[], Vec::as_slice));
         }
     }
@@ -1015,6 +1041,31 @@ mod tests {
         assert_eq!(ended, [note]);
         core.event(0, Event::Ump([0x40c3_0000, 0]));
         assert_eq!(core.problems(0).ignored_input, 1, "program change is counted, not dropped silently");
+    }
+
+    #[test]
+    fn mpe_member_channels_bend_their_own_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        sine(&path);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default();
+        (mix.parts[0].mpe, mix.parts[0].channel, mix.parts[0].bend_range) = (true, 0, 12);
+        core.set_mix(&mix);
+        core.install(0, load(&path));
+        let pitch = |core: &V2Core, at: usize| {
+            let part = core.parts[0].as_ref().unwrap();
+            let id = part.runtime.expression_id(core.held[at].id).unwrap();
+            part.runtime.expression(id).unwrap().pitch_semitones
+        };
+        core.event(0, on(HostNote { port: 0, channel: 1, key: 60, id: 1, clap: true }));
+        core.event(0, on(HostNote { port: 0, channel: 2, key: 64, id: 2, clap: true }));
+        core.event(0, Event::midi1(0xe1, 127, 127));
+        assert!((pitch(&core, 0) - 12.0).abs() < 0.01, "member bend at the part's range: {}", pitch(&core, 0));
+        assert_eq!(pitch(&core, 1), 0.0, "another member's note stays");
+        // The manager channel bends the whole zone, at its own range.
+        core.event(0, Event::midi1(0xe0, 127, 127));
+        assert!(pitch(&core, 1) > 1.0);
     }
 
     #[test]
