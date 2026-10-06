@@ -47,8 +47,10 @@ right-click, and confusing multi-output routing.
   the output tree. Report is the selected part's load report. Logs is the raw trace.
   v1's Mapping, Sound and Info tabs become views inside a part (below), not global
   tabs, because they are always about one instrument.
-- **Keyboard.** Mapped keys come from `Decoded.keys`; keyswitch keys are marked in the
-  articulation colour. **[next]**
+- **Keyboard.** Mapped keys come from `Decoded.keys`. Keyswitch keys
+  (`Articulation.switch_keys`) are deep in the part's hue, and the playing
+  articulation's key is lit. **[built]** Script key colours (`set_key_color`) wait for
+  Core gap 6. **[core]**
 
 ## Browser
 
@@ -81,10 +83,22 @@ pan, mute/solo, collapse), and below it the part's **stage**.
   "N MIDI messages ignored". These are short and actionable. **[built]**
 - **Instrument sub-views per part**, replacing the old global tabs: Interface (the
   stage), Articulations, Mapping, Sound (envelopes, filter, modulation as the core
-  exposes them) and Info. They switch with a segmented control in the part header.
-  **[next]**
+  exposes them) and Info. They switch with a segmented control above the stage, and
+  only views with content are offered. All of them read `PartView.instrument` (the
+  translated `sampler_ir::Instrument`). **[built]** (`src/ui/inside.rs`)
+  - Mapping: groups listed with zone counts, and a key × velocity map; clicking a
+    group picks it out.
+  - Sound: each distinct amplitude envelope (drawn, with A/D/S/R and the zones that
+    use it), filters, and modulation routes. Read-only until the Core takes edits.
+  - Info: file, format, contents, keys, untranslated count, and picture memory.
+- **MIDI menu** (the input button in the part header): channel, port, **MPE** and
+  **bend range** (as the instrument, ±2, ±12, ±24, ±48). These are stored as
+  `Part.mpe` and `Part.bend_range`; the Core applies them (Core gap 7). **[built, core]**
+- **Snapshots** wait for script control readback (Core gap 1). A snapshot without
+  the script's values would restore only the mixer. **[core]**
+- **Disk and RAM meters** wait for Core gap 8. **[core]**
 
-### Articulations (SINE model) **[next, core]**
+### Articulations (SINE model) **[built, core]**
 
 ```
 ┌ Articulations ─────────── trigger: [Keyswitch ▾]  Remap all… ┐
@@ -144,11 +158,11 @@ and `Part.nodes` (`NodeMix`) into it.
     (on instruments) Automatic.
   - Picking marks the node manual; Automatic hands it back to `routing::apply`.
   - By default every instrument gets its own pair. "One per mic" (the Outputs
-    setting, in Console for now) also gives each top-level bus its own pair.
+    menu in the mixer toolbar) also gives each top-level bus its own pair.
 - **Solo follows the tree.** Ancestors and descendants of a soloed node stay audible
   (`tree::audible`).
-- **The flat Console** (v1's bus mixer) stays one click away (Tree | Console) for
-  players who think in host buses.
+- **The tree is the only mixer.** The flat Console is gone; the toolbar keeps Outputs
+  and a master spectrum.
 - **Mic load/unload per node** (SINE) is the purge control for RAM. It needs a
   per-node "resident" flag from the Core (Core gap 4). **[core]**
 
@@ -273,3 +287,16 @@ Known limits of Vector:
 5. **Pictures in the loader.** The loader fills `ImageMeta.size` and reads `.txt` from
    `.nkr` containers. The KSP UI snapshot should be taken after persistence is
    restored, and empty picture names should not be emitted.
+6. **Script key colours.** `PartView.keys: Arc<[KeyLook; 128]>` with
+   `KeyLook { color: Option<u8> /* $KEY_COLOR_* index */, name: Option<String>, control: bool }`,
+   snapshotted after `on init` and persistence, and again when a script changes them.
+7. **MPE and bend range.** Read `Part.mpe` (lower zone, manager channel 1, so
+   `sampler_midi::Mpe` binds the part's domain) and `Part.bend_range` (semitones; 0
+   keeps the instrument's own) at ingress.
+8. **Disk and RAM.** `Decoded.resident_bytes: u64` (decoded PCM the part holds) and
+   `PartShared.stream: { cache_fill: AtomicU32 /* 0..=1000 */, reads_per_s: AtomicU32 }`.
+   Underruns already reach `RuntimeProblems`.
+9. **Articulation switching.** Persist `Part.switching: sampler_ir::Switching` (from
+   `v2/expression`). The UI's "Remap all" writes its `driver` field; the core applies
+   `assign_alternatives`. The articulation playing should come back as
+   `PartShared.articulation: AtomicU32`; today the UI follows switch keys itself.
