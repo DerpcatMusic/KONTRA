@@ -255,6 +255,17 @@ fn generated_maps_drive_like_their_keyswitches() {
         }
     }
     paths.sort();
+    // `KONTRA_ARTICULATION_SHARD=i/n` takes every n-th instrument from i, so a
+    // crash costs one shard.
+    let shard = std::env::var("KONTRA_ARTICULATION_SHARD")
+        .ok()
+        .and_then(|s| {
+            let (i, n) = s.split_once('/')?;
+            Some((i.parse::<usize>().ok()?, n.parse::<usize>().ok()?))
+        });
+    if let Some((i, n)) = shard {
+        paths = paths.into_iter().skip(i).step_by(n).collect();
+    }
     let (mut maps, mut failures) = (0, Vec::new());
     for path in &paths {
         let Ok(read) = sampler_kontakt::read(path) else {
@@ -350,4 +361,237 @@ fn generated_maps_drive_like_their_keyswitches() {
     }
     eprintln!("{maps} maps, {} failures", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Diagnostic: `KONTRA_PROBE=<nki>` plays its first free key and prints what
+/// the runtime did, to tell a silent patch from a silent harness.
+#[test]
+#[ignore]
+fn probe_instrument() {
+    let Some(path) = std::env::var_os("KONTRA_PROBE") else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    let ir = sampler_kontakt::read(path).unwrap().instrument;
+    let switch: Vec<u8> = ir
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.clone())
+        .collect();
+    let key = std::env::var("KONTRA_PROBE_KEY")
+        .ok()
+        .and_then(|k| k.parse().ok())
+        .unwrap_or(60u8);
+    eprintln!(
+        "articulations {} switch keys {switch:?} zones {}",
+        ir.articulations.len(),
+        ir.zones.len()
+    );
+    let mut d = decoded(path, key);
+    if std::env::var_os("KONTRA_PROBE_NOSCRIPT").is_some() {
+        d.instrument.behaviors.clear();
+    }
+    eprintln!(
+        "zones at {key}: {} behaviors {}",
+        d.instrument.zones.len(),
+        d.instrument.behaviors.len()
+    );
+    let z = &d.instrument.zones;
+    let vel = z
+        .iter()
+        .filter(|z| (z.velocities.low..=z.velocities.high).contains(&100))
+        .count();
+    let mut conds = std::collections::BTreeMap::<String, usize>::new();
+    for z in z {
+        *conds
+            .entry(format!("{:?} {:?}", z.trigger, z.conditions))
+            .or_default() += 1;
+    }
+    if let Ok(pat) = std::env::var("KONTRA_PROBE_GREP") {
+        for b in &d.instrument.behaviors {
+            let lines: Vec<&str> = b.source.lines().collect();
+            for (i, l) in lines.iter().enumerate() {
+                if pat.split(',').any(|p| l.contains(p))
+                    || pat.split(';').any(|r| {
+                        r.split_once("..").is_some_and(|(a, b)| {
+                            a.parse::<usize>().is_ok_and(|a| {
+                                b.parse::<usize>().is_ok_and(|b| (a..b).contains(&i))
+                            })
+                        })
+                    })
+                {
+                    eprintln!("SRC {i}: {l}");
+                }
+            }
+        }
+    }
+    for b in &d.instrument.behaviors {
+        eprintln!(
+            "STATE {} entries: {:?}",
+            b.state.len(),
+            &b.state[..b.state.len().min(40)]
+        );
+    }
+    if std::env::var_os("KONTRA_PROBE_GAINS").is_some() {
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let ir = &d.instrument;
+        eprintln!(
+            "GAIN instrument gain? name {} voice_limit {:?}",
+            ir.name, ir.voice_limit
+        );
+        for (i, z) in ir
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|(_, z)| (z.velocities.low..=z.velocities.high).contains(&vel))
+        {
+            let g = z.group.map(|g| &ir.groups[g.0]);
+            eprintln!(
+                "GAIN zone {i} grp {:?} zone gain {:?} pan {:?} group gain {:?} group pan {:?} vel {:?} keys {:?}-{:?} trig {:?}",
+                z.group,
+                z.gain,
+                z.pan,
+                g.map(|g| g.gain),
+                g.map(|g| g.pan),
+                z.velocity,
+                z.keys.low,
+                z.keys.high,
+                z.trigger
+            );
+        }
+    }
+    if std::env::var_os("KONTRA_PROBE_SOLO").is_some() {
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let mut groups: Vec<_> = d
+            .instrument
+            .zones
+            .iter()
+            .filter_map(|z| z.group)
+            .map(|g| g.0)
+            .collect();
+        groups.sort();
+        groups.dedup();
+        let db = |x: f64| 20.0 * (x + 1e-12).log10();
+        for g in groups {
+            let mut ir = d.instrument.clone();
+            ir.behaviors.clear();
+            ir.switching.driver = ir::Driver::Keys;
+            let kept = ir.retain_zones(|z| {
+                z.group.is_some_and(|x| x.0 == g)
+                    && (z.velocities.low..=z.velocities.high).contains(&vel)
+                    && z.trigger == ir::Trigger::Attack
+            });
+            if ir.zones.is_empty() {
+                continue;
+            }
+            let pcm: Vec<_> = kept.iter().map(|&a| d.pcm[a].clone()).collect();
+            let labels: Vec<_> = kept.iter().map(|&a| d.labels[a].clone()).collect();
+            let zones = ir.zones.len();
+            let loaded = sampler_kontakt::finish(ir, pcm, labels, &d.options).unwrap();
+            let mut words = vec![
+                0x2000_0000,
+                0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+            ];
+            words.resize(1500, 0x2000_0000);
+            let out = render(loaded, &words);
+            let sr = 48000;
+            let seg = &out[sr / 2..2 * sr];
+            let rms = (seg
+                .iter()
+                .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
+                .sum::<f64>()
+                / (2.0 * seg.len() as f64))
+                .sqrt();
+            let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            eprintln!(
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1}",
+                db(f64::from(pk)),
+                db(rms)
+            );
+        }
+    }
+    let mut tags = std::collections::BTreeMap::<String, usize>::new();
+    for z in z
+        .iter()
+        .filter(|z| (z.velocities.low..=z.velocities.high).contains(&100))
+    {
+        *tags
+            .entry(format!("{:?} grp {:?}", z.articulation, z.group))
+            .or_default() += 1;
+    }
+    eprintln!(
+        "velocity-100 articulation tags: {tags:?} owner {:?} default {:?}",
+        d.instrument.switching,
+        d.instrument
+            .articulations
+            .iter()
+            .map(|a| (a.name.clone(), a.default))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("velocity-100 zones {vel}; trigger/conditions: {conds:?}");
+    let loaded = d.drive(ir::Driver::Controller);
+    let mut feats = std::collections::BTreeMap::<String, usize>::new();
+    for u in &loaded.instrument.unsupported {
+        if u.feature != "script" {
+            *feats
+                .entry(format!("{:?} {}", u.reason, u.feature))
+                .or_default() += 1;
+        }
+    }
+    let mut warns = std::collections::BTreeMap::<String, usize>::new();
+    for u in &loaded.instrument.unsupported {
+        if u.feature.starts_with("script") {
+            *warns
+                .entry(format!("{} {}", u.feature, u.value))
+                .or_default() += 1;
+        }
+    }
+    for (w, n) in warns.iter().take(60) {
+        eprintln!("WARN {n} {w}");
+    }
+    eprintln!("non-script reports: {feats:?}");
+    eprintln!(
+        "zones after finish: {} pcm {}",
+        loaded.instrument.zones.len(),
+        d.pcm.len()
+    );
+    let plan = loaded.plan;
+    let limits = Limits {
+        notes: 64,
+        channels: 16,
+        performances: 1,
+        expressions: 64,
+        families: 64,
+        decisions: 256,
+        voices: 512,
+        commands: 256,
+        behaviors: 16,
+        behavior_fuel: 1 << 20,
+        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        note_cells: plan.note_cell_count().saturating_mul(64),
+    };
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi1);
+    let mut ingress = Ingress::new(0, groups);
+    let mut out = vec![[0.0f32; 2]; 4800];
+    rt.render(&mut out).unwrap();
+    let words = [0x2090_0064 | u32::from(key) << 8];
+    let r = ingress.apply(&mut rt, Packets::new(&words).next().unwrap().unwrap());
+    eprintln!("apply {r:?}");
+    for block in 0..10 {
+        rt.render(&mut out).unwrap();
+        let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+        eprintln!(
+            "block {block}: voices {} notes {} peak {peak}",
+            rt.voice_count(),
+            rt.note_count()
+        );
+    }
 }
