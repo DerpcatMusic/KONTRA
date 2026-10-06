@@ -89,3 +89,32 @@ Attack curve (ENGINE_PAR_ATK_CURVE, c = (v-500000)/500000) at attack v=629,920 (
 | +1.000 | ~1 throughout (90% within ~11 ms) | | | | | | | | |
 
 Concave side fits a = (e^{ku}-1)/(e^k-1) with k ~ 10 (c=-1), 6.0 (-0.748), 3.15 (-0.496), 0.72 (-0.244). Positive side is far more extreme than negative.
+
+## 6. Vista 3 Cellos CC100 (dynamics) sweep, solo of one group (key 48 vel 100, CC1 = CC11 = 127)
+
+RMS dBFS over 0.5-2 s after onset (lead removed), Kontakt, group solo via allow_group. With no CC100 sent first, behaviour equals CC100 = 0. Instrument slider and group volume are 0.0 dB.
+
+| CC100 | g37 | g36 |
+|---|---|---|
+| 0 | -57.3 | -62.3 |
+| 8 | -51.4 | -54.4 |
+| 16 | -47.7 | -50.2 |
+| 24 | -45.0 | -47.4 |
+| 32 | -42.9 | -45.2 |
+| 40 | -41.0 | -45.6 |
+| 48 | -39.4 | -46.7 |
+| 56 | -38.1 | -48.3 |
+| 64 | -38.4 | -50.6 |
+| 72 | -39.1 | -54.6 |
+| 80 | -40.4 | -65.3 |
+| 88 | -43.0 | silent |
+| 96 | -49.5 | silent |
+| 104, 127 | silent | silent |
+
+KONTRA minus Kontakt for g37: about +3.4 to +4.2 dB on the rising side (CC100 0-56), +2.2 at 64, +0.8 at 72, -0.7 at 80, -2.3 at 88, -4.1 at 96. A constant offset on the rising side plus a falling side where Kontakt decays more slowly than KONTRA's linear segment: the curved shaper segment matters.
+
+## 7. Una Corda Cotton notes (key 60)
+
+- Instrument slider reads 0.0 dB; DRY_G1 group volume is -6.0 dB. Group ids are 0-based, 4 columns row-major in the Group Editor list (113 groups; g98 = Depth, g94 = RESONANCE f, g88 = SSR, g107 = Flageolet 1, g110 = Reverse).
+- Group solos vel 64/100/127 (peak, rms dBFS): g39 -30.9/-20.7/-14.9 and -52.0/-42.5/-36.0; g94 flat -17.7 / -26.8; g98 flat -30.6 / -43.8 with Una's scripts active, but silent with scripts bypassed (script driven); g107 silent.
+- g98 Amplifier mod "Velocity to Volume" shaper reads as an exponential segment y = (e^{kx}-1)/(e^k-1), k about 1.79, stored curvature 0.118. Sampled: u .25 -> .12, .5 -> .30, .75 -> .58, .93 -> .86.
