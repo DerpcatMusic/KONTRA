@@ -3661,6 +3661,7 @@ version = "0.1.0"
 dependencies = [
  "rtrb",
  "sampler-ir",
+ "sampler-simd",
 ]
 
 [[package]]
@@ -3706,6 +3707,10 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
 ]
+
+[[package]]
+name = "sampler-simd"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-ui-ir"

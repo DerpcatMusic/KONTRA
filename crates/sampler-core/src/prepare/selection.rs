@@ -374,6 +374,7 @@ impl Runtime {
         }
         let required = attack.plus(release);
         self.reclaim_internal_notes(required);
+        self.steal_release_reserves(required);
         self.check_selection_capacity(required)?;
         Ok(release)
     }
@@ -417,6 +418,44 @@ impl Runtime {
             }
         }
         self.commit_selection(note, Trigger::Attack, velocity, snapshot);
+    }
+
+    /// When reservations alone keep `required` from fitting, suppress the
+    /// pending release phases of the oldest notes (returning their quotas)
+    /// until it fits, if `set_release_stealing` allows. Nothing is taken
+    /// unless the outstanding reservations could cover the shortfall.
+    fn steal_release_reserves(&mut self, required: ReleaseReserve) {
+        let fits = |rt: &Self, extra: ReleaseReserve| {
+            required.voices <= rt.voices.available() + extra.voices
+                && required.families <= rt.families.available() + extra.families
+                && required.decisions <= rt.decisions.available() + extra.decisions
+                && required.commands <= rt.available_commands() + extra.commands
+        };
+        if !self.steal_releases
+            || fits(self, ReleaseReserve::default())
+            || !fits(self, self.release_reserve())
+        {
+            return;
+        }
+        let pending = |rt: &Self, i: usize| {
+            rt.notes.slots[i].value.is_some()
+                && rt.release_times[i]
+                    .selection
+                    .contains(&ReleaseStatus::Pending)
+        };
+        // ponytail: a scan per stolen note over the bounded note pool.
+        while !fits(self, ReleaseReserve::default()) {
+            let Some(oldest) = (0..self.notes.slots.len())
+                .filter(|&i| pending(self, i))
+                .min_by_key(|&i| self.notes.slots[i].value.unwrap().order)
+            else {
+                return;
+            };
+            let note = NoteId(self.notes.id(oldest));
+            for trigger in [Trigger::KeyRelease, Trigger::GateRelease] {
+                self.run_release(note, trigger, false);
+            }
+        }
     }
 
     fn check_selection_capacity(&self, required: ReleaseReserve) -> Result<(), Error> {
