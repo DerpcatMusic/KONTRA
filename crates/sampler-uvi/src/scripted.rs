@@ -38,8 +38,7 @@ struct Glide {
     ms: f64,
 }
 
-pub struct Player {
-    rt: Runtime,
+pub struct Driver {
     host: ScriptHost,
     groups: Vec<OscGroup>,
     rate: f64,
@@ -59,12 +58,12 @@ pub struct Player {
     glide_at: u64,
 }
 
-impl Player {
-    pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
-        Ok(Self {
-            rt: Runtime::new(program.plan, limits)?,
-            host: program.host,
-            groups: program.groups,
+impl Driver {
+    /// The driver of `host`; the plan it plays on is the caller's runtime.
+    pub fn new(host: ScriptHost, groups: Vec<OscGroup>, rate: u32) -> Self {
+        Self {
+            host,
+            groups,
             rate: f64::from(rate),
             notes: HashMap::new(),
             held: HashMap::new(),
@@ -74,11 +73,12 @@ impl Player {
             voice_values: HashMap::new(),
             glides: Vec::new(),
             glide_at: 0,
-        })
+        }
     }
 
-    pub fn runtime(&self) -> &Runtime {
-        &self.rt
+    /// Whether the scripts take over note selection.
+    pub fn handles_notes(&self) -> bool {
+        self.host.handles_notes()
     }
 
     /// What plays asked for that was ignored, once each.
@@ -86,94 +86,84 @@ impl Player {
         &self.unmodeled
     }
 
-    fn now_ms(&self) -> f64 {
-        self.rt.now() as f64 * 1000.0 / self.rate
+    fn now_ms(&self, rt: &Runtime) -> f64 {
+        rt.now() as f64 * 1000.0 / self.rate
     }
 
     fn frames(&self, ms: f64) -> u64 {
         (ms * self.rate / 1000.0).ceil().max(0.0) as u64
     }
 
-    pub fn note_on(&mut self, key: u8, velocity: f64) -> Result<(), Error> {
-        let input = Input {
-            protocol: Protocol::Native,
-            port: 0,
-            group: 0,
-            channel: 0,
-            key,
-            external_id: None,
-        };
-        let note = self.rt.note_on(input, key, velocity)?;
+    /// The physical note `note` (admitted by the caller with
+    /// `Runtime::note_on`, so silent) went down.
+    pub fn note_on(
+        &mut self,
+        rt: &mut Runtime,
+        note: NoteId,
+        key: u8,
+        velocity: f64,
+    ) -> Result<(), Error> {
         let id = self.next;
         self.next += 1;
         self.notes.insert(id, note);
         self.held.insert(key, id);
-        self.host.set_time(self.now_ms());
+        self.host.set_time(self.now_ms(rt));
         self.host
             .note_on(id, key, (velocity * 127.0).round() as u8, 0);
         if !self.host.handles_notes() {
             // No onNote: the program sounds as authored.
-            self.rt.forward_attack(note)?;
+            rt.forward_attack(note)?;
         }
-        self.apply(false)
+        self.apply(rt, false)
     }
 
-    pub fn note_off(&mut self, key: u8) -> Result<(), Error> {
+    pub fn note_off(&mut self, rt: &mut Runtime, key: u8) -> Result<(), Error> {
         let Some(id) = self.held.remove(&key) else {
             return Ok(());
         };
-        self.host.set_time(self.now_ms());
+        self.host.set_time(self.now_ms(rt));
         self.host.note_off(id, key, 64, 0);
         // Plays made by onRelease must not be linked to the closing gate.
-        self.apply(true)?;
+        self.apply(rt, true)?;
         if let Some(note) = self.notes.get(&id).copied() {
-            self.rt.key_up(note, None)?;
+            rt.key_up(note, None)?;
         }
         Ok(())
     }
 
-    /// Render `out`, waking the script exactly when it asked to run.
-    pub fn render(&mut self, out: &mut [Frame]) -> Result<(), Error> {
-        let mut done = 0;
+    /// Run what is due now (script wake-ups, glide steps); the frames until
+    /// the next one, `None` when nothing is pending. Call before each block.
+    pub fn wake(&mut self, rt: &mut Runtime) -> Result<Option<usize>, Error> {
         let mut spins = 0;
-        while done < out.len() {
-            let left = out.len() - done;
-            if !self.glides.is_empty() && self.rt.now() >= self.glide_at {
-                self.step_glides();
+        loop {
+            if !self.glides.is_empty() && rt.now() >= self.glide_at {
+                self.step_glides(rt);
             }
-            let glide = (!self.glides.is_empty()).then(|| self.glide_at - self.rt.now());
+            let glide = (!self.glides.is_empty()).then(|| self.glide_at - rt.now());
             let host = self
                 .host
                 .next_due()
-                .map(|ms| self.frames(ms).saturating_sub(self.rt.now()));
-            let due = match (host, glide) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            match host {
-                Some(0) if spins < SPIN => {
-                    spins += 1;
-                    self.host.advance(self.now_ms());
-                    self.apply(false)?;
-                    continue;
-                }
-                _ => {}
+                .map(|ms| self.frames(ms).saturating_sub(rt.now()));
+            if host == Some(0) && spins < SPIN {
+                spins += 1;
+                self.host.advance(self.now_ms(rt));
+                self.apply(rt, false)?;
+                continue;
             }
-            spins = 0;
-            let step = due.map_or(left, |d| (d.max(1) as usize).min(left));
-            self.rt.render(&mut out[done..done + step])?;
-            done += step;
+            return Ok(match (host, glide) {
+                (Some(a), Some(b)) => Some(a.min(b) as usize),
+                (a, b) => a.or(b).map(|d| d as usize),
+            });
         }
-        Ok(())
     }
 
-    fn apply(&mut self, closing: bool) -> Result<(), Error> {
+    fn apply(&mut self, rt: &mut Runtime, closing: bool) -> Result<(), Error> {
         for command in self.host.take_commands() {
             match command {
-                Command::Play(play) => self.play(&play, closing)?,
+                Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
                     if let Some(note) = self.notes.get(&id).copied() {
-                        self.release(note, at_ms)?;
+                        self.release(rt, note, at_ms)?;
                     }
                 }
                 Command::Modulation {
@@ -182,7 +172,7 @@ impl Player {
                     glide_ms,
                     voice,
                     at_ms,
-                } => self.modulate(id, value, glide_ms, voice, at_ms)?,
+                } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
             }
         }
         Ok(())
@@ -190,6 +180,7 @@ impl Player {
 
     fn modulate(
         &mut self,
+        rt: &mut Runtime,
         id: u16,
         value: f64,
         glide_ms: f64,
@@ -198,7 +189,7 @@ impl Player {
     ) -> Result<(), Error> {
         self.glides.retain(|g| !(g.id == id && g.voice == voice));
         if glide_ms <= 0.0 {
-            return self.set_value(id, voice, value);
+            return self.set_value(rt, id, voice, value);
         }
         let from = match voice {
             Some(v) => self.voice_values.get(&(v, id)),
@@ -207,7 +198,7 @@ impl Player {
         .copied()
         .unwrap_or(0.0);
         if self.glides.is_empty() {
-            self.glide_at = self.rt.now();
+            self.glide_at = rt.now();
         }
         self.glides.push(Glide {
             id,
@@ -220,21 +211,27 @@ impl Player {
         Ok(())
     }
 
-    fn step_glides(&mut self) {
-        let now = self.now_ms();
+    fn step_glides(&mut self, rt: &mut Runtime) {
+        let now = self.now_ms(rt);
         let glides = std::mem::take(&mut self.glides);
         for g in glides {
             let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
-            let _ = self.set_value(g.id, g.voice, g.from + (g.to - g.from) * t);
+            let _ = self.set_value(rt, g.id, g.voice, g.from + (g.to - g.from) * t);
             if t < 1.0 {
                 self.glides.push(g);
             }
         }
-        self.glide_at = self.rt.now() + self.frames(GLIDE_STEP_MS).max(1);
+        self.glide_at = rt.now() + self.frames(GLIDE_STEP_MS).max(1);
     }
 
     /// Set Script Event Modulation `id` now. Voices that ended are forgotten.
-    fn set_value(&mut self, id: u16, voice: Option<u64>, value: f64) -> Result<(), Error> {
+    fn set_value(
+        &mut self,
+        rt: &mut Runtime,
+        id: u16,
+        voice: Option<u64>,
+        value: f64,
+    ) -> Result<(), Error> {
         let targets: Vec<u64> = match voice {
             Some(v) => {
                 self.voice_values.insert((v, id), value);
@@ -249,7 +246,7 @@ impl Player {
             let Some(note) = self.notes.get(&v).copied() else {
                 continue;
             };
-            match self.rt.set_note_script_value(note, id, value) {
+            match rt.set_note_script_value(note, id, value) {
                 Err(Error::StaleHandle) => {
                     self.notes.remove(&v);
                 }
@@ -259,24 +256,21 @@ impl Player {
         Ok(())
     }
 
-    fn release(&mut self, note: NoteId, at_ms: f64) -> Result<(), Error> {
+    fn release(&mut self, rt: &mut Runtime, note: NoteId, at_ms: f64) -> Result<(), Error> {
         let at = self.frames(at_ms);
-        if at <= self.rt.now() {
-            self.rt.key_up(note, None)
+        if at <= rt.now() {
+            rt.key_up(note, None)
         } else {
-            self.rt.release_at(note, at)
+            rt.release_at(note, at)
         }
     }
 
-    fn play(&mut self, play: &Play, closing: bool) -> Result<(), Error> {
+    fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
         let velocity = f64::from(play.velocity) / 127.0;
         let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
         let note = match parent {
-            Some(parent) => {
-                self.rt
-                    .child(parent, play.key, velocity, open, Inheritance::Independent)
-            }
+            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Independent),
             None => {
                 let input = Input {
                     protocol: Protocol::Native,
@@ -286,7 +280,7 @@ impl Player {
                     key: play.key,
                     external_id: None,
                 };
-                self.rt.note_on(input, play.key, velocity)
+                rt.note_on(input, play.key, velocity)
             }
         };
         let note = match note {
@@ -296,7 +290,7 @@ impl Player {
             Err(e) => return Err(e),
         };
         self.notes.insert(play.id, note);
-        self.select(note, play)?;
+        self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
             pan: play.pan.clamp(-1.0, 1.0),
@@ -304,29 +298,29 @@ impl Player {
             ..Expression::default()
         };
         if expression != Expression::default() {
-            let id = self.rt.expression_id(note)?;
-            self.rt.set_expression(id, expression)?;
+            let id = rt.expression_id(note)?;
+            rt.set_expression(id, expression)?;
         }
         for (id, value) in self.global.clone() {
-            self.rt.set_note_script_value(note, id, value)?;
+            rt.set_note_script_value(note, id, value)?;
         }
-        self.rt.forward_attack(note)?;
-        let now = self.now_ms();
+        rt.forward_attack(note)?;
+        let now = self.now_ms(rt);
         match play.duration_ms {
-            Some(ms) if ms > 0.0 => self.release(note, now + ms)?,
+            Some(ms) if ms > 0.0 => self.release(rt, note, now + ms)?,
             Some(_) => {}
-            None if parent.is_none() || closing => self.release(note, now + DETACHED_MS)?,
+            None if parent.is_none() || closing => self.release(rt, note, now + DETACHED_MS)?,
             None => {}
         }
         Ok(())
     }
 
     /// Allow only the groups of the layers and oscillator the play names.
-    fn select(&mut self, note: NoteId, play: &Play) -> Result<(), Error> {
+    fn select(&mut self, rt: &mut Runtime, note: NoteId, play: &Play) -> Result<(), Error> {
         if play.layers.is_empty() && play.osc.is_none() {
             return Ok(());
         }
-        self.rt.set_note_group(note, None, false)?;
+        rt.set_note_group(note, None, false)?;
         let wanted: Vec<u32> = self
             .groups
             .iter()
@@ -335,7 +329,61 @@ impl Player {
             .map(|g| g.group)
             .collect();
         for group in wanted {
-            self.rt.set_note_group(note, Some(group), true)?;
+            rt.set_note_group(note, Some(group), true)?;
+        }
+        Ok(())
+    }
+}
+
+/// A runtime and the driver of its scripts, for hosts that own nothing else.
+pub struct Player {
+    rt: Runtime,
+    driver: Driver,
+}
+
+impl Player {
+    pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
+        Ok(Self {
+            rt: Runtime::new(program.plan, limits)?,
+            driver: Driver::new(program.host, program.groups, rate),
+        })
+    }
+
+    pub fn runtime(&self) -> &Runtime {
+        &self.rt
+    }
+
+    /// What plays asked for that was ignored, once each.
+    pub fn unmodeled(&self) -> &[&'static str] {
+        self.driver.unmodeled()
+    }
+
+    pub fn note_on(&mut self, key: u8, velocity: f64) -> Result<(), Error> {
+        let input = Input {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key,
+            external_id: None,
+        };
+        let note = self.rt.note_on(input, key, velocity)?;
+        self.driver.note_on(&mut self.rt, note, key, velocity)
+    }
+
+    pub fn note_off(&mut self, key: u8) -> Result<(), Error> {
+        self.driver.note_off(&mut self.rt, key)
+    }
+
+    /// Render `out`, waking the script exactly when it asked to run.
+    pub fn render(&mut self, out: &mut [Frame]) -> Result<(), Error> {
+        let mut done = 0;
+        while done < out.len() {
+            let left = out.len() - done;
+            let due = self.driver.wake(&mut self.rt)?;
+            let step = due.map_or(left, |d| d.max(1).min(left));
+            self.rt.render(&mut out[done..done + step])?;
+            done += step;
         }
         Ok(())
     }
