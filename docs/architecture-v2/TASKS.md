@@ -217,8 +217,10 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   Finite pass counts now share traversal/guard/tail boundaries and allow natural-EOF
   release loops without duration commands. Native DAHDSR delay, independent stage
   curves and one-shot AHD now share source ownership and bounded rendering. Vendor
-  curve/clock profiles remain unverified. Crossfades, filters/effects and broader
-  graph services remain open.
+  curve/clock profiles remain unverified. [Native voice chains](VOICE_DSP.md) now run
+  independent stereo biquads and gain stages before/after the envelope, with retained
+  DSP tails, whole-chain choke and generation-owned state. Crossfades, nonlinear
+  effects, automated filters and broader routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,

@@ -361,15 +361,20 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                self.admit_voice(
-                    family,
-                    r.sample,
-                    self.now,
-                    r.gain * r.velocity_curve.amplitude(velocity),
-                    r.envelope,
-                    r.cursor.with_step(step),
-                )
-                .expect("prepared and preflighted source admission");
+                let voice = self
+                    .admit_voice(
+                        family,
+                        r.sample,
+                        self.now,
+                        r.gain * r.velocity_curve.amplitude(velocity),
+                        r.envelope,
+                        r.cursor.with_step(step),
+                    )
+                    .expect("prepared and preflighted source admission");
+                self.voices.get_mut(voice.0).unwrap().chain = r.chain;
+                if r.chain.is_some() {
+                    self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
+                }
             }
             if let Some(family) = family {
                 self.finish_family(family).expect("admitted family");

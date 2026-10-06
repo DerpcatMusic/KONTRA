@@ -44,6 +44,8 @@ pub use behavior::{
 };
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
+mod dsp;
+pub use dsp::{Biquad, FilterKind, VoiceChain, VoiceProcessor};
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
@@ -193,6 +195,9 @@ struct Voice {
     sample: usize,
     cursor: source::Cursor,
     base_step: f64,
+    chain: Option<usize>,
+    tail_remaining: Option<u32>,
+    dsp_fade: Option<(u32, f32)>,
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
@@ -420,6 +425,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
+            dsp: dsp::VoiceDspState::new(&plan, limits.voices)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
@@ -864,6 +870,9 @@ impl Runtime {
             sample,
             cursor,
             base_step,
+            chain: None,
+            tail_remaining: None,
+            dsp_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,

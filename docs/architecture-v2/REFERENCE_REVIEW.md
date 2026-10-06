@@ -172,3 +172,16 @@ Rust's defined wrapping primitives and independent i128 expected results in test
 no old VM types or execution path are referenced. The v1 test was inspected, not
 rerun for this change, and its vendor-behavior comments are not new reference evidence.
 Numeric edge fidelity and full KSP expression semantics remain separate parity gates.
+
+
+## Voice processor ownership and routing
+
+For native voice-chain work, inspected pinned Shortcircuit
+[`voice.cpp:69–105`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/voice/voice.cpp#L69)
+for processor cleanup ownership and
+[`voice.cpp:634–648`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/voice/voice.cpp#L634)
+for explicit mono/stereo chain layout. No implementation was copied and these external
+paths were not executed. Native state instead lives in control-prepared per-generation
+banks with per-voice/channel history, retains DSP tails and leaves via the existing
+retirement queue. Channel-layout expansion remains open; current processing is stereo.
+[VOICE_DSP.md](VOICE_DSP.md) records implemented behavior, numerical sources and tests.

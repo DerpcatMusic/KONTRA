@@ -244,13 +244,18 @@ impl Runtime {
         }
         family.gate = false;
         family.open = false;
+        let plan = self.notes.get(family.note.0).unwrap().plan;
         let mut voice = family.first_voice;
         while let Some(index) = voice {
             let state = self.voices.at_mut(index);
             voice = state.siblings.next;
             state.envelope.release();
             state.cursor.release();
-            if !state.started || state.envelope.done() {
+            let done = state.chain.map_or_else(
+                || state.envelope.done(),
+                |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
+            );
+            if !state.started || done {
                 self.end_voice(VoiceId(self.voices.id(index.get())));
             }
         }
@@ -322,6 +327,17 @@ impl Runtime {
             voice = state.siblings.next;
             if frames == 0 || !state.started {
                 self.end_voice(VoiceId(self.voices.id(index.get())));
+            } else if state.chain.is_some() {
+                if state
+                    .tail_remaining
+                    .is_none_or(|remaining| frames < remaining)
+                {
+                    let current = state.dsp_fade.map_or(1., |(total, initial)| {
+                        initial * state.tail_remaining.unwrap() as f32 / total as f32
+                    });
+                    state.tail_remaining = Some(frames);
+                    state.dsp_fade = Some((frames, current));
+                }
             } else {
                 state.envelope.choke(frames);
             }

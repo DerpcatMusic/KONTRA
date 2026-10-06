@@ -285,10 +285,9 @@ impl Cursor {
         gain: f32,
         gains: [f32; 2],
         kernel: &Kernel,
-    ) {
+    ) -> usize {
         if gain == 0.0 || gains == [0.0; 2] {
-            self.advance_silent(output.len(), envelope);
-            return;
+            return self.advance_silent(output.len(), envelope);
         }
         if self.step == 1.0 && self.fraction == 0.0 {
             let mut offset = 0;
@@ -315,12 +314,12 @@ impl Cursor {
                 self.position = self.position.saturating_add(count as u64);
                 offset += count;
             }
-            return;
+            return offset;
         }
-        self.render_filtered(pcm, output, envelope, gain, gains, kernel);
+        self.render_filtered(pcm, output, envelope, gain, gains, kernel)
     }
 
-    fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) {
+    fn advance_silent(&mut self, frames: usize, envelope: &mut EnvelopeState) -> usize {
         if self.fraction == 0.0 && self.step.fract() == 0.0 {
             let step = self.step as u64;
             let remaining = self
@@ -339,10 +338,11 @@ impl Cursor {
             self.position = self
                 .position
                 .saturating_add((count as u64).saturating_mul(step));
-            return;
+            return count;
         }
         // Preserve the exact fractional recurrence, including rounding, rather
         // than replacing repeated addition with a partition-dependent product.
+        let mut rendered = 0;
         for _ in 0..frames {
             if self.done() || envelope.done() {
                 break;
@@ -351,7 +351,9 @@ impl Cursor {
                 envelope.next();
             }
             self.advance();
+            rendered += 1;
         }
+        rendered
     }
 
     fn render_filtered(
@@ -362,7 +364,8 @@ impl Cursor {
         gain: f32,
         gains: [f32; 2],
         kernel: &Kernel,
-    ) {
+    ) -> usize {
+        let mut rendered = 0;
         for frame in output {
             if self.done() || envelope.done() {
                 break;
@@ -398,7 +401,9 @@ impl Cursor {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
             }
             self.advance();
+            rendered += 1;
         }
+        rendered
     }
 }
 

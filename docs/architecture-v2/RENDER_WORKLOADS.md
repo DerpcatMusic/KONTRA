@@ -592,3 +592,14 @@ Artifacts include initial `ping-pong-*-{before,after}-*.csv`, intermediate
 `ping-pong-binaries.sha256` under ignored `artifacts/`. Existing bit-exact output
 checks run outside the timed callbacks. Native unrolled/analytic reflected-loop
 checks are described in [SOURCE_VIEWS.md](SOURCE_VIEWS.md#ping-pong-topology).
+
+
+## Native voice filter chains
+
+`--filters COUNT [--muted]` exercises the new serial pre-envelope biquad path with
+1–16 stages, separately from the source-only workload. CSV output now includes a
+leading `filters` column (zero for the existing cases). Every timed constant-input
+block still has a bit-exact independent PCM check after filter warmup. See
+[VOICE_DSP.md](VOICE_DSP.md) for state ownership, signal-order and tail tests and
+initial batching measurements. Static linear filters are not a proxy for complete
+Kontakt/Falcon DSP, streaming, modulation or host integration workloads.
