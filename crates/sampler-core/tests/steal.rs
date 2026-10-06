@@ -93,7 +93,10 @@ fn full_polyphony_steals_quietest_with_a_fade_instead_of_rejecting() {
         // 0.5 + 1 + 0.25 after the 8-frame fade of 0.125.
         assert!((audio[15][0] - 1.75).abs() < 1e-6, "{audio:?}");
         assert!(audio[0][0] > 1.75 && audio[0][0] < 1.875 + 1e-6);
-        assert_eq!((rt.voice_count(), rt.stolen_voices(), rt.steals()), (3, 0, 1));
+        assert_eq!(
+            (rt.voice_count(), rt.stolen_voices(), rt.steals()),
+            (3, 0, 1)
+        );
         // More than the headroom at once: the oldest stolen voice is cut.
         for _ in 0..3 {
             start(&mut rt, 1.).unwrap();

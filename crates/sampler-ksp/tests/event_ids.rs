@@ -477,3 +477,24 @@ fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
         channels: 1,
     }
 }
+
+#[test]
+fn a_release_the_script_asked_for_cannot_be_ignored_by_its_own_release_callback() {
+    // Una Corda: note_off of its linked child runs the child's release
+    // callback, which ignores the release as it does for host key-ups.
+    let source = "on init declare $c end on
+      on note
+        ignore_event($EVENT_ID)
+        $c := play_note(60,127,0,-1)
+        note_off($c)
+      end on
+      on release if ($EVENT_ID = $c) ignore_event($EVENT_ID) end if end on";
+    let mut rt = runtime(source);
+    let host = rt.trigger(input(60), 60, 1.).unwrap();
+    rt.release(host).unwrap();
+    let mut audio = [[0.; 2]; 64];
+    rt.render(&mut audio).unwrap();
+    rt.flush_behaviors(|_, _, _| true);
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+}
