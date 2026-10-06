@@ -32,7 +32,7 @@ struct Bytes {
 }
 
 /// Bytes per file read.
-const BUFFER: usize = 64 << 10;
+const BUFFER: usize = 16 << 10;
 
 impl Bytes {
     fn open(source: &Source) -> io::Result<Self> {
@@ -513,14 +513,15 @@ impl Drop for Streamer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         for thread in self.threads.drain(..) {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }
 }
 
 /// Open readers kept per decode thread between pages of the same assets
-/// (each holds a 64 KiB read buffer).
-const OPEN_READERS: usize = 32;
+/// (each holds a 16 KiB read buffer).
+const OPEN_READERS: usize = 16;
 
 fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop: &AtomicBool) {
     let worker = || {
@@ -534,8 +535,9 @@ fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
         let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
-            // ponytail: polling; a wake from the audio side if 0.5 ms matters.
-            std::thread::sleep(Duration::from_micros(500));
+            // The runtime unparks decoders after queuing requests; the
+            // timeout only bounds a missed wake and notices `stop`.
+            std::thread::park_timeout(Duration::from_millis(20));
             continue;
         };
         tick += 1;
@@ -610,13 +612,20 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
-        let (cache, worker) =
+        let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
         let (streamer, bytes) = Streamer::start(sources, &kept, ranges, worker, policy.decoders)
             .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
+        cache.set_wake(
+            streamer
+                .threads
+                .iter()
+                .map(|t| t.thread().clone())
+                .collect(),
+        );
         drop(assets);
         Ok(Self {
             loaded,

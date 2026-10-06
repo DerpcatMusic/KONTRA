@@ -123,6 +123,9 @@ pub struct StreamCache {
     epoch: u64,
     serial: u64,
     store: u64,
+    /// Decoder threads to unpark after a service pushed requests.
+    wake: Vec<std::thread::Thread>,
+    pushed: bool,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -178,6 +181,8 @@ impl StreamCache {
                 epoch: 1,
                 serial: 0,
                 store,
+                wake: Vec::new(),
+                pushed: false,
             },
             StreamWorker {
                 requests: incoming,
@@ -189,6 +194,20 @@ impl StreamCache {
                 store,
             },
         ))
+    }
+    /// Control side: threads serving this cache's worker, unparked (heap
+    /// free) after each service that queued requests, so they can park
+    /// instead of polling.
+    pub fn set_wake(&mut self, threads: Vec<std::thread::Thread>) {
+        self.wake = threads;
+    }
+    /// Unpark the decoder threads if requests were queued since the last call.
+    fn wake(&mut self) {
+        if std::mem::take(&mut self.pushed) {
+            for thread in &self.wake {
+                thread.unpark();
+            }
+        }
     }
     pub fn begin_epoch(&mut self) -> Result<(), StreamError> {
         self.epoch = self
@@ -263,6 +282,7 @@ impl StreamCache {
                 self.requests
                     .push(request)
                     .map_err(|_| StreamError::Capacity)?;
+                self.pushed = true;
                 entry.request = request;
             }
             return Ok(entry.status());
@@ -314,6 +334,7 @@ impl StreamCache {
         self.requests
             .push(request)
             .expect("reserved request capacity");
+        self.pushed = true;
         self.serial = serial;
         if let Some(old) = self.entries[slot].take() {
             let index = self
@@ -525,6 +546,7 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        cache.wake();
         self.stream_cache = Some(cache);
         result
     }
