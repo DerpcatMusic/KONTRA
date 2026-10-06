@@ -1274,6 +1274,8 @@ fn native_wait_clock_overflow_faults_without_scheduling_or_losing_ownership() {
     assert_eq!(rt.pending_commands(), 0);
     rt.flush_ended(|_| panic!("fault still owns the original identity"));
     rt.flush_behaviors(|_, _, _| true);
+    assert!(rt.input_held(note).unwrap());
+    assert_eq!(rt.note_off(input(Some(9)), None), Ok(note));
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
 }

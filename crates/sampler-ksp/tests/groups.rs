@@ -305,3 +305,38 @@ fn faulted_suppressed_release_cannot_retain_a_gate_or_reserved_layers() {
         assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
     });
 }
+
+#[test]
+fn a_scheduled_script_noteoff_can_forward_a_later_suppressed_physical_release() {
+    use sampler_core::{Event, ScriptInstanceId};
+    let source = "on init declare $released end on
+      on note disallow_group($ALL_GROUPS) allow_group(0) note_off($EVENT_ID,125) end on
+      on release inc($released) ignore_event($EVENT_ID)
+        disallow_group($ALL_GROUPS) allow_group(1)
+      end on";
+    for block in [1, 7, 64] {
+        let mut rt = runtime(source);
+        support::without_heap(|| {
+            let note = rt.trigger(input(60), 60, 1.).unwrap();
+            rt.schedule_event(2, Event::KeyUp(note, None)).unwrap();
+            let mut audio = [[0.; 2]; 12];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(audio[..6], [[0.125; 2]; 6]);
+            assert_eq!(audio[6..], [[-0.25; 2]; 6]);
+            let context = rt.release_context(note).unwrap();
+            assert_eq!(context.key.unwrap().at, 2);
+            assert_eq!(context.gate.unwrap().at, 6);
+            assert!(!rt.input_held(note).unwrap());
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+                Ok(1)
+            );
+            rt.panic();
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}

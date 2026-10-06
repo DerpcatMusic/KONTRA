@@ -179,7 +179,7 @@ uses a piecewise bipolar scale with exact center and endpoints. Both channel val
 are retained while idle and installed before source selection or note programs.
 Multiple active notes on a member share its gestures. Each admitted root retains
 its own generational binding and member-pitch snapshot. The core's physical
-`key_down` state decides which members can change: a released note freezes its
+`input_held` state decides which members can change: a released note freezes its
 member pitch immediately, including under sustain, while manager pitch continues
 to reach the retained owner. Native scheduled key-up follows the same rule.
 Channel reuse cannot retarget an earlier tail. Linked generated notes share their
@@ -293,3 +293,19 @@ whole-zone reservation without partial state or leaked slots, pedal-up under ful
 capacity, and full fifteen-member masks. Existing core gate, scheduler, behavior,
 plan and MIDI checks still pass under the shared implementation. All event,
 rendering and cleanup checks retain allocation/deallocation guards.
+
+
+## Raw key pairing after script event completion
+
+MPE now reads the core's raw input ownership rather than the downstream logical
+key projection. A script may end its event while the member's physical key is still
+held. Subsequent member expression reaches that retained owner until actual host
+key-up; manager expression still reaches retained release tails afterward. Anonymous
+same-key note-off consumes the oldest pending external input even if its sound or
+script event already ended. Exact input IDs stay reserved until the normal terminal
+handshake completes. Source faults/cancellation follow the same pairing rule.
+
+New lower/upper-zone fixtures cover early script stop, same-key overlap, member and
+manager pitch, physical release and cleanup. No additional adapter-side key cache is
+introduced. The new distinction also preserves a queued host key-up when a script
+replaces its own note-end deadline.

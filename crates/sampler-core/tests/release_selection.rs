@@ -741,6 +741,8 @@ fn cancelled_and_faulted_parents_suppress_descendant_release_audio() {
             assert_eq!(rt.release_reserve(), ReleaseReserve::default());
             assert_eq!((rt.voice_count(), rt.pending_commands()), (0, 0));
             rt.flush_behaviors(|_, _, _| true);
+            assert!(rt.input_held(root).unwrap());
+            assert_eq!(rt.note_off(input(0), None), Ok(root));
             rt.flush_ended(|_| true);
             assert_eq!(rt.note_count(), 0);
         });

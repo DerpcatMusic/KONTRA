@@ -340,3 +340,118 @@ fn generated_result_aliases_are_preflighted_and_do_not_pin_completed_children() 
         Err(Error::Capacity)
     ));
 }
+
+#[test]
+fn script_note_end_and_callback_fault_preserve_anonymous_fifo_and_external_key_ownership() {
+    for fault in [false, true] {
+        let code = if fault {
+            vec![
+                Instruction::SetLocal {
+                    local: 0,
+                    value: 128,
+                },
+                Instruction::WriteEventKey { local: 0 },
+            ]
+        } else {
+            vec![
+                Instruction::ReadEventId { local: 0 },
+                Instruction::KeyUpEvent {
+                    event: 0,
+                    delay: None,
+                },
+            ]
+        };
+        let p = plan()
+            .with_programs(vec![Program::new(code).unwrap()], Some(0))
+            .unwrap();
+        let mut rt = Runtime::new(p, limits(3)).unwrap();
+        support::without_heap(|| {
+            let raw = Input {
+                protocol: Protocol::Midi1,
+                external_id: None,
+                ..input()
+            };
+            let old = rt.trigger(raw, 72, 1.).unwrap();
+            assert!(!rt.key_down(old).unwrap());
+            assert!(rt.input_held(old).unwrap());
+            let original = rt.release_context(old).unwrap();
+            assert_eq!(
+                original.key.unwrap().cause,
+                if fault {
+                    ReleaseCause::BehaviorFault
+                } else {
+                    ReleaseCause::Script
+                }
+            );
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(
+                    outcome,
+                    if fault {
+                        Outcome::Fault(Error::InvalidInput)
+                    } else {
+                        Outcome::Finished
+                    }
+                );
+                true
+            });
+            rt.flush_ended(|_| panic!("the host still owns its key pairing"));
+            let fresh = rt.note_on(raw, 84, 1.).unwrap();
+            assert_eq!(rt.note_off(raw, Some(0.75)), Ok(old));
+            assert!(!rt.input_held(old).unwrap());
+            assert!(rt.input_held(fresh).unwrap() && rt.key_down(fresh).unwrap());
+            assert_eq!(rt.release_context(old), Ok(original));
+            let mut ends = 0;
+            rt.flush_ended(|address| {
+                assert_eq!(address, raw);
+                ends += 1;
+                true
+            });
+            assert_eq!((ends, rt.note_count()), (1, 1));
+            assert_eq!(rt.note_off(raw, None), Ok(fresh));
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
+
+#[test]
+fn script_deadline_replacement_cannot_consume_scheduled_physical_keyups() {
+    for commands in [1, 2] {
+        let mut rt = Runtime::new(
+            plan(),
+            Limits {
+                commands,
+                ..limits(2)
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let n = rt.note_on(input(), 60, 1.).unwrap();
+            rt.schedule_event(12, Event::KeyUp(n, Some(0.5))).unwrap();
+            if commands == 1 {
+                assert_eq!(rt.replace_script_key_up_at(n, 8), Err(Error::Capacity));
+                assert!(rt.key_down(n).unwrap());
+                rt.replace_script_key_up_at(n, 0).unwrap();
+            } else {
+                rt.replace_script_key_up_at(n, 8).unwrap();
+                rt.replace_script_key_up_at(n, 4).unwrap();
+                rt.render(&mut [[0.; 2]; 5]).unwrap();
+            }
+            assert!(!rt.key_down(n).unwrap() && rt.input_held(n).unwrap());
+            assert_eq!(rt.pending_commands(), 1);
+            assert_eq!(rt.note_on(input(), 60, 1.), Err(Error::DuplicateInput));
+            rt.flush_ended(|_| panic!("logical release cannot consume the host key"));
+            rt.render(&mut [[0.; 2]; 12]).unwrap();
+            rt.render(&mut []).unwrap();
+            assert!(!rt.input_held(n).unwrap());
+            assert_eq!(rt.pending_commands(), 0);
+            rt.flush_ended(|_| true);
+            let fresh = rt.note_on(input(), 60, 1.).unwrap();
+            assert!(rt.input_held(fresh).unwrap());
+            assert_eq!(rt.input_held(n), Err(Error::StaleHandle));
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}

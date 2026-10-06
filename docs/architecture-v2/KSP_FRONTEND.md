@@ -143,7 +143,7 @@ without subtraction overflow. Compound conditions and arithmetic are now support
 through the expression lowering described below.
 See [NI control statements](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements).
 
-`$NOTE_HELD` reads the originating owner's current physical key state. It is zero
+`$NOTE_HELD` reads the originating owner's downstream logical key state. It is zero
 in the physical-release callback even when sustain still holds the effective gate;
 a different same-key owner's key-up cannot change it. It is read again after a
 wait rather than captured as a global key flag. The [NI built-in reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants)
@@ -620,7 +620,7 @@ all-target Clippy and both root boundary tests pass. Logs: `artifacts/event-ids-
 
 `note_off(id)` and `note_off(id, offset)` accept evaluated integer arguments from
 note, release and UI-control callbacks. IDs resolve only within the callback's plan
-generation; retired, unknown and already key-released targets are no-ops. A plain
+generation; retired/unknown targets and already forwarded releases are no-ops. A plain
 one-argument call preserves a generated fixed-duration policy. An explicit nonnegative
 microsecond offset replaces pending note-end deadlines; zero releases immediately.
 A queued host key-up is not a generated fixed duration. Arguments validate before
@@ -680,3 +680,26 @@ full command capacity and faults. Ordered source-slot propagation and Kontakt's
 special hard-cleanup callback rules remain unimplemented/unverified. This still does
 not establish vendor parity. Validation: 266 native tests in debug/release/Rust 1.92,
 strict Clippy and both root boundary tests (`artifacts/release-forward-*`).
+
+
+## Raw input versus script event ownership
+
+Source `note_off` now uses a distinct native `ScriptKeyUp` operation. It may end a
+logical script event and start its release callback while the host key remains down.
+That external input remains paired with its original full note handle. The eventual
+host note-off consumes the retained input, never a newer anonymous repeated key, and
+does not replay the already-consumed script callback. Callback faults/cancellation
+also retain input pairing after closing their owned sound. Panic/explicit native
+owner abort may discard it deliberately.
+
+`$NOTE_HELD` continues to describe the script event. MIDI/MPE use `input_held` for
+physical tracking instead. Source deadline replacement cannot remove a queued host
+key-up. If physical key-up suppresses its release before a queued script note-off
+expires, that original script deadline remains able to forward the held release.
+Its full generational identity, original plan and work pin remain unchanged.
+
+Validation: 270 native tests in debug, release and Rust 1.92, strict all-target Clippy
+and both root boundary tests (`artifacts/input-ownership-*`). Fixtures cover FIFO,
+exact-ID retention, script/fault completion, source/host deadline separation, callback
+counts and both MPE zones. Vendor-specific `$NOTE_HELD` projection and multi-stage
+rules still need reference execution; no complete compatibility claim is made.

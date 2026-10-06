@@ -177,6 +177,7 @@ enum AttackStatus {
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
+    input_down: bool,
     address: ChannelAddress,
     plan: PlanId,
     parent: Option<NoteId>,
@@ -685,6 +686,7 @@ impl Runtime {
         };
         let id = match self.notes.insert(Note {
             input,
+            input_down: input.is_some(),
             address,
             plan,
             parent,
@@ -798,7 +800,7 @@ impl Runtime {
                 s.value
                     .as_ref()
                     .filter(|n| {
-                        n.key_down()
+                        n.input_down
                             && n.input == Some(input)
                             && self.selections[i].performance == performance
                     })

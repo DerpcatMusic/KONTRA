@@ -114,7 +114,7 @@ pub enum Instruction {
     ReadKey {
         local: u16,
     },
-    /// Physical key state of this owner, independently of its sustained gate.
+    /// Downstream logical key state, independently of raw input and sustained gate.
     ReadKeyDown {
         local: u16,
     },
@@ -692,7 +692,7 @@ impl Runtime {
                     && (frames.is_some() || !self.note_events[note.0.index].fixed_duration)
                 {
                     if self.key_down(note)? {
-                        self.replace_key_up_at(note, at, None)?;
+                        self.replace_script_key_up_at(note, at)?;
                     } else if self.release_times[note.0.index].held {
                         self.replace_release_forward_at(note, at)?;
                     }

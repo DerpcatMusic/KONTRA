@@ -4,6 +4,8 @@ use super::{Error, Note, NoteId, Runtime};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReleaseCause {
     KeyUp,
+    /// A downstream script event ended; its external input may still be held.
+    Script,
     Pedal,
     Explicit,
     BehaviorCancelled,
@@ -73,6 +75,15 @@ pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
 impl Runtime {
     pub(super) fn release_key(&mut self, id: NoteId, cause: ReleaseCause, velocity: Option<f64>) {
         let note = self.notes.get_mut(id.0).unwrap();
+        if matches!(
+            cause,
+            ReleaseCause::KeyUp
+                | ReleaseCause::AllNotesOff
+                | ReleaseCause::Explicit
+                | ReleaseCause::Panic
+        ) {
+            note.input_down = false;
+        }
         if note.key_down() {
             let times = &mut self.release_times[id.0.index];
             times.key_at = self.now;
@@ -80,13 +91,19 @@ impl Runtime {
             note.key_release = Some(cause);
             self.run_release_behavior(
                 id,
-                matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
+                matches!(
+                    cause,
+                    ReleaseCause::KeyUp | ReleaseCause::Script | ReleaseCause::AllNotesOff
+                ),
             );
             if !self.release_times[id.0.index].held {
                 self.run_release(
                     id,
                     Trigger::KeyRelease,
-                    matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
+                    matches!(
+                        cause,
+                        ReleaseCause::KeyUp | ReleaseCause::Script | ReleaseCause::AllNotesOff
+                    ),
                 );
             }
         }
@@ -119,7 +136,7 @@ impl Runtime {
         self.release_times[note.0.index].held = false;
         self.forward_release_groups(note)?;
         self.run_release(note, Trigger::KeyRelease, true);
-        self.key_up_now(note, None)?;
+        self.key_up_with_cause(note, None, ReleaseCause::Script)?;
         Ok(true)
     }
 
@@ -223,7 +240,12 @@ impl ReleaseCause {
     pub(super) fn musical(self) -> bool {
         matches!(
             self,
-            Self::KeyUp | Self::Pedal | Self::Explicit | Self::Parent | Self::AllNotesOff
+            Self::KeyUp
+                | Self::Script
+                | Self::Pedal
+                | Self::Explicit
+                | Self::Parent
+                | Self::AllNotesOff
         )
     }
 }

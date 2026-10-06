@@ -791,3 +791,48 @@ fn articulation_switch_on_one_member_routes_all_members_without_changing_express
         rt.flush_ended(|_| true);
     });
 }
+
+#[test]
+fn script_note_off_keeps_fifo_pairing_and_member_expression_until_the_actual_host_keyup() {
+    for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
+        let mut rt = runtime();
+        let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
+        support::without_heap(|| {
+            let old = start(&mut mpe, &mut rt, member, 60);
+            rt.replace_script_key_up_at(old, rt.now()).unwrap();
+            assert!(!rt.key_down(old).unwrap() && rt.input_held(old).unwrap());
+            rt.flush_ended(|_| panic!("early script off must not consume the pending input"));
+            let fresh = start(&mut mpe, &mut rt, member, 60);
+            assert_eq!(
+                apply(&mut mpe, &mut rt, bend(member, 9216)),
+                Ok(Applied::Expression { owners: 2 })
+            );
+            assert_eq!(expression(&rt, old), expression(&rt, fresh));
+            assert!(
+                matches!(apply(&mut mpe, &mut rt, packet(0x80, member, 60, 0)), Ok(Applied::Released { note, .. }) if note == old)
+            );
+            assert!(!rt.input_held(old).unwrap());
+            assert!(rt.key_down(fresh).unwrap() && rt.input_held(fresh).unwrap());
+            assert_eq!(
+                apply(&mut mpe, &mut rt, bend(member, 10240)),
+                Ok(Applied::Expression { owners: 1 })
+            );
+            assert_eq!(expression(&rt, old).pitch_semitones, pitch(9216, 48.));
+            assert_eq!(
+                apply(&mut mpe, &mut rt, bend(manager, 12288)),
+                Ok(Applied::Expression { owners: 2 })
+            );
+            assert_eq!(
+                expression(&rt, old).pitch_semitones,
+                pitch(9216, 48.) + pitch(12288, 2.)
+            );
+            assert_eq!(
+                expression(&rt, fresh).pitch_semitones,
+                pitch(10240, 48.) + pitch(12288, 2.)
+            );
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}

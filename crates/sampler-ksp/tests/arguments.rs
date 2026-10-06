@@ -194,6 +194,8 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
                 count += 1;
                 true
             });
+            rt.flush_ended(|_| panic!("faults preserve input pairing"));
+            rt.note_off(input(1), None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(
                 (

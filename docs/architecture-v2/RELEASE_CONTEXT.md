@@ -12,13 +12,18 @@ reservations; articulation/controller snapshots remain open. Source completion a
 - `admitted_at`: logical admission on the monotonic engine sample clock, including
   generated notes. It does not pretend to be a delayed source's audible onset.
 - `key: Option<KeyRelease>`: the first consumed key transition, with sample time,
-  optional normalized release velocity and cause. `None` means the key remains down.
+  optional normalized release velocity and cause. `None` means the downstream logical
+  key remains down; raw external key ownership is queried separately with `input_held`.
 - `gate: Option<GateRelease>`: the first effective closure, with sample time and cause.
   `None` means the gate remains open.
 
-The records' cause markers replace the private key/gate booleans. Pairing, pedal capture, source
-admission, child release, callback cancellation and terminal retirement derive their
-state from the records; there is no separately writable duplicate state.
+The records own logical key/gate state. A separate `input_down` bit owns the raw
+external key pairing; generated notes never acquire that bit. Script note-off and
+callback faults can end the downstream event without consuming its host input.
+FIFO matching, physical sostenuto capture and MPE member tracking use the raw
+projection. Source admission, child release and script `$NOTE_HELD` use the logical
+projection. Retirement requires both external input consumption and completed logical
+ownership; these are distinct lifecycle facts, not competing copies of one state.
 
 `note_off(input, velocity)`, `key_up(note, velocity)` and
 `Event::KeyUp(note, velocity)` accept `Option<f64>`. Present values must be finite
@@ -31,14 +36,16 @@ cannot consume a key or install a release record.
 
 Repeated explicit closure preserves the first key and gate records. Anonymous input
 note-off still pairs FIFO over the complete original input identity. Direct repeated
-`key_up` on a retained handle is idempotent; a queued key-up requires a still-held key.
+`key_up` on a retained handle is idempotent; a queued physical key-up accepts either
+a pending external input or an open logical key.
 Old or foreign handles cannot access a replacement note's context.
 
 ## Closure causes and ownership
 
 | Cause | Native transition |
 | --- | --- |
-| `KeyUp` | Direct, scheduled or adapter-delivered key release; closes the gate if no pedal hold remains |
+| `KeyUp` | Direct, scheduled or adapter-delivered physical key release; consumes the raw input and closes the gate if no hold remains |
+| `Script` | Downstream scripted note end/forwarding; retains the raw external key pairing |
 | `Pedal` | A held release becomes effective after sustain/sostenuto allows it |
 | `Explicit` | Native explicit or scheduled release, including generated duration expiry |
 | `BehaviorCancelled` | Explicit abort of a pending native behavior |
@@ -48,7 +55,10 @@ Old or foreign handles cannot access a replacement note's context.
 | `AllSoundOff` | Hard silence of the addressed domain |
 | `Panic` | Global hard cleanup |
 
-Synthetic key consumption has no invented velocity. A physical note silenced by
+Synthetic key consumption has no invented velocity. Script end, callback fault and
+cancellation retain raw key pairing until its actual input note-off (or an explicit
+owner abort/panic). They do not cause that later note-off to target a newer same-key
+input. A physical note silenced by
 All Sound Off retains its key for matching the real note-off; therefore its gate
 record can precede its key record. Independent descendants keep their own clocks
 and gates. Later panic/hard cleanup does not rewrite an earlier release event.
@@ -94,3 +104,12 @@ The subsequent [release-selection checkpoint](RELEASE_SELECTION.md) adds explici
 phase/velocity policies, independent release sequences, coherent family reservations
 and cleanup suppression. Articulation and controller snapshots remain separate missing
 facts; neither checkpoint claims universal vendor release behavior.
+
+
+`Event::ScriptKeyUp` and `replace_script_key_up_at` preserve queued physical key-ups
+when replacing script deadlines. A script deadline survives a physical key-up whose
+release callback suppresses forwarding; execution then resumes the held release once.
+Physical note-off after an already ended script event consumes input ownership without
+rewriting the original logical release context or dispatching a duplicate callback.
+The existing explicit native `release`/`Event::Release` operation deliberately aborts
+the input owner as well; source note-off and callback faults do not use that policy.
