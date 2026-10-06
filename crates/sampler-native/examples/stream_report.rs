@@ -87,6 +87,7 @@ fn main() {
         .unwrap_or_else(|e| panic!("{e}"))
         .with_stream_cache(cache);
     rt.set_release_stealing(true);
+    rt.set_cold_starts(true);
     let (low, high) = loaded
         .instrument
         .zones
@@ -122,7 +123,7 @@ fn main() {
     let mut buffer = [[0.0f32; 2]; 64];
     // Heads bound only starts; running voices request a page ahead.
     let horizon = (report.head_frames.max(PAGE_FRAMES) + buffer.len()) as u32;
-    let (mut next, mut times, mut refused, mut reloaded) = (0, Vec::new(), 0, 0);
+    let (mut next, mut times, mut refused, mut purged) = (0, Vec::new(), 0, 0);
     let (mut peak, mut most) = (0.0f32, 0);
     let (mut pending, mut service_errors) = (0, std::collections::BTreeMap::new());
     let play = Instant::now();
@@ -161,8 +162,10 @@ fn main() {
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
         peak = buffer.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
-        if start % (PAGE_FRAMES * 4) == 0 {
-            reloaded += streamer.reload(&assets).unwrap();
+        // Halfway, purge start ranges idle for a second: later notes on them
+        // start cold and the background thread reloads them.
+        if purged == 0 && start >= frames / 2 {
+            purged = streamer.purge(&assets, rt.now().saturating_sub(u64::from(rate)));
         }
     }
     times.sort_by(f64::total_cmp);
@@ -176,10 +179,12 @@ fn main() {
         times.last().unwrap(),
     );
     println!(
-        "voices peak {most}, stream underruns {}, voice drops {}, nonfinite {}, refused events {refused}, heads reloaded {reloaded}; RSS {} (peak {})",
+        "voices peak {most}, stream underruns {}, voice drops {}, nonfinite {}, refused events {refused}, cold starts {} after purging {:.1} MB halfway; RSS {} (peak {})",
         stats.stream_underruns,
         stats.voice_drops,
         stats.nonfinite_frames,
+        stats.cold_starts,
+        mb(purged as u64),
         status("VmRSS:"),
         status("VmHWM:"),
     );
