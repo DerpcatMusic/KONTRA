@@ -1,4 +1,6 @@
 use std::{fs, process::Command, time::SystemTime};
+#[path = "../../sampler-kontakt/tests/support/nis.rs"]
+mod nis;
 
 #[test]
 fn expanded_source_inspection_preserves_input_and_reports_malformed_records() {
@@ -59,6 +61,54 @@ fn expanded_source_inspection_preserves_input_and_reports_malformed_records() {
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap(), text);
     assert_eq!(fs::read(&path).unwrap(), nks);
+    let base = nis::layer(b"NISD", 1, &[], &[]);
+    let mut properties = 1u32.to_le_bytes().to_vec();
+    properties.extend(0u32.to_le_bytes());
+    properties.extend(1u32.to_le_bytes());
+    properties.extend((bytes.len() as u64).to_le_bytes());
+    properties.extend(bytes);
+    let payload = nis::item(&nis::layer(b"NISD", 0x6d, &properties, &base), &[]);
+    for (compressed, protected, duplicate) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+    ] {
+        let encryption = nis::encryption(&payload, compressed, protected);
+        let children = if duplicate {
+            vec![encryption.clone(), encryption]
+        } else {
+            vec![encryption]
+        };
+        let preset = nis::item(&nis::layer(b"NIK4", 3, &[], &base), &children);
+        let document = nis::item(&nis::layer(b"NISD", 0x76, &[], &base), &[preset]);
+        fs::write(&path, &document).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_sampler-native"))
+            .arg("inspect-kontakt-nis")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), document);
+        if protected || duplicate {
+            assert!(!output.status.success());
+            assert!(
+                String::from_utf8(output.stderr)
+                    .unwrap()
+                    .contains(if protected {
+                        "AccessRequired"
+                    } else {
+                        "Ambiguous"
+                    })
+            );
+        } else {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), text);
+        }
+    }
     fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
     let output = run();
     assert!(!output.status.success());

@@ -30,7 +30,7 @@ impl<'a> Nks42<'a> {
         let version_at = h.0;
         let version = h.u16()?;
         if version != 0x0110 {
-            return Err(version_at.error(ErrorKind::UnsupportedVersion(version)));
+            return Err(version_at.error(ErrorKind::UnsupportedVersion(u32::from(version))));
         }
         let marker_at = h.0;
         if h.u32()? != 0xea37631a {
@@ -67,18 +67,26 @@ impl<'a> Nks42<'a> {
     /// BEFORE allocating the destination; a tiny malformed input cannot force a
     /// large claimed-size allocation. The second pass fills one bounded buffer.
     pub fn expand(self, max_bytes: usize) -> Result<Vec<u8>, Error> {
-        if self.expanded_bytes > max_bytes {
-            return Err(self.compressed.error(ErrorKind::Limit));
-        }
-        fastlz(self.compressed, self.expanded_bytes, None)?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(self.expanded_bytes)
-            .map_err(|_| self.compressed.error(ErrorKind::Allocation))?;
-        bytes.resize(self.expanded_bytes, 0);
-        fastlz(self.compressed, self.expanded_bytes, Some(&mut bytes))?;
-        Ok(bytes)
+        expand(self.compressed, self.expanded_bytes, max_bytes)
     }
+}
+
+pub(crate) fn expand(
+    compressed: Bytes<'_>,
+    expected: usize,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Error> {
+    if expected > max_bytes {
+        return Err(compressed.error(ErrorKind::Limit));
+    }
+    fastlz(compressed, expected, None)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(expected)
+        .map_err(|_| compressed.error(ErrorKind::Allocation))?;
+    bytes.resize(expected, 0);
+    fastlz(compressed, expected, Some(&mut bytes))?;
+    Ok(bytes)
 }
 
 // FastLZ levels 1/2 wire rules, reviewed against Ariya Hidayat's MIT-licensed

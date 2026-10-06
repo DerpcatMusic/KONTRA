@@ -311,9 +311,18 @@ fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
         [command, input]
-            if command == "inspect-kontakt-chunks" || command == "inspect-kontakt-nks" =>
+            if command == "inspect-kontakt-chunks"
+                || command == "inspect-kontakt-nks"
+                || command == "inspect-kontakt-nis" =>
         {
-            kontakt::inspect(Path::new(input), command == "inspect-kontakt-nks")
+            let format = if command == "inspect-kontakt-nks" {
+                kontakt::Format::Nks
+            } else if command == "inspect-kontakt-nis" {
+                kontakt::Format::Nis
+            } else {
+                kontakt::Format::Chunks
+            };
+            kontakt::inspect(Path::new(input), format)
         }
         [command, output] if command == "demo" || command == "echo" => render(
             demo_sample(),
@@ -342,7 +351,7 @@ fn run() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }

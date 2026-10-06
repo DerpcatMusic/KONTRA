@@ -37,6 +37,9 @@ The independent [Kontakt source decoder](KONTAKT_SOURCE.md) now inspects expande
 chunk payloads and retains source records, raw bytes and saved script state. An
 authored saved script executes through the native KSP/audio path. This does not
 close container decoding, whole-instrument lowering, persistence or playback gates.
+NKS 4.2 and clear NIS preset profiles now have bounded native decoding, with raw
+metadata retained and no dependency on the old importer. Remaining wrappers,
+source semantics and checksum/authentication validation are still required.
 
 ## Completed groundwork
 
