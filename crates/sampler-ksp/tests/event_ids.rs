@@ -343,3 +343,39 @@ fn nested_release_dispatch_preserves_side_effect_order_and_wait_resume_boundarie
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn stopping_a_pending_attack_finishes_without_sound_or_consuming_host_input() {
+    for stop in ["note_off($EVENT_ID)", "note_off($EVENT_ID,0)"] {
+        let mut rt = runtime(&format!(
+            "on init declare $releases end on
+             on note {stop} end on
+             on release inc($releases) end on"
+        ));
+        support::without_heap(|| {
+            let n = rt.trigger(input(60), 60, 1.).unwrap();
+            assert!(rt.input_held(n).unwrap());
+            assert!(!rt.key_down(n).unwrap());
+            assert_eq!(rt.forward_attack(n), Ok(false));
+            let mut audio = [[1.; 2]; 16];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio, [[0.; 2]; 16]);
+            assert_eq!((rt.voice_count(), rt.family_count()), (0, 0));
+            let mut callbacks = 0;
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                callbacks += 1;
+                true
+            });
+            assert_eq!(callbacks, 2);
+            rt.flush_ended(|_| panic!("raw input still owns its terminal"));
+            rt.key_up(n, None).unwrap();
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+                Ok(1)
+            );
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
+    }
+}

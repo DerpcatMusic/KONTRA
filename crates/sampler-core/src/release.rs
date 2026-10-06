@@ -91,6 +91,11 @@ impl Runtime {
             note.input_down = false;
         }
         if note.key_down() {
+            // A source stop before attack forwarding consumes that pending attack.
+            // Physical key-up retains the native deferred-attack rejection policy.
+            if cause == ReleaseCause::Script && note.attack == super::AttackStatus::Pending {
+                note.attack = super::AttackStatus::Suppressed;
+            }
             let times = &mut self.release_times[id.0.index];
             times.key_at = self.now;
             times.velocity = velocity;
