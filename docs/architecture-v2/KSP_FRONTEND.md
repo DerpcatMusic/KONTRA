@@ -951,3 +951,11 @@ Control IDs remain caller-bound persistent identities; module composition never
 renumbers them or aliases unrelated controls. Parent-dependent note operations and
 controller-event operands are rejected in UI handlers. Full source UI generations,
 widget gestures, async resource work and stage-scoped stored-event stops remain open.
+
+Variable `play_note` durations also work in UI/controller handlers and shared user
+functions: zero selects whole-source playback and positive microseconds select a
+fixed duration. A runtime-selected `-1` faults before note publication when there is
+no originating note; literal parent-linked durations are rejected at preparation.
+Note/release contexts retain native parent-gate ownership. One source fixture checks
+all three contexts, invalid negative durations, exact audio lengths and heap-free
+retirement. These are native contract checks, not Kontakt timing measurements.

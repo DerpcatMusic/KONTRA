@@ -832,3 +832,116 @@ fn ui_callbacks_keep_module_domain_and_origin_through_generated_events_waits_and
     });
     drop(transfer.retired().unwrap());
 }
+
+#[test]
+fn dynamic_durations_in_shared_functions_use_the_real_note_ui_or_controller_context() {
+    let button = ControlId(901);
+    let prepared = |duration: i32| {
+        let source = format!(
+            "on init declare $duration := {duration} declare $event declare ui_button $fire end on
+            function spawn
+                $event := play_note(60,127,0,$duration)
+            end function
+            on note ignore_event($EVENT_ID) call spawn end on
+            on ui_control($fire) call spawn end on
+            on controller ignore_controller call spawn end on"
+        );
+        compile_bound(&source, &[("$fire", button)])
+            .unwrap()
+            .bind(plan("on init end on"))
+            .unwrap()
+    };
+    for duration in [0, 125, -1, -2] {
+        for controller in [false, true] {
+            let prepared = prepared(duration);
+            let budget = limits(&prepared);
+            let mut rt = Runtime::new(prepared, budget).unwrap();
+            support::without_heap(|| {
+                let domain = rt.performance(1).unwrap();
+                let callback = if controller {
+                    rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+                        .unwrap()
+                        .unwrap()
+                } else {
+                    rt.invoke_control(
+                        ControlContext {
+                            performance: domain,
+                            origin: origin(),
+                            channels: 1 << 3,
+                        },
+                        rt.active_plan(),
+                        None,
+                        ControlWrite {
+                            id: button,
+                            value: ControlValue::Integer(1),
+                        },
+                    )
+                    .unwrap()
+                    .1
+                    .unwrap()
+                };
+                let mut audio = [[0.; 2]; 32];
+                rt.render(&mut audio).unwrap();
+                if duration < 0 {
+                    assert_eq!(
+                        rt.behavior_outcome(callback),
+                        Ok(Some(Outcome::Fault(Error::InvalidInput)))
+                    );
+                    assert_eq!(audio, [[0.; 2]; 32]);
+                    assert_eq!(
+                        rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
+                        Ok(0)
+                    );
+                } else {
+                    assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+                    let length = if duration == 0 { 16 } else { 6 };
+                    assert!(audio[..length].iter().all(|f| *f == [1.; 2]));
+                    assert!(audio[length..].iter().all(|f| *f == [0.; 2]));
+                }
+                rt.flush_behaviors(|_, _, _| true);
+                rt.flush_ended(|_| panic!("generated source has no host note"));
+                assert_eq!(
+                    (rt.note_count(), rt.voice_count(), rt.expression_count()),
+                    (0, 0, 0)
+                );
+            });
+        }
+    }
+    let prepared = prepared(-1);
+    let budget = limits(&prepared);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let note = rt
+            .trigger(
+                Input {
+                    protocol: Protocol::Clap,
+                    port: 0,
+                    group: 0,
+                    channel: 0,
+                    key: 60,
+                    external_id: Some(1),
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        let mut audio = [[0.; 2]; 3];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[1.; 2]; 3]);
+        rt.key_up(note, None).unwrap();
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.; 2]; 3]);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+    });
+    assert!(
+        compile_bound(
+            "on init declare ui_button $fire end on
+        on ui_control($fire) play_note(60,127,0,-1) end on",
+            &[("$fire", button)]
+        )
+        .is_err()
+    );
+}
