@@ -755,6 +755,13 @@ impl Gen<'_, '_> {
             })?;
             return self.emit(I::ControllerToMidi7 { local: dst });
         }
+        if array == SysArray::KeyDown {
+            self.value(index, dst)?;
+            return self.emit(I::ReadKeyHeld {
+                key: dst,
+                local: dst,
+            });
+        }
         self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
         self.set(dst, 0)
     }
@@ -1985,7 +1992,58 @@ impl Gen<'_, '_> {
         })
     }
 
+    /// `search(%KEY_DOWN, value)`: the first key whose held state is `value`.
+    fn search_keys(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
+        self.arg(args, 1, value)?;
+        if args.len() > 2 {
+            self.arg(args, 2, dst)?;
+            self.arg(args, 3, end)?;
+        } else {
+            self.set(dst, 0)?;
+            self.set(end, 127)?;
+        }
+        let start = self.here();
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: dst,
+            operation: IB::Add,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: end,
+            comparison: Cmp::LessEqual,
+        })?;
+        let missing = self.jump_if_zero(t)?;
+        self.emit(I::ReadKeyHeld {
+            key: dst,
+            local: t,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: value,
+            comparison: Cmp::Equal,
+        })?;
+        let next = self.jump_if_zero(t)?;
+        let found = self.jump()?;
+        self.land(next);
+        self.emit(I::AddLocal {
+            local: dst,
+            value: 1,
+        })?;
+        self.emit(I::Jump { target: start })?;
+        self.land(missing);
+        self.set(dst, -1)?;
+        self.land(found);
+        self.cover(Builtin::Search, Coverage::Native);
+        Ok(())
+    }
+
     fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        if let Some(Arg::SysArray(SysArray::KeyDown)) = args.first() {
+            return self.search_keys(args, dst);
+        }
         let Some(Arg::Var(v, _)) = args.first() else {
             self.ignore(
                 Builtin::Search,
