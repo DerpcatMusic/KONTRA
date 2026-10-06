@@ -120,7 +120,7 @@ impl GroupState {
 
     pub fn begin_release(&mut self, note: usize, stage: usize) {
         self.cells.copy_within(
-            self.range(note, GroupView::Note(stage)),
+            self.range(note, GroupView::Committed),
             self.range(note, GroupView::Release(stage)).start,
         );
     }
@@ -154,17 +154,19 @@ impl Runtime {
         if n.key_down() {
             return Err(Error::InvalidInput);
         }
+        if let Some(stage) = self.release_times[note.0.index].release_stage {
+            return self.forward_release_stage(note, stage);
+        }
         if self.release_times[note.0.index].groups_forwarded
             || self.release_times[note.0.index].held
         {
             return Ok(false);
         }
-        let groups = &mut self.plans.get_mut(n.plan.0).unwrap().groups;
-        if let Some(stage) = self.release_times[note.0.index].release_stage {
-            groups.commit_release(note.0.index, stage);
-        } else {
-            groups.commit_at(note.0.index, self.note_events[note.0.index].entry);
-        }
+        self.plans
+            .get_mut(n.plan.0)
+            .unwrap()
+            .groups
+            .commit_at(note.0.index, self.note_events[note.0.index].entry);
         self.release_times[note.0.index].groups_forwarded = true;
         Ok(true)
     }

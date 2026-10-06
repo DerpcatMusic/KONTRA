@@ -474,6 +474,7 @@ fn thousands_of_nested_release_callbacks_use_reserved_frames_on_a_small_thread_s
         Instruction::ReadScriptCell { local: 1, cell: 0 },
         Instruction::AddLocal { local: 1, value: 1 },
         Instruction::WriteScriptCell { cell: 0, local: 1 },
+        Instruction::ForwardReleaseGroups,
     ])
     .unwrap()
     .with_script_instance(ScriptInstanceId(0))
@@ -488,7 +489,7 @@ fn thousands_of_nested_release_callbacks_use_reserved_frames_on_a_small_thread_s
     let mut rt = Runtime::new(
         p,
         Limits {
-            behavior_fuel: 6,
+            behavior_fuel: 7,
             ..limits(COUNT)
         },
     )

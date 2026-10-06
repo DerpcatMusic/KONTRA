@@ -429,8 +429,8 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
-        // One execution frame and at most one release completion per continuation.
-        let ready_capacity = limits.behaviors.checked_mul(2).ok_or(Error::Capacity)?;
+        // Release completion belongs to its native route, not an extra VM frame.
+        let ready_capacity = limits.behaviors;
         std::alloc::Layout::array::<behavior::Ready>(ready_capacity)
             .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
@@ -993,9 +993,7 @@ impl Runtime {
             // retire or slots can be reused. Storage was reserved for every note.
             assert!(self.closed_notes.len() < self.closed_notes.capacity());
             self.closed_notes.push(id);
-            if !cause.musical() {
-                self.run_release_behavior(id, false);
-            }
+            self.run_release_behavior(id, false);
             self.release_note_callbacks(id);
             // Forced closure must return any suppressed physical-release quota.
             self.run_release(id, Trigger::KeyRelease, false);

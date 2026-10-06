@@ -11,13 +11,9 @@ pub struct Stage {
 }
 
 impl Prepared {
-    /// Install exact module positions. Downstream release routing is still under
-    /// implementation, so release bindings currently fail outside stage zero.
+    /// Install exact module positions with independently validated callback contexts.
     pub fn with_stages(mut self, stages: Vec<Stage>) -> Result<Self, Error> {
-        for (index, stage) in stages.iter().enumerate() {
-            if index != 0 && stage.release.is_some() {
-                return Err(Error::InvalidInput);
-            }
+        for stage in &stages {
             if stage
                 .note
                 .is_some_and(|id| self.programs.get(id).is_none_or(|p| p.requires_controller))
@@ -203,15 +199,16 @@ mod tests {
                 Err(Error::InvalidInput)
             ));
         }
-        assert!(matches!(
-            prepared().with_stages(vec![
-                Stage::default(),
-                Stage {
-                    release: Some(1),
-                    ..Stage::default()
-                }
-            ]),
-            Err(Error::InvalidInput)
-        ));
+        assert!(
+            prepared()
+                .with_stages(vec![
+                    Stage::default(),
+                    Stage {
+                        release: Some(1),
+                        ..Stage::default()
+                    }
+                ])
+                .is_ok()
+        );
     }
 }

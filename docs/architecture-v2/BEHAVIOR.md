@@ -638,8 +638,8 @@ on a 128 KiB thread stack with heap guards. Construction occurs off audio on the
 ordinary worker stack. Tests also cover failed admission, exact projections, waits
 across plan adoption, reclamation/backpressure and all cancellation paths.
 
-The controller slice is followed by ordered note routing below. Ordered release
-execution, per-stage logical key state and full vendor event semantics remain open.
+The controller slice is followed by ordered note routing below. Ordered release execution and per-stage logical key state are implemented below;
+full vendor event semantics remain open.
 No full multi-slot Kontakt playback claim is made.
 
 Validation: 312 native release/Rust 1.92 tests, strict all-target Clippy and both
@@ -655,9 +655,8 @@ compressing the route. Controller admission counts actual callbacks for capacity
 while incoming CC projections update every crossed module boundary. Empty leading,
 intermediate and trailing positions do not consume callback slots.
 
-Downstream release bindings still fail explicitly. Full release routing must
-reserve callbacks only for reached note stages and retain module-specific logical
-release state.
+Release routing below reserves callbacks for admitted routes, returns unreached
+quotas and retains module-specific logical release state.
 Concatenating programs or sharing one mutable event/group projection across
 suspended source slots would violate these requirements.
 
@@ -692,10 +691,9 @@ projection; CC writes from note callbacks enter the following controller stage.
 These paths use the existing bounded dispatcher and native source/voice ownership.
 
 `sampler_ksp::bind_modules` exposes ordered note/controller modules with isolated
-globals/polyphonic ranges and relocated controls. Release callbacks beyond module
-zero remain rejected: reached-stage release admission, release forwarding/holds
-and projected logical key state are the next implementation work. UI callback
-performance/module routing and complete Kontakt/Falcon semantics are not complete.
+globals/polyphonic ranges and relocated controls. Ordered release routing is
+described below. UI callback performance/module routing, stage-scoped scripted
+stop/parent-follow semantics and complete Kontakt/Falcon fidelity remain open.
 
 Validation: 321 native release/Rust 1.92 tests, strict all-target Clippy and both
 root boundary tests pass (`artifacts/note-stages-*`). New heap-guarded fixtures cover
@@ -713,6 +711,50 @@ children that release draft. It leaves a suspended note callback's group view
 unchanged. Physical identity, event properties and plan ownership remain shared
 at their existing scopes. The new source fixture covers a held release, delayed
 child generation and separate parent/child masks with exact rendered samples.
-This is preparation for multi-module release routing, which remains rejected.
+The following multi-module release implementation uses that separate phase.
 Validation: the native debug suite plus the new source fixture cover 322 tests;
 strict all-target Clippy passes (`artifacts/release-projections-*`).
+
+
+## Ordered release stages
+
+Preparation now accepts release callbacks at every module position. Admission
+reserves their continuation slots together with note callback slots, before
+publishing the note. Note consumption returns quotas for unreached modules;
+physical/scripted key-up also returns any pending downstream note callbacks.
+Release callbacks run only in modules that received the note, starting after the
+creator for generated notes. Callback records and unused future reservations have
+separate ownership, so a retained outcome cannot lose another stage's capacity.
+
+Each note projection records whether its release has reached, stopped at or passed
+that module. `$NOTE_HELD` uses this local view while raw input pairing remains
+independent. A suppressed release holds the native gate and remaining route until
+forwarded or forcibly closed. Each reached release callback starts from the current
+committed group selection in its own release draft; forwarding commits that draft
+for the next release stage. It never overwrites a suspended note callback's draft.
+
+Forwarding is explicit in native IR for every event kind. Finishing a native release
+program does not inject another event: callers can forward the pending route later.
+KSP's compiler already emits forwarding at its first yield/end and suppression
+blocks that forwarding. This leaves other frontend event policies out of the kernel.
+Final release forwarding completes the ordinary native key/gate services immediately.
+The former VM-only release-completion frame and extra note work pin are removed;
+the dispatcher needs one frame per continuation. Fixed-duration generated notes now
+schedule a native scripted key-up so downstream release callbacks receive their
+note-off, instead of bypassing them with a direct gate close.
+
+Validation: 327 native release/Rust 1.92 tests, strict all-target Clippy and both
+root boundary tests pass (`artifacts/release-stages-*`). New fixtures cover independent
+successive release holds, per-stage held state, consumed parents, timed generated
+notes, explicit native forwarding, capacity rejection/reclamation and 4,096 release
+stages on a 128 KiB stack under heap guards. Existing nested stop/query ordering is
+retained, including immediate gate closure after resuming a suppressed release.
+
+Remaining profile work includes stage-scoped `note_off` injection and generated
+parent-follow links. Parent-linked children currently follow the native parent gate;
+they do not yet follow a particular source module's release boundary. The v1
+reference routes these child releases at their creating slot, but its mutable event
+object and fixed child array are not suitable for reuse. Official NI command docs
+specify note-off generation/release behavior without resolving all cross-slot
+ordering cases; matched Kontakt runs remain necessary. These native fixtures are
+not proof of full Kontakt/Falcon event parity or superior performance.

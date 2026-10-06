@@ -152,7 +152,7 @@ source semantics and checksum/authentication validation are still required.
   now execute ordinary KSP globals across note/release/UI callbacks and retain old
   generations independently from new initial values. Polyphonic ranges now isolate
   those instances on each note, with preparation-time offsets and summed capacity;
-  ordered note/controller routing is implemented below; release routing remains open. Signed-32 arithmetic, bitwise
+  ordered note/controller/release routing is implemented below; full profile semantics remain open. Signed-32 arithmetic, bitwise
   expressions and scalar inc/dec now execute through explicit native instructions
   with bounded expression depth and register requirements. Integer constants, bounded
   script-instance arrays, indexed inc/dec and num_elements now share those services.
@@ -182,7 +182,9 @@ source semantics and checksum/authentication validation are still required.
   the same runtime with isolated state and relocated UI callbacks. Note stages now
   copy per-module properties/groups and reserve downstream callbacks. Generated
   notes/CCs enter the following module, retaining creator views and old plans.
-  Reached-stage release routing and logical key projection remain open. Controller callbacks now generate parentless notes in their retained
+  Reached-stage release callbacks now reserve owned capacity, retain separate group
+  drafts and expose local logical held state. Stage-scoped scripted stops and
+  generated parent-follow links remain open. Controller callbacks now generate parentless notes in their retained
   plan/domain, including source offsets and stored-ID stops; no fake host input is used.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.

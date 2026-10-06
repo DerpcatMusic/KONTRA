@@ -56,13 +56,11 @@ impl Note {
 pub(super) struct ReleaseTimes {
     pub groups_forwarded: bool,
     pub held: bool,
-    pub finishing: bool,
     pub admitted_at: u64,
     pub key_at: u64,
     pub gate_at: u64,
     pub velocity: Option<f64>,
     pub selection: [super::ReleaseStatus; 2],
-    pub release_behavior: bool,
     pub release_stage: Option<usize>,
 }
 
@@ -97,18 +95,16 @@ impl Runtime {
             if cause == ReleaseCause::Script && note.attack == super::AttackStatus::Pending {
                 note.attack = super::AttackStatus::Suppressed;
             }
+            self.release_note_callbacks(id);
+            self.trim_release_callbacks(id, false);
+            let note = self.notes.get_mut(id.0).unwrap();
             let times = &mut self.release_times[id.0.index];
             times.key_at = self.now;
             times.velocity = velocity;
             note.key_release = Some(cause);
             let musical = cause.triggers_key_release();
-            if musical && times.release_behavior {
-                times.finishing = true;
-                note.work = note
-                    .work
-                    .checked_add(1)
-                    .expect("reserved release completion");
-                self.push_behavior_work(super::behavior::Ready::FinishKeyUp(id, cause));
+            if musical && self.note_events[id.0.index].pending_releases != 0 {
+                times.held = true;
                 self.run_release_behavior(id, true);
                 return true;
             }
@@ -117,7 +113,7 @@ impl Runtime {
                 self.run_release(id, Trigger::KeyRelease, musical);
             }
         }
-        self.release_times[id.0.index].finishing
+        false
     }
 
     /// Stop a pending release before its script forwarding boundary. Physical key
@@ -127,6 +123,9 @@ impl Runtime {
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         if n.key_down() {
             return Err(Error::InvalidInput);
+        }
+        if let Some(stage) = self.release_times[note.0.index].release_stage {
+            return self.suppress_release_stage(note, stage);
         }
         let state = &mut self.release_times[note.0.index];
         if !n.gate() || state.groups_forwarded {
@@ -143,6 +142,21 @@ impl Runtime {
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         if !n.gate() || !self.release_times[note.0.index].held {
             return Ok(false);
+        }
+        if let Some(stage) = self.release_times[note.0.index].release_stage {
+            let plan = n.plan;
+            let state = &mut self
+                .plans
+                .get_mut(plan.0)
+                .unwrap()
+                .projections
+                .get_mut(note.0.index, stage)?
+                .release;
+            if *state != super::note_event::ReleaseStage::Suppressed {
+                return Ok(false);
+            }
+            *state = super::note_event::ReleaseStage::Pending;
+            return self.forward_release_stage(note, stage);
         }
         self.release_times[note.0.index].held = false;
         self.forward_release_groups(note)?;
@@ -293,5 +307,123 @@ impl Runtime {
         self.decisions.unreserve(reserve.decisions);
         assert!(reserve.commands <= self.reserved_commands);
         self.reserved_commands -= reserve.commands;
+    }
+}
+
+impl Runtime {
+    pub(super) fn reserve_release_callbacks(&mut self, note: NoteId, entry: usize) {
+        let plan = self.notes.get(note.0).unwrap().plan;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        let mut count = 0;
+        for (stage, binding) in generation.prepared.stages.iter().enumerate().skip(entry) {
+            if binding.release.is_some() {
+                generation
+                    .projections
+                    .get_mut(note.0.index, stage)
+                    .unwrap()
+                    .release_reserved = true;
+                count += 1;
+            }
+        }
+        self.note_events[note.0.index].release_start = entry;
+        self.note_events[note.0.index].pending_releases = count;
+        self.behaviors.reserve(count);
+    }
+
+    /// Return unreached quotas after consumption, or every remaining quota at closure.
+    pub(super) fn trim_release_callbacks(&mut self, note: NoteId, all: bool) {
+        use super::note_event::ReleaseStage;
+        let plan = self.notes.get(note.0).unwrap().plan;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        let mut count = 0;
+        for stage in 0..=generation.prepared.stages.len() {
+            let view = generation.projections.get_mut(note.0.index, stage).unwrap();
+            if view.release_reserved && (all || view.properties.is_none()) {
+                view.release_reserved = false;
+                count += 1;
+            }
+            if all && view.properties.is_some() {
+                view.release = ReleaseStage::Forwarded;
+            }
+        }
+        self.note_events[note.0.index].pending_releases -= count;
+        self.behaviors.unreserve(count);
+    }
+
+    pub(super) fn run_release_behavior(&mut self, note: NoteId, musical: bool) {
+        if !musical || self.note_events[note.0.index].pending_releases == 0 {
+            self.trim_release_callbacks(note, true);
+            return;
+        }
+        let entry = self.note_events[note.0.index].release_start;
+        self.advance_release_stage(note, entry);
+    }
+
+    fn advance_release_stage(&mut self, note: NoteId, from: usize) {
+        use super::{behavior::NoteStage, note_event::ReleaseStage};
+        let plan = self.notes.get(note.0).unwrap().plan;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        for stage in from..=generation.prepared.stages.len() {
+            let view = generation.projections.get_mut(note.0.index, stage).unwrap();
+            if view.properties.is_none() {
+                break;
+            }
+            if view.release_reserved {
+                view.release_reserved = false;
+                view.release = ReleaseStage::Pending;
+                let program = generation.prepared.stages[stage].release.unwrap();
+                generation.groups.begin_release(note.0.index, stage);
+                self.note_events[note.0.index].pending_releases -= 1;
+                self.behaviors.unreserve(1);
+                self.release_times[note.0.index].release_stage = Some(stage);
+                self.start_note_context(note, program, Some(NoteStage::Release(stage)))
+                    .expect("owned reached-stage release callback");
+                return;
+            }
+            view.release = ReleaseStage::Forwarded;
+        }
+        self.release_times[note.0.index].held = false;
+        self.release_times[note.0.index].groups_forwarded = true;
+        let cause = self.notes.get(note.0).unwrap().key_release.unwrap();
+        self.finish_key_release(note, cause);
+    }
+
+    pub(super) fn forward_release_stage(
+        &mut self,
+        note: NoteId,
+        stage: usize,
+    ) -> Result<bool, Error> {
+        use super::note_event::ReleaseStage;
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let generation = self.plans.get_mut(n.plan.0).unwrap();
+        let view = generation.projections.get_mut(note.0.index, stage)?;
+        if view.release != ReleaseStage::Pending {
+            return Ok(false);
+        }
+        view.release = ReleaseStage::Forwarded;
+        generation.groups.commit_release(note.0.index, stage);
+        self.advance_release_stage(note, stage + 1);
+        Ok(true)
+    }
+
+    pub(super) fn suppress_release_stage(
+        &mut self,
+        note: NoteId,
+        stage: usize,
+    ) -> Result<bool, Error> {
+        use super::note_event::ReleaseStage;
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let view = self
+            .plans
+            .get_mut(n.plan.0)
+            .unwrap()
+            .projections
+            .get_mut(note.0.index, stage)?;
+        if view.release != ReleaseStage::Pending {
+            return Ok(false);
+        }
+        view.release = ReleaseStage::Suppressed;
+        self.release_times[note.0.index].held = true;
+        Ok(true)
     }
 }
