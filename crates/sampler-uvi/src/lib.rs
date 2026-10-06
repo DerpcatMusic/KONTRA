@@ -905,6 +905,53 @@ pub struct Translated {
     pub locations: Vec<String>,
     /// The bank and program path the samples come from; loose files have none.
     bank: Option<(Bank, String)>,
+    /// Where each (layer, oscillator) of the program plays, for its scripts.
+    pub groups: Vec<OscGroup>,
+    /// The program's XML and the bank's Lua members, for its scripts.
+    text: String,
+    lua: script::Scripts,
+}
+
+/// A program's scripts loaded on a script thread for a host that owns the runtime.
+pub struct AttachedScript {
+    pub driver: scripted::Driver<scripted::ScriptThread>,
+    /// The script's widgets.
+    pub interface: sampler_ui_ir::Interface,
+}
+
+impl Translated {
+    /// Start the program's Lua scripts on their own thread and mark the
+    /// instrument as scripted: what they replace is no longer reported, what
+    /// they use that is not modeled is. `None` when the program has none.
+    pub fn attach_script(
+        &mut self,
+        rate: u32,
+        config: script::Config,
+    ) -> Result<Option<AttachedScript>, String> {
+        if self.instrument.behaviors.is_empty() {
+            return Ok(None);
+        }
+        let (thread, loaded) =
+            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config)?;
+        let unsupported = &mut self.instrument.unsupported;
+        if scripted::Script::handles_notes(&thread) {
+            unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
+        }
+        unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
+        for finding in loaded.findings {
+            unsupported.push(ir::Unsupported {
+                location: "script".into(),
+                feature: finding.feature,
+                value: format!("{} (x{})", finding.value, finding.count),
+                reason: ir::Reason::NotModeled,
+            });
+        }
+        let groups = self.groups.clone();
+        Ok(Some(AttachedScript {
+            driver: scripted::Driver::new(thread, groups, rate),
+            interface: loaded.interface,
+        }))
+    }
 }
 
 /// Translate what [`load`] accepts without decoding samples, so a host can
@@ -931,16 +978,23 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             member
         };
         let (text, program_path) = bank.program(&member)?;
-        let (instrument, locations) =
-            translate_bank(&text).map_err(|e| describe(Path::new(&member), e))?;
-        return Ok(Translated { instrument, locations, bank: Some((bank, program_path)) });
+        let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+            .map_err(|e| describe(Path::new(&member), e))?;
+        let lua = bank.scripts();
+        return Ok(Translated {
+            instrument,
+            locations,
+            bank: Some((bank, program_path)),
+            groups,
+            text,
+            lua,
+        });
     }
-    let (instrument, locations) = translate_with(
-        &read_text(path)?,
-        Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
-    )
-    .map_err(|e| describe(path, e))?;
-    Ok(Translated { instrument, locations, bank: None })
+    let text = read_text(path)?;
+    let (instrument, locations, groups) =
+        translate_full(&text, Source::Disk(path.parent().unwrap_or(Path::new(".")).into()))
+            .map_err(|e| describe(path, e))?;
+    Ok(Translated { instrument, locations, bank: None, groups, text, lua: Default::default() })
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.

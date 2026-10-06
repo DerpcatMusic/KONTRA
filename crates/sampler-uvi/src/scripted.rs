@@ -6,12 +6,52 @@
 //! attack is forwarded: the same ownership path the other frontends use, with
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
+mod thread;
 use crate::script::{Command, Play, ScriptHost};
 use crate::OscGroup;
 use sampler_core::{
     Error, Expression, Frame, Inheritance, Input, Limits, NoteId, Prepared, Protocol, Runtime,
 };
 use std::collections::HashMap;
+pub use thread::{Loaded, ScriptThread};
+
+/// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
+/// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
+pub trait Script {
+    fn handles_notes(&self) -> bool;
+    fn set_time(&mut self, ms: f64);
+    fn note_on(&mut self, id: u64, key: u8, velocity: u8);
+    fn note_off(&mut self, id: u64, key: u8);
+    fn advance(&mut self, ms: f64);
+    fn next_due(&mut self) -> Option<f64>;
+    fn take_commands(&mut self) -> Vec<Command>;
+    /// The audio clock at the start of a block, in milliseconds.
+    fn tick(&mut self, _now_ms: f64) {}
+}
+
+impl Script for ScriptHost {
+    fn handles_notes(&self) -> bool {
+        ScriptHost::handles_notes(self)
+    }
+    fn set_time(&mut self, ms: f64) {
+        ScriptHost::set_time(self, ms)
+    }
+    fn note_on(&mut self, id: u64, key: u8, velocity: u8) {
+        ScriptHost::note_on(self, id, key, velocity, 0)
+    }
+    fn note_off(&mut self, id: u64, key: u8) {
+        ScriptHost::note_off(self, id, key, 64, 0)
+    }
+    fn advance(&mut self, ms: f64) {
+        ScriptHost::advance(self, ms)
+    }
+    fn next_due(&mut self) -> Option<f64> {
+        ScriptHost::next_due(self)
+    }
+    fn take_commands(&mut self) -> Vec<Command> {
+        ScriptHost::take_commands(self)
+    }
+}
 
 /// A translated program whose scripts are loaded.
 pub struct Program {
@@ -38,8 +78,8 @@ struct Glide {
     ms: f64,
 }
 
-pub struct Driver {
-    host: ScriptHost,
+pub struct Driver<S: Script> {
+    host: S,
     groups: Vec<OscGroup>,
     rate: f64,
     /// Script event / voice id -> core note.
@@ -58,9 +98,9 @@ pub struct Driver {
     glide_at: u64,
 }
 
-impl Driver {
+impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
-    pub fn new(host: ScriptHost, groups: Vec<OscGroup>, rate: u32) -> Self {
+    pub fn new(host: S, groups: Vec<OscGroup>, rate: u32) -> Self {
         Self {
             host,
             groups,
@@ -108,8 +148,7 @@ impl Driver {
         self.notes.insert(id, note);
         self.held.insert(key, id);
         self.host.set_time(self.now_ms(rt));
-        self.host
-            .note_on(id, key, (velocity * 127.0).round() as u8, 0);
+        self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {
             // No onNote: the program sounds as authored.
             rt.forward_attack(note)?;
@@ -122,7 +161,7 @@ impl Driver {
             return Ok(());
         };
         self.host.set_time(self.now_ms(rt));
-        self.host.note_off(id, key, 64, 0);
+        self.host.note_off(id, key);
         // Plays made by onRelease must not be linked to the closing gate.
         self.apply(rt, true)?;
         if let Some(note) = self.notes.get(&id).copied() {
@@ -135,6 +174,9 @@ impl Driver {
     /// the next one, `None` when nothing is pending. Call before each block.
     pub fn wake(&mut self, rt: &mut Runtime) -> Result<Option<usize>, Error> {
         let mut spins = 0;
+        self.host.tick(self.now_ms(rt));
+        // Commands a script thread issued since the last block.
+        self.apply(rt, false)?;
         loop {
             if !self.glides.is_empty() && rt.now() >= self.glide_at {
                 self.step_glides(rt);
@@ -338,7 +380,7 @@ impl Driver {
 /// A runtime and the driver of its scripts, for hosts that own nothing else.
 pub struct Player {
     rt: Runtime,
-    driver: Driver,
+    driver: Driver<ScriptHost>,
 }
 
 impl Player {

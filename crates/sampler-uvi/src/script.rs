@@ -33,7 +33,7 @@ impl<T: Files> Files for std::rc::Rc<T> {
 }
 
 /// A bank's Lua members, by path.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Scripts {
     files: Vec<(String, String)>,
 }
@@ -72,6 +72,14 @@ pub struct Config {
     pub load: Duration,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
+}
+
+impl Config {
+    /// For a plugin: a callback that overruns a few milliseconds is aborted
+    /// (its commands up to then stand) rather than left to lag the sound.
+    pub fn realtime() -> Self {
+        Self { callback: Duration::from_millis(8), ..Self::default() }
+    }
 }
 
 impl Default for Config {
