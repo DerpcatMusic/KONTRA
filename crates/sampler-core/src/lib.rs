@@ -69,7 +69,7 @@ mod modulation;
 mod plan_programs;
 mod script_params;
 mod voice_mod;
-pub use plan_programs::PlanProgram;
+pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;

@@ -12,7 +12,7 @@ use sampler_core::{
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime,
     real_bits,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 /// Event context a program runs in; decides which event operands exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,20 @@ const AMP_ENVELOPE: &str = "ENV_AHDSR";
 /// Store key tags separating UI properties and PGS values from engine keys.
 pub const PROPERTY_TAG: i32 = i32::MIN;
 pub const PGS_TAG: i32 = i32::MIN + 1;
+/// `Instruction::Signal` of a PGS write; `on pgs_changed` is bound to it.
+pub const PGS_SIGNAL: u16 = 0;
+
+/// The shared-store key of PGS key `args[0]` at `index`.
+fn pgs_key(g: &Gen, args: &[Arg], index: Key) -> [Key; 4] {
+    let hash = name_hash(&g.const_text(args, 0).unwrap_or_default());
+    [
+        Key::Fixed(PGS_TAG),
+        Key::Fixed(hash),
+        index,
+        Key::Fixed(PGS_TAG),
+    ]
+}
+
 /// `[LISTENER_TAG, signal, 0, LISTENER_TAG]`: a listener's `set_listener` value.
 pub const LISTENER_TAG: i32 = i32::MIN + 2;
 
@@ -103,7 +117,6 @@ pub struct Unit<'h> {
     /// Host control per UI index.
     pub controls: &'h [Option<ControlId>],
     pub groups: &'h [String],
-    pub pgs: &'h BTreeSet<String>,
     pub slot: u8,
     /// Remaining instruction budget for the whole script.
     pub budget: usize,
@@ -1042,6 +1055,18 @@ impl Gen<'_, '_> {
 
     /// Keyed store access: key registers dst+1..=dst+4, value in dst.
     fn store(&mut self, args: &[Arg], key: [Key; 4], dst: u16, write: bool) -> Result<()> {
+        self.store_in(args, key, dst, write, false)
+    }
+
+    /// `store`, on the plan's shared store with `shared` (PGS).
+    fn store_in(
+        &mut self,
+        args: &[Arg],
+        key: [Key; 4],
+        dst: u16,
+        write: bool,
+        shared: bool,
+    ) -> Result<()> {
         for (i, k) in key.into_iter().enumerate() {
             let r = reg(dst, 1 + i as u16)?;
             match k {
@@ -1049,10 +1074,19 @@ impl Gen<'_, '_> {
                 Key::Fixed(v) => self.set(r, i64::from(v))?,
             }
         }
-        self.emit(I::Op(Op::Store {
-            key: reg(dst, 1)?,
-            local: dst,
-            write,
+        let key = reg(dst, 1)?;
+        self.emit(I::Op(if shared {
+            Op::SharedStore {
+                key,
+                local: dst,
+                write,
+            }
+        } else {
+            Op::Store {
+                key,
+                local: dst,
+                write,
+            }
         }))
     }
 
@@ -1655,35 +1689,32 @@ impl Gen<'_, '_> {
             }
             GetControlPar | GetControlParArr => return self.get_control_par(builtin, args, dst),
             PgsSetKeyVal => {
+                // Shared by every script slot; on pgs_changed runs in each.
                 self.arg(args, 2, dst)?;
-                let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [
-                    Key::Fixed(PGS_TAG),
-                    Key::Fixed(hash),
-                    Key::Arg(1),
-                    Key::Fixed(PGS_TAG),
-                ];
-                self.store(args, key, dst, true)?;
-                self.effect(builtin, args, dst)?;
-                return Ok(());
+                self.store_in(args, pgs_key(self, args, Key::Arg(1)), dst, true, true)?;
+                if self.callback_type != b::cb::PGS_CHANGED {
+                    // ponytail: a pgs_changed that sets keys does not re-signal,
+                    // which would recurse synchronously.
+                    self.emit(I::Signal { signal: PGS_SIGNAL })?;
+                }
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
             }
             PgsGetKeyVal => {
                 self.set(dst, 0)?;
-                let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [
-                    Key::Fixed(PGS_TAG),
-                    Key::Fixed(hash),
-                    Key::Arg(1),
-                    Key::Fixed(PGS_TAG),
-                ];
-                self.store(args, key, dst, false)?;
+                self.store_in(args, pgs_key(self, args, Key::Arg(1)), dst, false, true)?;
                 true
             }
             PgsKeyExists => {
-                let exists = self
-                    .const_text(args, 0)
-                    .is_some_and(|k| self.u.pgs.contains(&k));
-                self.set(dst, i64::from(exists))?;
+                // A created key has a value at index 0.
+                self.set(dst, i64::from(i32::MIN))?;
+                self.store_in(args, pgs_key(self, args, Key::Fixed(0)), dst, false, true)?;
+                self.set(t, i64::from(i32::MIN))?;
+                self.emit(I::CompareLocal {
+                    lhs: dst,
+                    rhs: t,
+                    comparison: Cmp::NotEqual,
+                })?;
                 true
             }
             WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
