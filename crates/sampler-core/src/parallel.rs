@@ -54,6 +54,25 @@ struct Run {
     count: usize,
 }
 
+/// Per-voice-slot storage of the parallel path.
+pub(super) struct Scratch {
+    scratch: Slab<[Frame; BLOCK]>,
+    outcomes: Slab<Outcome>,
+    claims: Claims,
+    runs: Vec<Run>,
+}
+
+impl Scratch {
+    pub(super) fn new(voices: usize) -> Self {
+        Self {
+            scratch: Slab::new(vec![[[0.; 2]; BLOCK]; voices].into_boxed_slice(), 1),
+            outcomes: Slab::new(vec![Outcome::default(); voices].into_boxed_slice(), 1),
+            claims: Claims::new(voices),
+            runs: Vec::with_capacity(voices),
+        }
+    }
+}
+
 pub(super) struct Parallel {
     pool: Pool,
     threads: usize,
@@ -66,15 +85,18 @@ pub(super) struct Parallel {
 
 impl Parallel {
     fn new(threads: usize, voices: usize) -> Self {
-        Self {
-            pool: Pool::new(threads - 1),
-            threads,
-            scratch: Slab::new(vec![[[0.; 2]; BLOCK]; voices].into_boxed_slice(), 1),
-            outcomes: Slab::new(vec![Outcome::default(); voices].into_boxed_slice(), 1),
-            claims: Claims::new(voices),
-            runs: Vec::with_capacity(voices),
-            blocks: 0,
-        }
+        let Scratch { scratch, outcomes, claims, runs } = Scratch::new(voices);
+        Self { pool: Pool::new(threads - 1), threads, scratch, outcomes, claims, runs, blocks: 0 }
+    }
+    /// Slots the scratch covers.
+    pub(super) fn voices(&self) -> usize {
+        self.outcomes.len()
+    }
+    pub(super) fn swap_scratch(&mut self, other: &mut Scratch) {
+        std::mem::swap(&mut self.scratch, &mut other.scratch);
+        std::mem::swap(&mut self.outcomes, &mut other.outcomes);
+        std::mem::swap(&mut self.claims, &mut other.claims);
+        std::mem::swap(&mut self.runs, &mut other.runs);
     }
 }
 

@@ -15,6 +15,10 @@ pub struct RuntimeStats {
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
     pub voices: usize,
+    /// Voice slots now, how often the pool grew, and growths refused.
+    pub voice_capacity: usize,
+    pub voice_growths: u64,
+    pub growth_failures: u64,
     /// Wall time of the last `render` call, and the peak since `reset_peak`.
     pub render_nanos_last: u64,
     pub render_nanos_peak: u64,
@@ -33,6 +37,9 @@ impl Runtime {
             cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
+            voice_capacity: self.voices.slots.len(),
+            voice_growths: self.voice_growths,
+            growth_failures: self.growth_failures,
             render_nanos_last: self.render_time[0],
             render_nanos_peak: self.render_time[1],
             render_frames_last: self.render_time[2] as u32,
@@ -112,6 +119,7 @@ impl Runtime {
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
         self.start_plan_programs();
+        self.apply_growth();
         self.resume_yielded();
         self.apply_due();
         let mut offset = 0;
