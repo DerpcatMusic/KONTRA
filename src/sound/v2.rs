@@ -86,6 +86,8 @@ pub struct Part {
     _stream: Option<Arc<Stream>>,
     /// Grows the voice pool off the audio thread; stopped when the part drops.
     grower: Option<Grower>,
+    /// The program's Lua scripts: they choose which of its oscillators play.
+    script: Option<Box<ScriptDriver>>,
 }
 
 /// A thread that sleeps until the audio side reports a nearly full voice pool
@@ -151,6 +153,7 @@ impl Part {
             horizon: None,
             _stream: None,
             grower: None,
+            script: None,
         })
     }
 
@@ -365,6 +368,22 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 return;
             }
             let input = host_input(note, part.mpe_zone);
+            if let Some(script) = part.script.as_mut() {
+                // The scripts play the part's notes: the physical one is silent.
+                let velocity = velocity.clamp(0.0, 1.0);
+                match part.runtime.note_on(input, note.key, velocity) {
+                    Ok(id) => {
+                        held.push(Held { part: index, note, input, id });
+                        match script.note_on(&mut part.runtime, id, note.key, velocity) {
+                            Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                            _ => {}
+                        }
+                    }
+                    Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                    Err(_) => {}
+                }
+                return;
+            }
             let id = match part.mpe.trigger(&mut part.runtime, input.channel, input, velocity.clamp(0.0, 1.0)) {
                 Ok(id) => id,
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
@@ -380,6 +399,9 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
         }
         Event::NoteOff(pattern) | Event::Choke(pattern) => {
             for h in held.iter().filter(|h| h.part == index && pattern.matches(h.note)) {
+                if let Some(script) = part.script.as_mut() {
+                    let _ = script.note_off(&mut part.runtime, h.note.key);
+                }
                 let _ = part.runtime.note_off(h.input, None);
             }
         }
@@ -512,6 +534,9 @@ impl Core for V2Core {
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
+            }
+            if let Some(script) = part.script.as_mut() {
+                let _ = script.wake(&mut part.runtime);
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
@@ -864,7 +889,10 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
 }
 
 /// A plan and, when its samples stream, the runtime's page cache.
-type Plan = (Prepared, Option<StreamCache>);
+type Plan = (Prepared, Option<StreamCache>, Option<ScriptDriver>);
+
+/// A UVI program's Lua scripts, driving the part's runtime from their own thread.
+pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>;
 
 fn kontakt(
     request: &LoadRequest,
@@ -909,7 +937,7 @@ fn kontakt(
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
     Ok(Loaded {
-        part: (loaded.plan, Some(cache)),
+        part: (loaded.plan, Some(cache), None),
         tree,
         report,
         interfaces: loaded.interfaces,
@@ -925,15 +953,23 @@ fn kontakt(
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(e.to_string());
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
+    let rate = request.sample_rate as u32;
+    let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let loaded = sampler_uvi::assemble_translated(t, request.sample_rate as u32).map_err(|e| load(&*e))?;
+    let mut loaded = sampler_uvi::assemble_translated(t, rate).map_err(|e| load(&*e))?;
+    let driver = attached.map(|a| {
+        // Loading reports a script it has no frontend for; this one runs.
+        loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
+        loaded.interfaces.push(a.interface);
+        a.driver
+    });
     report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
     Ok(Loaded {
-        part: (loaded.plan, None),
+        part: (loaded.plan, None, driver),
         tree,
         report,
         interfaces: loaded.interfaces,
@@ -993,7 +1029,7 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
     Ok(Loaded {
-        part: (plan, None),
+        part: (plan, None, None),
         tree: MixTree::instrument(&name),
         report,
         interfaces: Vec::new(),
@@ -1014,7 +1050,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: (prepared, cache), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: (prepared, cache, script), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_uvi(&request.path) {
             uvi(request)?
@@ -1053,6 +1089,7 @@ impl CoreLoader for V2Loader {
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.grower = Some(grower);
+        part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
@@ -1663,6 +1700,32 @@ mod tests {
             return;
         };
         mixer_nodes_pass_audio(path, NodeKind::Group);
+    }
+
+    #[test]
+    fn real_uvi_lua_program_sounds_through_the_trait() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.to_string_lossy().contains(".ufs") && p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| (), &|| false).unwrap();
+        assert!(
+            !loaded.report.missing.iter().any(|m| m.value.contains("no frontend")),
+            "the Lua script runs: {:?}",
+            loaded.report.missing
+        );
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
+        // The script runs on its own thread: its note arrives within a few blocks.
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard, "the scripted program is silent");
     }
 
     #[test]
