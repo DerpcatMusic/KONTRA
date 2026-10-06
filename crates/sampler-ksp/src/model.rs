@@ -145,3 +145,98 @@ pub struct Model {
     pub pgs_text: BTreeMap<String, String>,
     pub requests: Vec<Request>,
 }
+
+/// Assemble the model from resolved declarations and the `on init` result.
+pub(crate) fn assemble(
+    hir: &crate::hir::Hir,
+    init: &crate::eval::Initial,
+    controls: &[Option<ControlId>],
+    entries: &[crate::Entry],
+) -> Model {
+    use crate::builtins as b;
+    use crate::hir::{Home, Ty};
+    let mut model = init.model.clone();
+    let name = |par: i32| crate::eval::symbol_name(hir, par).unwrap_or_else(|| par.to_string());
+    let mut properties: BTreeMap<i32, BTreeMap<String, Value>> = BTreeMap::new();
+    for (&(id, par), &v) in &init.properties {
+        properties.entry(id).or_default().insert(name(par), Value::Int(v));
+    }
+    for ((id, par), v) in &init.text_properties {
+        properties
+            .entry(*id)
+            .or_default()
+            .insert(name(*par), Value::Text(v.clone()));
+    }
+    let real = |bits: i64| f64::from_bits(bits as u64);
+    let mut widgets = Vec::with_capacity(hir.uis.len());
+    for (i, ui) in hir.uis.iter().enumerate() {
+        let var = &hir.vars[ui.var.0 as usize];
+        let ui_id = b::FIRST_UI_ID + i as i32;
+        let value = match (var.home, var.ty) {
+            (Home::Control(_), _) => WidgetValue::Int(init.controls[i]),
+            (Home::Cell(c), Ty::Real) => WidgetValue::Reals(vec![real(init.cells[c as usize])]),
+            (Home::Cell(c), _) => WidgetValue::Int(init.cells[c as usize] as i32),
+            (Home::Text(c), _) => WidgetValue::Text(init.texts[c as usize].clone()),
+            (Home::Cells { offset, len }, Ty::Real) => WidgetValue::Reals(
+                init.cells[offset as usize..(offset + len) as usize]
+                    .iter()
+                    .map(|&b| real(b))
+                    .collect(),
+            ),
+            (Home::Cells { offset, len }, _) => WidgetValue::Ints(
+                init.cells[offset as usize..(offset + len) as usize]
+                    .iter()
+                    .map(|&v| v as i32)
+                    .collect(),
+            ),
+            _ => WidgetValue::None,
+        };
+        widgets.push(Widget {
+            name: var.name.to_string(),
+            kind: ui.kind,
+            ui_id,
+            control: controls[i],
+            value,
+            params: ui.params.clone(),
+            range: crate::eval::declared_range(ui).map(|(a, b)| (a.min(b), a.max(b))),
+            properties: properties.remove(&ui_id).unwrap_or_default(),
+            menu: init
+                .model
+                .interface
+                .widgets
+                .get(i)
+                .map(|w| w.menu.clone())
+                .unwrap_or_default(),
+            callback: entries
+                .iter()
+                .position(|e| e.kind == crate::EntryKind::UiControl(i)),
+            persistence: var.persistence,
+        });
+    }
+    model.interface.widgets = widgets;
+    model.interface.instrument = properties
+        .into_iter()
+        .filter(|(id, _)| (b::INST_ICON_ID..=b::INST_ICON_ID + 5).contains(id))
+        .collect();
+    model.persistent = hir
+        .vars
+        .iter()
+        .filter(|v| v.persistence != Persistence::None)
+        .filter_map(|v| {
+            let location = match v.home {
+                Home::Control(ui) => Location::Control(controls[ui as usize]?),
+                Home::Cell(c) => Location::Cells { offset: c, len: 1 },
+                Home::Cells { offset, len } => Location::Cells { offset, len },
+                Home::Text(c) => Location::Texts { offset: c, len: 1 },
+                Home::Texts { offset, len } => Location::Texts { offset, len },
+                Home::Note(_) | Home::Const(_) => return None,
+            };
+            Some(Persistent {
+                name: v.name.to_string(),
+                kind: v.persistence,
+                location,
+            })
+        })
+        .collect();
+    model
+}

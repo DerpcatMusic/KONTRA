@@ -13,6 +13,8 @@ pub struct Environment {
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
     pub persisted: BTreeMap<String, Value>,
+    /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
+    pub slot: u8,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
