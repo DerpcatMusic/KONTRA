@@ -132,6 +132,7 @@ impl Runtime {
                 n,
                 expression.value,
                 &self.performance_state.current(performance).controllers,
+                self.release_times[f.note.0.index].held(n.key_down(), at),
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),

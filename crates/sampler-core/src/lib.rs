@@ -72,7 +72,7 @@ mod script_params;
 mod steal;
 mod voice_mod;
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
-pub use steal::Stealing;
+pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
     Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
     ModTarget,
