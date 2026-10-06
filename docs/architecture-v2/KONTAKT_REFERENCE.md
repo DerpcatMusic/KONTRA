@@ -118,3 +118,13 @@ KONTRA minus Kontakt for g37: about +3.4 to +4.2 dB on the rising side (CC100 0-
 - Instrument slider reads 0.0 dB; DRY_G1 group volume is -6.0 dB. Group ids are 0-based, 4 columns row-major in the Group Editor list (113 groups; g98 = Depth, g94 = RESONANCE f, g88 = SSR, g107 = Flageolet 1, g110 = Reverse).
 - Group solos vel 64/100/127 (peak, rms dBFS): g39 -30.9/-20.7/-14.9 and -52.0/-42.5/-36.0; g94 flat -17.7 / -26.8; g98 flat -30.6 / -43.8 with Una's scripts active, but silent with scripts bypassed (script driven); g107 silent.
 - g98 Amplifier mod "Velocity to Volume" shaper reads as an exponential segment y = (e^{kx}-1)/(e^k-1), k about 1.79, stored curvature 0.118. Sampled: u .25 -> .12, .5 -> .30, .75 -> .58, .93 -> .86.
+
+## 8. AR LP2/4 (kind 106) cutoff law
+
+Measured on a noise instrument with an AR LP2/4 group insert and no modulators, engine value set with `set_engine_par($ENGINE_PAR_CUTOFF, v, 0, 0, -1)` and the displayed Hz read from the module:
+
+| x (v/1e6) | 0 | 0.1 | 0.25 | 0.5 | 0.5135 | 0.75 | 0.9 | 1.0 |
+|---|---|---|---|---|---|---|---|---|
+| Hz | 8.2 | 18.9 | 66.4 | 538.6 | 603.1 | 4.4k | 15.4k | 35.5k |
+
+Pure exponential: `f = 8.2 * 4329^x` Hz (ln slope 8.35-8.40 per unit x between every pair of points). The stored 0.5135 of ANALOG STRINGS group 9 gives 603 Hz, matching the earlier GUI read, so no modulator offset was involved. (Compare SV LP2: `25 * 800^x`.)
