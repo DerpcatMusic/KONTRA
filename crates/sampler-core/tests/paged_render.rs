@@ -491,3 +491,61 @@ fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_
         assert_eq!(rt.voice_count(), 1);
     });
 }
+
+#[test]
+fn a_full_pool_reclaims_a_voice_waiting_on_its_stream_before_dropping_starts() {
+    let asset = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+    let resident = Pcm::new(48000, vec![[0.5; 2]; 1000].into()).unwrap();
+    let data = vec![[0.75; 2]; PAGE_FRAMES * 2];
+    let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+    load(&mut cache, &mut worker, &asset, &data, 0);
+    let plan = Prepared::new(48000, vec![asset, resident], vec![], 8).unwrap();
+    let limits = Limits {
+        voices: 2,
+        ..Limits {
+            notes: 4,
+            channels: 0,
+            performances: 1,
+            families: 4,
+            voices: 8,
+            expressions: 4,
+            decisions: 0,
+            commands: 8,
+            behaviors: 0,
+            behavior_cells: 0,
+            behavior_fuel: 0,
+            note_cells: 0,
+        }
+    };
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let mut output = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let family = rt.create_family(note).unwrap();
+        let start = |rt: &mut Runtime, sample, start| {
+            let playback = Playback {
+                start,
+                ..Playback::default()
+            };
+            let at = rt.now();
+            rt.start_family(family, sample, at, 1., Envelope::default(), playback)
+        };
+        let starved = start(&mut rt, 0, PAGE_FRAMES - 2).unwrap();
+        let audible = start(&mut rt, 1, 0).unwrap();
+        // Two frames, then the one-millisecond fade: the voice is now waiting.
+        rt.render(&mut output).unwrap();
+        assert_eq!(rt.stats().stream_underruns, 1);
+        let reclaimed = start(&mut rt, 1, 0).unwrap();
+        assert!(!rt.voice_active(starved));
+        assert!(rt.voice_active(audible) && rt.voice_active(reclaimed));
+        assert_eq!(start(&mut rt, 1, 0), Err(Error::Capacity));
+        let stats = rt.stats();
+        assert_eq!((stats.voice_drops, stats.voices), (1, 2));
+        assert_eq!(stats.render_frames_last, 64);
+        assert!(stats.render_nanos_peak >= stats.render_nanos_last);
+        assert_eq!(stats.stream_cache_bytes, PAGE_FRAMES * 8);
+        rt.render(&mut output).unwrap();
+        assert!(output.iter().all(|f| f == &[1.; 2]));
+    });
+    assert_eq!(rt.resident_bytes(), 1000 * 8);
+}

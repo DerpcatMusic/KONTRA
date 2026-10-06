@@ -271,6 +271,11 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    /// Faded out and silently waiting for its stream window.
+    pub(super) fn waiting(&self) -> bool {
+        self.starvation == Some(0)
+    }
+
     /// One millisecond of native fade from the last complete resampled frame.
     /// No incomplete resampler frame is published. The cursor keeps advancing in
     /// time, so the source stays aligned with its envelope and demand.

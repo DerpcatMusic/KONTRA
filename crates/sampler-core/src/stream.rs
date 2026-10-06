@@ -136,6 +136,10 @@ pub struct StreamWorker {
     store: u64,
 }
 impl StreamCache {
+    /// Bytes of page buffers this cache owns once its worker has filled them.
+    pub fn bytes(&self) -> usize {
+        self.entries.len() * PAGE_FRAMES * size_of::<Frame>()
+    }
     pub fn new(pages: usize) -> Result<(Self, StreamWorker), Error> {
         if pages == 0 {
             return Err(Error::InvalidInput);

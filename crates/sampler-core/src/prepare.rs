@@ -82,6 +82,12 @@ impl Pcm {
     pub(crate) fn levels(&self) -> &[Box<[Frame]>] {
         &self.0.levels
     }
+    /// Bytes of resident frames and octave levels; zero for streamed assets.
+    pub fn resident_bytes(&self) -> usize {
+        let frames = self.0.frames.as_ref().map_or(0, |f| f.len())
+            + self.0.levels.iter().map(|l| l.len()).sum::<usize>();
+        frames * size_of::<Frame>()
+    }
 }
 
 /// Native tuning offsets in semitones from the nominal 12-tone equal-tempered
