@@ -291,8 +291,6 @@ pub fn prepare(
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
     let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
-    let group_values: Vec<sampler_core::GroupBase> =
-        instrument.groups.iter().map(Into::into).collect();
     let mut views = Vec::new();
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
         let mut performance_view = Default::default();
@@ -336,7 +334,6 @@ pub fn prepare(
                 })
                 .collect(),
             performance_view,
-            group_values: group_values.clone(),
         };
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
