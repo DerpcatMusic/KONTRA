@@ -541,6 +541,11 @@ impl Runtime {
                 if r.take != choice.map(|c| c.take) {
                     continue;
                 }
+                let group = prepared
+                    .region_groups
+                    .get(candidate.region)
+                    .copied()
+                    .flatten();
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
@@ -573,18 +578,25 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
+                let envelope = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .script
+                    .envelope(group, r.envelope);
                 let voice = self
                     .admit_voice(
                         family,
                         r.sample,
                         self.now,
                         r.gain * r.velocity_curve.amplitude(velocity),
-                        r.envelope,
+                        envelope,
                         cursor.with_step(step),
                     )
                     .expect("prepared and preflighted source admission");
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
+                state.group = group;
                 state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);

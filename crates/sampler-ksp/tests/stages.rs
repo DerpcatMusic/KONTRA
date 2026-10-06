@@ -498,10 +498,14 @@ fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
         let mut audio = [[0.; 2]; 7];
         rt.render(&mut audio).unwrap();
         assert_eq!(audio[0], [0.375; 2]);
-        assert_eq!(audio[6], [0.; 2]);
         assert_eq!(rt.release_context(parent).unwrap(), first);
-        // Callback-lifetime work remains owned after forced gate closure.
-        rt.render(&mut [[0.; 2]; 48]).unwrap();
+        // v2: the runaway loop is preempted every block and faults after a
+        // second; the fault then closes the linked child.
+        for _ in 0..12 {
+            rt.render(&mut [[0.; 2]; 4800]).unwrap();
+        }
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[0], [0.; 2]);
         let mut faults = 0;
         rt.flush_behaviors(|_, _, outcome| {
             if outcome == Outcome::FuelExhausted {
@@ -529,9 +533,15 @@ fn generated_note_fault_cannot_orphan_its_already_queued_parent_release() {
     support::without_heap(|| {
         rt.trigger(input(1), 60, 1.).unwrap();
         rt.note_off(input(1), None).unwrap();
+        // v2: the queued releases run after the preempted runaway callback of
+        // their script, which ends after a second. The child's key-up came
+        // before its fault, so its release runs as well as the parent's.
+        for _ in 0..12 {
+            rt.render(&mut [[0.; 2]; 4800]).unwrap();
+        }
         assert_eq!(
             rt.script_cell(rt.active_plan(), ScriptInstanceId(1), 0),
-            Ok(1)
+            Ok(2)
         );
         let mut faults = 0;
         rt.flush_behaviors(|_, _, outcome| {

@@ -246,9 +246,24 @@ fn mpe_audio_is_identical_across_host_partitions() {
     }
 }
 
+/// MIDI 2.0 (M2-104) min-center-max 7-to-32-bit upscaling, as an oracle.
+fn spec7(value: u32) -> u32 {
+    let shifted = value << 25;
+    if value <= 64 {
+        return shifted;
+    }
+    let mut repeat = (value & 63) << 19;
+    let mut out = shifted;
+    while repeat != 0 {
+        out |= repeat;
+        repeat >>= 6;
+    }
+    out
+}
+
 #[test]
 fn pressure_and_timbre_keep_member_snapshots_and_preserve_unrelated_expression() {
-    let scaled = |value: u32| (u64::from(value) * u64::from(u32::MAX) / 127) as u32;
+    let scaled = spec7;
     for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
         let mut rt = runtime();
         let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
@@ -1002,4 +1017,64 @@ fn mpe_filter_destinations_follow_captured_notes_across_member_channel_reuse() {
             );
         });
     }
+}
+
+#[test]
+fn host_owned_notes_follow_zone_bends_transposition_and_pedals() {
+    let mut rt = runtime_with_channels(16);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 4).unwrap();
+    let input = sampler_core::Input {
+        protocol: Protocol::Midi1,
+        port: 7,
+        group: 3,
+        channel: 0,
+        key: 60,
+        external_id: Some(9),
+    };
+    let note = mpe.trigger(&mut rt, 0, input, 1.0).unwrap();
+    // A wire note on the same key stays a separate owner.
+    start(&mut mpe, &mut rt, 0, 60);
+    apply(&mut mpe, &mut rt, bend(0, 16383)).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0));
+    mpe.transpose(&mut rt, -12.0).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0) - 12.0);
+    apply(&mut mpe, &mut rt, bend(0, 8192)).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, -12.0, "bends keep the offset");
+    assert_eq!(
+        apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)).unwrap(),
+        Applied::Pedal
+    );
+    rt.note_off(input, None).unwrap();
+    assert!(rt.note(note).unwrap().2, "sustain holds the host note");
+    apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 0)).unwrap();
+    assert!(!rt.note(note).unwrap().2);
+    assert_eq!(
+        mpe.trigger(&mut runtime(), 0, input, 1.0),
+        Err(ApplyError::Core(Error::StaleHandle))
+    );
+}
+
+#[test]
+fn midi2_messages_play_the_zone_at_full_precision() {
+    let mut rt = runtime();
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    let midi2 = |mpe: &mut Mpe, rt: &mut Runtime, status: u8, a: u8, b: u8, data: u32| {
+        let first = 0x4300_0000 | (u32::from(status) << 16) | (u32::from(a) << 8) | u32::from(b);
+        mpe.apply(rt, Packets::new(&[first, data]).next().unwrap().unwrap())
+    };
+    // Velocity 0x8001 of 16 bits, beyond any 7-bit step.
+    let Applied::Started(note) = midi2(&mut mpe, &mut rt, 0x90, 60, 0, 0x8001_0000).unwrap() else {
+        panic!("not admitted")
+    };
+    assert_eq!(rt.note(note).unwrap().1, f64::from(0x8001u16) / 65535.0);
+    // A quarter-step 32-bit bend over the default 2 semitones.
+    midi2(&mut mpe, &mut rt, 0xe0, 0, 0, 0xa000_0000).unwrap();
+    let pitch = expression(&rt, note).pitch_semitones;
+    assert!((pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12, "{pitch}");
+    // Pressure keeps all 32 bits.
+    midi2(&mut mpe, &mut rt, 0xd0, 0, 0, 0x1234_5678).unwrap();
+    assert_eq!(expression(&rt, note).pressure, 0x1234_5678);
+    // Registered Controller 0:0 sets the bend range: 12 semitones.
+    midi2(&mut mpe, &mut rt, 0x20, 0, 0, 12 << 25).unwrap();
+    assert_eq!(mpe.pitch_ranges().0, 12);
 }

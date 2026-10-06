@@ -522,6 +522,11 @@ fn plan_callback_faults_cancel_without_touching_musical_owners_or_leaking_work()
             (2, Outcome::Fault(Error::ArithmeticOverflow)),
         ] {
             let id = rt.start_plan_behavior(generation, program).unwrap();
+            if expected == Outcome::FuelExhausted {
+                for _ in 0..12 {
+                    rt.render(&mut [[0.; 2]; 4800]).unwrap();
+                }
+            }
             assert_eq!(rt.behavior_outcome(id), Ok(Some(expected)));
             assert!(rt.note(note).unwrap().2);
             rt.flush_behaviors(|_, owner, outcome| {

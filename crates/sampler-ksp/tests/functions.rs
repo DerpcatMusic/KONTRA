@@ -189,9 +189,7 @@ fn nested_function_branches_loops_and_exit_keep_polyphonic_state_and_caller_targ
 #[test]
 fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
     for source in [
-        "on note call later end on function later end function",
         "function recurse call recurse end function on note end on",
-        "function first call second end function function second end function on note end on",
         "function same end function function same end function on note end on",
         "function takes(1) end function on note end on",
         "function empty end function on note call empty(1) end on",
@@ -200,10 +198,30 @@ fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
         "function dead if (0) call missing end if end function on note end on",
         "function wrong if (1) end function on note end on",
         "function stray continue end function on note while(1) call stray end while end on",
-        "function cc ignore_controller end function on note call cc end on",
-        "function event change_note($EVENT_ID,61) end function on release call event end on",
     ] {
         assert!(compile(source, 4096).is_err(), "{source}");
+    }
+    // v2: functions resolve regardless of order; context-only operations warn.
+    for (source, warns) in [
+        (
+            "on note call later end on function later end function",
+            false,
+        ),
+        (
+            "function first call second end function function second end function on note end on",
+            false,
+        ),
+        (
+            "function cc ignore_controller end function on note call cc end on",
+            true,
+        ),
+        (
+            "function event change_note($EVENT_ID,61) end function on release call event end on",
+            false,
+        ),
+    ] {
+        let script = compile(source, 4096).unwrap();
+        assert_eq!(!script.warnings().is_empty(), warns, "{source}");
     }
     let mut source = String::from("on init declare $a end on function f0 inc($a) end function ");
     for i in 1..12 {
@@ -214,8 +232,10 @@ fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
         ));
     }
     source.push_str("on note call f11 end on");
+    // v2: functions are subroutines, so doubling call trees no longer expand.
+    assert!(compile(&source, 128).is_ok());
     assert!(
-        compile(&source, 128)
+        compile(&source, 8)
             .err()
             .unwrap()
             .message

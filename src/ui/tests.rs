@@ -1,7 +1,14 @@
 use super::*;
 use crate::artwork;
-use crate::engine::load_scripts;
-use crate::plugin::{Play, script_interface};
+use crate::plugin::Play;
+
+/// Where the owner's libraries are, for the ignored tests that need them.
+const LIBRARY_ROOT: &str = "/path/to/Kontakt-Libraries";
+
+/// The presets a scan of `root` finds.
+fn presets(root: &Path) -> Vec<PathBuf> {
+    shelved(root).1
+}
 
 fn enter() -> Input {
     Input {
@@ -280,7 +287,8 @@ fn selected_slot(p: &SamplerParams) -> usize {
 #[test]
 fn a_header_is_one_line_at_any_width() {
     for width in [900., 1180., 1920.] {
-        let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_knob $tone(0,100,1)\nend on");
+        let p = Arc::new(SamplerParams::new());
+        p.selection.write().unwrap().parts.push(Part { path: "/virtual/Library/Solo.nki".into(), ..Default::default() });
         {
             let mut selection = write(&p.selection);
             let part = &mut selection.parts[0];
@@ -295,12 +303,6 @@ fn a_header_is_one_line_at_any_width() {
             view.files = Arc::new(vec![
                 "/virtual/Library/Alpha.nki".into(), "/virtual/Library/Solo.nki".into(), "/virtual/Library/Zeta.nki".into(),
             ]);
-            // The view selector is available for authored artwork, rather
-            // than an unskinned script that only offers KONTRA's controls.
-            view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {
-                frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632,268,vec![40;632*268*4]).unwrap())],
-                stretch: [false;2], atlas: None,
-            }));
         }
         let mut h = Harness::new(&p, width, 600.);
         h.idle(2);
@@ -310,7 +312,7 @@ fn a_header_is_one_line_at_any_width() {
         assert!((header.size.height - (rack::SLIM - 1.)).abs() < 0.5, "at {width}: {header:?}");
         assert!(name.size.width >= 120. - 0.5,"the title remains meaningful at {width}: {name:?}, {header:?}");
         assert!(port.y < name.y + name.size.height && name.y < port.y + port.size.height, "at {width}");
-        for id in ["name-0","collapse-0","preset-prev-0","preset-next-0","midi-0","output-0","pan-0","volume-0","tune-0","solo-0","mute-0","view-0","more-0"] {
+        for id in ["name-0","collapse-0","preset-prev-0","preset-next-0","midi-0","output-0","pan-0","volume-0","tune-0","solo-0","mute-0","more-0"] {
             let f = frame(id);
             assert!(f.x >= header.x - 0.5 && f.x + f.size.width <= header.x + header.size.width + 0.5,
                 "{id} remains inside the header at {width}: {f:?}, {header:?}");
@@ -429,124 +431,6 @@ fn the_browser_finds_by_library_and_folder() {
 }
 
 #[test]
-fn replacing_presets_clears_script_and_ir_state_on_browser_and_file_drop_paths() {
-    use crate::ksp::Value;
-    let script = |caption| format!("on init\nmake_perfview\ndeclare @caption\n@caption := \"{caption}\"\nmake_persistent(@caption)\nread_persistent_var(@caption)\ndeclare ui_label $l(1,1)\nset_text($l,@caption)\nend on");
-    let instrument = |caption| import::Instrument { scripts: vec![script(caption)], ..Default::default() };
-    let old = instrument("Areia");
-    let (old_rt, errors) = load_scripts(&old, Vec::new(), 48000.);
-    assert!(errors.is_empty());
-    let old_state = old_rt.unwrap().persistence();
-    let new = instrument("CHORUS");
-    let caption = |saved| {
-        let (rt, errors) = load_scripts(&new, saved, 48000.);
-        assert!(errors.is_empty());
-        rt.unwrap().live().interface.unwrap().controls[0].properties["$CONTROL_PAR_TEXT"].clone()
-    };
-    assert_eq!(caption(old_state.clone()), Value::Text("Areia".into()), "same-named persistent variables contaminate another preset");
-    for dropped in [false, true] {
-        let p = Arc::new(SamplerParams::new());
-        let original = Part {
-            path: "/virtual/Library/Piano.nki".into(),
-            snapshot: "/virtual/Library/Old.nksn".into(),
-            name: "Old name".into(),
-            group: 7,
-            script_state: serde_json::to_string(&old_state).unwrap(),
-            engine_state: vec![crate::ksp::engine::NativeEdit { par:crate::ksp::EnginePar { id:crate::engine::engine_par::VOLUME,group:-1,slot:-1,generic:-1 },value:250000 }],
-            ir_settings: vec![crate::fx::IrSlotSettings {
-                rack: crate::fx::Rack::Insert, slot: 0,
-                settings: crate::fx::params::IrSettings::DEFAULT, file: None,
-            }],
-            port: 1, channel: 3, output: 4, output_manual: true,
-            gain: -8., pan: 0.25, tune: 2., aux: 5, aux_gain: -12., view: 1,
-            mpe: crate::articulate::Mpe { zone: crate::articulate::Zone::Lower, ..Default::default() },
-            ..Default::default()
-        };
-        {
-            let mut selection = p.selection.write().unwrap();
-            selection.parts = vec![original.clone()];
-            selection.order = vec![0];
-        }
-        {
-            let mut view = p.shared.view.lock().unwrap();
-            view.files = Arc::new(vec![original.path.clone().into(), "/virtual/Library/Strings.nki".into()]);
-            view.shelf = Arc::new(crate::library::Shelf::under("/virtual", &view.files));
-        }
-        let mut h = Harness::new(&p, 1180., 760.);
-        if dropped {
-            let at = center(&h.ui, "header-0");
-            assert!(native_files(&p, &Default::default(), &h.ui, at, &["/virtual/Library/Strings.nki".into()], true));
-        } else {
-            // The header's preset navigation calls the same Cx::replace as
-            // the browser. Its live surface avoids a hidden folder row.
-            assert!(h.ui.scene().unwrap().surface("preset-next-0").is_some());
-            h.press("preset-next-0");
-        }
-        let part = p.selection.read().unwrap().parts[0].clone();
-        let mut expected = original;
-        expected.path = "/virtual/Library/Strings.nki".into();
-        expected.group = u32::MAX;
-        expected.name.clear();
-        expected.snapshot.clear();
-        expected.script_state.clear();
-        expected.ir_settings.clear();
-        expected.engine_state.clear();
-        assert!(part == expected, "replacement dropped={dropped}: actual {}, expected {}",
-            serde_json::to_string(&part).unwrap(), serde_json::to_string(&expected).unwrap());
-        let restored = serde_json::from_str(&part.script_state).unwrap_or_else(|_| new.script_state.clone());
-        assert_eq!(caption(restored), Value::Text("CHORUS".into()), "replacement uses its own authored defaults");
-    }
-}
-
-#[test]
-fn snapshot_drop_targets_an_explicit_header_without_changing_active_state() {
-    let p = Arc::new(SamplerParams::new());
-    let original = Part { path: "/virtual/Library/Piano.nki".into(), snapshot: "/virtual/Library/Old.nksn".into(),
-        script_state: "retained".into(), ..Default::default() };
-    p.selection.write().unwrap().parts = vec![original.clone()];
-    let h = Harness::new(&p, 1180., 760.);
-    let at = center(&h.ui, "header-0");
-    let snapshot = [PathBuf::from("/virtual/Library/Warm.nksn")];
-    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, false));
-    assert!(lock(&p.shared.snapshot_request).is_none(), "hovering does not enqueue a load");
-    assert!(native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
-    assert!(lock(&p.shared.snapshot_request).is_some());
-    assert!(p.selection.read().unwrap().parts[0] == original);
-    p.selection.write().unwrap().parts[0].path = "Ensemble.nkm".into();
-    assert!(!native_files(&p, &Default::default(), &h.ui, at, &snapshot, true));
-}
-
-#[test]
-fn snapshot_header_steps_and_selects_without_replacing_the_base() {
-    let p = Arc::new(SamplerParams::new());
-    let base = "/virtual/Library/Piano.nki";
-    let paths: Vec<PathBuf> = ["Bright", "Warm", "Wide"].map(|n| format!("/virtual/Library/Snapshots/{n}.nksn").into()).into();
-    let original = Part { path: base.into(), snapshot: paths[1].to_string_lossy().into_owned(),
-        script_state: "retained".into(), channel: 3, gain: -4., ..Default::default() };
-    p.selection.write().unwrap().parts = vec![original.clone()];
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let mut shelf = crate::library::Shelf::default();
-        shelf.snapshots.insert(base.into(), crate::library::Snapshots { instrument: "Piano".into(), paths });
-        view.shelf = Arc::new(shelf);
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    for id in ["snapshot-prev-0", "snapshot-next-0"] {
-        h.press(id);
-        assert!(lock(&p.shared.snapshot_request).take().is_some(), "{id} queues transactional validation");
-        assert!(p.selection.read().unwrap().parts[0] == original, "until validated, the source, routing and saved state stay intact");
-    }
-    h.press("snapshot-0");
-    assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some());
-    h.press("menu-item-2");
-    assert!(lock(&p.shared.snapshot_request).take().is_some(), "selector uses the snapshot loader");
-    assert!(p.selection.read().unwrap().parts[0] == original);
-    p.selection.write().unwrap().parts[0].program = 1;
-    h.idle(3);
-    assert!(h.ui.scene().unwrap().surface("snapshot-0").is_none(), "the row must not offer snapshots for unsupported bank programs");
-}
-
-#[test]
 fn empty_rack_canvas_appends_and_scrolls_beyond_the_add_button() {
     let p = Arc::new(SamplerParams::new());
     {
@@ -603,7 +487,7 @@ fn rack_interactions() {
         v.files = Arc::new(vec![
             "/virtual/Library/Piano.nki".into(),
             "/virtual/Library/Strings.nki".into(),
-            "/virtual/Library/Ensemble.nkm".into(),
+            "/virtual/Library/Ensemble.kontra2-multi".into(),
         ]);
         v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
@@ -639,7 +523,7 @@ fn rack_interactions() {
             .unwrap()
             .take()
             .unwrap()
-            .ends_with("Ensemble.nkm")
+            .ends_with("Ensemble.kontra2-multi")
     );
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
     h.press("picker-instruments");
@@ -816,7 +700,7 @@ fn rack_interactions() {
         parts(&p)[0].path.ends_with("Native.nki"),
         "a dropped file takes the free slot"
     );
-    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("bad.wav")], true));
+    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("notes.txt")], true));
     let before_append = parts(&p).len();
     assert!(native_files(
         &p,
@@ -833,14 +717,14 @@ fn rack_interactions() {
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
-    let multi = [PathBuf::from("/external/Multi.nkm")];
+    let multi = [PathBuf::from("/external/Multi.kontra2-multi")];
     let before = p.selection.read().unwrap().clone();
     assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
     assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
-        "/external/Multi.nkm"
+        "/external/Multi.kontra2-multi"
     );
     assert!(*p.selection.read().unwrap() == before);
 }
@@ -1139,39 +1023,14 @@ fn a_large_library_browser_keeps_scrolling_and_searching() {
 }
 
 
-fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instrument>> {
+fn library_instruments(files: &[PathBuf], names: &str) -> Vec<PathBuf> {
     names
         .split(',')
         .filter_map(|name| files.iter().find(|p| p.file_stem().is_some_and(|n| n == name)))
-        .filter_map(|p| import::read(p).ok())
-        .map(Arc::new)
+        .cloned()
         .collect()
 }
 
-
-fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
-    let Some(mut rt) = load_scripts(i, i.script_state.clone(), 48000.).0 else {
-        return script_interface(None);
-    };
-    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
-    // A second of audio: listeners and waits run as they would once playing.
-    let mut run = |rt: &mut crate::ksp::Runtime| (0..100).for_each(|_| rt.process(&mut engine, 480));
-    run(&mut rt);
-    for press in std::env::var("KONTAKTO_PRESS").unwrap_or_default().split(',') {
-        let Some((var, value)) = press.split_once('=') else { continue };
-        let live = script_interface(Some(&rt));
-        let control = live
-            .interface
-            .as_ref()
-            .and_then(|u| u.controls.iter().position(|c| c.variable == var));
-        if let (Some(control), Ok(value)) = (control, value.parse()) {
-            let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
-            rt.ui_control(&mut engine, live.slot, control, value);
-        }
-        run(&mut rt);
-    }
-    script_interface(Some(&rt))
-}
 
 /// The libraries in the folder of libraries `root`, found as a scan finds
 /// them, with the hues of their own pictures.
@@ -1205,12 +1064,12 @@ fn cover_libraries() -> PathBuf {
     root
 }
 
-/// A plugin whose rack holds `instruments` (when `loaded`) as the loader
-/// leaves them: scripts run, pictures read. `state` stages the
+/// A plugin whose rack holds `instruments` (when `loaded`), loaded as the
+/// loader loads them. `state` stages the
 /// screenshots' special cases.
 fn racked(
     files: &[PathBuf],
-    instruments: &[Arc<import::Instrument>],
+    instruments: &[PathBuf],
     loaded: bool,
     state: &str,
 ) -> Arc<SamplerParams> {
@@ -1220,47 +1079,23 @@ fn racked(
         let (shelf, files) = match state {
             "no-libraries" => (crate::library::Shelf::default(), Vec::new()),
             "covers" => shelved(&cover_libraries()),
-            _ => (shelved(Path::new(import::LIBRARY_ROOT)).0, files.to_vec()),
+            _ => (shelved(Path::new(LIBRARY_ROOT)).0, files.to_vec()),
         };
         view.artwork = artwork::scan(&shelf.libraries);
         view.shelf = Arc::new(shelf);
         view.files = Arc::new(files);
         view.scanned = p.shared.libraries.wanted();
-        for (slot, i) in instruments.iter().enumerate().filter(|_| loaded) {
-            p.selection.write().unwrap().parts.push(Part {
-                path: i.path.to_string_lossy().into(),
-                group: i.first_playable_group().unwrap_or(0) as u32,
-                // KONTAKTO_VIEW=3 shows the parts vectorized (see `Part::view`).
-                view: std::env::var("KONTAKTO_VIEW").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-                ..Default::default()
-            });
-            let script = scripted(i);
-            let (interface, keys) = (script.interface, script.keys);
-            // Control pictures, as the plugin loads them: they size controls.
-            let names = interface.iter().flat_map(|u| &u.controls).filter_map(|c| {
-                match c.properties.get("$CONTROL_PAR_PICTURE") {
-                    Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
-                    _ => None,
-                }
-            });
-            let pictures = Arc::new(artwork::pictures(&i.path, names));
-            view.parts[slot] = PartView {
-                pictures,
-                wallpaper: artwork::performance(i, interface.as_deref())
-                    .unwrap_or(None),
-                interface,
-                keys,
-                instrument: Some(i.clone()),
-                active: i.name.clone(),
-                bytes: 180 << 20,
-                loading: state == "error" && slot == 2,
-                status: if state == "error" && slot == 0 {
-                    "Load failed: missing sample data in archive".into()
-                } else {
-                    format!("{} groups · {} zones", i.groups.len(), i.zones.len())
-                },
-                ..Default::default()
-            };
+        if loaded {
+            p.selection.write().unwrap().parts =
+                instruments.iter().map(|i| Part { path: i.to_string_lossy().into(), ..Default::default() }).collect();
+        }
+    }
+    {
+        use moose::prelude::BackgroundTask;
+        crate::plugin::Load.run(&p);
+        let mut view = p.shared.view.lock().unwrap();
+        if state == "error" {
+            view.parts[0].status = "Load failed: missing sample data in archive".into();
         }
     }
     p.selection.write().unwrap().appearance = match state {
@@ -1269,25 +1104,6 @@ fn racked(
         _ => 0,
     };
     p.selection.write().unwrap().sharp_artwork = state == "sharp";
-    if state.starts_with("timing") {
-        use crate::timing::{Delay, Timing};
-        let late = |name: &str, first: f32, legato: f32| Delay {
-            name: name.into(),
-            first: [Some(first); 3],
-            legato: [Some(legato); 3],
-        };
-        let mut selection = p.selection.write().unwrap();
-        selection.auto_align = true;
-        for part in &mut selection.parts {
-            part.timing = Timing {
-                source: crate::timing::source(&part.path, part.program),
-                loaded: late("", 45., 196.),
-                arts: vec![late("Legato", 45., 196.), late("Spiccato", 12., 12.), late("Pizzicato", 20., 20.)],
-                ..Timing::default()
-            };
-        }
-        p.shared.reported.store(196f32.to_bits(), Ordering::Relaxed);
-    }
     if state == "resized" {
         // The first part sized short: its controls clip and fade out.
         p.selection.write().unwrap().parts[0].height = 220.;
@@ -1297,12 +1113,10 @@ fn racked(
         let mut view = p.shared.view.lock().unwrap();
         for (slot, done) in [(1, 0.42), (2, 0.)] {
             view.parts[slot].loading = true;
-            view.parts[slot].bytes = 0;
-            let done = (f64::from(crate::engine::LOAD_DONE) * done) as u32;
+            let done = (f64::from(crate::sound::Progress::DONE.0) * done) as u32;
             p.shared.part(slot).unwrap().load_progress.store(done, Ordering::Relaxed);
         }
-        view.parts[2].instrument = None;
-        view.parts[2].interface = None;
+        view.parts[2].report = None;
     }
     if state == "pressed" {
         // Held on every kind of key: keyswitch red, unmapped grey, mapped
@@ -1321,41 +1135,6 @@ fn racked(
     p
 }
 
-/// Prints a library instrument's script controls as authored and as the
-/// panel reads them. `KONTAKTO_SHOT` names it; run with `--ignored --nocapture`.
-#[test]
-#[ignore]
-fn dump_panel() {
-    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
-    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
-    for i in library_instruments(&files, &names) {
-        let script = scripted(&i);
-        for (note, k) in script.keys.iter() {
-            println!("key {note} {:?} {:?}", k.color, k.name);
-        }
-        let (lo, hi) = i.zones.iter().filter(|z| z.available).fold((127, 0), |(l, h), z| (z.low_key.min(l), z.high_key.max(h)));
-        println!("zones span {lo}..={hi}");
-        let Some(interface) = script.interface else { continue };
-        println!("== {} ({}x{})", i.name, interface.width, interface.height);
-        for (n, c) in interface.controls.iter().enumerate() {
-            let prop = |k: &str| c.properties.get(&format!("$CONTROL_PAR_{k}")).map(|v| format!("{v:?}")).unwrap_or_default();
-            println!(
-                "{n:3} {:12} {:28} x{} y{} w{} h{} hide{} text={} pic={} val={}",
-                c.kind, c.variable, prop("POS_X"), prop("POS_Y"), prop("WIDTH"), prop("HEIGHT"),
-                prop("HIDE"), prop("TEXT"), prop("PICTURE"), prop("VALUE")
-            );
-        }
-        let names = interface.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-            Some(crate::ksp::Value::Text(n)) => Some(n.as_str()),
-            _ => None,
-        });
-        let pictures = artwork::pictures(&i.path, names);
-        let t = std::time::Instant::now();
-        let sections = panel::sections(&interface, &pictures);
-        println!("{sections:#?}\nsections in {} us", t.elapsed().as_micros());
-    }
-}
-
 /// What one frame costs, in microseconds: the view's build plus layout and
 /// paint-list resolve, and a CPU raster of the result (a stand-in for the
 /// GPU's share). `KONTAKTO_SHOT` picks the rack; run with `--ignored`.
@@ -1367,7 +1146,7 @@ fn frame_cost() {
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
     use std::time::Instant;
-    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let files = presets(Path::new(LIBRARY_ROOT));
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure".into()
     });
@@ -1447,12 +1226,12 @@ fn lag() {
         unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut t) };
         t.tv_sec as f64 * 1e6 + t.tv_nsec as f64 / 1e3
     };
-    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let files = presets(Path::new(LIBRARY_ROOT));
     let chosen = std::env::var("KONTAKTO_SHOT").unwrap_or_else(|_| {
         "03 Areia - 6 Celli - Core Techniques,Vista - 3 Cellos,Una Corda Pure,ANALOG STRINGS".into()
     });
     let library = library_instruments(&files, &chosen);
-    let racks: Vec<(&str, Vec<Arc<import::Instrument>>)> = vec![
+    let racks: Vec<(&str, Vec<PathBuf>)> = vec![
         ("16 parts", library.iter().cycle().take(16).cloned().collect()),
         ("ANALOG", library_instruments(&files, "ANALOG STRINGS")),
         ("Areia", library_instruments(&files, "03 Areia - 6 Celli - Core Techniques")),
@@ -1542,7 +1321,7 @@ fn screenshot() {
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
     };
-    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
+    let files = presets(Path::new(LIBRARY_ROOT));
     // KONTAKTO_SHOT="Name A,Name B" renders other instruments in the rack slots.
     let chosen = std::env::var("KONTAKTO_SHOT")
         .unwrap_or_else(|_| "Vista - Harp,Vista - 3 Cellos,Vista - 5 Violins".into());
@@ -1595,7 +1374,7 @@ fn screenshot() {
         ("sound-effects", true, &["tab-sound", "edit-lower-Effects"]),
         // A value double-clicked into a field.
         ("sound-typing", true, &["tab-sound"]),
-        ("mixer-wide", true, &["tab-mixer", "mix-wide"]),
+        ("mixer-wide", true, &["tab-mixer", "mix-mode-flat", "mix-wide"]),
         // Auto-align on: the settings and a part's timing.
         ("timing", true, &["app-menu"]),
         ("timing-part", true, &["more-0"]),
@@ -1624,14 +1403,6 @@ fn screenshot() {
     {
         for &(width, height) in &sizes {
             let p = racked(&files, &instruments, loaded, state);
-            if state == "library-ui" { p.selection.write().unwrap().parts.iter_mut().for_each(|p| p.view = 1); }
-            if state == "sound-edited" {
-                use crate::engine::overrides::{Override, Param};
-                let mut selection = p.selection.write().unwrap();
-                for (param, offset) in [(Param::Release, -0.2), (Param::Attack, 0.15), (Param::Sustain, -0.2)] {
-                    selection.parts[0].edits.set(Override { group: None, param, offset });
-                }
-            }
             // A chord with a little noise under it, for the spectrum.
             let heard = state.starts_with("mixer") || state.starts_with("sound");
             let mut seed = 1u32;
@@ -1808,368 +1579,6 @@ fn screenshot() {
     }
 }
 
-/// A rack of one part running `script`, its performance view read.
-fn scripted_part(script: &str) -> Arc<SamplerParams> {
-    let mut engine = crate::ksp::LogEngine::new(Vec::new(), 48_000.0);
-    let (rt, errors) = crate::ksp::Runtime::with_scripts(&[script], &mut engine, 8, Vec::new());
-    assert!(errors.iter().all(Option::is_none), "{errors:?}");
-    let path = "/virtual/Library/Solo.nki";
-    let p = Arc::new(SamplerParams::new());
-    p.selection.write().unwrap().parts.push(Part {
-        path: path.into(),
-        ..Default::default()
-    });
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        view.files = Arc::new(vec![path.into()]);
-        view.parts[0].interface = script_interface(Some(&rt)).interface;
-        view.parts[0].instrument = Some(Arc::new(import::Instrument {
-            path: path.into(),
-            name: "Solo".into(),
-            groups: Vec::new(),
-            zones: Vec::new(),
-            warnings: Vec::new(),
-            missing_samples: Vec::new(),
-            scripts: vec![script.into()],
-            fx: Default::default(),
-            voice_limit: None,
-            voice_groups: Vec::new(),
-            script_state: Vec::new(),
-            kontakt_sample_bytes: 0.0,
-            kontakt_preload: 0,
-            dependencies: Vec::new(),
-        }));
-    }
-    p
-}
-
-/// Synthetic callback publication follows production's immutable snapshots.
-fn publish_interface(p: &SamplerParams, edit: impl FnOnce(&mut crate::ksp::Interface)) {
-    let mut view = p.shared.view.lock().unwrap();
-    let part = &mut view.parts[0];
-    let mut next = part.interface.as_ref().unwrap().as_ref().clone();
-    edit(&mut next);
-    part.interface = Some(Arc::new(next));
-    let (interface, keys) = part.live_revisions.unwrap_or_default();
-    part.live_revisions = Some((interface.wrapping_add(1), keys));
-}
-
-/// Control `n`'s value in part 0's performance view.
-fn control_value(p: &SamplerParams, n: usize) -> crate::ksp::Value {
-    let view = p.shared.view.lock().unwrap();
-    let part = &view.parts[0];
-    if let Some((_, value)) = part.edited_values().find(|&(control, _)| control == n) {
-        crate::ksp::Value::Int(value)
-    } else {
-        part.interface.as_ref().unwrap().controls[n].properties["$CONTROL_PAR_VALUE"].clone()
-    }
-}
-
-/// An articulation's keyswitch is typed or played in place, its channel and
-/// velocity range typed; a right-click offers learn, reset and clear.
-#[test]
-fn articulation_cells_type_learn_and_reset() {
-    use crate::articulate::{CLEARED, Mode};
-    let p = scripted_part("on init\nmake_perfview\ndeclare ui_knob $tone(0, 100, 1)\nend on");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let key = |name: &str| crate::ksp::KeyState { name: name.into(), color: Some(crate::ksp::Value::Text("$KEY_COLOR_RED".into())), ..Default::default() };
-        view.parts[0].keys = Arc::new([(24, key("Legato")), (25, key("Staccato"))].into_iter().collect());
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    h.idle(3);
-    let arts = |p: &SamplerParams| p.selection.read().unwrap().parts[0].articulate.clone();
-    assert_eq!(arts(&p).articulations.len(), 2, "the named keys are the list");
-
-    h.type_into("art-key-0-1", "d#2");
-    assert_eq!(arts(&p).articulations[1].remap, Some(51), "a typed note");
-    h.type_into("art-key-0-1", "37");
-    assert_eq!(arts(&p).articulations[1].remap, Some(37), "a typed MIDI number");
-
-    // Clicked, it takes the next key played; one already down does not count.
-    p.shared.heard[60].store(100, Ordering::Relaxed);
-    h.press("art-key-0-0");
-    p.shared.heard[48].store(100, Ordering::Relaxed);
-    h.idle(3);
-    assert_eq!(arts(&p).articulations[0].remap, Some(48), "learned from a key");
-    assert!(h.ui.scene().unwrap().surface("art-key-0-0-edit").is_none(), "and done");
-    p.shared.heard[48].store(0, Ordering::Relaxed);
-    p.shared.heard[60].store(0, Ordering::Relaxed);
-
-    // Right-click: the library's name, Learn, Reset, Clear; no list of notes.
-    let right_click = |h: &mut Harness, id: &str| {
-        let at = center(&h.ui, id);
-        for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
-            h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
-        }
-        h.idle(2);
-    };
-    right_click(&mut h, "art-key-0-1");
-    assert!(h.ui.scene().unwrap().surface("menu-item-6").is_none(), "a short menu");
-    h.press("menu-item-3");
-    assert_eq!(arts(&p).articulations[1].remap, Some(CLEARED), "Clear");
-    right_click(&mut h, "art-key-0-1");
-    h.press("menu-item-2");
-    assert_eq!(arts(&p).articulations[1].remap, None, "Reset to library default");
-
-    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Channel;
-    h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("art-key-0-1").is_none(), "channel mode shows channels, not keys");
-    h.type_into("art-ch-0-1", "9");
-    assert_eq!(arts(&p).articulations[1].channel, 8);
-    right_click(&mut h, "art-ch-0-1");
-    h.press("menu-item-1");
-    assert_eq!(arts(&p).articulations[1].channel, 1, "back to its place in the list");
-
-    p.selection.write().unwrap().parts[0].articulate.mode = Mode::Velocity;
-    h.idle(2);
-    h.type_into("art-vel-0-0", "1-40");
-    assert_eq!((arts(&p).articulations[0].low, arts(&p).articulations[0].high), (1, 40));
-    // Dragging the split's line moves the boundary between the two.
-    let bar = h.ui.scene().unwrap().surface("art-split-0").unwrap().frame;
-    let y = bar.y + bar.size.height / 2.;
-    for (x, down) in [(bar.x + bar.size.width * 40. / 127., true), (bar.x + bar.size.width * 0.75, true), (bar.x + bar.size.width * 0.75, false)] {
-        h.tick(pointer(Point::new(x, y), down));
-    }
-    let a = arts(&p);
-    assert_eq!((a.articulations[0].high, a.articulations[1].low), (95, 96), "{a:?}");
-}
-
-/// Wide switches stacked at one pitch, one set, read as a list: each row
-/// named by its label, with its on/off as a check box and its keyswitch; a
-/// row the script hid below the fold comes back.
-#[test]
-fn an_articulation_list_picks_one_and_turns_rows_on() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $art0\nmove_control_px($art0, 10, 50)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art1\nmove_control_px($art1, 10, 72)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art2\nmove_control_px($art2, 10, 94)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $art3\nmove_control_px($art3, 10, 116)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_WIDTH, 100)\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name0(1,1)\nset_text($name0, \"Sustain\")\nmove_control_px($name0, 10, 50)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name0), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name1(1,1)\nset_text($name1, \"Staccato\")\nmove_control_px($name1, 10, 72)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name1), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name2(1,1)\nset_text($name2, \"Pizzicato\")\nmove_control_px($name2, 10, 94)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name2), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_label $name3(1,1)\nset_text($name3, \"Tremolo\")\nmove_control_px($name3, 10, 116)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_WIDTH, 110)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HEIGHT, 20)\ndeclare ui_switch $onoff0\nmove_control_px($onoff0, 10, 50)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff0), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff1\nmove_control_px($onoff1, 10, 72)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff1), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff2\nmove_control_px($onoff2, 10, 94)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff2), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_switch $onoff3\nmove_control_px($onoff3, 10, 116)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_WIDTH, 18)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HEIGHT, 18)\ndeclare ui_label $key0(1,1)\nset_text($key0, \"C#-0\")\nmove_control_px($key0, 90, 52)\ndeclare ui_label $key1(1,1)\nset_text($key1, \"C#-1\")\nmove_control_px($key1, 90, 74)\ndeclare ui_label $key2(1,1)\nset_text($key2, \"C#-2\")\nmove_control_px($key2, 90, 96)\ndeclare ui_label $key3(1,1)\nset_text($key3, \"C#-3\")\nmove_control_px($key3, 90, 118)\n$art0 := 1\nset_control_par(get_ui_id($art3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($name3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($onoff3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nset_control_par(get_ui_id($key3), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on");
-    let mut h = Harness::new(&p, 1180., 760.);
-    let scene = h.ui.scene().unwrap();
-    for n in [0, 1, 2, 3] {
-        assert!(scene.surface(&format!("ksp-0-{n}")).is_some(), "row {n} is shown");
-        assert!(scene.surface(&format!("ksp-0-{}", n + 8)).is_some(), "row {n}'s check box");
-    }
-    // The labels and keyswitches are part of the rows, not controls.
-    assert!(scene.surface("ksp-0-4").is_none() && scene.surface("ksp-0-12").is_none());
-    h.press("ksp-0-2");
-    assert_eq!(control_value(&p, 2), crate::ksp::Value::Int(1), "a row picks its choice");
-    let check = center(&h.ui, "ksp-0-9");
-    h.tick(pointer(check, true));
-    h.tick(pointer(check, false));
-    h.idle(3);
-    assert_eq!(control_value(&p, 9), crate::ksp::Value::Int(1), "a check box turns its row on");
-    assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(0), "and does not pick the row");
-}
-
-
-#[test]
-fn performance_controls_edit_the_script() {
-    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_knob $vibrato(0, 100, 1)\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
-    let p = scripted_part(script);
-    let value = |n: usize| control_value(&p, n);
-    let mut h = Harness::new(&p, 1180., 760.);
-
-    h.press("ksp-0-0");
-    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
-    h.press("ksp-0-0");
-    assert_eq!(value(0), crate::ksp::Value::Int(0), "and off");
-
-    let knob = center(&h.ui, "ksp-0-1");
-    for y in [0., -10., -60.] {
-        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
-    }
-    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
-    h.idle(2);
-    let crate::ksp::Value::Int(dragged) = value(1) else {
-        panic!("knob value")
-    };
-    assert!(dragged > 10, "dragging a knob up raises it, got {dragged}");
-
-    h.press("ksp-0-2");
-    h.press("menu-item-1");
-    assert_eq!(
-        value(2),
-        crate::ksp::Value::Int(1),
-        "a menu item sets the menu"
-    );
-}
-
-/// The library's own view: shown by default once there is artwork, its
-/// controls at their own places editing the script; the header switches the
-/// part to the rebuilt view and back, and the choice is the part's.
-#[test]
-fn the_original_view_edits_the_script_and_switches() {
-    let script = "on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $legato\nset_text($legato, \"Legato\")\nmove_control_px($legato, 10, 10)\ndeclare ui_slider $vibrato(0, 100)\nset_control_par_str(get_ui_id($vibrato), $CONTROL_PAR_PICTURE, \"strip\")\nmove_control_px($vibrato, 200, 10)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nadd_menu_item($mic, \"Room\", 1)\nmove_control_px($mic, 400, 10)\nend on";
-    let p = scripted_part(script);
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(40, 40, vec![255; 40 * 40 * 4]).unwrap());
-        let strip = Arc::new(artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None });
-        view.parts[0].pictures = Arc::new([("strip".to_owned(), strip)].into());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, vec![40; 632 * 268 * 4]).unwrap())], stretch: [false; 2], atlas: None }));
-    }
-    let value = |n: usize| control_value(&p, n);
-    let mut h = Harness::new(&p, 1180., 760.);
-    let scene = h.ui.scene().unwrap();
-    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the original view by default");
-    let at = scene.surface("kpv-0-1").unwrap().frame;
-    assert_eq!((at.size.width, at.size.height), (40., 40.), "sized to its picture at 1x");
-    let origin = scene.surface("stage-0").unwrap().frame;
-    let left = origin.x + (origin.size.width - 632.) / 2.;
-    assert!((at.x - left - 200.).abs() < 1., "at its own place: {at:?} in {origin:?}");
-
-    h.press("kpv-0-0");
-    assert_eq!(value(0), crate::ksp::Value::Int(1), "a switch toggles on");
-    let knob = center(&h.ui, "kpv-0-1");
-    for y in [0., -10., -60.] {
-        h.tick(pointer(Point::new(knob.x, knob.y + y), true));
-    }
-    h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
-    h.idle(2);
-    let crate::ksp::Value::Int(dragged) = value(1) else { panic!("slider value") };
-    assert!(dragged > 10, "dragging up raises it, got {dragged}");
-    h.press("kpv-0-2");
-    h.press("menu-item-1");
-    assert_eq!(value(2), crate::ksp::Value::Int(1), "a menu item sets the menu");
-
-    // The header's view menu: Original, Vectorized, KONTRA.
-    h.press("view-0");
-    h.press("menu-item-2");
-    assert_eq!(p.selection.read().unwrap().parts[0].view, 2, "the part keeps its choice");
-    assert!(h.ui.scene().unwrap().surface("ksp-0-1").is_some(), "the rebuilt view");
-    h.press("view-0");
-    h.press("menu-item-1");
-    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
-    let scene = h.ui.scene().unwrap();
-    assert!(scene.surface("kpv-0-1").is_some() && scene.surface("ksp-0-1").is_none(), "the vectorized view");
-    h.press("view-0");
-    h.press("menu-item-0");
-    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
-    assert!(h.ui.scene().unwrap().surface("kpv-0-1").is_some());
-}
-
-#[test]
-fn popup_retires_tooltips_and_consumes_its_outside_dismissal_click() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_switch $switch\nmove_control_px($switch,10,120)\nend on");
-    {
-        let image = Arc::new(moose::mui::mui::scene::Image::rgba(632, 200, vec![40; 632 * 200 * 4]).unwrap());
-        p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
-            frames: vec![image], stretch: [false; 2], atlas: None,
-        }));
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    let trigger = center(&h.ui, "view-0");
-    for _ in 0..60 { h.tick(pointer(trigger, false)); }
-    assert!(h.ui.scene().unwrap().surface("/tip").is_some(), "the trigger tooltip is already due before opening");
-    h.tick(pointer(trigger, true));
-    h.tick(pointer(trigger, false));
-    for _ in 0..60 { h.tick(pointer(trigger, false)); }
-    assert!(h.ui.scene().unwrap().surface("context-menu").is_some());
-    assert!(h.ui.scene().unwrap().surface("/tip").is_none(), "the old trigger tooltip cannot cover the popup");
-    // Keyboard activation continues to reach the existing menu rows.
-    h.press("menu-item-1");
-    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
-    h.press("view-0");
-    let underneath = center(&h.ui, "kpv-0-0");
-    h.tick(pointer(underneath, true));
-    h.tick(pointer(underneath, false));
-    h.idle(3);
-    assert!(h.ui.scene().unwrap().surface("context-menu").is_none(), "an outside click dismisses the popup");
-    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(0), "the dismissal click does not toggle the control underneath");
-    h.tick(pointer(underneath, true));
-    h.tick(pointer(underneath, false));
-    h.idle(3);
-    assert_eq!(control_value(&p, 0), crate::ksp::Value::Int(1), "normal interaction resumes once the popup closes");
-}
-
-#[test]
-fn original_and_vectorized_views_retain_authored_background_without_wallpaper() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\nset_ui_color(0285078h)\ndeclare ui_knob $value(0,100,1)\nmove_control_px($value,30,40)\nend on");
-    for mode in [1, 3] {
-        p.selection.write().unwrap().parts[0].view = mode;
-        let mut h = Harness::new(&p, 1180., 760.);
-        let frame = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
-        let at = ((frame.y + 30.) as usize * 1180 + (frame.x + 200.) as usize) * 4;
-        let painted = pixels(&h.ui, 1180, 760);
-        assert_eq!(&painted[at..at+4], &[40, 80, 120, 255], "mode {mode} retains authored backdrop even without image assets");
-        publish_interface(&p, |i| i.background_color = Some(0x78a0c8));
-        h.idle(2);
-        let changed = pixels(&h.ui, 1180, 760);
-        assert_eq!(&changed[at..at+4], &[120, 160, 200, 255], "published color invalidates the view memo");
-        publish_interface(&p, |i| i.background_color = Some(0x285078));
-    }
-}
-
-/// Offsets select a pixel window across page boundaries, rather than rounding
-/// to a frame, and a new script snapshot invalidates the view memo.
-#[test]
-fn original_wallpaper_pixel_offsets_render_across_frames() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $v(0,100)\nmove_control_px($v,30,40)\nset_skin_offset(170)\nend on");
-    let mut rgba = [220, 20, 40, 255].repeat(632 * 268);
-    rgba.extend([20, 40, 220, 255].repeat(632 * 268));
-    let image = Arc::new(moose::mui::mui::scene::Image::rgba(632, 536, rgba).unwrap());
-    p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
-        frames: vec![image], stretch: [false; 2], atlas: Some([632, 268]),
-    }));
-    p.selection.write().unwrap().parts[0].view = 1;
-    let mut h = Harness::new(&p, 1180., 760.);
-    let control = h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame;
-    let at = |y: f64| (y as usize * 1180 + (control.x + 300.) as usize) * 4;
-    let above = at(control.y - 30.);
-    let below = at(control.y + 20.);
-    let painted = pixels(&h.ui, 1180, 760);
-    assert_eq!(&painted[above..above+4], &[220, 20, 40, 255], "the window begins in the first frame");
-    assert_eq!(&painted[below..below+4], &[20, 40, 220, 255], "the same window crosses into the next frame");
-    publish_interface(&p, |i| i.skin_offset = 271);
-    h.idle(2);
-    let moved = pixels(&h.ui, 1180, 760);
-    assert_eq!(&moved[above..above+4], &[20, 40, 220, 255], "a changed offset redraws without changing the selected animation state");
-    assert_eq!(h.ui.scene().unwrap().surface("kpv-0-0").unwrap().frame, control, "artwork scrolling never moves controls");
-}
-
-/// A dependent table changes without rebuilding an unrelated Original knob.
-#[test]
-fn original_tables_render_dense_values_at_the_declared_range() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(180)\ndeclare ui_table %steps[4](2,1,-100)\nmove_control_px(%steps,10,10)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_WIDTH,120)\nset_control_par(get_ui_id(%steps),$CONTROL_PAR_HEIGHT,100)\ndeclare ui_knob $steady(0,100,1)\nmove_control_px($steady,180,10)\nend on");
-    p.shared.view.lock().unwrap().parts[0].wallpaper = Some(Arc::new(artwork::Picture {
-        frames: vec![Arc::new(moose::mui::mui::scene::Image::rgba(632, 248, vec![40; 632 * 248 * 4]).unwrap())],
-        stretch: [false; 2],
-        atlas: None,
-    }));
-    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 0), (0, 0)]);
-    let mut h = Harness::new(&p, 1180., 760.);
-    h.idle(3);
-    let empty = pixels(&h.ui, 1180, 760);
-    publish_interface(&p, |i| {
-        assert_eq!(i.controls[0].properties["$CONTROL_PAR_MIN_VALUE"], crate::ksp::Value::Int(-100));
-        assert_eq!(i.controls[0].properties["$CONTROL_PAR_MAX_VALUE"], crate::ksp::Value::Int(100));
-        i.controls[0].properties.insert("$CONTROL_PAR_VALUE".into(), crate::ksp::Value::IntArray(vec![50, -50, 100, -100]));
-    });
-    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 1), (0, 0)]);
-    h.idle(1);
-    let memos: Vec<_> = h.ui.scene().unwrap().memos_at("kpv-0-1").collect();
-    assert!(memos.len() >= 2 && memos.last().unwrap().1 && memos[..memos.len()-1].iter().any(|(_, reused)| !reused),
-        "the table publication rebuilds its stage while retaining the unchanged knob: {memos:?}");
-    let filled = pixels(&h.ui, 1180, 760);
-    let changed = empty.chunks_exact(4).zip(filled.chunks_exact(4)).filter(|(a,b)| a != b).count();
-    assert!(changed > 4000, "the numeric table paints bars, including its negative half: {changed}");
-    publish_interface(&p, |i| {
-        i.controls[0].properties.insert(
-            "$CONTROL_PAR_VALUE".into(), crate::ksp::Value::RealArray(vec![50., -50., 100., -100.])
-        );
-    });
-    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::from([(0, 2), (0, 0)]);
-    h.idle(2);
-    assert!(filled == pixels(&h.ui, 1180, 760), "integer and real snapshots paint the same values");
-    p.shared.view.lock().unwrap().parts[0].script_epoch += 1;
-    // Production replacement also changes the interface identity, even if the
-    // new script happens to publish the same initial row stamps.
-    publish_interface(&p, |_| {});
-    h.idle(1);
-    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "replacement epoch rebuilds the retained knob");
-    p.shared.view.lock().unwrap().parts[0].live_control_versions = Arc::default();
-    publish_interface(&p, |i| { i.controls[1].properties.insert("$CONTROL_PAR_FONT_TYPE".into(), crate::ksp::Value::Int(23)); });
-    h.idle(1);
-    assert!(!h.ui.scene().unwrap().memos_at("kpv-0-1").last().unwrap().1, "a fixture without row stamps uses immutable interface identity for changed styling");
-}
 
 #[test]
 fn failed_load_diagnostics_remain_visible_without_an_instrument() {
@@ -2182,107 +1591,17 @@ fn failed_load_diagnostics_remain_visible_without_an_instrument() {
         view.parts[0].status = "Loading import…".into();
     }
     let mut h = Harness::new(&p, 1180., 760.);
-    let stage_label = |ui: &Ui| ui.scene().unwrap().surface("stage-0").unwrap().semantics.as_ref().unwrap().label.as_ref().unwrap().to_string();
-    assert_eq!(stage_label(&h.ui), "Loading instrument…", "an active import uses the loading placeholder");
-    crate::plugin::Load.run(&p);
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let report = Arc::make_mut(view.parts[0].load_report.as_mut().unwrap());
-        assert!(report["failure"].is_string());
-        report["issues"] = serde_json::json!([]);
-        report["issues_omitted"] = serde_json::json!(7);
-    }
     h.idle(2);
-    assert!(stage_label(&h.ui).starts_with("Instrument could not be loaded."), "terminal failure replaces the cached loading placeholder");
-    h.press("tab-info");
-    let failure = h.ui.scene().unwrap().surface("load-diagnostic-failure").expect("failure cause stays visible even when issue examples were omitted").frame;
-    assert!(failure.y >= 0. && failure.y + failure.size.height < 760., "failure is visible: {failure:?}");
-    assert!(h.ui.scene().unwrap().surface("load-diagnostic-counts").is_some(), "retention and omitted occurrences are disclosed");
-    let frame = h.ui.scene().unwrap().surface("load-diagnostic-status").expect("failed imports still show their diagnostic report").frame;
-    assert!(frame.y >= 0. && frame.y + frame.size.height < 760., "status is visible: {frame:?}");
+    crate::plugin::Load.run(&p);
+    h.idle(2);
+    let status = p.shared.view.lock().unwrap().parts[0].status.clone();
+    assert!(status.starts_with("Load failed: "), "{status}");
+    assert!(h.ui.scene().unwrap().surface("stage-0").is_some(), "a failed part keeps its place in the rack");
     h.press("tab-logs");
     assert!(h.ui.scene().unwrap().surface("logs-export-preview").is_some(), "global Logs is available after a failed load");
     h.press("logs-export-preview");
     assert!(h.ui.scene().unwrap().surface("logs-export-path").is_some(), "export preview does not require a loaded instrument");
     h.press("logs-export-preview");
-    h.press("tab-info");
-    let rgba = pixels(&h.ui, 1180, 760);
-    let path = Path::new("artifacts/library-parity/info-failed.png");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    moose::core::screenshot::save_png(path, &rgba, 1180, 760);
-}
-
-#[test]
-fn automatic_performance_scale_fits_rack_height_and_explicit_zoom_stays_scrollable() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(540)\ndeclare ui_slider $bottom(0,100)\nmove_control_px($bottom,40,500)\nend on");
-    p.selection.write().unwrap().parts[0].view = 1;
-    publish_interface(&p, |i| i.width = 732);
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let image = Arc::new(moose::mui::mui::scene::Image::rgba(732,608,vec![40;732*608*4]).unwrap());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture {frames:vec![image],stretch:[false;2],atlas:None}));
-    }
-    let mut h = Harness::new(&p,2560.,1440.);
-    h.ui.set_scale(Some(1.5));
-    for height in [1440.,800.] {
-        h.size.height = height;
-        h.idle(8);
-        let scene = h.ui.scene().unwrap();
-        let rack = scene.surface("rack-view").unwrap().frame;
-        let stage = scene.surface("stage-0").unwrap().frame;
-        let bottom = scene.surface("kpv-0-0").unwrap().frame;
-        assert!(stage.y + stage.size.height <= rack.y + rack.size.height + 1., "auto fits the rack at {height}: stage={stage:?}, rack={rack:?}");
-        assert!(bottom.y + bottom.size.height <= rack.y + rack.size.height + 1., "bottom controls stay visible at {height}: {bottom:?}");
-    }
-    p.shared.libraries.edit(|s| s.view_scale = 3.);
-    h.idle(8);
-    let scene = h.ui.scene().unwrap();
-    assert!((scene.surface("stage-0").unwrap().frame.size.height - 1620.).abs() < 1., "explicit zoom is retained rather than fitted away");
-    assert!(scene.surface("rack-bar").is_some(), "explicit zoom can scroll");
-}
-
-#[test]
-fn the_vectorized_view_keeps_the_original_layout() {
-    let p = scripted_part("on init\nmake_perfview\nset_ui_height_px(200)\ndeclare ui_slider $vol(0, 100)\nmove_control_px($vol, 30, 40)\nset_control_par_str(get_ui_id($vol), $CONTROL_PAR_PICTURE, \"knob\")\ndeclare ui_switch $legato\nmove_control_px($legato, 120, 40)\ndeclare ui_menu $mic\nadd_menu_item($mic, \"Close\", 0)\nmove_control_px($mic, 200, 90)\ndeclare ui_label $title(1,1)\nset_text($title, \"Tone\")\nmove_control_px($title, 30, 100)\nend on");
-    {
-        let frame = Arc::new(moose::mui::mui::scene::Image::rgba(48, 50, vec![200; 48 * 50 * 4]).unwrap());
-        let knob = artwork::Picture { frames: vec![frame; 11], stretch: [false; 2], atlas: None };
-        let mut view = p.shared.view.lock().unwrap();
-        view.parts[0].pictures = Arc::new([("knob".to_owned(), Arc::new(knob))].into());
-        let wallpaper = Arc::new(moose::mui::mui::scene::Image::rgba(632, 268, [210, 180, 140, 255].repeat(632 * 268)).unwrap());
-        view.parts[0].wallpaper = Some(Arc::new(artwork::Picture { frames: vec![wallpaper], stretch: [false; 2], atlas: None }));
-    }
-    let rects = |code: u8| {
-        p.selection.write().unwrap().parts[0].view = code;
-        let mut h = Harness::new(&p, 1180., 760.);
-        let scene = h.ui.scene().unwrap();
-        let stage = scene.surface("stage-0").map(|s| s.frame);
-        let controls: Vec<_> = (0..4).filter_map(|n| scene.surface(&format!("kpv-0-{n}")).map(|s| (n, s.frame))).collect();
-        let knob = controls[0].1;
-        let rgba = pixels(&h.ui, 1180, 760);
-        let at = ((knob.y + 60.) as usize * 1180 + (knob.x + 300.) as usize) * 4;
-        assert_eq!(&rgba[at..at + 4], &[210, 180, 140, 255], "the wallpaper keeps its original pixels");
-        if code == 3 {
-            h.press("kpv-0-1");
-            assert_eq!(control_value(&p, 1), crate::ksp::Value::Int(1));
-            let knob = center(&h.ui, "kpv-0-0");
-            for y in [0., -10., -60.] {
-                h.tick(pointer(Point::new(knob.x, knob.y + y), true));
-            }
-            h.tick(pointer(Point::new(knob.x, knob.y - 60.), false));
-            h.idle(2);
-            assert!(matches!(control_value(&p, 0), crate::ksp::Value::Int(v) if v > 0), "the native knob edits the script");
-            h.press("kpv-0-2");
-            assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some(), "the menu still opens");
-        }
-        (stage, controls)
-    };
-    let (original, vectorized) = (rects(1), rects(3));
-    assert!(original.0.is_some(), "the original view shows");
-    assert_eq!(original.1.len(), 3, "the slider, switch and menu take the pointer: {:?}", original.1);
-    assert_eq!(original, vectorized, "same places, same sizes");
-    let knob = original.1[0].1;
-    assert_eq!((knob.size.width, knob.size.height), (48., 50.), "sized as its picture in both");
 }
 
 #[test]
@@ -2290,12 +1609,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     let p = Arc::new(SamplerParams::new());
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
-    static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let meters = Meters::default();
-    let mut watch = Watch {
-        disk_counter: Some(&DISK),
-        ..Watch::default()
-    };
+    let mut watch = Watch::default();
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");
@@ -2325,17 +1640,6 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     p.shared.dropouts.store(1, Ordering::Relaxed);
     std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
     assert!(changed(), "so does a dropout");
-    // Samples read from disk move the disk readout, which then settles.
-    DISK.fetch_add(8 << 20, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
-    assert!(changed(), "disk throughput shows");
-    assert!(f32::from_bits(meters.disk.load(Ordering::Relaxed)) > 1.);
-    for _ in 0..12 {
-        std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
-        changed();
-    }
-    std::thread::sleep(Duration::from_millis(READOUT_MS + 10));
-    assert!(!changed(), "an idle disk reads 0 and rebuilds nothing");
     p.shared.view.lock().unwrap().parts[0].loading = true;
     assert!(changed(), "loading animates");
     assert!(!changed(), "at most every {ANIMATION_MS} ms");
@@ -2402,6 +1706,7 @@ fn mixer_routing_edits() {
     let part = |p: &SamplerParams, n: usize| p.selection.read().unwrap().parts[n].clone();
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("tab-mixer");
+    h.press("mix-mode-flat");
     let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
     assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
     assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
@@ -2471,6 +1776,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let (width, height) = (1180u16, 760u16);
     let mut h = Harness::new(&p, f64::from(width), f64::from(height));
     h.press("tab-mixer");
+    h.press("mix-mode-flat");
     let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
     let quiet = pixels(&h.ui, width, height);
@@ -2487,12 +1793,8 @@ fn mixer_meters_paint_without_a_rebuild() {
         .count();
     assert!(lit as f64 > r.size.height / 2., "the meter shows the level: {lit} rows");
 
-    static DISK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let meters = Meters::default();
-    let mut watch = Watch {
-        disk_counter: Some(&DISK),
-        ..Watch::default()
-    };
+    let mut watch = Watch::default();
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     let settle = Duration::from_millis(ANIMATION_MS + 5);
@@ -2523,7 +1825,7 @@ fn mixer_meters_paint_without_a_rebuild() {
 fn editor_opens_while_parts_load() {
     use crate::plugin::Load;
     use moose::prelude::BackgroundTask;
-    let root = Path::new(import::LIBRARY_ROOT);
+    let root = Path::new(LIBRARY_ROOT);
     let paths = [
         "Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki",
         "Afflatus Chapter II Brass/Instruments/4. Experimental/Mega Brass.nki",
@@ -2566,61 +1868,6 @@ fn editor_opens_while_parts_load() {
         started.elapsed().as_secs_f64()
     );
     assert!(first < Duration::from_millis(500) && worst < Duration::from_millis(250));
-}
-
-/// Dragging the envelope's release handle left shortens the release as an
-/// override on the part (the instrument untouched); the panel's reset
-/// plays the library's again.
-#[test]
-fn sound_tab_drags_an_envelope_handle_into_the_override_layer() {
-    use crate::engine::overrides::Param;
-    let p = scripted_part("on init\nend on");
-    let env = crate::modulation::Ahdsr {
-        attack_curve: 0.0,
-        attack_ms: 10.0,
-        decay_ms: 500.0,
-        hold_ms: 0.0,
-        release_ms: 1000.0,
-        sustain: 0.5,
-        unknown_flag: 0,
-        unknown_tail: Vec::new(),
-    };
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        let i = view.parts[0].instrument.as_mut().unwrap();
-        Arc::get_mut(i).unwrap().groups = vec![import::Group { volume_env: Some(env), ..Default::default() }];
-    }
-    let mut h = Harness::new(&p, 1180., 760.);
-    h.press("tab-sound");
-    let frame = h.ui.scene().unwrap().surface("edit-envelope").expect("the envelope graph").frame;
-    // The release handle: the envelope's end, at the floor, inset by SPACE.
-    let at = Point::new(frame.x + frame.size.width - SPACE, frame.y + frame.size.height - SPACE);
-    for (x, down) in [(0., true), (-10., true), (-60., true), (-60., false)] {
-        h.tick(pointer(Point::new(at.x + x, at.y), down));
-    }
-    h.idle(2);
-    let offset = p.selection.read().unwrap().parts[0].edits.get(None, Param::Release);
-    assert!(offset < -0.01, "release moved down: {offset}");
-    let library = p.shared.view.lock().unwrap().parts[0].instrument.as_ref().unwrap().groups[0].volume_env.as_ref().unwrap().release_ms;
-    assert_eq!(library, 1000.0, "the instrument is untouched");
-    h.press("edit-envelope-reset");
-    assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty(), "reset plays the library's");
-
-    // A value double-clicked takes one typed in.
-    h.idle(60);
-    let at = center(&h.ui, "edit-envelope-value-Attack");
-    for down in [true, false, true, false] {
-        h.tick(pointer(at, down));
-    }
-    h.idle(2);
-    assert!(h.ui.scene().unwrap().surface("edit-envelope-value-Attack-edit").is_some(), "a field to type in");
-    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
-    h.tick(Input { text: "250 ms".into(), ..Default::default() });
-    h.tick(enter());
-    h.idle(3);
-    let edits = p.selection.read().unwrap().parts[0].edits.clone();
-    let attack = Param::Attack.apply(0.01, edits.offset(0, Param::Attack));
-    assert!((attack - 0.25).abs() < 0.01, "the attack plays {attack} s");
 }
 
 fn key_spot(ui: &Ui, note: u8) -> Point {
@@ -2878,139 +2125,6 @@ fn hue_walks_skip_orange() {
     }
 }
 
-/// Shape statistics of library performance views for the original view:
-/// sizes, kinds, pictures found and their frames. `KONTAKTO_SHOT` names
-/// the instruments; run with `--ignored --nocapture`. Prints no names.
-#[test]
-#[ignore]
-fn perf_view_stats() {
-    use crate::ksp::Value;
-    use std::collections::BTreeMap;
-    let files = import::presets(Path::new(import::LIBRARY_ROOT)).unwrap_or_default();
-    let names = std::env::var("KONTAKTO_SHOT").unwrap_or_default();
-    for i in library_instruments(&files, &names) {
-        let script = scripted(&i);
-        let Some(u) = script.interface else {
-            println!("== {}: no interface ({})", i.name, script.status.lines().count());
-            continue;
-        };
-        let wall = artwork::performance(&i, Some(u.as_ref()));
-        let wall = match &wall {
-            Ok(Some(w)) => format!("{}x{}", w.frames[0].width, w.frames[0].height),
-            Ok(None) => "none".into(),
-            Err(e) => format!("err {e}"),
-        };
-        let pic_names = u.controls.iter().filter_map(|c| match c.properties.get("$CONTROL_PAR_PICTURE") {
-            Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()),
-            _ => None,
-        });
-        let pics = artwork::pictures(&i.path, pic_names.clone());
-        let named: std::collections::BTreeSet<&str> = pic_names.collect();
-        println!("== {} ui {}x{} perf {} wallpaper {wall}; pictures {}/{}", i.name, u.width, u.height, u.performance, pics.len(), named.len());
-        let mut kinds: BTreeMap<&str, (usize, usize, usize, usize)> = BTreeMap::new();
-        let mut props: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-        for c in &u.controls {
-            let int = |k: &str| match c.properties.get(k) { Some(Value::Int(n)) => *n, _ => 0 };
-            let hidden = int("$CONTROL_PAR_HIDE") & 16 != 0;
-            let pic = match c.properties.get("$CONTROL_PAR_PICTURE") { Some(Value::Text(n)) if !n.is_empty() => Some(n.as_str()), _ => None };
-            let e = kinds.entry(c.kind.as_str()).or_default();
-            e.0 += 1;
-            e.1 += usize::from(!hidden);
-            e.2 += usize::from(pic.is_some());
-            if let Some(p) = pic.and_then(|n| pics.get(n)) {
-                let f = &p.frames[0];
-                e.3 += usize::from(f.width as i32 == int("$CONTROL_PAR_WIDTH") && f.height as i32 == int("$CONTROL_PAR_HEIGHT"));
-            }
-            for k in ["Z_LAYER", "FONT_TYPE", "TEXT_ALIGNMENT", "MOUSE_BEHAVIOUR", "PICTURE_STATE", "TEXTPOS_Y", "HIDE", "TEXT_COLOR"] {
-                if let Some(v) = c.properties.get(&format!("$CONTROL_PAR_{k}")) {
-                    *props.entry(format!("{}:{k}", c.kind)).or_default().entry(format!("{v:?}")).or_default() += 1;
-                }
-            }
-            for k in c.properties.keys().filter(|k| k.starts_with('#')) {
-                *props.entry("unnamed".into()).or_default().entry(k.clone()).or_default() += 1;
-            }
-        }
-        for (k, (n, vis, pic, sized)) in kinds {
-            println!("  {k:14} {n:4} visible {vis:4} picture {pic:4} sized-as-frame {sized}");
-        }
-        for (k, v) in props {
-            let mut v: Vec<_> = v.into_iter().collect();
-            v.sort_by_key(|x| std::cmp::Reverse(x.1));
-            v.truncate(6);
-            println!("  {k}: {v:?}");
-        }
-        let frames: BTreeMap<usize, usize> = pics.values().fold(BTreeMap::new(), |mut m, p| {
-            *m.entry(p.frames.len()).or_default() += 1;
-            m
-        });
-        println!("  frames per picture: {frames:?}");
-        // Where the unread pictures are, if anywhere: member paths' shapes only.
-        let nkrs: Vec<PathBuf> = i.path.ancestors().skip(1).take(4).flat_map(|d| {
-            let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
-            let subs: Vec<PathBuf> = v.iter().filter(|p| p.is_dir()).flat_map(|s| std::fs::read_dir(s).into_iter().flatten().flatten().map(|e| e.path())).collect();
-            v.extend(subs);
-            v.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr")))
-        }).collect();
-        for name in named.iter().filter(|n| !pics.contains_key(**n)) {
-            let want = format!("{}.png", name.to_lowercase());
-            let mut seen = Vec::new();
-            for nkr in &nkrs {
-                let Ok(mut f) = std::fs::File::open(nkr) else { continue };
-                let Ok(a) = ni_file::nkr::Archive::read(&mut f) else { continue };
-                for (k, e) in &a.entries {
-                    if k.to_lowercase().rsplit('/').next() == Some(want.as_str()) {
-                        seen.push(format!("depth {} encoded {}", k.matches('/').count(), e.encoded));
-                    }
-                }
-            }
-            println!("  unread picture (len {}): {seen:?}", name.len());
-        }
-    }
-}
-
-/// KONTRA's number boxes drag as its knobs do: up raises, sideways does
-/// nothing, Shift is finer; and the pointer hides while one is dragged.
-#[test]
-fn number_boxes_drag_up_and_down() {
-    let mut ui = theme::ui();
-    let mut v = 50.;
-    let frame = |ui: &mut Ui, v: &mut f64, input: Input| {
-        let shown = format!("{v:.0}");
-        let el = theme::number(ui, "n", "Amount", v, 0.0..=100.0, shown);
-        ui.frame(col![el].w(300.), Some(Size::new(300., 100.)), input, 1. / 60.).unwrap();
-    };
-    frame(&mut ui, &mut v, Input::default());
-    frame(&mut ui, &mut v, Input::default());
-    let at = center(&ui, "n");
-    let drag = |ui: &mut Ui, v: &mut f64, dx: f64, dy: f64, shift: bool| {
-        let before = *v;
-        // Held still a frame at the end, as a hand rests before letting go.
-        let steps = [(0., 0., true), (dx / 4., dy / 4., true), (dx, dy, true), (dx, dy, true), (dx, dy, false)];
-        for (n, (x, y, down)) in steps.into_iter().enumerate() {
-            let mut input = pointer(Point::new(at.x + x, at.y + y), down);
-            input.pointer.mods.shift = shift;
-            frame(ui, v, input);
-            if n == 3 {
-                assert!(theme::pointer_hidden(ui), "the pointer hides while the box is dragged");
-            }
-        }
-        // Long enough apart that the next press is not a double-click.
-        for _ in 0..60 {
-            frame(ui, v, Input::default());
-        }
-        assert!(!theme::pointer_hidden(ui), "and comes back once let go");
-        *v - before
-    };
-    let up = drag(&mut ui, &mut v, 0., -40., false);
-    assert!(up > 1., "dragging up raises it, by {up}");
-    let down = drag(&mut ui, &mut v, 0., 40., false);
-    assert!(down < -1., "dragging down lowers it, by {down}");
-    let sideways = drag(&mut ui, &mut v, 60., 0., false);
-    assert!(sideways.abs() < 1e-9, "sideways leaves it, moved {sideways}");
-    let fine = drag(&mut ui, &mut v, 0., -40., true);
-    assert!(fine > 0. && fine < up / 2., "Shift is finer: {fine} against {up}");
-}
-
 #[test]
 fn a_wheel_notch_scrolls_five_rows_and_a_fling_speeds_up() {
     use moose::mui::window::notch_lines;
@@ -3065,52 +2179,6 @@ fn the_cursor_follows_what_is_under_the_pointer() {
     assert!(h.ui.get("window-corner").hovered, "the window's resize corner");
 }
 
-
-#[test]
-fn frame_views_leave_large_persistence_json_with_the_loader() {
-    let p = SamplerParams::new();
-    let saved = "x".repeat(1_000_000);
-    let address = saved.as_ptr();
-    p.shared.view.lock().unwrap().parts[0].script_state = saved;
-    let frame = super::shown(&p.shared.view);
-    assert!(frame.parts[0].script_state.is_empty(), "frames do not read persistence JSON");
-    let view = p.shared.view.lock().unwrap();
-    assert_eq!(view.parts[0].script_state.len(), 1_000_000);
-    assert_eq!(view.parts[0].script_state.as_ptr(), address, "the loader retains the original allocation");
-}
-
-/// Pending values redraw without copying callback snapshots or treating an
-/// edit's settling timestamp as a visible change.
-#[test]
-fn optimistic_values_keep_callback_snapshots_immutable_and_invalidate_views() {
-    use std::hash::{DefaultHasher, Hasher};
-    let p = scripted_part("on init\nmake_perfview\ndeclare ui_slider $s(0,100)\nend on");
-    let signature = |view: &View| {
-        let mut h = DefaultHasher::new();
-        fingerprint(view, &mut h);
-        h.finish()
-    };
-    let (retained, before) = {
-        let view = p.shared.view.lock().unwrap();
-        (view.parts[0].interface.clone().unwrap(), signature(&view))
-    };
-    p.shared.edit_control(0, 0, 42);
-    let mut view = p.shared.view.lock().unwrap();
-    assert!(Arc::ptr_eq(&retained, view.parts[0].interface.as_ref().unwrap()));
-    assert_eq!(retained.controls[0].properties["$CONTROL_PAR_VALUE"], crate::ksp::Value::Int(0));
-    assert_eq!(view.parts[0].control_value(0), Some(42.));
-    let edited = signature(&view);
-    assert_ne!(edited, before, "a pending value wakes an idle editor");
-    view.parts[0].edited[0].2 = Instant::now();
-    assert_eq!(signature(&view), edited, "timestamps do not cause redraws");
-    view.parts[0].edited.clear();
-    assert_eq!(view.parts[0].control_value(0), Some(0.));
-    assert_eq!(signature(&view), before, "settling removes the overlay");
-    view.parts[0].live_revisions = Some((1,0));
-    let revision = signature(&view);
-    view.parts[0].live_revisions = Some((2,0));
-    assert_ne!(signature(&view), revision, "a reused snapshot address cannot hide a new source revision");
-}
 
 #[test]
 fn rack_growth_preserves_restored_slots_and_same_frame_duplicate() {
@@ -3215,31 +2283,4 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     h.press("library-0");
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
-}
-
-#[test]
-fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
-    let first = "on init\nmake_perfview\nset_script_title(\"Performance\")\nset_ui_height_px(200)\ndeclare ui_knob $layer(0,100,1)\nend on";
-    let second = "on init\nmake_perfview\nset_script_title(\"FX Rack\")\nset_ui_height_px(160)\ndeclare ui_switch $effect\nend on";
-    let p = scripted_part(first);
-    let mut engine = crate::ksp::LogEngine::new(Vec::new(),48000.);
-    let (rt, errors) = crate::ksp::Runtime::with_scripts(&[first,second],&mut engine,8,Vec::new());
-    assert!(errors.iter().all(Option::is_none),"{errors:?}");
-    {
-        let mut view = p.shared.view.lock().unwrap();
-        view.parts[0].script_pages = crate::plugin::script_pages(Some(&rt));
-        view.parts[0].script_epoch = 1;
-    }
-    let mut h = Harness::new(&p,1180.,760.);
-    assert!(h.ui.scene().unwrap().surface("script-page-0-0").is_some());
-    assert!(h.ui.scene().unwrap().surface("script-page-0-1").is_some());
-    h.press("script-page-0-1");
-    let view = p.shared.view.lock().unwrap();
-    assert_eq!(view.parts[0].script_slot,1);
-    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_switch");
-    drop(view);
-    h.press("script-page-0-0");
-    let view = p.shared.view.lock().unwrap();
-    assert_eq!(view.parts[0].script_slot,0);
-    assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
 }

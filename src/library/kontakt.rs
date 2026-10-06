@@ -88,8 +88,6 @@ pub fn roots(have: &[Root]) -> Vec<Root> {
     }
 
     folders.extend(documents.map(|d| d.join("Native Instruments")));
-    // The developer's own library folder, where there is one.
-    folders.push(PathBuf::from(crate::import::LIBRARY_ROOT));
 
     let libraries: Vec<PathBuf> = named.into_iter().filter(|d| is_library(d)).collect();
     let folders: Vec<PathBuf> = folders.into_iter().filter(|d| holds_libraries(d)).collect();
