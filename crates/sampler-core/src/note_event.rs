@@ -67,6 +67,20 @@ impl Prepared {
 
     /// Release-trigger families never fire on note release; behaviors that
     /// own release samples play them (Kontakt's `NO_SYS_SCRIPT_RLS_TRIG`).
+    pub fn with_initial_controllers(mut self, values: &[(u8, u8)]) -> Self {
+        self.initial_controllers = values
+            .iter()
+            .filter(|&&(controller, value)| controller < 128 && value < 128)
+            .map(|&(controller, value)| {
+                (
+                    controller,
+                    (u64::from(value) * u64::from(u32::MAX) / 127) as u32,
+                )
+            })
+            .collect();
+        self
+    }
+
     pub fn with_script_release_triggers(mut self, script: bool) -> Self {
         self.script_release_triggers = script;
         self

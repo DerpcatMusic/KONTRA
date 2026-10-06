@@ -1035,6 +1035,9 @@ impl Runtime {
                     self.behavior_ready.remove(index);
                 }
                 Ok(false) => {}
+                // Kontakt ignores a script's call on a note that already ended
+                // (play_note on a released parent, forwarding a dropped note).
+                Err(Error::ClosedNote) => {}
                 Err(error) => {
                     self.fail_behavior(id, Outcome::Fault(error));
                     self.behavior_ready.remove(index);
