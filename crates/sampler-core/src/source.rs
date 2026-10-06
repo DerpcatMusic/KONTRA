@@ -205,6 +205,20 @@ impl Cursor {
         self
     }
 
+    /// Skip `frames` further source frames from the current start position.
+    pub(super) fn skip(mut self, frames: u32) -> Self {
+        self.position += u64::from(frames);
+        if self.position >= (self.end - self.start) as u64
+            || self
+                .loop_range
+                .is_some_and(|r| self.position >= self.first_boundary(r))
+        {
+            self.loop_range = None;
+            self.exit = None;
+        }
+        self
+    }
+
     pub(super) fn unbounded_loop(&self) -> bool {
         self.loop_range.is_some() && self.exit.is_none()
     }
