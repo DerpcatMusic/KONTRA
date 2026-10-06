@@ -49,6 +49,7 @@ fn container_children_are_found_by_id_and_truncated_references_are_errors() {
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn installed_multi_opens_without_single_instrument_translation() {
     let root = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").and_then(|paths| {
         std::env::split_paths(&paths)
