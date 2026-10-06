@@ -168,13 +168,7 @@ impl FilterCache {
         expression: Option<&crate::Expression>,
     ) {
         self.prepare(at, len, parameters, expression);
-        let mix = match self.filter.mode {
-            SvfMode::LowPass => [0., 0., 1.],
-            SvfMode::HighPass => [1., -1., -1.],
-            SvfMode::BandPass => [0., 1., 0.],
-            SvfMode::Notch => [1., -1., 0.],
-            SvfMode::AllPass => [1., -2., 0.],
-        };
+        let mix = self.filter.mode.mix();
         if self.uniform {
             let c = self.coefficients[0];
             run(state, block, len, mix, |_| c);
@@ -212,6 +206,18 @@ fn run(
     *state = [s0, s1].map(|channels| channels.map(flush));
 }
 
+impl SvfMode {
+    fn mix(self) -> [f64; 3] {
+        match self {
+            Self::LowPass => [0., 0., 1.],
+            Self::HighPass => [1., -1., -1.],
+            Self::BandPass => [0., 1., 0.],
+            Self::Notch => [1., -1., 0.],
+            Self::AllPass => [1., -2., 0.],
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Scope {
     Shared(usize),
@@ -224,6 +230,9 @@ pub(crate) struct FilterBank {
     shared: Box<[FilterCache]>,
     expressions: Box<[FilterCache]>,
     stride: usize,
+    /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
+    /// Set around one voice's render; 1.0 uses the cached shared coefficients.
+    pub modulation: [f64; 2],
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -255,6 +264,7 @@ impl FilterBank {
             shared: shared.into_boxed_slice(),
             expressions: caches.into_boxed_slice(),
             stride,
+            modulation: [1.0; 2],
         })
     }
     pub fn is_empty(&self) -> bool {
@@ -289,14 +299,21 @@ impl FilterContext<'_> {
                 cache
             }
         };
-        cache.process(
-            state,
-            block,
-            len,
-            parameters,
-            at,
-            self.expression.as_ref().map(|(_, value)| value),
-        );
+        let expression = self.expression.as_ref().map(|(_, value)| value);
+        let [cutoff, q] = self.bank.modulation;
+        if cutoff != 1.0 || q != 1.0 {
+            // A modulated voice's coefficients are its own: one set per chunk at
+            // its midpoint, outside the shared cache.
+            let filter = cache.filter;
+            let middle = at + len as u64 / 2;
+            let hz = (filter.cutoff.value(parameters, middle, expression) * cutoff)
+                .clamp(10.0_f64.min(filter.rate * 0.25), filter.rate * 0.49);
+            let q = (filter.q.value(parameters, middle, expression) * q).max(0.025);
+            let c = Coefficients::new(filter.rate, hz, q);
+            run(state, block, len, filter.mode.mix(), |_| c);
+            return;
+        }
+        cache.process(state, block, len, parameters, at, expression);
     }
 }
 
