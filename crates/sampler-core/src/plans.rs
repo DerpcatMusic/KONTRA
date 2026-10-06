@@ -34,11 +34,13 @@ pub struct PlanTransfer {
     pub prepared: Box<Prepared>,
     sequences: super::variation::SequenceState,
     controls: super::control::ControlState,
-    scripts: Box<[Box<[i64]>]>,
+    scripts: Box<[super::ops::ScriptBank]>,
     dsp: super::dsp::DspState,
     groups: super::groups::GroupState,
     controllers: super::controller_event::ControllerState,
     projections: super::note_event::NoteProjections,
+    modulation: super::voice_mod::VoiceModState,
+    script: super::script_params::EngineLayers,
 }
 
 pub(super) struct Generation {
@@ -48,11 +50,13 @@ pub(super) struct Generation {
     pub callbacks: usize,
     pub sequences: super::variation::SequenceState,
     pub controls: super::control::ControlState,
-    pub scripts: Box<[Box<[i64]>]>,
+    pub scripts: Box<[super::ops::ScriptBank]>,
     pub dsp: super::dsp::DspState,
     pub groups: super::groups::GroupState,
     pub controllers: super::controller_event::ControllerState,
     pub projections: super::note_event::NoteProjections,
+    pub modulation: super::voice_mod::VoiceModState,
+    pub script: super::script_params::EngineLayers,
 }
 
 pub(super) struct PlanQueues {
@@ -138,7 +142,18 @@ impl PlanControl {
                     });
                 }
             };
+        let modulation =
+            match super::voice_mod::VoiceModState::new(&prepared.voice_modulation, self.voices) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Err(RejectedPlan {
+                        reason: PlanError::Capacity,
+                        prepared,
+                    });
+                }
+            };
         let request = self.sequence + 1;
+        let script = super::script_params::EngineLayers::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
@@ -152,6 +167,8 @@ impl PlanControl {
             groups,
             controllers,
             projections,
+            modulation,
+            script,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -264,6 +281,8 @@ impl Runtime {
                 groups: generation.groups,
                 controllers: generation.controllers,
                 projections: generation.projections,
+                modulation: generation.modulation,
+                script: generation.script,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -279,6 +298,8 @@ impl Runtime {
                             groups: plan.groups,
                             controllers: plan.controllers,
                             projections: plan.projections,
+                            modulation: plan.modulation,
+                            script: plan.script,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -323,6 +344,8 @@ impl Runtime {
                     groups: plan.groups,
                     controllers: plan.controllers,
                     projections: plan.projections,
+                    modulation: plan.modulation,
+                    script: plan.script,
                     notes: 0,
                     callbacks: 0,
                 })

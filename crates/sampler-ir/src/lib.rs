@@ -41,6 +41,10 @@ reference! {
     BusRef,
     /// Index into [`Instrument::controls`].
     ControlRef,
+    /// Index into [`Instrument::routes`].
+    RouteRef,
+    /// Index into [`Instrument::shapes`].
+    ShapeRef,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -52,8 +56,12 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
+    /// Which input selects among [`Instrument::articulations`].
+    pub switching: Switching,
     pub modulators: Vec<Modulator>,
     pub routes: Vec<Route>,
+    /// Transfer curves routes apply to their source value.
+    pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
     pub buses: Vec<Bus>,
     pub controls: Vec<Control>,
@@ -145,6 +153,8 @@ pub struct Zone {
     pub chain: Option<ChainRef>,
     /// Voice-scope amplitude envelope; `None` is a gate (instant on/off).
     pub amplitude: Option<ModulatorRef>,
+    /// Modulation routes that act on this zone's voices, in authored order.
+    pub routes: Vec<RouteRef>,
 }
 
 impl Instrument {
@@ -201,6 +211,7 @@ impl Zone {
             playback: Playback::default(),
             chain: None,
             amplitude: None,
+            routes: Vec::new(),
         }
     }
 }
@@ -310,13 +321,103 @@ pub enum CounterScope {
     ChannelKey,
 }
 
-/// A selectable articulation, switched by keys and/or a control.
-#[derive(Clone, Debug, PartialEq)]
+/// A selectable articulation, switched by keys and/or an alternative driver.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
     pub name: String,
+    /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
+    /// reads them, and the first is the key a driver taps to select this.
     pub switch_keys: Vec<u8>,
     /// Active before any switch is played.
     pub default: bool,
+    /// What selects it when [`Switching::driver`] is not [`Driver::Keys`].
+    pub alternatives: Alternatives,
+}
+
+/// Non-key inputs that select one articulation. Only the family named by
+/// [`Switching::driver`] is live; the others are kept for switching modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Alternatives {
+    /// Note-on velocities that select it, then play the note.
+    pub velocities: Option<VelocityRange>,
+    /// Zero-based MIDI channel whose notes select it, then play.
+    pub channel: Option<u8>,
+    /// A controller value range that selects it.
+    pub controller: Option<ControllerRange>,
+    pub program: Option<u8>,
+}
+
+/// How articulations are selected: who interprets a switch and which input
+/// drives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Switching {
+    pub owner: SwitchOwner,
+    pub driver: Driver,
+    /// What played switch keys do while another driver is active.
+    pub keys: SwitchKeys,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchOwner {
+    /// The runtime holds the articulation; zones name the one they belong to.
+    #[default]
+    Native,
+    /// A behavior reads the switch keys and selects groups itself; drivers
+    /// select by tapping an articulation's first switch key into it.
+    Behavior,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Driver {
+    #[default]
+    Keys,
+    Velocity,
+    Channel,
+    Controller,
+    Program,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchKeys {
+    /// Still switch, alongside the driver.
+    #[default]
+    Keep,
+    /// No longer switch; they play notes. Native ownership only.
+    Play,
+    /// Dropped before anything sees them.
+    Swallow,
+}
+
+impl Instrument {
+    /// Give every articulation one value of each alternative family, in order
+    /// of its lowest switch key (articulations without keys last, in list
+    /// order): controller `controller` values 0.., channels 0.., programs 0..
+    /// and equal velocity splits of 1..=127. Families an articulation count
+    /// cannot fit (more than 16 channels, 127 velocities, 128 values) stay unset.
+    pub fn assign_alternatives(&mut self, controller: u8) {
+        let mut order: Vec<usize> = (0..self.articulations.len()).collect();
+        order.sort_by_key(|&i| {
+            let keys = &self.articulations[i].switch_keys;
+            (keys.iter().min().copied().unwrap_or(u8::MAX), i)
+        });
+        let n = order.len();
+        for (rank, &i) in order.iter().enumerate() {
+            let value = u8::try_from(rank).ok().filter(|&v| v < 128);
+            self.articulations[i].alternatives = Alternatives {
+                velocities: (n <= 127).then(|| VelocityRange {
+                    low: (1 + rank * 127 / n) as u8,
+                    high: ((rank + 1) * 127 / n) as u8,
+                }),
+                channel: value.filter(|_| n <= 16),
+                controller: value.map(|v| ControllerRange {
+                    controller,
+                    low: v,
+                    high: v,
+                }),
+                program: value,
+            };
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -326,6 +427,9 @@ pub struct Playback {
     pub end: Option<SourceFrames>,
     pub reverse: bool,
     pub looping: Looping,
+    /// Furthest frame past `start` a [`Target::SampleStart`] route can move
+    /// the start to (Kontakt's zone sample-start modulation range).
+    pub start_range: SourceFrames,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -368,16 +472,33 @@ pub struct Modulator {
     pub source: ModulationSource,
 }
 
+/// What a modulator reads. Unipolar sources produce 0..=1, bipolar ones -1..=1:
+/// envelopes, controllers, velocity, key, pressure, timbre, random and constant
+/// are unipolar; LFOs and pitch bend are bipolar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModulationSource {
     Envelope(Envelope),
     Lfo(Lfo),
     Controller(u8),
     Velocity,
+    /// Note number / 127.
     Key,
     PitchBend,
     ChannelPressure,
     PolyPressure,
+    /// Per-note timbre: MPE CC74 or the MIDI 2.0 per-note brightness.
+    Timbre,
+    /// A uniform value drawn once per voice.
+    Random,
+    /// Always 1.
+    Constant,
+}
+
+impl ModulationSource {
+    /// Whether values span -1..=1 rather than 0..=1.
+    pub fn bipolar(&self) -> bool {
+        matches!(self, Self::Lfo(_) | Self::PitchBend)
+    }
 }
 
 /// Delay-attack-hold-decay-sustain-release.
@@ -422,27 +543,93 @@ pub enum Curve {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lfo {
     pub shape: LfoShape,
+    /// Cycles per second, or the cycle length in beats when tempo-synced.
     pub rate: Frequency,
+    /// Silent time after the note starts.
     pub delay: Time,
+    /// Linear depth ramp after the delay.
     pub fade_in: Time,
+    /// Cycle position at the start, 0..1.
+    pub phase: f64,
+    /// Each voice starts its own cycle at `phase`; otherwise one free-running
+    /// cycle, at `phase` when the instrument starts, is shared by all voices.
+    pub retrigger: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
+    /// Starts at 0 rising.
     Sine,
+    /// Starts at 0 rising.
     Triangle,
+    /// +1 for the first half cycle.
     Square,
+    /// -1 to +1.
     SawUp,
+    /// +1 to -1.
     SawDown,
+    /// A new uniform value each cycle, held.
     SampleAndHold,
+    /// A new uniform value each cycle, reached linearly by the cycle's end.
+    Random,
 }
 
-/// Modulator output scaled into a target. Depth carries the target's unit.
+/// A piecewise-linear transfer curve over 0..=1, as ascending `(input, output)`
+/// points. Bipolar values are mapped through `(v + 1) / 2` and back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shape {
+    pub points: Vec<(f64, f64)>,
+}
+
+/// Modulator output scaled into a target. The source value `v` passes through
+/// `invert` (unipolar `1 - v`, bipolar `-v`), then `shape`, then `smoothing`
+/// (a one-pole lag reaching 99% in that time). The target law:
+///
+/// | Target | Depth | Effect |
+/// | --- | --- | --- |
+/// | Amplitude | `Normalized(i)` | gain × (1 − i·(1 − u)), u the unipolar view of v |
+/// | Amplitude | `Gain(g)` | gain × g^v |
+/// | Pitch | `Pitch(p)` | + p·v |
+/// | Pan | `Normalized(d)` | + d·v (pan in −1..=1) |
+/// | Processor cutoff | `Pitch(p)` | cutoff × 2^(p·v/12) |
+/// | Processor resonance | `Gain(g)` | Q × g^v |
+/// | SampleStart | `Normalized(d)` | start + d·u·`Playback::start_range`, at note start |
+///
+/// The unipolar view of a bipolar value is (v + 1) / 2.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Route {
     pub source: ModulatorRef,
     pub target: Target,
     pub depth: Depth,
+    pub invert: bool,
+    pub shape: Option<ShapeRef>,
+    pub smoothing: Time,
+    /// Depth multiplier read from a second modulator (a modulator × modulator
+    /// product, e.g. LFO depth by the mod wheel). See [`RouteScale`].
+    pub scale: Option<RouteScale>,
+}
+
+/// The route's depth is multiplied by `shape(x)`, where `x` is the unipolar
+/// view of `source` ((v + 1) / 2 for bipolar sources) and no shape means `x`.
+/// The shape's output is used as-is, not mapped back to the source's range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteScale {
+    pub source: ModulatorRef,
+    pub shape: Option<ShapeRef>,
+}
+
+impl Route {
+    pub fn new(source: ModulatorRef, target: Target, depth: Depth) -> Self {
+        Self {
+            source,
+            target,
+            depth,
+            invert: false,
+            shape: None,
+            smoothing: Time::ZERO,
+            scale: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -450,6 +637,8 @@ pub enum Target {
     Amplitude,
     Pitch,
     Pan,
+    /// Playback start offset, applied when a voice starts.
+    SampleStart,
     /// A processor parameter, addressed by chain and position.
     Processor {
         chain: ChainRef,
@@ -600,9 +789,19 @@ pub struct Behavior {
     pub name: String,
     pub language: Language,
     pub source: String,
+    /// The source's script slot, when it numbers them (Kontakt's 0..=4).
+    pub slot: Option<u8>,
     /// Persisted values restored before the first callback, keyed by variable.
-    pub state: Vec<(String, i64)>,
+    pub state: Vec<(String, Saved)>,
     pub requires: Vec<Capability>,
+}
+
+/// A persisted script variable's saved value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Saved {
+    Int(i64),
+    Real(f64),
+    Text(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -651,4 +850,7 @@ pub enum Reason {
     NotModeled,
     /// Recognized, but this value cannot be represented.
     InvalidValue,
+    /// Recognized and representable, but how the source maps it to sound
+    /// (its scaling, curve or timing law) is not established.
+    UnknownLaw,
 }

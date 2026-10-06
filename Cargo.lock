@@ -1836,7 +1836,6 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 name = "kontakto"
 version = "0.3.148"
 dependencies = [
- "aes",
  "anyhow",
  "blake3",
  "buffr-durable-file",
@@ -1865,6 +1864,9 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ksp",
+ "sampler-midi",
+ "sampler-ui-ir",
  "serde",
  "serde_json",
  "sha2",
@@ -3675,6 +3677,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
+ "sampler-ui-ir",
 ]
 
 [[package]]
@@ -3682,6 +3685,8 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ui-ir",
+ "serde_json",
 ]
 
 [[package]]
@@ -3703,13 +3708,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-ui-ir"
+version = "0.1.0"
+
+[[package]]
 name = "sampler-uvi"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "crc32fast",
+ "dirs",
+ "flate2",
+ "libc",
  "roxmltree",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "serde",
+ "serde_json",
+ "sha2",
+ "symphonia",
 ]
 
 [[package]]
@@ -3970,10 +3989,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
 dependencies = [
  "lazy_static",
+ "symphonia-bundle-flac",
  "symphonia-codec-pcm",
  "symphonia-core",
  "symphonia-format-riff",
  "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-bundle-flac"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976"
+dependencies = [
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+ "symphonia-utils-xiph",
 ]
 
 [[package]]
@@ -4019,6 +4051,16 @@ dependencies = [
  "lazy_static",
  "log",
  "symphonia-core",
+]
+
+[[package]]
+name = "symphonia-utils-xiph"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16"
+dependencies = [
+ "symphonia-core",
+ "symphonia-metadata",
 ]
 
 [[package]]

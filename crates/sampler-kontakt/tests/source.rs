@@ -101,7 +101,7 @@ fn source_views_preserve_wire_identity_and_all_unknown_bytes_without_allocating(
         let source = Script::parse(children.next().unwrap(), LIMITS).unwrap();
         assert_eq!(source.text.unwrap().data(), [0xef, 0xbb, 0xbf, 0xff]);
         assert!(source.touched_but_not_applied);
-        assert_eq!(source.description.unwrap().data(), []);
+        assert_eq!(source.description.unwrap().data(), [0u8; 0]);
         assert!(source.textfile_name.is_none());
         assert_eq!(
             source.persistent.unwrap().iter().nth(1).unwrap().data(),
@@ -218,7 +218,7 @@ fn malformed_lengths_counts_flags_and_saved_tables_fail_at_the_source_boundary()
     };
     assert!(decode(&absent).text.is_none());
     assert!(decode(&absent).persistent.is_none());
-    assert_eq!(decode(&empty).text.unwrap().data(), []);
+    assert_eq!(decode(&empty).text.unwrap().data(), [0u8; 0]);
     assert!(decode(&empty).persistent.unwrap().is_empty());
 }
 
