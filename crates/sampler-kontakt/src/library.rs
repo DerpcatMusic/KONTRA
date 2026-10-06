@@ -97,6 +97,9 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
     }
+    for (at, slots) in crate::effects::program_racks(&program) {
+        out.effects(&at, slots);
+    }
     for (slot, chunk) in program
         .0
         .children
@@ -334,6 +337,22 @@ impl Translation {
         });
     }
 
+    /// Report a rack's active effects (none are modelled yet).
+    fn effects(&mut self, at: &str, slots: Vec<crate::effects::Slot>) {
+        for fx in slots.iter().filter(|fx| !fx.bypass) {
+            self.unsupported(
+                &format!("{at} slot {}", fx.slot),
+                "effect",
+                format!(
+                    "{} v{:#x}",
+                    crate::effects::module_name(fx.module),
+                    fx.version
+                ),
+                ir::Reason::NotModeled,
+            );
+        }
+    }
+
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let v = group.params()?;
@@ -379,20 +398,8 @@ impl Translation {
             Ok(_) => {}
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
-        if let Ok(fx) = group.insert_fx().and_then(|fx| fx.fx_items()) {
-            for (slot, fx) in fx.iter().enumerate() {
-                if let Ok(params) = fx.params()
-                    && !params.bypass
-                {
-                    let kind = fx.effect().map_or(0, |c| c.id);
-                    self.unsupported(
-                        &format!("{at} insert slot {slot}"),
-                        "insert effect (serialization type)",
-                        format!("{kind:#x}"),
-                        not_modeled,
-                    );
-                }
-            }
+        if let Ok(array) = group.insert_fx() {
+            self.effects(&format!("{at} insert"), crate::effects::rack(&array));
         }
         let mut envelope = None;
         let mut routes = Vec::new();

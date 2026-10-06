@@ -7,6 +7,7 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod effects;
 pub mod keyswitch;
 mod library;
 mod load;
