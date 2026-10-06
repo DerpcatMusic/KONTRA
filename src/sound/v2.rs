@@ -830,6 +830,29 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .collect()
 }
 
+/// A group's sends as sends of its bus, with the output and fader to use.
+/// The bus hears the signal after the fader, so a pre-fader send is scaled by
+/// the fader's inverse; a closed fader cannot be undone, so the first
+/// pre-fader send becomes the group's output and the rest are scaled to it.
+fn group_sends(group: &ir::Group, output: ir::Output) -> (ir::Output, ir::Gain, Vec<ir::Send>) {
+    let fader = group.gain.linear();
+    let send = |s: &ir::GroupSend, gain: f64| ir::Send {
+        to: ir::Output::Bus(s.to),
+        gain: ir::Gain::Linear(gain),
+        position: ir::SendPosition::PostChain,
+    };
+    if fader > 0.0 {
+        let sends = group.sends.iter().map(|s| send(s, s.gain.linear() * if s.pre_fader { 1.0 / fader } else { 1.0 })).collect();
+        return (output, group.gain, sends);
+    }
+    let Some(first) = group.sends.iter().find(|s| s.pre_fader && s.gain.linear() > 0.0) else {
+        return (output, group.gain, Vec::new());
+    };
+    let base = first.gain.linear();
+    let rest = group.sends.iter().filter(|s| s.pre_fader && !std::ptr::eq(*s, first)).map(|s| send(s, s.gain.linear() / base)).collect();
+    (ir::Output::Bus(first.to), ir::Gain::Linear(base), rest)
+}
+
 /// Give every group a bus of its own after the source's buses, so each is a
 /// mixer node, and describe the result as the part's tree: node 0 is the
 /// instrument, node `n > 0` is runtime bus `n - 1`.
@@ -874,16 +897,18 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             Some(at) => ir::Output::Bus(ir::BusRef(at - 1)),
             None => group.output,
         };
+        let (output, fader, sends) = group_sends(group, output);
         tree.nodes.push(MixNode {
             name: name.clone(),
             kind: NodeKind::Group,
             parent: Some(node(output)),
             inserts: insert_names(instrument, group.chain),
-            sends: Vec::new(),
+            sends: sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect(),
         });
         let bus = ir::BusRef(instrument.buses.len());
-        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output });
+        instrument.buses.push(ir::Bus { name, chain: None, sends, output });
         instrument.groups[index].output = ir::Output::Bus(bus);
+        instrument.groups[index].gain = fader;
     }
     tree
 }
@@ -1791,5 +1816,28 @@ mod tests {
             (0..4).any(|_| loud(&core.render(128), 0, 128))
         });
         assert!(again, "the purged sample reloads");
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+
+    fn group(gain: f64, sends: &[(f64, bool)]) -> ir::Group {
+        ir::Group {
+            gain: ir::Gain::Linear(gain),
+            sends: sends.iter().map(|&(g, pre)| ir::GroupSend { to: ir::BusRef(0), gain: ir::Gain::Linear(g), pre_fader: pre }).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pre_fader_sends_undo_the_fader_and_a_closed_fader_plays_the_send() {
+        let (_, fader, sends) = group_sends(&group(0.5, &[(0.4, true), (0.4, false)]), ir::Output::Master);
+        assert_eq!(fader.linear(), 0.5);
+        assert_eq!(sends.iter().map(|s| s.gain.linear()).collect::<Vec<_>>(), [0.8, 0.4]);
+        let (out, fader, sends) = group_sends(&group(0.0, &[(0.5, true), (0.25, true), (0.9, false)]), ir::Output::Master);
+        assert_eq!((out, fader.linear()), (ir::Output::Bus(ir::BusRef(0)), 0.5));
+        assert_eq!(sends.iter().map(|s| s.gain.linear()).collect::<Vec<_>>(), [0.5]);
     }
 }
