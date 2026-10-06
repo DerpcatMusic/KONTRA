@@ -9,6 +9,10 @@ fn run(source: &str, groups: &[&str]) -> Runtime {
         groups: groups.iter().map(|g| (*g).to_owned()).collect(),
         ..Default::default()
     };
+    run_in(source, environment)
+}
+
+fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
     let script = sampler_ksp::compile_with(
         source,
         48000,
@@ -123,6 +127,27 @@ fn set_controller_in_init_sets_the_starting_controller_value() {
         &[],
     );
     assert_eq!(cell(&rt, 0), 100);
+}
+
+/// Saved persistent arrays come back before the first callback, as Solo's
+/// articulation on/off switches do: without them every note was gated off.
+#[test]
+fn saved_persistent_arrays_are_restored() {
+    use sampler_ksp::model::Value;
+    let environment = sampler_ksp::Environment {
+        persisted_arrays: [(
+            "%on".to_owned(),
+            [3, 0, 7, 9].map(Value::Int).to_vec(), // one more than declared
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let rt = run_in(
+        "on init declare $a declare %on[3] make_persistent(%on) read_persistent_var(%on) end on
+         on note $a := %on[0] + %on[2] * 10 end on",
+        environment,
+    );
+    assert_eq!(cell(&rt, 0), 73);
 }
 
 /// Kontakt ignores a script's call on a note that already ended: a gate-linked

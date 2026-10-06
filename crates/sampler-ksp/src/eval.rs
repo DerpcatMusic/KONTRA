@@ -13,6 +13,9 @@ pub struct Environment {
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
     pub persisted: BTreeMap<String, Value>,
+    /// Saved array contents by variable name (`%a`, `?r`); a longer save is
+    /// cut to the declared length, a shorter one restores a prefix.
+    pub persisted_arrays: BTreeMap<String, Vec<Value>>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
@@ -172,16 +175,8 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
-        if var.persistence != Persistence::None
-            && var.len.is_none()
-            && let Some(saved) = env.persisted.get(&*var.name)
-        {
-            let v = match saved.clone() {
-                Value::Int(n) => V::I(n),
-                Value::Real(r) => V::R(r),
-                Value::Text(s) => V::S(s),
-            };
-            e.write_var(VarId(i as u32), v);
+        if var.persistence != Persistence::None {
+            e.restore(VarId(i as u32));
         }
     }
     if let Some(cb) = hir
@@ -334,6 +329,32 @@ impl Eval<'_> {
             }
             Home::Texts { offset, .. } => V::S(self.st.texts[(offset + i) as usize].clone()),
             _ => V::I(0),
+        }
+    }
+
+    /// Applies the saved value of a persistent variable, if the file has one.
+    fn restore(&mut self, var: VarId) {
+        let v = &self.hir.vars[var.0 as usize];
+        let conv = |value: &Value| match value {
+            Value::Int(n) => V::I(*n),
+            Value::Real(r) => V::R(*r),
+            Value::Text(s) => V::S(s.clone()),
+        };
+        if v.len.is_none() {
+            if let Some(saved) = self.env.persisted.get(&*v.name) {
+                let value = conv(saved);
+                self.write_var(var, value);
+            }
+        } else if let Some(saved) = self.env.persisted_arrays.get(&*v.name) {
+            let values: Vec<V> = saved
+                .iter()
+                .take(v.len.unwrap_or(0) as usize)
+                .map(conv)
+                .collect();
+            let span = v.span;
+            for (i, value) in values.into_iter().enumerate() {
+                self.write_elem(var, i as i32, value, span);
+            }
         }
     }
 
@@ -1083,17 +1104,7 @@ impl Eval<'_> {
             MakePersistent | MakeInstrPersistent => V::I(0),
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
-                let name = &self.hir.vars[var.0 as usize].name;
-                if let Some(value) = self.env.persisted.get(&**name).cloned() {
-                    let v = match value {
-                        Value::Int(n) => V::I(n),
-                        Value::Real(r) => V::R(r),
-                        Value::Text(s) => V::S(s),
-                    };
-                    if self.hir.vars[var.0 as usize].len.is_none() {
-                        self.write_var(var, v);
-                    }
-                }
+                self.restore(var);
                 V::I(0)
             }
             PgsCreateKey => {
