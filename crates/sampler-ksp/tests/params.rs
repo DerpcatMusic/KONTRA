@@ -236,3 +236,69 @@ fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
     // Only the reader's note 61 sounds.
     assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
 }
+
+#[test]
+fn sort_and_array_equal_run_at_runtime() {
+    let mut rt = runtime(
+        "on init
+           declare %a[4] := (59, 61, 58, 60)
+           declare %b[4] := (61, 60, 59, 58)
+         end on
+         on note
+           ignore_event($EVENT_ID)
+           sort(%a, 1)
+           if (array_equal(%a, %b))
+             sort(%a, 0, 1, 3)
+             { 61, 58, 59, 60 }
+             if (%a[1] = 58 and %a[3] = 60)
+               play_note(61, 127, 0, 100000)
+             end if
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn runtime_ui_requests_update_the_model() {
+    let source = "on init
+           declare ui_label $offline(1, 1)
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           set_control_par(get_ui_id($offline), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+           set_control_par_str(get_ui_id($offline), $CONTROL_PAR_PICTURE, \"online\")
+         end on";
+    let mut model = compile(source);
+    let mut rt = runtime(source);
+    for _ in 0..3 {
+        level(&mut rt);
+    }
+    let mut applied = 0;
+    rt.drain_effects(|e| {
+        applied += usize::from(model.apply_ui_effect(e));
+        true
+    });
+    let w = &model.model().interface.widgets[0];
+    assert_eq!(applied, 2);
+    assert_eq!(w.int("$CONTROL_PAR_HIDE"), Some(16));
+    assert_eq!(
+        w.properties.get("$CONTROL_PAR_PICTURE"),
+        Some(&sampler_ksp::model::Value::Text("online".into()))
+    );
+}
+
+#[test]
+fn key_down_reads_held_input_keys() {
+    let mut rt = runtime(
+        "on note
+           ignore_event($EVENT_ID)
+           if (%KEY_DOWN[60] = 1 and %KEY_DOWN[61] = 0)
+             play_note(61, 127, 0, 100000)
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
