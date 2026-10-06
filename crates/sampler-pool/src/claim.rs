@@ -65,6 +65,8 @@ pub struct Slab<T> {
     items: Box<[T]>,
     flags: Claims,
     unit: usize,
+    /// Stands in for the flag of the empty claims of empty storage.
+    idle: AtomicBool,
 }
 
 impl<T> Slab<T> {
@@ -72,7 +74,7 @@ impl<T> Slab<T> {
     pub fn new(items: Box<[T]>, unit: usize) -> Self {
         let unit = unit.max(1);
         let flags = Claims::new(items.len().div_ceil(unit));
-        Self { items, flags, unit }
+        Self { items, flags, unit, idle: AtomicBool::new(false) }
     }
     /// The whole storage; exclusive, so no claim can be live.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
@@ -89,6 +91,15 @@ impl<T> Slab<T> {
     }
     /// Unit `i`. Panics when `i` is out of range or the unit is held.
     pub fn claim(&self, i: usize) -> Claim<'_, T> {
+        if self.items.is_empty() {
+            // Nothing to guard: units of empty storage are empty, for any `i`.
+            return Claim {
+                ptr: std::ptr::NonNull::dangling().as_ptr(),
+                len: 0,
+                flag: &self.idle,
+                _borrow: PhantomData,
+            };
+        }
         take(self.items.as_ptr().cast_mut(), self.items.len(), self.unit, &self.flags.0, i)
     }
 }
