@@ -94,7 +94,18 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let page = &face.face.pages[0];
     let avail = ui.scene().and_then(|s| s.surface(&format!("face-{slot}"))).map_or(f64::from(page.size.width), |s| s.frame.size.width);
     let scale = (avail / f64::from(page.size.width.max(1))).clamp(0.5, 1.0);
+    // The core's values (scripts change them too); edits go back as widget edits.
+    let shared = cx.p.shared.part(slot);
+    let current: Vec<_> = shared.as_ref().map(|p| p.control_values()).unwrap_or_default();
+    face.values.extend(current.iter().copied());
     let view = ir_view::view(ui, &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);
+    for &(id, was) in &current {
+        if let Some(&now) = face.values.get(&id)
+            && now != was
+        {
+            cx.p.shared.set_control(slot, id, now);
+        }
+    }
     Some(
         col![
             row(bar).gap(SPACE).align(Align::Center).pad((TIGHT, INSET)).w(Len::Pct(100.)).shrink(0),
