@@ -223,7 +223,7 @@ fn ir_view_draws_the_ksp_corpus() {
 fn ir_view_real_instrument_memory() {
     let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
     // Only key 0's samples: the interfaces are what this measures.
-    let options = sampler_kontakt::Options { keys: 0..=0, ..Default::default() };
+    let options = sampler_kontakt::Options { keys: 0..=0, library: Some(patch.clone()), ..Default::default() };
     let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
     let mut face = loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface");
     // A wallpaper the saved state does not name can be given a stand-in to measure.
@@ -261,7 +261,7 @@ fn ir_view_real_instrument_memory() {
 fn editor_with_a_real_instrument() {
     use crate::sound::{report::LoadReport, tree::MixTree};
     let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
-    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true };
+    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true, library: Some(patch.clone()) };
     let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
     let p = Arc::new(crate::plugin::SamplerParams::new());
     p.selection.write().unwrap().parts.push(crate::plugin::Part { path: patch.to_string_lossy().into_owned(), ..Default::default() });
