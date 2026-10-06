@@ -48,6 +48,16 @@ pub enum Instruction {
     ReadControllerNumber {
         local: u16,
     },
+    /// Captured input address, independent of the downstream target channel mask.
+    ReadControllerPort {
+        local: u16,
+    },
+    ReadControllerGroup {
+        local: u16,
+    },
+    ReadControllerChannel {
+        local: u16,
+    },
     /// The captured full-resolution value of this callback's input event.
     ReadControllerValue {
         local: u16,
@@ -296,6 +306,9 @@ impl Program {
                 group: Some(local), ..
             }
             | Instruction::ReadControllerNumber { local }
+            | Instruction::ReadControllerPort { local }
+            | Instruction::ReadControllerGroup { local }
+            | Instruction::ReadControllerChannel { local }
             | Instruction::ReadControllerValue { local }
             | Instruction::ControllerToMidi7 { local }
             | Instruction::ControllerFromMidi7 { local }
@@ -400,6 +413,9 @@ impl Program {
                 Instruction::ForwardController
                     | Instruction::SuppressController
                     | Instruction::ReadControllerNumber { .. }
+                    | Instruction::ReadControllerPort { .. }
+                    | Instruction::ReadControllerGroup { .. }
+                    | Instruction::ReadControllerChannel { .. }
                     | Instruction::ReadControllerValue { .. }
             )
         });
@@ -750,6 +766,18 @@ impl Runtime {
             }
             Instruction::ReadControllerNumber { local } => {
                 let value = self.controller_event_mut(id)?.number;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::ReadControllerPort { local } => {
+                let value = self.controller_event_mut(id)?.origin.port;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::ReadControllerGroup { local } => {
+                let value = self.controller_event_mut(id)?.origin.group;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::ReadControllerChannel { local } => {
+                let value = self.controller_event_mut(id)?.origin.channel;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
             Instruction::ReadControllerValue { local } => {

@@ -561,8 +561,8 @@ strict Clippy pass (`artifacts/pending-attack-*`).
 `dispatch_controller` admits a plan-owned callback before changing downstream
 performance state. A prepared optional controller binding and validated program
 context use the existing continuation pool, explicit dispatcher, fuel, wait queue
-and retained outcomes. Each callback stores its performance index, complete channel
-scope, original CC number/value and a pending-forward bit. Immutable domain identities
+and retained outcomes. Each callback stores its performance index, exact input address, downstream
+channel mask, original CC number/value and a pending-forward bit. Immutable domain identities
 and the existing plan pin remain valid across waits and prepared-plan replacement.
 
 A separate preallocated input bank holds 128 full-resolution CCs per performance
@@ -591,3 +591,14 @@ pedal output at blocks 1, 7 and 64.
 
 Validation: 280 native debug/release tests and strict all-target Clippy pass
 (`artifacts/controller-context-*`).
+
+
+Controller callbacks expose their captured port, group and channel through native
+instructions. The physical origin is independent of the target channel mask, so
+an upper MPE manager retains channel 15 even when it controls channels 13–15.
+Values survive waits and plan replacement; malformed addresses fail before input
+publication. These are native physical addresses, not a claim of KSP multi-port
+`$MIDI_CHANNEL` or editable downstream channel semantics.
+
+Validation: 299 native release and Rust 1.92 tests plus strict all-target Clippy
+pass (`artifacts/controller-origin-*`).

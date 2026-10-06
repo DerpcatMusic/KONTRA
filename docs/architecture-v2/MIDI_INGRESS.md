@@ -322,3 +322,8 @@ Specialized MPE pressure/timbre/pitch and RPN handling, and ordinary channel mod
 retain their existing dedicated paths; dispatch parity for those is still open.
 Admission errors return through ApplyError; admitted callback faults remain available
 through Runtime::flush_behaviors. There is no second controller VM or note owner.
+
+CC dispatch now carries the exact input port/group/channel separately from its
+target mask. MIDI 1, MIDI 2 and both MPE zone adapters supply the original address;
+manager-to-pedal remapping retains the entire zone. Guarded fixtures check both
+input edges, including upper-zone manager channel 15, without heap activity.

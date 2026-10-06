@@ -125,12 +125,8 @@ impl Ingress {
             } => {
                 runtime.dispatch_controller(
                     performance,
-                    sampler_core::ChannelScope {
-                        protocol: input.protocol,
-                        port: input.port,
-                        group: input.group,
-                        channels: 1 << input.channel,
-                    },
+                    input.channel_address(),
+                    1 << input.channel,
                     index,
                     value.full_scale(),
                 )?;
@@ -139,12 +135,8 @@ impl Ingress {
             Message::Control { index, value } if index < 120 => {
                 runtime.dispatch_controller(
                     performance,
-                    sampler_core::ChannelScope {
-                        protocol: input.protocol,
-                        port: input.port,
-                        group: input.group,
-                        channels: 1 << input.channel,
-                    },
+                    input.channel_address(),
+                    1 << input.channel,
                     index,
                     value.full_scale(),
                 )?;
