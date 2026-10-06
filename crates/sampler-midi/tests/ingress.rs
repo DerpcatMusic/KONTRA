@@ -839,7 +839,7 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
             };
             rt.set_controller(domain, 1, 0).unwrap();
             assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
-            // A channel-mode message is not an ordinary selection controller.
+            // Reset All Controllers resets the routed domain only.
             let reset = if version == Version::Midi1 {
                 [0x20b0_7900, 0]
             } else {
@@ -851,10 +851,42 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                     domain,
                     Packets::new(&reset[..len]).next().unwrap().unwrap()
                 ),
-                Ok(Applied::Unsupported)
+                Ok(Applied::ResetControllers)
             );
+            assert_eq!(rt.controller(domain, 11).unwrap(), u32::MAX);
+            assert_eq!(rt.controller(rt.performance(0).unwrap(), 11).unwrap(), u32::MAX);
             rt.panic();
             rt.flush_ended(|_| true);
         });
     }
+}
+
+/// CC121 per RP-015: pedals up (releasing sustained notes), modulation 0,
+/// expression full; volume and pan keep their values.
+#[test]
+fn reset_all_controllers_follows_rp015() {
+    let mut rt = runtime();
+    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let p = rt.performance(0).unwrap();
+    for (cc, value) in [(64, 127), (66, 127), (1, 100), (11, 20), (7, 90), (10, 30)] {
+        apply(&ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
+    }
+    let Applied::Started(note) = apply(&ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
+        panic!()
+    };
+    apply(&ingress, &mut rt, &[0x2080_3c00]).unwrap();
+    assert!(rt.release_context(note).unwrap().gate.is_none(), "sustained");
+    let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
+    assert_eq!(
+        apply(&ingress, &mut rt, &[0x20b0_7900]),
+        Ok(Applied::ResetControllers)
+    );
+    assert!(rt.release_context(note).unwrap().gate.is_some(), "pedal released");
+    for cc in [1, 64, 65, 66, 67] {
+        assert_eq!(rt.controller(p, cc).unwrap(), 0, "CC{cc}");
+    }
+    assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
+    assert_eq!((rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()), (volume, pan));
+    // A non-zero value is not a channel mode message.
+    assert_eq!(apply(&ingress, &mut rt, &[0x20b0_7901]), Ok(Applied::Unsupported));
 }

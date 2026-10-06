@@ -71,6 +71,9 @@ pub enum Applied {
     AllSoundOff {
         stopped: usize,
     },
+    /// Reset All Controllers (CC121): the channel's controllers are back at
+    /// their RP-015 reset values.
+    ResetControllers,
     /// A recognized message intentionally has no effect in this receiver mode.
     Ignored,
     Unsupported,
@@ -249,6 +252,26 @@ impl Ingress {
             } => Applied::AllNotesOff {
                 released: runtime.all_notes_off(input.channel_address())?,
             },
+            Message::Control {
+                index: 121,
+                value: Value::Bits7(0) | Value::Bits32(0),
+            } => {
+                // RP-015: pedals (64-67) up, modulation (1) to 0, expression
+                // (11) to full. Volume, pan, bank, effects and sound
+                // controllers keep their values. This receiver has no pitch
+                // bend, pressure or RPN state to reset. Pedals first: a
+                // failed later admission must not leave notes sustained.
+                for (index, value) in [(64, 0), (65, 0), (66, 0), (67, 0), (1, 0), (11, u32::MAX)] {
+                    runtime.dispatch_controller(
+                        performance,
+                        input.channel_address(),
+                        1 << input.channel,
+                        index,
+                        value,
+                    )?;
+                }
+                Applied::ResetControllers
+            }
             Message::Control {
                 index: 120,
                 value: Value::Bits7(0) | Value::Bits32(0),
