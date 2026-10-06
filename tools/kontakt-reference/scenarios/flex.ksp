@@ -1,0 +1,18 @@
+on init
+declare $s
+end on
+on note
+$s := 1
+while ($s < 6)
+set_engine_par($ENGINE_PAR_FLEXENV_NUM_STAGES, 4, 0, $s, -1)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_LEVEL, 0, 0, $s, 0)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_LEVEL, 1000000, 0, $s, 1)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_LEVEL, 1000000, 0, $s, 2)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_LEVEL, 0, 0, $s, 3)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_TIME, 1000000, 0, $s, 1)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_TIME, 1000000, 0, $s, 2)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_TIME, 1000000, 0, $s, 3)
+set_engine_par($ENGINE_PAR_FLEXENV_STAGE_SLOPE, %CC[20] * 7874, 0, $s, 1)
+inc($s)
+end while
+end on
