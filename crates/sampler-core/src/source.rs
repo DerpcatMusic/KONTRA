@@ -23,8 +23,14 @@ pub enum LoopShape {
     Wrap,
     /// Wrap with a linear complementary blend into the pre-loop guard (post-loop
     /// guard for reverse playback). Keeps the loop period; frames must be nonzero,
-    /// fit the loop, and fit that guard inside the source view.
+    /// fit the loop, and fit that guard inside the source view. Linear gains sum
+    /// to one: right for correlated legs, a mid-fade dip for uncorrelated ones.
     Crossfade {
+        frames: usize,
+    },
+    /// `Crossfade` with cos/sin gains: constant power for uncorrelated legs
+    /// (noise, ensembles), up to +3 dB mid-fade for correlated ones.
+    EqualPowerCrossfade {
         frames: usize,
     },
     /// Reflect between the first/last included frames; endpoints occur once per turn.
@@ -47,7 +53,9 @@ impl Loop {
     fn period(self) -> u64 {
         let length = (self.end - self.start) as u64;
         match self.shape {
-            LoopShape::Wrap | LoopShape::Crossfade { .. } => length,
+            LoopShape::Wrap
+            | LoopShape::Crossfade { .. }
+            | LoopShape::EqualPowerCrossfade { .. } => length,
             LoopShape::PingPong => (2 * (length - 1)).max(1),
         }
     }
@@ -106,7 +114,7 @@ impl Playback {
                     || r.start >= r.end
                     || r.end > end
                     || r.shape == LoopShape::PingPong && (r.end - r.start - 1) as u64 > u64::MAX / 2
-                    || matches!(r.shape, LoopShape::Crossfade { frames } if frames == 0
+                    || matches!(r.shape, LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } if frames == 0
                     || frames > r.end - r.start
                     || frames > match self.direction {
                         Direction::Forward => r.start - self.start,
@@ -127,6 +135,7 @@ impl Playback {
             exit: None,
             last: [0.; 2],
             starvation: None,
+            fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
         };
         if let Some(range) = self.loop_range
@@ -164,13 +173,17 @@ pub(super) struct Cursor {
     // available to the interpolation window after release.
     exit: Option<u64>,
     last: Frame,
+    // Remaining fade-out frames after a miss; zero while waiting for the page.
     starvation: Option<u32>,
+    // Remaining fade-in frames after a recovered miss.
+    fade_in: u32,
     fade_frames: u32,
 }
 
 struct ReadAddress {
     primary: usize,
-    crossfade: Option<(usize, f64)>,
+    // Partner index and (primary, partner) gains.
+    crossfade: Option<(usize, [f64; 2])>,
 }
 
 impl Cursor {
@@ -230,7 +243,8 @@ impl Cursor {
             let mut exit = first.saturating_add(cycles.saturating_mul(length));
             // Once a crossfade has begun, complete that wrap before the final pass.
             // This also retains its past interpolation guards at the exact boundary.
-            if let LoopShape::Crossfade { frames } = r.shape
+            if let LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } =
+                r.shape
                 && exit.saturating_sub(self.position) <= frames as u64
             {
                 exit = exit.saturating_add(length);
@@ -247,11 +261,10 @@ impl Cursor {
         })
     }
 
+    /// A fading miss completes its fade first; a waiting one ends with its source.
     pub(super) fn done(&self) -> bool {
-        self.starvation.map_or_else(
-            || self.position == u64::MAX || self.limit().is_some_and(|end| self.position >= end),
-            |remaining| remaining == 0,
-        )
+        self.starvation.is_none_or(|remaining| remaining == 0)
+            && (self.position == u64::MAX || self.limit().is_some_and(|end| self.position >= end))
     }
 
     pub(super) fn starved(&self) -> bool {
@@ -259,8 +272,8 @@ impl Cursor {
     }
 
     /// One millisecond of native fade from the last complete resampled frame.
-    /// No incomplete resampler frame is published and late pages cannot restart
-    /// this source. Cursor ownership remains until this bounded tail completes.
+    /// No incomplete resampler frame is published. The cursor keeps advancing in
+    /// time, so the source stays aligned with its envelope and demand.
     fn render_starvation(
         &mut self,
         output: &mut [Frame],
@@ -268,20 +281,48 @@ impl Cursor {
         gain: f32,
         gains: [f32; 2],
     ) -> usize {
-        let remaining = self.starvation.as_mut().unwrap();
         let count = output
             .len()
-            .min(*remaining as usize)
+            .min(self.starvation.unwrap() as usize)
             .min(envelope.remaining());
         for frame in &mut output[..count] {
+            let remaining = self.starvation.as_mut().unwrap();
             *remaining -= 1;
             let fade = *remaining as f32 / self.fade_frames as f32;
             let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
             for channel in 0..2 {
                 frame[channel] += self.last[channel] * gain * gains[channel] * level * fade;
             }
+            self.advance();
         }
         count
+    }
+
+    /// Fade out, then wait silently (still advancing) until the window at the
+    /// cursor is resident again, then fade back in. Probed once per call.
+    fn render_starved(
+        &mut self,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) -> usize {
+        let count = if self.starvation != Some(0) {
+            self.render_starvation(output, envelope, gain, gains)
+        } else if self.done() || self.sample(pcm, kernel).is_none() {
+            self.last = [0.; 2];
+            return self.advance_silent(output.len(), envelope);
+        } else {
+            self.starvation = None;
+            self.fade_in = self.fade_frames;
+            0
+        };
+        if count == output.len() || envelope.remaining() == 0 {
+            return count;
+        }
+        count + self.render(pcm, &mut output[count..], envelope, gain, gains, kernel)
     }
 
     /// Resolve an integer position on the traversal. Out-of-view guards are zero;
@@ -317,7 +358,8 @@ impl Cursor {
                 crossfade: None,
             });
         };
-        let LoopShape::Crossfade { frames } = r.shape else {
+        let (LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) = r.shape
+        else {
             return Some(ReadAddress {
                 primary: index,
                 crossfade: None,
@@ -346,9 +388,15 @@ impl Cursor {
             Direction::Reverse => index + length as usize,
         };
         let blend = (frames as u64 - remaining) as f64 / frames as f64;
+        let gains = if let LoopShape::EqualPowerCrossfade { .. } = r.shape {
+            let (sin, cos) = (blend * std::f64::consts::FRAC_PI_2).sin_cos();
+            [cos, sin]
+        } else {
+            [1. - blend, blend]
+        };
         Some(ReadAddress {
             primary: index,
-            crossfade: Some((partner, blend)),
+            crossfade: Some((partner, gains)),
         })
     }
 
@@ -362,20 +410,24 @@ impl Cursor {
             }) => pcm.frame(primary),
             Some(ReadAddress {
                 primary,
-                crossfade: Some((partner, blend)),
+                crossfade: Some((partner, [ga, gb])),
             }) => {
                 let a = pcm.frame(primary)?;
                 let b = pcm.frame(partner)?;
                 Some(std::array::from_fn(|channel| {
-                    ((1. - blend) * f64::from(a[channel]) + blend * f64::from(b[channel])) as f32
+                    (ga * f64::from(a[channel]) + gb * f64::from(b[channel])) as f32
                 }))
             }
         }
     }
 
     fn crossfaded(&self) -> bool {
-        self.loop_range
-            .is_some_and(|r| matches!(r.shape, LoopShape::Crossfade { .. }))
+        self.loop_range.is_some_and(|r| {
+            matches!(
+                r.shape,
+                LoopShape::Crossfade { .. } | LoopShape::EqualPowerCrossfade { .. }
+            )
+        })
     }
 
     fn advance(&mut self) {
@@ -438,13 +490,13 @@ impl Cursor {
         kernel: &Kernel,
     ) -> usize {
         if self.starved() {
-            return self.render_starvation(output, envelope, gain, gains);
+            return self.render_starved(pcm, output, envelope, gain, gains, kernel);
         }
         if gain == 0.0 || gains == [0.0; 2] {
             self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
         }
-        if self.step == 1.0 && self.fraction == 0.0 && !self.crossfaded() {
+        if self.step == 1.0 && self.fraction == 0.0 && self.fade_in == 0 && !self.crossfaded() {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
                 let (index, count, direction) = self.span();
@@ -522,6 +574,54 @@ impl Cursor {
         rendered
     }
 
+    /// One complete output frame at the cursor, or None if any tap is missing.
+    fn sample(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
+        let position = i128::from(self.position);
+        if self.step == 1.0 && self.fraction == 0.0 {
+            self.read(pcm, position)
+        } else {
+            let radius = kernel.window(self.step);
+            let left = self.index(position - i128::from(radius));
+            let right = self.index(position + i128::from(radius));
+            let contiguous = if self.crossfaded() {
+                None
+            } else {
+                match (left, right) {
+                    (Some(left), Some(right))
+                        if right.checked_sub(left) == Some(2 * radius as usize) =>
+                    {
+                        pcm.span(left..right + 1).map(|s| (s, false))
+                    }
+                    (Some(left), Some(right))
+                        if left.checked_sub(right) == Some(2 * radius as usize) =>
+                    {
+                        pcm.span(right..left + 1).map(|s| (s, true))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some((span, reverse)) = contiguous {
+                Some(kernel.sample(self.fraction, self.step, |offset| {
+                    span[(if reverse {
+                        radius - offset
+                    } else {
+                        offset + radius
+                    }) as usize]
+                }))
+            } else {
+                let mut ready = true;
+                let sample = kernel.sample(self.fraction, self.step, |offset| {
+                    self.read(pcm, position + i128::from(offset))
+                        .unwrap_or_else(|| {
+                            ready = false;
+                            [0.; 2]
+                        })
+                });
+                ready.then_some(sample)
+            }
+        }
+    }
+
     fn render_filtered(
         &mut self,
         pcm: &(impl ReadFrames + ?Sized),
@@ -536,54 +636,24 @@ impl Cursor {
             if self.done() || envelope.done() {
                 break;
             }
-            let position = i128::from(self.position);
-            let source = if self.step == 1.0 && self.fraction == 0.0 {
-                self.read(pcm, position)
-            } else {
-                let radius = kernel.window(self.step);
-                let left = self.index(position - i128::from(radius));
-                let right = self.index(position + i128::from(radius));
-                let contiguous = if self.crossfaded() {
-                    None
-                } else {
-                    match (left, right) {
-                        (Some(left), Some(right))
-                            if right.checked_sub(left) == Some(2 * radius as usize) =>
-                        {
-                            pcm.span(left..right + 1).map(|s| (s, false))
-                        }
-                        (Some(left), Some(right))
-                            if left.checked_sub(right) == Some(2 * radius as usize) =>
-                        {
-                            pcm.span(right..left + 1).map(|s| (s, true))
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some((span, reverse)) = contiguous {
-                    Some(kernel.sample(self.fraction, self.step, |offset| {
-                        span[(if reverse {
-                            radius - offset
-                        } else {
-                            offset + radius
-                        }) as usize]
-                    }))
-                } else {
-                    let mut ready = true;
-                    let sample = kernel.sample(self.fraction, self.step, |offset| {
-                        self.read(pcm, position + i128::from(offset))
-                            .unwrap_or_else(|| {
-                                ready = false;
-                                [0.; 2]
-                            })
-                    });
-                    ready.then_some(sample)
-                }
-            };
-            let Some(source) = source else {
+            let Some(source) = self.sample(pcm, kernel) else {
                 self.starvation = Some(self.fade_frames);
                 return rendered
-                    + self.render_starvation(&mut output[rendered..], envelope, gain, gains);
+                    + self.render_starved(
+                        pcm,
+                        &mut output[rendered..],
+                        envelope,
+                        gain,
+                        gains,
+                        kernel,
+                    );
+            };
+            let source = if self.fade_in > 0 {
+                self.fade_in -= 1;
+                let ramp = 1. - self.fade_in as f32 / self.fade_frames as f32;
+                source.map(|value| value * ramp)
+            } else {
+                source
             };
             // The existing mix fault guard still observes an overflowing kernel;
             // never retain that nonfinite value as a later starvation tail.
@@ -822,6 +892,38 @@ mod tests {
                     Err(Error::InvalidInput)
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn crossfade_laws_keep_amplitude_or_power_complementary() {
+        for shape in [
+            LoopShape::Crossfade { frames: 4 },
+            LoopShape::EqualPowerCrossfade { frames: 4 },
+        ] {
+            let cursor = Playback {
+                loop_range: Some(Loop {
+                    start: 8,
+                    end: 16,
+                    mode: LoopMode::Continuous,
+                    shape,
+                    passes: None,
+                }),
+                ..Playback::default()
+            }
+            .cursor(24, 48000, 48000)
+            .unwrap();
+            for position in 12..16 {
+                let (partner, [a, b]) = cursor.address(position).unwrap().crossfade.unwrap();
+                assert_eq!(partner, position as usize - 8);
+                let sum = match shape {
+                    LoopShape::Crossfade { .. } => a + b,
+                    _ => a * a + b * b,
+                };
+                assert!((sum - 1.).abs() < 1e-12, "{shape:?} {position}");
+            }
+            let [a, b] = cursor.address(14).unwrap().crossfade.unwrap().1;
+            assert!((a - b).abs() < 1e-12);
         }
     }
 

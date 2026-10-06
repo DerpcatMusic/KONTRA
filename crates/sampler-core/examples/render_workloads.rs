@@ -183,8 +183,8 @@ fn measure(
         rt.render(&mut audio).unwrap();
     }
     let mut times = [0u128; TRIALS];
-    let resampled = processing.transpose != 0.
-        || processing.source_rate != 0 && processing.source_rate != rate;
+    let resampled =
+        processing.transpose != 0. || processing.source_rate != 0 && processing.source_rate != rate;
     let expected = (voices / LAYERS) as f32 * 10. / 4096. * if shaped { 0.5 } else { 1. };
     let expected = if muted {
         [0.0; 2]

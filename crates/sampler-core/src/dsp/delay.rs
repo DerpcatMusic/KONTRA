@@ -58,7 +58,11 @@ impl Delay {
             finite &= next[0].is_finite() & next[1].is_finite();
             samples[position as usize] = next.map(flush);
             filled = filled.saturating_add(1).min(self.frames);
-            position = if position == self.frames - 1 { 0 } else { position + 1 };
+            position = if position == self.frames - 1 {
+                0
+            } else {
+                position + 1
+            };
             (*l, *r) = (
                 self.dry * input[0] + self.wet * delayed[0],
                 self.dry * input[1] + self.wet * delayed[1],
