@@ -212,6 +212,10 @@ pub struct ScriptView {
 }
 
 impl ScriptView {
+    /// The model as runtime effects have left it (keys, widgets).
+    pub fn model(&self) -> &model::Model {
+        &self.model
+    }
     /// [`Script::apply_ui_effect`].
     pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
         apply_ui_effect(&mut self.model, &self.services, &self.symbols, effect)
@@ -236,10 +240,24 @@ fn apply_ui_effect(
     };
     let args = &effect.args[..usize::from(effect.count)];
     let arg = |i: usize| args.get(i).map(|&v| v as i32);
+    let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+    if let Some(rest) = service.strip_prefix("set_key_") {
+        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
+        else {
+            return false;
+        };
+        match rest {
+            "color" => key.color = arg(1),
+            "type" => key.kind = arg(1),
+            "pressed" => key.pressed = arg(1),
+            "name" => key.name = text(),
+            _ => return false,
+        }
+        return true;
+    }
     let (Some(id), Some(par)) = (arg(0), arg(1)) else {
         return false;
     };
-    let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
     let (value, index) = match service {
         "set_control_par" => (arg(2).map(Value::Int), None),
         "set_control_par_real" => (
