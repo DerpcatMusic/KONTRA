@@ -488,7 +488,6 @@ impl Translation {
                 "LFO" | "ScriptEventModulation" | "StdRandom" | "Drunk"
             );
             let polar = number(node, "Bipolar", f64::from(u8::from(polar_default)))? != 0.0;
-            self.used.push(node.id());
             return Ok(Ok(Signal::Fixed {
                 value: 0.0,
                 bipolar: polar,
@@ -517,7 +516,6 @@ impl Translation {
                     }
                 };
                 let polar = number(node, "Bipolar", 0.0)? != 0.0;
-                self.used.push(node.id());
                 Ok(Ok(Signal::Fixed {
                     value: if polar { 2.0 * value - 1.0 } else { value },
                     bipolar: polar,
@@ -607,7 +605,6 @@ impl Translation {
             phase: number(node, "Phase", 0.0)?.rem_euclid(1.0),
             retrigger,
         };
-        self.used.push(node.id());
         let modulator = self.modulator(
             format!("node {:?}", node.id()),
             ir::ModulationSource::Lfo(lfo),
