@@ -1006,7 +1006,9 @@ impl Translation {
             // Mapping Editor crossfades: widths in key and velocity steps
             // inside the zone; the gain law is measured (Kontakt 8,
             // KONTAKT_REFERENCE.md s.11). Field order low velocity, high
-            // velocity, low key, high key is taken from the v1 importer.
+            // velocity, low key, high key (v1 importer); the velocity pair is
+            // confirmed by ANALOG STRINGS' zone 1..40 fading out (f1 = 21) and
+            // Afflatus zones fading in (f0), no library here uses the key pair.
             fades: {
                 let step = |w: i16| w.clamp(0, 127) as u8;
                 ir::Fades {

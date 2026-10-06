@@ -1273,3 +1273,20 @@ impl super::Runtime {
             .bend_range
     }
 }
+
+#[cfg(test)]
+mod fade_tests {
+    use super::ramp;
+
+    /// Kontakt 8 measurements: L=1/F=100 gives v/101; L=30/F=60 gives (v-29)/61;
+    /// H=100/F=60 gives (101-v)/61.
+    #[test]
+    fn crossfade_ramps_start_one_step_in_and_mirror() {
+        assert_eq!(ramp(1, 1, 127, 100, 0), 1.0 / 101.0);
+        assert_eq!(ramp(50, 30, 127, 60, 0), 21.0 / 61.0);
+        assert_eq!(ramp(90, 30, 127, 60, 0), 1.0);
+        assert_eq!(ramp(40, 1, 100, 0, 60), 1.0);
+        assert_eq!(ramp(100, 1, 100, 0, 60), 1.0 / 61.0);
+        assert_eq!(ramp(80, 1, 100, 0, 60), 21.0 / 61.0);
+    }
+}
