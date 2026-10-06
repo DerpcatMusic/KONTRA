@@ -244,8 +244,11 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   curve/clock profiles remain unverified. [Native voice chains](VOICE_DSP.md) now run
   independent stereo biquads and gain stages before/after the envelope, including
   shared-control gain ramps on the sample clock, with retained
-  DSP tails, whole-chain choke and generation-owned state. Crossfades, nonlinear
-  effects, automated filters and broader routing/scopes remain open.
+  DSP tails, whole-chain choke and generation-owned state. Low/high shelving EQ now
+  has response, resonance and inverse-pair evidence. Linear crossfaded wraps now
+  preserve guard phase, finite exits and forward/reverse source views through the
+  common resampler. Reflected/other crossfade profiles, nonlinear effects, automated
+  filters and broader routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,

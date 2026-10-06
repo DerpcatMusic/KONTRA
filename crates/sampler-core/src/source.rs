@@ -21,6 +21,12 @@ pub enum LoopMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopShape {
     Wrap,
+    /// Wrap with a linear complementary blend into the pre-loop guard (post-loop
+    /// guard for reverse playback). Keeps the loop period; frames must be nonzero,
+    /// fit the loop, and fit that guard inside the source view.
+    Crossfade {
+        frames: usize,
+    },
     /// Reflect between the first/last included frames; endpoints occur once per turn.
     PingPong,
 }
@@ -41,7 +47,7 @@ impl Loop {
     fn period(self) -> u64 {
         let length = (self.end - self.start) as u64;
         match self.shape {
-            LoopShape::Wrap => length,
+            LoopShape::Wrap | LoopShape::Crossfade { .. } => length,
             LoopShape::PingPong => (2 * (length - 1)).max(1),
         }
     }
@@ -51,7 +57,7 @@ impl Loop {
     #[inline]
     fn span(self, distance: u64) -> (u64, u64, bool) {
         let length = (self.end - self.start) as u64;
-        if self.shape == LoopShape::Wrap || length == 1 {
+        if self.shape != LoopShape::PingPong || length == 1 {
             let within = distance % length;
             return (within, length - within, false);
         }
@@ -100,6 +106,12 @@ impl Playback {
                     || r.start >= r.end
                     || r.end > end
                     || r.shape == LoopShape::PingPong && (r.end - r.start - 1) as u64 > u64::MAX / 2
+                    || matches!(r.shape, LoopShape::Crossfade { frames } if frames == 0
+                    || frames > r.end - r.start
+                    || frames > match self.direction {
+                        Direction::Forward => r.start - self.start,
+                        Direction::Reverse => end - r.end,
+                    })
             })
         {
             return Err(Error::InvalidInput);
@@ -186,7 +198,14 @@ impl Cursor {
                     !distance.is_multiple_of(length)
                         || self.fraction != 0.0 && self.position >= first,
                 );
-            let exit = first.saturating_add(cycles.saturating_mul(length));
+            let mut exit = first.saturating_add(cycles.saturating_mul(length));
+            // Once a crossfade has begun, complete that wrap before the final pass.
+            // This also retains its past interpolation guards at the exact boundary.
+            if let LoopShape::Crossfade { frames } = r.shape
+                && exit.saturating_sub(self.position) <= frames as u64
+            {
+                exit = exit.saturating_add(length);
+            }
             self.exit = Some(self.exit.map_or(exit, |finite| finite.min(exit)));
         }
     }
@@ -225,6 +244,49 @@ impl Cursor {
             Direction::Forward => self.start + offset as usize,
             Direction::Reverse => self.end - 1 - offset as usize,
         })
+    }
+
+    /// Read the virtual source before resampling: both crossfade legs therefore use
+    /// the same kernel phase, including guards on either side of the wrap.
+    fn read(&self, pcm: &[Frame], position: i128) -> Frame {
+        let Some(index) = self.index(position) else {
+            return [0.; 2];
+        };
+        let Some(r) = self.loop_range else {
+            return pcm[index];
+        };
+        let LoopShape::Crossfade { frames } = r.shape else {
+            return pcm[index];
+        };
+        let offset = position as u64; // index() validated the nonnegative traversal.
+        let first = self.first_boundary(r);
+        let length = (r.end - r.start) as u64;
+        let remaining = if offset < first {
+            first - offset
+        } else {
+            length - (offset - first) % length
+        };
+        if remaining > frames as u64
+            || self
+                .exit
+                .is_some_and(|exit| offset >= exit || remaining >= exit - offset)
+        {
+            return pcm[index];
+        }
+        let partner = match self.direction {
+            Direction::Forward => index - length as usize,
+            Direction::Reverse => index + length as usize,
+        };
+        let blend = (frames as u64 - remaining) as f64 / frames as f64;
+        std::array::from_fn(|channel| {
+            ((1. - blend) * f64::from(pcm[index][channel])
+                + blend * f64::from(pcm[partner][channel])) as f32
+        })
+    }
+
+    fn crossfaded(&self) -> bool {
+        self.loop_range
+            .is_some_and(|r| matches!(r.shape, LoopShape::Crossfade { .. }))
     }
 
     fn advance(&mut self) {
@@ -289,7 +351,7 @@ impl Cursor {
         if gain == 0.0 || gains == [0.0; 2] {
             return self.advance_silent(output.len(), envelope);
         }
-        if self.step == 1.0 && self.fraction == 0.0 {
+        if self.step == 1.0 && self.fraction == 0.0 && !self.crossfaded() {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
                 let (index, count, direction) = self.span();
@@ -370,31 +432,39 @@ impl Cursor {
             if self.done() || envelope.done() {
                 break;
             }
-            let radius = Kernel::radius(self.step);
             let position = i128::from(self.position);
-            let left = self.index(position - i128::from(radius));
-            let right = self.index(position + i128::from(radius));
-            let source = match (left, right) {
-                (Some(left), Some(right))
-                    if right.checked_sub(left) == Some(2 * radius as usize) =>
-                {
-                    let span = &pcm[left..=right];
-                    kernel.sample(self.fraction, self.step, |offset| {
-                        span[(offset + radius) as usize]
-                    })
+            let source = if self.step == 1.0 && self.fraction == 0.0 {
+                self.read(pcm, position)
+            } else if self.crossfaded() {
+                kernel.sample(self.fraction, self.step, |offset| {
+                    self.read(pcm, position + i128::from(offset))
+                })
+            } else {
+                let radius = Kernel::radius(self.step);
+                let left = self.index(position - i128::from(radius));
+                let right = self.index(position + i128::from(radius));
+                match (left, right) {
+                    (Some(left), Some(right))
+                        if right.checked_sub(left) == Some(2 * radius as usize) =>
+                    {
+                        let span = &pcm[left..=right];
+                        kernel.sample(self.fraction, self.step, |offset| {
+                            span[(offset + radius) as usize]
+                        })
+                    }
+                    (Some(left), Some(right))
+                        if left.checked_sub(right) == Some(2 * radius as usize) =>
+                    {
+                        let span = &pcm[right..=left];
+                        kernel.sample(self.fraction, self.step, |offset| {
+                            span[(radius - offset) as usize]
+                        })
+                    }
+                    _ => kernel.sample(self.fraction, self.step, |offset| {
+                        self.index(position + i128::from(offset))
+                            .map_or([0.0; 2], |i| pcm[i])
+                    }),
                 }
-                (Some(left), Some(right))
-                    if left.checked_sub(right) == Some(2 * radius as usize) =>
-                {
-                    let span = &pcm[right..=left];
-                    kernel.sample(self.fraction, self.step, |offset| {
-                        span[(radius - offset) as usize]
-                    })
-                }
-                _ => kernel.sample(self.fraction, self.step, |offset| {
-                    self.index(position + i128::from(offset))
-                        .map_or([0.0; 2], |i| pcm[i])
-                }),
             };
             let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
             for channel in 0..2 {
@@ -571,6 +641,93 @@ mod tests {
                     playback.cursor(end, 48000, 48000),
                     Err(Error::InvalidInput)
                 ));
+            }
+        }
+    }
+
+    #[test]
+    fn crossfade_release_finishes_entered_wraps_and_keeps_every_past_guard() {
+        let pcm: Vec<Frame> = (0..24)
+            .map(|i| [i as f32 / 24., -(i * 7 % 19) as f32 / 20.])
+            .collect();
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for passes in [
+                None,
+                std::num::NonZeroU32::new(2),
+                std::num::NonZeroU32::new(5),
+            ] {
+                let initial = Playback {
+                    direction,
+                    loop_range: Some(Loop {
+                        start: 8,
+                        end: 16,
+                        mode: LoopMode::UntilRelease,
+                        shape: LoopShape::Crossfade { frames: 4 },
+                        passes,
+                    }),
+                    ..Playback::default()
+                }
+                .cursor(24, 48000, 48000)
+                .unwrap();
+                for position in [0, 11, 12, 15, 16, 17, 19, 20, 23, 24, 25, 28, 32] {
+                    for fraction in [0., 0.5] {
+                        let mut cursor = Cursor {
+                            position,
+                            fraction,
+                            ..initial
+                        };
+                        let before = cursor;
+                        cursor.release();
+                        let boundary = (16..).step_by(8).find(|&b| b > position + 4).unwrap();
+                        let expected_exit = initial.exit.map_or(boundary, |end| end.min(boundary));
+                        assert_eq!(cursor.exit, Some(expected_exit));
+                        cursor.release();
+                        assert_eq!(
+                            cursor.exit,
+                            Some(expected_exit),
+                            "repeated release cannot extend"
+                        );
+                        for i in 0..=position {
+                            assert_eq!(
+                                cursor.read(&pcm, i128::from(i)),
+                                before.read(&pcm, i128::from(i))
+                            );
+                        }
+                        let ordered: Vec<_> = match direction {
+                            Direction::Forward => pcm.clone(),
+                            Direction::Reverse => pcm.iter().rev().copied().collect(),
+                        };
+                        let count = (expected_exit - 16) / 8 + 1;
+                        let mut expected = ordered[..8].to_vec();
+                        for pass in 0..count {
+                            for i in 0..8 {
+                                let mut value = ordered[8 + i];
+                                if pass + 1 < count && i >= 4 {
+                                    let blend = (i - 4) as f64 / 4.;
+                                    for channel in 0..2 {
+                                        value[channel] = ((1. - blend) * f64::from(value[channel])
+                                            + blend * f64::from(ordered[i][channel]))
+                                            as f32;
+                                    }
+                                }
+                                expected.push(value);
+                            }
+                        }
+                        expected.extend_from_slice(&ordered[16..]);
+                        for i in -4..expected.len() as i128 + 4 {
+                            let frame = usize::try_from(i)
+                                .ok()
+                                .and_then(|i| expected.get(i))
+                                .copied()
+                                .unwrap_or([0.; 2]);
+                            assert_eq!(
+                                cursor.read(&pcm, i),
+                                frame,
+                                "{direction:?}, {position}, {fraction}, {passes:?}, read {i}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }

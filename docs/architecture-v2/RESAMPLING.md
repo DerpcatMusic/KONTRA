@@ -96,7 +96,7 @@ is checked outside timed callbacks. Local evidence uses ignored
 `artifacts/architecture-v2/resample-*`.
 
 Pitch ramps, broader rate
-ranges, quality tiers, streaming demand windows and crossfade loops remain
+ranges, quality tiers, streaming demand windows and broader crossfade profiles remain
 open. The host plugin and UI have not been switched to this core. Imported formats
 will lower into these native source and expression contracts rather than selecting
 another format-specific playback engine.
@@ -271,3 +271,10 @@ measured 41.5–44.1×; 64 voices/256 frames dropped from 4547.8 to 104.0 micros
 Three paired audible runs measured a median configuration ratio of 1.025, with
 configuration medians 0.964–1.082. These are process-level local observations, not
 callback deadline guarantees. CSVs, logs and binary hashes use `artifacts/muted-*`.
+
+
+Crossfaded wraps now resample the complete virtual blended source through the same
+kernel. Independent preblended finite-asset comparisons cover both traversal
+directions, short loops, fractional/maximum downsampling rates and final EOF. See
+[SOURCE_VIEWS.md](SOURCE_VIEWS.md#linear-crossfaded-wraps) for the fade and release
+contract; reflected partner phases and other source crossfade profiles remain open.

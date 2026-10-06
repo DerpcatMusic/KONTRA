@@ -313,3 +313,16 @@ translation must preserve that distinction. The new native shelf code follows th
 public equations, validates preparation and reuses voice-local filter state.
 Opposite-gain cancellation and unit-slope monotonicity now have executable evidence;
 nonlinear vendor response and dynamic-coefficient behavior remain separate work.
+
+
+### Crossfade guard execution
+
+Revisited the pinned Shortcircuit generator's crossfade interpolation review at
+[`generator.cpp:300–338`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/dsp/generator.cpp#L300).
+Its partner read must share the main interpolation alignment; mirrored traversal
+can change the fractional phase. The native wrap crossfade instead defines a
+linearly blended virtual source and applies one common bandlimited kernel to all
+reads, including past/future wrap guards. Independent preblended assets now provide
+exact output evidence. No mirrored crossfade implementation or Shortcircuit/vendor
+output equivalence is claimed. Release completes an entered fade and preserves past
+guards; alternative imported exit policies remain explicit follow-up work.
