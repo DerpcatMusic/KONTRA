@@ -502,3 +502,78 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
         .is_err()
     );
 }
+
+#[test]
+fn arithmetic_drives_a_waiting_sequence_through_native_audio_after_physical_release() {
+    let source = "on init declare $step end on
+        on note
+            ignore_event($EVENT_ID)
+            while ($step < 4)
+                if (($step mod 2) = 0)
+                    play_note($EVENT_NOTE, 127, 0, 500)
+                end if
+                inc($step)
+                wait(1000)
+            end while
+        end on";
+    for block in [1, 7, 64] {
+        let prepared = compile(source, 48000, limits(), &[])
+            .unwrap()
+            .bind(plan())
+            .unwrap();
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                notes: 4,
+                channels: 0,
+                performances: 1,
+                families: 4,
+                expressions: 4,
+                voices: 4,
+                decisions: 0,
+                commands: 8,
+                behaviors: 2,
+                behavior_fuel: 64,
+                behavior_cells: 8,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            rt.schedule_event(1, Event::KeyUp(note, None)).unwrap();
+            let mut output = [[0.; 2]; 224];
+            for chunk in output.chunks_mut(block) {
+                rt.render(&mut []).unwrap();
+                rt.render(chunk).unwrap();
+            }
+            for (frame, value) in output.iter().enumerate() {
+                assert_eq!(
+                    *value,
+                    [f32::from(frame < 24 || (96..120).contains(&frame)); 2]
+                );
+            }
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+                Ok(4)
+            );
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.family_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+}

@@ -330,6 +330,14 @@ impl Prepared {
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }
+    /// Maximum integer register count required by any callback in this plan.
+    pub fn behavior_local_count(&self) -> usize {
+        self.programs
+            .iter()
+            .map(|program| program.locals)
+            .max()
+            .unwrap_or(0)
+    }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()
     }

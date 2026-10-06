@@ -300,3 +300,16 @@ strict all-target Clippy and both root boundary tests pass. Logs use
 `artifacts/script-state-{debug,release,msrv,clippy,boundary}.log`. The regenerated
 KSP inventory retains all 25 chapters, 288 sections and 1,605 identifiers; the
 ordinary integer-variable section is now partial, not complete or vendor-verified.
+
+## Explicit signed-32 arithmetic
+
+`Binary32` and `Unary32` perform typed scalar integer work inside the same bounded
+callback interpreter. They do not change the checked-i64 `AddLocal` used by native
+counters. Operands must fit i32, including when reached through native script/control
+state; invalid operands fault without a partial destination write. The declared
+wrapping/division/bitwise policy is described in [KSP_FRONTEND.md](KSP_FRONTEND.md#integer-expressions).
+
+Program validation includes every referenced register, including aliased operands
+and dead code. `Prepared::behavior_local_count` exposes the largest callback width
+for control-side arena sizing; runtime construction and replacement still reject
+insufficient capacity. Execution uses no temporary heap stack or dynamic dispatch.

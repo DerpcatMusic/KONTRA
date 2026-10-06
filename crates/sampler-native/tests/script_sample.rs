@@ -46,9 +46,11 @@ fn authored_script_renders_owned_wav_at_its_rate_and_refuses_invalid_or_existing
     let branch_source = directory.join("branch.ksp");
     fs::write(
         &branch_source,
-        "on note ignore_event($EVENT_ID)
+        "on init declare $gate end on
+        on note ignore_event($EVENT_ID)
+        $gate := 1 + (2 * (3 + 4))
         wait(750000)
-        if ($NOTE_HELD = 0)
+        if (($NOTE_HELD + $gate) = 15)
             play_note($EVENT_NOTE, 96, 0, 125000)
             exit
         else

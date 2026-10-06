@@ -42,7 +42,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 
 ## Explicit rejection and limits
 
-The compiler rejects arithmetic expressions, dynamic command arguments (including
+The compiler rejects real-valued expressions, dynamic command arguments (including
 `$EVENT_VELOCITY`), arrays, real/string values, select/case, compound Boolean expressions, other
 callbacks, implicit note forwarding, nested comments,
 nonzero sample offsets, input-linked negative duration and whole-source duration zero.
@@ -52,7 +52,9 @@ semantics. Unknown syntax is never ignored and never sent to the old VM.
 `Limits.source_bytes`, `Limits.instructions` and `Limits.variables` bound source,
 total emitted code across callbacks and declarations. Symbol resolution happens on
 control using a bounded standard-library map; names do not enter audio execution.
-The parser walks input directly without recursion or a token-array allocation.
+The parser walks input without a token-array allocation. Statements use iterative
+block patching; integer expressions use precedence climbing with a fixed 64-level
+nesting bound and checked temporary-register indices.
 Malformed input returns a byte offset and a specific diagnostic; it never publishes
 an executable partial program. Compilation/allocation happen before runtime creation.
 Rendering uses the existing prepared programs, bounded continuations and fuel.
@@ -63,9 +65,9 @@ fidelity remain **unverified**. No Kontakt binary comparison has been performed.
 Polyphonic declarations and scalar assignments now lower into
 [note-owned integer cells](BEHAVIOR.md#note-owned-integer-state). Full typed arithmetic,
 persistent/typed script state and the other language/value services remain open.
-Native storage is signed 64-bit; this compiler admits only signed 32-bit values,
-key/held-state reads, comparisons and copies. It does not lower KSP arithmetic into native checked-64-bit
-addition or claim vendor overflow behavior.
+Native storage is signed 64-bit, while source integer expressions now use explicit
+signed-32 operations. Native checked-64 addition remains separate for runtime counters.
+The numeric edge policy and its unverified vendor fidelity are recorded below.
 
 ## Audition and evidence
 
@@ -277,3 +279,43 @@ across blocks 1/7/64 under allocator instrumentation. Declarations also reject d
 names, malformed/range-invalid initialization and exhausted variable budgets. Full
 init execution, arithmetic, constants, arrays, persistence and Kontakt differential
 fidelity remain required work.
+
+## Integer expressions
+
+Assignments and comparison operands now accept parentheses, unary signs, `+ - * /`,
+`mod`, `.and. .or. .xor. .not.`, and `abs`, `sgn`, `signbit`. `inc`/`dec` update a
+declared global, polyphonic or scalar control lvalue. Multiplicative operators bind
+above additive operators, then bitwise AND, then bitwise OR/XOR; equal-precedence
+binary operators associate left. The [NI arithmetic reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators)
+defines the operations. Precedence and edge-policy review also inspected the v1
+parser/evaluator as a regression source, not as vendor proof.
+
+`Binary32`/`Unary32` instructions retain signed 32-bit results in the native registers.
+Overflow wraps; integer division truncates toward zero; remainder retains the dividend
+sign. Both division and remainder return zero for a zero divisor, and `MIN/-1`,
+negation/absolute value of MIN retain the wrapping result. These reproduce the stated
+legacy regression policy; direct Kontakt differential evidence remains open. An
+out-of-i32 native register operand faults before changing its destination, rather
+than silently truncating an unrelated 64-bit engine value.
+
+Code generation reuses temporary registers by expression depth. The existing source,
+emitted-code, runtime-local and instruction-fuel limits still apply. Parenthesis/unary
+nesting is capped at 64 levels independently of source size. The native CLI reserves
+the actual prepared maximum register width for each of its callback slots, so richer
+expressions do not rely on the former fixed two-register allocation.
+
+Tests cover independent wide-integer arithmetic references, precedence/associativity,
+signed extrema, zero divisors, nested unary/functions, aliasing, invalid/wide operands,
+malformed/deep expressions and variable updates. A heap-audited alternating-note
+sequence computes its branch across waits after physical release and renders exact
+PCM across blocks 1/7/64. The process-level WAV fixture now also computes a nested
+global expression before waiting, then branches after key-up at 44.1/48/96 kHz.
+Dynamic `play_note`/`wait` arguments, shifts, compound Boolean expressions, full init
+execution and other value types remain required; this is not full-language parity.
+
+Integer-expression validation: all 206 native tests pass in debug, release and Rust
+1.92; strict all-target Clippy and both root boundary tests pass. The source process
+fixture passes with its wider prepared register allocation. Logs use
+`artifacts/integer-expressions-{debug,release,msrv,clippy,boundary,process}.log`.
+The complete inventory still has 25 chapters, 288 sections and 1,605 identifiers;
+24 named interfaces now have partial overrides, with vendor fidelity unverified.

@@ -355,7 +355,6 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
     for source in [
         format!("{init} on note ignore_event($EVENT_ID) $a := 2147483648 end on"),
         format!("{init} on release $a := -2147483649 end on"),
-        format!("{init} on release $a := 1 + 2 end on"),
         format!("{init} on release $a : = 1 end on"),
         format!("{init} on release $a := $missing end on"),
         format!("{init} on release $missing := 1 end on"),
@@ -921,4 +920,115 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates() {
+    for (expression, expected) in [
+        ("1 + 2 * 3", 7),
+        ("(1 + 2) * 3", 9),
+        ("20 / 3 * 2", 12),
+        ("7 - 3 - 2", 2),
+        ("-7 / 3", -2),
+        ("-7 mod 3", -1),
+        ("7 mod -3", 1),
+        ("7 / 0", 0),
+        ("7 mod 0", 0),
+        ("2147483647 + 1", i32::MIN),
+        ("-2147483648 - 1", i32::MAX),
+        ("-2147483648 / -1", i32::MIN),
+        ("-2147483648 mod -1", 0),
+        ("--2147483648", i32::MIN),
+        ("abs(-2147483648)", i32::MIN),
+        ("abs(-(1 + 2) * 3)", 9),
+        ("sgn(-7) + signbit(-7)", 0),
+        (".not. 0", -1),
+        ("1 .or. 2 .and. 6", 3),
+        ("7 .xor. 1 .or. 8", 14),
+        ("2 .and. 1 + 1", 2),
+        ("$EVENT_NOTE * (1 + 1)", 120),
+        ("+(-(-3))", 3),
+    ] {
+        let source = format!(
+            "on init declare $result end on on release $result := {expression} inc($result) dec($result) end on"
+        );
+        let prepared = compile(&source, 48000, limits())
+            .unwrap()
+            .bind(Prepared::new(48000, vec![], vec![], 0).unwrap())
+            .unwrap();
+        let mut rt = Runtime::new(
+            prepared,
+            CoreLimits {
+                notes: 1,
+                channels: 0,
+                performances: 1,
+                families: 0,
+                expressions: 1,
+                voices: 0,
+                decisions: 0,
+                commands: 0,
+                behaviors: 1,
+                behavior_fuel: 128,
+                behavior_cells: 16,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            };
+            let note = rt.trigger(input, 60, 1.).unwrap();
+            rt.key_up(note, None).unwrap();
+            assert_eq!(
+                rt.script_cell(rt.active_plan(), sampler_core::ScriptInstanceId(0), 0),
+                Ok(i64::from(expected)),
+                "{expression}"
+            );
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+    for expression in [
+        "()",
+        "1 +",
+        "* 3",
+        "abs()",
+        "abs(1,2)",
+        "1 .nand. 2",
+        "2147483648",
+        "-2147483649",
+        "~real + 1",
+    ] {
+        let source =
+            format!("on init declare $result end on on release $result := {expression} end on");
+        assert!(compile(&source, 48000, limits()).is_err(), "{expression}");
+    }
+    let source = format!(
+        "on init declare $result end on on release $result := {}1{} end on",
+        "(".repeat(1000),
+        ")".repeat(1000)
+    );
+    let error = compile(
+        &source,
+        48000,
+        Limits {
+            source_bytes: source.len(),
+            instructions: 10000,
+            ..limits()
+        },
+    )
+    .err()
+    .unwrap();
+    assert!(error.message.contains("nesting limit"));
+    assert!(source.is_char_boundary(error.offset));
 }
