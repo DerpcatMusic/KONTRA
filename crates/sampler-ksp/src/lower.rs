@@ -7,9 +7,10 @@ use crate::diag::{Fault, Result, Span, fault};
 use crate::hir::*;
 use crate::sema::fold;
 use sampler_core::{
-    Comparison as Cmp, ControlId, Duration, DurationValue, Inheritance, Instruction as I,
-    IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op, ParamScope, Program,
-    RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime, real_bits,
+    Comparison as Cmp, ControlId, Duration, DurationValue, EnvelopeStage, Inheritance,
+    Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op,
+    ParamScope, Program, RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime,
+    real_bits,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -39,6 +40,12 @@ pub enum Coverage {
     /// Not executed at runtime; a warning was recorded.
     Ignored,
 }
+
+/// Kontakt's default name for a group's first AHDSR, its volume envelope.
+// ponytail: a library that renames its volume envelope, or uses ENV_AHDSR
+// for another target, is mis-addressed; take the name from the instrument
+// when the loader exposes group modulators.
+const AMP_ENVELOPE: &str = "ENV_AHDSR";
 
 /// Store key tags separating UI properties and PGS values from engine keys.
 pub const PROPERTY_TAG: i32 = i32::MIN;
@@ -913,6 +920,12 @@ impl Gen<'_, '_> {
     /// Forward the call to the host: numeric arguments in order from `dst`,
     /// the first text argument as the effect text.
     fn effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
+        self.emit_effect(builtin, args, dst)?;
+        self.cover(builtin, host_service(builtin));
+        Ok(())
+    }
+
+    fn emit_effect(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let mut count = 0u16;
         let mut text = None;
         for (i, a) in args.iter().enumerate() {
@@ -946,7 +959,6 @@ impl Gen<'_, '_> {
         if text.is_some() {
             self.tdepth -= 1;
         }
-        self.cover(builtin, host_service(builtin));
         Ok(())
     }
 
@@ -1475,6 +1487,37 @@ impl Gen<'_, '_> {
                 self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
                 return self.effect(builtin, args, dst);
             }
+            SetEnginePar if self.envelope_param(args).is_some() => {
+                // The group's volume envelope when the slot is find_mod's
+                // "ENV_AHDSR"; any other modulator goes to the host as before.
+                self.arg(args, 1, dst)?;
+                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
+                let stage = self.envelope_param(args).unwrap();
+                let (slot, value) = (reg(dst, 1)?, reg(dst, 2)?);
+                self.arg(args, 3, slot)?;
+                self.set(value, i64::from(crate::eval::lookup_index(AMP_ENVELOPE)))?;
+                self.emit(I::CompareLocal {
+                    lhs: slot,
+                    rhs: value,
+                    comparison: Cmp::Equal,
+                })?;
+                let other = self.jump_if_zero(slot)?;
+                self.arg(args, 1, value)?;
+                self.envelope_frames(stage, value)?;
+                self.arg(args, 2, dst)?;
+                self.emit(I::WriteEnvelope {
+                    group: dst,
+                    stage,
+                    local: value,
+                })?;
+                let end = self.jump()?;
+                self.land(other);
+                self.emit_effect(builtin, args, dst)?;
+                self.land(end);
+                self.set(dst, 0)?;
+                self.cover(builtin, Coverage::Approximate);
+                return Ok(());
+            }
             SetEnginePar if self.engine_param(args).is_some() => {
                 // Mirror for get_engine_par, then drive the group or instrument layer.
                 self.arg(args, 1, dst)?;
@@ -1723,6 +1766,55 @@ impl Gen<'_, '_> {
             "ENGINE_PAR_TUNE" => Some(ModTarget::Pitch),
             _ => None,
         }
+    }
+
+    /// AHDSR times a script sets on a modulator (`generic` -1).
+    fn envelope_param(&self, args: &[Arg]) -> Option<EnvelopeStage> {
+        if self.const_int(args, 4) != Some(-1) {
+            return None;
+        }
+        let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
+        match name.trim_start_matches('$') {
+            "ENGINE_PAR_ATTACK" => Some(EnvelopeStage::Attack),
+            "ENGINE_PAR_DECAY" => Some(EnvelopeStage::Decay),
+            "ENGINE_PAR_RELEASE" => Some(EnvelopeStage::Release),
+            _ => None,
+        }
+    }
+
+    /// Engine units to frames in place: ms = 2^(v·(log2(max + 2) − 1)/10^6 + 1) − 2,
+    /// max 15000 ms for attack and 25000 ms for decay and release, the law
+    /// shipping library scripts display.
+    fn envelope_frames(&mut self, stage: EnvelopeStage, local: u16) -> Result<()> {
+        self.clamp(local, 0, 1_000_000)?;
+        let max: f64 = if stage == EnvelopeStage::Attack {
+            15002.0
+        } else {
+            25002.0
+        };
+        let ln2 = std::f64::consts::LN_2;
+        let t = reg(local, 1)?;
+        self.emit(I::Op(Op::IntegerToReal { local }))?;
+        let real = |s: &mut Self, value: f64, operation| -> Result<()> {
+            s.set(t, real_bits(value))?;
+            s.emit(I::Op(Op::Real {
+                lhs: local,
+                rhs: t,
+                operation,
+            }))
+        };
+        real(self, (max.log2() - 1.0) / 1e6 * ln2, RealBinary::Multiply)?;
+        real(self, ln2, RealBinary::Add)?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Exp,
+        }))?;
+        // ms − 2, in microseconds, then frames.
+        real(self, 2.0, RealBinary::Subtract)?;
+        real(self, 1000.0, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealToInteger { local }))?;
+        self.clamp(local, 0, i32::MAX)?;
+        self.emit(I::MicrosToFrames { local })
     }
 
     /// Kontakt engine units (0..=1000000) to `WriteParam` units in place. The
