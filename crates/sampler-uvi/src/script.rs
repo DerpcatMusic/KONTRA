@@ -85,8 +85,9 @@ pub struct Play {
     pub at_ms: f64,
     pub key: u8,
     pub velocity: u8,
-    /// Milliseconds until its own release; `None` (a duration of 0 or less, the
-    /// default) follows the originating note.
+    /// Milliseconds until its own release; `Some(0.0)` sends only the note-on
+    /// (the script releases it); `None` (-1, or unset) follows the originating
+    /// note.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Vec<u32>,
@@ -752,7 +753,9 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
     if values[4].is_some() || values[5].is_some() || values[9].is_some() {
         shared.find("lua playNote channel/input/slice", "");
     }
-    let duration = num(2).filter(|d| *d > 0.0);
+    // lua.uvi.net: > 0 releases after that long, -1 with the originating note,
+    // 0 sends only the note-on (the script ends it with releaseVoice).
+    let duration = num(2).filter(|d| *d >= 0.0);
     Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
@@ -875,7 +878,7 @@ mod tests {
         h.note_on(1, 62, 100, 0);
         let c = h.take_commands();
         assert!(
-            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms.is_none()),
+            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms == Some(0.0)),
             "{c:?} {:?}",
             h.findings()
         );
