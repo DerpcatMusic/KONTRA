@@ -199,8 +199,10 @@ Protected and clear XML share the parser and byte bounds: `9309bf5a`.
 
 ## Verification on the shared machine
 
-Wrap every Cargo command and real-library census/render with
-`flock --close /home/derpcat/.cache/kontakto-heavy.lock COMMAND ...`.
+Run every Cargo command and real-library census/render with
+`/home/derpcat/.cache/kontakto-heavy COMMAND ...`.
+The shared helper allows three jobs and waits for at least 10 GiB available RAM.
 Use the target directory and sccache from `~/.cargo/config.toml`; do not set
-`CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. `--close` keeps persistent child daemons
-such as sccache from inheriting the lock after the job finishes.
+`CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. The parent retains the slot guard and
+closes its descriptor in the command's child process, so persistent daemons
+such as sccache cannot inherit a slot after the job finishes.
