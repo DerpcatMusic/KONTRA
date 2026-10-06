@@ -201,7 +201,7 @@ pub struct Prepared {
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
-    keyswitches: [Option<u32>; 128],
+    pub(super) keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
     bend_range: f64,
