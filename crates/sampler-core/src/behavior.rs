@@ -246,6 +246,13 @@ pub enum Instruction {
         id: u16,
         local: u16,
     },
+    /// Read what an event is doing (`get_event_par` of a built-in parameter)
+    /// into `local`; 0 for a retired or unknown event.
+    ReadEventInfo {
+        event: u16,
+        info: super::EventInfo,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -507,6 +514,9 @@ impl Program {
             | Instruction::ReadModValue { event, id, local } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
+            }
+            if let Instruction::ReadEventInfo { event, local, .. } = *op {
+                locals = locals.max(usize::from(event.max(local)) + 1);
             }
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
@@ -1462,6 +1472,11 @@ impl Runtime {
                 let event = *self.local_cell_mut(id, event)?;
                 let slot = *self.local_cell_mut(id, slot)?;
                 *self.local_cell_mut(id, local)? = self.read_mod_value(plan, event, slot)?;
+            }
+            Instruction::ReadEventInfo { event, info, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                *self.local_cell_mut(id, local)? = self.read_event_info(plan, event, info)?;
             }
             Instruction::ReadParam {
                 scope,

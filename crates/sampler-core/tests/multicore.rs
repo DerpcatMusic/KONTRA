@@ -89,7 +89,10 @@ fn play(rt: &mut Runtime, blocks: &[usize]) -> Vec<Frame> {
             },
             48 + id as u8,
             1.,
-            Expression { gain: 0.5 + id as f64 * 0.02, ..Expression::default() },
+            Expression {
+                gain: 0.5 + id as f64 * 0.02,
+                ..Expression::default()
+            },
         )
         .unwrap();
     }
@@ -107,14 +110,24 @@ fn play(rt: &mut Runtime, blocks: &[usize]) -> Vec<Frame> {
 fn any_thread_count_renders_the_single_threaded_output_exactly() {
     let blocks = [64, 37, 128, 64, 200, 1];
     let expected = play(&mut runtime(1), &blocks);
-    assert!(expected.iter().any(|f| f[0] != 0.), "the workload is silent");
+    assert!(
+        expected.iter().any(|f| f[0] != 0.),
+        "the workload is silent"
+    );
     for threads in [2, 3, 4] {
         let mut rt = runtime(threads);
         let actual = play(&mut rt, &blocks);
         assert_eq!(rt.voice_count(), 0, "voices ended at {threads} threads");
-        assert!(rt.parallel_blocks() > 10, "the pool rendered {} blocks", rt.parallel_blocks());
         assert!(
-            actual.iter().zip(&expected).all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
+            rt.parallel_blocks() > 10,
+            "the pool rendered {} blocks",
+            rt.parallel_blocks()
+        );
+        assert!(
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
             "{threads} threads differ from one"
         );
     }

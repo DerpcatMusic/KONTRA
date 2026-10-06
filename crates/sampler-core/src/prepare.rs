@@ -681,8 +681,18 @@ impl Prepared {
     /// `Limits::voices` against a memory budget.
     pub fn voice_state_bytes(&self) -> usize {
         use std::mem::size_of;
-        let stages = self.voice_chains.iter().map(|c| c.stages()).max().unwrap_or(0);
-        let delay = self.voice_chains.iter().map(|c| c.delay_frames).max().unwrap_or(0);
+        let stages = self
+            .voice_chains
+            .iter()
+            .map(|c| c.stages())
+            .max()
+            .unwrap_or(0);
+        let delay = self
+            .voice_chains
+            .iter()
+            .map(|c| c.delay_frames)
+            .max()
+            .unwrap_or(0);
         size_of::<crate::Slot<crate::Voice>>()
             + stages * size_of::<crate::dsp::ProcessorState>()
             + delay * size_of::<[f64; 2]>()
