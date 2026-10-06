@@ -278,6 +278,16 @@ fn loose_program(path: &Path) {
 }
 
 #[cfg(feature = "library-access")]
+fn resource_cache_key(program: &str, path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if path.starts_with(['/', '$']) {
+        path
+    } else {
+        format!("{}/{path}", program.rsplit_once('/').map_or("", |p| p.0))
+    }
+}
+
+#[cfg(feature = "library-access")]
 fn bank(path: &Path) {
     let bank = match sampler_uvi::Bank::open(path) {
         Ok(bank) => bank,
@@ -303,7 +313,7 @@ fn bank(path: &Path) {
                     continue;
                 };
                 samples += 1;
-                let key = format!("{}/{sample}", member.rsplit_once('/').map_or("", |p| p.0));
+                let key = resource_cache_key(&member, sample);
                 decoded
                     .entry(key)
                     .or_insert_with(|| {
@@ -341,6 +351,25 @@ fn bank(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "library-access")]
+    #[test]
+    fn rooted_resources_share_status_across_presets_but_relative_resources_do_not() {
+        for sample in ["/Samples/a.wav", "$Authored.ufs/Samples/*L.wav*R.wav"] {
+            assert_eq!(
+                resource_cache_key("Presets/A/p.uvip", sample),
+                resource_cache_key("Presets/B/p.uvip", sample)
+            );
+        }
+        assert_eq!(
+            resource_cache_key("Presets/A/p.uvip", "\\Samples\\a.wav"),
+            "/Samples/a.wav"
+        );
+        assert_ne!(
+            resource_cache_key("Presets/A/p.uvip", "a.wav"),
+            resource_cache_key("Presets/B/p.uvip", "a.wav")
+        );
+    }
 
     #[test]
     fn a_program_must_open_and_decode_at_least_one_sample() {
