@@ -78,13 +78,16 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
     assert!(
         ni_file::file_container::NIFileContainer::read(std::io::Cursor::new(container)).is_err()
     );
+    for (name, picture) in [
+        ("Wallpaper.png", picture),
+        ("Wallpaper.txt", b"Has Alpha Channel: yes\nNumber of Animations: 1\nFixed Top: 0\nHorizontal Animation: no\n".as_slice()),
+    ] {
     for (version, hint) in [
         (0x110u16, 0xffu32),
         (0x111, 0xff),
         (0x110, 0x100),
         (0x111, 0x100),
     ] {
-        let name = "Wallpaper.png";
         let mut nkr = 0x5e70ac54u32.to_le_bytes().to_vec();
         nkr.extend(version.to_le_bytes());
         nkr.extend([0; 8]);
@@ -107,13 +110,14 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         let path = root.join(format!("authored-{version}.nkr"));
         std::fs::write(&path, &nkr).unwrap();
         let mut resources = ResourceContainer::open(&path).unwrap();
-        assert_eq!(resources.read("wallpaper.PNG").unwrap().unwrap(), picture);
+        assert_eq!(resources.read(&name.to_uppercase()).unwrap().unwrap(), picture);
         if hint == 0x100 {
-            // A signature without intact framing/CRCs cannot override protection.
-            *nkr.last_mut().unwrap() ^= 1;
+            // Invalid framing/CRCs or UTF-8 cannot override protection.
+            *nkr.last_mut().unwrap() ^= if name.ends_with(".txt") { 0x80 } else { 1 };
             std::fs::write(&path, &nkr).unwrap();
             assert!(ResourceContainer::open(&path).unwrap().read(name).is_err());
         }
+    }
     }
     std::fs::remove_dir_all(root).unwrap();
 }
