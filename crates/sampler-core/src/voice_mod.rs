@@ -44,6 +44,9 @@ pub struct Lfo {
     pub fade: u32,
     /// Per-voice cycle from `phase`; otherwise one cycle on the runtime clock.
     pub retrigger: bool,
+    /// With `retrigger`: one instance shared by every voice, restarted at
+    /// `phase` (and its delay and fade) whenever any voice starts.
+    pub shared: bool,
 }
 
 /// What a route reads. Lfo is bipolar (-1..=1); every other source is 0..=1.
@@ -74,11 +77,13 @@ pub enum ModSource {
     /// The note's script value for "from script" modulator `id`
     /// ([`crate::Instruction::WriteModValue`]), `clamp(v / 1e6, -1, 1)`.
     Script(u16),
+    /// The note's raw pitch bend ([`crate::Expression::bend`]), -1..=1.
+    PitchBend,
 }
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend)
     }
 }
 
@@ -188,6 +193,7 @@ enum Prepared {
     Constant,
     ReleaseCounter(u32),
     Script(u16),
+    PitchBend,
 }
 
 struct Program {
@@ -273,6 +279,7 @@ impl VoiceModulation {
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
                         ModSource::Script(id) => Prepared::Script(id),
+                        ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })
                 .collect::<Result<Box<[_]>, Error>>()?;
@@ -389,6 +396,7 @@ impl Prepared {
             Self::Timbre => f64::from(inputs.timbre) * FULL_SCALE,
             Self::Random => uniform(hash(seed, index as u64, u64::MAX)),
             Self::Constant => 1.0,
+            Self::PitchBend => inputs.bend,
             Self::Script(id) => (f64::from(inputs.script.get(id)) / 1_000_000.0).clamp(-1.0, 1.0),
             Self::ReleaseCounter(frames) => {
                 (1.0 - inputs.held as f64 / f64::from(frames)).clamp(0.0, 1.0)
@@ -505,6 +513,8 @@ pub(crate) struct Inputs<'a> {
     /// Frames from the note's admission to its key release (or now).
     pub held: u64,
     pub script: crate::script_params::ModValues,
+    /// The note's raw pitch bend, -1..=1.
+    pub bend: f64,
 }
 
 impl<'a> Inputs<'a> {
@@ -523,6 +533,7 @@ impl<'a> Inputs<'a> {
             controllers,
             held,
             script,
+            bend: expression.bend,
         }
     }
 }
@@ -570,6 +581,9 @@ pub(crate) struct VoiceModState {
     lagged: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
     segments: Box<[Segment]>,
+    /// Runtime frame and seed of the latest voice start: the restart of every
+    /// shared retriggered LFO.
+    restart: (u64, u64),
 }
 
 /// A voice's position in one breakpoint envelope.
@@ -648,6 +662,7 @@ impl VoiceModState {
             )
             .collect(),
             segments: crate::dsp::allocate(slots(modulation.breakpoints)?)?,
+            restart: (0, 0),
         })
     }
 
@@ -669,6 +684,7 @@ impl VoiceModState {
             lagged: Box::new([]),
             envelope: Box::new([]),
             segments: Box::new([]),
+            restart: (0, 0),
         }
     }
 
@@ -697,6 +713,7 @@ impl VoiceModState {
         let p = &modulation.programs[index as usize];
         self.seed[voice] = seed;
         self.age[voice] = 0;
+        self.restart = (clock.now, seed);
         self.tone[voice] = [[0.0; 2]; 2];
         for (i, source) in p.sources.iter().enumerate() {
             if let Prepared::Lfo(lfo) = source {
@@ -791,7 +808,16 @@ impl VoiceModState {
                         LfoRate::Hertz(hz) => hz,
                         LfoRate::Beats(beats) => clock.tempo / (60.0 * beats),
                     };
-                    let (phase, seed) = if lfo.retrigger {
+                    let since = clock.now.saturating_sub(self.restart.0);
+                    let age = if lfo.shared && lfo.retrigger {
+                        u32::try_from(since).unwrap_or(u32::MAX)
+                    } else {
+                        age
+                    };
+                    let (phase, seed) = if lfo.shared && lfo.retrigger {
+                        let t = since as f64 / clock.rate;
+                        (lfo.phase + hz * t, self.restart.1 ^ i as u64)
+                    } else if lfo.retrigger {
                         phases[i] += hz * f64::from(frames) / clock.rate;
                         (phases[i], seed ^ i as u64)
                     } else {
@@ -994,5 +1020,56 @@ mod tests {
         assert_eq!(evaluate(&points, 0.75), 0.5);
         assert_eq!(evaluate(&[(0.5, 0.3)], 0.1), 0.3);
         assert_eq!(evaluate(&[(0.5, 0.3)], 0.9), 0.3);
+    }
+
+    #[test]
+    fn a_shared_retriggered_lfo_restarts_for_every_voice() {
+        // A 1 Hz square read at 1 kHz: +1 for the first half cycle.
+        let pitch_of = |shared: bool| {
+            let lfo = Lfo {
+                shape: LfoShape::Square,
+                rate: LfoRate::Hertz(1.0),
+                phase: 0.0,
+                delay: 0,
+                fade: 0,
+                retrigger: true,
+                shared,
+            };
+            let program = ModProgram {
+                sources: vec![ModSource::Lfo(lfo)],
+                routes: vec![ModRoute::new(0, ModTarget::Pitch, 1.0)],
+                ..ModProgram::default()
+            };
+            let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
+            let mut state = VoiceModState::new(&modulation, 2).unwrap();
+            let controllers = [0; 128];
+            let inputs = Inputs {
+                velocity: 1.0,
+                key: 0.5,
+                pressure: 0,
+                timbre: 0,
+                controllers: &controllers,
+                held: 0,
+                script: Default::default(),
+                bend: 0.0,
+            };
+            let clock = |now| Clock {
+                rate: 1000.0,
+                tempo: 120.0,
+                now,
+            };
+            state.start(&modulation, 0, 0, &inputs, clock(0), 1);
+            let p = &modulation.programs[0];
+            state.evaluate(p, 0, &inputs, clock(600), 600, false);
+            // A second note at 0.6 s restarts the shared cycle under voice 0.
+            state.start(&modulation, 1, 0, &inputs, clock(600), 2);
+            state.evaluate(p, 0, &inputs, clock(700), 100, false).pitch
+        };
+        assert_eq!(
+            pitch_of(false),
+            -1.0,
+            "own cycle: 0.7 s is in its second half"
+        );
+        assert_eq!(pitch_of(true), 1.0, "restarted 0.1 s ago: first half");
     }
 }
