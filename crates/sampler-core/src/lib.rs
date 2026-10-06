@@ -647,6 +647,16 @@ impl Runtime {
             .map_or(0, |g| g.prepared.buses.len())
     }
 
+    /// Each bus of the active plan's peak level since the last call, after
+    /// its mix gain; taking them resets them.
+    pub fn take_bus_peaks(&mut self, mut each: impl FnMut(usize, [f32; 2])) {
+        if let Some(g) = self.plans.get_mut(self.active_plan.0) {
+            for (bus, peak) in g.dsp.buses.peaks.iter_mut().enumerate() {
+                each(bus, std::mem::take(peak));
+            }
+        }
+    }
+
     /// Mix `bus` of the active plan from the next rendered frame on. Older
     /// generations still sounding keep their own mix.
     pub fn set_bus_mix(&mut self, bus: usize, mix: BusMix) -> Result<(), Error> {

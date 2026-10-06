@@ -403,6 +403,11 @@ fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
     // The redirected output skips bus 1; the aux send still reaches the main output.
     assert_eq!(out[0], [0.5, 0.25]);
     assert_eq!(main[0], [0.25, 0.125]);
+    // Bus peaks are after the bus's own gain; bus 1 got nothing this time.
+    let mut peaks = Vec::new();
+    rt.take_bus_peaks(|bus, peak| peaks.push((bus, peak)));
+    assert_eq!(peaks, [(0, [0.5, 0.25]), (1, [0.; 2])]);
+    rt.take_bus_peaks(|_, peak| assert_eq!(peak, [0.; 2], "taking resets"));
     assert_eq!(
         rt.render_split(&mut main, &mut [&mut [[0.; 2]; 1]]),
         Err(Error::InvalidInput)
