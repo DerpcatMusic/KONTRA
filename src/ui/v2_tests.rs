@@ -125,23 +125,24 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
     let page = PageRef(0);
     let image = |path: &str, frames| ir::Asset { path: path.into(), kind: AssetKind::Image(ImageMeta { frames, ..ImageMeta::default() }) };
     let mut panel = Widget::new("$panel", page, Rect::new(20, 20, 300, 120), Kind::Panel);
-    panel.images.push(ImageUse { asset: ir::AssetRef(1), role: Role::Background });
+    panel.images.push(ImageUse::new(ir::AssetRef(1), Role::Background));
     let range = ir::Range { min: 0., max: 100., default: 50., step: None };
     let mut knob = Widget::new("$cutoff", page, Rect::new(20, 20, 64, 64), Kind::Knob { range, display: ir::Display::default() });
     knob.parent = Some(ir::WidgetRef(0));
     knob.binding = ir::Binding::Control(ir::ControlId(1));
-    knob.images.push(ImageUse { asset: ir::AssetRef(2), role: Role::Strip });
+    knob.images.push(ImageUse::new(ir::AssetRef(2), Role::Strip));
     let mut switch = Widget::new("$legato", page, Rect::new(120, 40, 80, 24), Kind::Switch);
     switch.parent = Some(ir::WidgetRef(0));
     switch.binding = ir::Binding::Control(ir::ControlId(2));
     switch.text = "Legato".into();
-    switch.images.push(ImageUse { asset: ir::AssetRef(3), role: Role::Strip });
+    switch.images.push(ImageUse::new(ir::AssetRef(3), Role::Strip));
     let face = ir::Interface {
         source: ir::Source::Ksp { slot: 0 },
         pages: vec![ir::Page {
             name: "Main".into(),
             size: ir::Size { width: 633, height: 300 },
             background: ir::Background { image: Some(ir::AssetRef(0)), ..Default::default() },
+            ..Default::default()
         }],
         widgets: vec![panel, knob, switch],
         assets: vec![image("wallpaper", 1), image("panel", 1), image("knob", 64), image("switch", 2)],
@@ -225,6 +226,7 @@ fn from_v1(u: &crate::ksp::Interface, pictures: &std::collections::HashMap<Strin
                 image: wallpaper.then_some(ir::AssetRef(0)),
                 offset_y: u.skin_offset + super::perf_view::HEADER as i32,
             },
+            ..Default::default()
         }],
         ..Default::default()
     };
@@ -253,9 +255,9 @@ fn from_v1(u: &crate::ksp::Interface, pictures: &std::collections::HashMap<Strin
             V1::Menu => ir::Kind::Menu {
                 items: c.menu.iter().map(|(t, v)| ir::MenuItem { text: t.clone(), value: *v, visible: true }).collect(),
             },
-            V1::Value => ir::Kind::ValueEdit { range, display: ir::Display::default() },
+            V1::Value => ir::Kind::ValueEdit { range, display: ir::Display::default(), arrows: false },
             V1::Label => ir::Kind::Label,
-            V1::Table => ir::Kind::Table { columns: 1, range, bipolar: false },
+            V1::Table => ir::Kind::Table { columns: 1, range, bipolar: false, cells: Vec::new() },
             V1::TextEdit => ir::Kind::TextEdit,
             V1::FileSelector => ir::Kind::FileSelector,
             V1::Area => ir::Kind::MouseArea,
@@ -280,7 +282,7 @@ fn from_v1(u: &crate::ksp::Interface, pictures: &std::collections::HashMap<Strin
                 });
             }
             let role = if s.kind == V1::Label { ir::Role::Background } else { ir::Role::Strip };
-            w.images.push(ir::ImageUse { asset: ir::AssetRef(at), role });
+            w.images.push(ir::ImageUse::new(ir::AssetRef(at), role));
         }
         face.widgets.push(w);
     }
