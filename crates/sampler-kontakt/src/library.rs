@@ -1476,3 +1476,44 @@ mod multi_tests {
         assert!(super::read_program(&path, 999).is_err());
     }
 }
+
+#[cfg(test)]
+mod census {
+    #[test]
+    #[ignore]
+    fn mic_census() {
+        let root = std::env::var("KONTRA_KONTAKT_LIBRARIES").unwrap();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let mut files = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        for f in &files {
+            let Ok(k) = super::read(f) else { continue };
+            let i = &k.instrument;
+            let mut outs = std::collections::BTreeSet::new();
+            for g in &i.groups {
+                outs.insert(format!("{:?}", g.output));
+            }
+            let names: std::collections::BTreeSet<_> = i.groups.iter().map(|g| g.name.as_str()).collect();
+            let buses: Vec<_> = i.buses.iter().map(|b| b.name.as_str()).collect();
+            println!(
+                "CENSUS\t{}\tgroups={}\tdistinct_names={}\touts={}\tbuses={:?}\tnames={:?}",
+                f.display(),
+                i.groups.len(),
+                names.len(),
+                outs.len(),
+                buses,
+                names.iter().take(12).collect::<Vec<_>>()
+            );
+        }
+    }
+}
