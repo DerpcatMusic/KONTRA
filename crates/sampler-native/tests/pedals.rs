@@ -75,9 +75,11 @@ struct Setup {
     port: Port,
     voices: usize,
     block: usize,
+    /// Replace the instrument's own scripts with this KSP.
+    script: Option<&'static str>,
 }
 impl Setup {
-    fn new(instrument: &'static str, keys: (u8, u8)) -> Self {
+    const fn new(instrument: &'static str, keys: (u8, u8)) -> Self {
         Self {
             instrument,
             keys,
@@ -85,6 +87,7 @@ impl Setup {
             port: Port::Channel,
             voices: 1024,
             block: BLOCK,
+            script: None,
         }
     }
 }
@@ -116,6 +119,10 @@ struct Run {
     bound_scripts: usize,
     /// Release-phase capacity reservations were all returned once idle.
     reserve_returned: bool,
+    /// The instrument has release-phase (Kontakt release-trigger) zones.
+    release_zones: bool,
+    /// Live logical notes (input and script-generated) after each block.
+    notes: Vec<usize>,
     script_outcomes: Vec<String>,
 }
 
@@ -156,6 +163,48 @@ fn limits(plan: &sampler_core::Prepared, voices: usize) -> Limits {
     }
 }
 
+/// `sampler_kontakt::load` with the instrument's scripts replaced by `source`.
+fn with_script(
+    path: &std::path::Path,
+    options: &sampler_kontakt::Options,
+    source: &str,
+) -> sampler_kontakt::Loaded {
+    let sampler_kontakt::Kontakt {
+        mut instrument,
+        locations,
+        mut samples,
+    } = sampler_kontakt::read(path).unwrap();
+    instrument.behaviors = vec![sampler_ir::Behavior {
+        name: "pedal test".into(),
+        language: sampler_ir::Language::Ksp,
+        source: source.into(),
+        state: Vec::new(),
+        requires: Vec::new(),
+    }];
+    let (low, high) = (*options.keys.start(), *options.keys.end());
+    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let pcm = kept
+        .iter()
+        .map(|&asset| {
+            let decoded = samples.decode(&locations[asset]).unwrap();
+            sampler_core::Pcm::new(decoded.rate, decoded.frames.into_boxed_slice()).unwrap()
+        })
+        .collect();
+    let labels = kept
+        .iter()
+        .map(|&a| locations[a].display().to_string())
+        .collect();
+    let loaded = sampler_kontakt::finish(instrument, pcm, labels, options).unwrap();
+    let failed: Vec<_> = loaded
+        .instrument
+        .unsupported
+        .iter()
+        .filter(|u| u.feature == "script")
+        .collect();
+    assert!(failed.is_empty(), "{failed:?}");
+    loaded
+}
+
 /// Play `events` (seconds, message) and render until every note, family and
 /// voice has retired, or `TAIL` seconds after the last event.
 fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
@@ -166,7 +215,10 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         scripts: setup.scripts,
         ..Default::default()
     };
-    let loaded = sampler_kontakt::load(&path, &options, |_| {}).unwrap();
+    let loaded = match setup.script {
+        None => sampler_kontakt::load(&path, &options, |_| {}).unwrap(),
+        Some(source) => with_script(&path, &options, source),
+    };
     assert_eq!(loaded.plan.sample_rate() as usize, RATE);
     let failed = loaded
         .instrument
@@ -179,6 +231,11 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
     } else {
         0
     };
+    let release_zones = loaded
+        .instrument
+        .zones
+        .iter()
+        .any(|z| z.trigger != sampler_ir::Trigger::Attack);
     let limits = limits(&loaded.plan, setup.voices);
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
     let mut groups = [None; 16];
@@ -206,6 +263,8 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         block: setup.block,
         bound_scripts,
         reserve_returned: false,
+        release_zones,
+        notes: Vec::new(),
         script_outcomes: Vec::new(),
     };
     let mut buffer = vec![[0f32; 2]; setup.block];
@@ -286,6 +345,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
             true
         });
         rt.flush_ended(|_| true);
+        run.notes.push(rt.note_count());
         run.peak_voices = run.peak_voices.max(rt.voice_count());
         run.out.extend_from_slice(&buffer);
         begin += len;
@@ -299,7 +359,12 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
             break;
         }
     }
-    assert_eq!(rt.nonfinite_frames(), 0, "{}: non-finite summation", setup.instrument);
+    assert_eq!(
+        rt.nonfinite_frames(),
+        0,
+        "{}: non-finite summation",
+        setup.instrument
+    );
     Some(run)
 }
 
@@ -323,11 +388,24 @@ fn sane(run: &Run, name: &str) {
     assert!(run.reserve_returned, "{name}: release reservations leaked");
     for p in &run.played {
         assert!(p.id.is_none(), "{name}: note {} not retired", p.key);
-        assert!(p.key_at.is_some(), "{name}: note {} never saw key-up", p.key);
-        assert!(p.gate_at.is_some(), "{name}: note {} gate never closed", p.key);
+        assert!(
+            p.key_at.is_some(),
+            "{name}: note {} never saw key-up",
+            p.key
+        );
+        assert!(
+            p.gate_at.is_some(),
+            "{name}: note {} gate never closed",
+            p.key
+        );
         // Release triggers sound once per release event, never before key-up
         // and never after the gate closes.
-        assert!(p.fired.len() <= 1, "{name}: note {} fired releases at {:?}", p.key, p.fired);
+        assert!(
+            p.fired.len() <= 1,
+            "{name}: note {} fired releases at {:?}",
+            p.key,
+            p.fired
+        );
         if let Some(&fired) = p.fired.first() {
             let key = p.key_at.unwrap() as usize;
             let gate = p.gate_at.unwrap() as usize;
@@ -338,7 +416,11 @@ fn sane(run: &Run, name: &str) {
             );
         }
     }
-    assert!(run.script_outcomes.is_empty(), "{name}: {:?}", run.script_outcomes);
+    assert!(
+        run.script_outcomes.is_empty(),
+        "{name}: {:?}",
+        run.script_outcomes
+    );
 }
 
 /// The frame a release trigger is expected at, from the trigger's declared phase.
@@ -367,7 +449,11 @@ fn assert_gate(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate: f6
 }
 
 /// Sustain holds released keys until pedal-up, and only then releases them.
-fn sustain(setup: Setup) -> Option<Run> {
+fn sustain(setup: Setup) {
+    sustain_run(setup);
+}
+
+fn sustain_run(setup: Setup) -> Option<Run> {
     let (a, b) = (setup.keys.0, setup.keys.0 + 4);
     let run = play(
         setup,
@@ -385,7 +471,10 @@ fn sustain(setup: Setup) -> Option<Run> {
     assert!(run.other.is_empty(), "{name}: {:?}", run.other);
     assert_gate(&run, name, a, 0, 0.4, 1.0);
     assert_gate(&run, name, b, 0, 0.4, 1.0);
-    assert!(run.energy(at(0.5), at(1.0)) > 0.0, "{name}: silent while sustained");
+    assert!(
+        run.energy(at(0.5), at(1.0)) > 0.0,
+        "{name}: silent while sustained"
+    );
     Some(run)
 }
 
@@ -468,10 +557,43 @@ fn half_pedal(setup: Setup) {
     assert_gate(&run, name, c, 0, 0.8, 0.95);
 }
 
-/// Sostenuto holds exactly the notes held at pedal-down.
-fn sostenuto(setup: Setup) -> Option<Run> {
+/// Pedal and note messages at the same sample apply in arrival order, and a
+/// lift-and-press within one sample still releases what the lift released.
+fn same_instant(setup: Setup) {
     let (a, b, c) = (setup.keys.0, setup.keys.0 + 4, setup.keys.0 + 7);
-    let run = play(
+    let Some(run) = play(
+        setup,
+        &[
+            (0.1, On(0, a, 100)),
+            (0.1, On(0, b, 100)),
+            (0.2, Off(0, a)),
+            (0.2, Cc(0, 64, 127)),
+            (0.3, Off(0, b)),
+            (0.5, Cc(0, 64, 0)),
+            (0.5, On(0, a, 100)),
+            (0.5, Cc(0, 64, 127)),
+            (0.6, Off(0, a)),
+            (0.8, Cc(0, 64, 0)),
+            (0.9, Cc(0, 66, 127)),
+            (0.9, On(0, c, 100)),
+            (1.0, Off(0, c)),
+            (1.1, Cc(0, 66, 0)),
+        ],
+    ) else {
+        return;
+    };
+    let name = "same instant";
+    sane(&run, name);
+    assert_gate(&run, name, a, 0, 0.2, 0.2);
+    assert_gate(&run, name, b, 0, 0.3, 0.5);
+    assert_gate(&run, name, a, 1, 0.6, 0.8);
+    assert_gate(&run, name, c, 0, 1.0, 1.0);
+}
+
+/// Sostenuto holds exactly the notes held at pedal-down.
+fn sostenuto(setup: Setup) {
+    let (a, b, c) = (setup.keys.0, setup.keys.0 + 4, setup.keys.0 + 7);
+    let Some(run) = play(
         setup,
         &[
             (0.0, On(0, a, 100)),
@@ -479,6 +601,8 @@ fn sostenuto(setup: Setup) -> Option<Run> {
             (0.05, Off(0, c)),
             (0.1, Cc(0, 66, 127)),
             (0.2, On(0, b, 100)),
+            // A repeated pedal-down value is not a new press: no recapture.
+            (0.25, Cc(0, 66, 100)),
             (0.3, Off(0, a)),
             (0.4, Off(0, b)),
             // Re-struck while held by sostenuto: the new note is not captured.
@@ -486,14 +610,15 @@ fn sostenuto(setup: Setup) -> Option<Run> {
             (0.6, Off(0, a)),
             (1.0, Cc(0, 66, 0)),
         ],
-    )?;
+    ) else {
+        return;
+    };
     let name = "sostenuto";
     sane(&run, name);
     assert_gate(&run, name, c, 0, 0.05, 0.05);
     assert_gate(&run, name, a, 0, 0.3, 1.0);
     assert_gate(&run, name, b, 0, 0.4, 0.4);
     assert_gate(&run, name, a, 1, 0.6, 0.6);
-    Some(run)
 }
 
 /// Both pedals: sustain holds everything until its lift, sostenuto keeps its
@@ -521,11 +646,69 @@ fn sustain_and_sostenuto(setup: Setup) {
     assert_gate(&run, name, b, 0, 0.3, 0.6);
 }
 
+/// Channel-mode messages under the sustain pedal. All Notes Off releases held
+/// keys but the pedal still holds them; All Sound Off silences at once with no
+/// release phase, before or after the late key-up. Reset All Controllers is
+/// not interpreted: the pedal stays down until an explicit CC64 lift.
+fn channel_mode(setup: Setup) {
+    let (a, b, c) = (setup.keys.0, setup.keys.0 + 4, setup.keys.0 + 7);
+    let Some(run) = play(
+        setup,
+        &[
+            (0.0, Cc(0, 64, 127)),
+            (0.1, On(0, a, 100)),
+            (0.1, On(0, b, 100)),
+            (0.2, Off(0, a)),
+            (0.3, Cc(0, 123, 0)),
+            (0.4, Cc(0, 121, 0)),
+            (0.6, Cc(0, 64, 0)),
+            (0.8, On(0, c, 100)),
+            (0.9, Cc(0, 120, 0)),
+            (1.0, Off(0, c)),
+        ],
+    ) else {
+        return;
+    };
+    let name = "channel mode";
+    sane(&run, name);
+    let other: Vec<_> = run.other.iter().map(|o| (o.0, o.1)).collect();
+    assert_eq!(
+        other,
+        [
+            (at(0.3), Cc(0, 123, 0)),
+            (at(0.4), Cc(0, 121, 0)),
+            (at(0.9), Cc(0, 120, 0))
+        ]
+    );
+    assert_eq!(run.other[0].2, Ok(Applied::AllNotesOff { released: 1 }));
+    assert_eq!(run.other[1].2, Ok(Applied::Unsupported));
+    assert!(matches!(run.other[2].2, Ok(Applied::AllSoundOff { stopped }) if stopped > 0));
+    assert_gate(&run, name, a, 0, 0.2, 0.6);
+    assert_gate(&run, name, b, 0, 0.3, 0.6);
+    let p = run.note(c, 0);
+    assert_eq!(
+        (p.key_at, p.gate_at),
+        (Some(at(1.0) as u64), Some(at(0.9) as u64))
+    );
+    assert!(
+        p.fired.is_empty(),
+        "{name}: release phase after All Sound Off"
+    );
+    assert_eq!(
+        run.energy(at(0.9) + 1, at(1.0) + BLOCK),
+        0.0,
+        "{name}: sound after All Sound Off"
+    );
+}
+
 /// CC67 (una corda) is an ordinary controller to the native core: it never
 /// holds or releases notes. With no script bound nothing reads it, so the
 /// render is identical to the same performance without it.
-fn soft_pedal(setup: Setup, plain: &Run) {
+fn soft_pedal(setup: Setup) {
     let (a, b) = (setup.keys.0, setup.keys.0 + 4);
+    let Some(plain) = sustain_run(setup) else {
+        return;
+    };
     let Some(run) = play(
         setup,
         &[
@@ -550,7 +733,10 @@ fn soft_pedal(setup: Setup, plain: &Run) {
     assert_gate(&run, name, a, 0, 0.4, 1.0);
     assert_gate(&run, name, b, 0, 0.4, 1.0);
     if run.bound_scripts == 0 {
-        assert!(run.out == plain.out, "{name}: CC67 changed an unscripted render");
+        assert!(
+            run.out == plain.out,
+            "{name}: CC67 changed an unscripted render"
+        );
     }
 }
 
@@ -720,20 +906,32 @@ fn voice_limit(setup: Setup) {
     assert_gate(&run, name, a, 1, late + 0.2, late + 0.2);
     let fired: Vec<usize> = run.played.iter().map(|p| p.fired.len()).collect();
     let expected = [two.played[0].fired.len(), two.played[1].fired.len()];
-    assert_eq!(fired, [expected[0], expected[1], expected[0]], "{name}: releases");
+    assert_eq!(
+        fired,
+        [expected[0], expected[1], expected[0]],
+        "{name}: releases"
+    );
 }
 
 /// Same input, same PCM: across runs, across host block partitions, and (with
 /// no script bound) with scripts unbound.
-fn determinism(setup: Setup, first: &Run) {
-    let Some(again) = sustain(setup) else { return };
+fn determinism(setup: Setup) {
+    let Some(first) = sustain_run(setup) else {
+        return;
+    };
+    let Some(again) = sustain_run(setup) else {
+        return;
+    };
     assert!(again.out == first.out, "repeat render differs");
-    let Some(split) = sustain(Setup { block: 61, ..setup }) else {
+    let Some(split) = sustain_run(Setup { block: 61, ..setup }) else {
         return;
     };
     let n = first.out.len().min(split.out.len());
-    assert!(split.out[..n] == first.out[..n], "block partition changes PCM");
-    let Some(unbound) = sustain(Setup {
+    assert!(
+        split.out[..n] == first.out[..n],
+        "block partition changes PCM"
+    );
+    let Some(unbound) = sustain_run(Setup {
         scripts: false,
         ..setup
     }) else {
@@ -754,73 +952,207 @@ fn record(name: &str, run: &Run) {
     );
 }
 
+/// One test per scenario and instrument.
+macro_rules! matrix {
+    ($setup:expr; $($scenario:ident),*) => {
+        $(#[test] fn $scenario() { super::$scenario($setup) })*
+    };
+}
+
 /// Una Corda Pure, C4..G4: felt piano with scripted pedal noise, resonance,
 /// repedalling and release noise ("MAIN", "RESONANCE", "RELEASE", "REPEDAL").
-#[test]
-fn una_corda_pure() {
-    let setup = Setup::new(UNA_CORDA, (60, 67));
-    let Some(plain) = sustain(setup) else { return };
-    record("Una Corda Pure", &plain);
-    // Its release noise has no Kontakt release-trigger group: only the
-    // "RELEASE" script plays it, so unscripted notes fire no release phase.
-    if plain.bound_scripts == 0 {
-        assert!(plain.played.iter().all(|p| p.fired.is_empty()));
+mod una_corda_pure {
+    use super::*;
+    const SETUP: Setup = Setup::new(UNA_CORDA, (60, 67));
+
+    #[test]
+    fn profile() {
+        let Some(plain) = sustain_run(SETUP) else {
+            return;
+        };
+        record("Una Corda Pure", &plain);
+        // Its release noise has no Kontakt release-trigger group: only the
+        // "RELEASE" script plays it, so unscripted notes fire no release phase.
+        assert!(!plain.release_zones);
+        assert!(plain.peak() < 1.0, "peak {}", plain.peak());
     }
-    assert!(plain.peak() < 1.0, "peak {}", plain.peak());
-    pedal_after_notes(setup);
-    pedal_up_while_held(setup);
-    half_pedal(setup);
-    sostenuto(setup);
-    sustain_and_sostenuto(setup);
-    soft_pedal(setup, &plain);
-    retrigger(setup);
-    mpe(setup);
-    voice_limit(setup);
-    determinism(setup, &plain);
+
+    matrix!(SETUP; sustain, pedal_after_notes, pedal_up_while_held, half_pedal, same_instant,
+        sostenuto, sustain_and_sostenuto, soft_pedal, retrigger, channel_mode, mpe, voice_limit,
+        determinism, scripted);
 }
 
 /// Vista 3 Cellos, C3..G3: sixteen Kontakt release-trigger groups (normal and
 /// legato releases, four dynamics, two mic sets) and a legato script.
-#[test]
-fn vista_3_cellos() {
-    let setup = Setup::new(CELLOS, (48, 55));
-    let Some(plain) = sustain(setup) else { return };
-    record("Vista 3 Cellos", &plain);
-    // Kontakt release-trigger groups lower to KeyRelease: one release phase
-    // per released key, at key-up even while the sustain pedal holds the note.
-    for p in &plain.played {
-        assert_eq!(p.release_trigger, Some(Trigger::KeyRelease));
-        assert_eq!(p.fired, [p.key_at.unwrap() as usize / BLOCK * BLOCK]);
+mod vista_3_cellos {
+    use super::*;
+    const SETUP: Setup = Setup::new(CELLOS, (48, 55));
+
+    #[test]
+    fn profile() {
+        let Some(plain) = sustain_run(SETUP) else {
+            return;
+        };
+        record("Vista 3 Cellos", &plain);
+        // Kontakt release-trigger groups lower to KeyRelease: one release
+        // phase per released key, at key-up even while the pedal holds it.
+        assert!(plain.release_zones);
+        for p in &plain.played {
+            assert_eq!(p.release_trigger, Some(Trigger::KeyRelease));
+            assert_eq!(p.fired, [block_of(p.key_at.unwrap() as usize)]);
+        }
+        assert!(plain.peak() < 1.5, "peak {}", plain.peak());
     }
-    assert!(plain.peak() < 1.5, "peak {}", plain.peak());
-    pedal_after_notes(setup);
-    pedal_up_while_held(setup);
-    half_pedal(setup);
-    sostenuto(setup);
-    sustain_and_sostenuto(setup);
-    soft_pedal(setup, &plain);
-    retrigger(setup);
-    mpe(setup);
-    voice_limit(setup);
-    determinism(setup, &plain);
+
+    matrix!(SETUP; sustain, pedal_after_notes, pedal_up_while_held, half_pedal, same_instant,
+        sostenuto, sustain_and_sostenuto, soft_pedal, retrigger, channel_mode, mpe, voice_limit,
+        determinism, scripted);
 }
 
 /// ANALOG STRINGS, C4..G4: 480 groups with LFO-modulated layers that the
-/// "Analog Strings" script selects between. Unscripted, every layer sounds.
-#[test]
-fn analog_strings() {
-    let setup = Setup {
+/// "Analog Strings" script selects between. Unscripted, every layer sounds,
+/// so it runs the scenarios where LFO voices matter, with a large pool.
+mod analog_strings {
+    use super::*;
+    const SETUP: Setup = Setup {
         voices: 4096,
         ..Setup::new(ANALOG, (60, 67))
     };
-    let Some(plain) = sustain(setup) else { return };
-    record("ANALOG STRINGS", &plain);
-    assert!(plain.played.iter().all(|p| p.fired.is_empty()));
-    // All 480 layers summed are far over full scale until the script binds.
-    let ceiling = if plain.bound_scripts == 0 { 16.0 } else { 2.0 };
-    assert!(plain.peak() < ceiling, "peak {}", plain.peak());
-    sostenuto(setup);
-    soft_pedal(setup, &plain);
-    retrigger(setup);
-    determinism(setup, &plain);
+
+    #[test]
+    fn profile() {
+        let Some(plain) = sustain_run(SETUP) else {
+            return;
+        };
+        record("ANALOG STRINGS", &plain);
+        assert!(!plain.release_zones);
+        // All 480 layers summed are far over full scale until the script binds.
+        let ceiling = if plain.bound_scripts == 0 { 16.0 } else { 2.0 };
+        assert!(plain.peak() < ceiling, "peak {}", plain.peak());
+    }
+
+    matrix!(SETUP; sostenuto, soft_pedal, retrigger, determinism);
+}
+
+/// A script that takes over the sustain pedal the way Vista's does: it
+/// consumes CC64, holds note-offs while the pedal is down, and sends them at
+/// pedal-up.
+const SCRIPT_SUSTAIN: &str = "on init
+    declare %ids[128]
+    declare %held[128]
+    declare $key
+end on
+on release
+    if (%CC[64] > 63)
+        ignore_event($EVENT_ID)
+        %ids[$EVENT_NOTE] := $EVENT_ID
+        %held[$EVENT_NOTE] := 1
+    end if
+end on
+on controller
+    if ($CC_NUM = 64)
+        ignore_controller
+        if (%CC[64] < 64)
+            $key := 0
+            while ($key < 128)
+                if (%held[$key] = 1)
+                    note_off(%ids[$key])
+                    %held[$key] := 0
+                end if
+                $key := $key + 1
+            end while
+        end if
+    end if
+end on";
+
+/// A script that swallows CC64 and does nothing with it: no sustain at all.
+const SCRIPT_NO_PEDAL: &str = "on controller
+    if ($CC_NUM = 64)
+        ignore_controller
+    end if
+end on";
+
+/// A script release noise in the style of Una Corda's: one fixed-length note
+/// per key-up, leaving the pedal to the native core.
+const SCRIPT_RELEASE_NOISE: &str = "on release
+    play_note($EVENT_NOTE, 40, 0, 300000)
+end on";
+
+/// Scripts bound to the real instrument and consuming pedal/release events.
+fn scripted(setup: Setup) {
+    let events = [
+        (0.0, Cc(0, 64, 127)),
+        (0.1, On(0, setup.keys.0, 100)),
+        (0.1, On(0, setup.keys.0 + 4, 90)),
+        (0.4, Off(0, setup.keys.0)),
+        (0.4, Off(0, setup.keys.0 + 4)),
+        (1.0, Cc(0, 64, 0)),
+    ];
+    let (a, b) = (setup.keys.0, setup.keys.0 + 4);
+
+    let Some(run) = play(
+        Setup {
+            script: Some(SCRIPT_SUSTAIN),
+            ..setup
+        },
+        &events,
+    ) else {
+        return;
+    };
+    let name = "script sustain";
+    sane(&run, name);
+    assert_eq!(run.bound_scripts, 1);
+    for key in [a, b] {
+        let p = run.note(key, 0);
+        assert_eq!(
+            (p.key_at, p.gate_at),
+            (Some(at(0.4) as u64), Some(at(1.0) as u64)),
+            "{name}: note {key}"
+        );
+        // The ignored note-off is the release event only when the script
+        // finally sends it: release triggers wait for pedal-up.
+        let expected: &[usize] = if run.release_zones {
+            &[block_of(at(1.0))]
+        } else {
+            &[]
+        };
+        assert_eq!(p.fired, expected, "{name}: note {key} release");
+    }
+
+    let Some(run) = play(
+        Setup {
+            script: Some(SCRIPT_NO_PEDAL),
+            ..setup
+        },
+        &events,
+    ) else {
+        return;
+    };
+    let name = "script without pedal";
+    sane(&run, name);
+    assert_gate(&run, name, a, 0, 0.4, 0.4);
+    assert_gate(&run, name, b, 0, 0.4, 0.4);
+
+    let Some(run) = play(
+        Setup {
+            script: Some(SCRIPT_RELEASE_NOISE),
+            ..setup
+        },
+        &events,
+    ) else {
+        return;
+    };
+    let name = "script release noise";
+    sane(&run, name);
+    assert_gate(&run, name, a, 0, 0.4, 1.0);
+    assert_gate(&run, name, b, 0, 0.4, 1.0);
+    // Two held inputs plus exactly one generated note per key-up.
+    let notes = |t: f64| run.notes[at(t) / BLOCK];
+    assert_eq!((notes(0.3), notes(0.45)), (2, 4), "{name}");
+    assert_eq!(run.notes.iter().max(), Some(&4), "{name}");
+    assert!(run.energy(at(0.4), at(0.7)) > 0.0);
+}
+
+fn block_of(frame: usize) -> usize {
+    frame / BLOCK * BLOCK
 }
