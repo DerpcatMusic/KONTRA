@@ -91,6 +91,19 @@ impl Seek for Bytes {
 enum Codec {
     Wav(crate::samples::Wav),
     Ncw(Box<ncw::NcwReader<Bytes>>),
+    /// A reader supplied by another loader: fills frames from a start.
+    Custom(Box<dyn FnMut(usize, &mut [Frame]) -> io::Result<()> + Send>),
+}
+
+/// Where an asset's frames are read from, reopened by each decode thread.
+pub trait AssetSource: Send + Sync {
+    fn open(&self) -> io::Result<SampleReader>;
+}
+
+impl AssetSource for Source {
+    fn open(&self) -> io::Result<SampleReader> {
+        SampleReader::open(self)
+    }
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -142,6 +155,21 @@ impl SampleReader {
         })
     }
 
+    /// A reader of `frames` frames at `rate` that fills output from `read(start, out)`.
+    pub fn custom(
+        rate: u32,
+        frames: usize,
+        read: impl FnMut(usize, &mut [Frame]) -> io::Result<()> + Send + 'static,
+    ) -> Self {
+        Self {
+            codec: Codec::Custom(Box::new(read)),
+            bytes: None,
+            rate,
+            frames,
+            scratch: Vec::new(),
+        }
+    }
+
     pub fn rate(&self) -> u32 {
         self.rate
     }
@@ -156,6 +184,7 @@ impl SampleReader {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
         match &mut self.codec {
+            Codec::Custom(read) => read(start, out)?,
             Codec::Wav(wav) => {
                 let align = wav.width * wav.channels;
                 let bytes = self.bytes.as_mut().expect("WAV bytes");
@@ -323,7 +352,7 @@ pub(crate) fn start_ranges(
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
     pub assets: Vec<Pcm>,
-    pub sources: HashMap<AssetId, Source>,
+    pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
     pub head: usize,
     pub rate: u32,
@@ -347,7 +376,7 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 /// decode thread. Purge and reload start ranges here; the runtime owns the
 /// page cache.
 pub struct Streamer {
-    sources: Arc<HashMap<AssetId, Source>>,
+    sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
     ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
@@ -358,7 +387,7 @@ impl Streamer {
     /// Open every source as a streamed asset, timing an open plus first-page
     /// read on up to `probe` of them to size heads by `policy`.
     pub(crate) fn open(
-        sources: Vec<(Source, &std::path::Path)>,
+        sources: Vec<(Arc<dyn AssetSource>, &std::path::Path)>,
         rate: u32,
         policy: &StreamPolicy,
         probe: usize,
@@ -370,7 +399,7 @@ impl Streamer {
         let mut full = 0;
         for (i, (source, path)) in sources.into_iter().enumerate() {
             let begin = Instant::now();
-            let mut reader = SampleReader::open(&source).map_err(|e| LoadError::io(path, e))?;
+            let mut reader = source.open().map_err(|e| LoadError::io(path, e))?;
             if i < probe {
                 let n = reader.frames().min(PAGE_FRAMES);
                 reader
@@ -421,7 +450,7 @@ impl Streamer {
     /// Read every asset's `ranges` and start `decoders` threads for `worker`.
     /// Returns the streamer and the resident bytes of those ranges.
     pub(crate) fn start(
-        sources: HashMap<AssetId, Source>,
+        sources: HashMap<AssetId, Arc<dyn AssetSource>>,
         assets: &[Pcm],
         ranges: Vec<Vec<Range<usize>>>,
         worker: StreamWorker,
@@ -431,7 +460,7 @@ impl Streamer {
         let mut table = HashMap::with_capacity(assets.len());
         for (pcm, ranges) in assets.iter().zip(ranges) {
             if !ranges.is_empty() {
-                let mut reader = SampleReader::open(&sources[&pcm.asset_id()])?;
+                let mut reader = sources[&pcm.asset_id()].open()?;
                 bytes += load_ranges(pcm, &mut reader, &ranges)?;
             }
             table.insert(pcm.asset_id(), ranges);
@@ -517,7 +546,7 @@ impl Streamer {
 
 fn reload(
     assets: &[Pcm],
-    sources: &HashMap<AssetId, Source>,
+    sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     ranges: &HashMap<AssetId, Vec<Range<usize>>>,
 ) -> io::Result<usize> {
     let mut count = 0;
@@ -529,7 +558,7 @@ fn reload(
         let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
             continue;
         };
-        load_ranges(pcm, &mut SampleReader::open(source)?, ranges)?;
+        load_ranges(pcm, &mut source.open()?, ranges)?;
         count += 1;
     }
     Ok(count)
@@ -549,7 +578,7 @@ impl Drop for Streamer {
 /// (each holds a 16 KiB read buffer).
 const OPEN_READERS: usize = 16;
 
-fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop: &AtomicBool) {
+fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Arc<dyn AssetSource>>, stop: &AtomicBool) {
     let worker = || {
         worker
             .lock()
@@ -572,7 +601,7 @@ fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop
             Some(i) => Some(i),
             None => sources
                 .get(&asset)
-                .and_then(|s| SampleReader::open(s).ok())
+                .and_then(|s| s.open().ok())
                 .map(|r| {
                     if readers.len() == OPEN_READERS {
                         let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();

@@ -11,11 +11,14 @@ use crate::{
     ufs::{Directory, Member, Ufs},
 };
 use anyhow::{Context, Result, ensure};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// An open bank. Deliberately not Debug: it holds access values.
 pub struct Bank {
-    ufs: Ufs,
+    ufs: Arc<Ufs>,
     directory: Directory,
     content_key: Option<u64>,
     program_namespace: Vec<u8>,
@@ -55,7 +58,7 @@ impl Bank {
             None
         };
         Ok(Self {
-            ufs,
+            ufs: Arc::new(ufs),
             directory,
             content_key,
             program_namespace: namespaces.program,
@@ -106,6 +109,36 @@ impl Bank {
     pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, String> {
         self.resource_inner(program_path, path)
             .map_err(|e| access::failure_reason(&e))
+    }
+
+    /// A bank-local audio resource for streaming: read in pieces and decrypted
+    /// in memory as it is read, never written out. Checked by opening it once.
+    pub fn stream_source(
+        &self,
+        program_path: &str,
+        path: &str,
+    ) -> Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>, String> {
+        self.stream_inner(program_path, path)
+            .map_err(|e| access::failure_reason(&e))
+    }
+
+    fn stream_inner(
+        &self,
+        program_path: &str,
+        path: &str,
+    ) -> Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>> {
+        let parts = resources(&self.directory, program_path, path)?
+            .into_iter()
+            .map(|member| {
+                let (offset, size, key) = self.ufs.locate(
+                    member,
+                    self.directory.metadata_key,
+                    self.content_key,
+                )?;
+                Ok(crate::stream::Origin::Member { ufs: self.ufs.clone(), offset, size, key })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        crate::stream::source(parts).map_err(anyhow::Error::msg)
     }
 
     fn resource_inner(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>> {
