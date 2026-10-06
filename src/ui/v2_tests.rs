@@ -178,7 +178,7 @@ const NO_LIMITS: sampler_ksp::Limits =
 fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
-    let (w, h) = (page.size.width.clamp(1, 1200) as u16, page.size.height.clamp(1, 900) as u16);
+    let (w, h) = (page.size.width.clamp(1, 1200) as u16, ir_view::height(&face, ir::PageRef(0)).clamp(1, 900) as u16);
     let mut values = ir_view::Values::default();
     let mut assets = ir_view::Assets::default();
     let mut bytes = [0; 2];
@@ -235,6 +235,13 @@ fn ir_view_real_instrument_memory() {
     }
     let mut source = super::pictures::Source::of(&patch);
     source.describe(&mut face);
+    if std::env::var_os("DUMP_WIDGETS").is_some() {
+        let r = ir_view::resolved(&face);
+        for (n, w) in r.widgets.iter().enumerate() {
+            eprintln!("W{n} {} {:?} {:?} vis={} hide={:?} text={:?} val={:?} imgs={:?} parent={:?}", w.name, kind_name(&w.kind), r.page_rect(ir::WidgetRef(n)), r.visible(ir::WidgetRef(n)), w.hide, w.text, w.value_text, w.images.iter().map(|i| (r.assets[i.asset.0].path.clone(), i.role)).collect::<Vec<_>>(), w.parent);
+        }
+        eprintln!("PAGE {:?} {:?}", r.pages[0], r.unsupported);
+    }
     let stem = Path::new(&patch).file_stem().unwrap().to_string_lossy().replace(' ', "_");
     let bytes = both_modes(&face, &mut |a| source.load(a), "real", &stem);
     eprintln!(
@@ -275,14 +282,23 @@ fn editor_with_a_real_instrument() {
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(40);
     let shot = |h: &Harness, name: &str| shoot(&h.ui, 1180, 780, &format!("app/{stem}-{name}.png"));
-    shot(&h, "rack-original");
-    if h.ui.scene().unwrap().surface("face-vector-0").is_some() {
+    if h.ui.scene().unwrap().surface("face-original-0").is_some() {
+        h.press("face-original-0");
+        h.idle(20);
+        shot(&h, "rack-original");
         h.press("face-vector-0");
         h.idle(20);
         shot(&h, "rack-vector");
+    } else {
+        shot(&h, "rack");
     }
     h.press("tab-mixer");
     shot(&h, "mixer");
     h.press("tab-report");
     shot(&h, "report");
+}
+
+fn kind_name(k: &ir::Kind) -> String {
+    let s = format!("{k:?}");
+    s.chars().take(60).collect()
 }
