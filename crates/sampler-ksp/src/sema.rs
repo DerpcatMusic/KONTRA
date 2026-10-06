@@ -133,6 +133,7 @@ pub fn analyze<'a, 's>(
             }
             s.hir.warnings.push(crate::diag::Fault {
                 span: c.span,
+                builtin: None,
                 message: "later ui_control callback replaces an earlier one".into(),
             });
             let callback: &mut Callback = &mut s.hir.callbacks[index];
@@ -273,6 +274,7 @@ impl<'a> Sema<'a, '_> {
                     // is publishing that controller value.
                     self.hir.warnings.push(crate::diag::Fault {
                         span: target.span,
+                        builtin: None,
                         message: "write to %CC lowered as set_controller".into(),
                     });
                     let index = self.expr(index)?;
@@ -425,6 +427,7 @@ impl<'a> Sema<'a, '_> {
                     .filter(|n| *n <= self.budget.array_cells)
                     .ok_or(crate::diag::Fault {
                         span,
+                        builtin: None,
                         message: "array cell budget exceeded".into(),
                     })?;
                 Home::Cells {
@@ -481,6 +484,7 @@ impl<'a> Sema<'a, '_> {
         let control = PerformanceControl::assumed(name, kind);
         self.hir.warnings.push(crate::diag::Fault {
             span,
+            builtin: None,
             message: format!(
                 "{name} is not in the performance view description; assumed {}",
                 kind.keyword()
@@ -502,6 +506,7 @@ impl<'a> Sema<'a, '_> {
                 .filter(|n| *n < u32::MAX)
                 .ok_or(crate::diag::Fault {
                     span,
+                    builtin: None,
                     message: "script cell range exceeded".into(),
                 })?;
         Ok(offset)
@@ -549,6 +554,7 @@ impl<'a> Sema<'a, '_> {
                     .filter(|n| *n <= self.budget.array_cells)
                     .ok_or(crate::diag::Fault {
                         span: size.span,
+                        builtin: None,
                         message: "array cell budget exceeded".into(),
                     })?;
                 Some(n as u32)
@@ -620,6 +626,7 @@ impl<'a> Sema<'a, '_> {
                 let cell = self.hir.note_cells;
                 self.hir.note_cells = cell.checked_add(1).ok_or(crate::diag::Fault {
                     span,
+                    builtin: None,
                     message: "note cell range exceeded".into(),
                 })?;
                 Home::Note(cell)
@@ -666,6 +673,7 @@ impl<'a> Sema<'a, '_> {
         if d.storage == Storage::Polyphonic {
             self.hir.warnings.push(crate::diag::Fault {
                 span,
+                builtin: None,
                 message: "polyphonic variables start at 0; initializer ignored".into(),
             });
             return Ok(None);
@@ -708,6 +716,7 @@ impl<'a> Sema<'a, '_> {
         self.resolve_or_declare(sym, span)?
             .ok_or_else(|| crate::diag::Fault {
                 span,
+                builtin: None,
                 message: format!("undeclared variable {}", self.name(sym)),
             })
     }
@@ -1056,6 +1065,7 @@ impl<'a> Sema<'a, '_> {
                     if !self.symbols.contains_key(&sym) {
                         self.hir.warnings.push(crate::diag::Fault {
                             span,
+                            builtin: None,
                             message: format!(
                                 "undeclared {name} treated as an opaque vendor constant"
                             ),

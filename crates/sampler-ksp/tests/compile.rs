@@ -1117,3 +1117,27 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
     // Without load_performance_view the name stays undeclared.
     assert!(compile("on note $x := $Cut end on", 48000, limits).is_err());
 }
+
+#[test]
+fn unsupported_and_approximate_builtins_are_positioned_diagnostics() {
+    let limits = Limits {
+        source_bytes: 4096,
+        instructions: 256,
+        variables: 8,
+        array_cells: 0,
+    };
+    let script = compile("on note\n  set_script_title(\"x\")\nend on", 48000, limits).unwrap();
+    let w = script
+        .warnings()
+        .iter()
+        .find(|w| w.builtin == Some("set_script_title"))
+        .unwrap();
+    assert_eq!(
+        (w.kind, w.line, w.column),
+        (sampler_ksp::Kind::Unsupported, 2, 3)
+    );
+    let error = compile("on note\n  nope(1)\nend on", 48000, limits)
+        .err()
+        .unwrap();
+    assert_eq!((error.kind, error.line), (sampler_ksp::Kind::Error, 2));
+}

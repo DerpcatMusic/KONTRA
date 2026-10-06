@@ -189,6 +189,7 @@ impl Eval<'_> {
         if self.st.warnings.len() < 1000 {
             self.st.warnings.push(Fault {
                 span,
+                builtin: None,
                 message: message.into(),
             });
         }

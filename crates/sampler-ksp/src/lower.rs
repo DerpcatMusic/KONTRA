@@ -96,7 +96,7 @@ pub struct Unit<'h> {
     pub budget: usize,
     pub services: Vec<Builtin>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
-    pub warnings: Vec<Fault>,
+    pub warnings: Vec<(Fault, crate::diag::Kind)>,
     /// Scratch text cells used above `hir.texts`.
     pub scratch: u32,
 }
@@ -156,6 +156,7 @@ impl<'h> Unit<'h> {
             .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
             .map_err(|e| Fault {
                 span,
+                builtin: None,
                 message: format!("invalid lowered program: {e:?}"),
             })
     }
@@ -219,6 +220,7 @@ const PROPERTY_KEY: [Key; 4] = [
 fn reg(r: u16, n: u16) -> Result<u16> {
     r.checked_add(n).ok_or_else(|| Fault {
         span: Span::default(),
+        builtin: None,
         message: "register range exceeded".into(),
     })
 }
@@ -257,23 +259,36 @@ impl Gen<'_, '_> {
         }
     }
     fn warn(&mut self, message: impl Into<String>) {
+        self.report(None, crate::diag::Kind::Warning, message.into());
+    }
+    fn report(&mut self, builtin: Option<Builtin>, kind: crate::diag::Kind, message: String) {
         if self.u.warnings.len() < 1000 {
-            self.u.warnings.push(Fault {
+            let fault = Fault {
                 span: self.span,
-                message: message.into(),
-            });
+                builtin: builtin.map(Builtin::name),
+                message,
+            };
+            self.u.warnings.push((fault, kind));
         }
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
-        *self
+        let count = self
             .u
             .coverage
             .entry((builtin.name(), coverage))
-            .or_default() += 1;
+            .or_default();
+        *count += 1;
+        // The first approximated call site per builtin is enough for the report;
+        // `Script::coverage` keeps the totals.
+        if *count == 1 && coverage == Coverage::Approximate {
+            let message = format!("{} runs with simplified semantics", builtin.name());
+            self.report(Some(builtin), crate::diag::Kind::Approximate, message);
+        }
     }
     fn ignore(&mut self, builtin: Builtin, why: &str) {
         self.cover(builtin, Coverage::Ignored);
-        self.warn(format!("{} {why}", builtin.name()));
+        let message = format!("{} {why}", builtin.name());
+        self.report(Some(builtin), crate::diag::Kind::Unsupported, message);
     }
     fn note_context(&self) -> bool {
         matches!(self.ctx, Context::Note | Context::Release)
