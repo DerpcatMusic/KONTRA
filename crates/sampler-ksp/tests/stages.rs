@@ -327,7 +327,7 @@ fn release_modules_hold_independently_and_note_held_tracks_the_incoming_stage() 
 }
 
 #[test]
-fn consumed_notes_release_only_reached_modules_and_generated_notes_skip_the_creator() {
+fn consumed_notes_release_only_reached_modules_and_generated_notes_also_run_the_creator() {
     let plan = plan(&[
         "on init declare $releases end on
         on note ignore_event($EVENT_ID) play_note(64,127,0,125) end on
@@ -336,7 +336,7 @@ fn consumed_notes_release_only_reached_modules_and_generated_notes_skip_the_crea
         on note inc($notes) end on
         on release inc($releases) end on",
     ]);
-    let budget = limits(&plan, 4);
+    let budget = limits(&plan, 6);
     let mut rt = Runtime::new(plan, budget).unwrap();
     support::without_heap(|| {
         let parent = rt.trigger(input(1), 60, 1.).unwrap();
@@ -347,7 +347,8 @@ fn consumed_notes_release_only_reached_modules_and_generated_notes_skip_the_crea
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(1));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(0));
         rt.render(&mut [[0.; 2]; 7]).unwrap();
-        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        // As in Kontakt, the generated note's release runs its creator's release.
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(2));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(1));
         rt.flush_behaviors(|_, _, outcome| {
             assert_eq!(outcome, Outcome::Finished);
@@ -376,7 +377,7 @@ fn parent_release_reaches_linked_children_before_the_creating_callback() {
             note_off($EVENT_ID)
         end on",
     ]);
-    let budget = limits(&plan, 4);
+    let budget = limits(&plan, 6);
     let mut rt = Runtime::new(plan, budget).unwrap();
     support::without_heap(|| {
         let parent = rt.trigger(input(1), 60, 1.).unwrap();
@@ -384,7 +385,8 @@ fn parent_release_reaches_linked_children_before_the_creating_callback() {
         assert_eq!(rt.note_event_at(parent, 1), Ok(None));
         rt.note_off(input(1), None).unwrap();
         assert!(rt.release_context(parent).unwrap().gate.is_some());
-        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        // Parent and linked child each run the creating module's release.
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(2));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(1));
         assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(1));
         let mut audio = [[0.; 2]; 7];
@@ -484,11 +486,12 @@ fn stage_linked_children_obey_pedals_without_fabricating_host_inputs() {
 #[test]
 fn late_parent_fault_closes_a_linked_child_held_in_a_downstream_release() {
     let plan = plan(&[
-        "on note ignore_event($EVENT_ID) play_note(64,127,0,-1) end on
-        on release wait(125) while (1 = 1) end while end on",
+        "on init declare polyphonic $mine end on
+        on note $mine := 1 ignore_event($EVENT_ID) play_note(64,127,0,-1) end on
+        on release if ($mine = 1) wait(125) while (1 = 1) end while end if end on",
         "on release ignore_event($EVENT_ID) wait(1000) note_off($EVENT_ID) end on",
     ]);
-    let budget = limits(&plan, 3);
+    let budget = limits(&plan, 5);
     let mut rt = Runtime::new(plan, budget).unwrap();
     support::without_heap(|| {
         let parent = rt.trigger(input(1), 60, 1.).unwrap();

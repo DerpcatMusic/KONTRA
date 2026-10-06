@@ -46,7 +46,7 @@ fn runtime_script(script: sampler_ksp::Script) -> Runtime {
             .unwrap(),
         )
         .unwrap();
-    let behavior_cells = plan.behavior_local_count() * 8;
+    let behavior_cells = plan.behavior_local_count() * 16;
     Runtime::new(
         plan,
         Limits {
@@ -58,7 +58,8 @@ fn runtime_script(script: sampler_ksp::Script) -> Runtime {
             voices: 16,
             decisions: 0,
             commands: 16,
-            behaviors: 8,
+            // Generated notes also reserve their creating module's release.
+            behaviors: 16,
             behavior_fuel: 1024,
             behavior_cells,
             note_cells,
@@ -150,8 +151,10 @@ fn stored_pitch_and_velocity_targets_keep_audio_pairing_and_reused_slots_isolate
 
 #[test]
 fn generated_ids_in_arrays_and_expressions_keep_each_original_release_owner() {
-    let source = "on init declare %ids[8] declare $duration := 0 declare polyphonic $slot end on
+    let source = "on init declare %ids[8] declare $duration := 0 declare polyphonic $slot
+        declare polyphonic $mine end on
       on note
+        $mine := 1
         $slot := ($EVENT_NOTE - 60) * 4
         %ids[$slot] := $EVENT_ID
         ignore_event($EVENT_ID)
@@ -160,7 +163,10 @@ fn generated_ids_in_arrays_and_expressions_keep_each_original_release_owner() {
         %ids[$slot + 3] := 7 + play_note(60,127,0,125) - 7
       end on
       on release
-        %ids[$slot] := $EVENT_ID
+        { The generated notes run this too, with their own (unset) polyphonics. }
+        if ($mine = 1)
+          %ids[$slot] := $EVENT_ID
+        end if
       end on";
     for block in [1, 7, 64] {
         let mut rt = runtime(source);
@@ -276,9 +282,11 @@ fn stored_note_off_replaces_durations_and_runs_original_release_once_at_exact_fr
             assert_eq!(audio[4..8], [[1.; 2]; 4]);
             assert_eq!(audio[8..], [[0.; 2]; 4]);
             assert_eq!(rt.release_context(original).unwrap().key.unwrap().at, 2);
+            // The original's release runs once; as in Kontakt, each of the
+            // three generated notes also runs this script's release callback.
             assert_eq!(
                 rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 3),
-                Ok(1)
+                Ok(4)
             );
             rt.flush_behaviors(|_, _, outcome| {
                 assert_eq!(outcome, Outcome::Finished);
