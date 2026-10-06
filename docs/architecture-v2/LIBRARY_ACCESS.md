@@ -241,6 +241,43 @@ to 32 MiB). The installed Conflux multi census improved from 20/50 to 50/50
 decoding by reading the actual Chords/Phrases tool WAVs, without synthesizing
 or bundling replacements. `Samples` keeps its existing public API.
 
+Full installed Kontakt census on 2026-10-06: all 11 libraries and all 835
+programs open. Programs decoding every referenced sample improved from
+803/835 to 833/835; libraries with every program decoding improved from
+9/11 to 10/11. NKI instruments remain at 781/781 opening and 779/781 decoding.
+NKM multis remain at 54/54 opening and improved from 24/54 to 54/54 decoding.
+The corrected census groups Morphology within the selected library root,
+instead of finding an unrelated `Samples` directory above that root.
+
+| Library | Programs opening | Programs decoding |
+| --- | ---: | ---: |
+| ANALOG STRINGS | 1/1 | 1/1 |
+| Afflatus Chapter II Brass | 348/348 | 348/348 |
+| Areia | 155/155 | 153/155 |
+| Audio Imperia CHORUS | 42/42 | 42/42 |
+| Audio Imperia Dolce | 77/77 | 77/77 |
+| Conflux | 51/51 | 51/51 |
+| Morphology Evolved | 1/1 | 1/1 |
+| Pacific Ensemble Strings | 50/50 | 50/50 |
+| Performance Samples Vista | 7/7 | 7/7 |
+| Solo | 100/100 | 100/100 |
+| Una Corda | 3/3 | 3/3 |
+
+The two remaining failures are Areia's legacy `01 16 Violins - Legato` and
+`05 16Vlns+10Vls 8va - Legato`. Both reference the same member in `Areia_0.nkx`:
+`Samples/Areia_16VlnsLgtSstndVFMDyn3RR1_75_87_12.ncw`. Its first four blocks
+parse, then decoding fails with `invalid NCW block signature at block 4,
+channel 0`. The payload fits its archive range; no alternate member was found
+in the installed Areia archives. Whether its tail is damaged or uses another
+encoding remains unresolved; an original alternate copy is needed for
+comparison. No missing audio is synthesized or silently discarded.
+
+Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
+archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
+0x110; ten version 0x111). No legacy NKS instrument container was found in
+this installed census; those profiles have authored tests rather than a local
+real-library result.
+
 ## Verification on the shared machine
 
 Run every Cargo command and real-library census/render with
