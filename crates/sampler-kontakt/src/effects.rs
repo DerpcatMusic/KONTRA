@@ -919,6 +919,7 @@ mod tests {
                 chain: None,
                 output: ir::Output::Master,
                 voice_limit: None,
+                monophonic_release: false,
             }],
             ..Default::default()
         };

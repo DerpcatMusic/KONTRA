@@ -23,8 +23,20 @@ pub struct Program {
 
 /// Plays made once their originating note was released sound at most this long.
 const DETACHED_MS: f64 = 5000.0;
+/// Gliding script modulations are stepped this often.
+const GLIDE_STEP_MS: f64 = 5.0;
 /// Script wake-ups handled at one instant before time is forced forward.
 const SPIN: usize = 64;
+
+/// A `sendScriptModulation` gliding to its value.
+struct Glide {
+    id: u16,
+    voice: Option<u64>,
+    from: f64,
+    to: f64,
+    start_ms: f64,
+    ms: f64,
+}
 
 pub struct Player {
     rt: Runtime,
@@ -38,6 +50,13 @@ pub struct Player {
     next: u64,
     /// Plays that asked for something the runtime does not model.
     unmodeled: Vec<&'static str>,
+    /// Script event modulation values: for all voices (also given to later
+    /// ones) and per voice.
+    global: HashMap<u16, f64>,
+    voice_values: HashMap<(u64, u16), f64>,
+    glides: Vec<Glide>,
+    /// Frame of the next glide step.
+    glide_at: u64,
 }
 
 impl Player {
@@ -51,6 +70,10 @@ impl Player {
             held: HashMap::new(),
             next: 1,
             unmodeled: Vec::new(),
+            global: HashMap::new(),
+            voice_values: HashMap::new(),
+            glides: Vec::new(),
+            glide_at: 0,
         })
     }
 
@@ -115,11 +138,19 @@ impl Player {
         let mut spins = 0;
         while done < out.len() {
             let left = out.len() - done;
-            let due = self
+            if !self.glides.is_empty() && self.rt.now() >= self.glide_at {
+                self.step_glides();
+            }
+            let glide = (!self.glides.is_empty()).then(|| self.glide_at - self.rt.now());
+            let host = self
                 .host
                 .next_due()
                 .map(|ms| self.frames(ms).saturating_sub(self.rt.now()));
-            match due {
+            let due = match (host, glide) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            match host {
                 Some(0) if spins < SPIN => {
                     spins += 1;
                     self.host.advance(self.now_ms());
@@ -145,6 +176,84 @@ impl Player {
                         self.release(note, at_ms)?;
                     }
                 }
+                Command::Modulation {
+                    id,
+                    value,
+                    glide_ms,
+                    voice,
+                    at_ms,
+                } => self.modulate(id, value, glide_ms, voice, at_ms)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn modulate(
+        &mut self,
+        id: u16,
+        value: f64,
+        glide_ms: f64,
+        voice: Option<u64>,
+        at_ms: f64,
+    ) -> Result<(), Error> {
+        self.glides.retain(|g| !(g.id == id && g.voice == voice));
+        if glide_ms <= 0.0 {
+            return self.set_value(id, voice, value);
+        }
+        let from = match voice {
+            Some(v) => self.voice_values.get(&(v, id)),
+            None => self.global.get(&id),
+        }
+        .copied()
+        .unwrap_or(0.0);
+        if self.glides.is_empty() {
+            self.glide_at = self.rt.now();
+        }
+        self.glides.push(Glide {
+            id,
+            voice,
+            from,
+            to: value,
+            start_ms: at_ms,
+            ms: glide_ms,
+        });
+        Ok(())
+    }
+
+    fn step_glides(&mut self) {
+        let now = self.now_ms();
+        let glides = std::mem::take(&mut self.glides);
+        for g in glides {
+            let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
+            let _ = self.set_value(g.id, g.voice, g.from + (g.to - g.from) * t);
+            if t < 1.0 {
+                self.glides.push(g);
+            }
+        }
+        self.glide_at = self.rt.now() + self.frames(GLIDE_STEP_MS).max(1);
+    }
+
+    /// Set Script Event Modulation `id` now. Voices that ended are forgotten.
+    fn set_value(&mut self, id: u16, voice: Option<u64>, value: f64) -> Result<(), Error> {
+        let targets: Vec<u64> = match voice {
+            Some(v) => {
+                self.voice_values.insert((v, id), value);
+                vec![v]
+            }
+            None => {
+                self.global.insert(id, value);
+                self.notes.keys().copied().collect()
+            }
+        };
+        for v in targets {
+            let Some(note) = self.notes.get(&v).copied() else {
+                continue;
+            };
+            match self.rt.set_note_script_value(note, id, value) {
+                Err(Error::StaleHandle) => {
+                    self.notes.remove(&v);
+                }
+                other => other?,
             }
         }
         Ok(())
@@ -198,10 +307,14 @@ impl Player {
             let id = self.rt.expression_id(note)?;
             self.rt.set_expression(id, expression)?;
         }
+        for (id, value) in self.global.clone() {
+            self.rt.set_note_script_value(note, id, value)?;
+        }
         self.rt.forward_attack(note)?;
         let now = self.now_ms();
         match play.duration_ms {
-            Some(ms) => self.release(note, now + ms)?,
+            Some(ms) if ms > 0.0 => self.release(note, now + ms)?,
+            Some(_) => {}
             None if parent.is_none() || closing => self.release(note, now + DETACHED_MS)?,
             None => {}
         }
