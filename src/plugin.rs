@@ -11,7 +11,7 @@ use crate::{
     import::{self, Instrument},
     timing::{self, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, LiveFault, Persisted, Refresh, Runtime},
-    sound::{BlockInfo, Core, Rendered, Transport, v1::{Prepared, V1Core}},
+    sound::{BlockInfo, Core, Macros, Rendered, Transport, v1::{Prepared, V1Core}},
 };
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
@@ -3090,29 +3090,6 @@ const LIVE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
 
-/// Channel that makes the on-screen keyboard reach the part's first zone.
-fn preview_channel(e: &Engine) -> u8 {
-    e.bank()
-        .and_then(|b| {
-            b.zones()
-                .first()
-                .map(|z| b.groups()[z.group].channel.max(0) as u8)
-        })
-        .unwrap_or(0)
-}
-
-/// Mid-range velocity of the first zone on `note`.
-fn preview_velocity(e: &Engine, note: u8) -> u8 {
-    let zone = e.bank().and_then(|b| {
-        b.zones()
-            .iter()
-            .find(|z| (z.low_key..=z.high_key).contains(&note))
-    });
-    zone.map_or(100, |z| {
-        ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8
-    })
-}
-
 /// One round of every part's smart memory (see `engine/residency.rs`):
 /// take back the heads the audio thread swapped, send the next ones, and
 /// show what is resident and what was freed.
@@ -3444,13 +3421,13 @@ impl PluginLogic for Sampler {
         let started = Instant::now();
         if !p.shared.discard.is_full() && let Some(mut growth) = p.shared.growth.pop() {
             if growth.core.parts() > s.core.parts() { growth.adopt(s); }
-            p.shared.grown.store(s.core.rack.parts.len() as u64, Ordering::Release);
+            p.shared.grown.store(s.core.parts() as u64, Ordering::Release);
             p.shared.discard.push(Retired { growth: Some(growth), ..Default::default() }).ok().unwrap();
             // Separate queues have no cross-queue ordering: only this
             // acknowledgment permits the loader to publish new-slot work.
             if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
         }
-        let rate = s.core.rack.parts[0].rate();
+        let rate = s.core.sample_rate();
         let frames = b.num_samples();
         // Offline, a render waits for the disk and keeps every tail; live,
         // tails go before the deadline does.
@@ -3473,7 +3450,7 @@ impl PluginLogic for Sampler {
             s.until_poll -= frames;
         }
         if !p.shared.discard.is_full() && let Some(controls) = p.shared.controls.pop() {
-            s.core.rack.set_controls(&controls);
+            s.core.set_mix(&controls);
             p.shared.discard.push(Retired { controls: Some(controls), ..Default::default() }).ok().unwrap();
         }
         if !p.shared.discard.is_full() && let Some(plan) = p.shared.plan.pop() {
@@ -3481,7 +3458,7 @@ impl PluginLogic for Sampler {
             p.shared.discard.push(Retired { plan: Some(old), ..Default::default() }).ok().unwrap();
         }
         // Held back only while aligning; once not, what was held plays at once.
-        let holding = s.core.align.holding(cx.transport.playing);
+        let holding = s.core.holding(cx.transport.playing);
         if !p.shared.discard.is_full() && let Some(routes) = p.shared.routes.pop() {
             for (r, route) in s.core.routers.iter_mut().zip(routes.iter().copied()) { r.set_route(route); }
             p.shared.discard.push(Retired { routes: Some(routes), ..Default::default() }).ok().unwrap();
@@ -3593,11 +3570,7 @@ impl PluginLogic for Sampler {
                 }
             }
         }
-        for (e, r) in s.core.rack.parts.iter_mut().zip(&s.core.routers) {
-            e.attack = p.attack.value();
-            e.release = p.release.value();
-            e.cutoff = p.cutoff.value() * r.cutoff_scale();
-        }
+        s.core.set_macros(Macros { attack: p.attack.value(), release: p.release.value(), cutoff: p.cutoff.value() });
         if p.shared.panic.swap(false, Ordering::AcqRel) {
             p.shared.reset_midi();
             for row in &mut s.key_slots.0 { row.fill(false); }
@@ -3607,22 +3580,18 @@ impl PluginLogic for Sampler {
         while let Some((slot, play)) = p.shared.keyboard.pop() {
             if slot == EVERY_PART {
                 // As host MIDI on port A, channel 1 plays it.
-                let (rack, routers) = (&mut s.core.rack, &mut s.core.routers);
                 match play {
-                    Play::Note(note, 0) => {
-                        let targets = &mut s.key_slots.0[note as usize & 127];
-                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), In::NoteOff(0, note));
-                    }
+                    Play::Note(note, 0) => s.core.event_to(&mut s.key_slots.0[note as usize & 127], In::NoteOff(0, note)),
                     Play::Note(note, velocity) => {
-                        articulate::dispatch_record(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
+                        s.core.event_recorded(0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
                     }
-                    Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
-                    Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
+                    Play::Bend(value) => s.core.event(0, In::Bend(0, value), 0, false),
+                    Play::Mod(value) => s.core.event(0, In::Cc(0, 1, value), 0, false),
                 }
                 continue;
             }
-            let Some(engine) = s.core.rack.parts.get(slot) else { continue };
-            let channel = preview_channel(engine);
+            if slot >= s.core.parts() { continue }
+            let channel = s.core.preview_channel(slot);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
                 Play::Note(note, velocity) => {
@@ -3632,26 +3601,14 @@ impl PluginLogic for Sampler {
                 Play::Bend(value) => In::Bend(channel, value),
                 Play::Mod(value) => In::Cc(channel, 1, value),
             };
-            articulate::play(&mut s.core.rack, &mut s.core.routers, slot, ev);
+            s.core.play(slot, ev);
         }
         // With no part selected there is none to audition.
         let selected = p.shared.selected.load(Ordering::Relaxed) as usize;
-        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.core.rack.parts.len() {
+        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.core.parts() {
             let slot = selected;
-            let e = &mut s.core.rack.parts[slot];
-            for channel in 0..16 {
-                e.cc(channel, 120, 0);
-            }
             let requested = p.shared.audition_note.swap(128, Ordering::Relaxed);
-            let note = if requested < 128 {
-                requested as u8
-            } else {
-                e.bank()
-                    .and_then(|b| b.zones().first())
-                    .map_or(60, |z| z.root)
-            };
-            let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
-            e.note_on(channel, note, velocity);
+            s.core.audition(slot, (requested < 128).then_some(requested as u8));
             s.audition_left[slot] = (rate * 1.5) as usize;
         }
 
@@ -3699,21 +3656,19 @@ impl PluginLogic for Sampler {
                 due = s.core.release_due(at, due);
             }
             let len = (due - at).min(MAX_BLOCK);
-            for (e, left) in s.core.rack.parts.iter_mut().zip(&mut s.audition_left) {
+            for (part, left) in s.audition_left.iter_mut().enumerate().take(s.core.parts()) {
                 if *left > 0 {
                     *left = left.saturating_sub(len);
                     if *left == 0 {
-                        for channel in 0..16 {
-                            e.cc(channel, 123, 0);
-                        }
+                        s.core.audition_stop(part);
                     }
                 }
             }
             for gain in &mut gains[..len] {
                 *gain = db_to_linear(p.volume.read());
             }
-            let ports = s.core.rack.bus_controls.map(|c| usize::from(c.port));
-            s.core.rack.tap = scope.checked_sub(1).filter(|&slot| slot < s.core.rack.parts.len());
+            let ports = s.core.bus_ports().map(usize::from);
+            s.core.set_tap(scope.checked_sub(1));
             let Rendered { buses, live } = s.core.render(len);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
@@ -3751,8 +3706,8 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            if s.core.rack.tap.is_some() {
-                p.shared.scope.push(&s.core.rack.tapped[..len]);
+            if let Some(tapped) = s.core.tapped(len) {
+                p.shared.scope.push(tapped);
             }
             at += len;
         }
@@ -3808,7 +3763,7 @@ impl PluginLogic for Sampler {
         if frames > 0 && rate > 0. {
             let fall = 0.1f32.powf(frames as f32 / rate as f32);
             let m = &p.shared.meters;
-            let peaks = &mut s.core.rack.peaks;
+            let peaks = s.core.peaks_mut();
             for (slot, peak) in peaks.parts.iter().copied().enumerate() {
                 let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
                 Meters::publish(&atoms.meter, peak, fall, &atoms.clip);
@@ -3841,9 +3796,7 @@ impl PluginLogic for Sampler {
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
             s.load = load.max(s.load * 0.98 + load * 0.02);
-            for e in &mut s.core.rack.parts {
-                e.load = s.load;
-            }
+            s.core.set_load(s.load);
         }
         capture_audio_diagnostics(s, p, frames, channels, offline, cx);
         ProcessStatus::Normal

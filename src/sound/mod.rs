@@ -24,6 +24,7 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod event;
+pub mod mix;
 pub mod v1;
 #[cfg(feature = "core-v2")]
 pub mod v2;
@@ -95,6 +96,14 @@ pub struct BlockInfo {
 pub struct Rendered<'a> {
     pub buses: &'a [Block; BUSES],
     pub live: [bool; BUSES],
+}
+
+/// Shell-wide macro controls applied to every part.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Macros {
+    pub attack: f32,
+    pub release: f32,
+    pub cutoff: f32,
 }
 
 /// Voice counts for meters.
@@ -175,6 +184,35 @@ pub trait Core: Send {
     /// Finish a block of `frames`: offer every ended host note to `end`, which
     /// returns false once the host refuses more. Returns refused notes.
     fn end_block(&mut self, frames: usize, end: &mut dyn FnMut(event::HostNote) -> bool) -> u64;
+
+    /// On-screen keyboard input that reaches parts like host port `port` and
+    /// records each part reached in `reached`, for [`event_to`](Self::event_to).
+    fn event_recorded(&mut self, port: u8, event: event::In, reached: &mut [bool]);
+    /// Input to the parts `parts` marks, even if routing changed since; clears the marks.
+    fn event_to(&mut self, parts: &mut [bool], event: event::In);
+    /// Input straight to one part, bypassing port and channel routing.
+    fn play(&mut self, part: usize, event: event::In);
+    /// The MIDI channel that reaches `part`'s first zone (keyboard preview).
+    fn preview_channel(&self, part: usize) -> u8;
+    /// Sound one preview note on `part`: `note`, else its first zone's root.
+    fn audition(&mut self, part: usize, note: Option<u8>);
+    /// Silence what [`audition`](Self::audition) started.
+    fn audition_stop(&mut self, part: usize);
+
+    /// Shell-wide envelope and filter macros, each `0..=1`.
+    fn set_macros(&mut self, macros: Macros);
+    /// The callback's smoothed CPU load, for load shedding.
+    fn set_load(&mut self, load: f32);
+    /// The mixer's part and bus settings.
+    fn set_mix(&mut self, mix: &mix::Mix);
+    /// Host output port of each bus, as last set by [`set_mix`](Self::set_mix).
+    fn bus_ports(&self) -> [u8; BUSES];
+    /// Copy `part`'s post-fader mono signal during [`render`](Self::render).
+    fn set_tap(&mut self, part: Option<usize>);
+    /// The tapped signal of the last render, if a tap is set.
+    fn tapped(&self, frames: usize) -> Option<&[f32]>;
+    /// Peaks accumulated since the caller last cleared them.
+    fn peaks_mut(&mut self) -> &mut mix::Peaks;
 
     /// A user edit of script control `control` in script slot `slot`.
     fn ui_control(&mut self, part: usize, slot: usize, control: usize, value: i32);

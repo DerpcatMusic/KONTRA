@@ -7,7 +7,8 @@
 
 use super::event::{HostNote, In};
 use super::view::{Persisted, Refresh};
-use super::{BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Progress, Rendered, Transport, Voices};
+use super::mix::{Mix, Peaks};
+use super::{BlockInfo, Core, Macros, CoreError, CoreLoader, Description, LoadRequest, Progress, Rendered, Transport, Voices};
 use crate::articulate::{self, Router};
 use crate::engine::{Bank, Engine, Heads, Rack};
 use crate::fx::FxProcessor;
@@ -237,6 +238,75 @@ impl Core for V1Core {
         self.align.plan.latency(self.sample_rate())
     }
 
+    fn event_recorded(&mut self, port: u8, ev: In, reached: &mut [bool]) {
+        articulate::dispatch_record(&mut self.rack, &mut self.routers, port, ev, reached);
+    }
+
+    fn event_to(&mut self, parts: &mut [bool], ev: In) {
+        let targets = parts.iter_mut().enumerate().filter_map(|(part, reached)| std::mem::take(reached).then_some(part));
+        articulate::dispatch_to(&mut self.rack, &mut self.routers, targets, ev);
+    }
+
+    fn play(&mut self, part: usize, ev: In) {
+        articulate::play(&mut self.rack, &mut self.routers, part, ev);
+    }
+
+    fn preview_channel(&self, part: usize) -> u8 {
+        self.engine(part).map_or(0, preview_channel)
+    }
+
+    fn audition(&mut self, part: usize, note: Option<u8>) {
+        let Some(e) = self.rack.parts.get_mut(part) else { return };
+        for channel in 0..16 {
+            e.cc(channel, 120, 0);
+        }
+        let note = note.unwrap_or_else(|| e.bank().and_then(|b| b.zones().first()).map_or(60, |z| z.root));
+        let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
+        e.note_on(channel, note, velocity);
+    }
+
+    fn audition_stop(&mut self, part: usize) {
+        if let Some(e) = self.rack.parts.get_mut(part) {
+            for channel in 0..16 {
+                e.cc(channel, 123, 0);
+            }
+        }
+    }
+
+    fn set_macros(&mut self, m: Macros) {
+        for (e, r) in self.rack.parts.iter_mut().zip(&self.routers) {
+            e.attack = m.attack;
+            e.release = m.release;
+            e.cutoff = m.cutoff * r.cutoff_scale();
+        }
+    }
+
+    fn set_load(&mut self, load: f32) {
+        for e in &mut self.rack.parts {
+            e.load = load;
+        }
+    }
+
+    fn set_mix(&mut self, mix: &Mix) {
+        self.rack.set_controls(mix);
+    }
+
+    fn bus_ports(&self) -> [u8; super::BUSES] {
+        self.rack.bus_controls.map(|c| c.port)
+    }
+
+    fn set_tap(&mut self, part: Option<usize>) {
+        self.rack.tap = part.filter(|&part| part < self.rack.parts.len());
+    }
+
+    fn tapped(&self, frames: usize) -> Option<&[f32]> {
+        self.rack.tap.map(|_| &self.rack.tapped[..frames])
+    }
+
+    fn peaks_mut(&mut self) -> &mut Peaks {
+        &mut self.rack.peaks
+    }
+
     fn ui_control(&mut self, part: usize, slot: usize, control: usize, value: i32) {
         let Some(engine) = self.rack.parts.get_mut(part) else { return };
         engine.ui_control(slot, control, value);
@@ -346,4 +416,15 @@ impl CoreLoader for V1Loader {
         let instrument = crate::import::shared_program(path, program).map_err(|e| CoreError::Load(format!("{e:#}")))?;
         Ok(Description { name: instrument.name.clone(), zones: instrument.zones.len(), scripts: instrument.scripts.len() })
     }
+}
+
+/// Channel that makes the on-screen keyboard reach the part's first zone.
+fn preview_channel(e: &Engine) -> u8 {
+    e.bank().and_then(|b| b.zones().first().map(|z| b.groups()[z.group].channel.max(0) as u8)).unwrap_or(0)
+}
+
+/// Mid-range velocity of the first zone on `note`.
+fn preview_velocity(e: &Engine, note: u8) -> u8 {
+    let zone = e.bank().and_then(|b| b.zones().iter().find(|z| (z.low_key..=z.high_key).contains(&note)));
+    zone.map_or(100, |z| ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8)
 }
