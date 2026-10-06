@@ -250,3 +250,17 @@ precedence/short-circuiting and non-normalized `in_range` bounds. The new compil
 reuses its native register/jump IR and shared numeric operations; it does not call
 or copy the old compiler/VM. Native tests validate these explicit policies; vendor
 numeric corner cases and evaluation equivalence remain unverified.
+
+
+## Source event identity
+
+Re-read the supplied architecture's sections 4.1–4.2: preserve full generational
+native handles, and translate host/script identities through scoped adapters.
+Read the NI general-command reference for returned `play_note` IDs and the distinct
+key-release behavior of `note_off`. The latter command is not yet exposed by the new
+frontend. Inspected legacy `src/ksp/runtime.rs:384–387` and
+`src/ksp/calls.rs:719–722`: its event pool and marked-event encoding are references,
+not the new owner. Native source aliases use a preallocated standard index and
+checked monotonically issued integers; Kontakt uses a restricted export range that
+leaves selector bits free. Numeric allocation parity and vendor event-status lifetime
+semantics remain unverified. No old core service is invoked.

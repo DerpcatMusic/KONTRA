@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add generation-scoped source event IDs and KSP play_note return values through
+  a preallocated native alias index. Retired IDs cannot target reused note slots;
+  identity exhaustion fails before generated audio publication. Event-targeted
+  commands and complete vendor lifetime semantics remain open.
+
 - Lower KSP select/case, Boolean expressions, range checks and hexadecimal integers
   onto shared native operations. First-match dispatch survives waits; short-circuit
   guards skip invalid array reads while dead source still validates. Constant and

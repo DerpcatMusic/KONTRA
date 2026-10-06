@@ -55,6 +55,11 @@ pub enum Instruction {
         velocity: u16,
         duration: DurationValue,
         inheritance: Inheritance,
+        /// Optional source-event ID destination; aliasing an argument is allowed.
+        result: Option<u16>,
+    },
+    ReadEventId {
+        local: u16,
     },
     /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
     ReadVelocity7 {
@@ -244,6 +249,7 @@ impl Program {
             | Instruction::WriteGroup {
                 group: Some(local), ..
             }
+            | Instruction::ReadEventId { local }
             | Instruction::ReadVelocity7 { local }
             | Instruction::WriteEventKey { local }
             | Instruction::WriteEventVelocity7 { local }
@@ -261,10 +267,14 @@ impl Program {
                 key,
                 velocity,
                 duration,
+                result,
                 ..
             } = *op
             {
                 locals = locals.max(usize::from(key.max(velocity)) + 1);
+                if let Some(result) = result {
+                    locals = locals.max(usize::from(result) + 1);
+                }
                 if let DurationValue::Frames(frames) = duration {
                     locals = locals.max(usize::from(frames) + 1);
                 }
@@ -311,6 +321,7 @@ impl Program {
                     | Instruction::SuppressAttack
                     | Instruction::Play { .. }
                     | Instruction::PlayMidi { .. }
+                    | Instruction::ReadEventId { .. }
                     | Instruction::ReadVelocity7 { .. }
                     | Instruction::WriteEventKey { .. }
                     | Instruction::WriteEventVelocity7 { .. }
@@ -642,6 +653,10 @@ impl Runtime {
                 let value = i32::try_from(*cell).map_err(|_| Error::ArithmeticOverflow)?;
                 *cell = i64::from(operation.apply(value));
             }
+            Instruction::ReadEventId { local } => {
+                let value = self.source_event_id(owner.note()?)?;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
             Instruction::ReadVelocity7 { local } => {
                 let note = self.note_event(owner.note()?)?;
                 let value = (note.velocity * 127.).round() as i64;
@@ -755,6 +770,7 @@ impl Runtime {
                 velocity,
                 duration,
                 inheritance,
+                result,
             } => {
                 let key = *self.local_cell_mut(id, key)?;
                 let velocity = *self.local_cell_mut(id, velocity)?;
@@ -772,13 +788,23 @@ impl Runtime {
                 if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
-                self.play_behavior(
-                    owner.note()?,
+                let note = owner.note()?;
+                // Reserve the external identity before publishing any child/audio.
+                // Failed admission may leave a numeric gap, never a reused ID.
+                let source_id = result
+                    .map(|_| self.reserve_source_id(self.note_plan(note)?))
+                    .transpose()?;
+                let child = self.play_behavior(
+                    note,
                     super::NotePitch::Key(key as u8),
                     velocity as f64 / 127.,
                     inheritance,
                     duration,
                 )?;
+                if let (Some(local), Some(source_id)) = (result, source_id) {
+                    self.publish_source_id(child, source_id)?;
+                    *self.local_cell_mut(id, local)? = i64::from(source_id);
+                }
             }
             Instruction::Play {
                 transpose,
@@ -821,7 +847,7 @@ impl Runtime {
         velocity: f64,
         inheritance: Inheritance,
         duration: Duration,
-    ) -> Result<(), Error> {
+    ) -> Result<NoteId, Error> {
         let frames = match duration {
             Duration::Gate | Duration::UntilSilent => None,
             Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
@@ -849,7 +875,7 @@ impl Runtime {
         if let Some(at) = at {
             self.release_at(child, at)?;
         }
-        Ok(())
+        Ok(child)
     }
 
     /// Note-owned integer state survives callback completion and release until the
