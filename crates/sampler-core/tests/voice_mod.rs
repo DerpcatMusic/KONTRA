@@ -397,3 +397,32 @@ fn measure_modulation_cost_per_voice() {
         "ns per voice-frame: svf chain {chain:.2}, +lfo pitch/pan, env gain, lfo cutoff {chain_full:.2}"
     );
 }
+
+#[test]
+fn a_second_source_scales_route_depth() {
+    // Constant +6 dB, depth scaled by velocity (0.5) through a shape doubling it
+    // past 0.25: multiplier 0.5 + (0.5 - 0.25) = 0.75 => +4.5 dB.
+    let program = ModProgram {
+        sources: vec![ModSource::Constant, ModSource::Velocity],
+        routes: vec![ModRoute {
+            scale: Some(ModScale {
+                source: 1,
+                shape: Some(0),
+            }),
+            ..ModRoute::new(0, ModTarget::Decibels, 6.)
+        }],
+        shapes: vec![vec![(0., 0.), (0.25, 0.25), (1., 1.75)]],
+    };
+    let mut rt = Runtime::new(
+        modulated(plan(64, Envelope::default()), program, 0),
+        limits(),
+    )
+    .unwrap();
+    rt.trigger(input(1), 60, 0.5).unwrap();
+    let audio = render(&mut rt, 8, 8);
+    let expected = 0.5 * 10f32.powf(4.5 / 20.);
+    assert!(
+        audio.iter().all(|f| (f[1] - expected).abs() < 1e-5),
+        "{audio:?}"
+    );
+}

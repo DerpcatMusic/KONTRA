@@ -67,7 +67,7 @@ pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
 mod voice_mod;
-pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
+pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};

@@ -335,6 +335,12 @@ impl Instrument {
             if let Some(shape) = route.shape {
                 check.exists(Reference::Shape(shape.0))?;
             }
+            if let Some(scale) = route.scale {
+                check.exists(Reference::Modulator(scale.source.0))?;
+                if let Some(shape) = scale.shape {
+                    check.exists(Reference::Shape(shape.0))?;
+                }
+            }
             check.time(route.smoothing, "smoothing")?;
             match route.depth {
                 Depth::Gain(gain) => check.gain(gain, "depth")?,
