@@ -66,6 +66,8 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod voice_mod;
+pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
@@ -407,6 +409,8 @@ impl<T> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
+    /// Quarter notes per minute for tempo-synced modulation.
+    tempo: f64,
     plans: Arena<Generation>,
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
@@ -518,12 +522,14 @@ impl Runtime {
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
+            modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
         })?);
         Ok(Self {
             rate,
+            tempo: 120.0,
             plans,
             active_plan,
             plan_queues: None,
