@@ -185,3 +185,16 @@ paths were not executed. Native state instead lives in control-prepared per-gene
 banks with per-voice/channel history, retains DSP tails and leaves via the existing
 retirement queue. Channel-layout expansion remains open; current processing is stereo.
 [VOICE_DSP.md](VOICE_DSP.md) records implemented behavior, numerical sources and tests.
+
+
+## Original note forwarding
+
+Inspected existing `src/ksp/runtime.rs:2893–2953` (`finish`, `yielded`, note arm of
+`forward`) for first-yield/completion dispatch and suppression. This is a regression
+reference, not a vendor oracle or code port. The new core shares attack selection
+preflight/commit and records mapping phase on the original logical note; KSP lowers
+explicit forward/suppress instructions. Read the NI event-command restrictions on
+pre-wait note mutation and its post-wait zone-ID example. New native/source tests
+execute independently with high-resolution velocity, live expression, capacity,
+release reserve and old-generation ownership checks. Multi-slot/release/controller
+forwarding remains required, and no legacy runtime path is called.

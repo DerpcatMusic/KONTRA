@@ -324,3 +324,24 @@ uses the same scheduler as `Wait`. `PlayMidi` reads separate key, seven-bit velo
 and positive frame-duration registers and calls the same admission implementation as
 native `Play`. Invalid arguments publish no child/timer; wider register values are
 checked, not truncated. KSP uses these operations; no language VM runs on audio.
+
+
+## Commit or suppress an existing attack
+
+`ForwardAttack` and `SuppressAttack` require a note context. The note records pending,
+forwarded or suppressed mapping independently of its physical/effective gate and
+source/family lifetime. Forwarding commits its original plan and captured onset
+selection onto the same note, with the same expression owner and full-resolution
+velocity. Direct native calls return whether they changed the pending state; repeated
+calls are no-ops after forwarding/suppression. Pending released keys cannot forward, including pedal-held gates: a deferred
+attack cannot reserve a key-release phase that has already passed.
+Consumed keyswitches are already suppressed. Explicitly started manual families are
+separate from this mapped-attack state.
+
+Normal selection and deferred forwarding share checked preflight and release quota
+reservation. Failure cannot partially advance selection or publish mapped voices.
+Direct callers can retry a pending capacity failure; instruction failure uses the
+existing callback fault cleanup and retained outcome. Native programs do not gain
+implicit forwarding: their translator places these instructions at its own semantic
+commit boundaries. The KSP frontend now does so before waits/exit/completion, while
+ordinary suppression-only native programs retain their explicit behavior.

@@ -13,7 +13,7 @@ manual surface. This subset is not the product's completion target.
 
 An optional first `on init` declares ordinary/script-instance and polyphonic integer variables and supported scalar
 UI controls. Optional `on note` and/or `on release` follows; duplicate or misplaced callbacks fail compilation.
-A note callback must begin with `ignore_event($EVENT_ID)`. Release-only scripts keep
+A note callback may suppress its original attack with `ignore_event($EVENT_ID)`. Release-only scripts keep
 ordinary native attack selection. Init accepts declarations, `make_perfview` and literal scalar initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
 
@@ -33,9 +33,10 @@ use microseconds. Lowering rounds upward to engine frames; this is an explicit
 native policy, not verified Kontakt rounding. Compilation targets a supplied sample
 rate and must be repeated when that rate changes.
 
-The leading suppression is required because implicit forwarding and its interaction
-with waits are not implemented. Generated voices use fixed normalized velocity and
-independent expression rather than inheriting the suppressed input's expression.
+An unsuppressed note callback forwards its original event at the first `wait`, `exit`
+or normal completion. Forwarding retains its note identity, high-resolution velocity
+and live expression owner. Explicit generated voices instead use normalized velocity
+and independent expression rather than inheriting the suppressed input's expression.
 The [event-command documentation](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
 notes that ignoring an event loses its volume/tune/pan information. The core now
 exposes fixed/scaled velocity and expression inheritance as separate native choices.
@@ -43,7 +44,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 ## Explicit rejection and limits
 
 The compiler rejects real-valued expressions, arrays, real/string values, select/case,
-compound Boolean expressions, other callbacks, implicit note forwarding, nested
+compound Boolean expressions, other callbacks, multi-slot event forwarding, nested
 comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
 at execution before publishing a child or timer. Input-linked negative duration and
 whole-source duration zero are still unsupported and fault explicitly.
@@ -351,3 +352,37 @@ Evaluated-argument validation: all 209 native tests pass in debug, release and R
 `artifacts/dynamic-arguments-{debug,release,msrv,clippy,boundary}.log`. The manual
 inventory remains 25 chapters / 288 sections / 1,605 identifiers, now with 25 named
 partial overrides; vendor fidelity remains unverified.
+
+
+## Original-event forwarding
+
+The leading-ignore restriction has been removed. `ignore_event($EVENT_ID)` can be
+conditional inside `on note`. The first `wait`, `exit` or normal callback completion
+commits the unsuppressed original mapped attack exactly once. A zero wait is also
+an explicit commit point but retains the native inline/fuel policy. Later waits,
+completion or late suppression cannot duplicate or undo an already committed attack.
+Release-event suppression remains unsupported; that needs its own forwarding phase.
+
+The native `ForwardAttack`/`SuppressAttack` instructions use the existing note, its
+original prepared generation, captured onset selection and live expression owner.
+No replacement child, velocity quantization, expression reset or second host terminal
+is introduced. Normal and deferred attacks share the same selection preflight,
+release reservation and commit implementation. Native direct-call capacity failures
+publish no partial sound/reservations and leave pending mapping retryable; a failure
+inside a callback instead follows the existing retained-fault and gate-cleanup policy.
+
+[NI event commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+restrict note changes to before the first wait and demonstrate waiting before querying
+a voice's zone ID. The reviewed v1 `yielded`/`forward` path provides regression context
+for first-yield/completion forwarding, not fresh vendor differential evidence. New
+fixtures check ordinary empty callbacks, conditional suppression, first/repeated/zero
+waits, exit, late suppression, original high-resolution/MPE-style expression ownership,
+release reservations, failed admission, plan replacement and terminal backpressure.
+All runtime paths are heap-audited. Ordered multi-slot/controller/release forwarding,
+event mutation and full Kontakt/Falcon differential fidelity remain open.
+
+Original-forwarding validation: all 218 native tests pass in debug, release and Rust
+1.92; strict all-target Clippy and both root boundary tests pass. The targeted debug
+check also verifies rejection after key-up while sustain still holds the gate, so
+forwarding cannot reserve an already-passed release phase. Logs use
+`artifacts/forward-attack-{debug,targeted,release,msrv,clippy,boundary}.log`.

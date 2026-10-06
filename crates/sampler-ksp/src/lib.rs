@@ -492,32 +492,39 @@ impl<'a> Parser<'a> {
     }
 
     fn callback(&mut self, note: bool) -> Result<Program, Error> {
-        if note {
-            self.expect(Kind::Word("ignore_event"),
-                "explicit leading ignore_event($EVENT_ID) is required; implicit forwarding is unsupported")?;
-            self.symbol(b'(')?;
-            self.expect(
-                Kind::Word("$EVENT_ID"),
-                "only suppression of the originating event is supported",
-            )?;
-            self.symbol(b')')?;
-        }
         // Each open branch has already emitted budgeted instructions. This
         // control-only patch stack is bounded by code/source limits, not recursion.
         let mut branches = Vec::new();
         loop {
             let token = self.next()?;
             match token.kind {
+                Kind::Word("ignore_event") if note => {
+                    self.symbol(b'(')?;
+                    self.expect(
+                        Kind::Word("$EVENT_ID"),
+                        "only suppression of the originating event is supported",
+                    )?;
+                    self.symbol(b')')?;
+                    self.emit(Instruction::SuppressAttack)?;
+                }
                 Kind::Word("wait") => {
                     self.symbol(b'(')?;
                     self.scalar(0)?;
                     self.symbol(b')')?;
                     self.emit(Instruction::MicrosToFrames { local: 0 })?;
+                    if note {
+                        self.emit(Instruction::ForwardAttack)?;
+                    }
                     self.emit(Instruction::WaitLocal { local: 0 })?;
                 }
                 Kind::Word("play_note") => self.play()?,
                 Kind::Word(command @ ("inc" | "dec")) => self.increment(command == "inc")?,
-                Kind::Word("exit") => self.emit(Instruction::End)?,
+                Kind::Word("exit") => {
+                    if note {
+                        self.emit(Instruction::ForwardAttack)?;
+                    }
+                    self.emit(Instruction::End)?;
+                }
                 Kind::Word(kind @ ("if" | "while")) => {
                     let start = self.code.len();
                     self.symbol(b'(')?;
@@ -608,6 +615,9 @@ impl<'a> Parser<'a> {
                             offset: token.offset,
                             message: "expected matching end if, end while or end on",
                         });
+                    }
+                    if note {
+                        self.emit(Instruction::ForwardAttack)?;
                     }
                     self.emit(Instruction::End)?;
                     return Program::new(std::mem::take(&mut self.code))

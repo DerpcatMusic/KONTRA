@@ -27,6 +27,9 @@ pub enum WaitLifetime {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Instruction {
+    /// Commit/suppress the owner's pending original attack, without another note ID.
+    ForwardAttack,
+    SuppressAttack,
     /// Generate a mapped child with an explicit release policy.
     Play {
         transpose: i8,
@@ -224,7 +227,9 @@ impl Program {
         let requires_note = code.iter().any(|op| {
             matches!(
                 op,
-                Instruction::Play { .. }
+                Instruction::ForwardAttack
+                    | Instruction::SuppressAttack
+                    | Instruction::Play { .. }
                     | Instruction::PlayMidi { .. }
                     | Instruction::ReadVelocity7 { .. }
                     | Instruction::ReadKey { .. }
@@ -499,6 +504,12 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
+            Instruction::ForwardAttack => {
+                self.forward_attack(owner.note()?)?;
+            }
+            Instruction::SuppressAttack => {
+                self.suppress_attack(owner.note()?)?;
+            }
             Instruction::SetLocal { local, value } => *self.local_cell_mut(id, local)? = value,
             Instruction::AddLocal { local, value } => {
                 let cell = self.local_cell_mut(id, local)?;
