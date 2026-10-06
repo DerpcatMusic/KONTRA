@@ -1041,9 +1041,12 @@ fn determinism(setup: Setup) {
         return;
     };
     let n = first.out.len().min(split.out.len());
+    let differs = (0..n).find(|&i| split.out[i] != first.out[i]);
     assert!(
-        split.out[..n] == first.out[..n],
-        "block partition changes PCM"
+        differs.is_none(),
+        "block partition changes PCM: first difference at frame {differs:?} ({:?} vs {:?})",
+        differs.map(|i| first.out[i]),
+        differs.map(|i| split.out[i])
     );
     let Some(unbound) = sustain_run(Setup {
         scripts: false,
