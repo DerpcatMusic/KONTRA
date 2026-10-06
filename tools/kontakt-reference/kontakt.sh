@@ -2,7 +2,7 @@
 # Kontakt 8 standalone under Wine on a private Xvfb, audio to a null sink,
 # MIDI from ALSA "Midi Through". Does not touch the Wine prefix or yabridge;
 # Kontakt's own prefs (Portapotty/UserData/Settings.cfg) hold the audio device.
-# Usage: kontakt.sh start INSTRUMENT.nki | stop
+# Usage: kontakt.sh start INSTRUMENT.nki | setup | stop
 # One-time: in Kontakt Options > Audio pick device "kontra_ref" (WASAPI shared,
 # 48000 Hz); back up Settings.cfg first. GUI coordinates assume the 1600x1000 desktop.
 set -euo pipefail
@@ -19,7 +19,15 @@ start)
     sink_properties=device.description=kontra_ref format=float32le rate=48000 channels=2 >/dev/null
   # explorer /desktop: mouse input only works inside a Wine virtual desktop.
   setsid nohup wine explorer /desktop=k8,1600x1000 "$K" "$(winepath -w "$2")" >"$W/log/kontakt.log" 2>&1 </dev/null &
-  sleep "${KONTAKT_LOAD_SECONDS:-45}"
+  sleep 15
+  for _ in $(seq 150); do   # wait until the loading Progress dialog is gone
+    xdotool search --name '^Progress$' >/dev/null 2>&1 || break; sleep 2
+  done
+  sleep 5
+  "$0" setup
+  import -window root "$W/log/ready.png"
+  ;;
+setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
   click 1089 440            # "What's new" popup
   click 20 57; click 60 86  # File > Options
   click 388 553            # Audio tab: the device choice does not persist across launches
