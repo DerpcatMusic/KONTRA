@@ -107,6 +107,18 @@ pub struct ModRoute {
     pub shape: Option<usize>,
     /// One-pole lag frames to reach 99% of a step (Kontakt's lag law).
     pub lag: u32,
+    /// Depth multiplier from a second source (a source × source product).
+    pub scale: Option<ModScale>,
+}
+
+/// Multiplies a route's depth by `shape(x)` of another source, `x` its unipolar
+/// view; without a shape the multiplier is `x`. Evaluated with the route.
+#[derive(Clone, Copy, Debug)]
+pub struct ModScale {
+    /// Index into [`ModProgram::sources`].
+    pub source: usize,
+    /// Index into [`ModProgram::shapes`]; its output is used unmapped.
+    pub shape: Option<usize>,
 }
 
 impl ModRoute {
@@ -118,6 +130,7 @@ impl ModRoute {
             invert: false,
             shape: None,
             lag: 0,
+            scale: None,
         }
     }
 }
@@ -234,6 +247,9 @@ impl VoiceModulation {
                 if route.source >= sources.len()
                     || !route.depth.is_finite()
                     || route.shape.is_some_and(|s| s >= shapes.len())
+                    || route.scale.is_some_and(|s| {
+                        s.source >= sources.len() || s.shape.is_some_and(|s| s >= shapes.len())
+                    })
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -288,18 +304,20 @@ impl VoiceModulation {
             .iter()
             .filter(|r| r.target == ModTarget::SampleStart)
         {
-            let source = program.sources[route.source];
             // Lfo and envelope values at the voice's first frame.
-            let raw = match source {
+            let at_start = |index: usize| match program.sources[index] {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
-                    wave(lfo.shape, lfo.phase, seed ^ route.source as u64)
+                    wave(lfo.shape, lfo.phase, seed ^ index as u64)
                 }
                 Prepared::Lfo(_) | Prepared::Envelope(_) => 0.0,
-                other => other.input(inputs, seed, route.source),
+                other => other.input(inputs, seed, index),
             };
             let bipolar = program.bipolar[route.source];
-            let v = program.transform(route, raw, bipolar);
-            fraction += route.depth * unipolar(v, bipolar);
+            let v = program.transform(route, at_start(route.source), bipolar);
+            let scale = route
+                .scale
+                .map_or(1.0, |s| program.scale(s, at_start(s.source)));
+            fraction += route.depth * scale * unipolar(v, bipolar);
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
     }
@@ -323,6 +341,13 @@ impl Prepared {
 const FULL_SCALE: f64 = 1.0 / u32::MAX as f64;
 
 impl Program {
+    fn scale(&self, scale: ModScale, raw: f64) -> f64 {
+        let x = unipolar(raw, self.bipolar[scale.source]);
+        scale.shape.map_or(x, |shape| {
+            f64::from(evaluate(&self.shapes[shape], x as f32))
+        })
+    }
+
     fn transform(&self, route: &ModRoute, raw: f64, bipolar: bool) -> f64 {
         let mut v = if route.invert {
             if bipolar { -raw } else { 1.0 - raw }
@@ -648,7 +673,9 @@ impl VoiceModState {
                 v = *lagged + (v - *lagged) * alpha;
             }
             *lagged = v;
-            let d = route.depth;
+            let d = route
+                .scale
+                .map_or(route.depth, |s| route.depth * p.scale(s, values[s.source]));
             match route.target {
                 ModTarget::Attenuate => gain *= 1.0 - d * (1.0 - unipolar(v, bipolar)),
                 ModTarget::Decibels => decibels += d * v,

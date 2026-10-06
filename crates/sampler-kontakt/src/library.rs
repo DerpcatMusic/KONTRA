@@ -658,6 +658,7 @@ impl Translation {
             invert: target.invert,
             shape,
             smoothing: ir::Time::Milliseconds(f64::from(target.lag_ms)),
+            scale: None,
         });
         Some(ir::RouteRef(self.ir.routes.len() - 1))
     }
@@ -1148,6 +1149,7 @@ mod modulation {
                 invert: true,
                 shape: None,
                 smoothing: ir::Time::Milliseconds(40.0),
+                scale: None,
             }
         );
         t.route("g", source, true, &target("volume", 0.25)).unwrap();
