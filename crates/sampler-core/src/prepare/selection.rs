@@ -3,6 +3,7 @@ use crate::{
     Runtime, Trigger,
 };
 
+#[derive(Clone, Copy)]
 struct Selection {
     plan: PlanId,
     note_pitch: NotePitch,
@@ -83,6 +84,7 @@ impl Runtime {
                 .release(self.selections[note.0.index].snapshot);
             self.selections[note.0.index].snapshot = self.performance_state.capture(index);
             self.selections[note.0.index].consumed_switch = true;
+            self.notes.get_mut(note.0).unwrap().attack = crate::AttackStatus::Suppressed;
             return Ok(note);
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
@@ -170,8 +172,7 @@ impl Runtime {
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
         let snapshot = self.performance_state.current[performance];
-        let key = note_pitch.key();
-        let attack = self.preflight_selection(
+        let release = self.preflight_attack(
             Selection {
                 plan,
                 note_pitch,
@@ -182,6 +183,75 @@ impl Runtime {
             },
             pitch,
         )?;
+        let note = match origin {
+            NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
+                self.performance(performance).unwrap(),
+                input,
+                note_pitch,
+                velocity,
+                expression,
+            )?,
+            NoteOrigin::Child(parent, linked, inheritance) => {
+                self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
+            }
+        };
+        self.commit_attack(note, release, snapshot);
+        Ok(note)
+    }
+
+    /// Commit a pending mapped attack exactly once on its existing logical note.
+    /// Uses the original plan and captured onset selection, never a substitute child.
+    pub fn forward_attack(&mut self, note: NoteId) -> Result<bool, Error> {
+        self.apply_due();
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if n.attack != crate::AttackStatus::Pending {
+            return Ok(false);
+        }
+        if !n.gate() || !n.key_down() {
+            return Err(Error::ClosedNote);
+        }
+        let snapshot = self.selections[note.0.index].snapshot;
+        let selection = Selection {
+            plan: n.plan,
+            note_pitch: n.pitch,
+            velocity: n.velocity,
+            address: n.address,
+            trigger: Trigger::Attack,
+            snapshot,
+        };
+        let pitch = self.pitch_range(n.expression, true)?;
+        let release = self.preflight_attack(selection, pitch)?;
+        self.commit_attack(note, release, snapshot);
+        Ok(true)
+    }
+
+    /// Suppress pending mapping. After forwarding/suppression, this is a no-op;
+    /// stopping an already sounding note is a separate musical operation.
+    pub fn suppress_attack(&mut self, note: NoteId) -> Result<bool, Error> {
+        self.apply_due();
+        let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        if n.attack != crate::AttackStatus::Pending {
+            return Ok(false);
+        }
+        n.attack = crate::AttackStatus::Suppressed;
+        Ok(true)
+    }
+
+    fn preflight_attack(
+        &mut self,
+        selection: Selection,
+        pitch: crate::pitch::PitchRange,
+    ) -> Result<ReleaseReserve, Error> {
+        let Selection {
+            plan,
+            note_pitch,
+            velocity,
+            address,
+            snapshot,
+            ..
+        } = selection;
+        let key = note_pitch.key();
+        let attack = self.preflight_selection(selection, pitch)?;
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let release = prepared.release_reserves[key as usize][0]
             .plus(prepared.release_reserves[key as usize][1]);
@@ -214,18 +284,13 @@ impl Runtime {
             self.reclaim_internal_notes(required.decisions);
         }
         self.check_selection_capacity(required)?;
-        let note = match origin {
-            NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
-                self.performance(performance).unwrap(),
-                input,
-                note_pitch,
-                velocity,
-                expression,
-            )?,
-            NoteOrigin::Child(parent, linked, inheritance) => {
-                self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
-            }
-        };
+        Ok(release)
+    }
+
+    fn commit_attack(&mut self, note: NoteId, release: ReleaseReserve, snapshot: usize) {
+        let n = self.notes.get_mut(note.0).unwrap();
+        let (plan, key, velocity, address) = (n.plan, n.pitch.key(), n.velocity, n.address);
+        n.attack = crate::AttackStatus::Forwarded;
         if release.voices != 0 {
             self.reserve_release(release);
             let generation = self.plans.get_mut(plan.0).unwrap();
@@ -250,7 +315,6 @@ impl Runtime {
             }
         }
         self.commit_selection(note, Trigger::Attack, velocity, snapshot);
-        Ok(note)
     }
 
     fn check_selection_capacity(&self, required: ReleaseReserve) -> Result<(), Error> {

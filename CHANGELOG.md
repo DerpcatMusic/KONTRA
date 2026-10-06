@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Forward unsuppressed KSP note callbacks at wait, exit or completion on the original
+  native note identity. Conditional suppression no longer requires a leading command;
+  selection retains high-resolution velocity, expression and original-plan ownership.
+  Multi-slot, controller and release forwarding remain incomplete.
+
 - Add native per-voice gain/biquad chains with explicit pre/post-envelope order,
   independent stereo state, control-prepared generation banks and bounded DSP tails.
   Musical release preserves post-envelope tails; finite choke bounds the whole chain.

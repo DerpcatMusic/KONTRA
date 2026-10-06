@@ -199,3 +199,83 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
         .is_err()
     );
 }
+
+#[test]
+fn note_callbacks_forward_the_original_once_at_wait_exit_or_completion() {
+    for (body, key, audible) in [
+        ("", 60, true),
+        ("wait(125) wait(125)", 60, true),
+        ("exit ignore_event($EVENT_ID)", 60, true),
+        ("wait(0) ignore_event($EVENT_ID)", 60, true),
+        ("wait(1) ignore_event($EVENT_ID)", 60, true),
+        (
+            "if ($EVENT_NOTE = 60) ignore_event($EVENT_ID) end if",
+            60,
+            false,
+        ),
+        (
+            "if ($EVENT_NOTE = 60) ignore_event($EVENT_ID) end if",
+            61,
+            true,
+        ),
+        ("ignore_event($EVENT_ID) wait(125)", 60, false),
+    ] {
+        for block in [1, 7, 64] {
+            let source = format!("on note {body} end on");
+            let mut rt = runtime(&source, 48000);
+            support::without_heap(|| {
+                let velocity = 0.345678912345;
+                let note = rt
+                    .trigger_with_expression(
+                        input(1),
+                        key,
+                        velocity,
+                        sampler_core::Expression {
+                            gain: 0.25,
+                            ..sampler_core::Expression::default()
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(
+                    rt.note_count(),
+                    1,
+                    "{body}: original identity, not a generated child"
+                );
+                assert_eq!(rt.note(note).unwrap().1, velocity);
+                rt.schedule_event(2, Event::KeyUp(note, None)).unwrap();
+                let mut audio = [[0.; 2]; 16];
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                    rt.render(&mut []).unwrap();
+                }
+                for (frame, value) in audio.iter().enumerate() {
+                    assert_eq!(
+                        *value,
+                        [if audible && frame < 2 {
+                            velocity as f32 * 0.25
+                        } else {
+                            0.
+                        }; 2],
+                        "{body}, {block}, {frame}"
+                    );
+                }
+                let mut completed = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished, "{body}");
+                    completed += 1;
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!(
+                    (
+                        completed,
+                        rt.note_count(),
+                        rt.voice_count(),
+                        rt.pending_commands()
+                    ),
+                    (1, 0, 0, 0)
+                );
+            });
+        }
+    }
+}

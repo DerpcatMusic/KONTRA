@@ -126,7 +126,6 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",
-        "on note end on",
         "on release ignore_event($EVENT_ID) end on",
         "on note ignore_event($EVENT_ID) message(1) end on",
         "on note ignore_event($EVENT_ID) wait($x) end on",
@@ -203,7 +202,7 @@ fn compilation_obeys_source_instruction_and_clock_budgets_without_panics() {
             source,
             48000,
             Limits {
-                instructions: 4,
+                instructions: 7,
                 ..limits()
             }
         )
@@ -415,7 +414,7 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
         source,
         48000,
         Limits {
-            instructions: 2,
+            instructions: 4,
             ..limits()
         },
     )

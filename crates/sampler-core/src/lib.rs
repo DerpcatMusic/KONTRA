@@ -164,6 +164,13 @@ enum NoteOrigin {
     Child(NoteId, bool, Inheritance),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AttackStatus {
+    Pending,
+    Forwarded,
+    Suppressed,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Note {
     input: Option<Input>,
@@ -171,6 +178,7 @@ struct Note {
     plan: PlanId,
     parent: Option<NoteId>,
     linked_release: bool,
+    attack: AttackStatus,
     siblings: Siblings,
     first_child: Option<Index>,
     first_family: Option<Index>,
@@ -666,6 +674,7 @@ impl Runtime {
             plan,
             parent,
             linked_release,
+            attack: AttackStatus::Pending,
             siblings: Siblings {
                 previous: None,
                 next: next_sibling,
