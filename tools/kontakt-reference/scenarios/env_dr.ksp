@@ -1,0 +1,6 @@
+on note
+set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
+set_engine_par($ENGINE_PAR_DECAY, %CC[21] * 7874, 0, 0, -1)
+set_engine_par($ENGINE_PAR_SUSTAIN, %CC[22] * 7874, 0, 0, -1)
+set_engine_par($ENGINE_PAR_RELEASE, %CC[23] * 7874, 0, 0, -1)
+end on
