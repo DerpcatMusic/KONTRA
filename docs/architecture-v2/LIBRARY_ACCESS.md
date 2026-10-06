@@ -249,3 +249,10 @@ Use the target directory and sccache from `~/.cargo/config.toml`; do not set
 `CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. The parent retains the slot guard and
 closes its descriptor in the command's child process, so persistent daemons
 such as sccache cannot inherit a slot after the job finishes.
+
+The final access/resource changes pass locked offline tests and Clippy with
+`--all-targets -- -D warnings` for `sampler-kontakt`, `sampler-uvi`,
+`sampler-native`, `sampler-ir` and `sampler-core`. The three access/native crates
+also pass tests and strict Clippy with `--no-default-features`; installed
+protected tests skip in that configuration. Tests use the optimized `ci`
+profile and one test thread on this machine.
