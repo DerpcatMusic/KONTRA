@@ -21,7 +21,8 @@ mod stream;
 pub use access::library_key;
 pub use library::{Kontakt, read};
 pub use load::{
-    Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_streamed, prepare,
+    Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_read_streamed,
+    load_streamed, prepare,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;

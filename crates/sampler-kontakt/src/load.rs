@@ -147,17 +147,28 @@ pub fn load_streamed(
     path: &Path,
     options: &Options,
     policy: &crate::StreamPolicy,
-    mut progress: impl FnMut(Progress),
+    progress: impl FnMut(Progress),
 ) -> Result<crate::Streamed, LoadError> {
     let options = Options {
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
     };
+    load_read_streamed(read(path)?, &options, policy, progress)
+}
+
+/// [`load_streamed`] for an instrument already [`read`]; pictures and
+/// resources come from [`Options::library`].
+pub fn load_read_streamed(
+    kontakt: Kontakt,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+    mut progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
     let Kontakt {
         mut instrument,
         locations,
         mut samples,
-    } = read(path)?;
+    } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
     progress(Progress::Translated {
@@ -176,7 +187,7 @@ pub fn load_streamed(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, &options)?;
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
     crate::Streamed::new(loaded, opened, kept)
 }
 
