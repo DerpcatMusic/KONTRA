@@ -2402,6 +2402,24 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    /// 1 in `at` when `lo <= value <= hi`.
+    fn in_range(&mut self, value: u16, lo: i32, hi: i32, at: u16) -> Result<()> {
+        self.set(at, 0)?;
+        self.emit(I::Binary32 {
+            lhs: at,
+            rhs: value,
+            operation: IB::Add,
+        })?;
+        self.clamp(at, lo, hi)?;
+        self.emit(I::CompareLocal {
+            lhs: at,
+            rhs: value,
+            comparison: Cmp::Equal,
+        })
+    }
+
+    /// Kontakt ignores a `play_note` outside the MIDI ranges and returns -1;
+    /// scripts pass an unset key of -1 routinely.
     fn play(&mut self, args: &[Arg], dst: u16) -> Result<()> {
         let (velocity, offset) = (reg(dst, 1)?, reg(dst, 2)?);
         self.arg(args, 0, dst)?;
@@ -2412,6 +2430,49 @@ impl Gen<'_, '_> {
             self.arg(args, 2, offset)?;
             Some(offset)
         };
+        let frames = if offset_micros.is_some() {
+            reg(offset, 1)?
+        } else {
+            offset
+        };
+        // Constants and the event's own key/velocity are in range already.
+        let in_range = |this: &Self, i: usize, lo: i32, sys: SysVar| {
+            this.const_int(args, i)
+                .is_some_and(|k| (lo..128).contains(&k))
+                || (this.note_context()
+                    && matches!(
+                        this.expr(args, i),
+                        Some(Expr { kind: ExprKind::Sys(s), .. }) if *s == sys
+                    ))
+        };
+        if in_range(self, 0, 0, SysVar::EventNote) && in_range(self, 1, 1, SysVar::EventVelocity) {
+            return self.play_checked(args, dst, velocity, offset_micros);
+        }
+        let (key_ok, velocity_ok) = (reg(frames, 2)?, reg(frames, 3)?);
+        self.in_range(dst, 0, 127, key_ok)?;
+        self.in_range(velocity, 1, 127, velocity_ok)?;
+        self.emit(I::Binary32 {
+            lhs: key_ok,
+            rhs: velocity_ok,
+            operation: IB::Multiply,
+        })?;
+        let bad = self.jump_if_zero(key_ok)?;
+        self.play_checked(args, dst, velocity, offset_micros)?;
+        let end = self.jump()?;
+        self.land(bad);
+        self.set(dst, -1)?;
+        self.land(end);
+        Ok(())
+    }
+
+    fn play_checked(
+        &mut self,
+        args: &[Arg],
+        dst: u16,
+        velocity: u16,
+        offset_micros: Option<u16>,
+    ) -> Result<()> {
+        let offset = reg(dst, 2)?;
         let frames = if offset_micros.is_some() {
             reg(offset, 1)?
         } else {

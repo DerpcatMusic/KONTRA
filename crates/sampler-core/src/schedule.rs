@@ -249,6 +249,9 @@ impl Runtime {
                 if self.release_times[id.0.index].held {
                     self.resume_release(id).unwrap();
                 } else {
+                    // The script's own stop: its release callback cannot
+                    // ignore the release this starts.
+                    self.note_events[id.0.index].script_stop = true;
                     self.key_up_with_cause(id, None, super::ReleaseCause::Script)
                         .unwrap();
                 }
