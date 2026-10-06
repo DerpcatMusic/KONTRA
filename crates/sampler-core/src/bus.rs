@@ -140,6 +140,8 @@ struct Buffer {
     samples: [Frame; BLOCK],
     input_frames: usize,
     remaining: u32,
+    /// Written since last cleared; idle buses cost nothing to begin.
+    dirty: bool,
 }
 
 impl Default for Buffer {
@@ -148,6 +150,7 @@ impl Default for Buffer {
             samples: [[0.; 2]; BLOCK],
             input_frames: 0,
             remaining: 0,
+            dirty: false,
         }
     }
 }
@@ -173,12 +176,17 @@ impl BusState {
     }
     pub fn begin(&mut self) {
         for buffer in &mut self.buffers {
-            buffer.samples.fill([0.; 2]);
+            if buffer.dirty {
+                buffer.samples.fill([0.; 2]);
+                buffer.dirty = false;
+            }
             buffer.input_frames = 0;
         }
     }
     pub fn input(&mut self, bus: usize, frames: usize) -> &mut [Frame] {
-        &mut self.buffers[bus].samples[..frames]
+        let buffer = &mut self.buffers[bus];
+        buffer.dirty = true;
+        &mut buffer.samples[..frames]
     }
     pub fn fed(&mut self, bus: usize, frames: usize) {
         self.buffers[bus].input_frames = self.buffers[bus].input_frames.max(frames);
@@ -258,6 +266,10 @@ impl BusState {
             if produced < len {
                 states.fill(ProcessorState::default());
             }
+            if produced == 0 {
+                continue;
+            }
+            buffer.dirty = true;
             let mix = self.mix[index];
             if mix.gain != [1.0; 2] {
                 for frame in &mut buffer.samples[..produced] {
