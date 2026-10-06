@@ -12,17 +12,23 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod access_error;
 mod audio;
 #[cfg(feature = "library-access")]
 mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod modulation;
+#[cfg(not(feature = "library-access"))]
+mod no_access;
 #[cfg(feature = "library-access")]
 mod ufs;
 
+pub use access_error::AccessError;
 #[cfg(feature = "library-access")]
 pub use bank::Bank;
+#[cfg(not(feature = "library-access"))]
+pub use no_access::Bank;
 
 use roxmltree::{Document, Node, ParsingOptions};
 use sampler_ir as ir;
@@ -99,18 +105,7 @@ pub struct Uvi {
 
 /// Translate the program at `path`; sample paths resolve from its folder.
 pub fn read(path: &Path) -> Result<Uvi, Error> {
-    let io = |error| Error::Io {
-        path: path.into(),
-        error,
-    };
-    let size = std::fs::metadata(path).map_err(io)?.len();
-    if size > XML_LIMIT {
-        return Err(Error::Invalid {
-            path: path.into(),
-            reason: "program exceeds 32 MiB".into(),
-        });
-    }
-    let text = std::fs::read_to_string(path).map_err(io)?;
+    let text = read_text(path)?;
     translate(&text, path.parent().unwrap_or(Path::new("."))).map_err(|e| match e {
         Translate::Xml(error) => Error::Xml {
             path: path.into(),
@@ -130,6 +125,42 @@ pub enum Translate {
     Invalid(String),
 }
 
+impl std::fmt::Display for Translate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Xml(error) => error.fmt(f),
+            Self::Invalid(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for Translate {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Xml(error) => Some(error),
+            Self::Invalid(_) => None,
+        }
+    }
+}
+
+/// Parse decoded program XML with the same bounds used by the loader and census.
+/// Large installed Falcon programs exceed 200,000 nodes; retain a 32 MiB byte
+/// bound and a one-million-node bound, and reject DTDs.
+pub fn parse_program_xml(text: &str) -> Result<Document<'_>, Translate> {
+    if text.len() as u64 > XML_LIMIT {
+        return Err(Translate::Invalid("program exceeds 32 MiB".into()));
+    }
+    Document::parse_with_options(
+        text,
+        ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: 1_000_000,
+            ..Default::default()
+        },
+    )
+    .map_err(Translate::Xml)
+}
+
 /// Translate program XML whose relative sample paths resolve from `folder`.
 pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
     let (instrument, locations) = translate_with(text, Source::Disk(folder.into()))?;
@@ -146,14 +177,7 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
-    let options = ParsingOptions {
-        allow_dtd: false,
-        // Augmented Orchestra programs reach ~97k elements (~200k nodes with
-        // their whitespace); XML_LIMIT bounds the text either way.
-        nodes_limit: 1_000_000,
-        ..Default::default()
-    };
-    let doc = Document::parse_with_options(text, options).map_err(Translate::Xml)?;
+    let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
         "Program" => root,
@@ -724,10 +748,32 @@ impl Translation {
     }
 }
 
-/// Load a clear `.uvip` program (loose WAV/FLAC/AIFF samples) as a plan at
-/// `rate`. For an encrypted bank program use [`load_program`]. Lua scripts have
-/// no frontend yet and are reported in the instrument, not run.
+/// Load a loose program, a virtual `bank.ufs/member.uvip` path, or the first
+/// program in a UFS bank. [`load_program`] selects a specific bank member.
+/// Protected programs use the installed reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    if let Some(bank_path) = path
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+    {
+        let bank = Bank::open(bank_path)?;
+        let member = path
+            .strip_prefix(bank_path)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let member = if member.is_empty() {
+            bank.programs()
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::Invalid {
+                    path: bank_path.into(),
+                    reason: "bank has no programs".into(),
+                })?
+        } else {
+            member
+        };
+        return load_program(&bank, &member, rate);
+    }
     let (instrument, locations) = translate_with(
         &read_text(path)?,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
@@ -735,34 +781,78 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
     .map_err(|e| describe(path, e))?;
     let decoded = locations
         .iter()
-        .map(|location| {
-            std::fs::read(location)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| audio::decode(&[bytes]).map(|(d, _)| d))
-        })
+        .map(|location| decode_sample(Path::new(location)).map_err(|e| e.to_string()))
         .collect();
-    assemble(instrument, locations, decoded, rate)
+    assemble(
+        instrument,
+        locations,
+        decoded,
+        &sampler_kontakt::Options {
+            rate,
+            ..Default::default()
+        },
+    )
+}
+
+/// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
+/// Both the encoded input and decoded audio are bounded to 512 MiB.
+pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take((512 << 20) + 1).read_to_end(&mut bytes))
+        .map_err(|error| Error::Io {
+            path: path.into(),
+            error,
+        })?;
+    audio::decode(&[bytes])
+        .map(|(audio, _)| audio)
+        .map_err(|reason| Error::Invalid {
+            path: path.into(),
+            reason,
+        })
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
 /// is a member path from [`Bank::programs`]. Samples are read from the bank.
-#[cfg(feature = "library-access")]
 pub fn load_program(
     bank: &Bank,
     program: &str,
     rate: u32,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    load_program_with_options(
+        bank,
+        program,
+        &sampler_kontakt::Options {
+            rate,
+            ..Default::default()
+        },
+    )
+}
+
+/// Load only sample zones overlapping `options.keys`, as Kontakt's loader does.
+/// This bounds offline renders to the played range without changing translation.
+pub fn load_program_with_options(
+    bank: &Bank,
+    program: &str,
+    options: &sampler_kontakt::Options,
+) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations) =
+    let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    let kept = instrument.retain_zones(|zone| {
+        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
+    });
+    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
     let decoded = locations
         .iter()
         .map(|authored| {
             bank.resource(&program_path, authored)
+                .map_err(|e| e.to_string())
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
         })
         .collect();
-    assemble(instrument, locations, decoded, rate)
+    assemble(instrument, locations, decoded, options)
 }
 
 fn read_text(path: &Path) -> Result<String, Error> {
@@ -776,6 +866,15 @@ fn read_text(path: &Path) -> Result<String, Error> {
             reason: "program exceeds 32 MiB".into(),
         });
     }
+    #[cfg(feature = "library-access")]
+    {
+        let bytes = std::fs::read(path).map_err(io)?;
+        bank::program_text(&bytes).map_err(|e| Error::Invalid {
+            path: path.into(),
+            reason: e.to_string(),
+        })
+    }
+    #[cfg(not(feature = "library-access"))]
     std::fs::read_to_string(path).map_err(io)
 }
 
@@ -798,7 +897,7 @@ fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
     decoded: Vec<Result<sampler_kontakt::Decoded, String>>,
-    rate: u32,
+    options: &sampler_kontakt::Options,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     for (location, result) in locations.iter().zip(&decoded) {
         if let Err(reason) = result {
@@ -812,20 +911,13 @@ fn assemble(
     }
     let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
     let mut pcm = Vec::with_capacity(kept.len());
+    let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {
-        let d = decoded[asset].as_ref().unwrap();
-        pcm.push(sampler_core::Pcm::new(
-            d.rate,
-            d.frames.clone().into_boxed_slice(),
-        )?);
+        let d = decoded[asset].take().unwrap().unwrap();
+        pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    let options = sampler_kontakt::Options {
-        rate,
-        scripts: true,
-        ..Default::default()
-    };
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, &options)?)
+    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
 }
 
 #[cfg(all(test, feature = "library-access"))]

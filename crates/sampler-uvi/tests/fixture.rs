@@ -3,6 +3,16 @@
 use sampler_core::{Input, Limits, Protocol, Runtime};
 use sampler_ir as ir;
 
+#[test]
+fn large_falcon_program_xml_is_bounded_without_rejecting_installed_node_counts() {
+    let xml = format!("<Program>{}</Program>", "<Properties/>".repeat(210_000));
+    assert!(sampler_uvi::parse_program_xml(&xml).is_ok());
+    let excessive = format!("<Program>{}</Program>", "<p/>".repeat(1_000_000));
+    assert!(sampler_uvi::parse_program_xml(&excessive).is_err());
+    assert!(sampler_uvi::parse_program_xml(&" ".repeat((32 << 20) + 1)).is_err());
+    assert!(sampler_uvi::parse_program_xml("<!DOCTYPE Program><Program/>").is_err());
+}
+
 const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <UVI4>
   <Program Name="Fixture" Gain="0.5">
