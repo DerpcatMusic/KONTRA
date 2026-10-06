@@ -171,3 +171,27 @@ fn midi2_bend_and_registered_range() {
         assert_eq!(expression(&rt, a).pitch_semitones, 0.0);
     });
 }
+
+/// CC121 (RP-015) centres bend and clears channel and poly pressure on held
+/// notes and for later ones; the bend range is kept.
+#[test]
+fn reset_all_controllers_centres_bend_and_clears_pressure() {
+    let mut rt = runtime(2.0);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let note = start(&mut ingress, &mut rt, 0, 60);
+    apply(&mut ingress, &mut rt, &[bend(0, 16383)]);
+    apply(&mut ingress, &mut rt, &[midi1(0xd0, 0, 100, 0)]);
+    apply(&mut ingress, &mut rt, &[midi1(0xa0, 0, 60, 90)]);
+    assert!(expression(&rt, note).pitch_semitones > 1.9);
+    assert!(expression(&rt, note).pressure > 0);
+    assert_eq!(
+        apply(&mut ingress, &mut rt, &[midi1(0xb0, 0, 121, 0)]),
+        Applied::ResetControllers
+    );
+    assert_eq!(expression(&rt, note).pitch_semitones, 0.0);
+    assert_eq!(expression(&rt, note).pressure, 0);
+    let later = start(&mut ingress, &mut rt, 0, 61);
+    assert_eq!((expression(&rt, later).pitch_semitones, expression(&rt, later).pressure), (0.0, 0));
+    apply(&mut ingress, &mut rt, &[bend(0, 16383)]);
+    assert!(expression(&rt, later).pitch_semitones > 1.9, "range kept");
+}
