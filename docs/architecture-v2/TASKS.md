@@ -33,6 +33,11 @@ performance materially above both reference platforms. These are acceptance targ
 not current claims: require versioned vendor fixtures and matched-quality workloads.
 No SFZ frontend has been implemented. Shared primitives remain format independent.
 
+The independent [Kontakt source decoder](KONTAKT_SOURCE.md) now inspects expanded
+chunk payloads and retains source records, raw bytes and saved script state. An
+authored saved script executes through the native KSP/audio path. This does not
+close container decoding, whole-instrument lowering, persistence or playback gates.
+
 ## Completed groundwork
 
 - [x] Isolate worktree, preserve all attachments and record their hashes.

@@ -1,4 +1,5 @@
 //! Independent offline composition root; no legacy application or engine dependency.
+mod kontakt;
 mod wave;
 use sampler_core::{
     Instruction, Limits, Outcome, Pcm, PlanControl, Prepared, Program, Region, Runtime,
@@ -309,6 +310,9 @@ fn demo_sample() -> Pcm {
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
+        [command, input] if command == "inspect-kontakt-chunks" => {
+            kontakt::inspect(Path::new(input))
+        }
         [command, output] if command == "demo" || command == "echo" => render(
             demo_sample(),
             Path::new(output),
@@ -336,7 +340,7 @@ fn run() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin",
         )),
     }
 }

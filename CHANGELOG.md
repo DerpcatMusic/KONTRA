@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add a dependency-free Kontakt source reader and expanded-payload inspection
+  command. Borrowed records retain unknown bytes, ordering and saved script state;
+  malformed tables fail explicitly. No old importer or engine dependency is added.
+
 - Compile KSP user functions into bounded native instructions with nested calls,
   relocated branches and caller-specific waits/forwarding. Invalid definitions and
   excessive expansion fail before activation; no audio-thread call stack is added.

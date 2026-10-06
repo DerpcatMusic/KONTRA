@@ -1,0 +1,14 @@
+[package]
+name = "sampler-kontakt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[dev-dependencies]
+sampler-core = { path = "../sampler-core" }
+sampler-ksp = { path = "../sampler-ksp" }
+
+[lints.rust]
+unsafe_code = "deny" # Library forbids it; test allocator instrumentation opts out.
