@@ -1499,6 +1499,7 @@ impl Gen<'_, '_> {
             | FsNavigate
             | SetNksNavName
             | SetNksNavPar
+            | ResetNksNav
             | SetKeyColor
             | SetKeyName
             | SetKeyType

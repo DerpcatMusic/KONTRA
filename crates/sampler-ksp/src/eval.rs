@@ -16,9 +16,9 @@ pub struct Environment {
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
     /// Controls a Creator Tools performance view (`.nckp`) declares when the
-    /// script calls `load_performance_view`, by variable name. Names the script
-    /// uses but this list lacks are assumed to be `ui_knob`s, with a warning.
-    pub performance_view: Vec<(String, WidgetKind)>,
+    /// script calls `load_performance_view`. Names the script uses but this
+    /// list lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    pub performance_view: Vec<model::PerformanceControl>,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -1131,7 +1131,7 @@ impl Eval<'_> {
             | ByMarks => V::I(0),
             SetZonePar | PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
             | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
-            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar => {
+            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
