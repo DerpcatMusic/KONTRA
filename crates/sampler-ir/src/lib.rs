@@ -181,6 +181,8 @@ pub struct Zone {
     pub gain: Gain,
     /// How note velocity scales this zone's amplitude.
     pub velocity: VelocityResponse,
+    /// Linear ramps at the edges of the key and velocity ranges.
+    pub fades: Fades,
     pub pan: Pan,
     pub playback: Playback,
     /// Voice-scope processing for this zone, before group/bus processing.
@@ -241,6 +243,7 @@ impl Zone {
             tune: Pitch::NONE,
             gain: Gain::UNITY,
             velocity: VelocityResponse::Linear,
+            fades: Fades::default(),
             pan: Pan::CENTER,
             playback: Playback::default(),
             chain: None,
@@ -260,6 +263,19 @@ pub enum VelocityResponse {
     Linear,
     /// Amplitude is (velocity / 127) ^ exponent.
     Power(f64),
+}
+
+/// Zone crossfades, in key and velocity steps inside the zone's own ranges.
+/// A fade-in of `F` over a low edge `L` has gain `(v - L + 1) / (F + 1)` for
+/// `L <= v <= L + F`; a fade-out over a high edge `H` mirrors it,
+/// `(H - v + 1) / (F + 1)`. Zero is no fade. The key and velocity gains
+/// multiply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fades {
+    pub velocity_in: u8,
+    pub velocity_out: u8,
+    pub key_in: u8,
+    pub key_out: u8,
 }
 
 /// Inclusive MIDI key range.

@@ -11,7 +11,11 @@ fn every_switching_round_trips_through_a_byte() {
             Driver::Program,
         ] {
             for keys in [SwitchKeys::Keep, SwitchKeys::Play, SwitchKeys::Swallow] {
-                let s = Switching { owner, driver, keys };
+                let s = Switching {
+                    owner,
+                    driver,
+                    keys,
+                };
                 assert_eq!(Switching::from_bits(s.to_bits()), Some(s));
             }
         }

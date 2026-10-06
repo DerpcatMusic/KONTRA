@@ -323,6 +323,19 @@ pub enum VelocityCurve {
     Power(f64),
 }
 
+impl PreparedRegion {
+    /// Crossfade gain for a note at `key` and normalised `velocity`.
+    pub(super) fn fade_gain(&self, key: u8, velocity: f64) -> f32 {
+        let f = self.fades;
+        if f == ZoneFades::default() {
+            return 1.0;
+        }
+        let v = (velocity * 127.0).round().clamp(0.0, 127.0) as u8;
+        let [kl, kh, vl, vh] = self.bounds;
+        ramp(key, kl, kh, f.key_in, f.key_out) * ramp(v, vl, vh, f.velocity_in, f.velocity_out)
+    }
+}
+
 impl VelocityCurve {
     fn amplitude(self, velocity: f64) -> f32 {
         match self {
@@ -333,6 +346,30 @@ impl VelocityCurve {
     }
 }
 
+/// Linear zone crossfades inside a region's key and velocity ranges (see
+/// `sampler_ir::Fades`): gain `(v - low + 1) / (fade + 1)` rising over `fade`
+/// steps from the low edge and the mirror falling to the high edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ZoneFades {
+    pub velocity_in: u8,
+    pub velocity_out: u8,
+    pub key_in: u8,
+    pub key_out: u8,
+}
+
+fn ramp(v: u8, low: u8, high: u8, fade_in: u8, fade_out: u8) -> f32 {
+    let (v, low, high) = (i32::from(v), i32::from(low), i32::from(high));
+    let mut gain = 1.0;
+    let (fade_in, fade_out) = (i32::from(fade_in), i32::from(fade_out));
+    if fade_in > 0 && v - low < fade_in {
+        gain = ((v - low + 1).max(0) as f32) / (fade_in + 1) as f32;
+    }
+    if fade_out > 0 && high - v < fade_out {
+        gain *= ((high - v + 1).max(0) as f32) / (fade_out + 1) as f32;
+    }
+    gain
+}
+
 /// Render-ready region: authoring bounds and playback metadata have been compiled.
 #[derive(Clone, Copy)]
 struct PreparedRegion {
@@ -341,6 +378,9 @@ struct PreparedRegion {
     velocity_high: f64,
     gain: f32,
     velocity_curve: VelocityCurve,
+    fades: ZoneFades,
+    /// key low, key high, velocity low, velocity high.
+    bounds: [u8; 4],
     chain: Option<usize>,
     bus: Option<usize>,
     envelope: Envelope,
@@ -425,6 +465,17 @@ impl Prepared {
         Ok(self)
     }
 
+    /// One crossfade set per authored region, in its original order.
+    pub fn with_zone_fades(mut self, fades: Vec<ZoneFades>) -> Result<Self, Error> {
+        if fades.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        for (region, fades) in self.regions.iter_mut().zip(fades) {
+            region.fades = fades;
+        }
+        Ok(self)
+    }
+
     /// Takes immutable PCM handles without copying/rescanning their frames. Region
     /// validation and candidate construction happen off audio. max_candidates
     /// bounds the expanded key index, not file IO.
@@ -489,6 +540,13 @@ impl Prepared {
                 velocity_high: r.velocity_high,
                 gain: r.gain,
                 velocity_curve: VelocityCurve::Linear,
+                fades: ZoneFades::default(),
+                bounds: [
+                    r.key_low,
+                    r.key_high,
+                    (r.velocity_low * 127.0).round() as u8,
+                    (r.velocity_high * 127.0).round() as u8,
+                ],
                 chain: None,
                 bus: None,
                 envelope: r.envelope,

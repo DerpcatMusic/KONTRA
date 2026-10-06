@@ -173,3 +173,32 @@ Measured on the ignored `measure_modulation_cost_per_voice` (64 looping
 resampled voices, release build): plain voice 24.7 ns per voice-frame; with the
 pressure route 26.5; with a closed tone filter 31.3; an SVF voice chain 32.3,
 plus LFO pitch/pan, envelope gain and LFO cutoff 35.0.
+
+## Measured Kontakt segment and crossfade laws
+
+Not in the Kontakt manual (KONTAKT_Manual.pdf states no crossfade, shaper
+curvature or flex-curve law); measured on Kontakt 8 by the reference harness
+(docs/architecture-v2/KONTAKT_REFERENCE.md on v2/kontakt-reference).
+
+- **Shaper segment curvature.** A breakpoint's stored curvature `c` bows the
+  segment to the next point: `k = 17 |c|`, `e(t) = (e^kt - 1)/(e^k - 1)`; the
+  segment is `y0 + (y1 - y0) e(t)` when `c > 0` and it rises or `c < 0` and it
+  falls (below the chord), else `y0 + (y1 - y0)(1 - e(1 - t))` (above).
+  Vista 3 Cellos group 37 swept over CC100 (0..96): 0.08 dB RMS residual with
+  K = 18 after a constant, K = 17 is the shared compromise (Una Corda "Depth"
+  GUI reading implies about 15). Expanded to 16 linear pieces per curved
+  segment in `crates/sampler-kontakt/src/library.rs` (`curved_shaper`).
+- **Flex envelope segment curve.** Stored `s` (0..1, 0.5 linear), `c = s - 0.5`,
+  `k = 17 |c|`; `c > 0` starts fast (`Exponential(-k)`), `c < 0` slowly.
+  Measured on rising 0..1 segments only; falling segments assume the same
+  progress function.
+- **Zone crossfades.** Linear amplitude ramp in integer steps with a nonzero
+  first step: a fade-in of `F` over low edge `L` has gain `(v - L + 1)/(F + 1)`
+  for `L <= v <= L + F`, the fade-out mirrors it `(H - v + 1)/(F + 1)`; key and
+  velocity alike, multiplied. Not equal-power. `ir::Fades`,
+  `Prepared::with_zone_fades`. The mapping field order (low velocity, high
+  velocity, low key, high key) is taken from the v1 importer, unverified.
+
+## Monophonic release note
+
+See RELEASE_CONTEXT.md.

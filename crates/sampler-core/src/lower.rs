@@ -8,7 +8,7 @@ use crate::{
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
     Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
     Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
-    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -334,6 +334,25 @@ pub fn lower_with(
         plan = plan
             .with_velocity_curves(curves)
             .map_err(core(Stage::Regions, "velocity responses"))?;
+    }
+    if instrument
+        .zones
+        .iter()
+        .any(|z| z.fades != ir::Fades::default())
+    {
+        let fades = instrument
+            .zones
+            .iter()
+            .map(|z| ZoneFades {
+                velocity_in: z.fades.velocity_in,
+                velocity_out: z.fades.velocity_out,
+                key_in: z.fades.key_in,
+                key_out: z.fades.key_out,
+            })
+            .collect();
+        plan = plan
+            .with_zone_fades(fades)
+            .map_err(core(Stage::Regions, "zone crossfades"))?;
     }
     plan = lowering.buses(plan)?;
     plan = lowering.modulation(plan)?;
