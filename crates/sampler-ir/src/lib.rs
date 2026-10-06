@@ -512,6 +512,18 @@ pub struct Route {
     pub invert: bool,
     pub shape: Option<ShapeRef>,
     pub smoothing: Time,
+    /// Depth multiplier read from a second modulator (a modulator × modulator
+    /// product, e.g. LFO depth by the mod wheel). See [`RouteScale`].
+    pub scale: Option<RouteScale>,
+}
+
+/// The route's depth is multiplied by `shape(x)`, where `x` is the unipolar
+/// view of `source` ((v + 1) / 2 for bipolar sources) and no shape means `x`.
+/// The shape's output is used as-is, not mapped back to the source's range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteScale {
+    pub source: ModulatorRef,
+    pub shape: Option<ShapeRef>,
 }
 
 impl Route {
@@ -523,6 +535,7 @@ impl Route {
             invert: false,
             shape: None,
             smoothing: Time::ZERO,
+            scale: None,
         }
     }
 }

@@ -5,9 +5,9 @@
 use crate::{
     Biquad, Bus, BusSend, ControllerCondition, Direction, Envelope, EnvelopeCurve, Error,
     FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute,
-    ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region, SelectionPolicy,
-    Sequence, SequenceScope, StateVariableFilter, SvfMode, Take, TakePolicy, Trigger,
-    VelocityCurve, VoiceChain,
+    ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region,
+    SelectionPolicy, Sequence, SequenceScope, StateVariableFilter, SvfMode, Take, TakePolicy,
+    Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -523,20 +523,41 @@ impl Lowering<'_> {
                 }
                 _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
             };
-            let source = match sources.get(&route.source) {
-                Some(&index) => index,
-                None => {
-                    let source = self.mod_source(&owner, &modulator.source)?;
-                    program.sources.push(source);
-                    sources.insert(route.source, program.sources.len() - 1);
-                    program.sources.len() - 1
+            let mut source_of = |modulator: ir::ModulatorRef,
+                                 program: &mut ModProgram|
+             -> Result<usize, LowerError> {
+                if let Some(&index) = sources.get(&modulator) {
+                    return Ok(index);
                 }
+                let m = &self.ir.modulators[modulator.0];
+                if m.scope != ir::Scope::Voice {
+                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
+                }
+                program.sources.push(self.mod_source(&owner, &m.source)?);
+                sources.insert(modulator, program.sources.len() - 1);
+                Ok(program.sources.len() - 1)
             };
-            let shape = route.shape.map(|shape| {
+            let source = source_of(route.source, &mut program)?;
+            let scale = match route.scale {
+                None => None,
+                Some(scale) => Some(ModScale {
+                    source: source_of(scale.source, &mut program)?,
+                    shape: None,
+                }),
+            };
+            let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
                 *shapes.entry(shape).or_insert_with(|| {
                     program.shapes.push(self.ir.shapes[shape.0].points.clone());
                     program.shapes.len() - 1
                 })
+            };
+            let shape = route.shape.map(|shape| shape_of(shape, &mut program));
+            let scale = scale.map(|s| ModScale {
+                shape: route
+                    .scale
+                    .and_then(|r| r.shape)
+                    .map(|shape| shape_of(shape, &mut program)),
+                ..s
             });
             program.routes.push(ModRoute {
                 source,
@@ -545,6 +566,7 @@ impl Lowering<'_> {
                 invert: route.invert,
                 shape,
                 lag: self.frames(route.smoothing),
+                scale,
             });
         }
         if let Some(mpe) = self.mpe {
