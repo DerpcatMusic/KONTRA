@@ -145,6 +145,7 @@ impl Ingress {
                 velocity.normalized(),
                 Expression {
                     pitch_semitones: channel.bend * range,
+                    bend: channel.bend,
                     pressure: channel.pressure,
                     ..Expression::default()
                 },
@@ -171,6 +172,7 @@ impl Ingress {
                 let owners = runtime.set_input_expressions(input.channel_address(), None, |e| {
                     Expression {
                         pitch_semitones: bend * range,
+                        bend,
                         ..e
                     }
                 })?;
@@ -273,6 +275,7 @@ impl Ingress {
                 }
                 runtime.set_input_expressions(input.channel_address(), None, |e| Expression {
                     pitch_semitones: 0.0,
+                    bend: 0.0,
                     pressure: 0,
                     ..e
                 })?;
@@ -307,6 +310,7 @@ impl Ingress {
         let bend = self.channels[slot].bend;
         runtime.set_input_expressions(address, None, |e| Expression {
             pitch_semitones: bend * range,
+            bend,
             ..e
         })?;
         self.channels[slot].range = Some(range);
