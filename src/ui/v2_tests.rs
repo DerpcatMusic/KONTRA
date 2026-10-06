@@ -172,119 +172,85 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
     assert_eq!(values.get(&ir::ControlId(1)), Some(&50.), "a value starts at its default");
 }
 
-/// Builds the IR from the current KSP view of a real instrument and measures
-/// both presentations. Opt-in: `KONTRA_UI_IR_PATCH=/path/to/patch.nki`.
+const NO_LIMITS: sampler_ksp::Limits =
+    sampler_ksp::Limits { source_bytes: usize::MAX, instructions: usize::MAX, variables: usize::MAX, array_cells: usize::MAX };
+
+/// Renders `face` in both presentations, shooting each as `{stem}-{mode}.png`
+/// under `dir`; returns the decoded bytes each keeps.
+fn both_modes(face: &ir::Interface, load: &dyn Fn(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
+    let face = ir_view::resolved(face);
+    let page = &face.pages[0];
+    let (w, h) = (page.size.width.clamp(1, 1200) as u16, page.size.height.clamp(1, 900) as u16);
+    let mut values = ir_view::Values::default();
+    let mut assets = ir_view::Assets::default();
+    let mut bytes = [0; 2];
+    for (n, (p, mode)) in [(ir::Presentation::Bitmap, "bitmap"), (ir::Presentation::Vector, "vector")].into_iter().enumerate() {
+        assets.sync(&face, p, load);
+        bytes[n] = assets.bytes();
+        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, p, 1., &mut values));
+        shoot(&ui, w, h, &format!("{dir}/{stem}-{mode}.png"));
+    }
+    bytes
+}
+
+/// Every script interface the KSP frontend emits from the extracted corpus
+/// draws in both presentations. Opt-in: `KSP_CORPUS` (default ~/.cache/ksp-corpus).
+#[test]
+#[ignore = "needs the extracted KSP corpus (kept outside the repo)"]
+fn ir_view_draws_the_ksp_corpus() {
+    let dir = std::env::var("KSP_CORPUS").unwrap_or_else(|_| format!("{}/.cache/ksp-corpus", std::env::var("HOME").unwrap()));
+    let mut paths: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|e| e == "ksp")).collect();
+    paths.sort();
+    let (mut drawn, mut widgets) = (0, 0);
+    for path in &paths {
+        let source = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
+        let Ok(script) = sampler_ksp::compile(&source, 48000, NO_LIMITS, &[]) else { continue };
+        let face = script.ui(&|_| None).unwrap();
+        if face.widgets.is_empty() {
+            continue;
+        }
+        widgets += face.widgets.len();
+        both_modes(&face, &|_| None, "corpus", &path.file_stem().unwrap().to_string_lossy());
+        drawn += 1;
+    }
+    eprintln!("drew {drawn} interfaces ({widgets} widgets) of {} scripts in both presentations", paths.len());
+    assert!(drawn > 0);
+}
+
+/// A real instrument's scripts through the KSP frontend into UI IR, with the
+/// library's own pictures, in both presentations; prints the decoded pixels
+/// each keeps. Opt-in: `KONTRA_UI_IR_PATCH=/path/to/patch.nki`.
 #[test]
 #[ignore = "set KONTRA_UI_IR_PATCH to a locally owned instrument"]
 fn ir_view_real_instrument_memory() {
     let patch = std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH");
+    // ponytail: the v1 reader supplies script text and pictures until the v2 Kontakt loader exposes both.
     let i = crate::import::read(Path::new(&patch)).unwrap();
-    let view = super::tests::scripted(&i);
-    let interface = view.interface.expect("the instrument has a script interface");
-    let names = crate::artwork::picture_names(&interface).map(|n| n.into_owned()).collect::<Vec<_>>();
+    let face = i
+        .scripts
+        .iter()
+        .filter_map(|s| sampler_ksp::compile(s, 48000, NO_LIMITS, &[]).ok())
+        .filter_map(|s| s.ui(&|_| None).ok())
+        .max_by_key(|u| u.widgets.len())
+        .expect("a script with an interface");
+    let name = |path: &str| path.trim_start_matches("Resources/pictures/").trim_end_matches(".png").to_owned();
+    let names: Vec<String> = face.assets.iter().map(|a| name(&a.path)).collect();
     let pictures = crate::artwork::pictures(&i.path, names.iter().map(String::as_str));
-    let wallpaper = crate::artwork::performance(&i, Some(&interface)).ok().flatten();
-    let face = from_v1(&interface, &pictures, wallpaper.is_some());
-    face.validate().unwrap();
-    let load = |a: &ir::Asset| if a.path == "@wallpaper" { wallpaper.clone() } else { pictures.get(&a.path).cloned() };
+    let wallpaper = face.pages[0].background.image.map(|a| names[a.0].clone());
+    let wall = crate::artwork::performance(&i, None).ok().flatten();
+    let load = |a: &ir::Asset| {
+        let n = name(&a.path);
+        if wallpaper.as_ref() == Some(&n) { wall.clone().or_else(|| pictures.get(&n).cloned()) } else { pictures.get(&n).cloned() }
+    };
     let stem = Path::new(&patch).file_stem().unwrap().to_string_lossy().replace(' ', "_");
-    let (w, h) = (face.pages[0].size.width as u16, face.pages[0].size.height as u16);
-    let mut values = ir_view::Values::default();
-    let mut assets = ir_view::Assets::default();
-    let mut bytes = Vec::new();
-    for (p, name) in [(ir::Presentation::Bitmap, "bitmap"), (ir::Presentation::Vector, "vector")] {
-        assets.sync(&face, p, load);
-        bytes.push(assets.bytes());
-        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, p, 1., &mut values));
-        shoot(&ui, w, h, &format!("ir-{name}-{stem}.png"));
-    }
-    let all: usize = pictures.values().chain(wallpaper.iter()).flat_map(|p| p.frames.iter()).map(|i| i.width as usize * i.height as usize * 4).sum();
+    let bytes = both_modes(&face, &load, "real", &stem);
     eprintln!(
-        "{stem}: {} widgets, {} assets; decoded pixels resident: bitmap {} KiB, vector {} KiB ({} KiB in every picture the script names)",
+        "{stem}: {} widgets, {} assets ({} unsupported entries); decoded pixels resident: bitmap {} KiB, vector {} KiB",
         face.widgets.len(),
         face.assets.len(),
+        face.unsupported.len(),
         bytes[0] / 1024,
-        bytes[1] / 1024,
-        all / 1024
+        bytes[1] / 1024
     );
     assert!(bytes[1] <= bytes[0]);
-}
-
-/// The current KSP view as UI IR: every visible control at its absolute
-/// place (panels resolved), label pictures as background art, every other
-/// control picture as a strip.
-// ponytail: test-only bridge over the v1 KSP runtime; the KSP frontend emits the IR directly.
-fn from_v1(u: &crate::ksp::Interface, pictures: &std::collections::HashMap<String, Arc<Picture>>, wallpaper: bool) -> ir::Interface {
-    use super::perf_view::{Kind as V1, layout, prop};
-    let mut face = ir::Interface {
-        source: ir::Source::Ksp { slot: 0 },
-        pages: vec![ir::Page {
-            name: u.title.clone(),
-            size: ir::Size { width: u.width.max(1) as u32, height: u.height.max(1) as u32 },
-            background: ir::Background {
-                color: u.background_color.map(ir::Rgba::rgb),
-                image: wallpaper.then_some(ir::AssetRef(0)),
-                offset_y: u.skin_offset + super::perf_view::HEADER as i32,
-            },
-            ..Default::default()
-        }],
-        ..Default::default()
-    };
-    if wallpaper {
-        face.assets.push(ir::Asset { path: "@wallpaper".into(), kind: ir::AssetKind::Image(ir::ImageMeta::default()) });
-    }
-    let mut asset_of = std::collections::HashMap::new();
-    for s in layout(u, pictures) {
-        let c = &u.controls[s.control];
-        let int = |k: &str| match c.properties.get(k) {
-            Some(crate::ksp::Value::Int(n)) => Some(f64::from(*n)),
-            Some(crate::ksp::Value::Real(r)) => Some(*r),
-            _ => None,
-        };
-        let range = ir::Range {
-            min: int("$CONTROL_PAR_MIN_VALUE").unwrap_or(0.),
-            max: int("$CONTROL_PAR_MAX_VALUE").unwrap_or(1_000_000.),
-            default: int("$CONTROL_PAR_DEFAULT_VALUE").unwrap_or(0.),
-            step: Some(1.),
-        };
-        let kind = match s.kind {
-            V1::Knob => ir::Kind::Knob { range, display: ir::Display::default() },
-            V1::Slider => ir::Kind::Slider { range, orientation: ir::Orientation::Vertical },
-            V1::Switch => ir::Kind::Switch,
-            V1::Button => ir::Kind::Button { momentary: false },
-            V1::Menu => ir::Kind::Menu {
-                items: c.menu.iter().map(|(t, v)| ir::MenuItem { text: t.clone(), value: *v, visible: true }).collect(),
-            },
-            V1::Value => ir::Kind::ValueEdit { range, display: ir::Display::default(), arrows: false },
-            V1::Label => ir::Kind::Label,
-            V1::Table => ir::Kind::Table { columns: 1, range, bipolar: false, cells: Vec::new() },
-            V1::TextEdit => ir::Kind::TextEdit,
-            V1::FileSelector => ir::Kind::FileSelector,
-            V1::Area => ir::Kind::MouseArea,
-            V1::Meter => ir::Kind::LevelMeter { orientation: ir::Orientation::Vertical },
-            V1::Waveform => ir::Kind::Waveform,
-            V1::Other => ir::Kind::Xy { cursors: 1 },
-        };
-        let mut w = ir::Widget::new(c.variable.clone(), ir::PageRef(0), ir::Rect::new(s.x as i32, s.y as i32, s.w as u32, s.h as u32), kind);
-        w.source_id = Some(c.id);
-        w.z = s.z;
-        w.text = prop(c, "$CONTROL_PAR_TEXT").to_owned();
-        let control = ir::ControlId(face.widgets.len() as u128);
-        w.binding = ir::Binding::Control(control);
-        let name = prop(c, "$CONTROL_PAR_PICTURE");
-        if let Some(p) = s.picture.as_ref() {
-            let next = face.assets.len();
-            let at = *asset_of.entry(name.to_owned()).or_insert(next);
-            if at == next {
-                face.assets.push(ir::Asset {
-                    path: name.to_owned(),
-                    kind: ir::AssetKind::Image(ir::ImageMeta { frames: p.frames.len() as u32, ..Default::default() }),
-                });
-            }
-            let role = if s.kind == V1::Label { ir::Role::Background } else { ir::Role::Strip };
-            w.images.push(ir::ImageUse::new(ir::AssetRef(at), role));
-        }
-        face.widgets.push(w);
-    }
-    face
 }
