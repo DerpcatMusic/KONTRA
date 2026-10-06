@@ -259,3 +259,32 @@ fn sort_and_array_equal_run_at_runtime() {
     rt.trigger(input(60), 60, 1.).unwrap();
     assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
 }
+
+#[test]
+fn runtime_ui_requests_update_the_model() {
+    let source = "on init
+           declare ui_label $offline(1, 1)
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           set_control_par(get_ui_id($offline), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
+           set_control_par_str(get_ui_id($offline), $CONTROL_PAR_PICTURE, \"online\")
+         end on";
+    let mut model = compile(source);
+    let mut rt = runtime(source);
+    for _ in 0..3 {
+        level(&mut rt);
+    }
+    let mut applied = 0;
+    rt.drain_effects(|e| {
+        applied += usize::from(model.apply_ui_effect(e));
+        true
+    });
+    let w = &model.model().interface.widgets[0];
+    assert_eq!(applied, 2);
+    assert_eq!(w.int("$CONTROL_PAR_HIDE"), Some(16));
+    assert_eq!(
+        w.properties.get("$CONTROL_PAR_PICTURE"),
+        Some(&sampler_ksp::model::Value::Text("online".into()))
+    );
+}
