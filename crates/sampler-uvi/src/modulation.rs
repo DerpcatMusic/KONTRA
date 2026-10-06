@@ -18,7 +18,7 @@
 //! mapper exactly. Constant sources (macros) fold into the zone's gain, tune or
 //! pan. What has no exact route is reported, never approximated.
 
-use crate::{Translation, number, path};
+use crate::{number, path, Translation};
 use roxmltree::Node;
 use sampler_ir as ir;
 
@@ -116,7 +116,11 @@ struct Mapper {
 
 impl Mapper {
     fn position(value: f64, bipolar: bool) -> f64 {
-        if bipolar { (value + 1.0) * 0.5 } else { value }
+        if bipolar {
+            (value + 1.0) * 0.5
+        } else {
+            value
+        }
     }
 
     fn apply(&self, value: f64, bipolar: bool) -> f64 {
@@ -727,6 +731,41 @@ impl Translation {
                 Ok(Ok(Signal::Fixed {
                     value: if polar { 2.0 * value - 1.0 } else { value },
                     bipolar: polar,
+                }))
+            }
+            "ScriptEventModulation" => {
+                // The script sets it per voice or for all voices
+                // (`sendScriptModulation`); its id is the number in the name,
+                // as the scripts' own id tables show.
+                let id = node
+                    .attribute("Name")
+                    .and_then(|n| n.rsplit(' ').next())
+                    .and_then(|t| t.parse::<u16>().ok());
+                let Some(id) = id else {
+                    return Ok(Err(gap(
+                        "ScriptEventModulation without an id",
+                        "",
+                        NotModeled,
+                    )));
+                };
+                if number(node, "Bipolar", 1.0)? != 0.0 && self.shared_sources.insert(node.id()) {
+                    self.ir.unsupported.push(ir::Unsupported {
+                        location: path(node),
+                        feature: "bipolar ScriptEventModulation (negative script values read as 0)"
+                            .into(),
+                        value: id.to_string(),
+                        reason: NotModeled,
+                    });
+                }
+                let source = ir::ModulationSource::Script(id);
+                Ok(Ok(Signal::Live {
+                    modulator: self.modulator(format!("{source:?}"), source),
+                    curve: identity,
+                    bipolar: false,
+                    scale: None,
+                    smoothing: 0.0,
+                    extra: None,
+                    shared: None,
                 }))
             }
             "DAHDSR" => {

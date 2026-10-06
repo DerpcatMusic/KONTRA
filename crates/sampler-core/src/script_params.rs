@@ -8,7 +8,7 @@
 //! Group layers hold absolute values that start at the authored
 //! [`GroupParams`]; the authored values are already baked into each region,
 //! so voices apply only the difference.
-use crate::{Error, ModTarget, Prepared, Runtime};
+use crate::{Error, ModTarget, NoteId, Prepared, Runtime};
 
 /// A group's authored volume, pan and tune. Scripts read these back and set
 /// them absolutely (KSP `get_engine_par`/`set_engine_par`).
@@ -254,12 +254,13 @@ pub(crate) struct NoteParams {
 }
 
 /// A note's "from script" modulator values by id; unset ids read 0.
-// ponytail: four ids per note (installed scripts use at most three: Pacific
-// 1, 3, 4); further ids are dropped. Grow if a library needs more.
+// ponytail: twelve ids per note (KSP scripts use at most three, Pacific 1, 3,
+// 4; UVI's VWinds sets seven); further ids are dropped. Grow if a library
+// needs more.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModValues {
-    ids: [u16; 4],
-    values: [i32; 4],
+    ids: [u16; 12],
+    values: [i32; 12],
     len: u8,
 }
 
@@ -287,6 +288,21 @@ impl ModValues {
 }
 
 impl Runtime {
+    /// Set a note's "from script" modulator `id` for a frontend that drives
+    /// the runtime directly (the Falcon Lua host); `value` clamps to ±1.
+    /// Voices of the note read it on their next chunk.
+    pub fn set_note_script_value(
+        &mut self,
+        note: NoteId,
+        id: u16,
+        value: f64,
+    ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let value = (value.clamp(-1.0, 1.0) * 1_000_000.0).round() as i32;
+        self.note_params[note.0.index].mods.set(id, value);
+        Ok(())
+    }
+
     fn param_layer(
         &mut self,
         plan: crate::PlanId,
