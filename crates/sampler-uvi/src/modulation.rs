@@ -696,3 +696,181 @@ pub(crate) fn source_node<'a>(owner: Node<'a, 'a>, source: &str) -> Option<Node<
                 .find(|n| n.is_element() && n.attribute("Name") == Some(name))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use sampler_ir as ir;
+
+    /// One keygroup with `keygroup` connections and a player with `player` ones.
+    fn translate(sources: &str, keygroup: &str, player: &str) -> ir::Instrument {
+        let xml = format!(
+            r#"<Program Name="t"><ControlSignalSources>{sources}</ControlSignalSources>
+            <Mappers><ControlSignalMapper Name="Tent" Min="0" Max="1">0,0 1,0 0,0</ControlSignalMapper></Mappers>
+            <Layers><Layer Name="L"><Keygroups><Keygroup Name="K">
+            <Connections>{keygroup}</Connections>
+            <Oscillators><SamplePlayer Name="P" SamplePath="a.wav"><Connections>{player}</Connections></SamplePlayer></Oscillators>
+            </Keygroup></Keygroups></Layer></Layers></Program>"#
+        );
+        crate::translate_bank(&xml).unwrap().0
+    }
+
+    fn only_route(ir: &ir::Instrument) -> (&ir::Route, &ir::ModulationSource) {
+        assert_eq!(ir.zones[0].routes.len(), 1, "{:?}", ir.unsupported);
+        let route = &ir.routes[ir.zones[0].routes[0].0];
+        (route, &ir.modulators[route.source.0].source)
+    }
+
+    fn shape<'a>(ir: &'a ir::Instrument, route: &ir::Route) -> &'a [(f64, f64)] {
+        &ir.shapes[route.shape.unwrap().0].points
+    }
+
+    #[test]
+    fn velocity_and_controller_gain_are_attenuation_routes() {
+        let ir = translate(
+            "",
+            r#"<SignalConnection Source="@VoiceParam Velocity" Destination="Gain" Ratio="0.75"/>"#,
+            "",
+        );
+        let (route, source) = only_route(&ir);
+        assert_eq!(source, &ir::ModulationSource::Velocity);
+        assert_eq!(
+            (route.target, route.depth, route.invert, route.shape),
+            (
+                ir::Target::Amplitude,
+                ir::Depth::Normalized(0.75),
+                false,
+                None
+            )
+        );
+        // Negative ratio: gain × (1 + r·u) = 1 − |r|·u, the inverted source.
+        let ir = translate(
+            "",
+            r#"<SignalConnection Source="@MIDI CC 11" Destination="Gain" Ratio="-1"/>"#,
+            "",
+        );
+        let (route, source) = only_route(&ir);
+        assert_eq!(source, &ir::ModulationSource::Controller(11));
+        assert_eq!(
+            (route.depth, route.invert),
+            (ir::Depth::Normalized(1.0), true)
+        );
+        assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+    }
+
+    #[test]
+    fn pitch_bend_and_lfo_pitch_use_semitone_ratios() {
+        let ir = translate(
+            "",
+            "",
+            r#"<SignalConnection Source="@PitchBend" Destination="Pitch" Ratio="2"/>"#,
+        );
+        let (route, source) = only_route(&ir);
+        assert_eq!(source, &ir::ModulationSource::PitchBend);
+        assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(2.0)));
+        assert_eq!(route.shape, None);
+
+        // A unipolar LFO at depth 0.5 reads 0.5·(x + 1)/2: v = 2y − 1 = s.
+        let ir = translate(
+            r#"<LFO Name="V" Freq="0.5" SyncToHost="1" Depth="0.5" Bipolar="0" Retrigger="0" Phase="0.25" WaveFormType="2" Smooth="5.2776863e-09"/>"#,
+            "",
+            r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>"#,
+        );
+        let (route, source) = only_route(&ir);
+        assert_eq!(
+            source,
+            &ir::ModulationSource::Lfo(ir::Lfo {
+                shape: ir::LfoShape::Triangle,
+                rate: ir::Frequency::Beats(0.5),
+                delay: ir::Time::Seconds(0.0),
+                fade_in: ir::Time::Seconds(0.0),
+                phase: 0.25,
+                retrigger: false,
+            })
+        );
+        assert_eq!(shape(&ir, route), [(0.0, 0.5), (1.0, 0.75)]);
+    }
+
+    #[test]
+    fn mappers_become_shapes_and_constants_fold() {
+        let ir = translate(
+            r#"<ConstantModulation Name="M" Value="0.25"/>"#,
+            r#"<SignalConnection Source="$Program/M" Destination="Gain" Ratio="1"/>"#,
+            r#"<SignalConnection Source="@MIDI CC 1" Destination="Pitch" Ratio="12" Mapper="Tent">
+                 <Connections><SignalConnection Source="$Program/M" Destination="Ratio" Ratio="1"/></Connections>
+               </SignalConnection>
+               <SignalConnection Source="$Program/M" Destination="Pitch" Ratio="4"/>"#,
+        );
+        let zone = &ir.zones[0];
+        assert_eq!(zone.gain, ir::Gain::Linear(0.25));
+        assert_eq!(zone.tune, ir::Pitch::Semitones(1.0));
+        let (route, _) = only_route(&ir);
+        // Ratio 12 × the macro's factor 0.25.
+        assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(3.0)));
+        assert_eq!(shape(&ir, route), [(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]);
+    }
+
+    #[test]
+    fn key_follow_is_exact_at_every_key() {
+        let ir = translate(
+            "",
+            r#"<SignalConnection Source="@VoiceParam LinearKeyFollow" Destination="Pan" Ratio="0.5"/>"#,
+            "",
+        );
+        let (route, source) = only_route(&ir);
+        assert_eq!(source, &ir::ModulationSource::Key);
+        assert_eq!(route.depth, ir::Depth::Normalized(0.5));
+        let points = shape(&ir, route);
+        assert_eq!(points.len(), 128);
+        assert_eq!(points[0], (0.0, -1.0));
+        assert_eq!(points[90], (90.0 / 127.0, 0.5));
+    }
+
+    #[test]
+    fn inert_connections_vanish_and_shared_ones_are_one_route() {
+        let ir = translate(
+            r#"<StepEnvelope Name="S"/>"#,
+            r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="0"/>
+               <SignalConnection Source="$Program/S" Destination="Pan" Ratio="1" Bypass="1"/>
+               <SignalConnection Source="@VoiceParam Velocity" Destination="Gain" Ratio="1"/>"#,
+            r#"<SignalConnection Source="@VoiceParam Velocity" Destination="Gain" Ratio="1"/>"#,
+        );
+        assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
+        assert_eq!(ir.routes.len(), 1);
+        assert_eq!(ir.zones[0].routes, [ir::RouteRef(0), ir::RouteRef(0)]);
+    }
+
+    #[test]
+    fn untranslatable_connections_are_reported() {
+        let ir = translate(
+            r#"<StepEnvelope Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
+            r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
+               <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
+               <SignalConnection Source="@PitchBend" Destination="Gain" Ratio="1"/>"#,
+            r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1">
+                 <Connections><SignalConnection Source="@VoiceParam Key" Destination="Ratio" Ratio="-1"/></Connections>
+               </SignalConnection>"#,
+        );
+        let reasons: Vec<_> = ir
+            .unsupported
+            .iter()
+            .map(|u| (u.feature.as_str(), u.reason))
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                ("modulation source", ir::Reason::NotModeled),
+                ("LFO waveform", ir::Reason::UnknownLaw),
+                (
+                    "pitch bend outside pitch (bend is native note expression)",
+                    ir::Reason::NotModeled
+                ),
+                (
+                    "ratio modulated by a live source (a product of sources)",
+                    ir::Reason::NotModeled
+                ),
+            ]
+        );
+        assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: StepEnvelope");
+        assert!(ir.zones[0].routes.is_empty());
+    }
+}

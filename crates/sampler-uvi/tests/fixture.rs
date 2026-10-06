@@ -7,8 +7,9 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <UVI4>
   <Program Name="Fixture" Gain="0.5">
     <ControlSignalSources>
-      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocitySens="0.5" DecayCurve="0.5"/>
-      <LFO Name="Vibrato" Rate="5"/>
+      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocityAmount="1" VelocitySens="0.5" DecayCurve="0.5"/>
+      <LFO Name="Vibrato" Freq="5"/>
+      <StepEnvelope Name="Steps"/>
     </ControlSignalSources>
     <EventProcessors>
       <ScriptProcessor Name="Arp"><script><![CDATA[function onNote(e) playNote(e.note, e.velocity) end]]></script></ScriptProcessor>
@@ -20,6 +21,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <Connections>
               <SignalConnection Source="$Program/Amp Env" Destination="Gain" Ratio="1"/>
               <SignalConnection Source="$Program/Vibrato" Destination="Pitch" Ratio="0.1"/>
+              <SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="0.5"/>
             </Connections>
             <Oscillators>
               <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Gain="0.8">
@@ -112,20 +114,27 @@ fn authored_program_translates_loads_and_renders() {
     let features: Vec<&str> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
     for expected in [
         "HighKeyFade",
-        "modulation",
+        "modulation source",
         "sample outside the program's bank",
-        "module",
     ] {
         assert!(
             features.contains(&expected),
             "{expected} missing from {features:?}"
         );
     }
-    assert!(
-        ir.unsupported.iter().any(|u| u.value == "LFO"),
-        "{:?}",
-        ir.unsupported
-    );
+    // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
+    let route = &ir.routes[zone.routes[0].0];
+    assert_eq!(zone.routes.len(), 1);
+    assert_eq!(route.target, ir::Target::Pitch);
+    assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
+    assert!(matches!(
+        ir.modulators[route.source.0].source,
+        ir::ModulationSource::Lfo(ir::Lfo {
+            shape: ir::LfoShape::Sine,
+            rate: ir::Frequency::Hertz(5.0),
+            ..
+        })
+    ));
 
     let loaded = sampler_uvi::load(&program, 48000).unwrap();
     assert!(

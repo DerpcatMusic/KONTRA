@@ -34,7 +34,8 @@ use std::{
 const XML_LIMIT: u64 = 32 << 20;
 
 /// Container nodes whose meaning is their children.
-const STRUCTURAL: [&str; 17] = [
+const STRUCTURAL: [&str; 18] = [
+    "Mappers",
     "UVI4",
     "Program",
     "Layers",
