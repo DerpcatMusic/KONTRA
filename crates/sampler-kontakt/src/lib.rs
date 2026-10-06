@@ -5,7 +5,9 @@
 //! Decoding a source record does not admit its semantics for native playback.
 #![forbid(unsafe_code)]
 
+mod nks;
 mod script;
+pub use nks::Nks42;
 pub use script::{Script, Strings};
 
 /// Per-input limits. Nested chunk lists are validated only when explicitly opened;
@@ -25,9 +27,13 @@ pub enum ErrorKind {
     UnsupportedLayout,
     UnsupportedVersion(u16),
     IncorrectId { expected: u16, actual: u16 },
+    InvalidMagic,
+    InvalidCompression,
+    LengthMismatch,
+    Allocation,
 }
 
-/// Byte position in the original expanded payload, never a nested relative offset.
+/// Byte position in the source buffer being decoded, never a nested relative offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Error {
     pub offset: usize,
