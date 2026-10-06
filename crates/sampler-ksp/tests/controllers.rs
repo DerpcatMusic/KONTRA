@@ -39,6 +39,7 @@ fn runtime(source: &str) -> Runtime {
         )
         .unwrap();
     let behavior_cells = plan.behavior_local_count() * 4;
+    let note_cells = plan.note_cell_count() * 4;
     Runtime::new(
         plan,
         Limits {
@@ -53,7 +54,7 @@ fn runtime(source: &str) -> Runtime {
             behaviors: 4,
             behavior_cells,
             behavior_fuel: 512,
-            note_cells: 0,
+            note_cells,
         },
     )
     .unwrap()
@@ -171,4 +172,87 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
     ] {
         assert!(compile(invalid).is_err(), "{invalid}");
     }
+}
+
+#[test]
+fn note_and_release_controller_operations_retain_the_original_domain_across_waits() {
+    for block in [1, 7, 64] {
+        let mut rt = runtime(
+            "on init declare polyphonic $saved end on
+          on note
+            $saved := %CC[1]
+            wait(125)
+            set_controller(7,$saved)
+            set_controller(11,%CC[1])
+          end on
+          on release wait(250) set_controller(64,%CC[2]) end on",
+        );
+        support::without_heap(|| {
+            for (index, value) in [(0, 63), (1, 127)] {
+                let domain = rt.performance(index).unwrap();
+                let scoped = ChannelScope {
+                    channels: 1 << (index + 3),
+                    ..scope()
+                };
+                rt.dispatch_controller(
+                    domain,
+                    scoped,
+                    1,
+                    (value * u64::from(u32::MAX) / 127) as u32,
+                )
+                .unwrap();
+                rt.dispatch_controller(domain, scoped, 2, u32::MAX).unwrap();
+                let note = rt
+                    .trigger_in(
+                        domain,
+                        Input {
+                            protocol: Protocol::Midi1,
+                            port: 1,
+                            group: 2,
+                            channel: index as u8 + 3,
+                            key: 60,
+                            external_id: Some(index as i32),
+                        },
+                        NotePitch::Key(60),
+                        1.,
+                        Expression::default(),
+                    )
+                    .unwrap();
+                rt.key_up(note, None).unwrap();
+                rt.dispatch_controller(domain, scoped, 1, 0).unwrap();
+            }
+            let mut audio = [[0.; 2]; 13];
+            for part in audio.chunks_mut(block) {
+                rt.render(part).unwrap();
+            }
+            for (index, value) in [(0, 63), (1, 127)] {
+                let domain = rt.performance(index).unwrap();
+                assert_eq!(
+                    rt.controller(domain, 7),
+                    Ok((value * u64::from(u32::MAX) / 127) as u32)
+                );
+                assert_eq!(rt.controller(domain, 11), Ok(0));
+                assert_eq!(rt.controller(domain, 64), Ok(u32::MAX));
+                let channel = rt
+                    .register_channel(ChannelAddress {
+                        protocol: Protocol::Midi1,
+                        port: 1,
+                        group: 2,
+                        channel: index as u8 + 3,
+                    })
+                    .unwrap();
+                assert_eq!(rt.pedals(channel), Ok((true, false)));
+            }
+            let mut completed = 0;
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                completed += 1;
+                true
+            });
+            assert_eq!(completed, 4);
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
+    }
+    assert!(compile("on note set_controller(7,$CC_NUM) end on").is_err());
 }

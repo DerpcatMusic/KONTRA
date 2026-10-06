@@ -165,7 +165,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   Controller callbacks now capture their input and original plan while separating
   raw CC banks from downstream selection state. KSP CC consumption/remapping and
   ordinary MIDI/MPE manager ingress share the same full-resolution/pedal services.
-  Virtual controllers, cross-context CC operations and ordered script-stage banks
+  Note/release CC reads and writes now reuse the retained note performance/channel
+  context across waits; UI CC context, virtual controllers and ordered stage banks
   remain open.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.

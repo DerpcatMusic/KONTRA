@@ -84,6 +84,29 @@ impl Runtime {
             .ok_or(Error::InvalidInput)
     }
 
+    pub(super) fn behavior_performance(
+        &self,
+        id: BehaviorId,
+    ) -> Result<(usize, ChannelScope), Error> {
+        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        if let Some(event) = callback.controller {
+            return Ok((event.performance, event.scope));
+        }
+        if let crate::BehaviorOwner::Note(note) = callback.owner {
+            let address = self.notes.get(note.0).ok_or(Error::StaleHandle)?.address;
+            return Ok((
+                self.selections[note.0.index].performance,
+                ChannelScope {
+                    protocol: address.protocol,
+                    port: address.port,
+                    group: address.group,
+                    channels: 1 << address.channel,
+                },
+            ));
+        }
+        Err(Error::InvalidInput)
+    }
+
     pub(super) fn forward_controller(&mut self, id: BehaviorId) -> Result<(), Error> {
         let event = *self.controller_event_mut(id)?;
         if event.pending {

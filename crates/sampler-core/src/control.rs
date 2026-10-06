@@ -108,7 +108,7 @@ impl Prepared {
             self.control_index(control)?;
             let program = self.programs.get(program).ok_or(Error::InvalidInput)?;
             if program.requires_note
-                || program.requires_controller
+                || program.requires_performance
                 || program.wait_lifetime != super::WaitLifetime::Callback
             {
                 return Err(Error::InvalidInput);
