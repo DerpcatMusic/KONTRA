@@ -1,7 +1,7 @@
 //! Checks and screenshots for the v2 views: the nested mixer, the load report
 //! and the UI-IR renderer. Shots land in `artifacts/v2-ui/`.
 
-use super::{ir_view, load_report as lr, mix_tree as mt, theme, tests::pixels};
+use super::{ir_view, load_report as lr, mix_tree as mt, theme, tests::{Harness, pixels}};
 use super::ir_view::Picture;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Image;
@@ -246,4 +246,43 @@ fn ir_view_real_instrument_memory() {
         bytes[1] / 1024
     );
     assert!(bytes[1] <= bytes[0]);
+}
+
+/// The editor with a real instrument in the rack, drawn from the v2 Kontakt
+/// loader's data: its interface in both presentations, the mixer tree and
+/// the load report. Opt-in: `KONTRA_UI_IR_PATCH=/path/to/patch.nki`.
+#[test]
+#[ignore = "set KONTRA_UI_IR_PATCH to a locally owned instrument"]
+fn editor_with_a_real_instrument() {
+    use crate::sound::{report::LoadReport, tree::MixTree};
+    let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
+    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true };
+    let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: patch.to_string_lossy().into_owned(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        let part = &mut v.parts[0];
+        part.active = loaded.instrument.name.clone();
+        part.report = Some(Arc::new(LoadReport::of(&loaded.instrument, &patch, loaded.plan.sample_count())));
+        part.tree = Some(Arc::new(MixTree::instrument(&loaded.instrument.name)));
+        part.interfaces = loaded.interfaces.into();
+    }
+    let stem = patch.file_stem().unwrap().to_string_lossy().replace(' ', "_");
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(40);
+    let shot = |h: &Harness, name: &str| shoot(&h.ui, 1180, 780, &format!("app/{stem}-{name}.png"));
+    shot(&h, "rack-original");
+    if h.ui.scene().unwrap().surface("face-vector-0").is_some() {
+        h.press("face-vector-0");
+        h.idle(20);
+        shot(&h, "rack-vector");
+    }
+    h.press("tab-mixer");
+    shot(&h, "mixer");
+    h.press("tab-report");
+    shot(&h, "report");
 }
