@@ -12,7 +12,7 @@ use super::{
         lanes::VOICES,
         svf::FilterContext,
     },
-    render::render_source,
+    render::{Prelude, render_source},
 };
 use sampler_pool::{Claims, Disjoint, Pool, Slab};
 
@@ -60,6 +60,7 @@ pub(super) struct Scratch {
     outcomes: Slab<Outcome>,
     claims: Claims,
     runs: Vec<Run>,
+    preps: Vec<Option<Prelude>>,
 }
 
 impl Scratch {
@@ -69,6 +70,7 @@ impl Scratch {
             outcomes: Slab::new(vec![Outcome::default(); voices].into_boxed_slice(), 1),
             claims: Claims::new(voices),
             runs: Vec::with_capacity(voices),
+            preps: vec![None; voices],
         }
     }
 }
@@ -80,13 +82,24 @@ pub(super) struct Parallel {
     outcomes: Slab<Outcome>,
     claims: Claims,
     runs: Vec<Run>,
+    /// Per voice slot: modulation and script state prepared for this block.
+    preps: Vec<Option<Prelude>>,
     blocks: u64,
 }
 
 impl Parallel {
     fn new(threads: usize, voices: usize) -> Self {
-        let Scratch { scratch, outcomes, claims, runs } = Scratch::new(voices);
-        Self { pool: Pool::new(threads - 1), threads, scratch, outcomes, claims, runs, blocks: 0 }
+        let Scratch { scratch, outcomes, claims, runs, preps } = Scratch::new(voices);
+        Self {
+            pool: Pool::new(threads - 1),
+            threads,
+            scratch,
+            outcomes,
+            claims,
+            runs,
+            preps,
+            blocks: 0,
+        }
     }
     /// Slots the scratch covers.
     pub(super) fn voices(&self) -> usize {
@@ -97,6 +110,7 @@ impl Parallel {
         std::mem::swap(&mut self.outcomes, &mut other.outcomes);
         std::mem::swap(&mut self.claims, &mut other.claims);
         std::mem::swap(&mut self.runs, &mut other.runs);
+        std::mem::swap(&mut self.preps, &mut other.preps);
     }
 }
 
@@ -136,7 +150,7 @@ impl Runtime {
     /// when the block is not eligible and must render on this thread.
     pub(super) fn render_voices_parallel(&mut self, output: &mut [Frame], at: u64) -> bool {
         let frames = output.len();
-        if self.parallel.is_none() || self.script_params || frames > BLOCK {
+        if self.parallel.is_none() || frames > BLOCK {
             return false;
         }
         let mut par = self.parallel.take().expect("checked");
@@ -147,8 +161,20 @@ impl Runtime {
             return false;
         }
         let tasks = par.runs.len().min(par.threads * 4);
+        // Modulation and script state advance per voice on this thread, in
+        // slot order, ahead of the workers.
+        for run in &par.runs {
+            for &i in &run.voices[..run.count] {
+                let needs = self.script_params
+                    || self.families.get(self.voices.slots[i].value.as_ref().unwrap().family.0).is_some_and(|f| {
+                        let plan = self.notes.get(f.note.0).unwrap().plan.0;
+                        self.plans.get(plan).unwrap().modulation.program(i).is_some()
+                    });
+                par.preps[i] = if needs && run.count == 1 { self.prepare_voice(i, at, frames) } else { None };
+            }
+        }
         {
-            let Parallel { pool, scratch, outcomes, claims, runs, .. } = &mut par;
+            let Parallel { pool, scratch, outcomes, claims, runs, preps, .. } = &mut par;
             let view = View {
                 plans: &self.plans,
                 families: &self.families,
@@ -159,6 +185,7 @@ impl Runtime {
                 voices: Disjoint::new(&mut self.voices.slots, 1, claims),
                 scratch,
                 outcomes,
+                preps,
                 frames,
                 at,
             };
@@ -171,7 +198,7 @@ impl Runtime {
             });
         }
         par.blocks += 1;
-        self.fold_runs(&par, output);
+        self.fold_runs(&par, output, at);
         self.parallel = Some(par);
         true
     }
@@ -197,7 +224,7 @@ impl Runtime {
                 let f = self.families.get(v.family.0).unwrap();
                 let plan = self.plans.get(self.notes.get(f.note.0).unwrap().plan.0).unwrap();
                 // A plan adopted before the thread count rose may lack lane caches.
-                if plan.modulation.program(i).is_some() || plan.dsp.filters.len() < lanes {
+                if plan.dsp.filters.len() < lanes {
                     return false;
                 }
                 match (key, open) {
@@ -220,24 +247,35 @@ impl Runtime {
 
     /// Add every voice's scratch block to its destination in slot order and
     /// settle what the render decided: counters, bus feeds, ended voices.
-    fn fold_runs(&mut self, par: &Parallel, output: &mut [Frame]) {
+    fn fold_runs(&mut self, par: &Parallel, output: &mut [Frame], at: u64) {
         let frames = output.len();
         for run in &par.runs {
             for &i in &run.voices[..run.count] {
                 let outcome = par.outcomes.claim(i)[0];
-                let scratch = par.scratch.claim(i);
+                let mut scratch = par.scratch.claim(i);
                 let v = self.voices.slots[i].value.as_ref().unwrap();
                 let bus = v.bus;
                 let f = self.families.get(v.family.0).unwrap();
                 let plan = self.notes.get(f.note.0).unwrap().plan.0;
-                let dsp = &mut self.plans.get_mut(plan).unwrap().dsp;
+                let generation = self.plans.get_mut(plan).unwrap();
+                let (dsp, modulation) = (&mut generation.dsp, &mut generation.modulation);
                 let target = match bus {
                     Some(bus) => dsp.buses.input(bus, frames),
                     None => &mut *output,
                 };
-                for (out, x) in target.iter_mut().zip(&scratch[0][..frames]) {
-                    out[0] += x[0];
-                    out[1] += x[1];
+                match par.preps[i].and_then(|p| p.points.map(|r| (p.modulated, r))) {
+                    Some((true, ramp)) => {
+                        modulation.mix(i, &mut scratch[0][..frames], target, ramp, at, f64::from(self.rate));
+                    }
+                    Some((false, ramp)) => {
+                        super::render::ramp_mix(&scratch[0][..frames], target, ramp.from.gains, ramp.to.gains);
+                    }
+                    None => {
+                        for (out, x) in target.iter_mut().zip(&scratch[0][..frames]) {
+                            out[0] += x[0];
+                            out[1] += x[1];
+                        }
+                    }
                 }
                 if let Some(bus) = bus {
                     dsp.buses.fed(bus, outcome.produced);
@@ -267,6 +305,7 @@ struct View<'a> {
     voices: Disjoint<'a, Slot<Voice>>,
     scratch: &'a Slab<[Frame; BLOCK]>,
     outcomes: &'a Slab<Outcome>,
+    preps: &'a [Option<Prelude>],
     frames: usize,
     at: u64,
 }
@@ -288,12 +327,19 @@ impl View<'_> {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let plan = self.plans.get(n.plan.0).unwrap();
-        v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+        let prelude = self.preps[i];
+        // A prepared voice had its step set with its modulation.
+        if prelude.is_none() {
+            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+        }
         let asset = &plan.prepared.pcm[v.sample];
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut cells = plan.dsp.cells.claim(i);
         let mut delay = plan.dsp.delay_samples.claim(i);
         let mut bank = plan.dsp.filters.claim(lane);
+        if let Some(filter) = prelude.and_then(|p| p.filter) {
+            bank[0].modulation = filter;
+        }
         let mut scratch = self.scratch.claim(i);
         let segment = &mut scratch[0][..self.frames];
         segment.fill([0.; 2]);
@@ -307,6 +353,10 @@ impl View<'_> {
             },
             at: self.at,
         };
+        let applied = prelude.and_then(|p| p.points).map_or(expression.rendered.gains, |r| {
+            let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+            [expression.rendered.gains[0] * m(0), expression.rendered.gains[1] * m(1)]
+        });
         let states = &mut cells[..chain.map_or(0, |c| c.stages())];
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), self.at);
@@ -326,7 +376,12 @@ impl View<'_> {
             };
             render_source(v, &source, segment, chain, states, context, self.kernel)
         };
-        let done = done || super::render::inaudible(v, produced, expression.rendered.gains);
+        if prelude.is_some_and(|p| p.points.is_some()) {
+            bank[0].modulation = [1.0; 2];
+        }
+        let done = done
+            || prelude.is_some_and(|p| p.stop)
+            || super::render::inaudible(v, produced, applied);
         self.outcomes.claim(i)[0] = Outcome { produced, done, faults, underrun };
     }
 
@@ -455,6 +510,115 @@ impl View<'_> {
                 faults: u64::from(fault),
                 underrun: !starved[k] && v.cursor.starved(),
             };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::*;
+
+    const NOTES: usize = 40;
+    const LAYERS: usize = 4;
+
+    fn runtime(threads: usize) -> Runtime {
+        let samples: Vec<Pcm> = (0..LAYERS)
+            .map(|layer| {
+                let mut x = 0x9E37_79B9u32.wrapping_mul(layer as u32 + 1);
+                let frames = (0..6000)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 17;
+                        x ^= x << 5;
+                        let v = (x as f32 / u32::MAX as f32 - 0.5) * 0.2;
+                        [v, -v * 0.5]
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice();
+                Pcm::new(48000, frames).unwrap()
+            })
+            .collect();
+        let regions = (0..LAYERS)
+            .map(|sample| Region {
+                sample,
+                key_low: 48,
+                key_high: 48 + NOTES as u8,
+                root_key: Some(60),
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::new(4, 2, 8, 0.5, 8).unwrap(),
+                playback: Playback { transpose_semitones: 7., ..Playback::default() },
+            })
+            .collect();
+        let plan = Prepared::new(48000, samples, regions, LAYERS * (NOTES + 1)).unwrap();
+        Runtime::new(
+            plan,
+            Limits {
+                notes: NOTES,
+                channels: 0,
+                performances: 1,
+                families: NOTES,
+                decisions: 0,
+                expressions: NOTES,
+                voices: NOTES * LAYERS,
+                commands: 0,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap()
+        .with_threads(Threads::Fixed(threads))
+    }
+
+    /// Script volume and fades (some stopping their voices) on every note, as
+    /// a script's `change_vol` and `fade_out` would write them.
+    fn play(rt: &mut Runtime) -> Vec<Frame> {
+        let plan = rt.active_plan();
+        for id in 0..NOTES {
+            let input = Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 48 + id as u8,
+                external_id: Some(id as i32),
+            };
+            let note = rt.trigger(input, 48 + id as u8, 1.).unwrap();
+            rt.note_params[note.0.index]
+                .layer
+                .write(ModTarget::Decibels, -250 * (id as i64 % 5), false)
+                .unwrap();
+            if id % 3 == 0 {
+                rt.fade_event(plan, id as i64, 700 + 40 * id as u32, true, id % 2 == 0).unwrap();
+            }
+        }
+        let mut out = Vec::new();
+        for len in [64, 37, 128, 64, 200, 1].into_iter().cycle().take(60) {
+            let mut block = vec![[0.; 2]; len];
+            rt.render(&mut block).unwrap();
+            out.extend(block);
+        }
+        out
+    }
+
+    #[test]
+    fn script_layered_voices_render_the_single_threaded_output_exactly() {
+        let mut one = runtime(1);
+        let expected = play(&mut one);
+        assert!(expected.iter().any(|f| f[0] != 0.));
+        for threads in [2, 4] {
+            let mut rt = runtime(threads);
+            let actual = play(&mut rt);
+            assert!(rt.parallel_blocks() > 10, "{threads}: {} parallel blocks", rt.parallel_blocks());
+            assert_eq!(rt.voice_count(), one.voice_count());
+            assert!(
+                actual.iter().zip(&expected).all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
+                "{threads} threads differ from one"
+            );
         }
     }
 }
