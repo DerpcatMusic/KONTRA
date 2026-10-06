@@ -246,8 +246,9 @@ or bundling replacements. `Samples` keeps its existing public API.
 Run every Cargo command and real-library census/render with
 `/home/derpcat/.cache/kontakto-heavy COMMAND ...`.
 The shared helper allows three jobs and waits for at least 10 GiB available RAM.
-Use the target directory and sccache from `~/.cargo/config.toml`; do not set
-`CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. The parent retains the slot guard and
+The helper now selects a per-worktree target directory automatically, with
+sccache from `~/.cargo/config.toml`; do not set `CARGO_TARGET_DIR` or
+`RUSTC_WRAPPER` yourself. The parent retains the slot guard and
 closes its descriptor in the command's child process, so persistent daemons
 such as sccache cannot inherit a slot after the job finishes.
 
