@@ -421,7 +421,8 @@ fn nested_release_dispatch_preserves_side_effect_order_and_wait_resume_boundarie
         rt.key_up(n, None).unwrap();
         assert_eq!(rt.voice_count(), 0);
         rt.flush_behaviors(|_, _, outcome| {
-            assert_eq!(outcome, Outcome::Fault(Error::ClosedNote));
+            // Kontakt ignores a gate-linked note played on an ended gate.
+            assert_eq!(outcome, Outcome::Finished);
             true
         });
         rt.flush_ended(|_| true);
