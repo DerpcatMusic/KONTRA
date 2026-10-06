@@ -320,7 +320,10 @@ pub fn detect(source: &str, saved: &[(String, i64)]) -> Detection {
                     .collect::<Vec<_>>(),
             ),
             (Err(why), true) => return Detection::Unrecognized(why.clone()),
-            (Ok(found), false) => unmapped.push(format!("further switch keys {found:?}")),
+            (Ok(found), false) if !found.iter().all(|k| keys.contains(k)) => {
+                unmapped.push(format!("further switch keys {found:?}"))
+            }
+            (Ok(_), false) => {}
             (Err(why), false) => unmapped.push(why.clone()),
         }
     }
