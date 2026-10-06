@@ -6,7 +6,7 @@ use crate::{
     Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
     FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
     ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
+    Processor, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
     SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
@@ -52,6 +52,8 @@ pub enum Feature {
     TempoSync,
     VendorResonance,
     Delay,
+    /// A reverb in a voice or group chain; it is a bus processor.
+    VoiceReverb,
     PreChainSend,
     Controls,
     /// Pitch bend routed anywhere but pitch (where it is native expression).
@@ -361,6 +363,14 @@ impl Lowering<'_> {
             let chain = &self.ir.chains[chain.0];
             if chain.scope != ir::Scope::Voice {
                 return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
+            }
+            if chain
+                .pre_amplitude
+                .iter()
+                .chain(&chain.post_amplitude)
+                .any(|p| matches!(p, ir::Processor::Reverb(_)))
+            {
+                return Err(unsupported(owner, Feature::VoiceReverb));
             }
             for p in &chain.pre_amplitude {
                 pre.push(self.processor(&owner, *p)?);
@@ -693,6 +703,17 @@ impl Lowering<'_> {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
             ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
+            ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
+                decay_seconds: r.decay_seconds,
+                size: r.size,
+                damping_hz: r.damping_hz,
+                modulation_seconds: r.modulation_seconds,
+                diffusion: r.diffusion,
+                predelay_seconds: r.predelay_seconds,
+                input_cutoff_hz: r.input_cutoff_hz,
+                low_shelf_db: r.low_shelf_db,
+                width: r.width,
+            }),
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             ir::Processor::Delay { .. } => return Err(unsupported(owner, Feature::Delay)),
         })
@@ -786,11 +807,16 @@ impl Lowering<'_> {
                     gain: send.gain.linear(),
                 });
             }
-            let tail_frames = if processors.is_empty() {
-                0
-            } else {
-                (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32
-            };
+            // Linear stages without memory leave no tail; a reverb rings for its own.
+            let tail_frames = processors
+                .iter()
+                .map(|p| match p {
+                    Processor::Gain(_) | Processor::StereoMatrix(_) => 0,
+                    Processor::Reverb(r) => r.tail_frames(self.rate),
+                    _ => (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32,
+                })
+                .max()
+                .unwrap_or(0);
             buses.push(Bus {
                 processors,
                 sends,

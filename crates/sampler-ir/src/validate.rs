@@ -199,6 +199,21 @@ impl Check<'_> {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::Reverb(r) => {
+                    for (v, field) in [
+                        (r.decay_seconds, "reverb decay"),
+                        (r.size, "reverb size"),
+                        (r.damping_hz, "reverb damping"),
+                        (r.modulation_seconds, "reverb modulation"),
+                        (r.diffusion, "reverb diffusion"),
+                        (r.predelay_seconds, "reverb predelay"),
+                        (r.input_cutoff_hz, "reverb input cutoff"),
+                        (r.low_shelf_db, "reverb low shelf"),
+                        (r.width, "reverb width"),
+                    ] {
+                        self.finite(v, field)?;
+                    }
+                }
                 Processor::StereoMatrix(matrix) => {
                     for x in matrix.as_flattened() {
                         self.finite(*x, "stereo matrix")?;

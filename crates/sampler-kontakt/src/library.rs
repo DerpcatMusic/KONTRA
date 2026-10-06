@@ -97,7 +97,14 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
     }
-    for (at, slots) in crate::effects::program_racks(&program) {
+    let racks = crate::effects::program_racks(&program);
+    for (at, (slot, feature, value, reason)) in
+        crate::effects::instrument_buses(&mut out.ir, &racks)
+    {
+        out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
+    }
+    // Bus racks are not modelled yet.
+    for (at, slots) in racks.into_iter().filter(|(at, _)| at.starts_with("bus")) {
         out.effects(&at, slots);
     }
     for (slot, chunk) in program
@@ -405,8 +412,10 @@ impl Translation {
         }
         let mut chain = None;
         if let Ok(array) = group.insert_fx() {
-            let (processors, notes) = crate::effects::group_inserts(&crate::effects::rack(&array));
-            for (slot, feature, value, reason) in notes {
+            let c =
+                crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
+            let processors = c.processors;
+            for (slot, feature, value, reason) in c.notes {
                 self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
             }
             if !processors.is_empty() {

@@ -168,6 +168,10 @@ pub(crate) enum Params {
     },
     /// 1-3 band EQ (filter types 22..=24): Hz, octaves, dB.
     Eq { bands: Vec<[f32; 3]> },
+    /// `BParFXGaloisReverb`, the modern Reverb: normalized room type, time,
+    /// size, damping, modulation, diffusion, predelay, high cut, low shelf,
+    /// stereo (`$ENGINE_PAR_RV2_*` order).
+    Reverb([f32; 10]),
 }
 
 impl Slot {
@@ -180,6 +184,13 @@ impl Slot {
                 pan: r.f32()?,
                 pseudo: r.flag()?,
             },
+            0x59 => {
+                let mut v = [0.0; 10];
+                for x in &mut v {
+                    *x = r.f32()?;
+                }
+                Params::Reverb(v)
+            }
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -253,6 +264,7 @@ impl Reader<'_> {
 
 /// A report entry: slot, feature, value, reason.
 pub(crate) type Note = (usize, String, String, sampler_ir::Reason);
+type Notes = Vec<(String, String, sampler_ir::Reason)>;
 
 type Matrix = [[f64; 2]; 2];
 const IDENTITY: Matrix = [[1.0, 0.0], [0.0, 1.0]];
@@ -262,10 +274,7 @@ fn product(a: Matrix, b: Matrix) -> Matrix {
 }
 
 /// The stereo matrix of a linear module, and what it leaves out.
-fn matrix(
-    params: &Params,
-    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
-) -> Option<Matrix> {
+fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
     use sampler_ir::Reason::{NotModeled, UnknownLaw};
     Some(match *params {
         Params::Gainer { gain } => [[f64::from(gain), 0.0], [0.0, f64::from(gain)]],
@@ -320,60 +329,208 @@ fn matrix(
     })
 }
 
-/// A group insert rack as voice-scope processors (Kontakt runs group
-/// inserts per voice, before the amplifier), plus what it leaves out.
-///
-/// Each slot scales its output by the slot's output gain. The slot's dry
-/// level is not mixed back: local presets store 1.0 on Stereo Modeller,
-/// Inverter and EQ slots used as gain trims (output gains in whole-dB steps),
-/// where an added dry path would contradict the trim.
-pub(crate) fn group_inserts(slots: &[Slot]) -> (Vec<sampler_ir::Processor>, Vec<Note>) {
-    let mut notes = Vec::new();
+/// Where a rack's processors will run.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Scope {
+    /// Per voice (group inserts): no memory-heavy modules.
+    Voice,
+    /// On a summed bus.
+    Bus,
+}
+
+/// A rack as serial processors plus the levels its Send Levels slots feed
+/// into the instrument's send slots, and what it leaves out.
+#[derive(Default)]
+pub(crate) struct Chain {
+    pub processors: Vec<sampler_ir::Processor>,
+    pub sends: Vec<f32>,
+    pub notes: Vec<Note>,
+}
+
+/// Translate one rack. Each slot scales its output by its output gain. The
+/// slot's dry level is not mixed back: local presets store 1.0 on Stereo
+/// Modeller, Inverter and EQ slots used as gain trims (output gains in
+/// whole-dB steps), where an added dry path would contradict the trim.
+/// Linear stereo stages fold into one matrix; EQ bands act alike on both
+/// channels, so they commute with it.
+pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
+    let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
+    let mut flush =
+        |combined: &mut Matrix, filters: &mut Vec<sampler_ir::Processor>, out: &mut Chain| {
+            out.processors.append(filters);
+            if *combined != IDENTITY {
+                out.processors
+                    .push(sampler_ir::Processor::StereoMatrix(*combined));
+                *combined = IDENTITY;
+            }
+        };
     for fx in slots.iter().filter(|fx| !fx.bypass) {
         let name = module_name(fx.module);
-        let mut slot_notes = Vec::new();
+        let mut notes = Vec::new();
         let params = fx.params();
         let wet = f64::from(fx.output_gain);
         let gain = [[wet, 0.0], [0.0, wet]];
-        if let Some(Params::Eq { bands }) = &params {
-            filters.extend(
-                bands
-                    .iter()
-                    .filter_map(|band| eq_band(*band, &mut slot_notes)),
-            );
-            combined = product(gain, combined);
-            notes.extend(
-                slot_notes
-                    .into_iter()
-                    .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
-            );
-            continue;
+        let mut modelled = true;
+        match &params {
+            Some(Params::Eq { bands }) => {
+                filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
+                combined = product(gain, combined);
+            }
+            Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
+                if out.sends.is_empty() {
+                    out.sends = sends.clone();
+                } else {
+                    modelled = false;
+                }
+                combined = product(gain, combined);
+            }
+            Some(Params::Reverb(values)) if scope == Scope::Bus => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors
+                    .push(sampler_ir::Processor::Reverb(reverb(values, &mut notes)));
+                combined = gain;
+            }
+            Some(p) => match matrix(p, &mut notes) {
+                Some(m) => combined = product(product(gain, m), combined),
+                None => modelled = false,
+            },
+            None => modelled = false,
         }
-        match params.as_ref().and_then(|p| matrix(p, &mut slot_notes)) {
-            Some(m) => combined = product(product(gain, m), combined),
-            // Linear filters applied alike to both channels commute with
-            // the matrices, so leaving one out does not reorder the rest.
-            None => notes.push((
+        if !modelled {
+            out.notes.push((
                 fx.slot,
                 "effect".into(),
                 format!("{name} v{:#x} {params:?}", fx.version),
                 sampler_ir::Reason::NotModeled,
-            )),
+            ));
         }
-        notes.extend(
-            slot_notes
+        out.notes.extend(
+            notes
                 .into_iter()
                 .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
         );
     }
-    // Filters alike on both channels commute with the matrix.
-    let mut processors = filters;
-    if combined != IDENTITY {
-        processors.push(sampler_ir::Processor::StereoMatrix(combined));
+    flush(&mut combined, &mut filters, &mut out);
+    out
+}
+
+/// Kontakt's normalized Reverb values as physical settings. Laws are v1's
+/// fits, not verified against Kontakt's own rendering.
+fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
+    let [
+        room,
+        time,
+        size,
+        damping,
+        modulation,
+        diffusion,
+        predelay,
+        high_cut,
+        low_shelf,
+        stereo,
+    ] = v.map(|x| f64::from(x.clamp(0.0, 1.0)));
+    notes.push((
+        "reverb algorithm".into(),
+        format!("normalized {v:?}"),
+        sampler_ir::Reason::UnknownLaw,
+    ));
+    sampler_ir::Reverb {
+        decay_seconds: 0.2 * 100f64.powf(time),
+        size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
+        damping_hz: 18_000.0 * 0.05f64.powf(damping),
+        modulation_seconds: modulation * 0.0015,
+        diffusion: 0.75 * diffusion,
+        predelay_seconds: predelay * 0.25,
+        input_cutoff_hz: 20_000.0 * 0.025f64.powf(high_cut),
+        low_shelf_db: -18.0 * low_shelf,
+        width: stereo,
     }
-    (processors, notes)
+}
+
+/// The instrument-level racks as buses: every group feeds an insert bus
+/// (the insert rack), whose Send Levels slots feed one bus per send slot
+/// (the send rack's effects), and the main rack follows both. Changes
+/// nothing when the racks do nothing.
+pub(crate) fn instrument_buses(
+    ir: &mut sampler_ir::Instrument,
+    racks: &[(String, Vec<Slot>)],
+) -> Vec<(String, Note)> {
+    use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
+    let rack = |name: &str| {
+        racks
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(&[][..], |(_, s)| s.as_slice())
+    };
+    let mut report = Vec::new();
+    let mut take = |name: &str, c: &Chain| {
+        report.extend(c.notes.iter().map(|n| (name.to_string(), n.clone())));
+    };
+    let insert = chain(rack("instrument insert"), Scope::Bus);
+    take("instrument insert", &insert);
+    let main = chain(rack("instrument main"), Scope::Bus);
+    take("instrument main", &main);
+    // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
+    let mut sends = Vec::new();
+    for slot in rack("instrument send").iter().filter(|s| !s.bypass) {
+        let c = chain(std::slice::from_ref(slot), Scope::Bus);
+        take("instrument send", &c);
+        let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
+        if !c.processors.is_empty() && level > 0.0 {
+            sends.push((c.processors, f64::from(level)));
+        }
+    }
+    if insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty() {
+        return report;
+    }
+    // Bus order: insert, sends, main.
+    let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
+    let target = main_bus.map_or(Output::Master, |i| Output::Bus(BusRef(i)));
+    let mut add = |ir: &mut sampler_ir::Instrument, name: String, processors, sends, output| {
+        let chain = (!Vec::<sampler_ir::Processor>::is_empty(&processors)).then(|| {
+            let index = ir.buses.len();
+            ir.chains.push(sampler_ir::Chain {
+                scope: IrScope::Bus(BusRef(index)),
+                pre_amplitude: processors,
+                post_amplitude: Vec::new(),
+            });
+            ChainRef(ir.chains.len() - 1)
+        });
+        ir.buses.push(sampler_ir::Bus {
+            name,
+            chain,
+            sends,
+            output,
+        });
+    };
+    let feeds = sends
+        .iter()
+        .enumerate()
+        .map(|(i, (_, level))| Send {
+            to: Output::Bus(BusRef(i + 1)),
+            gain: sampler_ir::Gain::Linear(*level),
+            position: SendPosition::PostChain,
+        })
+        .collect();
+    add(ir, "insert".into(), insert.processors, feeds, target);
+    for (i, (processors, _)) in sends.into_iter().enumerate() {
+        add(ir, format!("send {i}"), processors, Vec::new(), target);
+    }
+    if main_bus.is_some() {
+        add(
+            ir,
+            "main".into(),
+            main.processors,
+            Vec::new(),
+            Output::Master,
+        );
+    }
+    for group in &mut ir.groups {
+        group.output = Output::Bus(BusRef(0));
+    }
+    report
 }
 
 /// One EQ band (Hz, octaves, dB) as a peaking filter; flat bands vanish.
@@ -434,7 +591,11 @@ mod tests {
         modeller.extend(0.0f32.to_le_bytes());
         modeller.push(0);
         let modeller = slot(0x1f, modeller, 2.0);
-        let (processors, notes) = group_inserts(&[gainer, inverter, modeller]);
+        let sampler_kontakt_chain = chain(&[gainer, inverter, modeller], Scope::Voice);
+        let (processors, notes) = (
+            sampler_kontakt_chain.processors,
+            sampler_kontakt_chain.notes,
+        );
         // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
         assert_eq!(
             processors,
@@ -452,7 +613,7 @@ mod tests {
         for x in [100.0f32, 1.0, 0.0, 1000.0, 1.0, 6.0, 5000.0, 2.0, 0.0] {
             eq.extend(x.to_le_bytes());
         }
-        let (processors, _) = group_inserts(&[slot(0x18, eq, 2.0)]);
+        let processors = chain(&[slot(0x18, eq, 2.0)], Scope::Voice).processors;
         assert!(
             matches!(
                 processors.as_slice(),
@@ -465,7 +626,57 @@ mod tests {
             "{processors:?}"
         );
         // Unity everything: no processor at all.
-        let (processors, _) = group_inserts(&[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)]);
+        let processors = chain(
+            &[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)],
+            Scope::Voice,
+        )
+        .processors;
         assert!(processors.is_empty());
+    }
+
+    #[test]
+    fn send_rack_reverb_becomes_a_send_bus_fed_by_send_levels() {
+        use sampler_ir as ir;
+        let mut levels = 2u32.to_le_bytes().to_vec();
+        levels.extend([0.5f32, 1.0].iter().flat_map(|x| x.to_le_bytes()));
+        levels.extend(0u32.to_le_bytes());
+        let mut reverb = Vec::new();
+        for x in [0.0f32, 0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0] {
+            reverb.extend(x.to_le_bytes());
+        }
+        let mut instrument = ir::Instrument {
+            groups: vec![ir::Group {
+                name: "g".into(),
+                gain: ir::Gain::UNITY,
+                pan: ir::Pan::default(),
+                tune: ir::Pitch::Semitones(0.0),
+                chain: None,
+                output: ir::Output::Master,
+            }],
+            ..Default::default()
+        };
+        let racks = vec![
+            (
+                "instrument insert".to_string(),
+                vec![slot(0x17, levels, 1.0)],
+            ),
+            ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
+        ];
+        let report = instrument_buses(&mut instrument, &racks);
+        assert_eq!(instrument.buses.len(), 2, "{report:?}");
+        assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
+        let feed = &instrument.buses[0].sends[0];
+        assert_eq!(feed.to, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(feed.gain, ir::Gain::Linear(0.5));
+        let chain = &instrument.chains[instrument.buses[1].chain.unwrap().0];
+        assert!(matches!(
+            chain.pre_amplitude[..],
+            [ir::Processor::Reverb(_)]
+        ));
+        instrument.validate().unwrap();
+        // Nothing to do: no buses.
+        let mut plain = ir::Instrument::default();
+        instrument_buses(&mut plain, &[]);
+        assert!(plain.buses.is_empty());
     }
 }
