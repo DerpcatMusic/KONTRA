@@ -15,6 +15,10 @@ pub enum Inheritance {
     Independent,
 }
 
+/// Largest note gain an expression carries: CLAP's note gain expression
+/// range (0..=4, linear, +12 dB).
+pub const MAX_EXPRESSION_GAIN: f64 = 4.0;
+
 /// Canonical note expression. Gain, stereo balance and pitch affect resident PCM.
 /// Integer pressure/timbre retain all 32 bits for future modulation routing.
 /// Protocol decoding and member-channel assignment remain adapter responsibilities.
@@ -43,7 +47,7 @@ impl Default for Expression {
 impl Expression {
     pub(super) fn valid(self) -> bool {
         self.gain.is_finite()
-            && (0.0..=1.0).contains(&self.gain)
+            && (0.0..=MAX_EXPRESSION_GAIN).contains(&self.gain)
             && self.pan.is_finite()
             && (-1.0..=1.0).contains(&self.pan)
             && self.pitch_semitones.is_finite()

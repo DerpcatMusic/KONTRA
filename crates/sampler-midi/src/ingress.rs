@@ -131,7 +131,7 @@ impl Ingress {
                 key,
                 velocity,
                 attribute,
-            } if matches!(attribute.kind, 0 | 3) => Applied::Started(runtime.trigger_in(
+            } => Applied::Started(runtime.trigger_in(
                 performance,
                 Input { key, ..input },
                 if attribute.kind == 3 {

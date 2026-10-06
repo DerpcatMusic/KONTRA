@@ -165,7 +165,7 @@ fn root() -> PathBuf {
     {
         std::env::var_os("KONTRA_LOG_DIR")
             .map(PathBuf::from)
-            .or_else(|| crate::cache::dir().map(|p| p.join("logs")))
+            .or_else(|| dirs::cache_dir().map(|p| p.join("kontra").join("logs")))
             .unwrap_or_else(|| std::env::temp_dir().join("kontra-logs"))
     }
     #[cfg(test)]
@@ -682,28 +682,6 @@ pub(crate) fn excerpt_text(issue: &Value) -> Option<&str> {
         .or_else(|| issue["details"]["source_excerpt"]["text"].as_str())
 }
 
-/// Called after a diagnostic snapshot returns from the audio thread.
-pub(crate) fn runtime(
-    path: &Path,
-    program: u32,
-    part: usize,
-    epoch: u64,
-    load_id: Option<&str>,
-    issues: &[Value],
-) {
-    for issue in issues {
-        let mut data = issue.clone();
-        if data.is_object() {
-            data["script_epoch"] = json!(epoch);
-            if let Some(slot) = data["slot"].as_u64().and_then(|slot| slot.checked_sub(1)) {
-                data["script_slot"] = json!(slot);
-            }
-        }
-        emit(
-            json!({"event":"runtime_issue","load_id":load_id,"path":path,"program":program,"part":part,"script_epoch":epoch,"data":data}),
-        );
-    }
-}
 pub(crate) fn resource(instrument: &Path, name: &str, error: &str) {
     emit(
         json!({"module":"resources","event":"resource_issue","path":instrument,"data":{"code":"resource_unavailable","resource":name,"message":error}}),
@@ -1478,27 +1456,6 @@ fn redact_text(text: &str) -> String {
     }
     result
 }
-/// Materialize bounded runtime context from cached metadata/source off audio.
-/// Fault slots and excerpt slots are one-based; promoted script_slot is zero-based.
-pub fn script_runtime_report(runtime: &crate::ksp::Runtime, sources: &[String]) -> Value {
-    json!({"faults":runtime.faults().map(|fault| script_fault_details(runtime, fault, sources)).collect::<Vec<_>>(),
-        "fault_occurrences_omitted":runtime.fault_occurrences_omitted(),
-        "action_scope":"last occurrence per retained fault; counts aggregate repeated occurrences"})
-}
-fn script_fault_details(runtime: &crate::ksp::Runtime, fault: crate::ksp::LiveFault, sources: &[String]) -> Value {
-    let mut details = serde_json::to_value(fault).unwrap();
-    if let Some(slot) = fault.slot.checked_sub(1) {
-        details["script_slot"] = json!(slot);
-        if let Some(source) = sources.get(slot as usize)
-            && let Some(excerpt) = script_excerpt(source, fault.slot as u32, fault.line, None)
-        { details["source_excerpt"] = excerpt; }
-        else { details["source_excerpt_unavailable"] = json!("Cached script source or reported line is unavailable"); }
-    }
-    if let Some(crate::ksp::FaultContext::ArrayIndex { variable, index, length }) = fault.context {
-        details["array"] = json!({"name":runtime.fault_variable_name(fault.slot, variable),"index":index,"length":length});
-    }
-    details
-}
 
 /// One instrument attempt; enqueue stage starts before blocking loader work.
 /// A crash may lose queued rows; the last persisted start identifies the last
@@ -1662,20 +1619,6 @@ impl LoadTrace {
             { details["source_excerpt"] = excerpt; }
         }
         self.issue_details("scripts", code, message, details);
-    }
-    /// Record all existing diagnostics, retaining structured fault context and
-    /// excerpts rather than reparsing their rendered strings. Off-thread only.
-    pub fn script_runtime(&mut self, runtime: &crate::ksp::Runtime, sources: &[String]) -> usize {
-        let diagnostics = runtime.diagnostics();
-        let faults: std::collections::HashSet<String> = runtime.faults().map(|fault| {
-            let message = fault.to_string();
-            self.issue_details("scripts", code(&message), message.clone(), script_fault_details(runtime, fault, sources));
-            message
-        }).collect();
-        for message in &diagnostics {
-            if !faults.contains(message) { self.script_issue(code(message), message, sources); }
-        }
-        diagnostics.len()
     }
     fn issue_details(&mut self, stage: &'static str, code: &'static str, mut message: String, mut issue: Value) {
         truncate(&mut message, 4096);

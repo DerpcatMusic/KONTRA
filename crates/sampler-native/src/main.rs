@@ -208,6 +208,8 @@ fn write_render(
     wave::header(&mut out, rate, count)?;
     let mut buffer = [[0.0; 2]; 256];
     let mut remaining = count;
+    // Offline control-side batching: any number of events may share a block.
+    let mut batch = Vec::with_capacity(packets.len());
     while remaining > 0 {
         let mut len = remaining.min(buffer.len());
         let begin = count - remaining;
@@ -225,14 +227,12 @@ fn write_render(
                 len = len.min(replacement.at - begin);
             }
         }
-        let mut batch = [packets[0]; 4];
-        let mut event_count = 0;
+        batch.clear();
         while next < packets.len() && packets[next].offset < begin + len {
-            batch[event_count] = TimedPacket {
+            batch.push(TimedPacket {
                 offset: packets[next].offset - begin,
                 ..packets[next]
-            };
-            event_count += 1;
+            });
             next += 1;
         }
         let mut failure = None;
@@ -240,8 +240,8 @@ fn write_render(
             .render(
                 &mut rt,
                 &mut buffer[..len],
-                &batch[..event_count],
-                4,
+                &batch,
+                batch.len(),
                 |_, result| {
                     if !matches!(
                         result,
@@ -368,12 +368,7 @@ fn run() -> io::Result<()> {
 }
 
 fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
-    let limits = sampler_ksp::Limits {
-        source_bytes: 1 << 20,
-        instructions: 65536,
-        variables: 128,
-        array_cells: 1_000_000,
-    };
+    let limits = sampler_ksp::Limits::LIBRARY;
     let mut text = String::new();
     std::fs::File::open(source)?
         .take(limits.source_bytes as u64 + 1)
@@ -391,5 +386,62 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn more_than_four_events_in_one_block_render_without_panicking() {
+        let plan = prepare_sample(demo_sample(), false, true).unwrap();
+        let rt = Runtime::new(
+            plan,
+            Limits {
+                notes: 4,
+                channels: 16,
+                performances: 1,
+                expressions: 4,
+                families: 4,
+                decisions: 0,
+                voices: 4,
+                commands: 16,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        let mut groups = [None; 16];
+        groups[0] = Some(Version::Midi2);
+        let mut ingress = Ingress::new(0, groups);
+        // A note, four sustain-pedal changes and its release, all in the first block.
+        let words = [
+            [0x4090_3c00, 0xffff_0000],
+            [0x40b0_4000, u32::MAX],
+            [0x40b0_4000, 0],
+            [0x40b0_4000, u32::MAX],
+            [0x40b0_4000, 0],
+            [0x4080_3c00, 0],
+        ];
+        let packets: Vec<_> = words
+            .iter()
+            .enumerate()
+            .map(|(offset, words)| TimedPacket {
+                offset,
+                packet: Packets::new(words).next().unwrap().unwrap(),
+            })
+            .collect();
+        let output = std::env::temp_dir().join(format!(
+            "sampler-native-batch-{}-{:?}.wav",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&output);
+        let result = write_render(rt, &output, 48000, &packets, &mut ingress, None);
+        let _ = std::fs::remove_file(&output);
+        result.unwrap();
     }
 }
