@@ -303,6 +303,30 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|arg| arg == "--case") {
+        // --case TRANSPOSE FILTERS SVF(0|1) BLOCK VOICES: one pitched row.
+        let n = |i: usize| args[i].parse::<f64>().expect("numeric --case field");
+        assert_eq!(
+            args.len(),
+            6,
+            "expected --case TRANSPOSE FILTERS SVF BLOCK VOICES"
+        );
+        measure(
+            48000,
+            n(4) as usize,
+            n(5) as usize,
+            n(5) as usize,
+            false,
+            Processing {
+                transpose: n(1),
+                filters: n(2) as usize,
+                automated: n(3) != 0.,
+                ..Processing::default()
+            },
+            muted,
+        );
+        return;
+    }
     if args.first().is_some_and(|arg| arg == "--pitched") {
         let mips = args.get(1).is_some_and(|arg| arg == "--mips");
         assert_eq!(
