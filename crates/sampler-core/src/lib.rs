@@ -455,6 +455,7 @@ pub struct Runtime {
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    steal_releases: bool,
     /// Last and peak `render` nanoseconds, and the last call's frames.
     render_time: [u64; 3],
     families: Arena<Family>,
@@ -586,6 +587,7 @@ impl Runtime {
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            steal_releases: false,
             render_time: [0; 3],
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
