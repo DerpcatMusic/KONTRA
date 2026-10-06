@@ -1052,3 +1052,28 @@ fn host_owned_notes_follow_zone_bends_transposition_and_pedals() {
         Err(ApplyError::Core(Error::StaleHandle))
     );
 }
+
+#[test]
+fn midi2_messages_play_the_zone_at_full_precision() {
+    let mut rt = runtime();
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 2, 8).unwrap();
+    let midi2 = |mpe: &mut Mpe, rt: &mut Runtime, status: u8, a: u8, b: u8, data: u32| {
+        let first = 0x4300_0000 | (u32::from(status) << 16) | (u32::from(a) << 8) | u32::from(b);
+        mpe.apply(rt, Packets::new(&[first, data]).next().unwrap().unwrap())
+    };
+    // Velocity 0x8001 of 16 bits, beyond any 7-bit step.
+    let Applied::Started(note) = midi2(&mut mpe, &mut rt, 0x90, 60, 0, 0x8001_0000).unwrap() else {
+        panic!("not admitted")
+    };
+    assert_eq!(rt.note(note).unwrap().1, f64::from(0x8001u16) / 65535.0);
+    // A quarter-step 32-bit bend over the default 2 semitones.
+    midi2(&mut mpe, &mut rt, 0xe0, 0, 0, 0xa000_0000).unwrap();
+    let pitch = expression(&rt, note).pitch_semitones;
+    assert!((pitch - 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32)).abs() < 1e-12, "{pitch}");
+    // Pressure keeps all 32 bits.
+    midi2(&mut mpe, &mut rt, 0xd0, 0, 0, 0x1234_5678).unwrap();
+    assert_eq!(expression(&rt, note).pressure, 0x1234_5678);
+    // Registered Controller 0:0 sets the bend range: 12 semitones.
+    midi2(&mut mpe, &mut rt, 0x20, 0, 0, 12 << 25).unwrap();
+    assert_eq!(mpe.pitch_ranges().0, 12);
+}
