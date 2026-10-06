@@ -11,7 +11,7 @@ echo "ch=1 0.0 on 60 100" > "$W/fx.txt"; echo "ch=1 2.5 off 60" >> "$W/fx.txt"; 
 python3 "$here/scenario.py" "$W/fx.txt" "$W/fx.mid"
 for hz in "$@"; do
   if [ "$hz" != ref ]; then
-    xdotool mousemove ${FIELD_X:-845} 562; sleep 0.3; xdotool click --repeat 2 --delay 100 1; sleep 0.5
+    xdotool mousemove ${FIELD_X:-845} ${FIELD_Y:-562}; sleep 0.3; xdotool click --repeat 2 --delay 100 1; sleep 0.5
     xdotool key ctrl+a; xdotool type --delay 40 "$hz"; xdotool key Return; sleep 0.8
   fi
   "$here/record.sh" "$W/fx.mid" "$W/wav/fx_${tag}_${hz}.wav" 1.5
