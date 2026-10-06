@@ -141,6 +141,8 @@ pub struct Description {
     pub name: String,
     pub zones: usize,
     pub scripts: usize,
+    /// What the core could not translate, one human-readable line each.
+    pub unsupported: Vec<String>,
 }
 
 /// The sound core on the audio thread: every method is real-time safe.

@@ -1863,6 +1863,8 @@ dependencies = [
  "rfd 0.17.2",
  "rustc-hash 2.1.3",
  "sampler-core",
+ "sampler-ir",
+ "sampler-kontakt",
  "serde",
  "serde_json",
  "sha2",

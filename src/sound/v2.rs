@@ -2,11 +2,12 @@
 //!
 //! Wired: host and MIDI notes (exact CLAP/VST3 ownership and NOTE_END), all
 //! sound/notes off, rendering, the part gain/mute/solo/output-bus mix, peaks,
-//! the scope tap, audition, voices, panic. Loading: WAV files, as one region
-//! across the keyboard.
+//! the scope tap, audition, voices, panic. Loading: Kontakt instruments through
+//! `sampler-kontakt` (scripts as far as it compiles them; the rest is in
+//! [`Description::unsupported`]), and WAV files as one region across the keyboard.
 //!
 //! Not yet (silently ignored on the audio thread, refused by the loader where a
-//! request needs them): Kontakt translation, scripts and their UI, persistence,
+//! request needs them): script UI and widgets, persistence,
 //! automation and controllers (bend, pressure, CC other than 120/123, pedals),
 //! note expressions and initial tuning, alignment, pan/tune/aux/mic outs, bus
 //! faders, macros, load shedding, streaming, rack growth, sample-rate change
@@ -381,24 +382,25 @@ impl Core for V2Core {
     }
 }
 
-/// Prepares [`V2Core`] parts. Only WAV sources exist so far.
+/// Prepares [`V2Core`] parts from Kontakt instruments and WAV files.
 #[derive(Default)]
 pub struct V2Loader;
 
-fn limits() -> Limits {
+/// Capacities of a part, sized for its plan's script state.
+fn limits(plan: &Prepared) -> Limits {
     Limits {
         notes: 128,
         channels: 16,
         performances: 1,
         families: 256,
-        decisions: 0,
+        decisions: 256,
         expressions: 128,
-        voices: 256,
+        voices: 512,
         commands: 256,
-        behaviors: 0,
-        behavior_fuel: 0,
-        behavior_cells: 0,
-        note_cells: 0,
+        behaviors: 16,
+        behavior_fuel: 1 << 20,
+        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        note_cells: plan.note_cell_count().saturating_mul(128),
     }
 }
 
@@ -406,12 +408,33 @@ fn is_wav(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("wav"))
 }
 
+fn is_kontakt(path: &Path) -> bool {
+    path.extension().is_some_and(|e| ["nki", "nkm", "nkb", "nksn"].iter().any(|k| e.eq_ignore_ascii_case(k)))
+}
+
 fn unsupported(path: &Path) -> CoreError {
-    if is_wav(path) {
-        CoreError::Invalid("not a WAV file".into())
+    if is_kontakt(path) || is_wav(path) {
+        CoreError::Invalid("unreadable instrument".into())
     } else {
         CoreError::Unsupported("translating this instrument format to sampler-core")
     }
+}
+
+fn report(instrument: &sampler_ir::Instrument) -> Vec<String> {
+    instrument.unsupported.iter().map(|u| format!("{}: {} = {} ({:?})", u.location, u.feature, u.value, u.reason)).collect()
+}
+
+fn kontakt(request: &LoadRequest, progress: &mut dyn FnMut(Progress)) -> Result<Prepared, CoreError> {
+    let options = sampler_kontakt::Options { rate: request.sample_rate as u32, keys: 0..=127, scripts: true };
+    let loaded = sampler_kontakt::load(&request.path, &options, |p| {
+        progress(Progress(match p {
+            sampler_kontakt::Progress::Translated { .. } => 50,
+            sampler_kontakt::Progress::Decoding { done, total, .. } => (100 + 800 * done / total.max(1)) as u16,
+            sampler_kontakt::Progress::Lowering => 950,
+        }))
+    })
+    .map_err(|e| CoreError::Load(e.to_string()))?;
+    Ok(loaded.plan)
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -433,6 +456,27 @@ fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
     Ok((spec.sample_rate, frames))
 }
 
+fn wav(request: &LoadRequest) -> Result<Prepared, CoreError> {
+    let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
+    let rate = request.sample_rate as u32;
+    let (source_rate, frames) = read_wav(&request.path)?;
+    let pcm = Pcm::new(source_rate, frames).map_err(core)?;
+    let release = (0.05 * f64::from(rate)) as u32;
+    let region = Region {
+        sample: 0,
+        // The resampler steps at most 16x up: four octaves above the root.
+        key_low: 0,
+        key_high: 108,
+        root_key: Some(60),
+        velocity_low: 0.0,
+        velocity_high: 1.0,
+        gain: 1.0,
+        envelope: Envelope::new(0, 0, 0, 1.0, release).map_err(core)?,
+        playback: Playback::default(),
+    };
+    Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)
+}
+
 impl CoreLoader for V2Loader {
     type Core = V2Core;
 
@@ -442,45 +486,42 @@ impl CoreLoader for V2Loader {
         progress: &mut dyn FnMut(Progress),
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Box<Runtime>, CoreError> {
-        if !is_wav(&request.path) {
-            return Err(unsupported(&request.path));
-        }
         if request.persisted.iter().any(|p| !p.is_empty()) {
             return Err(CoreError::Unsupported("restoring script state"));
         }
-        let rate = request.sample_rate as u32;
-        let (source_rate, frames) = read_wav(&request.path)?;
+        let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
+        let prepared = if is_kontakt(&request.path) {
+            kontakt(request, progress)?
+        } else if is_wav(&request.path) {
+            wav(request)?
+        } else {
+            return Err(unsupported(&request.path));
+        };
         if canceled() {
             return Err(CoreError::Canceled);
         }
-        let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let pcm = Pcm::new(source_rate, frames).map_err(core)?;
-        let release = (0.05 * f64::from(rate)) as u32;
-        let region = Region {
-            sample: 0,
-            // The resampler steps at most 16x up: four octaves above the root.
-            key_low: 0,
-            key_high: 108,
-            root_key: Some(60),
-            velocity_low: 0.0,
-            velocity_high: 1.0,
-            gain: 1.0,
-            envelope: Envelope::new(0, 0, 0, 1.0, release).map_err(core)?,
-            playback: Playback::default(),
-        };
-        let prepared = Prepared::new(rate, vec![pcm], vec![region], 128).map_err(core)?;
-        let runtime = Runtime::new(prepared, limits()).map_err(core)?;
+        let limits = limits(&prepared);
+        let runtime = Runtime::new(prepared, limits).map_err(core)?;
         progress(Progress::DONE);
         Ok(Box::new(runtime))
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
+        if is_kontakt(path) {
+            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(e.to_string()))?.instrument;
+            return Ok(Description {
+                name: instrument.name.clone(),
+                zones: instrument.zones.len(),
+                scripts: instrument.behaviors.len(),
+                unsupported: report(&instrument),
+            });
+        }
         if !is_wav(path) {
             return Err(unsupported(path));
         }
         hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Description { name, zones: 1, scripts: 0 })
+        Ok(Description { name, zones: 1, scripts: 0, unsupported: Vec::new() })
     }
 }
 
@@ -559,9 +600,32 @@ mod tests {
     }
 
     #[test]
-    fn kontakt_sources_are_explicitly_unsupported() {
-        let request = LoadRequest { path: "x.nki".into(), sample_rate: 48000.0, ..Default::default() };
+    fn unknown_formats_are_explicitly_unsupported() {
+        let request = LoadRequest { path: "x.exs".into(), sample_rate: 48000.0, ..Default::default() };
         let err = V2Loader.prepare(&request, &mut |_| {}, &|| false).err().unwrap();
         assert!(matches!(err, CoreError::Unsupported(_)), "{err}");
+    }
+
+    /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
+    #[test]
+    fn real_kontakt_instrument_plays_through_the_trait() {
+        let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let description = V2Loader.describe(&path, 0).unwrap();
+        assert!(description.zones > 0);
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let mut last = Progress(0);
+        let prepared = V2Loader.prepare(&request, &mut |p| last = p, &|| false).unwrap();
+        assert_eq!(last, Progress::DONE);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, prepared);
+        let note = HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true };
+        core.event(0, In::HostOn(note, 100, 0.0), 0, false);
+        let heard = (0..40).any(|_| loud(&core.render(128), 128));
+        assert!(heard, "no output; unsupported: {:?}", description.unsupported);
     }
 }

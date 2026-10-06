@@ -426,7 +426,7 @@ impl CoreLoader for V1Loader {
 
     fn describe(&self, path: &std::path::Path, program: u32) -> Result<Description, CoreError> {
         let instrument = crate::import::shared_program(path, program).map_err(|e| CoreError::Load(format!("{e:#}")))?;
-        Ok(Description { name: instrument.name.clone(), zones: instrument.zones.len(), scripts: instrument.scripts.len() })
+        Ok(Description { name: instrument.name.clone(), zones: instrument.zones.len(), scripts: instrument.scripts.len(), unsupported: Vec::new() })
     }
 }
 
