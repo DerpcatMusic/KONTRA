@@ -516,6 +516,7 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
+    /// Still running after one second of preemption (a runaway loop).
     FuelExhausted,
     Fault(Error),
 }
@@ -578,6 +579,8 @@ pub(super) struct Continuation {
     pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
     pub frames: super::ops::Frames,
+    /// Sample time of the first preemption.
+    pub yielded_at: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -633,6 +636,7 @@ impl Runtime {
             pc: 0,
             outcome: None,
             frames: Default::default(),
+            yielded_at: None,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -700,6 +704,7 @@ impl Runtime {
             pc: 0,
             outcome: None,
             frames: Default::default(),
+            yielded_at: None,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -797,6 +802,17 @@ impl Runtime {
     }
 
     pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
+        // Behind a preempted callback of the same instrument: keep event order.
+        let plan = self.behaviors.get(id.0).map(|c| c.owner);
+        let plan = plan.and_then(|o| self.behavior_plan(o).ok());
+        if self
+            .yielded
+            .iter()
+            .any(|&y| self.yielded_plan(y).is_some() && self.yielded_plan(y) == plan)
+        {
+            self.yielded.push_back(id);
+            return;
+        }
         self.push_behavior_work(Ready::Resume {
             id,
             fuel: self.behavior_fuel,
@@ -847,8 +863,8 @@ impl Runtime {
                 continue;
             };
             if fuel == 0 {
-                self.fail_behavior(id, Outcome::FuelExhausted);
                 self.behavior_ready.remove(index);
+                self.yield_behavior(id);
                 continue;
             }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
@@ -868,6 +884,61 @@ impl Runtime {
             }
         }
         self.dispatching_behavior = false;
+    }
+
+    fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
+        let c = self.behaviors.get(id.0)?;
+        if c.outcome.is_some() {
+            return None;
+        }
+        self.behavior_plan(c.owner).ok()
+    }
+
+    /// Out of fuel for this block: continue next block, unless it has been
+    /// running for a second, which only a runaway loop does.
+    fn yield_behavior(&mut self, id: BehaviorId) {
+        let now = self.now;
+        let c = self.behaviors.get_mut(id.0).unwrap();
+        let since = *c.yielded_at.get_or_insert(now);
+        if now - since >= u64::from(self.rate) {
+            self.fail_behavior(id, Outcome::FuelExhausted);
+            return;
+        }
+        self.preemptions += 1;
+        self.longest_preempted = self.longest_preempted.max(now - since);
+        // Capacity is the behavior arena's; each callback is queued at most once.
+        self.yielded.push_back(id);
+    }
+
+    /// Resume preempted callbacks with fresh fuel, oldest first. A callback
+    /// stays queued while an earlier one of its instrument preempted again
+    /// in this pass.
+    pub(super) fn resume_yielded(&mut self) {
+        let pending = self.yielded.len();
+        for done in 0..pending {
+            let Some(id) = self.yielded.pop_front() else {
+                break;
+            };
+            let Some(plan) = self.yielded_plan(id) else {
+                continue;
+            };
+            let requeued = self.yielded.len() - (pending - done - 1);
+            let blocked = self
+                .yielded
+                .iter()
+                .rev()
+                .take(requeued)
+                .any(|&y| self.yielded_plan(y) == Some(plan));
+            if blocked {
+                self.yielded.push_back(id);
+                continue;
+            }
+            self.push_behavior_work(Ready::Resume {
+                id,
+                fuel: self.behavior_fuel,
+            });
+            self.drain_behavior();
+        }
     }
 
     pub(super) fn push_behavior_work(&mut self, ready: Ready) {
