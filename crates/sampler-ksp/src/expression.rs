@@ -70,7 +70,7 @@ impl<'a> Parser<'a> {
                     },
                 })?;
             }
-            _ => self.operand(token, local)?,
+            _ => self.operand(token, local, depth)?,
         }
         loop {
             let checkpoint = self.offset;
@@ -92,8 +92,23 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn operand(&mut self, token: Token<'a>, local: u16) -> Result<(), Error> {
+    fn operand(&mut self, token: Token<'a>, local: u16, depth: u8) -> Result<(), Error> {
         let instruction = match token.kind {
+            Kind::Word("num_elements") => {
+                self.symbol(b'(')?;
+                let token = self.next()?;
+                let Kind::Word(name) = token.kind else {
+                    return Err(self.error("expected integer array name"));
+                };
+                let Variable::Array(array) = self.variable(name, token.offset)? else {
+                    return Err(self.error("num_elements requires an integer array"));
+                };
+                self.symbol(b')')?;
+                Instruction::SetLocal {
+                    local,
+                    value: i64::from(array.len),
+                }
+            }
             Kind::Word("$EVENT_VELOCITY") => Instruction::ReadVelocity7 { local },
             Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
             Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
@@ -104,6 +119,20 @@ impl<'a> Parser<'a> {
                     local,
                     control: self.controls[index].definition.id,
                 },
+                Variable::Constant(value) => Instruction::SetLocal {
+                    local,
+                    value: i64::from(value),
+                },
+                Variable::Array(array) => {
+                    self.symbol(b'[')?;
+                    self.expression(local, 0, depth + 1)?;
+                    self.symbol(b']')?;
+                    Instruction::ReadScriptArray {
+                        array,
+                        index: local,
+                        local,
+                    }
+                }
             },
             _ => Instruction::SetLocal {
                 local,
@@ -120,8 +149,34 @@ impl<'a> Parser<'a> {
             return Err(self.error("inc/dec requires an integer variable"));
         };
         let variable = self.variable(name, token.offset)?;
+        if let Variable::Array(array) = variable {
+            self.symbol(b'[')?;
+            self.scalar(0)?;
+            self.symbol(b']')?;
+            self.symbol(b')')?;
+            self.emit(Instruction::ReadScriptArray {
+                array,
+                index: 0,
+                local: 1,
+            })?;
+            self.emit(Instruction::SetLocal { local: 2, value: 1 })?;
+            self.emit(Instruction::Binary32 {
+                lhs: 1,
+                rhs: 2,
+                operation: if add {
+                    IntegerBinary::Add
+                } else {
+                    IntegerBinary::Subtract
+                },
+            })?;
+            return self.emit(Instruction::WriteScriptArray {
+                array,
+                index: 0,
+                local: 1,
+            });
+        }
         self.symbol(b')')?;
-        self.operand(token, 0)?;
+        self.operand(token, 0, 0)?;
         self.emit(Instruction::SetLocal { local: 1, value: 1 })?;
         self.emit(Instruction::Binary32 {
             lhs: 0,

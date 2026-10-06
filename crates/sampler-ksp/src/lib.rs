@@ -7,6 +7,7 @@ use sampler_core::{
 };
 use std::collections::BTreeMap;
 mod expression;
+mod state;
 
 pub const PROFILE: &str = "ksp-8.12-note-release-subset-v1";
 
@@ -15,6 +16,8 @@ pub struct Limits {
     pub source_bytes: usize,
     pub instructions: usize,
     pub variables: usize,
+    /// Total declared array elements; independent of the declaration-count budget.
+    pub array_cells: usize,
 }
 
 /// Control-owned executable callbacks, UI metadata and declared state layout.
@@ -123,9 +126,11 @@ enum Block {
 }
 #[derive(Clone, Copy)]
 enum Variable {
-    Global(u16),
+    Global(u32),
     Note(u16),
     Control(usize),
+    Constant(i32),
+    Array(sampler_core::ScriptArray),
 }
 
 struct Parser<'a> {
@@ -141,6 +146,8 @@ struct Parser<'a> {
     note_cells: usize,
     performance_view: bool,
     variable_limit: usize,
+    array_limit: usize,
+    array_cells: usize,
 }
 impl<'a> Parser<'a> {
     fn error(&self, message: &'static str) -> Error {
@@ -154,6 +161,10 @@ impl<'a> Parser<'a> {
         loop {
             while bytes.get(self.offset).is_some_and(u8::is_ascii_whitespace) {
                 self.offset += 1;
+            }
+            if self.source[self.offset..].starts_with("...") {
+                self.offset += 3;
+                continue;
             }
             if bytes.get(self.offset) != Some(&b'{') {
                 break;
@@ -184,7 +195,7 @@ impl<'a> Parser<'a> {
                 offset: start,
             });
         };
-        let kind = if byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' {
+        let kind = if byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$' || byte == b'%' {
             self.offset += 1;
             while bytes
                 .get(self.offset)
@@ -231,7 +242,7 @@ impl<'a> Parser<'a> {
                 .ok_or_else(|| self.error("unsupported dotted operator"))?;
             self.offset += operator.len();
             Kind::Word(operator)
-        } else if b"(),+-*/".contains(&byte) {
+        } else if b"()[],+-*/".contains(&byte) {
             self.offset += 1;
             Kind::Symbol(byte)
         } else {
@@ -290,10 +301,11 @@ impl<'a> Parser<'a> {
                     let token = self.next()?;
                     let (kind, token) = match token.kind {
                         Kind::Word(
-                            kind @ ("polyphonic" | "ui_knob" | "ui_slider" | "ui_button"
+                            kind @ ("const" | "polyphonic" | "ui_knob" | "ui_slider" | "ui_button"
                             | "ui_switch"),
                         ) => (kind, self.next()?),
                         Kind::Word(name) if name.starts_with('$') => ("integer", token),
+                        Kind::Word(name) if name.starts_with('%') => ("array", token),
                         _ => return Err(self.error("unsupported declaration type")),
                     };
                     let Kind::Word(name) = token.kind else {
@@ -302,23 +314,35 @@ impl<'a> Parser<'a> {
                             message: "expected integer variable name",
                         });
                     };
-                    if !name.strip_prefix('$').is_some_and(|name| {
-                        name.as_bytes()
-                            .first()
-                            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-                    }) || matches!(
-                        name,
-                        "$EVENT_NOTE" | "$EVENT_VELOCITY" | "$EVENT_ID" | "$NOTE_HELD"
-                    ) || [
-                        "$NI_",
-                        "$CONTROL_PAR_",
-                        "$EVENT_PAR_",
-                        "$ENGINE_PAR_",
-                        "$ZONE_PAR_",
-                        "$LOOP_PAR_",
-                    ]
-                    .iter()
-                    .any(|prefix| name.starts_with(prefix))
+                    if !name
+                        .strip_prefix(if kind == "array" { '%' } else { '$' })
+                        .is_some_and(|name| {
+                            name.as_bytes()
+                                .first()
+                                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+                        })
+                        || matches!(
+                            name,
+                            "$EVENT_NOTE"
+                                | "$EVENT_VELOCITY"
+                                | "$EVENT_ID"
+                                | "$NOTE_HELD"
+                                | "%CC"
+                                | "%CC_TOUCHED"
+                                | "%KEY_DOWN"
+                                | "%GROUPS_AFFECTED"
+                        )
+                        || [
+                            "$NI_",
+                            "%NI_",
+                            "$CONTROL_PAR_",
+                            "$EVENT_PAR_",
+                            "$ENGINE_PAR_",
+                            "$ZONE_PAR_",
+                            "$LOOP_PAR_",
+                        ]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
                     {
                         return Err(Error {
                             offset: token.offset,
@@ -334,9 +358,16 @@ impl<'a> Parser<'a> {
                     if self.variables.len() >= self.variable_limit {
                         return Err(self.error("variable budget exceeded"));
                     }
-                    let variable = if kind == "integer" {
-                        let cell = u16::try_from(self.globals.len())
-                            .map_err(|_| self.error("native script-cell index range exceeded"))?;
+                    let variable = if kind == "const" {
+                        self.symbol(b':')?;
+                        Variable::Constant(self.constant()?)
+                    } else if kind == "array" {
+                        Variable::Array(self.array_declaration()?)
+                    } else if kind == "integer" {
+                        let cell = u32::try_from(self.globals.len())
+                            .ok()
+                            .filter(|cell| *cell < u32::MAX)
+                            .ok_or_else(|| self.error("native script-cell index range exceeded"))?;
                         self.globals.push(0);
                         Variable::Global(cell)
                     } else if kind == "polyphonic" {
@@ -390,25 +421,32 @@ impl<'a> Parser<'a> {
                         Variable::Control(index)
                     };
                     self.variables.insert(name, variable);
-                    if kind == "integer" {
+                    if kind == "integer" || kind == "array" {
                         let checkpoint = self.offset;
                         if self.next()?.kind == Kind::Symbol(b':') {
-                            let Variable::Global(cell) = variable else {
-                                unreachable!()
-                            };
-                            let value = i64::from(self.integer()?);
-                            self.globals[usize::from(cell)] = value;
+                            match variable {
+                                Variable::Global(cell) => {
+                                    let value = i64::from(self.constant()?);
+                                    self.globals[cell as usize] = value;
+                                }
+                                Variable::Array(array) => self.array_initializer(array)?,
+                                _ => unreachable!(),
+                            }
                         } else {
                             self.offset = checkpoint;
                         }
                     }
                 }
-                Kind::Word(name) if name.starts_with('$') => {
+                Kind::Word(name) if name.starts_with('$') || name.starts_with('%') => {
                     let variable = self.variable(name, token.offset)?;
+                    if let Variable::Array(array) = variable {
+                        self.initial_array_write(array)?;
+                        continue;
+                    }
                     self.symbol(b':')?;
-                    let value = i64::from(self.integer()?);
+                    let value = i64::from(self.constant()?);
                     match variable {
-                        Variable::Global(cell) => self.globals[usize::from(cell)] = value,
+                        Variable::Global(cell) => self.globals[cell as usize] = value,
                         Variable::Note(_) => {
                             return Err(
                                 self.error("polyphonic state cannot be initialized in on init")
@@ -426,12 +464,16 @@ impl<'a> Parser<'a> {
                             }
                             control.default = ControlValue::Integer(value);
                         }
+                        Variable::Constant(_) => {
+                            return Err(self.error("cannot assign to a constant"));
+                        }
+                        Variable::Array(_) => unreachable!(),
                     }
                 }
                 _ => {
                     return Err(Error {
                         offset: token.offset,
-                        message: "only declarations and literal scalar initialization are supported in on init",
+                        message: "only declarations and constant-expression initialization are supported in on init",
                     });
                 }
             }
@@ -447,6 +489,18 @@ impl<'a> Parser<'a> {
 
     fn assignment(&mut self, name: &str, offset: usize) -> Result<(), Error> {
         let variable = self.variable(name, offset)?;
+        if let Variable::Array(array) = variable {
+            self.symbol(b'[')?;
+            self.scalar(0)?;
+            self.symbol(b']')?;
+            self.symbol(b':')?;
+            self.scalar(1)?;
+            return self.emit(Instruction::WriteScriptArray {
+                array,
+                index: 0,
+                local: 1,
+            });
+        }
         self.symbol(b':')?;
         self.scalar(0)?;
         self.write_variable(variable, 0)
@@ -460,6 +514,8 @@ impl<'a> Parser<'a> {
                 control: self.controls[index].definition.id,
                 local,
             },
+            Variable::Constant(_) => return Err(self.error("cannot assign to a constant")),
+            Variable::Array(_) => return Err(self.error("array assignment requires an index")),
         })
     }
 
@@ -599,7 +655,9 @@ impl<'a> Parser<'a> {
                     *branch = end_jump;
                     *has_else = true;
                 }
-                Kind::Word(name) if name.starts_with('$') => self.assignment(name, token.offset)?,
+                Kind::Word(name) if name.starts_with('$') || name.starts_with('%') => {
+                    self.assignment(name, token.offset)?
+                }
                 Kind::Word("end") => {
                     let token = self.next()?;
                     if token.kind == Kind::Word("if") {
@@ -777,6 +835,8 @@ pub fn compile(
         note_cells: 0,
         performance_view: false,
         variable_limit: limits.variables,
+        array_limit: limits.array_cells,
+        array_cells: 0,
     };
     let mut programs = Vec::new();
     let (mut on_note, mut on_release) = (None, None);

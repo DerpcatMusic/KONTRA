@@ -349,6 +349,7 @@ fn render_script(sample: Pcm, source: &Path, output: &Path) -> io::Result<()> {
         source_bytes: 1 << 20,
         instructions: 65536,
         variables: 128,
+        array_cells: 1_000_000,
     };
     let mut text = String::new();
     std::fs::File::open(source)?

@@ -12,6 +12,7 @@ fn runtime(source: &str, rate: u32) -> Runtime {
             source_bytes: 4096,
             instructions: 128,
             variables: 4,
+            array_cells: 0,
         },
         &[],
     )
@@ -212,7 +213,8 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
             sampler_ksp::Limits {
                 source_bytes: 4096,
                 instructions: 128,
-                variables: 4
+                variables: 4,
+                array_cells: 0,
             },
             &[]
         )
@@ -232,6 +234,7 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
                     source_bytes: 4096,
                     instructions: 128,
                     variables: 4,
+                    array_cells: 0,
                 },
                 &[]
             )

@@ -211,3 +211,16 @@ separates admission, script-visible and committed values instead of preserving t
 legacy discrepancy. Native range validation is explicit and needs vendor probes.
 `forwarding.rs` and KSP `arguments.rs` check this distinction with independent PCM
 expectations and heap guards. No fresh Kontakt/Falcon execution comparison was run.
+
+
+## Integer arrays and constants
+
+Read the [NI variables reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables)
+for signed-32 elements, the million-element maximum, constant dimensions and
+last-initializer repetition. Inspected legacy `src/ksp/compile.rs:1129–1213`: it
+folds literal initializers into prepared data and repeats the final computed
+initializer through the tail. This comparison is a regression reference, not a
+vendor oracle. The new compiler instead prepares constant values off audio and
+uses bounded views into the existing native instance bank. No legacy VM is called
+and no external implementation was copied. Zero-length rejection and invalid-index
+fault behavior require vendor probes; native memory safety and ownership are tested.

@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add KSP integer constants and bounded arrays through native script-instance banks.
+  Indexed reads/writes, inc/dec and num_elements preserve generation ownership and
+  reject invalid accesses before adjacent state can change. Million-element source
+  arrays are prepared off audio; full typed state and vendor fidelity remain open.
+
 - Schedule typed control values on the native sample timeline, retaining their
   original plan and reserving revision space. Equal-time writes and script resumes
   preserve order; cancellation/panic release ownership without applying stale edits.

@@ -122,10 +122,20 @@ pub enum Instruction {
     /// Access the program's own script instance, shared across its callbacks.
     ReadScriptCell {
         local: u16,
-        cell: u16,
+        cell: u32,
     },
     WriteScriptCell {
-        cell: u16,
+        cell: u32,
+        local: u16,
+    },
+    ReadScriptArray {
+        array: super::ScriptArray,
+        index: u16,
+        local: u16,
+    },
+    WriteScriptArray {
+        array: super::ScriptArray,
+        index: u16,
         local: u16,
     },
     /// Read/write integer controls in the originating plan generation.
@@ -245,7 +255,25 @@ impl Program {
             if let Instruction::ReadScriptCell { cell, .. }
             | Instruction::WriteScriptCell { cell, .. } = *op
             {
-                script_cells = script_cells.max(usize::from(cell) + 1);
+                let end = usize::try_from(cell)
+                    .ok()
+                    .and_then(|cell| cell.checked_add(1))
+                    .ok_or(Error::Capacity)?;
+                script_cells = script_cells.max(end);
+            }
+            if let Instruction::ReadScriptArray {
+                array,
+                index,
+                local,
+            }
+            | Instruction::WriteScriptArray {
+                array,
+                index,
+                local,
+            } = *op
+            {
+                locals = locals.max(usize::from(index.max(local)) + 1);
+                script_cells = script_cells.max(array.end()?);
             }
         }
         let requires_note = code.iter().any(|op| {
@@ -621,6 +649,24 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteScriptCell { cell, local } => {
+                let value = *self.local_cell_mut(id, local)?;
+                *self.behavior_script_cell_mut(id, cell)? = value;
+            }
+            Instruction::ReadScriptArray {
+                array,
+                index,
+                local,
+            } => {
+                let cell = array.cell(*self.local_cell_mut(id, index)?)?;
+                let value = *self.behavior_script_cell_mut(id, cell)?;
+                *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::WriteScriptArray {
+                array,
+                index,
+                local,
+            } => {
+                let cell = array.cell(*self.local_cell_mut(id, index)?)?;
                 let value = *self.local_cell_mut(id, local)?;
                 *self.behavior_script_cell_mut(id, cell)? = value;
             }
