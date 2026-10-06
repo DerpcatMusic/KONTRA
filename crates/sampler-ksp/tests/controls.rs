@@ -653,6 +653,19 @@ fn waiting_ui_callback_controls_live_dsp_through_shared_values_without_a_window(
                     1.,
                 )
                 .unwrap();
+            // Submitted before the callback's wait: its equal-time write must
+            // execute before the resumed script restores LEVEL to 100.
+            rt.schedule_event(
+                6,
+                sampler_core::Event::Control(
+                    rt.active_plan(),
+                    ControlWrite {
+                        id: LEVEL,
+                        value: ControlValue::Integer(50),
+                    },
+                ),
+            )
+            .unwrap();
             let (_, callback) = rt
                 .invoke_control(
                     rt.active_plan(),

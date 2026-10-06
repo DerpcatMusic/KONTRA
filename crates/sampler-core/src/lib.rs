@@ -978,6 +978,11 @@ impl Runtime {
             }
         }
         self.cleanup_closed_notes();
+        for command in &self.commands {
+            if let Action::Event(Event::Control(plan, _)) = command.action {
+                self.plans.get_mut(plan.0).unwrap().controls.pending -= 1;
+            }
+        }
         self.commands.clear();
         for s in &mut self.channels.slots {
             if let Some(c) = &mut s.value {

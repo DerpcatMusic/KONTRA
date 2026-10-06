@@ -274,7 +274,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
 - **Partial evidence:** [typed headless scalar controls](CONTROL_STATE.md), stable
   IDs, atomic edits/full scalar recall, revision conflicts, bounded acknowledged
   UI handoff and coherent capture are implemented. Shared scalar values now drive
-  native gain ramps through the same atomic edit/recall path. KSP scalar widget declarations
+  native gain ramps through the same atomic edit/recall path. Timestamped native
+  control events reserve the target generation/revision and share musical ordering. KSP scalar widget declarations
   and plan-owned UI handlers use the shared state without a window. Complete instrument serialization,
   script-instance state, non-scalar controls and host automation remain open.
 

@@ -193,7 +193,7 @@ impl Runtime {
                 || !slot
                     .value
                     .as_ref()
-                    .is_some_and(|g| g.notes == 0 && g.callbacks == 0)
+                    .is_some_and(|g| g.notes == 0 && g.callbacks == 0 && g.controls.pending == 0)
             {
                 continue;
             }

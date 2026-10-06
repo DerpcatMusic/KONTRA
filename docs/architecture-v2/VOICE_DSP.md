@@ -145,8 +145,8 @@ repeated values, rejection atomicity, multiple bindings, stable IDs after schema
 reordering, extreme numeric domains, queued recall and retained generations.
 `sampler-ksp/tests/controls.rs` executes a waiting plan-owned UI handler that changes
 live DSP through the same state, at blocks 1/7/64 under the heap guard. This is
-headless integration; production UI/CLAP wiring and timestamped host automation
-remain open. No vendor DSP/performance parity is inferred.
+headless integration; production UI/CLAP wiring and host automation routing remain open. Native
+timestamped values now use `Event::Control`, described in [CONTROL_STATE.md](CONTROL_STATE.md#timestamped-control-values). No vendor DSP/performance parity is inferred.
 
 Control/DSP validation: all 229 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs use

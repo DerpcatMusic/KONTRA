@@ -367,3 +367,155 @@ fn one_control_drives_multiple_dsp_bindings_and_schema_order_is_not_identity() {
         rt.flush_ended(|_| true);
     });
 }
+
+#[test]
+fn control_events_share_sample_boundaries_stable_order_and_bounded_admission() {
+    let domain = ControlDomain::Real { min: 0., max: 1. };
+    for block in [1, 7, 64] {
+        let mut rt = Runtime::new(
+            plan(domain, ControlValue::Real(0.), 4),
+            Limits {
+                commands: 8,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let plan = rt.active_plan();
+            rt.trigger(input(1), 60, 1.).unwrap();
+            for (at, edit) in [
+                (2, write(LEVEL, ControlValue::Real(1.))),
+                (6, write(MUTE, ControlValue::Toggle(true))),
+                (8, write(MUTE, ControlValue::Toggle(false))),
+                (8, write(LEVEL, ControlValue::Real(0.75))),
+                (8, write(LEVEL, ControlValue::Real(0.5))),
+            ] {
+                rt.schedule_event(at, Event::Control(plan, edit)).unwrap();
+            }
+            assert_eq!(
+                rt.schedule_event(
+                    3,
+                    Event::Control(plan, write(LEVEL, ControlValue::Real(f64::NAN)))
+                ),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(rt.pending_commands(), 5);
+            rt.render(&mut [[0.; 2]; 2]).unwrap();
+            assert_eq!(rt.control_value(plan, LEVEL), Ok(ControlValue::Real(0.)));
+            rt.render(&mut []).unwrap();
+            assert_eq!(rt.control_value(plan, LEVEL), Ok(ControlValue::Real(1.)));
+            let mut audio = [[0.; 2]; 18];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            let expected = [
+                0., 0.25, 0.5, 0.75, 0., 0., 1., 0.875, 0.75, 0.625, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                0.5, 0.5,
+            ];
+            for (actual, expected) in audio.iter().zip(expected) {
+                assert_eq!(*actual, [expected; 2], "block {block}");
+            }
+            assert_eq!(rt.control_revision(plan), Ok(5));
+            assert_eq!(
+                rt.schedule_event(
+                    19,
+                    Event::Control(plan, write(LEVEL, ControlValue::Real(0.)))
+                ),
+                Err(Error::PastEvent)
+            );
+            rt.panic();
+            rt.flush_ended(|_| true);
+        });
+    }
+    let mut rt = Runtime::new(
+        plan(domain, ControlValue::Real(0.), 0),
+        Limits {
+            commands: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let plan = rt.active_plan();
+        rt.schedule_event(
+            4,
+            Event::Control(plan, write(LEVEL, ControlValue::Real(0.5))),
+        )
+        .unwrap();
+        assert_eq!(
+            rt.schedule_event(
+                5,
+                Event::Control(plan, write(LEVEL, ControlValue::Real(1.)))
+            ),
+            Err(Error::Capacity)
+        );
+        rt.schedule_event(
+            0,
+            Event::Control(plan, write(LEVEL, ControlValue::Real(0.75))),
+        )
+        .unwrap();
+        assert_eq!(rt.control_revision(plan), Ok(1));
+        assert_eq!(rt.cancel_control_events(plan), Ok(1));
+        assert_eq!(rt.cancel_control_events(plan), Ok(0));
+        assert_eq!(rt.control_value(plan, LEVEL), Ok(ControlValue::Real(0.75)));
+        assert_eq!(rt.pending_commands(), 0);
+    });
+}
+
+#[test]
+fn scheduled_controls_pin_the_original_generation_until_application_cancellation_or_panic() {
+    let domain = ControlDomain::Real { min: 0., max: 1. };
+    for finish in 0..3 {
+        let (mut rt, mut control) =
+            Runtime::with_plan_updates(plan(domain, ControlValue::Real(0.25), 0), limits(), 2, 1)
+                .unwrap();
+        control
+            .submit(Box::new(plan(domain, ControlValue::Real(0.75), 0)))
+            .unwrap();
+        support::without_heap(|| {
+            let old = rt.active_plan();
+            rt.schedule_event(
+                8,
+                Event::Control(old, write(LEVEL, ControlValue::Real(0.5))),
+            )
+            .unwrap();
+            rt.poll_plan_update().unwrap();
+            let new = rt.active_plan();
+            rt.schedule_event(
+                12,
+                Event::Control(new, write(LEVEL, ControlValue::Real(1.))),
+            )
+            .unwrap();
+            assert_eq!(
+                rt.collect_retired_plans(),
+                0,
+                "a scheduled write owns a plan without any note/callback"
+            );
+            rt.render(&mut [[0.; 2]; 8]).unwrap();
+            assert_eq!(rt.control_value(old, LEVEL), Ok(ControlValue::Real(0.25)));
+            match finish {
+                0 => {
+                    rt.render(&mut []).unwrap();
+                    assert_eq!(rt.control_value(old, LEVEL), Ok(ControlValue::Real(0.5)));
+                }
+                1 => {
+                    assert_eq!(rt.cancel_control_events(old), Ok(1));
+                }
+                _ => rt.panic(),
+            }
+            assert_eq!(rt.control_value(new, LEVEL), Ok(ControlValue::Real(0.75)));
+            assert_eq!(rt.collect_retired_plans(), 1);
+            assert_eq!(
+                rt.schedule_event(
+                    20,
+                    Event::Control(old, write(LEVEL, ControlValue::Real(1.)))
+                ),
+                Err(Error::StaleHandle)
+            );
+            assert_eq!(rt.cancel_control_events(old), Err(Error::StaleHandle));
+            assert_eq!(rt.cancel_control_events(new), Ok(usize::from(finish != 2)));
+            assert_eq!(rt.pending_commands(), 0);
+        });
+        drop(control.retired().unwrap());
+    }
+}
