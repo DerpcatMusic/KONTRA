@@ -309,11 +309,14 @@ fn zone_routes_lower_to_voice_modulation() {
         ir::Route::new(
             ir::ModulatorRef(1),
             ir::Target::Pitch,
-            ir::Depth::Pitch(ir::Pitch::Cents(200.0)),
+            ir::Depth::Pitch(ir::Pitch::Cents(1200.0)),
         ),
     ];
     let plan = lower(&ir, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    // The authored bend depth is the plain-MIDI default range.
+    assert_eq!(plan.bend_range(), 12.0);
     let mut rt = Runtime::new(plan, limits()).unwrap();
+    assert_eq!(rt.bend_range(), 12.0);
     let out = play(&mut rt, 60, 0.5);
     assert!((out[0] - 0.25).abs() < 1e-6, "{out:?}");
 
@@ -372,4 +375,57 @@ fn native_mpe_defaults_are_identity_at_rest_and_follow_pressure_and_timbre() {
     let dark = Expression { timbre: 0, ..rest };
     assert!(play(&on, dark) < 0.001, "{}", play(&on, dark));
     assert_eq!(play(&off, dark), 0.25);
+}
+
+#[test]
+fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
+    let limit = |voices, kill| ir::VoiceLimit {
+        voices,
+        kill,
+        prefer_released: true,
+        fade: ir::Time::Milliseconds(0.0),
+    };
+    let zone = |group| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        group: Some(ir::GroupRef(group)),
+        ..ir::Zone::new(ir::AssetRef(group))
+    };
+    let ir = ir::Instrument {
+        assets: ["a", "b"].map(asset).to_vec(),
+        groups: vec![
+            ir::Group {
+                voice_limit: Some(0),
+                ..Default::default()
+            },
+            ir::Group::default(),
+        ],
+        voice_limit: Some(limit(5, ir::Kill::Oldest)),
+        voice_limits: vec![limit(2, ir::Kill::Highest)],
+        zones: vec![zone(0), zone(1)],
+        ..ir::Instrument::default()
+    };
+    let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut out = [[0.0; 2]; 64];
+    // Each note starts one voice per group (0.1 in group 0, 0.2 in group 1).
+    let mut note = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.).unwrap();
+        rt.render(&mut out).unwrap();
+        (rt.voice_count(), out[63][0])
+    };
+    note(&mut rt, 60);
+    note(&mut rt, 72);
+    // Group 0 holds two: 72's group-0 voice (the highest) goes.
+    let (voices, level) = note(&mut rt, 48);
+    assert_eq!(voices, 5);
+    assert!((level - 0.8).abs() < 1e-6, "{level}");
+    // The instrument holds five: both voices of 60 (the oldest) go.
+    let (voices, level) = note(&mut rt, 36);
+    assert_eq!(voices, 5);
+    assert!((level - 0.8).abs() < 1e-6, "{level}");
+    // Group 0 is now 48 and 36; 84 replaces 48 there.
+    let (voices, _) = note(&mut rt, 84);
+    assert_eq!(voices, 5);
 }

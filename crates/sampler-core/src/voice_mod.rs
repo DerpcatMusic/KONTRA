@@ -66,6 +66,11 @@ pub enum ModSource {
     /// A uniform value drawn once per voice.
     Random,
     Constant,
+    /// `clamp(1 − held / frames, 0, 1)`: the share of a `frames` countdown
+    /// left when the key was released (now, while it is down).
+    ReleaseCounter {
+        frames: u32,
+    },
 }
 
 impl ModSource {
@@ -178,6 +183,7 @@ enum Prepared {
     Timbre,
     Random,
     Constant,
+    ReleaseCounter(u32),
 }
 
 struct Program {
@@ -258,6 +264,10 @@ impl VoiceModulation {
                         ModSource::Timbre => Prepared::Timbre,
                         ModSource::Random => Prepared::Random,
                         ModSource::Constant => Prepared::Constant,
+                        ModSource::ReleaseCounter { frames: 0 } => {
+                            return Err(Error::InvalidInput);
+                        }
+                        ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
                     })
                 })
                 .collect::<Result<Box<[_]>, Error>>()?;
@@ -374,6 +384,9 @@ impl Prepared {
             Self::Timbre => f64::from(inputs.timbre) * FULL_SCALE,
             Self::Random => uniform(hash(seed, index as u64, u64::MAX)),
             Self::Constant => 1.0,
+            Self::ReleaseCounter(frames) => {
+                (1.0 - inputs.held as f64 / f64::from(frames)).clamp(0.0, 1.0)
+            }
             Self::Lfo(_) | Self::Envelope(_) | Self::Breakpoints(_) => {
                 unreachable!("stateful sources")
             }
@@ -483,6 +496,8 @@ pub(crate) struct Inputs<'a> {
     pub pressure: u32,
     pub timbre: u32,
     pub controllers: &'a [u32; 128],
+    /// Frames from the note's admission to its key release (or now).
+    pub held: u64,
 }
 
 impl<'a> Inputs<'a> {
@@ -490,6 +505,7 @@ impl<'a> Inputs<'a> {
         note: &crate::Note,
         expression: crate::Expression,
         controllers: &'a [u32; 128],
+        held: u64,
     ) -> Self {
         Self {
             velocity: note.velocity,
@@ -497,6 +513,7 @@ impl<'a> Inputs<'a> {
             pressure: expression.pressure,
             timbre: expression.timbre,
             controllers,
+            held,
         }
     }
 }

@@ -246,7 +246,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         .unwrap();
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let mut mpe = match setup.port {
         Port::Channel => None,
         Port::Mpe(members) => Some(Mpe::new(&rt, 0, 0, Zone::Lower, members, 64).unwrap()),
