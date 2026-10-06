@@ -118,8 +118,8 @@ comparison. No missing audio is synthesized or silently discarded.
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
 0x110; ten version 0x111). No legacy NKS instrument container was found in
-this installed census; those profiles have authored tests rather than a local
-real-library result.
+this installed census. Legacy NKS v1/v2 embedded monolith support remains
+unimplemented in the vendor reader.
 
 ## Verification on the shared machine
 
