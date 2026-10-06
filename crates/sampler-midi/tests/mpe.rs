@@ -1002,3 +1002,34 @@ fn mpe_filter_destinations_follow_captured_notes_across_member_channel_reuse() {
         });
     }
 }
+
+#[test]
+fn host_owned_notes_follow_zone_bends_and_pedals() {
+    let mut rt = runtime_with_channels(16);
+    let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 4).unwrap();
+    let input = sampler_core::Input {
+        protocol: Protocol::Midi1,
+        port: 7,
+        group: 3,
+        channel: 0,
+        key: 60,
+        external_id: Some(9),
+    };
+    let note = mpe.trigger(&mut rt, 0, input, 1.0).unwrap();
+    // A wire note on the same key stays a separate owner.
+    start(&mut mpe, &mut rt, 0, 60);
+    apply(&mut mpe, &mut rt, bend(0, 16383)).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0));
+    assert_eq!(
+        apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)).unwrap(),
+        Applied::Pedal
+    );
+    rt.note_off(input, None).unwrap();
+    assert!(rt.note(note).unwrap().2, "sustain holds the host note");
+    apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 0)).unwrap();
+    assert!(!rt.note(note).unwrap().2);
+    assert_eq!(
+        mpe.trigger(&mut runtime(), 0, input, 1.0),
+        Err(ApplyError::Core(Error::StaleHandle))
+    );
+}

@@ -211,30 +211,12 @@ impl Mpe {
                 key,
                 velocity,
                 attribute,
-            } if attribute.kind == 0 => {
-                if self.bindings.len() == self.limit {
-                    return Err(Error::Capacity.into());
-                }
-                let member = if voice.channel == self.zone.manager() {
-                    Controls::default()
-                } else {
-                    self.controls[usize::from(voice.channel)]
-                };
-                let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
-                let note = runtime.trigger_in(
-                    self.performance,
-                    Input { key, ..input },
-                    NotePitch::Key(key),
-                    velocity.normalized(),
-                    expression,
-                )?;
-                self.bindings.push(Binding {
-                    note,
-                    channel: voice.channel,
-                    member,
-                });
-                Applied::Started(note)
-            }
+            } if attribute.kind == 0 => Applied::Started(self.admit(
+                runtime,
+                voice.channel,
+                Input { key, ..input },
+                velocity.normalized(),
+            )?),
             Message::NoteOff {
                 key,
                 velocity,
@@ -303,6 +285,60 @@ impl Mpe {
             }
             _ => Applied::Unsupported,
         })
+    }
+
+    /// Admit a note whose identity another transport owns (a host note ID) as
+    /// if it arrived on `channel` of this zone, so the zone's pedals and gestures
+    /// reach it. `input` must lie in this zone's MIDI 1.0 port and group for
+    /// pedals to hold it; its `external_id` keeps it distinct from wire notes.
+    pub fn trigger(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !self.zone.contains(channel, self.members) {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        Ok(self.admit(runtime, channel, input, velocity)?)
+    }
+
+    fn admit(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        if self.bindings.len() == self.limit {
+            return Err(Error::Capacity);
+        }
+        let member = if channel == self.zone.manager() {
+            Controls::default()
+        } else {
+            self.controls[usize::from(channel)]
+        };
+        let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        let note = runtime.trigger_in(
+            self.performance,
+            input,
+            NotePitch::Key(input.key),
+            velocity,
+            expression,
+        )?;
+        self.bindings.push(Binding {
+            note,
+            channel,
+            member,
+        });
+        Ok(note)
     }
 
     fn manager_scope(&self) -> ChannelScope {
