@@ -1128,6 +1128,7 @@ impl Runtime {
                 let number = u8::try_from(*self.local_cell_mut(id, controller)?)
                     .map_err(|_| Error::InvalidInput)?;
                 let value = self.behavior_input_controller(id, number)?;
+                if number == 64 && std::env::var_os("DBG_P").is_some() { eprintln!("DBG read cc64 at {} stage {:?} = {value}", self.now, self.behavior_stage(id)); }
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
 

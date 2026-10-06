@@ -1211,6 +1211,7 @@ impl Runtime {
     fn close_gate(&mut self, id: NoteId, cause: ReleaseCause) {
         let note = self.notes.get_mut(id.0).unwrap();
         let first = note.gate();
+        if first && std::env::var_os("DBG_P").is_some() { eprintln!("DBG close_gate note{} {:?} at {}", id.0.index, cause, self.now); }
         if first {
             self.release_times[id.0.index].gate_at = self.now;
             self.release_times[id.0.index].held = false;

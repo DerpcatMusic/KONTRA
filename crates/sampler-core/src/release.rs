@@ -106,6 +106,11 @@ impl Runtime {
         ) {
             note.input_down = false;
         }
+        if std::env::var_os("DBG_P").is_some() {
+            let top = self.behavior_ready.last().and_then(|r| match r { super::behavior::Ready::Resume { id, .. } => self.behaviors.get(id.0).map(|c| (c.program, c.pc, c.note_stage.map(|s| s.index()))), _ => None });
+            eprintln!("DBG release_key note{} {:?} at {} by {:?}", id.0.index, cause, self.now, top);
+        }
+        let note = self.notes.get_mut(id.0).unwrap();
         if note.key_down() {
             // A source stop before attack forwarding consumes that pending attack.
             // Physical key-up retains the native deferred-attack rejection policy.

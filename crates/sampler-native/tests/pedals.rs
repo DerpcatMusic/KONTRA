@@ -223,6 +223,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         Some(source) => with_script(&path, &options, source),
     };
     assert_eq!(loaded.plan.sample_rate() as usize, RATE);
+    if std::env::var_os("DBG_P").is_some() { eprintln!("DBG groups {:?}", loaded.instrument.groups.iter().map(|g| g.name.clone()).take(12).collect::<Vec<_>>()); }
     let failed = loaded
         .instrument
         .unsupported
@@ -327,9 +328,11 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         for played in &mut run.played {
             let Some(id) = played.id else { continue };
             let Ok(context) = rt.release_context(id) else {
+                if std::env::var_os("DBG_P").is_some() { eprintln!("DBG gone key {} at {begin}", played.key); }
                 played.id = None;
                 continue;
             };
+            if std::env::var_os("DBG_P").is_some() && (played.key_at.is_none() != context.key.is_none() || played.gate_at.is_none() != context.gate.is_none()) { eprintln!("DBG key {} at {begin}: {:?}", played.key, context); }
             played.key_at = context.key.map(|k| k.at);
             played.gate_at = context.gate.map(|g| g.at);
             let mut fresh = false;
@@ -352,6 +355,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
             true
         });
         rt.flush_ended(|_| true);
+        if std::env::var_os("DBG_P").is_some() && begin % 4800 < len { eprintln!("DBG t {begin} notes {} voices {} fam {}", rt.note_count(), rt.voice_count(), rt.family_count()); }
         run.notes.push(rt.note_count());
         run.stolen.push(rt.stolen_voices());
         run.peak_voices = run.peak_voices.max(rt.voice_count());
