@@ -238,6 +238,7 @@ pub struct Program {
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
+    pub(super) requires_performance: bool,
 }
 impl Program {
     pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
@@ -252,6 +253,11 @@ impl Program {
 
     pub fn requires_controller(&self) -> bool {
         self.requires_controller
+    }
+
+    /// Needs a note or controller's routed performance domain, not a plain UI plan.
+    pub fn requires_performance(&self) -> bool {
+        self.requires_performance
     }
 
     pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
@@ -395,14 +401,20 @@ impl Program {
                     | Instruction::SuppressController
                     | Instruction::ReadControllerNumber { .. }
                     | Instruction::ReadControllerValue { .. }
-                    | Instruction::ReadInputController { .. }
-                    | Instruction::WriteController { .. }
             )
         });
+        let requires_performance = requires_controller
+            || code.iter().any(|op| {
+                matches!(
+                    op,
+                    Instruction::ReadInputController { .. } | Instruction::WriteController { .. }
+                )
+            });
         if requires_note && requires_controller {
             return Err(Error::InvalidInput);
         }
         Ok(Self {
+            requires_performance,
             requires_controller,
             requires_note,
             code: code.into_boxed_slice(),
@@ -521,7 +533,7 @@ impl Runtime {
             .get(program)
             .ok_or(Error::InvalidInput)?;
         if program.requires_note
-            || (program.requires_controller && !controller)
+            || (program.requires_performance && !controller)
             || program.wait_lifetime != WaitLifetime::Callback
         {
             return Err(Error::InvalidInput);
@@ -746,8 +758,8 @@ impl Runtime {
             }
             Instruction::ReadInputController { controller, local } => {
                 let number = *self.local_cell_mut(id, controller)?;
-                let event = *self.controller_event_mut(id)?;
-                let value = self.performance_state.input_controllers[event.performance]
+                let (performance, _) = self.behavior_performance(id)?;
+                let value = self.performance_state.input_controllers[performance]
                     .get(usize::try_from(number).map_err(|_| Error::InvalidInput)?)
                     .ok_or(Error::InvalidInput)?;
                 *self.local_cell_mut(id, local)? = i64::from(*value);
@@ -757,8 +769,8 @@ impl Runtime {
                     .map_err(|_| Error::InvalidInput)?;
                 let value = u32::try_from(*self.local_cell_mut(id, value)?)
                     .map_err(|_| Error::InvalidInput)?;
-                let event = *self.controller_event_mut(id)?;
-                self.publish_controller(event.performance, event.scope, number, value)?;
+                let (performance, scope) = self.behavior_performance(id)?;
+                self.publish_controller(performance, scope, number, value)?;
             }
             Instruction::ControllerToMidi7 { local } => {
                 let cell = self.local_cell_mut(id, local)?;

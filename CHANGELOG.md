@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Reuse retained note performance/channel context for KSP CC reads and generated
+  controller writes, including overlapping note/release callbacks after waits.
+
 - Route controller callbacks through native input/downstream state and bounded
   continuations. KSP CC consumption/remapping now reaches ordinary MIDI and MPE
   manager ingress, preserving full-resolution forwarding and pedal ownership.

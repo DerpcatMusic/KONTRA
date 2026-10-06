@@ -648,7 +648,7 @@ impl<'a> Parser<'a> {
                 Kind::Word("ignore_controller") if matches!(kind, CallbackKind::Controller) => {
                     self.emit(Instruction::SuppressController)?;
                 }
-                Kind::Word("set_controller") if matches!(kind, CallbackKind::Controller) => {
+                Kind::Word("set_controller") if !matches!(kind, CallbackKind::Control) => {
                     self.symbol(b'(')?;
                     self.scalar(0)?;
                     self.symbol(b',')?;
@@ -1140,7 +1140,7 @@ pub fn compile(
                     return Err(p.error("duplicate UI control callback"));
                 }
                 let program = p.callback(CallbackKind::Control)?;
-                if program.requires_note() || program.requires_controller() {
+                if program.requires_note() || program.requires_performance() {
                     return Err(Error {
                         offset: token.offset,
                         message: "event-dependent operands are unsupported in UI callbacks",

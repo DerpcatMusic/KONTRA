@@ -579,3 +579,15 @@ heap activity. Ordered multi-stage controller projections remain open.
 
 Validation: 279 native tests pass in debug/release/Rust 1.92, strict all-target
 Clippy and both root boundary tests pass (`artifacts/controller-events-*`).
+
+CC reads/writes now require a routed performance context, separately from the
+controller-only captured-event/consumption instructions. Notes resolve that context
+from their retained selection domain and inherited source address; controller
+callbacks use their captured scope. Programs mixing incompatible event operands
+are rejected, including unreachable operands. Plain plan/UI invocation cannot
+borrow an arbitrary performance domain. A source fixture exercises overlapping
+notes in two domains, polyphonic captures, post-release waits and channel-scoped
+pedal output at blocks 1, 7 and 64.
+
+Validation: 280 native debug/release tests and strict all-target Clippy pass
+(`artifacts/controller-context-*`).

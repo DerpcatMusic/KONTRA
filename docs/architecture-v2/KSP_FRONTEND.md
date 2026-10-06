@@ -731,7 +731,14 @@ retains the entire zone scope.
 
 Current limits: only integer CC numbers 0–127 and values 0–127 in set_controller;
 virtual pitch-bend/aftertouch IDs, parameter-controller dispatch, channel-mode
-semantics, generated notes from controller callbacks and cross-context CC reads/
-writes remain open. Source CC reads/writes currently require on controller. Faults
+semantics, generated notes from controller callbacks and UI CC context remain open.
+Source CC reads/writes run in note, release and controller callbacks; event-number
+reads and consumption still require the controller context. Faults
 are retained native outcomes; prior writes are not rolled back. No vendor parity
 claim follows from these authored fixtures.
+
+Note/release `%CC` reads and `set_controller` writes use the originating note's
+retained performance domain and source channel. They remain valid across waits
+and physical key-up; polyphonic captures stay separate on overlapping notes.
+No controller event or fake note is created to supply a missing context. Plain
+plan/UI callbacks reject these operands until an explicit performance binding exists.
