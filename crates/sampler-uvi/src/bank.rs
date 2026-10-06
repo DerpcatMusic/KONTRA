@@ -145,6 +145,8 @@ impl Bank {
     }
 
     fn resource_inner(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>> {
+        let path = path.replace('\\', "/");
+        let (program_path, path) = resource_base(program_path, &path, &self.ufs.header.bank_name)?;
         resources(program_path, path, |path| self.resolve(path))?
             .iter()
             .map(|member| self.read(member))
@@ -160,6 +162,22 @@ impl Bank {
         }
         resolve(&self.directory, &path)
     }
+}
+
+/// Falcon's `$Bank.ufs/` volume is rooted in this bank, not the preset folder.
+/// Never satisfy a resource explicitly bound to a different bank.
+fn resource_base<'a>(program: &'a str, path: &'a str, bank: &str) -> Result<(&'a str, &'a str)> {
+    let Some(volume) = path.strip_prefix('$') else {
+        return Ok((program, path));
+    };
+    let (volume, relative) = volume
+        .split_once('/')
+        .context("UVI bank volume has no resource path")?;
+    ensure!(
+        volume.eq_ignore_ascii_case(bank) || volume.eq_ignore_ascii_case(&format!("{bank}.ufs")),
+        "UVI resource belongs to a different bank"
+    );
+    Ok(("", relative))
 }
 
 fn normalize(path: &str) -> Result<String> {
@@ -247,5 +265,27 @@ fn resources<'a>(
             .collect()
     } else {
         Ok(vec![resource(program_path, path, resolve)?])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_bank_volumes_are_rooted_and_cannot_cross_banks() {
+        let (program, path) = resource_base(
+            "Presets/Category/p.uvip",
+            "$Authored.ufs/Scripts/./../IRs/space.aif",
+            "Authored",
+        )
+        .unwrap();
+        assert_eq!(program, "");
+        assert_eq!(normalize(path).unwrap(), "IRs/space.aif");
+        assert!(resource_base("Presets/p.uvip", "$Other.ufs/IRs/space.aif", "Authored").is_err());
+        assert!(resource_base("Presets/p.uvip", "$Authored.ufs", "Authored").is_err());
+        let (_, path) =
+            resource_base("Presets/p.uvip", "$Authored.ufs/../escape.aif", "Authored").unwrap();
+        assert!(normalize(path).is_err());
     }
 }
