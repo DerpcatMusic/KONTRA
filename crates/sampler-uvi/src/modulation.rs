@@ -642,7 +642,8 @@ impl Translation {
                         }
                     }
                     Ok(Signal::Live { .. }) => {
-                        let what = describe(&[nested]);
+                        let retrigger = number(node, "Retrigger", 1.0)?;
+                        let what = format!("{}, Retrigger {retrigger}", describe(&[nested]));
                         return Ok(Err(gap(
                             "LFO rate modulated by a live source",
                             what,
