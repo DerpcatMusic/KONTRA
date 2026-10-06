@@ -1024,6 +1024,27 @@ pub fn assemble_translated(
     )
 }
 
+/// [`assemble_translated`], streamed: only the frames where zones start and a
+/// page pool are resident; the rest is read from the bank or file on demand.
+pub fn assemble_translated_streamed(
+    t: Translated,
+    rate: u32,
+    policy: &sampler_kontakt::StreamPolicy,
+) -> Result<sampler_kontakt::Streamed, Box<dyn std::error::Error>> {
+    let sources = t
+        .locations
+        .iter()
+        .map(|location| match &t.bank {
+            #[cfg(feature = "library-access")]
+            Some((bank, program_path)) => bank.stream_source(program_path, location),
+            #[cfg(not(feature = "library-access"))]
+            Some(_) => Err("bank samples need the library-access feature".to_string()),
+            None => stream::source(vec![stream::Origin::File(location.into())]),
+        })
+        .collect();
+    assemble_streamed(t.instrument, t.locations, sources, rate, policy)
+}
+
 /// Decode one loose WAV, AIFF or FLAC sample to in-memory stereo frames.
 /// Both the encoded input and decoded audio are bounded to 512 MiB.
 pub fn decode_sample(path: &Path) -> Result<sampler_kontakt::Decoded, Error> {

@@ -949,7 +949,7 @@ fn kontakt(
 }
 
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
-/// decode up front (no streaming yet).
+/// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(e.to_string());
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
@@ -957,7 +957,9 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let mut loaded = sampler_uvi::assemble_translated(t, rate).map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
+    let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
+    report.decoded.full_bytes = stream.full_bytes;
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -969,14 +971,14 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
     Ok(Loaded {
-        part: (loaded.plan, None, driver),
+        part: (loaded.plan, Some(cache), driver),
         tree,
         report,
         interfaces: loaded.interfaces,
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
-        stream: None,
+        stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
 
@@ -1717,6 +1719,9 @@ mod tests {
             "the Lua script runs: {:?}",
             loaded.report.missing
         );
+        let stream = loaded.stream.clone().expect("UVI samples stream");
+        let (held, full) = (stream.resident_bytes(), loaded.report.decoded.full_bytes);
+        assert!(held > 0 && held < full, "{held} of {full} bytes resident");
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, loaded.part);
         core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
