@@ -65,7 +65,7 @@ pub use release::{
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning};
+pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
 mod schedule;
 mod variation;
 use gate::Channel;

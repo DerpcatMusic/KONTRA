@@ -24,6 +24,15 @@ sampler references, following [REFERENCE_REVIEW.md](REFERENCE_REVIEW.md). Conver
 relevant basic and advanced DSP/musical edge cases into tests; explicitly track
 unimplemented cases. Source inspection alone is not passing conformance evidence.
 
+## Active priority — Kontakt and Falcon first
+
+User direction on 2026-10-06 explicitly defers SFZ and all other format frontends.
+Finish native DSP/audio, MIDI, core ownership, production UI and full Kontakt/Falcon
+capabilities first. Other formats may resume only after complete parity and measured
+performance materially above both reference platforms. These are acceptance targets,
+not current claims: require versioned vendor fixtures and matched-quality workloads.
+No SFZ frontend has been implemented. Shared primitives remain format independent.
+
 ## Completed groundwork
 
 - [x] Isolate worktree, preserve all attachments and record their hashes.
@@ -168,7 +177,7 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   Vendor frontends and the broader semantic model remain open.
 
 - [ ] **P1; dependencies:** V2-02/05.
-- Native authoring plus new Kontakt and one open-format frontend lower into neutral
+- Native authoring plus new Kontakt and Falcon frontends lower into neutral
   semantic data; preserve source identity, unknown data and explicit capability reports.
 - **Done when:** bounds/asset paths are validated; unsupported required behavior fails
   preparation; no parser/vendor objects cross into musical or render execution.

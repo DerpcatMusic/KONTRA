@@ -941,3 +941,87 @@ fn counted_release_sources_need_no_duration_command_and_retire_at_natural_eof() 
         });
     }
 }
+
+#[test]
+fn velocity_curves_shape_each_phase_without_changing_selection_or_note_velocity() {
+    use sampler_core::VelocityCurve;
+    let mut regions = vec![region(0); 3];
+    for region in &mut regions {
+        region.gain = 0.5;
+    }
+    regions[2].velocity_low = 0.25;
+    let p = prepared(
+        regions,
+        vec![Trigger::Attack, Trigger::KeyRelease, Trigger::GateRelease],
+        ReleaseOptions {
+            velocity: ReleaseVelocity::KeyUp { fallback: 0.75 },
+            duration: None,
+        },
+        2,
+    )
+    .with_velocity_curves(vec![
+        VelocityCurve::Linear,
+        VelocityCurve::Constant,
+        VelocityCurve::Power(2.0),
+    ])
+    .unwrap();
+    let mut rt = Runtime::new(p, limits()).unwrap();
+    support::without_heap(|| {
+        for (id, velocity) in [0.0, 0.125, 0.25, 0.500_000_000_3, 1.0]
+            .into_iter()
+            .enumerate()
+        {
+            let note = rt.trigger(input(id as i32), 60, velocity).unwrap();
+            assert_eq!(rt.note(note).unwrap().1, velocity);
+            let mut output = [[0.; 2]; 2];
+            rt.render(&mut output).unwrap();
+            assert_eq!(output, [[0.5 * velocity as f32; 2]; 2]);
+            assert_eq!(rt.voice_count(), 0);
+            rt.key_up(note, Some(velocity)).unwrap();
+            // Constant key release remains audible at zero. The gate layer is
+            // selected by raw velocity, then independently applies its square.
+            let expected = if velocity < 0.25 {
+                0.5
+            } else {
+                0.5 + 0.5 * (velocity * velocity) as f32
+            };
+            rt.render(&mut output).unwrap();
+            assert_eq!(output, [[expected; 2]; 2]);
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.family_count()),
+                (0, 0, 0)
+            );
+        }
+    });
+    for curve in [
+        VelocityCurve::Power(f64::NAN),
+        VelocityCurve::Power(f64::INFINITY),
+        VelocityCurve::Power(f64::NEG_INFINITY),
+        VelocityCurve::Power(-1.0),
+        VelocityCurve::Power(0.0),
+    ] {
+        assert!(matches!(
+            prepared(
+                vec![region(0)],
+                vec![Trigger::Attack],
+                ReleaseOptions::default(),
+                1
+            )
+            .with_velocity_curves(vec![curve]),
+            Err(Error::InvalidInput)
+        ));
+    }
+    for curves in [vec![], vec![VelocityCurve::Linear; 2]] {
+        assert!(matches!(
+            prepared(
+                vec![region(0)],
+                vec![Trigger::Attack],
+                ReleaseOptions::default(),
+                1
+            )
+            .with_velocity_curves(curves),
+            Err(Error::InvalidInput)
+        ));
+    }
+}

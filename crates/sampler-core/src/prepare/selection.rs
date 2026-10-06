@@ -365,7 +365,7 @@ impl Runtime {
                     family,
                     r.sample,
                     self.now,
-                    r.gain * velocity as f32,
+                    r.gain * r.velocity_curve.amplitude(velocity),
                     r.envelope,
                     r.cursor.with_step(step),
                 )

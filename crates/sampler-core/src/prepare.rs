@@ -74,6 +74,26 @@ pub struct Region {
     pub playback: Playback,
 }
 
+/// Velocity-to-amplitude response, independent of velocity selection and note data.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum VelocityCurve {
+    Constant,
+    #[default]
+    Linear,
+    /// Positive finite exponent of normalized velocity. Applied once per voice.
+    Power(f64),
+}
+
+impl VelocityCurve {
+    fn amplitude(self, velocity: f64) -> f32 {
+        match self {
+            Self::Constant => 1.0,
+            Self::Linear => velocity as f32,
+            Self::Power(exponent) => velocity.powf(exponent) as f32,
+        }
+    }
+}
+
 /// Render-ready region: authoring bounds and playback metadata have been compiled.
 #[derive(Clone, Copy)]
 struct PreparedRegion {
@@ -81,6 +101,7 @@ struct PreparedRegion {
     velocity_low: f64,
     velocity_high: f64,
     gain: f32,
+    velocity_curve: VelocityCurve,
     envelope: Envelope,
     cursor: super::source::Cursor,
     root_key: Option<u8>,
@@ -124,6 +145,22 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// One response per authored region, in its original order. Selection always
+    /// uses the unmodified velocity; this only changes the admitted voice gain.
+    pub fn with_velocity_curves(mut self, curves: Vec<VelocityCurve>) -> Result<Self, Error> {
+        if curves.len() != self.regions.len()
+            || curves.iter().any(|curve| {
+                matches!(curve, VelocityCurve::Power(exponent) if !exponent.is_finite() || *exponent <= 0.0)
+            })
+        {
+            return Err(Error::InvalidInput);
+        }
+        for (region, curve) in self.regions.iter_mut().zip(curves) {
+            region.velocity_curve = curve;
+        }
+        Ok(self)
+    }
+
     /// Takes immutable PCM handles without copying/rescanning their frames. Region
     /// validation and candidate construction happen off audio. max_candidates
     /// bounds the expanded key index, not file IO.
@@ -187,6 +224,7 @@ impl Prepared {
                 velocity_low: r.velocity_low,
                 velocity_high: r.velocity_high,
                 gain: r.gain,
+                velocity_curve: VelocityCurve::Linear,
                 envelope: r.envelope,
                 cursor,
                 root_key: r.root_key,

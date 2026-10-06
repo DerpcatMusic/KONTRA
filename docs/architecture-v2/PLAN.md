@@ -37,6 +37,13 @@ is required scope from the event-model stage, not a postponed adapter.
 
 ## Current implementation priority
 
+Latest direction (2026-10-06): defer SFZ and other formats until full Kontakt/Falcon
+parity and significantly higher measured performance against both. DSP/audio, MIDI,
+core, production UI and both priority frontends are the active scope. Preserve the
+shared IR, but do not use another format as a detour or substitute for these gates.
+Versioned vendor fixtures and matched-quality benchmarks must establish the claims;
+source decoding or isolated native microbenchmarks do not.
+
 The user clarified the product direction again on 2026-10-05: complete the native
 architecture before an early DAW/UI preview. Linux CLAP in Bitwig is the eventual
 hands-on target, not a reason to rush host integration ahead of the engine.

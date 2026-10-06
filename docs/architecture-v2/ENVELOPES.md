@@ -116,3 +116,20 @@ Still open: envelope curves, tempo-relative durations, live envelope modulation,
 repedaling, automatic stealing/reserves, release-trigger mapping, and audio-host
 integration. The native linear envelope is not a compatibility interpretation
 of Kontakt/HISE/Falcon or other engines.
+
+## Region velocity response
+
+`Prepared::with_velocity_curves` assigns constant, linear or positive-power
+amplitude response in authored region order. Defaults remain linear. Curves shape
+voice gain once at admission, not raw note velocity, layer predicates, expression
+state or the render loop. Attack, physical-key release and effective-gate release
+all use the same admission path, with each release phase's configured velocity.
+
+The preparation boundary rejects invalid exponents and mismatched region counts.
+The heap-audited release-selection fixture covers zero/full/high-resolution input,
+independent curves, raw-velocity threshold selection, natural EOF and retirement.
+This is a native primitive, not a claim about Kontakt/Falcon curve parameter units
+or their complete velocity modulation behavior.
+
+Velocity-response validation: all 195 native debug tests and strict all-target
+Clippy pass (`artifacts/velocity-response-{debug,clippy}.log`).
