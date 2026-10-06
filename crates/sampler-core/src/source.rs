@@ -706,12 +706,25 @@ impl Cursor {
         if self.step >= 2.0 && !pcm.levels().is_empty() {
             return 0;
         }
-        let count = output.len().min(envelope.remaining());
+        let mut count = output.len().min(envelope.remaining());
         let radius = kernel.window(self.step);
         let bank = kernel.polyphase(self.step);
         let taps = 2 * radius as usize + 1;
         // Frames read per output frame: the bank reads whole chunks.
         let width = bank.map_or(taps, |bank| bank.width());
+        // Stop the run short of the next boundary (loop end or crossfade)
+        // instead of rendering every frame before it one at a time.
+        let (_, contiguous, _) = self.span();
+        let fade = match self.loop_range.map(|r| r.shape) {
+            Some(LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) => {
+                frames as usize
+            }
+            _ => 0,
+        };
+        let margin = radius as usize + width - taps + fade + 2;
+        if let Some(room) = contiguous.checked_sub(margin) {
+            count = count.min((room as f64 / self.step) as usize);
+        }
         // Upper bound on the frames advanced by `count` steps.
         let advance = (count as f64 * self.step).ceil() as i64 + 1;
         let position = i128::from(self.position);
