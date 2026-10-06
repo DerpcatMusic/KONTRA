@@ -103,7 +103,7 @@ impl Runtime {
                 .iter()
                 .filter(|stage| stage.controller.is_some())
                 .count();
-            if self.behaviors.available() < needed {
+            if !self.behavior_room(needed) {
                 return Err(Error::Capacity);
             }
             self.validate_plan_context(

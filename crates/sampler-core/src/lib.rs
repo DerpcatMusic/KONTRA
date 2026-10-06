@@ -57,20 +57,22 @@ mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend};
-pub use resample::ResampleQuality;
+pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
-    VoiceChain,
+    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod plan_programs;
 mod script_params;
 mod steal;
 mod voice_mod;
+pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::{Kill, Stealing, VoiceLimit};
 pub use voice_mod::{
@@ -85,18 +87,24 @@ pub use pitch::NotePitch;
 mod groups;
 mod note_event;
 pub use note_event::NoteProperties;
+mod packed;
 mod plans;
 mod prepare;
+pub use packed::Packed;
 mod release;
 mod render;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
     ReleaseStatus, ReleaseVelocity, Trigger,
 };
+pub use render::RuntimeStats;
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
+pub use prepare::{
+    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve,
+    service_mipmaps,
+};
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
@@ -224,6 +232,48 @@ impl Limits {
     /// library scripts: all but two finish every callback within it; the
     /// other two need up to five blocks.
     pub const DEFAULT_BEHAVIOR_FUEL: usize = 10_000;
+
+    /// Keys a part's scripts are sized to run at once (chords, pedalled runs).
+    pub const SCRIPT_KEYS: usize = 32;
+    /// Cap on script callback state per part: 4M cells, 32 MB.
+    pub const SCRIPT_CELLS: usize = 1 << 22;
+
+    /// Script callbacks a plan can have running at once: each note of
+    /// [`Self::SCRIPT_KEYS`] keys runs a release callback in every stage and
+    /// notes the scripts play pass the later stages too (about four per
+    /// stage), plus one listener per stage; within [`Self::SCRIPT_CELLS`].
+    /// 16 for a plan without stages.
+    pub fn script_capacity(plan: &Prepared) -> usize {
+        let stages = plan.stage_count();
+        if stages == 0 {
+            return 16;
+        }
+        let wanted = (4 * stages * Self::SCRIPT_KEYS + stages).clamp(16, 4096);
+        wanted
+            .min(Self::SCRIPT_CELLS / plan.behavior_local_count().max(1))
+            .max(16)
+    }
+
+    /// Capacities for playing `plan`: `notes` held at once and `voices`,
+    /// with script state sized by [`Self::script_capacity`]. Hosts and test
+    /// harnesses share this so a plan that plays in one plays in the other.
+    pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
+        let behaviors = Self::script_capacity(plan);
+        Self {
+            notes,
+            channels: 16,
+            performances: 1,
+            families: 256,
+            decisions: 256,
+            expressions: notes,
+            voices,
+            commands: 256,
+            behaviors,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count().saturating_mul(behaviors),
+            note_cells: plan.note_cell_count().saturating_mul(notes),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -458,10 +508,18 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     stealing: Option<steal::Stealing>,
     stolen: usize,
+    /// Voices stolen since the runtime started.
+    steals: u64,
     voice_order: u64,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    voice_drops: u64,
+    steal_releases: bool,
+    cold_starts: bool,
+    cold_started: u64,
+    /// Last and peak `render` nanoseconds, and the last call's frames.
+    render_time: [u64; 3],
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
@@ -475,6 +533,8 @@ pub struct Runtime {
     preemptions: u64,
     longest_preempted: u64,
     dispatching_behavior: bool,
+    /// The plan whose plan programs have started.
+    started_plan: Option<PlanId>,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
@@ -589,10 +649,16 @@ impl Runtime {
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             stealing: None,
             stolen: 0,
+            steals: 0,
             voice_order: 0,
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            voice_drops: 0,
+            steal_releases: false,
+            cold_starts: false,
+            cold_started: 0,
+            render_time: [0; 3],
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
@@ -604,6 +670,7 @@ impl Runtime {
             preemptions: 0,
             longest_preempted: 0,
             dispatching_behavior: false,
+            started_plan: None,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),
@@ -1096,14 +1163,32 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
-        self.check_source_ready(asset, cursor, envelope)?;
-        let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
+        let cold = self.check_source_ready(asset, cursor, envelope)?;
+        f.voices.checked_add(1).ok_or(Error::Capacity)?;
         self.steal_voices(1);
-        let f = self.families.get(family.0).unwrap();
-        let next_sibling = f.first_voice;
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
+        if self.voices.available() == 0 {
+            // ponytail: only silent voices waiting on the stream are taken; no
+            // audible-voice stealing policy yet, so a full pool drops the start.
+            let waiting = (0..self.voices.slots.len()).find(|&i| {
+                self.voices.slots[i]
+                    .value
+                    .as_ref()
+                    .is_some_and(|v| v.started && v.cursor.waiting())
+            });
+            match waiting {
+                Some(i) => self.end_voice(VoiceId(self.voices.id(i))),
+                None => {
+                    self.voice_drops = self.voice_drops.saturating_add(1);
+                    return Err(Error::Capacity);
+                }
+            }
+        }
+        let f = self.families.get(family.0).unwrap();
+        let count = f.voices + 1;
+        let next_sibling = f.first_voice;
         let id = VoiceId(self.voices.insert(Voice {
             family,
             siblings: Siblings {
@@ -1111,7 +1196,7 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor,
+            cursor: if cold { cursor.cold() } else { cursor },
             base_step,
             chain: None,
             bus: None,
@@ -1125,6 +1210,7 @@ impl Runtime {
             group: None,
             script_gains: None,
         })?);
+        self.cold_started += u64::from(cold);
         self.voice_order += 1;
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);

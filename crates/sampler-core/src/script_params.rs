@@ -21,6 +21,18 @@ pub struct GroupParams {
 }
 
 impl Prepared {
+    /// Initial entries and capacity of the store all script instances share
+    /// (`Op::SharedStore`).
+    pub fn with_shared_store(
+        mut self,
+        entries: Vec<([i32; crate::STORE_KEY], i64)>,
+        capacity: usize,
+    ) -> Result<Self, Error> {
+        crate::ops::Store::new(entries.clone(), capacity)?;
+        self.shared_store = (entries.into_boxed_slice(), capacity);
+        Ok(self)
+    }
+
     /// One [`GroupParams`] per group of [`Prepared::with_groups`].
     pub fn with_group_params(mut self, params: Vec<GroupParams>) -> Result<Self, Error> {
         if params.len() != self.group_count as usize
@@ -172,8 +184,10 @@ pub enum EnvelopeStage {
     Release,
 }
 
-/// Per-plan-generation group and instrument layers.
+/// Per-plan-generation script engine state: group and instrument layers,
+/// envelope stages and the store shared by every script instance.
 pub(crate) struct EngineLayers {
+    pub shared: crate::ops::Store,
     pub instrument: Layer,
     pub groups: Box<[Layer]>,
     authored: Box<[Layer]>,
@@ -192,7 +206,10 @@ impl EngineLayers {
                     .map_or(Layer::default(), |p| Layer::authored(*p))
             })
             .collect();
+        let (entries, capacity) = &prepared.shared_store;
         Self {
+            // Capacity was reserved by `with_shared_store`.
+            shared: crate::ops::Store::new(entries.to_vec(), *capacity).unwrap_or_default(),
             instrument: Layer::default(),
             groups: authored.clone(),
             authored,

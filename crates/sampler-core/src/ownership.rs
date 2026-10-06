@@ -333,6 +333,13 @@ impl Runtime {
         Ok(self.families.get(id.0).ok_or(Error::StaleHandle)?.note)
     }
 
+    /// Every live logical note, input and behavior-generated, in slot order.
+    pub fn live_notes(&self) -> impl Iterator<Item = NoteId> + '_ {
+        (0..self.notes.slots.len())
+            .filter(|&i| self.notes.slots[i].value.is_some())
+            .map(|i| NoteId(self.notes.id(i)))
+    }
+
     /// Borrow the note's currently retained families without exposing slot indices.
     pub fn note_families(
         &self,

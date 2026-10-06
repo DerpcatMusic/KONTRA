@@ -491,3 +491,171 @@ fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_
         assert_eq!(rt.voice_count(), 1);
     });
 }
+
+#[test]
+fn a_full_pool_reclaims_a_voice_waiting_on_its_stream_before_dropping_starts() {
+    let asset = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+    let resident = Pcm::new(48000, vec![[0.5; 2]; 1000].into()).unwrap();
+    let data = vec![[0.75; 2]; PAGE_FRAMES * 2];
+    let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+    load(&mut cache, &mut worker, &asset, &data, 0);
+    let plan = Prepared::new(48000, vec![asset, resident], vec![], 8).unwrap();
+    let limits = Limits {
+        voices: 2,
+        ..Limits {
+            notes: 4,
+            channels: 0,
+            performances: 1,
+            families: 4,
+            voices: 8,
+            expressions: 4,
+            decisions: 0,
+            commands: 8,
+            behaviors: 0,
+            behavior_cells: 0,
+            behavior_fuel: 0,
+            note_cells: 0,
+        }
+    };
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    let mut output = [[0.; 2]; 64];
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let family = rt.create_family(note).unwrap();
+        let start = |rt: &mut Runtime, sample, start| {
+            let playback = Playback {
+                start,
+                ..Playback::default()
+            };
+            let at = rt.now();
+            rt.start_family(family, sample, at, 1., Envelope::default(), playback)
+        };
+        let starved = start(&mut rt, 0, PAGE_FRAMES - 2).unwrap();
+        let audible = start(&mut rt, 1, 0).unwrap();
+        // Two frames, then the one-millisecond fade: the voice is now waiting.
+        rt.render(&mut output).unwrap();
+        assert_eq!(rt.stats().stream_underruns, 1);
+        let reclaimed = start(&mut rt, 1, 0).unwrap();
+        assert!(!rt.voice_active(starved));
+        assert!(rt.voice_active(audible) && rt.voice_active(reclaimed));
+        assert_eq!(start(&mut rt, 1, 0), Err(Error::Capacity));
+        let stats = rt.stats();
+        assert_eq!((stats.voice_drops, stats.voices), (1, 2));
+        assert_eq!(stats.render_frames_last, 64);
+        assert!(stats.render_nanos_peak >= stats.render_nanos_last);
+        assert_eq!(stats.stream_cache_bytes, PAGE_FRAMES * 8);
+        rt.render(&mut output).unwrap();
+        assert!(output.iter().all(|f| f == &[1.; 2]));
+    });
+    assert_eq!(rt.resident_bytes(), 1000 * 8);
+}
+
+#[test]
+fn a_resident_head_starts_cold_voices_and_streams_the_rest() {
+    let data: Vec<Frame> = (0..PAGE_FRAMES * 2 + 100)
+        .map(|i| [i as f32 / 1e4, -(i as f32) / 1e4])
+        .collect();
+    let asset = Pcm::headed(48000, data.len(), &data[..PAGE_FRAMES]).unwrap();
+    assert_eq!(asset.resident_bytes(), PAGE_FRAMES * 8);
+    let (cache, mut worker) = StreamCache::new(2).unwrap();
+    let mut rt =
+        runtime(vec![asset.clone()], vec![region(0, Playback::default())]).with_stream_cache(cache);
+    let mut output = vec![[0.; 2]; PAGE_FRAMES + 200];
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        assert!(!rt.service_streaming(PAGE_FRAMES as u32 + 200).unwrap());
+    });
+    // The head never travels through the cache: only page 1 is requested.
+    let mut job = worker.next_job().unwrap();
+    assert_eq!(job.range(), PAGE_FRAMES..PAGE_FRAMES * 2);
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    assert!(worker.next_job().is_none());
+    support::without_heap(|| {
+        assert!(rt.service_streaming(PAGE_FRAMES as u32 + 200).unwrap());
+        rt.render(&mut output).unwrap();
+    });
+    assert_eq!(rt.stream_underruns(), 0);
+    let reference = {
+        let resident = Pcm::new(48000, data.clone().into()).unwrap();
+        let mut rt = runtime(vec![resident], vec![region(0, Playback::default())]);
+        let mut output = vec![[0.; 2]; PAGE_FRAMES + 200];
+        rt.trigger(input(), 60, 1.).unwrap();
+        rt.render(&mut output).unwrap();
+        output
+    };
+    assert_eq!(output, reference);
+    // A purged head refuses starts and marks the asset for reloading.
+    rt.note_off(input(), None).unwrap();
+    assert_eq!(asset.set_ranges(vec![]).unwrap().len(), 1);
+    assert!(!asset.take_cold());
+    assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
+    assert!(asset.take_cold() && !asset.take_cold());
+    assert!(asset.last_played() > 0);
+}
+
+#[test]
+fn a_cold_start_waits_silently_for_its_page_then_fades_in() {
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 2];
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let (cache, mut worker) = StreamCache::new(4).unwrap();
+    let mut rt =
+        runtime(vec![asset.clone()], vec![region(0, Playback::default())]).with_stream_cache(cache);
+    assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
+    rt.set_cold_starts(true);
+    let mut output = vec![[0.; 2]; 256];
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        assert!(!rt.service_streaming(PAGE_FRAMES as u32).unwrap());
+        rt.render(&mut output).unwrap();
+    });
+    assert!(output.iter().all(|f| f == &[0.; 2]));
+    assert!(asset.take_cold());
+    let mut job = worker.next_job().unwrap();
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    support::without_heap(|| {
+        rt.service_streaming(PAGE_FRAMES as u32).unwrap();
+        rt.render(&mut output).unwrap();
+    });
+    // A short fade-in, then the source at full level.
+    assert!(output[0][0] > 0. && output[0][0] < output[255][0] && output[60] == output[255]);
+    assert!(output.windows(2).all(|w| w[0][0] <= w[1][0]));
+    let stats = rt.stats();
+    assert_eq!((stats.cold_starts, stats.stream_underruns), (1, 0));
+}
+
+#[test]
+fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 3];
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let range = data[PAGE_FRAMES..PAGE_FRAMES + 300].into();
+    asset.set_ranges(vec![(PAGE_FRAMES, range)]).unwrap();
+    assert!(
+        asset
+            .set_ranges(vec![(PAGE_FRAMES * 3, [[0.; 2]].into())])
+            .is_err()
+    );
+    assert!(
+        asset
+            .set_ranges(vec![(0, [[0.; 2]; 2].into()), (1, [[0.; 2]].into())])
+            .is_err()
+    );
+    let at = |start| {
+        let playback = Playback {
+            start,
+            ..Playback::default()
+        };
+        let cache = StreamCache::new(2).unwrap().0;
+        runtime(vec![asset.clone()], vec![region(0, playback)]).with_stream_cache(cache)
+    };
+    let mut inside = at(PAGE_FRAMES + 100);
+    let mut output = [[0.; 2]; 64];
+    inside.trigger(input(), 60, 1.).unwrap();
+    inside.render(&mut output).unwrap();
+    assert!(output[10..].iter().all(|f| f[0] > 0.));
+    assert_eq!(inside.stream_underruns(), 0);
+    assert_eq!(at(100).trigger(input(), 60, 1.), Err(Error::NotReady));
+}

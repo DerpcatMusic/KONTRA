@@ -110,6 +110,32 @@ fn phases(shared: bool) -> Prepared {
 }
 
 #[test]
+fn release_stealing_admits_an_attack_by_suppressing_the_oldest_pending_release() {
+    let mut rt = Runtime::new(
+        phases(false),
+        Limits {
+            voices: 14,
+            families: 7,
+            decisions: 7,
+            ..limits()
+        },
+    )
+    .unwrap();
+    rt.set_release_stealing(true);
+    support::without_heap(|| {
+        let a = rt.trigger(input(1), 60, 1.).unwrap();
+        let b = rt.trigger(input(2), 60, 1.).unwrap();
+        // Reservations of a and b leave no room for c's attack and releases.
+        let c = rt.trigger(input(3), 60, 1.).unwrap();
+        for trigger in [Trigger::KeyRelease, Trigger::GateRelease] {
+            assert_eq!(rt.release_status(a, trigger), Ok(ReleaseStatus::Suppressed));
+            assert_eq!(rt.release_status(b, trigger), Ok(ReleaseStatus::Pending));
+            assert_eq!(rt.release_status(c, trigger), Ok(ReleaseStatus::Pending));
+        }
+    });
+}
+
+#[test]
 fn full_capacity_pedal_burst_preserves_complete_mics_and_independent_phase_history() {
     let mut rt = Runtime::new(
         phases(false),

@@ -19,7 +19,7 @@ impl Repository {
     }
 
     pub fn infer_schema(&self) -> NISObject {
-        if let Some(child) = self.0.children.get(0) {
+        if let Some(child) = self.0.children.first() {
             child.into()
         } else {
             NISObject::Unknown
