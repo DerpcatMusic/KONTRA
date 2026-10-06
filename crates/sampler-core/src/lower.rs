@@ -752,6 +752,7 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::Script(id) => ModSource::Script(*id),
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
                 frames: self.frames(*t).max(1),
             },

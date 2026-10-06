@@ -526,6 +526,10 @@ pub enum ModulationSource {
     /// was released, `clamp((T − held) / T, 0, 1)`, where `held` runs from
     /// note-on to key-up (to now while the key is down).
     ReleaseCounter(Time),
+    /// A script-set per-event value, `id` as KSP's "from script" modulator
+    /// index: `set_event_par_arr(event, $EVENT_PAR_MOD_VALUE_ID, v, id)`,
+    /// read as `clamp(v / 1_000_000, -1, 1)`; 0 until set.
+    Script(u16),
 }
 
 impl ModulationSource {
