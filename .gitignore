@@ -16,3 +16,4 @@
 /.claude/worktrees/
 
 /.github/scripts/__pycache__/
+__pycache__/

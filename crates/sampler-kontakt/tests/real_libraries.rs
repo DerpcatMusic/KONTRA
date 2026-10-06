@@ -3,7 +3,7 @@
 //! player's settings (`~/.config/kontra/settings.json`), as v1 finds them.
 //! Nothing read here is written anywhere.
 
-use sampler_core::{Input, Limits, Protocol, Runtime};
+use sampler_core::{Input, Limits, Protocol, Runtime, Stealing};
 use std::path::{Path, PathBuf};
 
 fn roots() -> Vec<PathBuf> {
@@ -264,6 +264,9 @@ fn survey_modulated_instruments_lower_and_render() {
                         continue;
                     }
                 };
+                // As the product plays: steal at capacity rather than reject.
+                rt.set_voice_stealing(Some(Stealing::for_limits(48000, limits().voices)))
+                    .unwrap();
                 if let Err(error) = rt.trigger(input(60), 60, 0.8) {
                     println!("TRIGGER {}: {error:?}", path.display());
                     continue;
