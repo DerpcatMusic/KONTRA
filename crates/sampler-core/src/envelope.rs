@@ -262,6 +262,15 @@ impl EnvelopeState {
         self.enter(Phase::Release);
     }
 
+    pub(super) fn releasing(&self) -> bool {
+        matches!(self.phase, Phase::Release | Phase::Done)
+    }
+
+    /// The level the next frame starts from.
+    pub(super) fn current(&self) -> f32 {
+        self.level()
+    }
+
     pub(super) fn done(&self) -> bool {
         self.phase == Phase::Done
     }
