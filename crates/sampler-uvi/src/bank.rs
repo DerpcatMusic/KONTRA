@@ -1,9 +1,6 @@
-//! Programs and samples inside an installed UFS bank, ported from v1
-//! (`src/uvi/library.rs`, `src/library/uvi.rs`). The reader namespaces come
-//! from the user's installed official UVI Workstation (`access::reader_path`,
-//! hash-verified); a bank's content state is prepared or reloaded only through
-//! v1's owner-only store. Neither value is logged, printed or put in an error:
-//! every failure crosses this boundary as `access::failure_reason`.
+//! Programs and samples inside an installed UFS bank. Reader namespaces come
+//! from the user's hash-verified official UVI Workstation. Recovered content
+//! access and decoded bytes live only in this process; nothing is persisted.
 
 use crate::{
     AccessError,
@@ -50,20 +47,12 @@ pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
     }
 }
 
-/// v1's private store: `KONTRA_UVI_AUTHORITY_DIR`, else `<config>/kontra/uvi-access`.
-fn store_dir() -> Result<PathBuf> {
-    std::env::var_os("KONTRA_UVI_AUTHORITY_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::config_dir().map(|c| c.join("kontra/uvi-access")))
-        .context("The private UVI access store is unavailable")
-}
-
 impl Bank {
     /// Open and decode the directory of the bank at `path`.
     pub fn open(path: &Path) -> Result<Self, AccessError> {
         let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
-        let cache_error = |e| AccessError::PrivateCache(access::failure_reason(&e));
+        let content_error = |e| AccessError::Content(access::failure_reason(&e));
         let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
         let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
         let ufs = Ufs::open(path).map_err(bank_error)?;
@@ -76,10 +65,7 @@ impl Bank {
             .iter()
             .any(|m| m.mode == Protection::Content)
         {
-            let store = store_dir().map_err(cache_error)?;
-            access::ensure_content_state(path, &ufs, &directory, &store)
-                .map_err(cache_error)?
-                .map(|state| state.key)
+            Some(access::recover_content_key(path, &ufs, &directory).map_err(content_error)?)
         } else {
             None
         };
