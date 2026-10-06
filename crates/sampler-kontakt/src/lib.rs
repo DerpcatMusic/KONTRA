@@ -7,6 +7,7 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod container;
 mod library;
 mod load;
 mod mapping;
@@ -16,6 +17,7 @@ mod samples;
 mod script;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
+pub use container::read_chunks;
 pub use library::{Kontakt, read};
 pub use load::{Loaded, Options, Progress, finish, load, prepare};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
