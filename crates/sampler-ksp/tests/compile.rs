@@ -887,6 +887,12 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
                 external_id: None,
             };
             let note = rt.trigger(input, 60, 1.).unwrap();
+            if expected == Outcome::FuelExhausted {
+                // v2: preempted every block; a runaway ends after a second.
+                for _ in 0..12 {
+                    rt.render(&mut [[0.; 2]; 4800]).unwrap();
+                }
+            }
             if body.starts_with("$a") {
                 assert_eq!(rt.note_cell(note, 2), Ok(7));
             }

@@ -5,12 +5,15 @@
 //! script callback runs inside the block that dispatched it, so block time
 //! is the audio-thread cost. The deadline for 64 frames is 1333 us.
 //! Usage: cargo run -p sampler-ksp --release --example bench [DIR]
-//! KSP_FUEL sets the per-resume instruction budget (default 100000).
+//! KSP_FUEL sets the per-block callback budget (default
+//! `Limits::DEFAULT_BEHAVIOR_FUEL`); longer callbacks continue next block.
 use sampler_core::*;
 use std::time::{Duration, Instant};
 
 const BLOCK: usize = 64;
 const BLOCKS: usize = 2000;
+/// Report scripts whose callbacks span more blocks than this.
+const LONG_BLOCKS: u64 = 8;
 
 fn main() {
     let dir = std::env::args()
@@ -19,7 +22,7 @@ fn main() {
     let fuel: usize = std::env::var("KSP_FUEL")
         .ok()
         .and_then(|f| f.parse().ok())
-        .unwrap_or(100_000);
+        .unwrap_or(sampler_core::Limits::DEFAULT_BEHAVIOR_FUEL);
     let mut paths: Vec<_> = std::fs::read_dir(&dir)
         .expect("corpus directory")
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -32,12 +35,24 @@ fn main() {
         variables: usize::MAX,
         array_cells: usize::MAX,
     };
-    println!("fuel {fuel} per resume; {BLOCKS} blocks of {BLOCK} frames; deadline 1333 us");
     println!(
-        "{:<10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6}",
-        "script", "compile", "mean us", "p99 us", "max us", "over", "fuel!", "fault"
+        "fuel {fuel} per callback per block; {BLOCKS} blocks of {BLOCK} frames; deadline 1333 us"
+    );
+    println!(
+        "{:<10} {:>10} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6}",
+        "script",
+        "compile",
+        "mean us",
+        "p99 us",
+        "max us",
+        "over",
+        "preempt",
+        "blocks",
+        "fuel!",
+        "fault"
     );
     let mut all = Vec::new();
+    let mut long = Vec::new();
     let mut fault_kinds = std::collections::BTreeMap::<String, usize>::new();
     let (mut total_over, mut total_exhausted) = (0, 0);
     for path in &paths {
@@ -169,17 +184,24 @@ fn main() {
         let p99 = times[times.len() * 99 / 100];
         let max = *times.last().unwrap();
         let over = times.iter().filter(|t| t.as_micros() > 1333).count();
+        // Blocks the longest callback spanned.
+        let blocks = rt.longest_preempted_frames() / BLOCK as u64 + 1;
+        let preempted = rt.preemptions();
+        if blocks > LONG_BLOCKS {
+            long.push(format!("{file} ({blocks} blocks)"));
+        }
         total_over += over;
         total_exhausted += exhausted;
         all.extend_from_slice(&times);
         println!(
-            "{file:<10} {:>8.1}ms {:>8.1} {:>8.1} {:>8.1} {over:>8} {exhausted:>6} {faults:>6}",
+            "{file:<10} {:>8.1}ms {:>8.1} {:>8.1} {:>8.1} {over:>8} {preempted:>8} {blocks:>6} {exhausted:>6} {faults:>6}",
             compile.as_secs_f64() * 1e3,
             mean.as_secs_f64() * 1e6,
             p99.as_secs_f64() * 1e6,
             max.as_secs_f64() * 1e6,
         );
     }
+    println!("callbacks spanning more than {LONG_BLOCKS} blocks: {long:?}");
     if !fault_kinds.is_empty() {
         println!("callback faults by error: {fault_kinds:?}");
     }
