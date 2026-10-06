@@ -1149,7 +1149,7 @@ fn library_instruments(files: &[PathBuf], names: &str) -> Vec<Arc<import::Instru
 }
 
 
-fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
+pub(super) fn scripted(i: &import::Instrument) -> crate::plugin::ScriptView {
     let Some(mut rt) = load_scripts(i, i.script_state.clone(), 48000.).0 else {
         return script_interface(None);
     };

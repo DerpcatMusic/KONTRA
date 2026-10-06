@@ -32,6 +32,9 @@ mod keyboard;
 mod logs;
 mod menu;
 mod mixer;
+mod mix_tree;
+mod ir_view;
+mod load_report;
 mod panel;
 mod perf_view;
 pub(crate) use perf_view::font_fallbacks;
@@ -40,6 +43,8 @@ mod rack;
 mod spectrum;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod v2_tests;
 mod theme;
 mod vector;
 mod viz;
