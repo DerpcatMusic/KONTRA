@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Fade starved native sources over one millisecond from the last complete resample,
+  then drain their declared DSP tails. Keep host pairing and one-time fault telemetry;
+  late pages cannot restart failed sources or leak incomplete interpolation output.
+
 - Service live source demand through bounded cache polling and protect every voice
   before page replacement. Preserve first-use deadlines while resolving overlapping
   interpolation guards once; verify long sources through a three-page cache.
@@ -20,8 +24,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 - Render metadata-only streamed assets through the shared native source/DSP path.
   Reject missing onset guards without partial layers and report live starvation
-  while preserving host pairing and declared DSP tails. Automatic streaming and
-  click-free starvation handling remain in development.
+  while preserving host pairing and declared DSP tails. Live demand service and
+  a bounded starvation fade are now executable; production streaming gates remain open.
 
 - Add a bounded decoded-page cache/worker protocol with owned buffer recycling,
   demand protection, deadline ordering and stale-result rejection. The first

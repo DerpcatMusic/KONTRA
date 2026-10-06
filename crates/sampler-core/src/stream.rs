@@ -538,7 +538,7 @@ impl crate::Runtime {
         for requesting in [false, true] {
             for (index, slot) in self.voices.slots.iter().enumerate() {
                 let Some(voice) = &slot.value else { continue };
-                if voice.source_failed {
+                if voice.cursor.starved() {
                     continue;
                 }
                 let family = self.families.get(voice.family.0).unwrap();

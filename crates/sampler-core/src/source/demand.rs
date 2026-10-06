@@ -28,7 +28,7 @@ impl Runtime {
             .checked_add(u64::from(frames))
             .ok_or(Error::ClockOverflow)?;
         let v = self.voices.get(voice.0).ok_or(Error::StaleHandle)?;
-        if v.source_failed {
+        if v.cursor.starved() {
             return Ok(true);
         }
         let family = self.families.get(v.family.0).unwrap();

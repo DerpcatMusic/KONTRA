@@ -235,7 +235,6 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
-    source_failed: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -974,7 +973,6 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
-            source_failed: false,
         })?);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
