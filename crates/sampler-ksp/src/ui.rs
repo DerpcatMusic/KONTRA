@@ -74,7 +74,6 @@ pub fn picture_path(name: &str) -> String {
 /// malformed lines keep the defaults.
 pub fn picture_meta(txt: &str) -> ir::ImageMeta {
     let mut meta = ir::ImageMeta::default();
-    let (mut resizable, mut margins) = (false, ir::Margins::default());
     for line in txt.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
@@ -86,15 +85,15 @@ pub fn picture_meta(txt: &str) -> ir::ImageMeta {
             "Has Alpha Channel" => meta.alpha = yes,
             "Number of Animations" => meta.frames = n.max(1),
             "Horizontal Animation" if yes => meta.axis = ir::Orientation::Horizontal,
-            "Vertical Resizable" | "Horizontal Resizable" => resizable |= yes,
-            "Fixed Top" => margins.top = n,
-            "Fixed Bottom" => margins.bottom = n,
-            "Fixed Left" => margins.left = n,
-            "Fixed Right" => margins.right = n,
+            "Horizontal Resizable" => meta.stretch[0] = yes,
+            "Vertical Resizable" => meta.stretch[1] = yes,
+            "Fixed Top" => meta.margins.top = n,
+            "Fixed Bottom" => meta.margins.bottom = n,
+            "Fixed Left" => meta.margins.left = n,
+            "Fixed Right" => meta.margins.right = n,
             _ => {}
         }
     }
-    meta.stretch = resizable.then_some(margins);
     meta
 }
 
@@ -316,11 +315,12 @@ pub fn interface(
                     },
                     bipolar: r < 0,
                     cells,
+                    steps_shown: None,
                 }
             }
-            WidgetKind::Xy => ir::Kind::Xy { cursors: len / 2 },
+            WidgetKind::Xy => ir::Kind::Xy { cursors: len / 2, sensitivity: [None; 2], mouse_mode: None },
             WidgetKind::Waveform => ir::Kind::Waveform,
-            WidgetKind::Wavetable => ir::Kind::Wavetable,
+            WidgetKind::Wavetable => ir::Kind::Wavetable { view_mode: None, parallax: [0; 2] },
             WidgetKind::LevelMeter => ir::Kind::LevelMeter {
                 orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
                     ir::Orientation::Horizontal
@@ -328,7 +328,7 @@ pub fn interface(
                     ir::Orientation::Vertical
                 },
             },
-            WidgetKind::FileSelector => ir::Kind::FileSelector,
+            WidgetKind::FileSelector => ir::Kind::FileSelector { base_path: None, files: ir::Files::Any, column_width: None },
             WidgetKind::TextEdit => ir::Kind::TextEdit,
             WidgetKind::MouseArea => ir::Kind::MouseArea,
         };

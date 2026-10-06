@@ -32,8 +32,14 @@ mod keyboard;
 mod logs;
 mod menu;
 mod mixer;
+// The v2 views take plain data the v2 core does not produce yet (UI IR,
+// submix/bus nodes, effect and modulation reports); until it does, parts are
+// reached only from tests and the v1 bridge.
+#[allow(dead_code)]
 mod mix_tree;
+#[allow(dead_code)]
 mod ir_view;
+#[allow(dead_code)]
 mod load_report;
 mod v1_bridge;
 mod panel;

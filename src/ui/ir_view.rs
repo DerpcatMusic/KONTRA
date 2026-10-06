@@ -105,8 +105,8 @@ fn default_size(kind: &Kind) -> (u32, u32) {
     match kind {
         Kind::Knob { .. } => (85, 52),
         Kind::Table { .. } | Kind::Xy { .. } | Kind::MouseArea => (92, 92),
-        Kind::Waveform | Kind::Wavetable => (184, 92),
-        Kind::FileSelector => (184, 184),
+        Kind::Waveform | Kind::Wavetable { .. } => (184, 92),
+        Kind::FileSelector { .. } => (184, 184),
         Kind::LevelMeter { orientation: ir::Orientation::Vertical } => (8, 92),
         Kind::Panel => (0, 0),
         _ => (85, 18),
@@ -131,6 +131,23 @@ pub fn resolved(face: &Interface) -> Interface {
         if w.auto_size {
             (w.rect.width, w.rect.height) = default_size(&w.kind);
             w.auto_size = false;
+        }
+    }
+    // Kontakt sizes a control to its picture along any axis the picture does not stretch.
+    for n in 0..face.widgets.len() {
+        let w = &face.widgets[n];
+        let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
+            ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
+            ir::AssetKind::BitmapFont => None,
+        });
+        if let Some((size, stretch)) = meta {
+            let r = &mut face.widgets[n].rect;
+            if !stretch[0] {
+                r.width = size.width;
+            }
+            if !stretch[1] {
+                r.height = size.height;
+            }
         }
     }
     face
@@ -271,7 +288,7 @@ fn widget(
             })
             .fill(Role::Ink.alpha(0.06))
         }
-        Kind::Xy { .. } | Kind::Waveform | Kind::Wavetable | Kind::FileSelector | Kind::TextEdit => {
+        Kind::Xy { .. } | Kind::Waveform | Kind::Wavetable { .. } | Kind::FileSelector { .. } | Kind::TextEdit => {
             row![words(wd.text.clone())].align(Align::Center).pad((TIGHT * scale, 0.)).fill(Role::Ink.alpha(0.06)).stroke(Role::Ink.alpha(0.15)).stroke_width(1)
         }
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
