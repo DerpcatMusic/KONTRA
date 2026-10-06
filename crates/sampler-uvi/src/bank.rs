@@ -80,6 +80,21 @@ impl Bank {
             .read_member(member, self.directory.metadata_key, self.content_key)
     }
 
+    /// Every member path in the bank, in directory order.
+    pub fn members(&self) -> Vec<String> {
+        self.directory
+            .files
+            .iter()
+            .filter_map(|m| m.path.clone())
+            .collect()
+    }
+
+    /// The bytes of the member at bank-root `path` (a script, say).
+    pub fn file(&self, path: &str) -> Result<Vec<u8>, String> {
+        let read = || self.read(resolve(&self.directory, path)?);
+        read().map_err(|e| access::failure_reason(&e))
+    }
+
     /// Decode the program at member `name` to its clear XML and its path.
     pub fn program(&self, name: &str) -> Result<(String, String), String> {
         self.program_inner(name)
