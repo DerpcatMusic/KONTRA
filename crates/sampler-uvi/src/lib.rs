@@ -17,6 +17,7 @@ mod audio;
 mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
+mod modulation;
 #[cfg(feature = "library-access")]
 mod ufs;
 
@@ -188,15 +189,25 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
         assets: HashMap::new(),
         locations: Vec::new(),
         envelopes: HashMap::new(),
+        modulator_index: HashMap::new(),
+        route_index: HashMap::new(),
+        shape_index: HashMap::new(),
         used: Vec::new(),
     };
     out.program(program).map_err(Translate::Invalid)?;
     // Whatever was neither structure nor consumed is reported once per node.
+    // Modulation sources and mappers act only through connections, which
+    // report what they could not translate.
     for node in program.descendants().filter(|n| n.is_element()) {
         let kind = node.tag_name().name();
         if !STRUCTURAL.contains(&kind)
             && !out.used.contains(&node.id())
             && !node.ancestors().skip(1).any(|a| out.used.contains(&a.id()))
+            && !node.ancestors().any(|a| {
+                a.parent().is_some_and(|p| {
+                    matches!(p.tag_name().name(), "ControlSignalSources" | "Mappers")
+                })
+            })
         {
             let bypassed = node.attribute("Bypass") == Some("1");
             out.unsupported(
@@ -210,6 +221,14 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
     Ok((out.ir, out.locations))
+}
+
+/// A node's own `SignalConnection`s.
+fn connections<'a>(node: Node<'a, 'a>) -> impl Iterator<Item = Node<'a, 'a>> {
+    node.children()
+        .filter(|n| n.has_tag_name("Connections"))
+        .flat_map(|c| c.children())
+        .filter(|n| n.has_tag_name("SignalConnection"))
 }
 
 /// `Program/Layer "Name"/Keygroup "Name"/...`, for reports.
@@ -282,6 +301,10 @@ struct Translation {
     locations: Vec<String>,
     /// Envelope modulators by their source node, with their velocity law.
     envelopes: HashMap<roxmltree::NodeId, (ir::ModulatorRef, ir::VelocityResponse)>,
+    /// Shared modulators, routes and shapes by identity (see `modulation`).
+    modulator_index: HashMap<String, ir::ModulatorRef>,
+    route_index: HashMap<String, ir::RouteRef>,
+    shape_index: HashMap<String, ir::ShapeRef>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
 }
@@ -294,6 +317,25 @@ impl Translation {
             value: value.to_string(),
             reason: ir::Reason::NotModeled,
         });
+    }
+
+    /// Program and layer connections act on the mixed signal of their scope.
+    fn scope_connections(&mut self, scope: Node) -> Result<(), String> {
+        for connection in connections(scope) {
+            if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
+            {
+                self.unsupported(
+                    &path(connection),
+                    "program or layer modulation",
+                    format!(
+                        "{} -> {}",
+                        connection.attribute("Source").unwrap_or_default(),
+                        connection.attribute("Destination").unwrap_or_default()
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
@@ -316,10 +358,12 @@ impl Translation {
                 requires: Vec::new(),
             });
         }
+        self.scope_connections(program)?;
         for layer in program.descendants().filter(|n| n.has_tag_name("Layer")) {
             if number(layer, "Mute", 0.0)? != 0.0 {
                 continue;
             }
+            self.scope_connections(layer)?;
             let pan = number(layer, "Pan", 0.0)?;
             self.ir.groups.push(ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -375,35 +419,35 @@ impl Translation {
                 self.unsupported(&at, fade, number(keygroup, fade, 0.0)?);
             }
         }
-        // The amplitude envelope: a Gain connection from a DAHDSR or AnalogADSR.
+        // The amplitude envelope: a plain Gain connection from a DAHDSR or
+        // AnalogADSR. Every other connection is a route or a static factor.
         let mut amplitude = None;
-        let connections = keygroup
-            .children()
-            .filter(|n| n.has_tag_name("Connections"))
-            .flat_map(|c| c.children());
-        for connection in connections.filter(|n| n.has_tag_name("SignalConnection")) {
-            let (source, destination) = (
-                connection.attribute("Source").unwrap_or_default(),
-                connection.attribute("Destination").unwrap_or_default(),
-            );
+        let mut shared = modulation::Modulation::default();
+        for connection in connections(keygroup) {
             let plain = number(connection, "Ratio", 1.0)? == 1.0
                 && number(connection, "Bypass", 0.0)? == 0.0
                 && number(connection, "Inverted", 0.0)? == 0.0
+                && number(connection, "ConnectionMode", 0.0)? == 0.0
                 && connection
                     .attribute("Mapper")
                     .unwrap_or_default()
                     .is_empty()
                 && connection.children().all(|c| !c.is_element());
-            match self.envelope_source(keygroup, source) {
-                Some(envelope) if destination == "Gain" && plain && amplitude.is_none() => {
+            let envelope = modulation::source_node(
+                keygroup,
+                connection.attribute("Source").unwrap_or_default(),
+            )
+            .filter(|n| matches!(n.tag_name().name(), "DAHDSR" | "AnalogADSR"))
+            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0));
+            match envelope {
+                Some(envelope)
+                    if connection.attribute("Destination") == Some("Gain")
+                        && plain
+                        && amplitude.is_none() =>
+                {
                     amplitude = Some(self.envelope(envelope)?);
-                    self.used.push(connection.id());
                 }
-                _ => self.unsupported(
-                    &path(connection),
-                    "modulation",
-                    format!("{source} -> {destination}"),
-                ),
+                _ => self.connect(connection, &mut shared)?,
             }
         }
         let (amplitude, velocity) = match amplitude {
@@ -452,6 +496,26 @@ impl Translation {
                 );
             }
             let playback = self.playback(player)?;
+            let mut modulation = shared.clone();
+            for connection in connections(player) {
+                self.connect(connection, &mut modulation)?;
+            }
+            if amplitude.is_none()
+                && modulation.routes.iter().any(|r| {
+                    let route = &self.ir.routes[r.0];
+                    route.target == ir::Target::Amplitude
+                        && matches!(
+                            self.ir.modulators[route.source.0].source,
+                            ir::ModulationSource::Envelope(_)
+                        )
+                })
+            {
+                self.unsupported(
+                    &at,
+                    "envelope gain route without an amplitude envelope (voice ends at note-off)",
+                    "",
+                );
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -464,56 +528,23 @@ impl Translation {
                 },
                 pitch,
                 tune: ir::Pitch::Semitones(
-                    number(player, "CoarseTune", 0.0)? + number(player, "FineTune", 0.0)? / 100.0,
+                    number(player, "CoarseTune", 0.0)?
+                        + number(player, "FineTune", 0.0)? / 100.0
+                        + modulation.pitch,
                 ),
-                gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)?),
+                gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)? * modulation.gain),
                 velocity,
                 pan: ir::Pan {
-                    position: (pan + player_pan).clamp(-1.0, 1.0),
+                    position: (pan + player_pan + modulation.pan).clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
                 playback,
                 amplitude,
+                routes: modulation.routes,
                 ..ir::Zone::new(asset)
             });
         }
         Ok(())
-    }
-
-    /// The DAHDSR or AnalogADSR node a connection source names: `$Program/X`
-    /// and `$Layer/X` address those scopes, a bare name the nearest scope.
-    fn envelope_source<'a>(&self, keygroup: Node<'a, 'a>, source: &str) -> Option<Node<'a, 'a>> {
-        let (scopes, name): (Vec<Node>, &str) = match source.split_once('/') {
-            Some(("$Program", name)) => (
-                keygroup
-                    .ancestors()
-                    .filter(|n| n.has_tag_name("Program"))
-                    .collect(),
-                name,
-            ),
-            Some(("$Layer", name)) => (
-                keygroup
-                    .ancestors()
-                    .filter(|n| n.has_tag_name("Layer"))
-                    .collect(),
-                name,
-            ),
-            Some(_) => return None,
-            None => (
-                keygroup.ancestors().filter(|n| n.is_element()).collect(),
-                source,
-            ),
-        };
-        scopes.into_iter().find_map(|scope| {
-            scope
-                .children()
-                .filter(|n| n.has_tag_name("ControlSignalSources"))
-                .flat_map(|s| s.children())
-                .find(|n| {
-                    matches!(n.tag_name().name(), "DAHDSR" | "AnalogADSR")
-                        && n.attribute("Name") == Some(name)
-                })
-        })
     }
 
     fn envelope(&mut self, node: Node) -> Result<(ir::ModulatorRef, ir::VelocityResponse), String> {
@@ -539,7 +570,8 @@ impl Translation {
             },
             decay: seconds("DecayTime", 30.0)?,
             sustain: number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0),
-            release: seconds("ReleaseTime", 10.0)?,
+            release: number(node, "ReleaseTime", 0.05)
+                .map(|t| ir::Time::Seconds(t.clamp(0.0, 10.0)))?,
             ..Default::default()
         };
         if kind == "DAHDSR" {
@@ -553,17 +585,27 @@ impl Translation {
             // AnalogADSR integrates an RC stage law this envelope does not model.
             self.unsupported(&at, "analog ADSR stage law (linear stages used)", "");
         }
-        // v1 measured law: velocity^(1 - log2(1 - sensitivity)); 1 gates at 127.
+        // v1 measured law: level × (1 − a + a·velocity^(1 − log2(1 − sensitivity))),
+        // a = VelocityAmount; sensitivity 1 gates at 127.
         let sensitivity = number(node, "VelocitySens", 0.75)?.clamp(-1.0, 1.0);
-        let velocity = if sensitivity < 1.0 {
+        let amount = number(node, "VelocityAmount", 0.0)?.clamp(0.0, 1.0);
+        let velocity = if amount == 0.0 {
+            ir::VelocityResponse::None
+        } else if sensitivity < 1.0 {
             ir::VelocityResponse::Power(1.0 - (1.0 - sensitivity).log2())
         } else {
             self.unsupported(&at, "VelocitySens", sensitivity);
             ir::VelocityResponse::Linear
         };
-        let amount = number(node, "VelocityAmount", 0.0)?;
-        if amount != 0.0 {
-            self.unsupported(&at, "VelocityAmount", amount);
+        if amount != 0.0 && amount != 1.0 {
+            self.unsupported(&at, "VelocityAmount (full amount used)", amount);
+        }
+        // v1 measured only per-voice envelopes released at note-off.
+        for (name, expected) in [("Retrigger", 1.0), ("NoteOffRetrigger", 0.0)] {
+            let value = number(node, name, expected)?;
+            if value != expected {
+                self.unsupported(&at, name, value);
+            }
         }
         self.ir.modulators.push(ir::Modulator {
             scope: ir::Scope::Voice,
@@ -780,4 +822,42 @@ fn assemble(
         ..Default::default()
     };
     Ok(sampler_kontakt::finish(instrument, pcm, labels, &options)?)
+}
+
+#[cfg(all(test, feature = "library-access"))]
+mod dump {
+    #[test]
+    #[ignore]
+    fn dump_programs() {
+        let root = std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap());
+        let out = std::path::PathBuf::from(std::env::var("DUMP").unwrap());
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e == "ufs") {
+                    let bank = match crate::Bank::open(&p) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("{}: {e}", p.display());
+                            continue;
+                        }
+                    };
+                    let stem = p.file_stem().unwrap().to_string_lossy().into_owned();
+                    for prog in bank.programs() {
+                        match bank.program(&prog) {
+                            Ok((text, _)) => {
+                                let f = out.join(&stem).join(prog.trim_start_matches('/'));
+                                std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+                                std::fs::write(f, text).unwrap();
+                            }
+                            Err(e) => eprintln!("{prog}: {e}"),
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
