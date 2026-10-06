@@ -161,7 +161,7 @@ pub(super) struct RenderContext<'a> {
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
     pub parameters: &'a [ControlRamp],
-    pub filters: &'a mut [svf::FilterCache],
+    pub filters: svf::FilterContext<'a>,
     pub at: u64,
 }
 
@@ -267,7 +267,7 @@ impl PreparedVoiceChain {
         pcm: &(impl crate::source::ReadFrames + ?Sized),
         output: &mut [Frame],
         states: &mut [ProcessorState],
-        context: RenderContext<'_>,
+        mut context: RenderContext<'_>,
         kernel: &crate::resample::Kernel,
     ) -> (usize, u64) {
         let mut faults = 0;
@@ -315,7 +315,7 @@ impl PreparedVoiceChain {
                     context.parameters,
                     at,
                     context.delay,
-                    context.filters,
+                    &mut context.filters,
                 );
                 let level = voice
                     .envelope
@@ -329,7 +329,7 @@ impl PreparedVoiceChain {
                     context.parameters,
                     at,
                     context.delay,
-                    context.filters,
+                    &mut context.filters,
                 );
                 let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
                     f64::from(initial) * f64::from(voice.tail_remaining.unwrap()) / f64::from(total)
@@ -383,12 +383,12 @@ pub(super) fn process(
     parameters: &[ControlRamp],
     at: u64,
     delay_samples: &mut [[f64; 2]],
-    filters: &mut [svf::FilterCache],
+    filters: &mut svf::FilterContext<'_>,
 ) -> [f64; 2] {
     for (stage, state) in stages.iter().zip(states) {
         match stage {
             PreparedProcessor::StateVariable(index) => {
-                value = filters[*index].process(&mut state.z, value, parameters, at);
+                value = filters.process(*index, &mut state.z, value, parameters, at);
             }
             PreparedProcessor::Delay { delay, offset } => {
                 value = delay.process(
@@ -439,11 +439,11 @@ pub(super) struct DspState {
     pub parameters: Box<[ControlRamp]>,
     pub delay_stride: usize,
     pub delay_samples: Box<[[f64; 2]]>,
-    pub filters: Box<[svf::FilterCache]>,
+    pub filters: svf::FilterBank,
     pub buses: crate::bus::BusState,
 }
 impl DspState {
-    pub fn new(plan: &Prepared, voices: usize) -> Result<Self, Error> {
+    pub fn new(plan: &Prepared, voices: usize, expressions: usize) -> Result<Self, Error> {
         let stride = plan
             .voice_chains
             .iter()
@@ -462,12 +462,7 @@ impl DspState {
             stride,
             cells: allocate(cells)?,
             delay_stride,
-            filters: plan
-                .filters
-                .iter()
-                .copied()
-                .map(svf::FilterCache::new)
-                .collect(),
+            filters: svf::FilterBank::new(&plan.filters, expressions)?,
             delay_samples: allocate(delay_count)?,
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
@@ -526,6 +521,7 @@ mod tests {
             ] {
                 let filter = Biquad::new(rate, kind, frequency, 0.7).unwrap();
                 let mut state = [ProcessorState::default()];
+                let mut filters = svf::FilterBank::new(&[], 0).unwrap();
                 let (mut x, mut y) = ([0.; 2], [0.; 2]);
                 let mut response = [[0.; 2]; 3];
                 for sample in 0..4096 {
@@ -542,7 +538,10 @@ mod tests {
                         &[],
                         0,
                         &mut [],
-                        &mut [],
+                        &mut svf::FilterContext {
+                            bank: &mut filters,
+                            expression: None,
+                        },
                     );
                     assert!((actual[0] - expected).abs() < 1e-13);
                     assert_eq!(actual[1], 0., "stereo channels must not share state");
@@ -603,6 +602,7 @@ mod tests {
                             let boost = Biquad::new(rate, kind(gain_db), frequency, q).unwrap();
                             let cut = Biquad::new(rate, kind(-gain_db), frequency, q).unwrap();
                             let mut state = [ProcessorState::default(); 2];
+                            let mut filters = svf::FilterBank::new(&[], 0).unwrap();
                             for i in 0..4096 {
                                 let input =
                                     [(f64::from(i) * 0.017).sin(), if i == 0 { 1. } else { 0. }];
@@ -616,7 +616,10 @@ mod tests {
                                     &[],
                                     0,
                                     &mut [],
-                                    &mut [],
+                                    &mut svf::FilterContext {
+                                        bank: &mut filters,
+                                        expression: None,
+                                    },
                                 );
                                 for (actual, expected) in output.into_iter().zip(input) {
                                     assert!(

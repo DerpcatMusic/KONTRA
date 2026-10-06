@@ -95,3 +95,15 @@ three-route medians were 1.73/1.19/1.76 microseconds. Source filtering is not in
 
 All four new crates pass release tests, strict all-target Clippy and Rust 1.92
 checks; the root v2 integration boundary also passes. No Doctor rescan was run.
+
+
+## Expression-driven filter parameters
+
+Prepared voice filters now also accept pressure/timbre through
+[`Parameter::Expression`](VOICE_DSP.md#note-expression-filter-destinations).
+The event mapping reads the existing retained expression owner at its full 32-bit
+resolution; filter coefficients share work by expression identity while stereo DSP
+history stays per voice. This is a separate explicitly voice-scoped destination,
+not an extension that changes the existing gain/balance/pitch projection contract.
+Native link/snapshot/detach and MPE released-member reuse checks cover audible output.
+Full modulation graphs and source-profile parameter laws remain required work.

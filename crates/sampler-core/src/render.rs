@@ -45,9 +45,7 @@ impl Runtime {
             let at = self.now + (chunk * 64) as u64;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
-                for filter in &mut g.dsp.filters {
-                    filter.begin(at);
-                }
+                g.dsp.filters.begin(at);
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
@@ -113,7 +111,10 @@ impl Runtime {
                 [delay_begin..delay_begin + chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters: &plan.dsp.parameters,
-            filters: &mut plan.dsp.filters,
+            filters: super::dsp::svf::FilterContext {
+                bank: &mut plan.dsp.filters,
+                expression: Some((n.expression, expression.value)),
+            },
             at,
         };
         let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {

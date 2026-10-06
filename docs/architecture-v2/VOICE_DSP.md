@@ -303,3 +303,43 @@ voice count and block size. These are unpinned local observations with uncontrol
 scheduling/frequency, not a demonstrated worst case or an interchangeable routing
 optimization. Production per-voice throughput and competitor performance gates remain
 open; no quality reduction or movement of authored voice filters to buses is implied.
+
+
+## Note-expression filter destinations
+
+`Parameter::Expression { source, low, high }` maps retained 32-bit pressure or timbre
+to cutoff hertz or Q. Endpoints undergo the same full-range filter validation as
+constant/control parameters. The event-rate expression mapping is immediate; it
+does not invent a smoothing law. A filter may combine an expression-mapped cutoff
+with a ramped shared-control Q, or map both fields from expression. General additive/
+multiplicative modulation graphs and expression smoothing remain open.
+
+Coefficient banks distinguish generation-shared bindings from expression-owned
+bindings. Only expression-dependent filters reserve per-expression windows, sized
+by `Limits.expressions` with checked multiplication/layout and fallible reservation.
+`PlanControl` captures that same limit for off-audio replacement preparation. Lazy
+windows are indexed by the native expression slot and tagged with its full generational
+handle; MIDI key/channel is never an owner key. Linked notes share coefficients,
+snapshots and detached notes use their own entries, and audio histories remain
+voice-local. A recycled expression slot cannot reuse a previous owner's window.
+Generation-shared filters do not multiply their coefficient memory by polyphony.
+
+Summed buses reject expression-dependent parameters because they have no unique
+note owner. The system does not silently pick the latest voice or collapse per-note
+filters into one shared response. Both real MPE gestures and direct native expression
+updates reach the existing note owners; no second expression state or adapter-specific
+DSP path is introduced.
+
+Native fixtures compare four simultaneous notes/children with independent solver
+histories through link/snapshot/detach, full-resolution endpoint/intermediate values,
+slot reuse, replacement and bus-scope/capacity rejection. The real UMP/MPE fixture
+compares rendered PCM to explicit native expression events while a released note's
+member channel is reused, including a simultaneous shared Q ramp. Release tails keep
+the old member's captured expression. Runtime work is heap guarded; full native MSRV
+and Clippy plus core/MIDI release checks pass (`artifacts/expression-filter-*`).
+
+Per-expression windows cost roughly two KiB per dependent filter per configured
+expression slot, in addition to metadata; production resource admission must budget
+this. The current scalar voice kernels still miss high-polyphony deadlines. Local
+shared-control workload reruns are retained in `artifacts/expression-filter-shared.csv`;
+this work establishes correct scope and execution, not performance superiority.

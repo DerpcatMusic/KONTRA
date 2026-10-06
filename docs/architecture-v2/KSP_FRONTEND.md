@@ -470,7 +470,7 @@ Rust 1.92; strict all-target Clippy and both root boundary tests pass. Logs use
 ## Live DSP from headless UI callbacks
 
 A prepared instrument can now bind its KSP scalar control identity to a native
-`GainControl` processor. The end-to-end fixture invokes a plan-owned UI callback,
+`ControlRange` processor. The end-to-end fixture invokes a plan-owned UI callback,
 sets the gain control, waits 125 microseconds, then changes it again while a physical
 note continues sounding. Both assignments update the existing shared control owner
 and its native gain ramp. Independent expected PCM matches blocks 1/7/64 with no

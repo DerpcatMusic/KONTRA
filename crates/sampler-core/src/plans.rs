@@ -69,6 +69,7 @@ pub struct PlanControl {
     locals: usize,
     note_cells: usize,
     voices: usize,
+    expressions: usize,
     notes: usize,
     performances: usize,
     sequence: u64,
@@ -95,7 +96,7 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
-        let dsp = match super::dsp::DspState::new(&prepared, self.voices) {
+        let dsp = match super::dsp::DspState::new(&prepared, self.voices, self.expressions) {
             Ok(dsp) => dsp,
             Err(_) => {
                 return Err(RejectedPlan {
@@ -199,6 +200,7 @@ impl Runtime {
             locals: runtime.behavior_stride,
             note_cells: runtime.note_stride,
             voices: limits.voices,
+            expressions: limits.expressions,
             notes: limits.notes,
             performances: limits.performances,
             sequence: 0,

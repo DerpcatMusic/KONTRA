@@ -330,6 +330,142 @@ fn replacement_retains_old_filter_trajectories_and_independent_new_histories() {
 }
 
 #[test]
+fn note_owned_pressure_and_timbre_follow_link_snapshot_detach_and_slot_reuse() {
+    let filter = StateVariableFilter {
+        mode: SvfMode::LowPass,
+        cutoff_hz: Parameter::Expression {
+            source: ExpressionSource::Timbre,
+            low: 1000.,
+            high: 9000.,
+        },
+        q: Parameter::Expression {
+            source: ExpressionSource::Pressure,
+            low: 0.5,
+            high: 2.5,
+        },
+    };
+    // A summed signal has no unique expression owner. Never silently pick one.
+    assert!(matches!(
+        plan(48000, filter, true),
+        Err(Error::InvalidInput)
+    ));
+    let mut excessive = limits();
+    excessive.expressions = usize::MAX;
+    assert!(matches!(
+        Runtime::new(plan(48000, filter, false).unwrap(), excessive),
+        Err(Error::Capacity)
+    ));
+    for block in [1, 7, 64, 129] {
+        let prepared = plan(48000, filter, false).unwrap();
+        let (mut rt, mut transfer) = Runtime::with_plan_updates(prepared, limits(), 2, 1).unwrap();
+        let replacement = transfer
+            .submit(Box::new(plan(48000, filter, false).unwrap()))
+            .unwrap();
+        let initial = Expression::default();
+        let high = Expression {
+            pressure: u32::MAX,
+            timbre: u32::MAX,
+            ..initial
+        };
+        let middle = Expression {
+            pressure: u32::MAX - 1,
+            timbre: u32::MAX / 2,
+            ..initial
+        };
+        let mut expected = [[0.; 2]; 220];
+        let mut histories = [[[0.; 2]; 2]; 4];
+        for (at, output) in expected.iter_mut().enumerate().take(200) {
+            let root = if (4..8).contains(&at) { high } else { initial };
+            let linked = if at < 4 {
+                initial
+            } else if at < 12 {
+                high
+            } else {
+                middle
+            };
+            for (state, expression) in histories.iter_mut().zip([root, linked, initial, high]) {
+                let frequency = 1000. + 8000. * f64::from(expression.timbre) / f64::from(u32::MAX);
+                let quality = 0.5 + 2. * f64::from(expression.pressure) / f64::from(u32::MAX);
+                let value = reference(
+                    SvfMode::LowPass,
+                    48000,
+                    frequency,
+                    quality,
+                    state,
+                    source(at),
+                );
+                for i in 0..2 {
+                    output[i] += value[i];
+                }
+            }
+        }
+        support::without_heap(|| {
+            let root = rt.trigger(input(1), 60, 1.).unwrap();
+            let linked = rt.child(root, 60, 1., false, Inheritance::Linked).unwrap();
+            assert!(rt.forward_attack(linked).unwrap());
+            let snapshot = rt
+                .child(root, 60, 1., false, Inheritance::Snapshot)
+                .unwrap();
+            assert!(rt.forward_attack(snapshot).unwrap());
+            rt.trigger_with_expression(input(2), 60, 1., high).unwrap();
+            let root_expression = rt.expression_id(root).unwrap();
+            assert_eq!(rt.expression_id(linked), Ok(root_expression));
+            let mut actual = [[0.; 2]; 220];
+            rt.render(&mut actual[..4]).unwrap();
+            rt.set_expression(root_expression, high).unwrap();
+            rt.render(&mut actual[4..8]).unwrap();
+            let detached = rt.detach_expression(linked).unwrap();
+            assert_ne!(detached, root_expression);
+            rt.set_expression(root_expression, initial).unwrap();
+            rt.render(&mut actual[8..12]).unwrap();
+            rt.set_expression(detached, middle).unwrap();
+            for chunk in actual[12..].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (a, b) in actual.into_iter().zip(expected) {
+                near(a, b);
+            }
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.expression_count(), 0);
+            // Reuse an expression slot in the same retained filter bank.
+            let reused = rt.trigger_with_expression(input(3), 60, 1., high).unwrap();
+            assert_ne!(rt.expression_id(reused), Ok(root_expression));
+            let mut state = [[0.; 2]; 2];
+            let mut audio = [[0.; 2]; 20];
+            rt.render(&mut audio).unwrap();
+            for (at, value) in audio.into_iter().enumerate() {
+                near(
+                    value,
+                    reference(SvfMode::LowPass, 48000, 9000., 2.5, &mut state, source(at)),
+                );
+            }
+            rt.panic();
+            rt.flush_ended(|_| true);
+            // Replacement also prepared the expression capacity off audio.
+            assert_eq!(rt.poll_plan_update(), Ok(Some(replacement)));
+            rt.trigger_with_expression(input(4), 60, 1., high).unwrap();
+            let mut first = [[0.; 2]; 1];
+            rt.render(&mut first).unwrap();
+            near(
+                first[0],
+                reference(
+                    SvfMode::LowPass,
+                    48000,
+                    9000.,
+                    2.5,
+                    &mut [[0.; 2]; 2],
+                    source(0),
+                ),
+            );
+            assert_eq!(rt.plan_count(), 1);
+            assert_eq!(rt.collect_retired_plans(), 0);
+        });
+        drop(transfer.retired().unwrap());
+    }
+}
+
+#[test]
 fn static_filter_boundaries_rates_and_invalid_control_ranges_are_explicit() {
     for rate in [44100, 48000, 96000] {
         for cutoff in [10., f64::from(rate) * 0.1, f64::from(rate) * 0.499] {

@@ -272,7 +272,9 @@ source semantics and checksum/authentication validation are still required.
   kernel, prepared storage and tail owners, with constant-work history invalidation.
   Fractional/modulated delays and vendor effect profiles remain open. Shared-control
   trapezoidal state-variable filters now automate cutoff/Q at sample rate, sharing
-  coefficient windows while retaining independent voice/bus histories. Reflected/other
+  coefficient windows while retaining independent voice/bus histories. Native
+  pressure/timbre can also target voice filters through retained expression owners,
+  including MPE member reuse and mixed shared-control/per-note parameters. Reflected/other
   crossfade profiles, nonlinear effects and remaining modulation routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
