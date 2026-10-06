@@ -114,7 +114,7 @@ fn engine_volume_and_purge_address_one_group() {
          end on
          on note
            if ($EVENT_NOTE = 61)
-             set_engine_par($ENGINE_PAR_VOLUME, 629960, 0, -1, -1)
+             set_engine_par($ENGINE_PAR_VOLUME, 500000, 0, -1, -1)
              set_engine_par($ENGINE_PAR_TUNE, 500000, 1, -1, -1)
              purge_group(1, 0)
            end if
@@ -124,6 +124,21 @@ fn engine_volume_and_purge_address_one_group() {
     // on init's write is not a runtime callback; group 0 plays at 0 dB.
     assert!(close(level(&mut rt), [0.5; 2]));
     rt.trigger(input(61), 61, 1.).unwrap();
-    // 629960 is 0 dB for group 0; group 1 is purged.
-    assert!(close(level(&mut rt), [0.5; 2]));
+    // 500000 is -6.02 dB for group 0 (both of its notes); group 1 is purged.
+    assert!(close(level(&mut rt), [0.2506; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn volume_envelope_attack_applies_to_voices_that_start_after_it() {
+    let mut rt = runtime(
+        "on note
+           { 200809 is 10 ms (480 frames) on Kontakt's attack law. }
+           set_engine_par($ENGINE_PAR_ATTACK, 200809, 0, find_mod(0, \"ENV_AHDSR\"), -1)
+           { Another modulator's attack is left to the host. }
+           set_engine_par($ENGINE_PAR_ATTACK, 0, 1, find_mod(1, \"ENV_FILTER\"), -1)
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let level = level(&mut rt)[0];
+    assert!((level - 0.5 * 256. / 480.).abs() < 0.01, "{level}");
 }

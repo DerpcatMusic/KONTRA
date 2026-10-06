@@ -471,3 +471,22 @@ fn out_of_range_event_writes_clamp_instead_of_faulting() {
         });
     }
 }
+
+#[test]
+fn budget_diagnostics_report_size_against_limit() {
+    let limits = sampler_ksp::Limits {
+        source_bytes: 8,
+        instructions: 16,
+        variables: 16,
+        array_cells: 16,
+    };
+    let source = "on init end on";
+    let e = sampler_ksp::compile(source, 48000, limits, &[])
+        .err()
+        .unwrap();
+    assert_eq!(e.message, "source byte budget exceeded: 14 bytes, limit 8");
+    let usage = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap()
+        .usage();
+    assert_eq!((usage.source_bytes, usage.variables), (14, 0));
+}
