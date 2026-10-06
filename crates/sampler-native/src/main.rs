@@ -153,7 +153,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     };
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi2);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let events = if replacing {
         [
             (0, [0x4090_3c00, 0xffff_0000]),
@@ -182,7 +182,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
-    write_render(rt, output, count, &packets, &ingress, replacement)
+    write_render(rt, output, count, &packets, &mut ingress, replacement)
 }
 
 fn write_render(
@@ -190,7 +190,7 @@ fn write_render(
     output: &Path,
     count: usize,
     packets: &[TimedPacket<'_>],
-    ingress: &Ingress,
+    ingress: &mut Ingress,
     mut replacement: Option<Replacement>,
 ) -> io::Result<()> {
     let rate = rt.sample_rate();
