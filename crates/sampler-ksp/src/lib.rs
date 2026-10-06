@@ -6,9 +6,25 @@ use sampler_core::{
     Instruction, Prepared, Program, ScriptInstanceId, WaitLifetime,
 };
 use std::collections::BTreeMap;
+mod ast;
+mod diag;
 mod expression;
 mod functions;
+mod lexer;
+mod parser;
 mod state;
+
+/// Parse-only check used by the corpus harness while the pipeline is rebuilt.
+#[doc(hidden)]
+pub fn parse_only(source: &str) -> Result<usize, diag::Error> {
+    let mut syms = lexer::Interner::default();
+    let mut run = || -> diag::Result<usize> {
+        let mut toks = lexer::lex(source, &mut syms)?;
+        lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        Ok(parser::parse(&toks, &syms)?.items.len())
+    };
+    run().map_err(|f| f.locate(source))
+}
 
 // Opaque source constant; numeric value retained from the recorded v1 reference.
 const ALL_GROUPS: i64 = 0x3fff_ffff;
