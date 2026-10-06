@@ -3682,6 +3682,7 @@ name = "sampler-ksp"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ui-ir",
 ]
 
 [[package]]
@@ -3701,6 +3702,10 @@ dependencies = [
  "sampler-ksp",
  "sampler-midi",
 ]
+
+[[package]]
+name = "sampler-ui-ir"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-uvi"
