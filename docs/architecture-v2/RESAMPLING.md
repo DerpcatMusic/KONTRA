@@ -45,8 +45,12 @@ exhaustion; no wrapping address can access unrelated source storage.
 
 ## Filter and real-time work
 
-The first measured filter is a Blackman-windowed sinc with radius 48 and cutoff
-0.45 cycles per source frame at steps <=1. For downsampling, the kernel is widened
+The reference filter is a Blackman-windowed sinc with radius 48 and cutoff
+0.45 cycles per source frame at steps <=1 (`ResampleQuality::High`). The default
+`ResampleQuality::Realtime` uses a radius-12 table and, for 1 < step <= 2, a polyphase bank: eight
+stretches per octave, 65 f32 phase rows per stretch, linear interpolation between
+rows, rows normalized to unit sum. Steps of two or more read pre-decimated octave
+levels where an asset has them. For downsampling, the kernel is widened
 by the step and the cutoff lowered by the same ratio. Its continuous response is
 stored at 1,024 table intervals per source-frame unit and linearly interpolated.
 The inner loop traverses table coordinates with Q32 integers, avoiding a floating-point
@@ -58,8 +62,10 @@ not two-sample linear interpolation of PCM.
 A process-wide immutable table occupies 196,612 bytes. Runtime construction prepares
 it through `OnceLock` off audio and retains a shared reference; the callback never
 initializes, locks, allocates or destroys it. Exact unit step at integer phase uses
-the direct-read renderer and retains existing arithmetic. Other ratios use 97 to
-1,537 taps per output frame. Interior windows read contiguous PCM directly; boundary
+the direct-read renderer and retains existing arithmetic. Other high-quality
+ratios use 97 to 1,537 taps per output frame; real-time quality uses 25 taps at
+steps <=1 and up to 49 at step 2 or, through octave levels, above it (without
+levels the window keeps widening with the step). Interior windows read contiguous PCM directly; boundary
 windows resolve the explicit traversal. All work is bounded independently of the
 number of loop repetitions, including one-frame loops.
 

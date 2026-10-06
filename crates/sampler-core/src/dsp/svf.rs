@@ -74,11 +74,11 @@ impl PreparedFilter {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-struct Coefficients {
-    a1: f64,
-    a2: f64,
-    a3: f64,
-    k: f64,
+pub(super) struct Coefficients {
+    pub a1: f64,
+    pub a2: f64,
+    pub a3: f64,
+    pub k: f64,
 }
 impl Coefficients {
     fn new(rate: f64, hz: f64, q: f64) -> Self {
@@ -105,8 +105,8 @@ pub(crate) struct FilterCache {
     start: Option<u64>,
     filled: usize,
     /// Every filled entry equals the first: the block runs on hoisted values.
-    uniform: bool,
-    coefficients: [Coefficients; BLOCK],
+    pub(super) uniform: bool,
+    pub(super) coefficients: [Coefficients; BLOCK],
     last_values: Option<[f64; 2]>,
     last: Coefficients,
 }
@@ -122,6 +122,11 @@ impl FilterCache {
             last_values: None,
             last: Coefficients::default(),
         }
+    }
+
+    /// The response's output mix: `[m0, mk, m2]`.
+    pub(super) fn mix(&self) -> [f64; 3] {
+        self.filter.mode.mix()
     }
 
     /// Coefficients for `len` frames from `at`, evaluated per frame at the
@@ -267,15 +272,58 @@ impl FilterBank {
             modulation: [1.0; 2],
         })
     }
-    pub fn is_empty(&self) -> bool {
-        self.scopes.is_empty()
-    }
 }
 
 pub(crate) struct FilterContext<'a> {
     pub bank: &'a mut FilterBank,
     pub expression: Option<(crate::ExpressionId, crate::Expression)>,
 }
+/// Which cache a voice's filter resolved to for this block.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheRef {
+    Shared(usize),
+    Expression(usize),
+}
+
+impl FilterBank {
+    /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
+    pub(super) fn prepare(
+        &mut self,
+        index: usize,
+        len: usize,
+        parameters: &[ControlRamp],
+        at: u64,
+        expression: Option<(crate::ExpressionId, crate::Expression)>,
+    ) -> CacheRef {
+        let cache = match self.scopes[index] {
+            Scope::Shared(index) => CacheRef::Shared(index),
+            Scope::Expression(index) => {
+                let (id, _) = expression.expect("prepared voice-scoped filter");
+                let slot = id.0.index * self.stride + index;
+                let cache = &mut self.expressions[slot];
+                if cache.owner != Some(id) {
+                    cache.owner = Some(id);
+                    cache.start = None;
+                }
+                CacheRef::Expression(slot)
+            }
+        };
+        let value = expression.as_ref().map(|(_, value)| value);
+        match cache {
+            CacheRef::Shared(i) => self.shared[i].prepare(at, len, parameters, value),
+            CacheRef::Expression(i) => self.expressions[i].prepare(at, len, parameters, value),
+        }
+        cache
+    }
+
+    pub(super) fn cache(&self, cache: CacheRef) -> &FilterCache {
+        match cache {
+            CacheRef::Shared(i) => &self.shared[i],
+            CacheRef::Expression(i) => &self.expressions[i],
+        }
+    }
+}
+
 impl FilterContext<'_> {
     #[inline]
     pub fn process(
