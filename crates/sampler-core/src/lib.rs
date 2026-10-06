@@ -68,7 +68,9 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod steal;
 mod voice_mod;
+pub use steal::Stealing;
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
@@ -266,6 +268,10 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
+    /// Admission order, for oldest-first stealing.
+    born: u64,
+    /// Fading out after being stolen; no longer counts against polyphony.
+    stolen: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -426,6 +432,9 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    stealing: Option<steal::Stealing>,
+    stolen: usize,
+    voice_order: u64,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
@@ -543,6 +552,9 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            stealing: None,
+            stolen: 0,
+            voice_order: 0,
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
@@ -999,6 +1011,8 @@ impl Runtime {
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
         self.check_source_ready(asset, cursor, envelope)?;
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
+        self.steal_voices(1);
+        let f = self.families.get(family.0).unwrap();
         let next_sibling = f.first_voice;
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
@@ -1019,7 +1033,10 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
+            born: self.voice_order,
+            stolen: false,
         })?);
+        self.voice_order += 1;
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {
