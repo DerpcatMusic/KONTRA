@@ -712,6 +712,9 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
+                frames: self.frames(*t).max(1),
+            },
             ir::ModulationSource::PitchBend => {
                 return Err(unsupported(owner, Feature::PitchBendSource));
             }
