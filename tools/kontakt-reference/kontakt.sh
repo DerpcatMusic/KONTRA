@@ -22,6 +22,9 @@ start)
   sleep "${KONTAKT_LOAD_SECONDS:-45}"
   click 1089 440            # "What's new" popup
   click 20 57; click 60 86  # File > Options
+  click 388 553            # Audio tab: the device choice does not persist across launches
+  click 1088 318 0.5; xdotool mousemove 1060 480; for _ in 1 2 3 4 5 6; do xdotool click 5; done; sleep 0.5
+  click 1010 485 2          # "kontra_ref" output (list position as of 6 scroll clicks)
   click 385 520             # MIDI tab
   click 1075 414; click 1128 476  # Midi Through Port-0 -> Port A
   click 1178 781            # Close
