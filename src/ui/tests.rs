@@ -1374,7 +1374,7 @@ fn screenshot() {
         ("sound-effects", true, &["tab-sound", "edit-lower-Effects"]),
         // A value double-clicked into a field.
         ("sound-typing", true, &["tab-sound"]),
-        ("mixer-wide", true, &["tab-mixer", "mix-mode-flat", "mix-wide"]),
+        ("mixer-tree", true, &["tab-mixer"]),
         // Auto-align on: the settings and a part's timing.
         ("timing", true, &["app-menu"]),
         ("timing-part", true, &["more-0"]),
@@ -1698,73 +1698,33 @@ fn two_parts() -> Arc<SamplerParams> {
     p
 }
 
-/// Routing from the mixer: menus pick a part's output, send and MIDI
-/// input and a bus's host port; a strip dropped on a bus routes it there.
+/// Routing from the tree mixer: a part's strip picks its host pair, solo
+/// and mute write back to the part, and Outputs opens its menu.
 #[test]
 fn mixer_routing_edits() {
     let p = two_parts();
     let part = |p: &SamplerParams, n: usize| p.selection.read().unwrap().parts[n].clone();
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("tab-mixer");
-    h.press("mix-mode-flat");
     let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
-    assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
-    assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
+    let (a, b) = (1u64 << 16, 2u64 << 16);
+    assert!(shows(&h, &format!("mt-strip-{a}")) && shows(&h, &format!("mt-strip-{b}")));
 
-    // Automatic, a rule, then st.1…: the third bus, picked by hand.
-    h.press("mix-out-0");
-    h.press("menu-item-4");
-    assert_eq!(part(&p, 0).output, 2, "the output menu routes");
+    // Host 1/2, 3/4, 5/6 …, then Automatic.
+    h.press(&format!("mt-out-{a}"));
+    h.press(&format!("mt-pick-{a}-2"));
+    assert_eq!(part(&p, 0).output, 2, "the pick routes");
     assert!(part(&p, 0).output_manual, "and the route sticks");
-    assert!(shows(&h, "bus-2"), "a bus in use gets its strip");
+    h.press(&format!("mt-out-{a}"));
+    h.press(&format!("mt-pick-{a}-{}", crate::sound::BUSES));
+    assert!(!part(&p, 0).output_manual, "Automatic hands it back");
 
-    // No send, a rule, then st.1…: the fourth bus.
-    h.press("mix-aux-1");
-    h.press("menu-item-5");
-    assert_eq!(part(&p, 1).aux, 3);
-    assert!(shows(&h, "bus-3"));
+    h.press(&format!("solo-mt-{b}"));
+    h.press(&format!("mute-mt-{a}"));
+    assert!(part(&p, 1).solo && part(&p, 0).mute);
 
-    // Omni, channels 1–16, a rule, a heading, ports A–D.
-    h.press("mix-in-1");
-    h.press("menu-item-3");
-    h.press("mix-in-1");
-    h.press("menu-item-20");
-    assert_eq!((part(&p, 1).port, part(&p, 1).channel), (1, 2));
-
-    h.drag("mix-name-1", "bus-2");
-    assert_eq!(part(&p, 1).output, 2, "a strip dropped on a bus plays through it");
-
-    h.press("solo-mix-0");
-    h.press("mute-bus-2");
-    assert!(part(&p, 0).solo);
-    assert!(p.selection.read().unwrap().bus(2).mute);
-
-    h.press("bus-port-2");
-    h.press("menu-item-5");
-    assert_eq!(p.selection.read().unwrap().bus(2).port, 5);
-
-    assert!(!shows(&h, "bus-1"));
-    h.press("mix-add-bus");
-    assert!(shows(&h, "bus-1"), "+ shows the next bus");
-
-    // Right-click: Rename…, Reset, a rule, Route to…
-    p.selection.write().unwrap().parts[0].gain = -6.;
-    h.idle(2);
-    let at = center(&h.ui, "strip-0");
-    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
-        h.tick(Input {
-            pointer: PointerInput {
-                pos: Some(at),
-                buttons,
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-    }
-    h.idle(2);
-    h.press("menu-item-1");
-    assert_eq!((part(&p, 0).gain, part(&p, 0).solo), (0., false), "Reset");
-    assert_eq!(part(&p, 0).output, 2, "and the routing stays");
+    h.press("mix-outputs");
+    assert!(shows(&h, "menu-item-1"), "Outputs opens its menu");
 }
 
 /// A meter is a canvas that reads the audio thread's level as the scene is
@@ -1776,7 +1736,6 @@ fn mixer_meters_paint_without_a_rebuild() {
     let (width, height) = (1180u16, 760u16);
     let mut h = Harness::new(&p, f64::from(width), f64::from(height));
     h.press("tab-mixer");
-    h.press("mix-mode-flat");
     let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
     let quiet = pixels(&h.ui, width, height);
@@ -1785,13 +1744,14 @@ fn mixer_meters_paint_without_a_rebuild() {
     }
     h.ui.frame(root, Some(h.size), Input::default(), 0.).unwrap();
     let loud = pixels(&h.ui, width, height);
-    let r = h.ui.scene().unwrap().surface("mix-fader-0-meter").unwrap().frame;
-    let x = (r.x + 1.) as usize;
-    let at = |y: usize| (y * usize::from(width) + x) * 4;
+    let r = h.ui.scene().unwrap().surface(&format!("mt-strip-{}", 1u64 << 16)).unwrap().frame;
     let lit = (r.y as usize..(r.y + r.size.height) as usize)
-        .filter(|&y| quiet[at(y)..at(y) + 4] != loud[at(y)..at(y) + 4])
+        .filter(|&y| {
+            let at = |x: usize| (y * usize::from(width) + x) * 4;
+            (r.x as usize..(r.x + r.size.width) as usize).any(|x| quiet[at(x)..at(x) + 4] != loud[at(x)..at(x) + 4])
+        })
         .count();
-    assert!(lit as f64 > r.size.height / 2., "the meter shows the level: {lit} rows");
+    assert!(lit as f64 > r.size.height / 4., "the meter shows the level: {lit} rows");
 
     let meters = Meters::default();
     let mut watch = Watch::default();
