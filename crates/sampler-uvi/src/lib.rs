@@ -1007,9 +1007,24 @@ pub fn load_program_scripted(
     program: &str,
     rate: u32,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
+    let options = sampler_kontakt::Options { rate, ..Default::default() };
+    load_program_scripted_with_options(bank, program, &options)
+}
+
+/// [`load_program_scripted`] keeping only the zones overlapping `options.keys`.
+#[cfg(feature = "library-access")]
+pub fn load_program_scripted_with_options(
+    bank: &Bank,
+    program: &str,
+    options: &sampler_kontakt::Options,
+) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+    let (mut instrument, locations, groups) = translate_full(&text, Source::Bank)
         .map_err(|e| describe(Path::new(program), e))?;
+    let kept = instrument.retain_zones(|zone| {
+        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
+    });
+    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
     let decoded = locations
         .iter()
         .map(|authored| {
@@ -1018,8 +1033,7 @@ pub fn load_program_scripted(
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
         })
         .collect();
-    let options = sampler_kontakt::Options { rate, ..Default::default() };
-    let loaded = assemble(instrument, locations, decoded, &options)?;
+    let loaded = assemble(instrument, locations, decoded, options)?;
     let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let mut instrument = loaded.instrument;
     if host.handles_notes() {
