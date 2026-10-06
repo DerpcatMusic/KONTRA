@@ -246,9 +246,24 @@ fn mpe_audio_is_identical_across_host_partitions() {
     }
 }
 
+/// MIDI 2.0 (M2-104) min-center-max 7-to-32-bit upscaling, as an oracle.
+fn spec7(value: u32) -> u32 {
+    let shifted = value << 25;
+    if value <= 64 {
+        return shifted;
+    }
+    let mut repeat = (value & 63) << 19;
+    let mut out = shifted;
+    while repeat != 0 {
+        out |= repeat;
+        repeat >>= 6;
+    }
+    out
+}
+
 #[test]
 fn pressure_and_timbre_keep_member_snapshots_and_preserve_unrelated_expression() {
-    let scaled = |value: u32| (u64::from(value) * u64::from(u32::MAX) / 127) as u32;
+    let scaled = spec7;
     for (zone, manager, member) in [(Zone::Lower, 0, 1), (Zone::Upper, 15, 14)] {
         let mut rt = runtime();
         let mut mpe = Mpe::new(&rt, 7, 3, zone, 2, 8).unwrap();
