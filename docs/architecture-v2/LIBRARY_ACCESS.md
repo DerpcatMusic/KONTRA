@@ -118,6 +118,12 @@ An additional RAM-only experiment tested every phase of all eight installed
 library access streams against three failing block headers, both directly and
 as a second cipher layer. It found no candidate. Neither stored nor decoded
 tails contain standard or reversed NCW block signatures.
+The failing member's header form, key hint and all currently ignored header
+fields also match 6,049 NCW peers in the same archive; they do not identify a
+different container profile. A bounded metadata search of mounted storage
+found no alternate Areia bank or installer (14,643 directories and 234,516
+files checked; the Projects root reached its directory budget). These checks
+do not establish that the source audio is corrupt.
 
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
