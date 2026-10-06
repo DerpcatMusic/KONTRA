@@ -188,3 +188,18 @@ morph implementation.
 
 Validation: 283 native tests pass in debug, release and Rust 1.92; strict all-target
 Clippy and both root boundary tests pass (`artifacts/loop-crossfade-*`).
+
+
+## Per-event attack offsets
+
+Generated events retain a nonnegative source-time offset independently of pitch,
+duration and expression. Attack selection converts microseconds to an integer
+position plus fractional remainder at each asset's rate, using bounded integer
+arithmetic. No source buffer is sliced or copied and no per-frame offset work is
+added. The cursor retains the view's interpolation guards and original loop count.
+
+Offsets are directional within the original view. A position at/past the initial
+outward loop edge bypasses that loop; an exhausted source is silent and retires
+through existing voice/family ownership. Automatic release sources start normally.
+The native semantics and KSP evidence/remaining profile work are recorded in
+[KSP_FRONTEND.md](KSP_FRONTEND.md#generated-note-source-offsets).

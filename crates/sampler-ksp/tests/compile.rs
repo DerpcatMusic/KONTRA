@@ -137,7 +137,7 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         "on note ignore_event($OTHER_ID) end on",
         "{ unclosed",
         "{ { nested } }",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 1, 1000) end on",
+        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, $missing, 1000) end on",
         "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 0, 1000 end on",
         "🎹",
     ];

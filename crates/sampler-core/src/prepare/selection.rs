@@ -91,7 +91,12 @@ impl Runtime {
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
         let (on_note, on_release) = (prepared.note_program, prepared.release_program);
         if on_note.is_none() && on_release.is_none() {
-            return self.select(NoteOrigin::Input(input, expression, index), pitch, velocity);
+            return self.select(
+                NoteOrigin::Input(input, expression, index),
+                pitch,
+                velocity,
+                0,
+            );
         }
         let callbacks = usize::from(on_note.is_some()) + usize::from(on_release.is_some());
         if self.behaviors.available() < callbacks {
@@ -100,7 +105,12 @@ impl Runtime {
         let note = if on_note.is_some() {
             self.note_on_pitched_in(performance, input, pitch, velocity, expression)?
         } else {
-            self.select(NoteOrigin::Input(input, expression, index), pitch, velocity)?
+            self.select(
+                NoteOrigin::Input(input, expression, index),
+                pitch,
+                velocity,
+                0,
+            )?
         };
         if on_release.is_some() {
             self.behaviors.reserve(1);
@@ -120,11 +130,13 @@ impl Runtime {
         velocity: f64,
         linked: bool,
         inheritance: crate::Inheritance,
+        offset_micros: u32,
     ) -> Result<NoteId, Error> {
         self.select(
             NoteOrigin::Child(parent, linked, inheritance),
             pitch,
             velocity,
+            offset_micros,
         )
     }
 
@@ -133,6 +145,7 @@ impl Runtime {
         origin: NoteOrigin,
         note_pitch: NotePitch,
         velocity: f64,
+        offset_micros: u32,
     ) -> Result<NoteId, Error> {
         self.apply_due();
         if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
@@ -200,6 +213,7 @@ impl Runtime {
                 self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }
         };
+        self.note_events[note.0.index].source_offset_micros = offset_micros;
         self.commit_attack(note, release, snapshot);
         Ok(note)
     }
@@ -436,6 +450,14 @@ impl Runtime {
                     continue;
                 }
                 let step = prepared.step(candidate, note_pitch);
+                let cursor = if trigger == Trigger::Attack {
+                    r.cursor.with_offset(
+                        self.note_events[note.0.index].source_offset_micros,
+                        prepared.pcm[r.sample].sample_rate(),
+                    )
+                } else {
+                    r.cursor
+                };
                 let family = *family.get_or_insert_with(|| {
                     let family = self
                         .create_family_for(note, trigger)
@@ -450,7 +472,7 @@ impl Runtime {
                         self.now,
                         r.gain * r.velocity_curve.amplitude(velocity),
                         r.envelope,
-                        r.cursor.with_step(step),
+                        cursor.with_step(step),
                     )
                     .expect("prepared and preflighted source admission");
                 self.voices.get_mut(voice.0).unwrap().chain = r.chain;

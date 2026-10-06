@@ -1618,14 +1618,16 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             assert_eq!(rt.note_count(), 0);
         });
     }
-    for (key, velocity, frames) in [
-        (-1, 127, 1),
-        (128, 127, 1),
-        (60, 0, 1),
-        (60, 128, 1),
-        (60, 127, 0),
-        (60, 127, -1),
-        (60, 127, i64::from(u32::MAX) + 1),
+    for (key, velocity, frames, offset) in [
+        (-1, 127, 1, 0),
+        (128, 127, 1, 0),
+        (60, 0, 1, 0),
+        (60, 128, 1, 0),
+        (60, 127, 0, 0),
+        (60, 127, -1, 0),
+        (60, 127, i64::from(u32::MAX) + 1, 0),
+        (60, 127, 1, -1),
+        (60, 127, 1, i64::from(u32::MAX) + 1),
     ] {
         let code = vec![
             Instruction::SetLocal {
@@ -1640,7 +1642,12 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
                 local: 2,
                 value: frames,
             },
+            Instruction::SetLocal {
+                local: 3,
+                value: offset,
+            },
             Instruction::PlayMidi {
+                offset_micros: Some(3),
                 result: None,
                 key: 0,
                 velocity: 1,
@@ -1672,12 +1679,14 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             assert_eq!(rt.note_count(), 0);
         });
     }
-    // Each of the three operands contributes to the prepared register width,
+    // Every operand contributes to the prepared register width,
     // including instructions that are unreachable after End.
-    for (key, velocity, frames) in [(4, 0, 0), (0, 4, 0), (0, 0, 4)] {
+    for (key, velocity, frames, offset) in [(4, 0, 0, 0), (0, 4, 0, 0), (0, 0, 4, 0), (0, 0, 0, 4)]
+    {
         let program = Program::new(vec![
             Instruction::End,
             Instruction::PlayMidi {
+                offset_micros: Some(offset),
                 result: None,
                 key,
                 velocity,

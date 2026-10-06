@@ -91,6 +91,8 @@ pub enum Instruction {
         key: u16,
         velocity: u16,
         duration: DurationValue,
+        /// Optional nonnegative source-time offset in microseconds; None means zero.
+        offset_micros: Option<u16>,
         inheritance: Inheritance,
         /// Optional source-event ID destination; aliasing an argument is allowed.
         result: Option<u16>,
@@ -330,11 +332,15 @@ impl Program {
                 key,
                 velocity,
                 duration,
+                offset_micros,
                 result,
                 ..
             } = *op
             {
                 locals = locals.max(usize::from(key.max(velocity)) + 1);
+                if let Some(offset) = offset_micros {
+                    locals = locals.max(usize::from(offset) + 1);
+                }
                 if let Some(result) = result {
                     locals = locals.max(usize::from(result) + 1);
                 }
@@ -1012,11 +1018,15 @@ impl Runtime {
                 key,
                 velocity,
                 duration,
+                offset_micros,
                 inheritance,
                 result,
             } => {
                 let key = *self.local_cell_mut(id, key)?;
                 let velocity = *self.local_cell_mut(id, velocity)?;
+                let offset_micros = offset_micros.map_or(Ok(0), |local| {
+                    u32::try_from(*self.local_cell_mut(id, local)?).map_err(|_| Error::InvalidInput)
+                })?;
                 let duration = match duration {
                     DurationValue::Fixed(duration) => duration,
                     DurationValue::Frames(local) => {
@@ -1043,6 +1053,7 @@ impl Runtime {
                     velocity as f64 / 127.,
                     inheritance,
                     duration,
+                    offset_micros,
                 )?;
                 if let (Some(local), Some(source_id)) = (result, source_id) {
                     self.publish_source_id(child, source_id)?;
@@ -1062,7 +1073,7 @@ impl Runtime {
                     Velocity::Scale(scale) => n.velocity * scale,
                     Velocity::Fixed(value) => value,
                 };
-                self.play_behavior(note, pitch, velocity, inheritance, duration)?;
+                self.play_behavior(note, pitch, velocity, inheritance, duration, 0)?;
             }
         }
         Ok(false)
@@ -1090,6 +1101,7 @@ impl Runtime {
         velocity: f64,
         inheritance: Inheritance,
         duration: Duration,
+        offset_micros: u32,
     ) -> Result<NoteId, Error> {
         let frames = match duration {
             Duration::Gate | Duration::UntilSilent => None,
@@ -1111,7 +1123,7 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
+        let child = self.trigger_child(note, pitch, velocity, linked, inheritance, offset_micros);
         self.reserved_commands -= command;
         let child = child?;
         self.note_events[child.0.index].fixed_duration = frames.is_some();

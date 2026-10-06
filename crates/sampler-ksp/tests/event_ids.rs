@@ -160,7 +160,7 @@ fn event_expressions_remain_bounded_and_short_circuit_does_not_generate_skipped_
     for source in [
         "on init declare const $ID := $EVENT_ID end on",
         "on init declare $ID := play_note(60,127,0,0) end on",
-        "on note if (1 or play_note(60,127,9,0)) exit end if end on",
+        "on note if (1 or play_note(60,127,$missing,0)) exit end if end on",
     ] {
         assert!(compile(source).is_err());
     }

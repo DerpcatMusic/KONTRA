@@ -163,6 +163,24 @@ pub(super) struct Cursor {
 }
 
 impl Cursor {
+    /// Start within the original view, measured in source time, never pitch time.
+    /// Offsets at/past the view end are silent. Starting past a loop's outward
+    /// edge bypasses it; starting inside retains its original boundaries/count.
+    pub(super) fn with_offset(mut self, micros: u32, source_rate: u32) -> Self {
+        let ticks = u64::from(micros) * u64::from(source_rate);
+        self.position = ticks / 1_000_000;
+        self.fraction = (ticks % 1_000_000) as f64 / 1_000_000.;
+        if self.position >= (self.end - self.start) as u64
+            || self
+                .loop_range
+                .is_some_and(|r| self.position >= self.first_boundary(r))
+        {
+            self.loop_range = None;
+            self.exit = None;
+        }
+        self
+    }
+
     pub(super) fn unbounded_loop(&self) -> bool {
         self.loop_range.is_some() && self.exit.is_none()
     }
@@ -506,6 +524,59 @@ fn mix<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offsets_preserve_source_time_and_bounds_without_advancing_loop_passes() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let cursor = Playback {
+                start: 8,
+                end: Some(40),
+                direction,
+                loop_range: Some(Loop {
+                    start: 16,
+                    end: 32,
+                    shape: LoopShape::Wrap,
+                    mode: LoopMode::UntilRelease,
+                    passes: None,
+                }),
+                ..Playback::default()
+            }
+            .cursor(48, 44100, 48000)
+            .unwrap();
+            let fractional = cursor.with_offset(125, 44100);
+            assert_eq!(fractional.position, 5);
+            assert_eq!(fractional.fraction, 0.5125);
+            assert_eq!(fractional.step(), cursor.step());
+            assert_eq!(
+                fractional.index(5),
+                Some(if direction == Direction::Forward {
+                    13
+                } else {
+                    34
+                })
+            );
+            let mut inside = cursor.with_offset(400, 48000);
+            assert_eq!((inside.position, inside.fraction), (19, 0.2));
+            assert!(inside.unbounded_loop());
+            inside.release();
+            assert_eq!(inside.exit, Some(24));
+            let past = cursor.with_offset(500, 48000);
+            assert!(!past.unbounded_loop());
+            assert_eq!(
+                past.index(24),
+                Some(if direction == Direction::Forward {
+                    32
+                } else {
+                    15
+                })
+            );
+            for offset in [1_000, u32::MAX] {
+                let end = cursor.with_offset(offset, u32::MAX);
+                assert!(end.done());
+                assert_eq!(end.index(i128::from(end.position)), None);
+            }
+        }
+    }
 
     #[test]
     fn fractional_phase_survives_large_positions_and_guard_mapping() {
