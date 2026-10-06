@@ -55,8 +55,6 @@ pub enum Feature {
     Delay,
     PreChainSend,
     Controls,
-    /// Pitch bend routed anywhere but pitch (where it is native expression).
-    PitchBendSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -756,9 +754,8 @@ impl Lowering<'_> {
             ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
                 frames: self.frames(*t).max(1),
             },
-            ir::ModulationSource::PitchBend => {
-                return Err(unsupported(owner, Feature::PitchBendSource));
-            }
+            // Bend to pitch never gets here (native expression bend).
+            ir::ModulationSource::PitchBend => ModSource::PitchBend,
         })
     }
 
