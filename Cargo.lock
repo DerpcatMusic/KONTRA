@@ -1865,6 +1865,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-midi",
  "serde",
  "serde_json",
  "sha2",
