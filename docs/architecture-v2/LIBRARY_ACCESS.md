@@ -52,6 +52,19 @@ banks with every program decoding improved from 25/26 to 26/26. All 620 XML
 admission failures and the subsequently exposed audio-format reference failure
 are resolved. The census stores status only, without program or sample bytes.
 
+Protected `render-uvi` checks produced finite, nonzero audio for Augmented
+Orchestra's `V Strings Bartok` (note 60) and `BSS Phased Flatterzunge` (note 35).
+`render-kontakt` also rendered `Una Corda Pure` (note 60). Each check rendered
+158,400 stereo frames at 48 kHz. The opt-in UVI integration test additionally
+renders directly into RAM. Rendered note performances are verification outputs;
+no original programs, pictures, samples or access state are extracted.
+
+Access/decode census success does not imply complete frontend semantics:
+this branch reports unsupported Lua processors and modulation/effect mappings.
+For example, VWinds `Clarinet A` has saved zero layer gains that need its Lua
+initialization; its samples decode but its current translated render is silent.
+Those mappings remain with the IR frontend owner.
+
 ## Verification on the shared machine
 
 Run every Cargo command and real-library census/render with
