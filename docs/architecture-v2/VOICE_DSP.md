@@ -15,7 +15,7 @@ low-pass, high-pass, unity-peak band-pass, notch, all-pass, peaking and low/high
 
 Mutable processor banks belong to retained plan generations and are prepared on the
 control side, including queued replacements. Each bank reserves `voice_capacity *
-max_chain_stages` cells, currently 32 bytes per stage/voice; checked multiplication
+max_chain_stages` cells, currently 40 bytes per stage/voice; checked multiplication
 and layout validation reject impossible sizes. There is no fixed hidden stage limit.
 Coefficients are shared; state is addressed by the admitted voice slot and reset
 before that slot starts a new chain. Concurrent generations cannot alias state.
@@ -189,3 +189,52 @@ native EQ semantics, not a Kontakt/Falcon processor model.
 
 Shelf validation: 281 native debug/release tests and strict all-target Clippy pass
 (`artifacts/shelf-eq-*`).
+
+
+## Causal stereo delay
+
+`Processor::Delay(Delay::new(frames, feedback, dry, wet))` uses the same native
+kernel in voice pre/post chains and shared buses. Time is a positive integer number
+of output frames; the delay is an intentional effect, not processing latency to
+compensate out of parallel paths. Dry/wet gains are separate finite linear values.
+The two-by-two feedback matrix supports independent channels, polarity and
+cross-channel echoes. Each absolute row sum must be strictly below one, a
+conservative sufficient stability condition. This rejects some stable noncontractive
+matrices as well as self-oscillating settings; no source-profile equivalence follows.
+
+For delayed stereo signal `d[n]`, the ring stores `x[n] + F d[n]` and emits
+`dry*x[n] + wet*d[n]`. Reads precede writes even at a one-frame delay. This is the
+causal delayed-output feedback model described by
+[Julius O. Smith](https://ccrma.stanford.edu/~jos/pasp/Feedback_Comb_Filters.html),
+extended to a contractive stereo matrix. All feedback storage is f64. Subnormal
+stored samples are zeroed, and nonfinite writes enter existing chain fault containment
+before entering the ring. Output overflow clears the owning chain's validity.
+
+Prepared chains assign disjoint delay ranges across pre/post processors; buses
+assign disjoint ranges across their graph. Each voice reserves the largest authored
+chain's summed delay length, multiplied by the configured voice capacity; buses
+reserve exactly their summed lengths. Storage costs 16 bytes per stereo delay frame.
+Checked layout/multiplication and fallible reservation happen on control, including
+queued replacements. Plans without delays allocate no delay samples. Long per-voice
+delays can be expensive; importers must preserve the authored processing scope and
+resource admission must account for this memory rather than silently moving effects
+to buses. No arbitrary voice-to-bus optimization is performed.
+
+Each stage owns its ring position and valid-history count. Reset, panic, exhausted
+tails and faults invalidate history in constant work per stage; they never clear or
+free a long ring on audio. Slot reuse cannot read old contents. Ordinary declared
+voice/bus tails retain their existing owners, including silent gaps before a first
+echo. A bus tail retains its generation but does not retain retired host note IDs.
+
+`tests/delay.rs` compares stereo feedback and cascaded pre/post/bus processing with
+an independent whole-timeline recurrence, overlapping voices, delays 1/3/67 and
+blocks 1/7/64/129. It verifies silent-gap plan replacement, panic/slot reuse, overflow
+containment, invalid feedback and checked capacity under the heap guard. The pinned
+Shortcircuit [bus ringout implementation](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/engine/bus.cpp#L98)
+was reviewed for processor lifetime and silent-gap handling; no code was copied.
+
+Fractional/modulated delay, tempo synchronization, feedback-path filtering,
+diffusion and Kontakt/Falcon delay parameter/sonic profiles remain open. This exact
+integer-delay kernel is not a complete vendor delay model or an interpolation-quality
+claim. Full native MSRV and strict all-target Clippy checks pass; logs use
+`artifacts/delay-*`.

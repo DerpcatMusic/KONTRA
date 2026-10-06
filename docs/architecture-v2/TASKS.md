@@ -268,7 +268,9 @@ source semantics and checksum/authentication validation are still required.
   preserve guard phase, finite exits and forward/reverse source views through the
   common resampler. [Bus DSP](BUS_DSP.md) now uses a prepared stereo DAG with summed
   histories, sends, sample-clock control ramps and generation-owned tails independent
-  of host note retirement. Reflected/other crossfade profiles, nonlinear effects,
+  of host note retirement. Causal stereo matrix-feedback delays now share the voice/bus
+  kernel, prepared storage and tail owners, with constant-work history invalidation.
+  Fractional/modulated delays and vendor effect profiles remain open. Reflected/other crossfade profiles, nonlinear effects,
   automated filters and remaining routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
