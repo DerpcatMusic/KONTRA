@@ -85,6 +85,21 @@ local function widget(kind, name, value, min, max, integer)
       w.x, w.y, w.width, w.height = named.bounds[1], named.bounds[2], named.bounds[3], named.bounds[4]
     end
   end
+  -- The preset's saved value, unless the widget is not persistent.
+  local saved = name and named and named.persistent ~= false and native.saved(name)
+  if saved then
+    if kind == "OnOffButton" or kind == "Button" then
+      w.value = (saved == "1" or saved == "true")
+    elseif kind == "Table" then
+      local i = 0
+      for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
+        i = i + 1
+        if i <= w.length then w.values[i] = tonumber(number) or 0 end
+      end
+    elseif tonumber((string.gsub(saved, ",", "."))) then
+      w.value = tonumber((string.gsub(saved, ",", ".")))
+    end
+  end
   report("ui", kind)
   return w
 end

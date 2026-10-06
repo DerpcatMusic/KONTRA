@@ -85,7 +85,8 @@ pub struct Play {
     pub at_ms: f64,
     pub key: u8,
     pub velocity: u8,
-    /// Milliseconds until its own release; `None` follows the originating note.
+    /// Milliseconds until its own release; `None` (a duration of 0 or less, the
+    /// default) follows the originating note.
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Vec<u32>,
@@ -132,6 +133,9 @@ struct Shared {
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
     params: RefCell<Vec<Vec<(String, String)>>>,
+    /// The preset's saved widget values and table data (ScriptProcessor
+    /// attributes and ScriptData), by widget name.
+    saved: RefCell<BTreeMap<String, String>>,
     files: Box<dyn Files>,
     config: Config,
 }
@@ -288,6 +292,7 @@ impl ScriptHost {
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
             params: RefCell::new(Vec::new()),
+            saved: RefCell::new(BTreeMap::new()),
             files: Box::new(files),
             config,
         });
@@ -303,6 +308,21 @@ impl ScriptHost {
             .descendants()
             .find(|n| n.has_tag_name("Program"))
             .ok_or_else(|| mlua::Error::runtime("no Program"))?;
+        for processor in program
+            .descendants()
+            .filter(|n| n.has_tag_name("ScriptProcessor"))
+        {
+            let mut saved = self.shared.saved.borrow_mut();
+            for node in std::iter::once(processor).chain(
+                processor
+                    .children()
+                    .filter(|c| c.has_tag_name("ScriptData")),
+            ) {
+                for a in node.attributes() {
+                    saved.insert(a.name().to_owned(), a.value().to_owned());
+                }
+            }
+        }
         let mut tree = Tree { params: Vec::new() };
         let root = element(&self.lua, &mut tree, program, None)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
@@ -348,6 +368,11 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
+        let s = shared.clone();
+        native.set(
+            "saved",
+            lua.create_function(move |_, name: String| Ok(s.saved.borrow().get(&name).cloned()))?,
+        )?;
         let s = shared.clone();
         native.set(
             "paramNames",
@@ -727,7 +752,7 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
     if values[4].is_some() || values[5].is_some() || values[9].is_some() {
         shared.find("lua playNote channel/input/slice", "");
     }
-    let duration = num(2).filter(|d| *d >= 0.0);
+    let duration = num(2).filter(|d| *d > 0.0);
     Play {
         id: shared.next_id(),
         at_ms: shared.now.get(),
@@ -850,7 +875,7 @@ mod tests {
         h.note_on(1, 62, 100, 0);
         let c = h.take_commands();
         assert!(
-            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms == Some(0.0)),
+            matches!(&c[..], [Command::Play(p)] if p.key == 62 && p.velocity == 90 && p.duration_ms.is_none()),
             "{c:?} {:?}",
             h.findings()
         );
