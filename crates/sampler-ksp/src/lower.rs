@@ -1370,6 +1370,8 @@ impl Gen<'_, '_> {
                 true
             }
             Search => return self.search(args, dst),
+            Sort => return self.sort(args, dst),
+            ArrayEqual => return self.array_equal(args, dst),
             ByMarks => {
                 self.arg(args, 0, dst)?;
                 self.set(t, i64::from(b::MARKS_FLAG))?;
@@ -2088,12 +2090,14 @@ impl Gen<'_, '_> {
         };
         let array = ScriptArray { offset, len };
         let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
-        self.arg(args, 1, value)?;
+        // Ascending registers: evaluation uses those above its target.
         if args.len() > 2 {
             self.arg(args, 2, dst)?;
+            self.arg(args, 1, value)?;
             self.arg(args, 3, end)?;
         } else {
             self.set(dst, 0)?;
+            self.arg(args, 1, value)?;
             self.set(end, i64::from(len) - 1)?;
         }
         let start = self.here();
@@ -2131,6 +2135,198 @@ impl Gen<'_, '_> {
         self.set(dst, -1)?;
         self.land(found);
         self.cover(Builtin::Search, Coverage::Native);
+        Ok(())
+    }
+
+    fn cells(&self, args: &[Arg], i: usize) -> Option<ScriptArray> {
+        let Some(Arg::Var(v, _)) = args.get(i) else {
+            return None;
+        };
+        match self.var(*v).home {
+            Home::Cells { offset, len } => Some(ScriptArray { offset, len }),
+            _ => None,
+        }
+    }
+
+    /// `sort(array, direction[, from, to])`: in place, descending when
+    /// `direction` is non-zero.
+    // ponytail: insertion sort, O(n²) callback fuel on large unsorted arrays.
+    fn sort(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let Some(array) = self.cells(args, 0) else {
+            self.ignore(Builtin::Sort, "of a text or runtime array is not available");
+            return Ok(());
+        };
+        // Arguments in ascending registers: evaluation uses those above.
+        let [end, desc, i, key, j, x, t] = [1, 2, 3, 4, 5, 6, 7].map(|n| dst + n);
+        reg(dst, 8)?;
+        if args.len() > 3 {
+            self.arg(args, 2, dst)?;
+            self.arg(args, 3, end)?;
+        } else {
+            self.set(dst, 0)?;
+            self.set(end, i64::from(array.len) - 1)?;
+        }
+        self.arg(args, 1, desc)?;
+        for local in [dst, end] {
+            for (bound, operation) in [
+                (0, IntegerExtra::Max),
+                (array.len as i64 - 1, IntegerExtra::Min),
+            ] {
+                self.set(t, bound)?;
+                self.emit(I::Op(Op::Integer {
+                    lhs: local,
+                    rhs: t,
+                    operation,
+                }))?;
+            }
+        }
+        // i = from + 1
+        self.set(i, 1)?;
+        self.emit(I::Binary32 {
+            lhs: i,
+            rhs: dst,
+            operation: IB::Add,
+        })?;
+        let outer = self.here();
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: i,
+            operation: IB::Add,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: end,
+            comparison: Cmp::LessEqual,
+        })?;
+        let done = self.jump_if_zero(t)?;
+        self.emit(I::ReadScriptArray {
+            array,
+            index: i,
+            local: key,
+        })?;
+        self.set(j, -1)?;
+        self.emit(I::Binary32 {
+            lhs: j,
+            rhs: i,
+            operation: IB::Add,
+        })?;
+        let inner = self.here();
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: dst,
+            comparison: Cmp::GreaterEqual,
+        })?;
+        let place = self.jump_if_zero(t)?;
+        self.emit(I::ReadScriptArray {
+            array,
+            index: j,
+            local: x,
+        })?;
+        // Shift while a[j] is out of order against key.
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: x,
+            operation: IB::Add,
+        })?;
+        let ascending = self.jump_if_zero(desc)?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: key,
+            comparison: Cmp::Less,
+        })?;
+        let compared = self.jump()?;
+        self.land(ascending);
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: key,
+            comparison: Cmp::Greater,
+        })?;
+        self.land(compared);
+        let place2 = self.jump_if_zero(t)?;
+        self.set(t, 1)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::WriteScriptArray {
+            array,
+            index: t,
+            local: x,
+        })?;
+        self.emit(I::AddLocal {
+            local: j,
+            value: -1,
+        })?;
+        self.emit(I::Jump { target: inner })?;
+        self.land(place);
+        self.land(place2);
+        self.set(t, 1)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::WriteScriptArray {
+            array,
+            index: t,
+            local: key,
+        })?;
+        self.emit(I::AddLocal { local: i, value: 1 })?;
+        self.emit(I::Jump { target: outer })?;
+        self.land(done);
+        self.cover(Builtin::Sort, Coverage::Native);
+        Ok(())
+    }
+
+    /// `array_equal(a, b)`: same length and cells.
+    fn array_equal(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let (Some(a), Some(b)) = (self.cells(args, 0), self.cells(args, 1)) else {
+            self.ignore(Builtin::ArrayEqual, "of text arrays is not available; 0");
+            return self.set(dst, 0);
+        };
+        self.cover(Builtin::ArrayEqual, Coverage::Native);
+        if a.len != b.len {
+            return self.set(dst, 0);
+        }
+        let [i, x, y] = [1, 2, 3].map(|n| dst + n);
+        reg(dst, 3)?;
+        self.set(i, i64::from(a.len))?;
+        let top = self.here();
+        self.set(dst, 1)?;
+        let done = self.jump_if_zero(i)?;
+        self.emit(I::AddLocal {
+            local: i,
+            value: -1,
+        })?;
+        self.emit(I::ReadScriptArray {
+            array: a,
+            index: i,
+            local: x,
+        })?;
+        self.emit(I::ReadScriptArray {
+            array: b,
+            index: i,
+            local: y,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: x,
+            rhs: y,
+            comparison: Cmp::Equal,
+        })?;
+        self.set(dst, 0)?;
+        let differ = self.jump_if_zero(x)?;
+        self.emit(I::Jump { target: top })?;
+        self.land(done);
+        self.land(differ);
         Ok(())
     }
 
