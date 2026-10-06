@@ -58,6 +58,17 @@ pub fn load(path: &Path, options: &Options, progress: impl FnMut(Progress)) -> R
 pub fn load_cancelable(
     path: &Path,
     options: &Options,
+    progress: impl FnMut(Progress),
+    canceled: impl Fn() -> bool,
+) -> Result<Loaded, LoadError> {
+    load_read(read(path)?, options, progress, canceled)
+}
+
+/// [`load_cancelable`] for an instrument already [`read`], so a caller can
+/// reshape its IR (say, give each group a bus) before samples are decoded.
+pub fn load_read(
+    kontakt: Kontakt,
+    options: &Options,
     mut progress: impl FnMut(Progress),
     canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
@@ -65,7 +76,7 @@ pub fn load_cancelable(
         mut instrument,
         locations,
         mut samples,
-    } = read(path)?;
+    } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
     progress(Progress::Translated {
