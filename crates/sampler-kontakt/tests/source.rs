@@ -36,6 +36,48 @@ fn script(text: Option<&[u8]>, state: &[u8]) -> Vec<u8> {
     chunk(6, &object(0x60, &[0xa5], &public, &chunk(0xffff, &[9])))
 }
 
+fn unstructured_script(text: &[u8]) -> Vec<u8> {
+    let mut body = vec![0, 0x60, 0];
+    body.extend(sized(text));
+    body.extend([0, 0, 0]);
+    body.extend(0u32.to_le_bytes());
+    body.extend(u32::MAX.to_le_bytes());
+    body.extend(u32::MAX.to_le_bytes());
+    body.extend(0u32.to_le_bytes());
+    chunk(6, &body)
+}
+
+#[test]
+fn unstructured_script_uses_its_chunk_boundary_but_cannot_swallow_array_peers() {
+    let first = unstructured_script(b"on note end on");
+    let second = unstructured_script(b"on release end on");
+    let bytes = [first.as_slice(), second.as_slice()].concat();
+    support::without_heap(|| {
+        let mut chunks = Chunks::parse(&bytes, LIMITS).unwrap().iter();
+        for text in [b"on note end on".as_slice(), b"on release end on"] {
+            let script = Script::parse(chunks.next().unwrap(), LIMITS).unwrap();
+            assert!(!script.object.is_structured);
+            assert_eq!(script.text.unwrap().data(), text);
+            assert!(script.object.private.data().is_empty());
+            assert_eq!(script.object.children(LIMITS).unwrap().iter().count(), 0);
+        }
+        assert!(chunks.next().is_none());
+    });
+    let mut array = 2u32.to_le_bytes().to_vec();
+    array.extend(&first[6..]);
+    array.extend(object(0x95, &[], &[], &[]));
+    let bytes = chunk(0x33, &array);
+    let root = Chunks::parse(&bytes, LIMITS)
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        root.records(LIMITS).unwrap_err().kind,
+        ErrorKind::UnsupportedLayout
+    );
+}
+
 #[test]
 fn source_views_preserve_wire_identity_and_all_unknown_bytes_without_allocating() {
     let mut children = chunk(0x9000, &[1, 2, 3]);
@@ -159,7 +201,7 @@ fn malformed_lengths_counts_flags_and_saved_tables_fail_at_the_source_boundary()
             );
         });
     }
-    for flag in [0, 2, 255] {
+    for flag in [2, 255] {
         let mut invalid = bytes.clone();
         invalid[6] = flag;
         let root = Chunks::parse(&invalid, LIMITS)
@@ -198,7 +240,7 @@ fn malformed_lengths_counts_flags_and_saved_tables_fail_at_the_source_boundary()
 #[test]
 fn saved_ksp_source_uses_the_same_native_compiler_and_audio_owners() {
     use sampler_core::*;
-    let bytes = script(Some(b"on note change_note($EVENT_ID, 60) end on"), &[]);
+    let bytes = unstructured_script(b"on note change_note($EVENT_ID, 60) end on");
     let parsed = Script::parse(
         Chunks::parse(&bytes, LIMITS)
             .unwrap()

@@ -136,12 +136,24 @@ impl<'a> Reader<'a> {
             },
         })
     }
-    fn structured(&mut self) -> Result<Structured<'a>, Error> {
+    fn structured(&mut self, bounded: bool) -> Result<Structured<'a>, Error> {
         let start = self.0;
         if !self.boolean()? {
-            // Unstructured records have no internal length; their boundaries depend
-            // on the containing schema. Retain the enclosing raw chunk instead.
-            return Err(start.error(ErrorKind::UnsupportedLayout));
+            // A chunk supplies the end of an unstructured body. An element inside
+            // an array does not; treating the rest of the list as one body loses peers.
+            if !bounded {
+                return Err(start.error(ErrorKind::UnsupportedLayout));
+            }
+            let version = self.u16()?;
+            let public = self.take(self.0.data.len())?;
+            return Ok(Structured {
+                is_structured: false,
+                version,
+                public,
+                private: self.0,
+                children: self.0,
+                raw: start,
+            });
         }
         let version = self.u16()?;
         let private = self.sized()?;
@@ -149,6 +161,7 @@ impl<'a> Reader<'a> {
         let children = self.sized()?;
         let length = self.0.offset - start.offset;
         Ok(Structured {
+            is_structured: true,
             version,
             private,
             public,
@@ -213,7 +226,7 @@ impl<'a> Chunk<'a> {
     }
     pub fn structured(self) -> Result<Structured<'a>, Error> {
         let mut reader = Reader(self.body);
-        let object = reader.structured()?;
+        let object = reader.structured(true)?;
         reader.finish()?;
         Ok(object)
     }
@@ -250,7 +263,7 @@ impl<'a> Chunk<'a> {
             if zones {
                 reader.u32()?;
             }
-            reader.structured()?;
+            reader.structured(false)?;
         }
         reader.finish()?;
         Ok(records)
@@ -259,6 +272,7 @@ impl<'a> Chunk<'a> {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Structured<'a> {
+    pub is_structured: bool,
     pub version: u16,
     pub private: Bytes<'a>,
     pub public: Bytes<'a>,
@@ -305,7 +319,9 @@ impl<'a> Records<'a> {
                 .then(|| reader.u32().expect("validated group ID"));
             Record {
                 group,
-                object: reader.structured().expect("validated structured record"),
+                object: reader
+                    .structured(false)
+                    .expect("validated structured record"),
             }
         })
     }
