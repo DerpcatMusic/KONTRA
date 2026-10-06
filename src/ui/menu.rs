@@ -81,6 +81,8 @@ pub enum Command {
     /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
     Channel(usize, i16),
     Port(usize, u8),
+    Mpe(usize),
+    BendRange(usize, u8),
     Output(usize, u8),
     /// Route a part automatically again.
     AutoOutput(usize),
@@ -272,6 +274,10 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items.extend((0..4u8).map(|n| {
                 check(format!("Port {}", char::from(b'A' + n)), part.port == n, Command::Port(*slot, n))
             }));
+            items.extend([Item::Rule, check("MPE", part.mpe, Command::Mpe(*slot)), Item::Rule, Item::Info("Bend range".into())]);
+            items.extend([(0, "As the instrument".to_owned()), (2, "±2".into()), (12, "±12".into()), (24, "±24".into()), (48, "±48 (MPE)".into())].map(
+                |(n, label)| check(label, part.bend_range == n, Command::BendRange(*slot, n)),
+            ));
             items
         }
         Target::Output(slot) => {
@@ -538,6 +544,15 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
+        Command::Mpe(slot) => {
+            let part = &mut cx.selection.parts[slot];
+            part.mpe = !part.mpe;
+            // MPE controllers bend ±48 on member channels by default.
+            if part.mpe && part.bend_range == 0 {
+                part.bend_range = 48;
+            }
+        }
+        Command::BendRange(slot, n) => cx.selection.parts[slot].bend_range = n,
         Command::Output(slot, output) => {
             let part = &mut cx.selection.parts[slot];
             (part.output, part.output_manual) = (output, true);
