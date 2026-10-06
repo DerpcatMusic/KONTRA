@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Accept variable generated-note durations in KSP UI/controller handlers and shared
+  functions. Validate parent-only durations against actual callback ownership before
+  publishing notes; keep fixed/whole-source playback independent.
+
 - Bind native UI callbacks to their module and explicit performance/channel context.
   KSP UI handlers can read scoped CC state and generate downstream notes/controllers
   across waits and plan replacement without fabricated host notes. Direct and queued

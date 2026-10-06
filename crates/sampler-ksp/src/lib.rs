@@ -215,6 +215,7 @@ struct Parser<'a> {
     code: Vec<Instruction>,
     functions: BTreeMap<&'a str, [Result<Vec<Instruction>, Error>; 4]>,
     function_instructions: usize,
+    note_context: bool,
     variables: BTreeMap<&'a str, Variable>,
     bindings: BTreeMap<&'a str, ControlId>,
     controls: Vec<Control>,
@@ -652,6 +653,7 @@ impl<'a> Parser<'a> {
     }
 
     fn body(&mut self, kind: CallbackKind, function: bool) -> Result<Vec<Instruction>, Error> {
+        self.note_context = matches!(kind, CallbackKind::Note | CallbackKind::Release);
         let note = matches!(kind, CallbackKind::Note);
         // Each open branch has already emitted budgeted instructions. This
         // control-only patch stack is bounded by code/source limits, not recursion.
@@ -1053,7 +1055,15 @@ impl<'a> Parser<'a> {
             self.play_duration(
                 local,
                 velocity,
-                sampler_core::DurationValue::Fixed(duration),
+                if value == -1 && !self.note_context {
+                    // A runtime-selected parent sentinel has no meaning in UI/CC
+                    // callbacks. Keep native positive-frame validation on this
+                    // branch, so valid dynamic durations still compile and an
+                    // actual -1 faults before publishing a note.
+                    sampler_core::DurationValue::Frames(frames)
+                } else {
+                    sampler_core::DurationValue::Fixed(duration)
+                },
                 offset_micros,
                 result,
             )?;
@@ -1144,6 +1154,7 @@ pub fn compile(
         code: Vec::new(),
         functions: BTreeMap::new(),
         function_instructions: 0,
+        note_context: false,
         variables: BTreeMap::new(),
         bindings,
         controls: Vec::new(),
