@@ -459,9 +459,6 @@ impl Translation {
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
-        if v.release_trigger && v.release_trigger_note_monophonic {
-            self.unsupported(&at, "monophonic release trigger", true, not_modeled);
-        }
         // 1-based (0 = none): Una Corda's groups use 1 and 2 with voice
         // groups 0 and 1 defined, Afflatus 2 Horns KS 1..=8 with 0..=7.
         let voice_group = usize::try_from(v.voice_group_index - 1).ok();
@@ -710,6 +707,7 @@ impl Translation {
             },
             tune: ir::Pitch::Ratio(f64::from(v.tune)),
             voice_limit,
+            monophonic_release: v.release_trigger && v.release_trigger_note_monophonic,
             ..Default::default()
         });
         Ok(Some(GroupInfo {
