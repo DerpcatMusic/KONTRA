@@ -53,6 +53,8 @@ local kinds = {
   "Text", "Frame",
 }
 local widget_mt = {}
+local registry = {}
+local ui = { widgets = registry }
 local function widget(kind, name, value, min, max, integer)
   -- Kind{"name", value, min, max, integer, size=..., changed=...} passes one table.
   local named
@@ -101,6 +103,8 @@ local function widget(kind, name, value, min, max, integer)
     end
   end
   report("ui", kind)
+  registry[#registry + 1] = w
+  rawset(w, "id", #registry)
   return w
 end
 for _, kind in ipairs(kinds) do
@@ -132,6 +136,7 @@ function methods.setRange(self, lo, hi) self.min, self.max = lo, hi end
 function methods.setPosition(self, x, y) self.x, self.y = x, y end
 function methods.setSize(self, w, h) self.width, self.height = w, h end
 function methods.setItem(self, i, text) end
+function methods.setStripImage(self, path, frames) self.stripImage, self.frames = path, frames end
 function methods.setValueNormalized(self, v) self.value = self.min + v * (self.max - self.min) end
 function methods.getValueNormalized(self)
   if self.max == self.min then return 0 end
@@ -141,7 +146,11 @@ widget_mt.__index = function(t, k)
   if methods[k] then return methods[k] end
   for _, kind in ipairs(kinds) do
     if kind == k then
-      return function(self, ...) return widget(k, ...) end
+      return function(self, ...)
+        local child = widget(k, ...)
+        rawset(child, "parent_id", rawget(self, "id"))
+        return child
+      end
     end
   end
   if type(k) ~= "string" then return nil end
@@ -288,3 +297,8 @@ function type(v)
   end
   return t
 end
+
+-- What the interface export reads (see ScriptHost::interface).
+function setBackground(path) ui.background = path end
+function setSize(w, h) ui.width, ui.height = w, h end
+__ui = ui
