@@ -569,8 +569,27 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
+/// Keys a part's scripts are sized to run at once (chords, pedalled runs).
+const SCRIPT_KEYS: usize = 32;
+/// Cap on script callback state per part: 4M cells, 32 MB.
+const SCRIPT_CELLS: usize = 1 << 22;
+
+/// Concurrent script callbacks `plan` needs: each key runs a note and a
+/// release callback in every stage, and notes the scripts play pass the
+/// later stages too (about four per stage), for [`SCRIPT_KEYS`] keys, plus
+/// one listener per stage; within [`SCRIPT_CELLS`].
+fn script_capacity(plan: &Prepared) -> usize {
+    let stages = plan.stage_count();
+    if stages == 0 {
+        return 16;
+    }
+    let wanted = (4 * stages * SCRIPT_KEYS + stages).clamp(16, 4096);
+    wanted.min(SCRIPT_CELLS / plan.behavior_local_count().max(1)).max(16)
+}
+
 /// Capacities of a part, sized for its plan's script state.
 fn limits(plan: &Prepared) -> Limits {
+    let behaviors = script_capacity(plan);
     Limits {
         notes: NOTES,
         channels: 16,
@@ -580,9 +599,9 @@ fn limits(plan: &Prepared) -> Limits {
         expressions: 128,
         voices: 512,
         commands: 256,
-        behaviors: 16,
+        behaviors,
         behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(16),
+        behavior_cells: plan.behavior_local_count().saturating_mul(behaviors),
         note_cells: plan.note_cell_count().saturating_mul(128),
     }
 }
@@ -748,7 +767,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: prepared, tree, report, interfaces, instrument, scripts, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: prepared, tree, mut report, interfaces, instrument, scripts, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -764,6 +783,7 @@ impl CoreLoader for V2Loader {
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         let limits = limits(&prepared);
+        report.decoded.script_callbacks = limits.behaviors;
         let runtime = Runtime::new(prepared, limits).map_err(core)?;
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
             return Err(CoreError::Invalid(format!(
@@ -1065,6 +1085,25 @@ mod tests {
         });
         assert_eq!(applied, 1);
         assert_ne!(ui.interfaces(), before, "the label is hidden");
+    }
+
+    #[test]
+    fn script_capacity_grows_with_the_stages_a_key_passes() {
+        let pcm = || Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plain = Prepared::new(48000, vec![pcm()], vec![region.clone()], 1).unwrap();
+        assert_eq!(script_capacity(&plain), 16);
+        let script = |n: u8| {
+            sampler_ksp::compile(&format!("on note\n play_note({}, 100, 0, -1)\nend on\n", 60 + n), 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap()
+        };
+        let one = sampler_ksp::bind_modules(vec![script(0)], Prepared::new(48000, vec![pcm()], vec![region.clone()], 1).unwrap()).unwrap();
+        let four = sampler_ksp::bind_modules((0..4).map(script).collect(), Prepared::new(48000, vec![pcm()], vec![region], 1).unwrap()).unwrap();
+        assert_eq!((script_capacity(&one), script_capacity(&four)), (4 * SCRIPT_KEYS + 1, 16 * SCRIPT_KEYS + 4));
+        let limits = limits(&four);
+        assert!(Runtime::new(four, limits).is_ok());
     }
 
     #[test]

@@ -44,6 +44,9 @@ pub struct Decoded {
     pub controls: usize,
     /// Keys the zones map, one bit per MIDI key, for the keyboard.
     pub keys: u128,
+    /// Script callbacks the part can run at once, sized from its scripts.
+    #[serde(default)]
+    pub script_callbacks: usize,
 }
 
 impl Decoded {
@@ -130,6 +133,7 @@ impl LoadReport {
                 articulations: instrument.articulations.len(),
                 controls: instrument.controls.len(),
                 keys: key_bits(instrument),
+                script_callbacks: 0,
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
@@ -140,8 +144,8 @@ impl LoadReport {
     pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
         let d = &self.decoded;
         std::iter::once(format!(
-            "{} ({}): {} zones, {} groups, {} samples, {} buses, {} scripts, {} articulations, {} controls",
-            self.name, d.format, d.zones, d.groups, d.samples, d.buses, d.scripts, d.articulations, d.controls
+            "{} ({}): {} zones, {} groups, {} samples, {} buses, {} scripts ({} callbacks at once), {} articulations, {} controls",
+            self.name, d.format, d.zones, d.groups, d.samples, d.buses, d.scripts, d.script_callbacks, d.articulations, d.controls
         ))
         .chain(self.missing.iter().map(|m| {
             format!("missing ({:?}): {} = {:?} at {}", m.reason, m.feature, m.value, m.location)
