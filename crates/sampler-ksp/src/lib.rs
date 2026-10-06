@@ -17,6 +17,7 @@ mod hir;
 mod lexer;
 mod lower;
 pub mod model;
+pub mod nckp;
 mod parser;
 mod sema;
 pub mod ui;
@@ -283,7 +284,7 @@ pub fn compile_with(
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view)?;
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
         let init = eval::run(&hir, environment)?;
         Ok((hir, init))
     })()

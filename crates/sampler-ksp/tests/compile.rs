@@ -887,6 +887,12 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
                 external_id: None,
             };
             let note = rt.trigger(input, 60, 1.).unwrap();
+            if expected == Outcome::FuelExhausted {
+                // v2: preempted every block; a runaway ends after a second.
+                for _ in 0..12 {
+                    rt.render(&mut [[0.; 2]; 4800]).unwrap();
+                }
+            }
             if body.starts_with("$a") {
                 assert_eq!(rt.note_cell(note, 2), Ok(7));
             }
@@ -1074,10 +1080,13 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
         array_cells: 0,
     };
     let env = sampler_ksp::Environment {
-        performance_view: vec![
-            PerformanceControl::assumed("$Cut", WidgetKind::Slider),
-            PerformanceControl::assumed("$Mode", WidgetKind::Menu),
-        ],
+        performance_view: sampler_ksp::model::PerformanceView {
+            controls: vec![
+                PerformanceControl::assumed("$Cut", WidgetKind::Slider),
+                PerformanceControl::assumed("$Mode", WidgetKind::Menu),
+            ],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let script = sampler_ksp::compile_with(source, 48000, limits, &[], &env).unwrap();

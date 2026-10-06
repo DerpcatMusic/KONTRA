@@ -15,10 +15,10 @@ pub struct Environment {
     pub persisted: BTreeMap<String, Value>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
-    /// Controls a Creator Tools performance view (`.nckp`) declares when the
-    /// script calls `load_performance_view`. Names the script uses but this
-    /// list lacks are assumed (see `PerformanceControl::assumed`), with a warning.
-    pub performance_view: Vec<model::PerformanceControl>,
+    /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
+    /// script loads with `load_performance_view`. Names the script uses but
+    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    pub performance_view: model::PerformanceView,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -168,6 +168,32 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
         e.block(&init.body)?;
+    }
+    // On load Kontakt restores saved persistent values, then runs
+    // `on persistence_changed`, before the interface is shown.
+    for (i, var) in hir.vars.iter().enumerate() {
+        if var.persistence != Persistence::None
+            && var.len.is_none()
+            && let Some(saved) = env.persisted.get(&*var.name)
+        {
+            let v = match saved.clone() {
+                Value::Int(n) => V::I(n),
+                Value::Real(r) => V::R(r),
+                Value::Text(s) => V::S(s),
+            };
+            e.write_var(VarId(i as u32), v);
+        }
+    }
+    if let Some(cb) = hir
+        .callbacks
+        .iter()
+        .find(|c| c.kind == CallbackKind::PersistenceChanged)
+        && let Err(f) = e.block(&cb.body)
+    {
+        e.warn(
+            f.span,
+            format!("on persistence_changed at load: {}", f.message),
+        );
     }
     Ok(e.st)
 }
@@ -561,6 +587,63 @@ impl Eval<'_> {
         V::I(0)
     }
 
+    /// The view's page settings and control properties, as if the script
+    /// had set them right after `load_performance_view`.
+    fn apply_performance_view(&mut self, span: Span) {
+        let view = &self.env.performance_view;
+        let ui = &mut self.st.model.interface;
+        ui.width_px = view.width.or(ui.width_px);
+        ui.height_px = view.height.or(ui.height_px);
+        if let Some(color) = view.color {
+            self.st.model.requests.push(Request {
+                command: "set_ui_color",
+                args: vec![Value::Int(color)],
+            });
+        }
+        for (id, picture) in [
+            (b::INST_WALLPAPER_ID, &view.wallpaper),
+            (b::INST_ICON_ID, &view.icon),
+        ] {
+            if let Some(p) = picture {
+                self.set_property(id, b::CONTROL_PAR_PICTURE, V::S(p.clone()), span);
+            }
+        }
+        let ui_id = |name: &str| {
+            let var = self
+                .hir
+                .vars
+                .iter()
+                .position(|v| v.ui.is_some() && *v.name == *name)?;
+            Some(b::FIRST_UI_ID + self.hir.vars[var].ui? as i32)
+        };
+        for c in &view.controls {
+            let Some(id) = ui_id(&c.name) else { continue };
+            for (name, value) in &c.properties {
+                let Some(par) = b::control_par(name) else {
+                    self.warn(
+                        span,
+                        format!("{}: unknown performance view property {name}", c.name),
+                    );
+                    continue;
+                };
+                let value = match (par, value) {
+                    (b::CONTROL_PAR_PARENT_PANEL, Value::Text(panel)) => match ui_id(panel) {
+                        Some(p) => V::I(p),
+                        None => continue,
+                    },
+                    (_, Value::Int(n)) => V::I(*n),
+                    (_, Value::Real(r)) => V::R(*r),
+                    (_, Value::Text(t)) => V::S(t.clone()),
+                };
+                self.set_property(id, par, value, span);
+            }
+            if !c.menu.is_empty() {
+                let ui = (id - b::FIRST_UI_ID) as usize;
+                self.menu(ui).extend(c.menu.iter().cloned());
+            }
+        }
+    }
+
     fn menu(&mut self, ui: usize) -> &mut Vec<MenuItem> {
         let widgets = &mut self.st.model.interface.widgets;
         if widgets.len() <= ui {
@@ -908,6 +991,7 @@ impl Eval<'_> {
             LoadPerformanceView => {
                 self.request(builtin, args)?;
                 self.st.model.interface.performance_view = true;
+                self.apply_performance_view(span);
                 V::I(0)
             }
             MakePerfview => {

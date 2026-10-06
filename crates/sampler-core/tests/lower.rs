@@ -235,3 +235,55 @@ fn even_probability_takes_lower_to_a_random_sequence() {
         })
     ));
 }
+
+#[test]
+fn zone_routes_lower_to_voice_modulation() {
+    let mut ir = ir::Instrument {
+        assets: vec![asset("a")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            routes: vec![ir::RouteRef(0), ir::RouteRef(1)],
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        ..Default::default()
+    };
+    ir.modulators = vec![
+        ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Velocity,
+        },
+        ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::PitchBend,
+        },
+    ];
+    ir.routes = vec![
+        ir::Route::new(
+            ir::ModulatorRef(0),
+            ir::Target::Amplitude,
+            ir::Depth::Normalized(1.0),
+        ),
+        // Native expression bend owns this one.
+        ir::Route::new(
+            ir::ModulatorRef(1),
+            ir::Target::Pitch,
+            ir::Depth::Pitch(ir::Pitch::Cents(200.0)),
+        ),
+    ];
+    let plan = lower(&ir, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let out = play(&mut rt, 60, 0.5);
+    assert!((out[0] - 0.25).abs() < 1e-6, "{out:?}");
+
+    ir.routes[1].target = ir::Target::Pan;
+    ir.routes[1].depth = ir::Depth::Normalized(1.0);
+    assert!(matches!(
+        rejected(&ir, vec![constant(0.5)]),
+        LowerError::Unsupported {
+            feature: Feature::PitchBendSource,
+            ..
+        }
+    ));
+}

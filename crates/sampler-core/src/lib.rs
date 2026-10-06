@@ -66,6 +66,10 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod script_params;
+mod voice_mod;
+pub use script_params::ParamScope;
+pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
@@ -199,10 +203,20 @@ pub struct Limits {
     pub decisions: usize,
     pub commands: usize,
     pub behaviors: usize,
+    /// Instructions a callback runs per block before it is preempted and
+    /// continued at the next block (see [`Limits::DEFAULT_BEHAVIOR_FUEL`]).
     pub behavior_fuel: usize,
     pub behavior_cells: usize,
     /// Total note-owned integer cells, divided evenly across logical note slots.
     pub note_cells: usize,
+}
+
+impl Limits {
+    /// About 115 us of script work per callback per block on a desktop CPU,
+    /// under a tenth of the 64-frame deadline at 48 kHz. Measured over 52
+    /// library scripts: all but two finish every callback within it; the
+    /// other two need up to five blocks.
+    pub const DEFAULT_BEHAVIOR_FUEL: usize = 10_000;
 }
 
 #[derive(Clone, Copy)]
@@ -267,6 +281,10 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
+    /// The region's group, for script group layers.
+    group: Option<u32>,
+    /// Script-layer gains at the end of the last rendered chunk.
+    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -412,6 +430,8 @@ impl<T> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
+    /// Quarter notes per minute for tempo-synced modulation.
+    tempo: f64,
     plans: Arena<Generation>,
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
@@ -435,12 +455,21 @@ pub struct Runtime {
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_ready: Vec<behavior::Ready>,
+    /// Callbacks preempted on fuel, and callbacks queued behind them to keep
+    /// their script's event order; resumed at the next block, oldest first.
+    yielded: std::collections::VecDeque<BehaviorId>,
+    preemptions: u64,
+    longest_preempted: u64,
     dispatching_behavior: bool,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
     note_stride: usize,
     note_values: Box<[i64]>,
+    note_params: Box<[script_params::NoteParams]>,
+    /// Set once a script writes a voice parameter; voices then render in chunks.
+    // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
+    script_params: bool,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -524,12 +553,15 @@ impl Runtime {
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
+            modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
+            script: script_params::EngineLayers::new(plan.group_count),
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
         })?);
         Ok(Self {
             rate,
+            tempo: 120.0,
             plans,
             active_plan,
             plan_queues: None,
@@ -551,6 +583,9 @@ impl Runtime {
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_ready: Vec::with_capacity(ready_capacity),
+            yielded: std::collections::VecDeque::with_capacity(limits.behaviors),
+            preemptions: 0,
+            longest_preempted: 0,
             dispatching_behavior: false,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
@@ -565,6 +600,9 @@ impl Runtime {
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
+            note_params: vec![script_params::NoteParams::default(); limits.notes]
+                .into_boxed_slice(),
+            script_params: false,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -579,6 +617,14 @@ impl Runtime {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+    /// Times a callback ran out of per-block fuel and continued next block.
+    pub fn preemptions(&self) -> u64 {
+        self.preemptions
+    }
+    /// Longest time, in frames, a preempted callback has spanned so far.
+    pub fn longest_preempted_frames(&self) -> u64 {
+        self.longest_preempted
     }
     pub fn now(&self) -> u64 {
         self.now
@@ -859,6 +905,7 @@ impl Runtime {
             ..release::ReleaseTimes::default()
         };
         self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
+        self.note_params[id.index] = script_params::NoteParams::default();
         self.plans.get_mut(plan.0).unwrap().projections.admit(
             id.index,
             0,
@@ -1044,6 +1091,8 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
+            group: None,
+            script_gains: None,
         })?);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);

@@ -4,9 +4,10 @@
 //! approximated silently.
 use crate::{
     Biquad, Bus, BusSend, ControllerCondition, Direction, Envelope, EnvelopeCurve, Error,
-    FilterKind, Keyswitch, Loop, LoopMode, LoopShape, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, SelectionPolicy, Sequence, SequenceScope, StateVariableFilter, SvfMode,
-    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute,
+    ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region, SelectionPolicy,
+    Sequence, SequenceScope, StateVariableFilter, SvfMode, Take, TakePolicy, Trigger,
+    VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -28,6 +29,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Modulation,
 }
 
 /// IR meaning the runtime cannot yet execute.
@@ -52,6 +54,8 @@ pub enum Feature {
     Delay,
     PreChainSend,
     Controls,
+    /// Pitch bend routed anywhere but pitch (where it is native expression).
+    PitchBendSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -158,12 +162,6 @@ pub fn lower(
     if !instrument.controls.is_empty() {
         return Err(unsupported("controls", Feature::Controls));
     }
-    if let Some((i, route)) = instrument.routes.iter().enumerate().next() {
-        return Err(unsupported(
-            format!("route {i}"),
-            Feature::ModulationRoute(route.target),
-        ));
-    }
     let lowering = Lowering {
         ir: instrument,
         rate,
@@ -214,6 +212,7 @@ pub fn lower(
             .map_err(core(Stage::Regions, "velocity responses"))?;
     }
     plan = lowering.buses(plan)?;
+    plan = lowering.modulation(plan)?;
     plan = lowering.variation(plan)?;
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
@@ -360,6 +359,10 @@ impl Lowering<'_> {
         let ir::ModulationSource::Envelope(e) = &modulator.source else {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
+        self.adsr(owner, e, one_shot)
+    }
+
+    fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
         let curve = |curve: ir::Curve| match curve {
             ir::Curve::Linear => Ok(EnvelopeCurve::default()),
             ir::Curve::Exponential(k) => {
@@ -384,6 +387,182 @@ impl Lowering<'_> {
             curve(e.decay_shape)?,
             curve(e.release_shape)?,
         ))
+    }
+
+    /// One voice modulation program per distinct zone route list.
+    fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        if self.ir.zones.iter().all(|z| z.routes.is_empty()) {
+            return Ok(plan);
+        }
+        let mut programs: Vec<ModProgram> = Vec::new();
+        let mut known = std::collections::HashMap::new();
+        let mut bindings = Vec::with_capacity(self.ir.zones.len());
+        for (i, zone) in self.ir.zones.iter().enumerate() {
+            if zone.routes.is_empty() {
+                bindings.push(None);
+                continue;
+            }
+            let index = match known.get(&(&zone.routes, zone.chain)) {
+                Some(&index) => index,
+                None => {
+                    let program = self.program(&format!("zone {i}"), zone)?;
+                    let index = programs.len();
+                    programs.push(program);
+                    known.insert((&zone.routes, zone.chain), index);
+                    index
+                }
+            };
+            // A program whose routes all belong to native expression is no program.
+            bindings.push((!programs[index].routes.is_empty()).then_some(index));
+        }
+        let ranges = self
+            .ir
+            .zones
+            .iter()
+            .map(|z| z.playback.start_range.min(u64::from(u32::MAX)) as u32)
+            .collect();
+        plan.with_voice_modulation(programs, bindings, ranges)
+            .map_err(core(Stage::Modulation, "zones"))
+    }
+
+    fn program(&self, owner: &str, zone: &ir::Zone) -> Result<ModProgram, LowerError> {
+        let mut program = ModProgram::default();
+        let mut sources = std::collections::HashMap::new();
+        let mut shapes = std::collections::HashMap::new();
+        for &route_ref in &zone.routes {
+            let route = &self.ir.routes[route_ref.0];
+            let owner = format!("{owner} route {}", route_ref.0);
+            let modulator = &self.ir.modulators[route.source.0];
+            if modulator.scope != ir::Scope::Voice {
+                return Err(unsupported(owner, Feature::ModulatorScope(modulator.scope)));
+            }
+            let target = match (route.target, route.depth) {
+                // Pitch bend to pitch is the note's native expression bend.
+                (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
+                    continue;
+                }
+                (ir::Target::Amplitude, ir::Depth::Normalized(i)) => (ModTarget::Attenuate, i),
+                (ir::Target::Amplitude, ir::Depth::Gain(g)) => {
+                    (ModTarget::Decibels, 20.0 * g.linear().log10())
+                }
+                (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
+                (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
+                (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (
+                    ir::Target::Processor {
+                        chain,
+                        index,
+                        parameter,
+                    },
+                    depth,
+                ) if Some(chain) == zone.chain && self.modulable_filter(chain, index) => {
+                    match (parameter, depth) {
+                        (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
+                            (ModTarget::Cutoff, p.semitones())
+                        }
+                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => {
+                            (ModTarget::Resonance, 20.0 * g.linear().log10())
+                        }
+                        _ => {
+                            return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+                        }
+                    }
+                }
+                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
+            };
+            let source = match sources.get(&route.source) {
+                Some(&index) => index,
+                None => {
+                    let source = self.mod_source(&owner, &modulator.source)?;
+                    program.sources.push(source);
+                    sources.insert(route.source, program.sources.len() - 1);
+                    program.sources.len() - 1
+                }
+            };
+            let shape = route.shape.map(|shape| {
+                *shapes.entry(shape).or_insert_with(|| {
+                    program.shapes.push(self.ir.shapes[shape.0].points.clone());
+                    program.shapes.len() - 1
+                })
+            });
+            program.routes.push(ModRoute {
+                source,
+                target: target.0,
+                depth: target.1,
+                invert: route.invert,
+                shape,
+                lag: self.frames(route.smoothing),
+            });
+        }
+        Ok(program)
+    }
+
+    /// Voice cutoff/Q modulation scales every state-variable filter in the
+    /// chain, so it is exact only when the addressed filter is the only one.
+    fn modulable_filter(&self, chain: ir::ChainRef, index: usize) -> bool {
+        let chain = &self.ir.chains[chain.0];
+        let processors: Vec<_> = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .collect();
+        let svf = |p: &ir::Processor| {
+            matches!(
+                p,
+                ir::Processor::Filter(ir::Filter {
+                    kind: ir::FilterKind::LowPass { poles: 2 }
+                        | ir::FilterKind::HighPass { poles: 2 }
+                        | ir::FilterKind::BandPass { poles: 2 }
+                        | ir::FilterKind::Notch { poles: 2 }
+                        | ir::FilterKind::AllPass,
+                    ..
+                })
+            )
+        };
+        svf(processors[index]) && processors.iter().filter(|p| svf(p)).count() == 1
+    }
+
+    fn mod_source(
+        &self,
+        owner: &str,
+        source: &ir::ModulationSource,
+    ) -> Result<ModSource, LowerError> {
+        Ok(match source {
+            ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
+                shape: match lfo.shape {
+                    ir::LfoShape::Sine => LfoShape::Sine,
+                    ir::LfoShape::Triangle => LfoShape::Triangle,
+                    ir::LfoShape::Square => LfoShape::Square,
+                    ir::LfoShape::SawUp => LfoShape::SawUp,
+                    ir::LfoShape::SawDown => LfoShape::SawDown,
+                    ir::LfoShape::SampleAndHold => LfoShape::SampleAndHold,
+                    ir::LfoShape::Random => LfoShape::Random,
+                },
+                rate: match lfo.rate {
+                    ir::Frequency::Hertz(hz) => LfoRate::Hertz(hz),
+                    ir::Frequency::Beats(beats) => LfoRate::Beats(beats),
+                },
+                phase: lfo.phase,
+                delay: self.frames(lfo.delay),
+                fade: self.frames(lfo.fade_in),
+                retrigger: lfo.retrigger,
+            }),
+            ir::ModulationSource::Controller(cc) => ModSource::Controller(*cc),
+            ir::ModulationSource::Velocity => ModSource::Velocity,
+            ir::ModulationSource::Key => ModSource::Key,
+            // Pressure arrives as the note's expression pressure: MPE channel
+            // pressure or polyphonic aftertouch.
+            ir::ModulationSource::ChannelPressure | ir::ModulationSource::PolyPressure => {
+                ModSource::Pressure
+            }
+            ir::ModulationSource::Timbre => ModSource::Timbre,
+            ir::ModulationSource::Random => ModSource::Random,
+            ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::PitchBend => {
+                return Err(unsupported(owner, Feature::PitchBendSource));
+            }
+        })
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
