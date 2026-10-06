@@ -95,6 +95,7 @@ fn shared_function_waits_inherit_each_callback_and_return_without_an_extra_forwa
             rt.dispatch_controller(domain, input(60).channel_address(), 1, 1, 0x12345678)
                 .unwrap();
             rt.invoke_control(
+                control_context(&rt),
                 rt.active_plan(),
                 None,
                 ControlWrite {
@@ -223,4 +224,17 @@ fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
     let source = "on init declare $a end on function increment inc($a) end function on note call increment call increment end on";
     assert!(compile(source, 4).is_err());
     assert!(compile(source, 64).is_ok());
+}
+
+fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
+    sampler_core::ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
+    }
 }

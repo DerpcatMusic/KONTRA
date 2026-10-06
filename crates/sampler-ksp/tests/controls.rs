@@ -300,6 +300,7 @@ fn ui_handlers_wait_and_control_note_playback_without_fabricated_notes() {
         let generation = rt.active_plan();
         let (_, callback) = rt
             .invoke_control(
+                control_context(&rt),
                 generation,
                 Some(0),
                 ControlWrite {
@@ -447,6 +448,7 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
             assert_eq!(rt.note_cell(first, 0), Ok(0));
             assert_eq!(rt.note_cell(second, 0), Ok(1));
             rt.invoke_control(
+                control_context(&rt),
                 plan,
                 None,
                 ControlWrite {
@@ -670,6 +672,7 @@ fn waiting_ui_callback_controls_live_dsp_through_shared_values_without_a_window(
             .unwrap();
             let (_, callback) = rt
                 .invoke_control(
+                    control_context(&rt),
                     rt.active_plan(),
                     None,
                     ControlWrite {
@@ -710,5 +713,18 @@ fn waiting_ui_callback_controls_live_dsp_through_shared_values_without_a_window(
                 (0, 0, 0)
             );
         });
+    }
+}
+
+fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
+    sampler_core::ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
     }
 }

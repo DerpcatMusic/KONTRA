@@ -271,7 +271,7 @@ impl Program {
         self.requires_controller
     }
 
-    /// Needs a note or controller's routed performance domain, not a plain UI plan.
+    /// Needs a routed note/controller/UI performance domain, not a bare plan callback.
     pub fn requires_performance(&self) -> bool {
         self.requires_performance
     }
@@ -517,12 +517,28 @@ impl NoteStage {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(super) enum PlanContext {
+    Bare,
+    Controller(super::controller_event::ControllerEvent),
+    Control(super::control::ControlEvent),
+}
+impl PlanContext {
+    fn stage(self) -> Option<usize> {
+        match self {
+            Self::Bare => None,
+            Self::Controller(event) => Some(event.stage),
+            Self::Control(event) => Some(event.stage),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(super) struct Continuation {
     pub owner: BehaviorOwner,
     pub program: usize,
     pub pc: usize,
     pub outcome: Option<Outcome>,
-    pub controller: Option<super::controller_event::ControllerEvent>,
+    pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
 }
 
@@ -573,7 +589,7 @@ impl Runtime {
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
-            controller: None,
+            context: PlanContext::Bare,
             note_stage,
             program,
             pc: 0,
@@ -596,19 +612,11 @@ impl Runtime {
         self.start_plan_behavior_now(plan, program)
     }
 
-    pub(super) fn validate_plan_behavior(
-        &self,
-        plan: super::PlanId,
-        program: usize,
-    ) -> Result<(), Error> {
-        self.validate_plan_context(plan, program, false)
-    }
-
     pub(super) fn validate_plan_context(
         &self,
         plan: super::PlanId,
         program: usize,
-        controller: bool,
+        context: PlanContext,
     ) -> Result<(), Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let program = generation
@@ -617,7 +625,8 @@ impl Runtime {
             .get(program)
             .ok_or(Error::InvalidInput)?;
         if program.requires_note
-            || (program.requires_performance && !controller)
+            || (program.requires_performance && matches!(context, PlanContext::Bare))
+            || (program.requires_controller && !matches!(context, PlanContext::Controller(_)))
             || program.wait_lifetime != WaitLifetime::Callback
         {
             return Err(Error::InvalidInput);
@@ -633,20 +642,20 @@ impl Runtime {
         plan: super::PlanId,
         program: usize,
     ) -> Result<BehaviorId, Error> {
-        self.start_plan_context(plan, program, None)
+        self.start_plan_context(plan, program, PlanContext::Bare)
     }
 
     pub(super) fn start_plan_context(
         &mut self,
         plan: super::PlanId,
         program: usize,
-        controller: Option<super::controller_event::ControllerEvent>,
+        context: PlanContext,
     ) -> Result<BehaviorId, Error> {
-        self.validate_plan_context(plan, program, controller.is_some())?;
+        self.validate_plan_context(plan, program, context)?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Plan(plan),
-            controller,
+            context,
             note_stage: None,
             program,
             pc: 0,
@@ -663,7 +672,7 @@ impl Runtime {
         let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         Ok(c.note_stage
             .map(|stage| stage.index())
-            .or(c.controller.map(|e| e.stage))
+            .or(c.context.stage())
             .unwrap_or_else(|| match c.owner {
                 BehaviorOwner::Note(note) => self.note_events[note.0.index].entry,
                 BehaviorOwner::Plan(_) => 0,
@@ -1274,15 +1283,22 @@ impl Runtime {
         let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
         let source_stage = callback
             .note_stage
-            .or(callback.controller.map(|e| NoteStage::Attack(e.stage)));
+            .or(callback.context.stage().map(NoteStage::Attack));
         let origin = match callback.owner {
             BehaviorOwner::Note(note) => super::NoteOrigin::Child(note, linked, inheritance),
             BehaviorOwner::Plan(plan) => {
                 if linked || inheritance != Inheritance::Independent {
                     return Err(Error::InvalidInput);
                 }
-                let event = callback.controller.ok_or(Error::InvalidInput)?;
-                super::NoteOrigin::Generated(plan, event.origin, event.performance)
+                let (origin, performance) = if let PlanContext::Controller(event) = callback.context
+                {
+                    (event.origin, event.performance)
+                } else if let PlanContext::Control(event) = callback.context {
+                    (event.origin, event.performance)
+                } else {
+                    return Err(Error::InvalidInput);
+                };
+                super::NoteOrigin::Generated(plan, origin, performance)
             }
         };
         self.reclaim_internal_notes(super::ReleaseReserve::default());

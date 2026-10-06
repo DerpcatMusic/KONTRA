@@ -379,7 +379,11 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
             None,
         )
         .unwrap()
-        .with_control_programs(vec![(MODE, 0)])
+        .with_control_programs(vec![sampler_core::ControlCallback {
+            control: MODE,
+            program: 0,
+            stage: 0,
+        }])
         .unwrap();
     let (rt, mut transfer) = Runtime::with_plan_updates(prepared, limits(), 2, 1).unwrap();
     let (mut rt, mut client) = rt.with_control_updates(1, 1).unwrap();
@@ -388,7 +392,10 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
         .submit(ControlRequest {
             plan: old,
             expected_revision: Some(0),
-            operation: ControlOperation::Invoke(write(MODE, ControlValue::Integer(11))),
+            operation: ControlOperation::Invoke(
+                control_context(&rt),
+                write(MODE, ControlValue::Integer(11)),
+            ),
         })
         .unwrap();
     support::without_heap(|| {
@@ -401,7 +408,12 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
     let mut second = None;
     support::without_heap(|| {
         second = rt
-            .invoke_control(old, Some(1), write(MODE, ControlValue::Integer(12)))
+            .invoke_control(
+                control_context(&rt),
+                old,
+                Some(1),
+                write(MODE, ControlValue::Integer(12)),
+            )
             .unwrap()
             .1;
         assert_eq!(rt.note_count(), 0);
@@ -410,7 +422,12 @@ fn plan_callbacks_are_independent_of_notes_and_retain_generations_until_acknowle
         assert_eq!(rt.behavior_local(second.unwrap(), 0), Ok(12));
         // Saturation cannot change the value even though the value itself is valid.
         assert_eq!(
-            rt.invoke_control(old, None, write(MODE, ControlValue::Integer(99))),
+            rt.invoke_control(
+                control_context(&rt),
+                old,
+                None,
+                write(MODE, ControlValue::Integer(99))
+            ),
             Err(Error::Capacity)
         );
         assert_eq!(rt.control_value(old, MODE), Ok(ControlValue::Integer(12)));
@@ -838,4 +855,168 @@ fn signed32_instructions_preserve_declared_arithmetic_and_reject_wide_register_i
         );
         assert_eq!(rt.behavior_local(id, 0), Ok(i64::MAX));
     }
+}
+
+fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
+    sampler_core::ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
+    }
+}
+
+#[test]
+fn routed_control_contexts_are_validated_before_edits_and_survive_queued_waits() {
+    let prepared = || {
+        plan(definitions())
+            .with_programs(
+                vec![
+                    Program::new(vec![
+                        Instruction::SetLocal { local: 0, value: 7 },
+                        Instruction::Wait(2),
+                        Instruction::ReadInputController {
+                            controller: 0,
+                            local: 1,
+                        },
+                        Instruction::WriteControl {
+                            control: MODE,
+                            local: 1,
+                        },
+                        Instruction::End,
+                    ])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+                ],
+                None,
+            )
+            .unwrap()
+            .with_stages(vec![Stage::default(); 2])
+            .unwrap()
+    };
+    let binding = ControlCallback {
+        control: MODE,
+        program: 0,
+        stage: 1,
+    };
+    assert!(matches!(
+        prepared().with_control_programs(vec![ControlCallback {
+            stage: 2,
+            ..binding
+        }]),
+        Err(Error::InvalidInput)
+    ));
+    assert!(matches!(
+        prepared()
+            .with_control_programs(vec![binding])
+            .unwrap()
+            .with_stages(vec![Stage::default()]),
+        Err(Error::InvalidInput)
+    ));
+    let mut budget = limits();
+    budget.performances = 2;
+    let rt = Runtime::new(
+        prepared().with_control_programs(vec![binding]).unwrap(),
+        budget,
+    )
+    .unwrap();
+    let foreign = Runtime::new(plan(definitions()), limits()).unwrap();
+    let (mut rt, mut client) = rt.with_control_updates(1, 1).unwrap();
+    let plan_id = rt.active_plan();
+    let context = ControlContext {
+        performance: rt.performance(1).unwrap(),
+        ..control_context(&rt)
+    };
+    let initial = rt.control_value(plan_id, MODE).unwrap();
+    support::without_heap(|| {
+        for (context, error) in [
+            (
+                ControlContext {
+                    performance: foreign.performance(0).unwrap(),
+                    ..context
+                },
+                Error::StaleHandle,
+            ),
+            (
+                ControlContext {
+                    channels: 0,
+                    ..context
+                },
+                Error::InvalidInput,
+            ),
+            (
+                ControlContext {
+                    origin: ChannelAddress {
+                        channel: 16,
+                        ..context.origin
+                    },
+                    ..context
+                },
+                Error::InvalidInput,
+            ),
+            (
+                ControlContext {
+                    origin: ChannelAddress {
+                        group: 16,
+                        ..context.origin
+                    },
+                    ..context
+                },
+                Error::InvalidInput,
+            ),
+        ] {
+            assert_eq!(
+                rt.invoke_control(
+                    context,
+                    plan_id,
+                    None,
+                    write(MODE, ControlValue::Integer(11))
+                ),
+                Err(error)
+            );
+            assert_eq!(rt.control_value(plan_id, MODE), Ok(initial));
+            assert_eq!(rt.control_revision(plan_id), Ok(0));
+        }
+        assert_eq!(
+            rt.start_plan_behavior(plan_id, 0),
+            Err(Error::InvalidInput),
+            "a bare plan callback cannot borrow a performance"
+        );
+        rt.dispatch_controller(context.performance, context.origin, 1, 7, 42)
+            .unwrap();
+    });
+    client
+        .submit(ControlRequest {
+            plan: plan_id,
+            expected_revision: Some(0),
+            operation: ControlOperation::Invoke(context, write(MODE, ControlValue::Integer(11))),
+        })
+        .unwrap();
+    support::without_heap(|| {
+        assert_eq!(rt.poll_control_update(), Ok(Some(1)));
+        assert_eq!(
+            rt.control_value(plan_id, MODE),
+            Ok(ControlValue::Integer(11))
+        );
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.expression_count()),
+            (0, 0, 0)
+        );
+        rt.render(&mut [[0.; 2]; 3]).unwrap();
+        assert_eq!(
+            rt.control_value(plan_id, MODE),
+            Ok(ControlValue::Integer(42))
+        );
+        assert_eq!(rt.controller(rt.performance(0).unwrap(), 7), Ok(0));
+    });
+    let reply = client.reply().unwrap();
+    assert_eq!(reply.result, Ok((1, 1)));
+    assert_eq!(
+        rt.behavior_outcome(reply.behavior.unwrap()),
+        Ok(Some(Outcome::Finished))
+    );
 }

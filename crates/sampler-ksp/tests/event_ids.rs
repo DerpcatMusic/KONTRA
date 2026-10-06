@@ -299,6 +299,7 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         let plan = rt.active_plan();
         let original = rt.trigger(input(60), 60, 1.).unwrap();
         rt.invoke_control(
+            control_context(&rt),
             plan,
             None,
             ControlWrite {
@@ -318,6 +319,7 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         rt.flush_ended(|_| true);
         let fresh = rt.note_on(input(60), 60, 1.).unwrap();
         rt.invoke_control(
+            control_context(&rt),
             plan,
             None,
             ControlWrite {
@@ -449,5 +451,18 @@ fn stopping_a_pending_attack_finishes_without_sound_or_consuming_host_input() {
             rt.flush_ended(|_| true);
             assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
         });
+    }
+}
+
+fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
+    sampler_core::ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
     }
 }

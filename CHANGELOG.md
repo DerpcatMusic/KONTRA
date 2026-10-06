@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Bind native UI callbacks to their module and explicit performance/channel context.
+  KSP UI handlers can read scoped CC state and generate downstream notes/controllers
+  across waits and plan replacement without fabricated host notes. Direct and queued
+  interactions validate ownership before editing values.
+
 - Fade starved native sources over one millisecond from the last complete resample,
   then drain their declared DSP tails. Keep host pairing and one-time fault telemetry;
   late pages cannot restart failed sources or leak incomplete interpolation output.
