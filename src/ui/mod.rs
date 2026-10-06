@@ -262,7 +262,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
         (v.loading, &v.status, v.program).hash(h);
-        (at(&v.tree), at(&v.report), at(&v.trace)).hash(h);
+        (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
 

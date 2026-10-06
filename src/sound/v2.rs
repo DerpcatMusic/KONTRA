@@ -632,7 +632,7 @@ fn kontakt(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
     canceled: &(dyn Fn() -> bool + Sync),
-) -> Result<(Prepared, MixTree, LoadReport), CoreError> {
+) -> Result<Loaded<Prepared>, CoreError> {
     let load = |e: sampler_kontakt::LoadError| match e {
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load(e.to_string()),
@@ -654,7 +654,21 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    Ok((loaded.plan, tree, report))
+    let mut interfaces = loaded.interfaces;
+    for asset in interfaces.iter_mut().flat_map(|ui| &mut ui.assets) {
+        if let sampler_ui_ir::AssetKind::Image(meta) = &mut asset.kind {
+            *meta = picture_meta(&request.path, &asset.path).unwrap_or(*meta);
+        }
+    }
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces })
+}
+
+/// The layout of the picture at `asset` (library-relative, `.png`) from the
+/// `.txt` beside it, in the nearest folder above `instrument` that has it.
+fn picture_meta(instrument: &Path, asset: &str) -> Option<sampler_ui_ir::ImageMeta> {
+    let txt = Path::new(asset).with_extension("txt");
+    let text = instrument.ancestors().skip(1).find_map(|dir| std::fs::read_to_string(dir.join(&txt)).ok())?;
+    Some(sampler_ksp::ui::picture_meta(&text))
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -680,7 +694,7 @@ fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn wav(request: &LoadRequest) -> Result<(Prepared, MixTree, LoadReport), CoreError> {
+fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
     let rate = request.sample_rate as u32;
     let (source_rate, frames) = read_wav(&request.path)?;
@@ -705,7 +719,7 @@ fn wav(request: &LoadRequest) -> Result<(Prepared, MixTree, LoadReport), CoreErr
     report.decoded.zones = 1;
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
-    Ok((plan, MixTree::instrument(&name), report))
+    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new() })
 }
 
 impl CoreLoader for V2Loader {
@@ -718,7 +732,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let (prepared, tree, report) = if is_kontakt(&request.path) {
+        let Loaded { part: prepared, tree, report, interfaces } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -739,7 +753,7 @@ impl CoreLoader for V2Loader {
         }
         let part = Part::new(runtime, tree.clone())?;
         progress(Progress::DONE);
-        Ok(Loaded { part: Some(Box::new(part)), tree, report })
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -954,6 +968,18 @@ mod tests {
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
+    }
+
+    #[test]
+    fn script_pictures_read_their_layout_from_the_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let pictures = dir.path().join("Resources/pictures");
+        std::fs::create_dir_all(&pictures).unwrap();
+        std::fs::write(pictures.join("knob.txt"), "Number of Animations: 31\nHas Alpha Channel: yes\n").unwrap();
+        let instrument = dir.path().join("Instruments/Piano.nki");
+        let meta = super::picture_meta(&instrument, "Resources/pictures/knob.png").unwrap();
+        assert_eq!(meta.frames, 31);
+        assert!(super::picture_meta(&instrument, "Resources/pictures/missing.png").is_none());
     }
 
     #[test]
