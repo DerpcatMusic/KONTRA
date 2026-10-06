@@ -576,6 +576,8 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
 pub(crate) const MAX_LANES: usize = 8;
 
 pub(super) struct DspState {
+    /// Voice slots `cells` and `delay_samples` are sized for.
+    pub voices: usize,
     pub stride: usize,
     /// One `stride` of chain state per voice slot; claimed per voice.
     pub cells: Slab<ProcessorState>,
@@ -593,21 +595,11 @@ impl DspState {
         expressions: usize,
         lanes: usize,
     ) -> Result<Self, Error> {
-        let stride = plan
-            .voice_chains
-            .iter()
-            .map(PreparedVoiceChain::stages)
-            .max()
-            .unwrap_or(0);
+        let (stride, delay_stride) = Self::shape(plan);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
-        let delay_stride = plan
-            .voice_chains
-            .iter()
-            .map(|chain| chain.delay_frames)
-            .max()
-            .unwrap_or(0);
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
         Ok(Self {
+            voices,
             stride,
             cells: Slab::new(allocate(cells)?, stride),
             filters: Slab::new(
@@ -620,6 +612,48 @@ impl DspState {
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
         })
+    }
+    /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).
+    pub fn shape(plan: &Prepared) -> (usize, usize) {
+        let stride = plan
+            .voice_chains
+            .iter()
+            .map(PreparedVoiceChain::stages)
+            .max()
+            .unwrap_or(0);
+        let delay = plan
+            .voice_chains
+            .iter()
+            .map(|chain| chain.delay_frames)
+            .max()
+            .unwrap_or(0);
+        (stride, delay)
+    }
+    /// Per-voice storage for `voices` slots of a plan of this `shape`.
+    pub fn voice_storage(
+        (stride, delay): (usize, usize),
+        voices: usize,
+    ) -> Result<(Slab<ProcessorState>, Slab<[f64; 2]>), Error> {
+        let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        let delays = delay.checked_mul(voices).ok_or(Error::Capacity)?;
+        Ok((Slab::new(allocate(cells)?, stride), Slab::new(allocate(delays)?, delay)))
+    }
+    /// Take the larger per-voice storage `cells`/`delays` (from
+    /// `voice_storage`), moving every live voice's state across; the old
+    /// storage is left in the arguments. No allocation.
+    pub fn adopt(
+        &mut self,
+        voices: usize,
+        cells: &mut Slab<ProcessorState>,
+        delays: &mut Slab<[f64; 2]>,
+    ) {
+        let n = self.cells.len();
+        cells.as_mut_slice()[..n].swap_with_slice(self.cells.as_mut_slice());
+        std::mem::swap(&mut self.cells, cells);
+        let n = self.delay_samples.len();
+        delays.as_mut_slice()[..n].swap_with_slice(self.delay_samples.as_mut_slice());
+        std::mem::swap(&mut self.delay_samples, delays);
+        self.voices = voices;
     }
     /// Make sure there is a filter cache for each of `lanes` render lanes.
     /// Control side: allocates.
