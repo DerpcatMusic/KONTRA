@@ -31,8 +31,9 @@ struct Siblings {
 
 mod control;
 pub use control::{
-    ControlClient, ControlDefinition, ControlDomain, ControlId, ControlOperation,
-    ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite, RejectedControls,
+    ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
+    ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
+    RejectedControls,
 };
 mod controller_event;
 mod performance;

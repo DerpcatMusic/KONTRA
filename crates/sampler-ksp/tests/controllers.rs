@@ -133,6 +133,7 @@ fn source_controller_modules_keep_ordered_cc_views_globals_and_ui_bindings() {
             true
         });
         rt.invoke_control(
+            control_context(&rt),
             generation,
             None,
             ControlWrite {
@@ -221,6 +222,7 @@ fn modules_without_controller_callbacks_keep_their_positions_and_ui_ownership() 
         rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
             .unwrap();
         rt.invoke_control(
+            control_context(&rt),
             generation,
             None,
             ControlWrite {
@@ -667,4 +669,166 @@ fn note_and_release_controller_operations_retain_the_original_domain_across_wait
         });
     }
     assert!(compile("on note set_controller(7,$CC_NUM) end on").is_err());
+}
+
+fn control_context(rt: &sampler_core::Runtime) -> sampler_core::ControlContext {
+    sampler_core::ControlContext {
+        performance: rt.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+        },
+        channels: 1,
+    }
+}
+
+#[test]
+fn ui_callbacks_keep_module_domain_and_origin_through_generated_events_waits_and_plan_replacement()
+{
+    let button = ControlId(900);
+    let prepared = sampler_ksp::bind_modules(
+        vec![
+            compile(
+                "on init declare $calls declare $notes end on
+            on controller inc($calls) ignore_controller set_controller(2,%CC[1]) end on
+            on note inc($notes) ignore_event($EVENT_ID) end on",
+            )
+            .unwrap(),
+            compile("on init declare $empty end on").unwrap(),
+            compile_bound(
+                "on init declare $seen declare $event declare ui_button $button end on
+            on ui_control($button)
+                $seen := %CC[2]
+                $event := play_note(60,127,0,500)
+                set_controller(3,$seen / 2)
+                wait(125)
+                set_controller(4,%CC[2])
+            end on",
+                &[("$button", button)],
+            )
+            .unwrap(),
+            compile(
+                "on init declare $notes declare $released declare $last end on
+            on note inc($notes) change_note($EVENT_ID,61) end on
+            on release inc($released) end on
+            on controller $last := $CC_NUM end on",
+            )
+            .unwrap(),
+        ],
+        Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[0.25; 2]; 128].into()).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 61,
+                key_high: 61,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut budget = limits(&prepared);
+    budget.behaviors = 16;
+    budget.behavior_cells = prepared.behavior_local_count() * 16;
+    budget.commands = 16;
+    let (mut rt, mut transfer) = Runtime::with_plan_updates(prepared, budget, 2, 1).unwrap();
+    let old = rt.active_plan();
+    let domain = rt.performance(1).unwrap();
+    let mut callback = None;
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        callback = rt
+            .invoke_control(
+                ControlContext {
+                    performance: domain,
+                    origin: origin(),
+                    channels: (1 << 3) | (1 << 4),
+                },
+                old,
+                Some(0),
+                ControlWrite {
+                    id: button,
+                    value: ControlValue::Integer(1),
+                },
+            )
+            .unwrap()
+            .1;
+        assert_eq!(rt.behavior_outcome(callback.unwrap()), Ok(None));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(0), 1), Ok(0));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(2), 0), Ok(127));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(3), 0), Ok(1));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(3), 2), Ok(3));
+        let alias = rt.script_cell(old, ScriptInstanceId(2), 1).unwrap() as i32;
+        let note = rt.resolve_source_event(old, alias).unwrap().unwrap();
+        assert_eq!(rt.input_held(note), Ok(false));
+        assert_eq!(rt.note_plan(note), Ok(old));
+        assert_eq!(rt.note_pitch(note), Ok(NotePitch::Key(61)));
+        assert_eq!(rt.note_controller(note, 2), Ok(u32::MAX));
+        assert_eq!(
+            rt.note_controller(note, 3),
+            Ok(0),
+            "onset snapshot predates UI-generated CC"
+        );
+        assert_eq!(
+            rt.controller(domain, 3),
+            Ok((u64::from(u32::MAX) * 63 / 127) as u32)
+        );
+        assert_eq!(rt.controller(rt.performance(0).unwrap(), 3), Ok(0));
+        assert_eq!(
+            rt.all_sound_off(ChannelAddress {
+                channel: 4,
+                ..origin()
+            }),
+            Ok(0)
+        );
+        assert_eq!(rt.voice_count(), 1);
+    });
+    transfer
+        .submit(Box::new(Prepared::new(48000, vec![], vec![], 0).unwrap()))
+        .unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        let mut audio = [[0.; 2]; 32];
+        for chunk in audio.chunks_mut(7) {
+            rt.render(chunk).unwrap();
+        }
+        assert_eq!(&audio[..24], &[[0.25; 2]; 24]);
+        assert_eq!(&audio[24..], &[[0.; 2]; 8]);
+        assert_eq!(rt.controller(domain, 4), Ok(u32::MAX));
+        assert_eq!(rt.controller(rt.performance(0).unwrap(), 4), Ok(0));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(3), 1), Ok(1));
+        assert_eq!(rt.script_cell(old, ScriptInstanceId(3), 2), Ok(4));
+        assert_eq!(
+            rt.behavior_outcome(callback.unwrap()),
+            Ok(Some(Outcome::Finished))
+        );
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| panic!("UI-generated notes have no host terminal"));
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.expression_count()),
+            (0, 0, 0)
+        );
+        assert_eq!(rt.collect_retired_plans(), 1);
+    });
+    drop(transfer.retired().unwrap());
 }

@@ -113,7 +113,11 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         });
         for control in script.controls {
             if let Some(program) = control.callback {
-                callbacks.push((control.definition.id, base + program));
+                callbacks.push(sampler_core::ControlCallback {
+                    control: control.definition.id,
+                    program: base + program,
+                    stage: index,
+                });
             }
             controls.push(control.definition);
         }
@@ -131,8 +135,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_source_event_limit(0x0fff_ffff)?
         .with_controls(controls)?
         .with_programs(programs, None)?
-        .with_control_programs(callbacks)?
-        .with_stages(stages)
+        .with_stages(stages)?
+        .with_control_programs(callbacks)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,7 +177,7 @@ impl CallbackKind {
     fn accepts(self, program: &Program) -> bool {
         match self {
             Self::Note | Self::Release => !program.requires_controller(),
-            Self::Control => !program.requires_note() && !program.requires_performance(),
+            Self::Control => !program.requires_note() && !program.requires_controller(),
             Self::Controller => !program.requires_note(),
         }
     }
@@ -691,7 +695,7 @@ impl<'a> Parser<'a> {
                 Kind::Word("ignore_controller") if matches!(kind, CallbackKind::Controller) => {
                     self.emit(Instruction::SuppressController)?;
                 }
-                Kind::Word("set_controller") if !matches!(kind, CallbackKind::Control) => {
+                Kind::Word("set_controller") => {
                     self.symbol(b'(')?;
                     self.scalar(0)?;
                     self.symbol(b',')?;

@@ -106,14 +106,22 @@ impl Runtime {
             if self.behaviors.available() < needed {
                 return Err(Error::Capacity);
             }
-            self.validate_plan_context(plan, program, true)?;
+            self.validate_plan_context(
+                plan,
+                program,
+                super::behavior::PlanContext::Controller(event),
+            )?;
             event.reserved = needed - 1;
             self.behaviors.reserve(event.reserved);
             self.receive_controller_path(plan, event, next + 1);
             event.stage = next;
             Ok(Some(
-                self.start_plan_context(plan, program, Some(event))
-                    .expect("preflighted controller chain admission"),
+                self.start_plan_context(
+                    plan,
+                    program,
+                    super::behavior::PlanContext::Controller(event),
+                )
+                .expect("preflighted controller chain admission"),
             ))
         } else {
             let end = stages.len();
@@ -135,7 +143,9 @@ impl Runtime {
     }
 
     pub(super) fn release_controller_reserve(&mut self, id: BehaviorId) {
-        if let Some(event) = self.behaviors.get_mut(id.0).unwrap().controller.as_mut() {
+        if let super::behavior::PlanContext::Controller(event) =
+            &mut self.behaviors.get_mut(id.0).unwrap().context
+        {
             let reserved = std::mem::take(&mut event.reserved);
             self.behaviors.unreserve(reserved);
         }
@@ -173,13 +183,28 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-        if let Some(mut event) = callback.controller {
+        if let super::behavior::PlanContext::Controller(mut event) = callback.context {
             event.stage += 1;
             event.number = number;
             event.value = value;
             event.pending = true;
             event.reserved = 0;
             self.admit_controller(self.behavior_plan(callback.owner)?, event)?;
+            Ok(())
+        } else if let super::behavior::PlanContext::Control(event) = callback.context {
+            self.admit_controller(
+                self.behavior_plan(callback.owner)?,
+                ControllerEvent {
+                    performance: event.performance,
+                    origin: event.origin,
+                    channels: event.channels,
+                    number,
+                    value,
+                    stage: event.stage + 1,
+                    pending: true,
+                    reserved: 0,
+                },
+            )?;
             Ok(())
         } else if let Some(stage) = callback.note_stage {
             let note = callback.owner.note()?;
@@ -217,12 +242,15 @@ impl Runtime {
         &mut self,
         id: BehaviorId,
     ) -> Result<&mut ControllerEvent, Error> {
-        self.behaviors
+        match &mut self
+            .behaviors
             .get_mut(id.0)
             .ok_or(Error::StaleHandle)?
-            .controller
-            .as_mut()
-            .ok_or(Error::InvalidInput)
+            .context
+        {
+            super::behavior::PlanContext::Controller(event) => Ok(event),
+            _ => Err(Error::InvalidInput),
+        }
     }
 
     pub(super) fn behavior_performance(
@@ -230,7 +258,10 @@ impl Runtime {
         id: BehaviorId,
     ) -> Result<(usize, ChannelScope), Error> {
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-        if let Some(event) = callback.controller {
+        if let super::behavior::PlanContext::Controller(event) = callback.context {
+            return Ok((event.performance, event.scope()));
+        }
+        if let super::behavior::PlanContext::Control(event) = callback.context {
             return Ok((event.performance, event.scope()));
         }
         if let crate::BehaviorOwner::Note(note) = callback.owner {
@@ -280,7 +311,7 @@ impl Runtime {
                 self.start_plan_context(
                     plan,
                     program,
-                    Some(ControllerEvent {
+                    super::behavior::PlanContext::Controller(ControllerEvent {
                         stage: next,
                         reserved: remaining,
                         ..event

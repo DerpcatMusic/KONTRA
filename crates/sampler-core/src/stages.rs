@@ -31,6 +31,13 @@ impl Prepared {
                 return Err(Error::InvalidInput);
             }
         }
+        if self
+            .control_programs
+            .iter()
+            .any(|binding| binding.stage >= stages.len())
+        {
+            return Err(Error::InvalidInput);
+        }
         self.stages = stages.into_boxed_slice();
         Ok(self)
     }

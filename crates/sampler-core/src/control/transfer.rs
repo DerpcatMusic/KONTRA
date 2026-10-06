@@ -5,7 +5,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 
 #[derive(Debug)]
 pub enum ControlOperation {
-    Invoke(ControlWrite),
+    Invoke(super::ControlContext, ControlWrite),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -13,7 +13,7 @@ pub enum ControlOperation {
 impl ControlOperation {
     fn len(&self) -> usize {
         match self {
-            Self::Invoke(_) => 1,
+            Self::Invoke(..) => 1,
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
         }
     }
@@ -62,6 +62,10 @@ pub(crate) struct ControlQueues {
     retained: Option<ControlReply>,
 }
 impl ControlClient {
+    #[allow(
+        clippy::result_large_err,
+        reason = "Return the bounded caller-owned command intact without allocating a rejection wrapper"
+    )]
     pub fn submit(&mut self, command: ControlRequest) -> Result<u64, RejectedControls> {
         let reason = if self.pending.is_abandoned() {
             Some(ControlQueueError::Disconnected)
@@ -155,8 +159,8 @@ impl Runtime {
         // Share ordering with direct controls and the native musical timeline.
         self.apply_due();
         reply.result = match &mut command.operation {
-            ControlOperation::Invoke(write) => self
-                .invoke_control(command.plan, command.expected_revision, *write)
+            ControlOperation::Invoke(context, write) => self
+                .invoke_control(*context, command.plan, command.expected_revision, *write)
                 .map(|(revision, behavior)| {
                     reply.behavior = behavior;
                     (1, revision)

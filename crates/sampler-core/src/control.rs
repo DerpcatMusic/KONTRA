@@ -59,6 +59,41 @@ pub struct ControlWrite {
     pub value: ControlValue,
 }
 
+/// A control callback's position in the prepared source-module route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlCallback {
+    pub control: ControlId,
+    pub program: usize,
+    pub stage: usize,
+}
+
+/// Musical target of a UI interaction. The caller supplies the real performance
+/// domain and address; a UI callback never borrows or fabricates a host note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlContext {
+    pub performance: crate::PerformanceId,
+    pub origin: crate::ChannelAddress,
+    pub channels: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ControlEvent {
+    pub performance: usize,
+    pub origin: crate::ChannelAddress,
+    pub channels: u16,
+    pub stage: usize,
+}
+impl ControlEvent {
+    pub fn scope(self) -> crate::ChannelScope {
+        crate::ChannelScope {
+            protocol: self.origin.protocol,
+            port: self.origin.port,
+            group: self.origin.group,
+            channels: self.channels,
+        }
+    }
+}
+
 pub(super) struct ControlState {
     values: Box<[ControlValue]>,
     revision: u64,
@@ -88,8 +123,8 @@ impl Prepared {
         self.controls = controls.into_boxed_slice();
         self.validate_program_controls(&self.programs)?;
         self.validate_gain_controls()?;
-        for &(control, _) in &self.control_programs {
-            self.control_index(control)?;
+        for binding in &self.control_programs {
+            self.control_index(binding.control)?;
         }
         Ok(self)
     }
@@ -98,17 +133,21 @@ impl Prepared {
     /// interaction dispatch is explicit. Replacing programs clears these bindings.
     pub fn with_control_programs(
         mut self,
-        mut callbacks: Vec<(ControlId, usize)>,
+        mut callbacks: Vec<ControlCallback>,
     ) -> Result<Self, Error> {
-        callbacks.sort_unstable_by_key(|c| c.0);
-        if callbacks.windows(2).any(|c| c[0].0 == c[1].0) {
+        callbacks.sort_unstable_by_key(|c| c.control);
+        if callbacks.windows(2).any(|c| c[0].control == c[1].control) {
             return Err(Error::InvalidInput);
         }
-        for &(control, program) in &callbacks {
-            self.control_index(control)?;
-            let program = self.programs.get(program).ok_or(Error::InvalidInput)?;
-            if program.requires_note
-                || program.requires_performance
+        for binding in &callbacks {
+            self.control_index(binding.control)?;
+            let program = self
+                .programs
+                .get(binding.program)
+                .ok_or(Error::InvalidInput)?;
+            if binding.stage >= self.stages.len()
+                || program.requires_note
+                || program.requires_controller
                 || program.wait_lifetime != super::WaitLifetime::Callback
             {
                 return Err(Error::InvalidInput);
@@ -153,23 +192,36 @@ impl Runtime {
     /// Returns (resulting revision, callback identity), including synchronous work.
     pub fn invoke_control(
         &mut self,
+        context: ControlContext,
         plan: PlanId,
         expected_revision: Option<u64>,
         write: ControlWrite,
     ) -> Result<(u64, Option<super::BehaviorId>), Error> {
+        let performance = self.performance_index(context.performance)?;
+        if context.origin.group >= 16 || context.origin.channel >= 16 || context.channels == 0 {
+            return Err(Error::InvalidInput);
+        }
         self.apply_due();
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let bindings = &generation.prepared.control_programs;
-        let program = bindings
-            .binary_search_by_key(&write.id, |c| c.0)
+        let binding = bindings
+            .binary_search_by_key(&write.id, |c| c.control)
             .ok()
-            .map(|index| bindings[index].1);
-        if let Some(program) = program {
-            self.validate_plan_behavior(plan, program)?;
+            .map(|index| bindings[index]);
+        let event = binding.map(|binding| {
+            crate::behavior::PlanContext::Control(ControlEvent {
+                performance,
+                origin: context.origin,
+                channels: context.channels,
+                stage: binding.stage,
+            })
+        });
+        if let Some(binding) = binding {
+            self.validate_plan_context(plan, binding.program, event.unwrap())?;
         }
         self.edit_controls_now(plan, expected_revision, &[write])?;
-        let callback = program.map(|program| {
-            self.start_plan_behavior_now(plan, program)
+        let callback = binding.map(|binding| {
+            self.start_plan_context(plan, binding.program, event.unwrap())
                 .expect("preflighted control callback admission")
         });
         Ok((self.control_revision(plan)?, callback))

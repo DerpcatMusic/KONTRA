@@ -85,7 +85,9 @@ Rust 1.92; strict all-target Clippy passes. Logs: `artifacts/controls-*`.
 
 ## Instrument-owned UI callbacks
 
-A prepared `with_control_programs` table binds control identities to native programs.
+A prepared `with_control_programs` table binds control identities to native programs
+and exact module positions through `ControlCallback`. Replacing the module table
+rejects bindings outside that table.
 `invoke_control` admits the value write and callback together: lack of continuation
 capacity rejects before mutation. A handler fault after admission is a retained
 outcome, not a rollback of already executed operations. The queued `Invoke` operation
@@ -95,12 +97,13 @@ script assignments do not recursively dispatch UI handlers.
 `BehaviorOwner` distinguishes `Note` from `Plan`. A plan-owned callback consumes the
 same fixed continuation/local/fuel/command budgets, but no note or expression owner.
 It explicitly retains the generation through waits and outcome backpressure. Note
-operands and gate-lifetime programs are rejected before admission. Channel sound-off
+operands, controller-event-only operands and gate-lifetime programs are rejected
+for UI admission; routed performance operands use the explicit interaction context. Channel sound-off
 does not cancel an unrelated UI handler; explicit abort and global panic cancel
 its pending work. Plan-handler faults do not release unrelated musical notes.
 `flush_behaviors` now returns this explicit owner, and release of a completed handler
-permits off-audio plan retirement. Script-instance subdivision and non-note generated
-musical events remain open; this is not fabricated-note dispatch.
+permits off-audio plan retirement. Script-instance globals and non-note generated musical events now use the shared
+services; this is not fabricated-note dispatch.
 
 Additional native/source checks cover overlapping plan callbacks, exact local
 retention, edits rejected under callback saturation, MIDI cleanup isolation,
@@ -162,3 +165,31 @@ CLAP automation routing, gestures and source-specific callback dispatch remain o
 Timeline validation: all 232 native tests pass in debug, release and Rust 1.92;
 strict all-target Clippy and both root boundary tests pass. Logs use
 `artifacts/control-timeline-{debug,release,msrv,clippy,boundary}.log`.
+
+## Routed UI performance and module ownership
+
+Direct `invoke_control` and queued `ControlOperation::Invoke` now require a
+`ControlContext`: a runtime-qualified `PerformanceId`, source channel address and
+nonempty target-channel mask. The prepared `ControlCallback` supplies its module
+position; callers cannot redirect a control to an arbitrary source module. Invalid
+or foreign performance handles, invalid MIDI addresses and empty masks fail before
+value/callback publication. Queue rejection returns the inline owned request intact;
+a local `result_large_err` exemption avoids allocating a rejection wrapper.
+
+The continuation retains this context alongside its original plan across waits,
+plan replacement and outcome backpressure. UI `%CC` reads use the originating
+module's bank in that performance; generated CCs enter the next module with the
+captured mask. Generated notes use the captured origin address, select in the captured
+performance, and route downstream of the UI module. They are independent native
+roots with source-event aliases, no physical host key or synthetic terminal event.
+Gate-linked note operations and controller-input-only operands still require their
+actual source context. Bare `start_plan_behavior` deliberately has no performance
+and continues to reject operands that need one.
+
+The native control fixture checks invalid contexts without edits, stale runtime IDs,
+module-table revalidation, queued dispatch and performance retention through a wait.
+The source fixture places a UI-only module between other modules, reads a remapped
+CC, creates a note and two controller messages, waits across plan replacement and
+checks exact audio, release callback, domain isolation, origin address, retained
+outcomes and off-audio generation retirement. Both use heap guards. Evidence:
+`artifacts/control-context-*`; widget rendering and complete KSP UI parity remain open.

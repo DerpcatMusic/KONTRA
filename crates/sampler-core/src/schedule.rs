@@ -312,7 +312,7 @@ impl Runtime {
             Action::Resume(id) => {
                 let c = self.behaviors.get_mut(id.0).unwrap();
                 if c.outcome.is_some() {
-                    if let Some(event) = c.controller.as_mut() {
+                    if let super::behavior::PlanContext::Controller(event) = &mut c.context {
                         controller_reserves += std::mem::take(&mut event.reserved);
                     }
                     false

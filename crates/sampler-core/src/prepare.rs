@@ -176,7 +176,7 @@ pub struct Prepared {
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
-    pub(super) control_programs: Box<[(super::ControlId, usize)]>,
+    pub(super) control_programs: Box<[super::ControlCallback]>,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     conditions: Box<[Box<[ControllerCondition]>]>,

@@ -338,8 +338,10 @@ source semantics and checksum/authentication validation are still required.
   UI handoff and coherent capture are implemented. Shared scalar values now drive
   native gain ramps through the same atomic edit/recall path. Timestamped native
   control events reserve the target generation/revision and share musical ordering. KSP scalar widget declarations
-  and plan-owned UI handlers use the shared state without a window. Complete instrument serialization,
-  script-instance state, non-scalar controls and host automation remain open.
+  and plan-owned UI handlers use the shared state without a window. UI interactions
+  now retain explicit module/performance/address context and generate downstream
+  notes/controllers across waits and plan replacement. Complete instrument serialization,
+  non-scalar controls, complete UI generations and host automation remain open.
 
 - [ ] **P0; dependencies:** V2-05/07/10.
 - New stable automation/control IDs, coherent bounded capture, state schema and UI

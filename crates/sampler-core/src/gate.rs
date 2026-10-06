@@ -260,9 +260,8 @@ impl Runtime {
                     super::BehaviorOwner::Note(note) => {
                         self.notes.get(note.0).is_some_and(|n| n.address == address)
                     }
-                    super::BehaviorOwner::Plan(_) => callback
-                        .controller
-                        .is_some_and(|event| event.origin == address),
+                    super::BehaviorOwner::Plan(_) => matches!(callback.context,
+                        super::behavior::PlanContext::Controller(event) if event.origin == address),
                 }
             {
                 callback.outcome = Some(super::Outcome::Cancelled);
