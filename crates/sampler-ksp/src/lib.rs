@@ -20,7 +20,7 @@ pub mod model;
 mod parser;
 mod sema;
 
-pub use diag::Error;
+pub use diag::{Error, Kind};
 pub use eval::Environment;
 pub use lower::{Coverage, PGS_TAG, PROPERTY_TAG};
 
@@ -243,6 +243,8 @@ pub fn compile_with(
         offset: 0,
         line: 1,
         column: 1,
+        kind: diag::Kind::Error,
+        builtin: None,
         message: message.into(),
     };
     if source.len() > limits.source_bytes {
@@ -417,9 +419,12 @@ pub fn compile_with(
         .warnings
         .iter()
         .chain(&init.warnings)
-        .chain(&unit.warnings)
-        .map(|f| f.clone().locate(source))
+        .map(|f| (f, diag::Kind::Warning))
+        .chain(unit.warnings.iter().map(|(f, k)| (f, *k)))
+        .map(|(f, kind)| f.clone().locate_as(source, kind))
         .collect();
+    // Builtin findings first so the cap never hides an unsupported builtin.
+    warnings.sort_by_key(|w| (w.kind == Kind::Warning, w.offset));
     warnings.truncate(1000);
     let services = unit.services.iter().map(|b| b.name()).collect();
     let coverage = unit

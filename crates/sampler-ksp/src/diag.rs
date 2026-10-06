@@ -21,14 +21,31 @@ impl Span {
     }
 }
 
-/// A compile failure positioned in the source. Line and column are 1-based;
-/// the column counts characters, not bytes.
+/// What a diagnostic reports, for the load report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Kind {
+    /// The script does not compile.
+    Error,
+    /// Compiles, but Kontakt would behave differently or report a problem.
+    Warning,
+    /// A builtin runs with simplified semantics (first call site per builtin).
+    Approximate,
+    /// A builtin is accepted but has no effect.
+    Unsupported,
+}
+
+/// A positioned diagnostic: the compile error, or an entry in
+/// `Script::warnings`. Line and column are 1-based; the column counts
+/// characters, not bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     /// UTF-8 byte offset into the supplied source; always a char boundary.
     pub offset: usize,
     pub line: u32,
     pub column: u32,
+    pub kind: Kind,
+    /// KSP builtin the diagnostic is about, e.g. `set_engine_par`.
+    pub builtin: Option<&'static str>,
     pub message: String,
 }
 impl std::fmt::Display for Error {
@@ -42,6 +59,7 @@ impl std::error::Error for Error {}
 #[derive(Clone, Debug)]
 pub struct Fault {
     pub span: Span,
+    pub builtin: Option<&'static str>,
     pub message: String,
 }
 pub type Result<T> = std::result::Result<T, Fault>;
@@ -49,12 +67,16 @@ pub type Result<T> = std::result::Result<T, Fault>;
 pub fn fault<T>(span: Span, message: impl Into<String>) -> Result<T> {
     Err(Fault {
         span,
+        builtin: None,
         message: message.into(),
     })
 }
 
 impl Fault {
     pub fn locate(self, source: &str) -> Error {
+        self.locate_as(source, Kind::Error)
+    }
+    pub fn locate_as(self, source: &str, kind: Kind) -> Error {
         let mut offset = (self.span.start as usize).min(source.len());
         while !source.is_char_boundary(offset) {
             offset -= 1;
@@ -67,6 +89,8 @@ impl Fault {
             offset,
             line,
             column,
+            kind,
+            builtin: self.builtin,
             message: self.message,
         }
     }
@@ -82,6 +106,7 @@ mod tests {
         let at = source.find("$x").unwrap();
         let error = Fault {
             span: Span::new(at, at + 2),
+            builtin: None,
             message: "m".into(),
         }
         .locate(source);
