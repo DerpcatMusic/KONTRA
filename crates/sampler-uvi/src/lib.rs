@@ -232,6 +232,17 @@ fn path(node: Node) -> String {
     parts.join("/")
 }
 
+/// A UVI stage-curve value `c` in (-1, 1) as the native envelope curvature.
+/// `k = 2·ln((1+c)/(1-c))` makes `expm1(k·t)/expm1(k)` equal v1's envelope law.
+fn curve(c: f64) -> ir::Curve {
+    let c = c.clamp(-0.9998, 0.9998);
+    if c == 0.0 {
+        ir::Curve::Linear
+    } else {
+        ir::Curve::Exponential(2.0 * ((1.0 + c) / (1.0 - c)).ln())
+    }
+}
+
 fn number(node: Node, name: &str, default: f64) -> Result<f64, String> {
     match node.attribute(name) {
         None => Ok(default),
@@ -514,7 +525,7 @@ impl Translation {
         let kind = node.tag_name().name();
         let seconds =
             |name, max| number(node, name, 0.0).map(|t| ir::Time::Seconds(t.clamp(0.0, max)));
-        let envelope = ir::Envelope {
+        let mut envelope = ir::Envelope {
             delay: if kind == "DAHDSR" {
                 seconds("DelayTime", 10.0)?
             } else {
@@ -531,14 +542,16 @@ impl Translation {
             release: seconds("ReleaseTime", 10.0)?,
             ..Default::default()
         };
-        if kind == "AnalogADSR" {
+        if kind == "DAHDSR" {
+            // The native envelope curve `expm1(k·t)/expm1(k)` is exactly v1's
+            // `envelope_curve` (src/uvi/modulation.rs) at k = 2·ln((1+c)/(1-c)),
+            // so a DAHDSR's per-stage curve translates without approximation.
+            envelope.attack_shape = curve(number(node, "AttackCurve", 0.0)?);
+            envelope.decay_shape = curve(number(node, "DecayCurve", 0.0)?);
+            envelope.release_shape = curve(number(node, "ReleaseCurve", 0.0)?);
+        } else {
+            // AnalogADSR integrates an RC stage law this envelope does not model.
             self.unsupported(&at, "analog ADSR stage law (linear stages used)", "");
-        }
-        for curve in ["AttackCurve", "DecayCurve", "ReleaseCurve"] {
-            let value = number(node, curve, 0.0)?;
-            if value != 0.0 {
-                self.unsupported(&at, curve, value);
-            }
         }
         // v1 measured law: velocity^(1 - log2(1 - sensitivity)); 1 gates at 127.
         let sensitivity = number(node, "VelocitySens", 0.75)?.clamp(-1.0, 1.0);
