@@ -503,5 +503,9 @@ fn release_counter_counts_down_while_held_and_freezes_at_key_up() {
     rt.note_off(input(1), None).unwrap();
     // Frozen at 1 − 128/256 once the ramp into it completes.
     let after = render(&mut rt, 256, 64);
-    assert!(after[64..].iter().all(|f| (f[1] - 0.25).abs() < 1e-6), "{:?}", after[64]);
+    assert!(
+        after[64..].iter().all(|f| (f[1] - 0.25).abs() < 1e-6),
+        "{:?}",
+        after[64]
+    );
 }
