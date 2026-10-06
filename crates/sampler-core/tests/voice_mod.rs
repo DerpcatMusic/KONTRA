@@ -75,9 +75,9 @@ fn render(rt: &mut Runtime, frames: usize, block: usize) -> Vec<Frame> {
 fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     // A 64-frame linear attack read through Kontakt's attenuate law at depth 1.
     let attack = Envelope::new(64, 0, 0, 1., 0).unwrap();
-    // Control points fall on chunk ends, so partitions aligned to the attack
-    // knee reproduce it exactly.
-    for block in [1, 16, 64, 100] {
+    // Control points sit on the runtime's 64-frame grid, so any host block
+    // partition reproduces the knee exactly.
+    for block in [1, 7, 16, 61, 64, 100] {
         let mut rt = Runtime::new(
             modulated(
                 plan(256, Envelope::default()),
