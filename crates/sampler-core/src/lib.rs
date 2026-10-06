@@ -148,6 +148,44 @@ pub struct NoteId(Handle);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeId(u64);
 
+/// Why a region mapped to a key did not sound for one selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// Belongs to another phase: a release-trigger region on an attack, or the reverse.
+    Trigger,
+    /// Needs a different articulation (keyswitch).
+    Articulation,
+    /// A controller condition (CC range) failed.
+    Condition,
+    /// Velocity outside the region's range.
+    Velocity,
+    /// The script disallowed the region's group.
+    Group,
+    /// Another round-robin take of the sequence was chosen.
+    Take,
+}
+
+/// One mapped region's outcome in a selection; `rejected` is `None` if it sounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionVerdict {
+    pub region: usize,
+    pub group: Option<u32>,
+    pub rejected: Option<Rejection>,
+}
+
+/// One selection's diagnostic: every region mapped to the key with its verdict.
+/// A key with no candidates has an empty list (nothing is mapped there); a
+/// script-suppressed attack has `suppressed` set and no candidates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectionRecord {
+    pub at: u64,
+    pub key: u8,
+    pub velocity: f64,
+    pub trigger: Trigger,
+    pub suppressed: bool,
+    pub candidates: Vec<RegionVerdict>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceId(Handle);
 
@@ -592,6 +630,8 @@ pub struct Runtime {
     /// Keys whose latest physical event was a note-on: one note-off clears the
     /// key however many presses stacked, as `%KEY_DOWN` does in Kontakt.
     input_keys: u128,
+    /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
+    selection_log: Option<Vec<SelectionRecord>>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -743,6 +783,7 @@ impl Runtime {
                 .into_boxed_slice(),
             script_params: false,
             input_keys: 0,
+            selection_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
