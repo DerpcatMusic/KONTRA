@@ -137,6 +137,13 @@ all 6,050 valid member headers in that archive. The signature failures therefore
 are not explained by a different directory-entry kind. No aligned 1/2/4/8 MiB
 window fits the observed valid/invalid boundaries; a damaged download chunk is
 still a hypothesis, not an established cause.
+A broader bounded backup search also matched full paths, so generic installer
+filenames inside Areia folders were included. It checked 39,273 directories
+and 466,071 files, including user caches and Wine user data, without finding
+an alternate source. The Projects root completed; Gaming and local application
+data reached their directory budgets. Installed library roots, repositories
+and build caches were excluded. Search dumps/probes were deleted after the
+small summary was recorded.
 
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
