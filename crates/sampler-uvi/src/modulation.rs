@@ -80,9 +80,22 @@ enum Signal {
         /// A second modulator summed into the value (MultiLFO noise), with its
         /// own `w` → value curve.
         extra: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        /// The program- or layer-level source this reads, reported (and made
+        /// instrument-wide) once a route uses it.
+        shared: Option<Shared>,
     },
     /// A constant UVI value.
     Fixed { value: f64, bipolar: bool },
+}
+
+/// A shared UVI source instance; see [`Translation::share`].
+struct Shared {
+    node: roxmltree::NodeId,
+    location: String,
+    feature: String,
+    /// Becomes the IR's instrument-wide retriggered LFO.
+    master: bool,
+    modulators: Vec<ir::ModulatorRef>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -237,7 +250,11 @@ impl Translation {
                     scale: None,
                     smoothing: 0.0,
                     extra: None,
+                    shared,
                 }) if scale.is_none() => {
+                    if let Some(shared) = shared {
+                        self.share(shared);
+                    }
                     let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
                     let factor = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
                     let points = match self.live_points(nested, &curve, bipolar, factor)? {
@@ -302,6 +319,7 @@ impl Translation {
                 scale: depth,
                 smoothing,
                 extra,
+                shared,
             } => {
                 let mapped = !connection
                     .attribute("Mapper")
@@ -378,6 +396,9 @@ impl Translation {
                     let route =
                         self.route(modulator, target, depth, points, scale.clone(), smoothing);
                     out.routes.push(route);
+                }
+                if let Some(shared) = shared {
+                    self.share(shared);
                 }
             }
         }
@@ -526,6 +547,7 @@ impl Translation {
                 scale: None,
                 smoothing: 0.0,
                 extra: None,
+                shared: None,
             }))
         };
         // Key followers: exact at every MIDI key.
@@ -663,7 +685,11 @@ impl Translation {
                     scale: None,
                     smoothing: 0.0,
                     extra: None,
+                    shared,
                 }) if scale.is_none() => {
+                    if let Some(shared) = shared {
+                        self.share(shared);
+                    }
                     let f = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
                     match self.live_points(nested, &curve, bipolar, f)? {
                         Ok(points) => scale = Some((modulator, points)),
@@ -718,6 +744,7 @@ impl Translation {
                         NotModeled,
                     )));
                 }
+                let shared = self.shared(node, Vec::new());
                 let polar = number(node, "Bipolar", 0.0)? != 0.0;
                 Ok(Ok(Signal::Live {
                     modulator,
@@ -726,13 +753,79 @@ impl Translation {
                     scale: None,
                     smoothing: 0.0,
                     extra: None,
+                    shared,
                 }))
             }
-            "LFO" => self.lfo(node, factor, scale, hertz),
-            "MultiLFO" => self.multi_lfo(node, factor, scale),
-            "StepEnvelope" => self.steps(node),
+            "LFO" | "MultiLFO" | "StepEnvelope" => {
+                let signal = match kind {
+                    "LFO" => self.lfo(node, factor, scale, hertz)?,
+                    "MultiLFO" => self.multi_lfo(node, factor, scale)?,
+                    _ => self.steps(node)?,
+                };
+                let mut signal = signal;
+                if let Ok(Signal::Live {
+                    modulator,
+                    extra,
+                    shared,
+                    ..
+                }) = &mut signal
+                {
+                    let mut modulators = vec![*modulator];
+                    modulators.extend(extra.as_ref().map(|e| e.0));
+                    *shared = self.shared(node, modulators);
+                }
+                Ok(signal)
+            }
             _ => Ok(Err(gap("modulation source", kind, NotModeled))),
         }
+    }
+
+    /// UVI runs a program- or layer-level source once, for every note it
+    /// serves. A program-level retriggered LFO becomes the IR's instrument-wide
+    /// LFO restarted by every voice start; how UVI's shared instance treats
+    /// overlapping notes is inferred, not measured, so it is reported. A
+    /// layer-level one (restarted by its layer's notes only) and shared
+    /// envelopes stay per voice, reported as approximated. Free-running LFOs
+    /// are already one shared cycle.
+    fn shared(&self, node: Node, modulators: Vec<ir::ModulatorRef>) -> Option<Shared> {
+        let scope = node.parent_element()?.parent_element()?.tag_name().name();
+        let retriggered = modulators.iter().any(|m| {
+            matches!(&self.ir.modulators[m.0].source, ir::ModulationSource::Lfo(l) if l.retrigger)
+        });
+        let lfo = !modulators.is_empty();
+        if !matches!(scope, "Program" | "Layer")
+            || (lfo && !retriggered)
+            || self.shared_sources.contains(&node.id())
+        {
+            return None;
+        }
+        Some(Shared {
+            node: node.id(),
+            location: path(node),
+            feature: format!("{scope}-level {}", node.tag_name().name()),
+            master: scope == "Program" && lfo,
+            modulators,
+        })
+    }
+
+    fn share(&mut self, shared: Shared) {
+        if !self.shared_sources.insert(shared.node) {
+            return;
+        }
+        let value = if shared.master {
+            for m in &shared.modulators {
+                self.ir.modulators[m.0].scope = ir::Scope::Master;
+            }
+            "one instance restarted by every note-on (overlapping notes: inferred, not measured)"
+        } else {
+            "one shared instance in UVI, approximated per voice"
+        };
+        self.ir.unsupported.push(ir::Unsupported {
+            location: shared.location,
+            feature: shared.feature,
+            value: value.into(),
+            reason: ir::Reason::UnknownLaw,
+        });
     }
 
     fn lfo(
@@ -826,6 +919,7 @@ impl Translation {
             scale,
             smoothing,
             extra: None,
+            shared: None,
         }))
     }
 
@@ -934,6 +1028,7 @@ impl Translation {
             scale,
             smoothing,
             extra,
+            shared: None,
         }))
     }
 
@@ -1035,6 +1130,7 @@ impl Translation {
             scale: None,
             smoothing: 0.0,
             extra: None,
+            shared: None,
         }))
     }
 
@@ -1313,6 +1409,7 @@ mod tests {
                     "pitch bend outside pitch (bend is native note expression)",
                     ir::Reason::NotModeled
                 ),
+                ("Program-level LFO", ir::Reason::UnknownLaw),
             ]
         );
         assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: AHD");
@@ -1457,9 +1554,13 @@ mod tests {
         // 1 Hz + 20 × 0.1 × 0.5.
         assert_eq!(lfo(&ir, route).rate, ir::Frequency::Hertz(2.0));
         assert!((route.smoothing.seconds() - 0.1 * 100f64.ln() / 3f64.ln()).abs() < 1e-12);
+        let features: Vec<_> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
         assert_eq!(
-            ir.unsupported[0].feature,
-            "LFO rate modulated by a live source"
+            features,
+            ["Program-level LFO", "LFO rate modulated by a live source"]
         );
+        // A program-level retriggered LFO is one instance restarted by every note.
+        assert_eq!(ir.modulators[route.source.0].scope, ir::Scope::Master);
+        assert!(ir.unsupported[0].value.contains("inferred, not measured"));
     }
 }

@@ -490,7 +490,8 @@ pub enum Scope {
     /// One instance per group, over the sum of its voices.
     Group(GroupRef),
     Bus(BusRef),
-    /// The instrument output.
+    /// The instrument output; for a modulator, one instance for the whole
+    /// instrument (an LFO only; see [`Lfo::retrigger`]).
     Master,
 }
 
@@ -615,6 +616,8 @@ pub struct Lfo {
     pub phase: f64,
     /// Each voice starts its own cycle at `phase`; otherwise one free-running
     /// cycle, at `phase` when the instrument starts, is shared by all voices.
+    /// A [`Scope::Master`] retriggered LFO is one cycle shared by all voices
+    /// and restarted at `phase` (with its delay and fade) by every voice start.
     pub retrigger: bool,
 }
 
