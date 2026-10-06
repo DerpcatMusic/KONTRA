@@ -335,6 +335,10 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut starts = Vec::new();
     let mut signals = Vec::new();
     let mut shared = Vec::new();
+    let initial_controllers: Vec<(u8, u8)> = scripts
+        .iter()
+        .flat_map(|s| s.model().controllers.iter().copied())
+        .collect();
     let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
     let owns_release_triggers = scripts.iter().any(|s| s.owns_release_triggers);
     for (index, script) in scripts.into_iter().enumerate() {
@@ -386,7 +390,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         resources.push(script.resources);
     }
     let capacity = shared.len() + 4096;
-    plan.with_script_sustain(owns_sustain)
+    plan.with_initial_controllers(&initial_controllers)
+        .with_script_sustain(owns_sustain)
         .with_script_release_triggers(owns_release_triggers)
         .with_programs(Vec::new(), None)?
         .with_script_instances(instances)?

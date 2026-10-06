@@ -1305,4 +1305,3 @@ fn scripted(setup: Setup) {
 fn block_of(frame: usize) -> usize {
     frame / BLOCK * BLOCK
 }
-
