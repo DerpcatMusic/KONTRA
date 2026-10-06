@@ -9,10 +9,12 @@ No source buffer or vendor structure enters the audio runtime.
 Implemented framing includes ordered chunks, structured objects, group/zone
 record lists and script records with versions 0x50/0x60. Unknown chunk IDs,
 duplicate IDs, opaque public/private fields, source group IDs and extension bytes
-remain available without normalization. Unknown script versions and unstructured
-record layouts return explicit errors when interpretation is requested; their
-enclosing raw chunks remain accessible. Unstructured records cannot be delimited
-using the structured-object layout.
+remain available without normalization. Chunk-bounded unstructured bodies retain
+their version and public bytes too; this is the script layout authored by the v1
+writer. Unknown script versions and unstructured array elements return explicit
+errors when interpretation is requested. An unstructured array element has no
+internal length: consuming the remainder would silently lose following records.
+Its enclosing raw chunk remains accessible.
 
 Script text, optional linked filenames, password hashes and persistent entries
 remain exact bytes. Absent strings and empty strings differ. Old records without
