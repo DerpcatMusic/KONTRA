@@ -302,3 +302,36 @@ fn afflatus_keyswitch_script_yields_an_articulation_map() {
     driven.switching.driver = sampler_ir::Driver::Velocity;
     assert_eq!(driven.validate(), Ok(()));
 }
+
+/// Every report feature across the installed instruments, as (instruments,
+/// entries). Translation only, nothing written: run with --ignored.
+#[test]
+#[ignore]
+fn survey_reported_features() {
+    let mut instruments = Vec::new();
+    for root in roots() {
+        collect(&root, &mut instruments);
+    }
+    instruments.sort();
+    let mut features = std::collections::BTreeMap::<String, (usize, usize)>::new();
+    for path in &instruments {
+        let Ok(kontakt) = sampler_kontakt::read(path) else {
+            continue;
+        };
+        let mut seen = std::collections::HashSet::new();
+        for u in &kontakt.instrument.unsupported {
+            let key = format!("{:?} {}", u.reason, u.feature);
+            let entry = features.entry(key.clone()).or_default();
+            entry.1 += 1;
+            if seen.insert(key) {
+                entry.0 += 1;
+            }
+        }
+    }
+    let mut sorted: Vec<_> = features.into_iter().collect();
+    sorted.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
+    for (feature, (n, entries)) in sorted {
+        println!("{n:6} {entries:9} {feature}");
+    }
+    println!("{} instruments", instruments.len());
+}
