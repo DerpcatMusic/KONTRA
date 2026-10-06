@@ -231,8 +231,9 @@ builtins! {
     GetFolder "get_folder" [I] 0 Str;
     FsGetFilename "fs_get_filename" [I I] 0 Str;
     FsNavigate "fs_navigate" [I I] 0 Void;
-    SetNksNavName "set_nks_nav_name" [I S] 0 Void;
+    SetNksNavName "set_nks_nav_name" [I I S] 0 Void;
     SetNksNavPar "set_nks_nav_par" [I I I] 0 Void;
+    ResetNksNav "reset_nks_nav" [] 0 Void;
     // Keyboard display.
     SetKeyColor "set_key_color" [I I] 0 Void;
     SetKeyName "set_key_name" [I S] 0 Void;

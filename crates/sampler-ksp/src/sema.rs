@@ -4,6 +4,7 @@ use crate::builtins::{self, Arg as K, Builtin, Ret, SysArray};
 use crate::diag::{Result, Span, fault};
 use crate::hir::*;
 use crate::lexer::{Interner, Sym};
+use crate::model::PerformanceControl;
 use sampler_core::Comparison;
 use std::collections::HashMap;
 
@@ -29,7 +30,7 @@ struct Sema<'a, 's> {
     in_init: bool,
     loops: usize,
     /// Controls from the performance view file, once `load_performance_view` ran.
-    performance_view: &'s [(String, WidgetKind)],
+    performance_view: &'s [PerformanceControl],
     performance_loaded: bool,
 }
 
@@ -37,7 +38,7 @@ pub fn analyze<'a, 's>(
     ast: ast::Ast,
     syms: &'s Interner<'a>,
     budget: Budget,
-    performance_view: &'s [(String, WidgetKind)],
+    performance_view: &'s [PerformanceControl],
 ) -> Result<Hir> {
     let mut s = Sema {
         syms,
@@ -389,47 +390,57 @@ impl<'a> Sema<'a, '_> {
     /// `load_performance_view` declares the file's controls as UI variables.
     fn load_performance_view(&mut self, span: Span) -> Result<()> {
         self.performance_loaded = true;
-        for (name, kind) in self.performance_view {
-            if !self.folded.contains_key(&name.to_ascii_lowercase()) {
-                self.performance_widget(name, *kind, span)?;
+        for control in self.performance_view {
+            if !self.folded.contains_key(&control.name.to_ascii_lowercase()) {
+                self.performance_widget(control, span)?;
             }
         }
         Ok(())
     }
 
-    fn performance_widget(&mut self, name: &str, kind: WidgetKind, span: Span) -> Result<VarId> {
-        let (ty, array) = prefix_type(name);
-        let expected = match kind {
+    fn performance_widget(&mut self, c: &PerformanceControl, span: Span) -> Result<VarId> {
+        let (ty, array) = prefix_type(&c.name);
+        let expected = match c.kind {
             WidgetKind::Table => (Ty::Int, true),
             WidgetKind::Xy => (Ty::Real, true),
             WidgetKind::TextEdit => (Ty::Str, false),
             _ => (Ty::Int, false),
         };
-        if (ty, array) != expected || array {
+        let len = array.then_some(c.len);
+        if (ty, array) != expected || len.is_some_and(|n| !(1..=MAX_ARRAY).contains(&n)) {
             return fault(
                 span,
-                format!("performance view control {name} has an unsupported type"),
+                format!(
+                    "performance view control {} has an unsupported type or size",
+                    c.name
+                ),
             );
         }
-        // Creator Tools controls default to Kontakt's 0..1000000 parameter range.
-        let params = match kind {
-            WidgetKind::Knob | WidgetKind::Slider => vec![0, 1_000_000],
-            WidgetKind::ValueEdit => vec![0, 1_000_000, 1],
-            _ => vec![],
-        };
-        let home = if kind.has_control() {
-            Home::Control(self.hir.uis.len() as u32)
-        } else if ty == Ty::Str {
-            Home::Text(self.cells(1, true, span)?)
-        } else {
-            Home::Cell(self.cells(1, false, span)?)
+        let home = match len {
+            _ if c.kind.has_control() => Home::Control(self.hir.uis.len() as u32),
+            Some(len) => {
+                self.array_cells = self
+                    .array_cells
+                    .checked_add(len as usize)
+                    .filter(|n| *n <= self.budget.array_cells)
+                    .ok_or(crate::diag::Fault {
+                        span,
+                        message: "array cell budget exceeded".into(),
+                    })?;
+                Home::Cells {
+                    offset: self.cells(len, false, span)?,
+                    len,
+                }
+            }
+            None if ty == Ty::Str => Home::Text(self.cells(1, true, span)?),
+            None => Home::Cell(self.cells(1, false, span)?),
         };
         let var = self.push_var(
             span,
             Var {
-                name: name.into(),
+                name: c.name.as_str().into(),
                 ty,
-                len: None,
+                len,
                 home,
                 ui: Some(self.hir.uis.len() as u32),
                 persistence: Persistence::None,
@@ -437,36 +448,45 @@ impl<'a> Sema<'a, '_> {
             },
         )?;
         self.hir.uis.push(Ui {
-            kind,
+            kind: c.kind,
             var,
-            params,
+            params: c.params.clone(),
             callback: None,
         });
         Ok(var)
     }
 
-    /// After `load_performance_view`, unknown `$` names are performance view
-    /// controls the host did not describe.
+    /// After `load_performance_view`, unknown `$`, `%` and `@` names are performance
+    /// view controls the host did not describe.
     fn resolve_or_declare(&mut self, sym: Sym, span: Span) -> Result<Option<VarId>> {
         if let Some(v) = self.resolve(sym) {
             return Ok(Some(v));
         }
         let name = self.name(sym);
+        let kind = match name.as_bytes().first() {
+            Some(b'$') => WidgetKind::Knob,
+            Some(b'%') => WidgetKind::Table,
+            Some(b'@') => WidgetKind::TextEdit,
+            _ => return Ok(None),
+        };
         if !self.performance_loaded
-            || !name.starts_with('$')
             || builtins::sys_var(name).is_some()
+            || SysArray::from_name(name).is_some()
             || builtins::constant(name).is_some()
             || builtins::control_par(name).is_some()
             || builtins::real_constant(name).is_some()
         {
             return Ok(None);
         }
+        let control = PerformanceControl::assumed(name, kind);
         self.hir.warnings.push(crate::diag::Fault {
             span,
-            message: format!("{name} is not in the performance view description; assumed ui_knob"),
+            message: format!(
+                "{name} is not in the performance view description; assumed {}",
+                kind.keyword()
+            ),
         });
-        self.performance_widget(name, WidgetKind::Knob, span)
-            .map(Some)
+        self.performance_widget(&control, span).map(Some)
     }
 
     fn cells(&mut self, len: u32, text: bool, span: Span) -> Result<u32> {
@@ -964,12 +984,7 @@ impl<'a> Sema<'a, '_> {
 
     fn var(&mut self, sym: Sym, index: Option<&ast::Expr>, span: Span) -> Result<Expr> {
         let name = self.name(sym);
-        let resolved = if index.is_none() {
-            self.resolve_or_declare(sym, span)?
-        } else {
-            self.resolve(sym)
-        };
-        if let Some(var) = resolved {
+        if let Some(var) = self.resolve_or_declare(sym, span)? {
             let v = &self.hir.vars[var.0 as usize];
             let ty = v.ty;
             return Ok(match (index, v.len.is_some()) {

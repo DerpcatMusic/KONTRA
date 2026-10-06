@@ -25,6 +25,38 @@ pub enum WidgetValue {
     Reals(Vec<f64>),
 }
 
+/// A control declared by a Creator Tools performance view file rather than by
+/// the script; the host reads the `.nckp` and passes these in `Environment`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PerformanceControl {
+    /// Variable name with its type prefix, e.g. `$Cutoff` or `%Steps`.
+    pub name: String,
+    pub kind: WidgetKind,
+    /// Declaration parameters as a `declare ui_*` would take them.
+    pub params: Vec<i32>,
+    /// Element count for array controls (`ui_table`, `ui_xy`).
+    pub len: u32,
+}
+impl PerformanceControl {
+    /// What a control the host did not describe is assumed to be.
+    // ponytail: guessed shape; the .nckp reader replaces these with real kinds.
+    pub fn assumed(name: &str, kind: WidgetKind) -> Self {
+        let (params, len) = match kind {
+            // Kontakt's 0..1000000 parameter range.
+            WidgetKind::Knob | WidgetKind::Slider => (vec![0, 1_000_000], 0),
+            WidgetKind::ValueEdit => (vec![0, 1_000_000, 1], 0),
+            WidgetKind::Table => (vec![100, 100, 100], 128),
+            _ => (vec![], 0),
+        };
+        Self {
+            name: name.into(),
+            kind,
+            params,
+            len,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuItem {
     pub text: String,

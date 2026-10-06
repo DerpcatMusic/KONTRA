@@ -1060,7 +1060,7 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
 
 #[test]
 fn performance_view_controls_and_indexed_properties_reach_the_model() {
-    use sampler_ksp::model::{Value, WidgetKind};
+    use sampler_ksp::model::{PerformanceControl, Value, WidgetKind};
     let source = "on init load_performance_view(\"view\")
         declare ui_label $L(1, 2)
         set_control_par_str_arr(get_ui_id($L), $CONTROL_PAR_TEXT, \"two\", 1)
@@ -1075,8 +1075,8 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
     };
     let env = sampler_ksp::Environment {
         performance_view: vec![
-            ("$Cut".into(), WidgetKind::Slider),
-            ("$Mode".into(), WidgetKind::Menu),
+            PerformanceControl::assumed("$Cut", WidgetKind::Slider),
+            PerformanceControl::assumed("$Mode", WidgetKind::Menu),
         ],
         ..Default::default()
     };

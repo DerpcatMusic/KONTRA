@@ -90,26 +90,33 @@ pub enum WidgetKind {
     Panel,
 }
 impl WidgetKind {
+    const KEYWORDS: [(&'static str, Self); 16] = [
+        ("ui_button", Self::Button),
+        ("ui_knob", Self::Knob),
+        ("ui_menu", Self::Menu),
+        ("ui_value_edit", Self::ValueEdit),
+        ("ui_label", Self::Label),
+        ("ui_table", Self::Table),
+        ("ui_waveform", Self::Waveform),
+        ("ui_wavetable", Self::Wavetable),
+        ("ui_slider", Self::Slider),
+        ("ui_text_edit", Self::TextEdit),
+        ("ui_file_selector", Self::FileSelector),
+        ("ui_switch", Self::Switch),
+        ("ui_xy", Self::Xy),
+        ("ui_level_meter", Self::LevelMeter),
+        ("ui_mouse_area", Self::MouseArea),
+        ("ui_panel", Self::Panel),
+    ];
     pub fn from_keyword(word: &str) -> Option<Self> {
-        Some(match word {
-            "ui_button" => Self::Button,
-            "ui_knob" => Self::Knob,
-            "ui_menu" => Self::Menu,
-            "ui_value_edit" => Self::ValueEdit,
-            "ui_label" => Self::Label,
-            "ui_table" => Self::Table,
-            "ui_waveform" => Self::Waveform,
-            "ui_wavetable" => Self::Wavetable,
-            "ui_slider" => Self::Slider,
-            "ui_text_edit" => Self::TextEdit,
-            "ui_file_selector" => Self::FileSelector,
-            "ui_switch" => Self::Switch,
-            "ui_xy" => Self::Xy,
-            "ui_level_meter" => Self::LevelMeter,
-            "ui_mouse_area" => Self::MouseArea,
-            "ui_panel" => Self::Panel,
-            _ => return None,
-        })
+        Self::KEYWORDS
+            .iter()
+            .find(|(k, _)| *k == word)
+            .map(|(_, v)| *v)
+    }
+    /// The `declare` keyword, e.g. `ui_knob`.
+    pub fn keyword(self) -> &'static str {
+        Self::KEYWORDS.iter().find(|(_, v)| *v == self).unwrap().0
     }
     /// `$NI_CONTROL_TYPE_*` value.
     pub fn control_type(self) -> i32 {
