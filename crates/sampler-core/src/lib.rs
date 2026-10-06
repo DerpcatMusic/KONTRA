@@ -38,6 +38,8 @@ pub use control::{
 mod controller_event;
 mod performance;
 pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
+mod switching;
+pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
 use behavior::Continuation;
 pub use behavior::{
