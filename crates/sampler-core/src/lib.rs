@@ -68,8 +68,10 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod plan_programs;
 mod script_params;
 mod voice_mod;
+pub use plan_programs::{PlanProgram, SignalProgram};
 pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget};
 mod ownership;
@@ -463,6 +465,8 @@ pub struct Runtime {
     preemptions: u64,
     longest_preempted: u64,
     dispatching_behavior: bool,
+    /// The plan whose plan programs have started.
+    started_plan: Option<PlanId>,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
@@ -589,6 +593,7 @@ impl Runtime {
             preemptions: 0,
             longest_preempted: 0,
             dispatching_behavior: false,
+            started_plan: None,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),

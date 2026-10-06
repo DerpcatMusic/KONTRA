@@ -8,9 +8,8 @@ fn runtime(source: &str) -> Runtime {
     authored(source, GroupParams::default())
 }
 
-/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
-fn authored(source: &str, group0: GroupParams) -> Runtime {
-    let script = sampler_ksp::compile(
+fn compile(source: &str) -> sampler_ksp::Script {
+    sampler_ksp::compile(
         source,
         48000,
         sampler_ksp::Limits {
@@ -21,8 +20,16 @@ fn authored(source: &str, group0: GroupParams) -> Runtime {
         },
         &[],
     )
-    .unwrap();
-    let note_cells = script.note_cells() * 8;
+    .unwrap()
+}
+
+/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
+fn authored(source: &str, group0: GroupParams) -> Runtime {
+    modules(vec![compile(source)], group0)
+}
+
+fn modules(scripts: Vec<sampler_ksp::Script>, group0: GroupParams) -> Runtime {
+    let note_cells = scripts.iter().map(|s| s.note_cells()).sum::<usize>() * 8;
     let pcm = [0.5, 0.25].map(|v| Pcm::new(48000, Box::from([[v; 2]; 48000])).unwrap());
     let regions = (0..2)
         .map(|sample| Region {
@@ -41,15 +48,15 @@ fn authored(source: &str, group0: GroupParams) -> Runtime {
             playback: Playback::default(),
         })
         .collect();
-    let plan = script
-        .bind(
-            Prepared::new(48000, pcm.into(), regions, 2)
-                .unwrap()
-                .with_groups(2, vec![Some(0), Some(1)])
-                .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
-                .unwrap(),
-        )
-        .unwrap();
+    let plan = sampler_ksp::bind_modules(
+        scripts,
+        Prepared::new(48000, pcm.into(), regions, 2)
+            .unwrap()
+            .with_groups(2, vec![Some(0), Some(1)])
+            .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
+            .unwrap(),
+    )
+    .unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
     Runtime::new(
         plan,
@@ -172,4 +179,60 @@ fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
     );
     rt.trigger(input(60), 60, 1.).unwrap();
     assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
+}
+
+#[test]
+fn timer_listener_plays_notes_on_its_period() {
+    let mut rt = runtime(
+        "on init
+           declare $n
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)
+             inc($n)
+             if ($n = 2)
+               { The second tick stops the timer. }
+               change_listener_par($NI_SIGNAL_TIMER_MS, 0)
+             end if
+             play_note(60, 100, 0, 100000)
+           end if
+         end on",
+    );
+    // 10 ms is 480 frames: silent before the first tick, sounding after.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+
+    level(&mut rt);
+    // Velocity 100: 0.5 · 100/127.
+    assert!(close(level(&mut rt), [0.3937; 2]));
+    for _ in 0..25 {
+        level(&mut rt);
+    }
+    // Two 100 ms notes, then no more ticks.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+    assert_eq!(rt.voice_count(), 0);
+}
+
+#[test]
+fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
+    let writer = compile(
+        "on note
+           ignore_event($EVENT_ID)
+           pgs_set_key_val(SHARED, 0, 5)
+         end on",
+    );
+    let reader = compile(
+        "on init
+           pgs_create_key(SHARED, 1)
+         end on
+         on pgs_changed
+           if (pgs_key_exists(SHARED) and pgs_get_key_val(SHARED, 0) = 5)
+             play_note(61, 127, 0, 100000)
+           end if
+         end on",
+    );
+    let mut rt = modules(vec![writer, reader], GroupParams::default());
+    rt.trigger(input(60), 60, 1.).unwrap();
+    // Only the reader's note 61 sounds.
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
 }

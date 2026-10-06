@@ -196,6 +196,9 @@ pub struct Prepared {
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
+    pub(super) plan_programs: Box<[super::PlanProgram]>,
+    pub(super) signal_programs: Box<[super::SignalProgram]>,
+    pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
@@ -348,6 +351,9 @@ impl Prepared {
             note_cells: 0,
             controls: Box::new([]),
             control_programs: Box::new([]),
+            plan_programs: Box::new([]),
+            signal_programs: Box::new([]),
+            shared_store: (Box::new([]), 0),
             keyswitches: [None; 128],
             articulated: false,
             switching: Default::default(),
@@ -376,6 +382,7 @@ impl Prepared {
         }
         self.validate_program_controls(&programs)?;
         self.validate_program_scripts(&programs)?;
+        super::plan_programs::validate_starts(&programs)?;
         // One polyphonic bank per script instance, plus the unbound native bank.
         // Resolve offsets off audio; callback execution never scans other scripts.
         let bank = |p: &super::Program| p.script_instance.map_or(0, |id| usize::from(id.0) + 1);
@@ -399,6 +406,8 @@ impl Prepared {
             ..super::Stage::default()
         }]);
         self.control_programs = Box::new([]);
+        self.plan_programs = Box::new([]);
+        self.signal_programs = Box::new([]);
         Ok(self)
     }
 
