@@ -114,6 +114,10 @@ channel 0`. The payload fits its archive range; no alternate member was found
 in the installed Areia archives. Whether its tail is damaged or uses another
 encoding remains unresolved; an original alternate copy is needed for
 comparison. No missing audio is synthesized or silently discarded.
+An additional RAM-only experiment tested every phase of all eight installed
+library access streams against three failing block headers, both directly and
+as a second cipher layer. It found no candidate. Neither stored nor decoded
+tails contain standard or reversed NCW block signatures.
 
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
@@ -138,3 +142,6 @@ The final access/resource changes pass locked offline tests and Clippy with
 also pass tests and strict Clippy with `--no-default-features`; installed
 protected tests skip in that configuration. Tests use the optimized `ci`
 profile and one test thread on this machine.
+After recording each scan/experiment verdict, remove its dumps, logs, rendered
+verification files and scratch builds. Retain only small status summaries;
+never persist original decrypted content or access material.
