@@ -932,6 +932,21 @@ mod tests {
     }
 
     #[test]
+    fn widgets_export_to_the_ui_ir() {
+        let h = host(
+            "setSize(400, 200)\n\
+             local p = Panel('main')\n\
+             p:Knob('gain', 0.5, 0, 1)\n\
+             p:Menu{name='mode', items={'a','b'}}\n\
+             p:OnOffButton('on', true)",
+        );
+        let ui = h.interface();
+        assert_eq!(ui.source, sampler_ui_ir::Source::FalconLua);
+        assert!(ui.widgets.len() >= 4, "{}", ui.widgets.len());
+        assert_eq!(ui.pages.len(), 1);
+    }
+
+    #[test]
     fn unknown_api_and_ui_are_inert_and_reported_once() {
         let mut h = host(
             "local p = Panel('main')\n\
