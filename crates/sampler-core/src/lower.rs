@@ -219,6 +219,13 @@ pub fn lower_with(
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
     instrument.validate().map_err(LowerError::Invalid)?;
+    let tapped;
+    let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
+        tapped = instrument.with_group_taps();
+        &tapped
+    } else {
+        instrument
+    };
     if pcm.len() != instrument.assets.len() {
         return Err(LowerError::AssetCount {
             assets: instrument.assets.len(),
@@ -923,7 +930,7 @@ impl Lowering<'_> {
             }
             let mut sends = vec![BusSend {
                 bus: target(bus.output),
-                gain: 1.0,
+                gain: bus.gain.linear(),
             }];
             for send in &bus.sends {
                 if send.position == ir::SendPosition::PreChain {
