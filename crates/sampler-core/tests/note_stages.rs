@@ -393,3 +393,54 @@ fn linked_generated_chains_release_on_a_small_stack_without_release_callbacks() 
         .join()
         .unwrap();
 }
+
+#[test]
+fn a_chord_through_four_chained_stages_reclaims_finished_callbacks() {
+    // Four chained scripts and ten keys at one instant, with no host flush in
+    // between: each key leaves four finished callbacks and one release reserve.
+    let forward = || Program::new(vec![I::ForwardAttack]).unwrap();
+    let release = Program::new(vec![])
+        .unwrap()
+        .with_wait_lifetime(WaitLifetime::Callback);
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(vec![forward(), release], None)
+        .unwrap()
+        .with_stages(vec![
+            Stage {
+                note: Some(0),
+                release: Some(1),
+                ..Stage::default()
+            },
+            Stage {
+                note: Some(0),
+                ..Stage::default()
+            },
+            Stage {
+                note: Some(0),
+                ..Stage::default()
+            },
+            Stage {
+                note: Some(0),
+                ..Stage::default()
+            },
+        ])
+        .unwrap();
+    let budget = Limits {
+        notes: 16,
+        expressions: 16,
+        ..limits(&prepared, 16)
+    };
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        for i in 0..10 {
+            let key = Input {
+                key: 60 + i as u8,
+                ..input(i + 1)
+            };
+            let r = rt.trigger(key, 60 + i as u8, 1.);
+            assert!(r.is_ok(), "key {i}: {r:?}");
+        }
+        assert_eq!(rt.note_count(), 10);
+    });
+}
