@@ -144,7 +144,7 @@ mui-baseview = { path = "vendor/mui-baseview" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
+members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ir", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/mui-baseview", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 
