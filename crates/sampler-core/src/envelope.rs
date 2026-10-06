@@ -143,6 +143,11 @@ impl Envelope {
         }
     }
 
+    /// Ends by itself, whatever the gate and the source do.
+    pub(super) fn finite(&self) -> bool {
+        self.one_shot && self.hold != u32::MAX
+    }
+
     /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
     /// the stage's curvature. Script engine parameters; see `script_params`.
     pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {

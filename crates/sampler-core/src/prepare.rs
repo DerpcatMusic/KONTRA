@@ -183,6 +183,8 @@ pub struct Prepared {
     regions: Box<[PreparedRegion]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
+    /// CC64 holds no gate: a behavior implements sustain itself.
+    pub(super) script_sustain: bool,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
@@ -339,6 +341,7 @@ impl Prepared {
             regions: prepared_regions.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
+            script_sustain: false,
             region_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
@@ -578,6 +581,7 @@ impl Prepared {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
                 && region.cursor.unbounded_loop()
+                && !region.envelope.finite()
             {
                 return Err(Error::InvalidInput);
             }
