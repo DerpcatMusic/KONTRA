@@ -280,6 +280,9 @@ pub(crate) struct PartShared {
     problems: [AtomicU64; 6],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
+    /// Per node of the loaded part's tree, its level like [`Self::meter`]
+    /// (node 0, the instrument, is the part's own meter).
+    pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
 }
 
 /// One control's value as last seen (`f64` bits).
@@ -299,6 +302,14 @@ impl ControlCell {
 }
 
 impl PartShared {
+    /// Tree node `node`'s level, silent when the part has no such node.
+    pub(crate) fn node_level(&self, node: usize) -> [f32; 2] {
+        if node == 0 {
+            return Meters::read(&self.meter);
+        }
+        self.node_meters.lock().unwrap().get(node).map_or([0.0; 2], Meters::read)
+    }
+
     /// The part's controls and their values, in id order.
     pub(crate) fn control_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
         self.controls.lock().unwrap().iter().map(|c| (c.id, c.value())).collect()
@@ -1063,6 +1074,8 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.tree = Some(Arc::new(loaded.tree));
             v.report = Some(Arc::new(loaded.report));
             v.interfaces = loaded.interfaces.into();
+            let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
+            *atoms.node_meters.lock().unwrap() = (0..nodes).map(|_| Default::default()).collect();
             *atoms.controls.lock().unwrap() = loaded
                 .controls
                 .iter()
@@ -1542,6 +1555,18 @@ impl PluginLogic for Sampler {
                     Meters::publish(&atoms.meter, peak, fall, &atoms.clip);
                 }
             }
+            let peaks_parts = peaks.parts.len();
+            for slot in 0..peaks_parts.min(s.core.parts()) {
+                let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) else { continue };
+                let Ok(meters) = atoms.node_meters.try_lock() else { continue };
+                let unlit = AtomicBool::new(false);
+                s.core.take_node_peaks(slot, &mut |node, peak| {
+                    if let Some(meter) = meters.get(node) {
+                        Meters::publish(meter, peak, fall, &unlit);
+                    }
+                });
+            }
+            let peaks = s.core.peaks_mut();
             for ((meter, peak), clip) in m.buses.iter().zip(peaks.buses).zip(&m.clips.buses) {
                 Meters::publish(meter, peak, fall, clip);
             }

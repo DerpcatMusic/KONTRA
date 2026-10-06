@@ -191,6 +191,9 @@ pub trait Core: Send {
     fn tapped(&self, frames: usize) -> Option<&[f32]>;
     /// Peaks accumulated since the caller last cleared them.
     fn peaks_mut(&mut self) -> &mut mix::Peaks;
+    /// `part`'s tree nodes below the root, each with its peak since the last
+    /// call (after the node's own fader); taking them resets them.
+    fn take_node_peaks(&mut self, part: usize, each: &mut dyn FnMut(usize, [f32; 2]));
 
     /// Edit one of `part`'s controls as its widget would: the value is
     /// clamped to the control's range (integers rounded, toggles at 0.5) and

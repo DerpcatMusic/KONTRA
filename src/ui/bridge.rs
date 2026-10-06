@@ -63,13 +63,13 @@ pub fn apply(cx: &mut Cx, tree: &mt::Tree) {
     }
 }
 
-/// Post-fader levels: the part's meter on its root strip.
-// ponytail: nodes below the root show no level until the core meters them.
+/// Post-fader levels of every strip: parts and their nodes.
 pub fn levels(p: &Arc<SamplerParams>, tree: &mt::Tree) -> mt::Levels {
-    let slots: Vec<Option<usize>> = tree.nodes.iter().map(|n| (n.id & 0xffff == 0).then(|| (n.id >> 16) as usize - 1)).collect();
+    let ids: Vec<Option<(usize, usize)>> =
+        tree.nodes.iter().map(|n| Some((((n.id >> 16) as usize).checked_sub(1)?, (n.id & 0xffff) as usize))).collect();
     let p = p.clone();
     Arc::new(move |n| {
-        slots.get(n).copied().flatten().and_then(|s| p.shared.part(s)).map_or([0.; 2], |part| crate::plugin::Meters::read(&part.meter))
+        ids.get(n).copied().flatten().and_then(|(slot, node)| Some(p.shared.part(slot)?.node_level(node))).unwrap_or([0.; 2])
     })
 }
 
