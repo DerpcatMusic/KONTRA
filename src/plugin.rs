@@ -2973,16 +2973,25 @@ fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, c
     feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
 }
 
+/// Return `note`'s exact identity to the host. False if the host's output list refused it.
+fn end_host_note(cx: &mut ProcessContext, note: crate::engine::HostNote, offset: u32) -> bool {
+    !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
+        kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
+    })).is_ok()
+}
+
 fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
+    // No-owner terminals refused earlier have nothing else retaining them.
+    let sent = s.unowned_ends.iter().take_while(|&&note| end_host_note(cx,note,offset)).count();
+    let refused = sent < s.unowned_ends.len();
+    s.unowned_ends.drain(..sent);
+    if refused { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
     for e in &mut s.rack.parts { e.mark_host_notes(); }
     for part in 0..s.rack.parts.len() {
         let mut index = 0;
         while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
             if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note) { index += 1; continue; }
-            let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
-                kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
-            })).is_ok();
-            if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
+            if !end_host_note(cx,note,offset) { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
             for e in &mut s.rack.parts { e.retire_host_note(note); }
             s.align.retire_host_note(note);
         }
@@ -2992,10 +3001,7 @@ fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
     let mut index=0;
     while let Some((note,held))=s.align.host_note_at(index) {
         if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note)) { index+=1; continue; }
-        let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
-            kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
-        })).is_ok();
-        if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
+        if end_host_note(cx,note,offset) { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
     }
 }
 
@@ -3033,6 +3039,8 @@ pub struct Dsp {
     unsupported_note_brightness: u64,
     unsupported_host_expression: u64,
     host_note_end_rejections: u64,
+    /// Refused NOTE_ENDs for inputs no part owns, oldest first; preallocated, never grown on audio.
+    unowned_ends: Vec<crate::engine::HostNote>,
     // Created off-thread with the rack, never acquired or replaced by reset/process.
     _diagnostics: crate::diagnostics::DiagnosticLease,
 }
@@ -3044,7 +3052,8 @@ impl Default for Dsp {
             snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
             align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
-            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire() }
+            diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0,
+            unowned_ends: Vec::with_capacity(crate::ksp::EVENT_CAPACITY), _diagnostics: crate::diagnostics::acquire() }
     }
 }
 
@@ -3450,6 +3459,7 @@ impl PluginLogic for Sampler {
         s.audition_left.fill(0);
         for row in &mut s.key_slots.0 { row.fill(false); }
         s.align.clear();
+        s.unowned_ends.clear();
         for router in &mut s.routers { router.reset_midi(); }
         // The voices are gone, and the host's releases for them may be too.
         p.shared.reset_midi();
@@ -3766,9 +3776,11 @@ impl PluginLogic for Sampler {
                             if let In::HostOn(note, ..) = ev
                                 && note.clap && !s.align.host_note_waiting(note)
                                 && !s.rack.parts.iter().any(|e| e.host_note_present(note)) {
-                                if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
-                                    kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
-                                })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
+                                if !end_host_note(cx,note,exact.sample_offset()) {
+                                    // Nothing owns this identity: keep it for finish_host_notes to retry.
+                                    s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1);
+                                    if s.unowned_ends.len() < s.unowned_ends.capacity() { s.unowned_ends.push(note); }
+                                }
                             }
                         }
                         Some(ExactInput::Brightness) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
@@ -7792,6 +7804,37 @@ end on"#;
             finish_host_notes(&mut dsp,&mut cx,127);
             assert_eq!(dsp.host_note_end_rejections,1);
             assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
+        }),0);
+    }
+
+    #[test]
+    fn refused_no_owner_note_end_is_retried_once_the_host_accepts_output() {
+        let params=SamplerParams::new(); let mut dsp=Dsp::default();
+        dsp.until_poll=usize::MAX;
+        // Port 7 reaches no part: the note-on gets an immediate NOTE_END.
+        let address=ExactNoteAddress::from_raw_signed(7,4,60,42);
+        let mut incoming=EventList::with_capacity(1);
+        incoming.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address,velocity:0.8 })).unwrap();
+        // The host's output list is already full, so that NOTE_END is refused.
+        let mut output=EventList::with_capacity(1);
+        output.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(0,0,60,1),velocity:0. })).unwrap();
+        let transport=TransportInfo::default();
+        let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
+        let (mut left,mut right)=([0.;128],[0.;128]);
+        let mut channels=[&mut left[..],&mut right[..]];
+        let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,128);
+        let ends=|cx:&ProcessContext| cx.output_events.lossless_iter().filter(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,address:a,.. } if *a==address))).count();
+        let none=EventList::with_capacity(1);
+        assert_eq!(allocations(|| {
+            Sampler::process(&mut dsp,&params,&mut buffer,&incoming,&mut cx);
+            assert!(dsp.host_note_end_rejections>0);
+            assert_eq!(ends(&cx),0);
+            cx.output_events.clear();
+            Sampler::process(&mut dsp,&params,&mut buffer,&none,&mut cx);
+            assert_eq!(ends(&cx),1,"missing retry for rejected no-owner NOTE_END");
+            cx.output_events.clear();
+            Sampler::process(&mut dsp,&params,&mut buffer,&none,&mut cx);
+            assert_eq!(ends(&cx),0,"delivered NOTE_END was sent twice");
         }),0);
     }
 
