@@ -126,7 +126,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
                         .unwrap_or(location),
                     language: ir::Language::Ksp,
                     source: text,
-                    state: Vec::new(),
+                    state: crate::keyswitch::saved_scalars(&script.persistent),
                     requires: Vec::new(),
                 });
             }
