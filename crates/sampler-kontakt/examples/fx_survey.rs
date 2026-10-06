@@ -43,6 +43,9 @@ fn main() {
         let mut any = false;
         with_ir += usize::from(!kontakt.instrument.impulses.is_empty());
         for u in &kontakt.instrument.unsupported {
+            if std::env::var_os("LOOPS").is_some() && (u.feature.contains("loop")) {
+                println!("LOOP\t{i}\t{}\t{}\t{}", u.feature, u.value, path.display());
+            }
             if u.feature.starts_with("Convolution") || u.feature == "impulse response" {
                 caveats.entry(u.feature.clone()).or_default().insert(i);
             }
