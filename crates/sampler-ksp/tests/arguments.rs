@@ -130,26 +130,6 @@ fn expressions_drive_note_pitch_velocity_duration_and_waits_after_key_release() 
 #[test]
 fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
     for (body, rate, expected) in [
-        (
-            "change_note($EVENT_ID, -1)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_note($EVENT_ID, 128)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_velo($EVENT_ID, 0)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_velo($EVENT_ID, 128)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
         ("wait(1 - 2)", 48000, sampler_core::Error::InvalidInput),
         (
             "wait(2147483647)",
@@ -222,28 +202,45 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
         )
         .is_err()
     );
+    let limits = sampler_ksp::Limits {
+        source_bytes: 4096,
+        instructions: 128,
+        variables: 4,
+        array_cells: 0,
+    };
+    // v2: release-callback event writes compile like Kontakt; multi-event
+    // selectors compile with a warning and have no effect.
     for source in [
         "on release change_note($EVENT_ID, 61) end on",
         "on release change_velo($EVENT_ID, 64) end on",
-        "on note change_note($ALL_EVENTS, 61) end on",
-        "on note change_velo($missing, 64) end on",
     ] {
         assert!(
-            sampler_ksp::compile(
-                source,
-                48000,
-                sampler_ksp::Limits {
-                    source_bytes: 4096,
-                    instructions: 128,
-                    variables: 4,
-                    array_cells: 0,
-                },
-                &[]
-            )
-            .is_err(),
+            sampler_ksp::compile(source, 48000, limits, &[]).is_ok(),
             "{source}"
         );
     }
+    let script = sampler_ksp::compile(
+        "on note change_note($ALL_EVENTS, 61) end on",
+        48000,
+        limits,
+        &[],
+    )
+    .unwrap();
+    assert!(!script.warnings().is_empty());
+    assert!(
+        sampler_ksp::compile(
+            "on note change_velo($missing, 64) end on",
+            48000,
+            sampler_ksp::Limits {
+                source_bytes: 4096,
+                instructions: 128,
+                variables: 4,
+                array_cells: 0,
+            },
+            &[]
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -455,4 +452,41 @@ fn generated_duration_expressions_choose_gate_or_whole_source_without_timers() {
             });
         }
     }
+}
+
+#[test]
+fn out_of_range_event_writes_clamp_instead_of_faulting() {
+    // v2: Kontakt keeps the note; keys clamp to 0..=127, velocities to 1..=127.
+    for body in [
+        "change_note($EVENT_ID, -1)",
+        "change_note($EVENT_ID, 128)",
+        "change_velo($EVENT_ID, 0)",
+        "change_velo($EVENT_ID, 128)",
+    ] {
+        let mut rt = runtime(&format!("on note {body} end on"), 48000);
+        rt.trigger(input(1), 60, 1.).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished, "{body}");
+            true
+        });
+    }
+}
+
+#[test]
+fn budget_diagnostics_report_size_against_limit() {
+    let limits = sampler_ksp::Limits {
+        source_bytes: 8,
+        instructions: 16,
+        variables: 16,
+        array_cells: 16,
+    };
+    let source = "on init end on";
+    let e = sampler_ksp::compile(source, 48000, limits, &[])
+        .err()
+        .unwrap();
+    assert_eq!(e.message, "source byte budget exceeded: 14 bytes, limit 8");
+    let usage = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[])
+        .unwrap()
+        .usage();
+    assert_eq!((usage.source_bytes, usage.variables), (14, 0));
 }
