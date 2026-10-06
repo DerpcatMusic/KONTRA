@@ -3,7 +3,7 @@
 
 use crate::wave;
 use sampler_core::{Limits, Outcome, Runtime};
-use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
+use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
     io::{self, BufWriter, Write},
@@ -52,10 +52,108 @@ pub fn parse(sequence: &str) -> Result<Vec<Note>, String> {
         .collect()
 }
 
-pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> io::Result<()> {
-    let keys = notes.iter().map(|n| n.key);
+/// A MIDI 1.0 channel message at `seconds`.
+pub type Message = (f64, [u8; 3]);
+
+/// The channel-voice messages of a Standard MIDI File (format 0 or 1), in
+/// time order, with tempo changes honoured. Meta and system messages are
+/// skipped.
+pub fn midi_file(smf: &[u8]) -> Result<Vec<Message>, String> {
+    let be16 = |at: usize| smf.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let be32 = |at: usize| smf.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    if smf.get(..4) != Some(b"MThd") {
+        return Err("not a Standard MIDI File".into());
+    }
+    let (tracks, division) = (be16(10).ok_or("short header")?, be16(12).ok_or("short header")?);
+    if division & 0x8000 != 0 {
+        return Err("SMPTE time division is not supported".into());
+    }
+    let mut at = 8 + be32(4).ok_or("short header")? as usize;
+    let mut raw: Vec<(u64, usize, [u8; 3])> = Vec::new(); // (tick, order, message)
+    let mut tempos: Vec<(u64, u32)> = vec![(0, 500_000)];
+    for _ in 0..tracks {
+        if smf.get(at..at + 4) != Some(b"MTrk") {
+            return Err("missing track".into());
+        }
+        let end = at + 8 + be32(at + 4).ok_or("short track")? as usize;
+        let mut i = at + 8;
+        let (mut tick, mut running) = (0u64, 0u8);
+        let byte = |i: usize| smf.get(i).copied().ok_or("truncated track");
+        while i < end {
+            let mut delta = 0u64;
+            loop {
+                let b = byte(i)?;
+                i += 1;
+                delta = delta << 7 | u64::from(b & 0x7f);
+                if b & 0x80 == 0 {
+                    break;
+                }
+            }
+            tick += delta;
+            let mut status = byte(i)?;
+            if status < 0x80 {
+                status = running;
+            } else {
+                i += 1;
+            }
+            match status {
+                0xff => {
+                    let kind = byte(i)?;
+                    let len = byte(i + 1)? as usize;
+                    if kind == 0x51 && len == 3 {
+                        let t = smf.get(i + 2..i + 5).ok_or("truncated tempo")?;
+                        tempos.push((tick, u32::from(t[0]) << 16 | u32::from(t[1]) << 8 | u32::from(t[2])));
+                    }
+                    i += 2 + len;
+                }
+                0xf0 | 0xf7 => {
+                    let len = byte(i)? as usize;
+                    i += 1 + len;
+                }
+                0x80..=0xef => {
+                    running = status;
+                    let data = if matches!(status & 0xf0, 0xc0 | 0xd0) { 1 } else { 2 };
+                    let d1 = byte(i)?;
+                    let d2 = if data == 2 { byte(i + 1)? } else { 0 };
+                    i += data;
+                    raw.push((tick, raw.len(), [status, d1, d2]));
+                }
+                _ => return Err(format!("unexpected status byte {status:#x}")),
+            }
+        }
+        at = end;
+    }
+    tempos.sort_by_key(|t| t.0);
+    let seconds = |tick: u64| {
+        let (mut t, mut last, mut us) = (0.0f64, 0u64, 500_000u32);
+        for &(at, tempo) in &tempos {
+            if at >= tick {
+                break;
+            }
+            t += (at - last) as f64 * f64::from(us) / 1e6 / f64::from(division);
+            (last, us) = (at, tempo);
+        }
+        t + (tick - last) as f64 * f64::from(us) / 1e6 / f64::from(division)
+    };
+    // Offs before ons at one tick, otherwise file order.
+    raw.sort_by_key(|&(tick, order, m)| (tick, m[0] & 0xf0 == 0x90 && m[2] > 0, order));
+    Ok(raw.into_iter().map(|(tick, _, m)| (seconds(tick), m)).collect())
+}
+
+/// `notes` as note-on and note-off messages.
+pub fn note_messages(notes: &[Note]) -> Vec<Message> {
+    let mut m: Vec<Message> = notes
+        .iter()
+        .flat_map(|n| [(n.start, [0x90, n.key, n.velocity]), (n.start + n.length, [0x80, n.key, n.velocity])])
+        .collect();
+    m.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90))));
+    m
+}
+
+pub fn run(instrument: &Path, output: &Path, messages: &[Message], scripts: bool) -> io::Result<()> {
+    let keys: Vec<u8> = messages.iter().filter(|m| matches!(m.1[0] & 0xf0, 0x80 | 0x90)).map(|m| m.1[1]).collect();
     let options = sampler_kontakt::Options {
-        keys: keys.clone().min().unwrap_or(0)..=keys.max().unwrap_or(127),
+        keys: keys.iter().copied().min().unwrap_or(0)..=keys.iter().copied().max().unwrap_or(127),
         scripts,
         ..Default::default()
     };
@@ -65,10 +163,10 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
         }
     })
     .map_err(|e| io::Error::other(e.to_string()))?;
-    render(loaded, output, notes)
+    render(loaded, output, messages)
 }
 
-pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) -> io::Result<()> {
+pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, messages: &[Message]) -> io::Result<()> {
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
@@ -121,17 +219,15 @@ pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) ->
     )))
     .map_err(|e| io::Error::other(format!("native core: {e}")))?;
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
-    let mut events: Vec<(usize, u32)> = notes
+    // MIDI 1.0 channel voice messages as UMP words, in the order given (a
+    // stable sort keeps simultaneous messages in file order).
+    let mut events: Vec<(usize, u32)> = messages
         .iter()
-        .flat_map(|n| {
-            let word = 0x2000_0000 | u32::from(n.key) << 8 | u32::from(n.velocity);
-            [
-                (frame(n.start), word | 0x0090_0000),
-                (frame(n.start + n.length), word | 0x0080_0000),
-            ]
+        .map(|&(at, [status, d1, d2])| {
+            (frame(at), 0x2000_0000 | u32::from(status) << 16 | u32::from(d1) << 8 | u32::from(d2))
         })
         .collect();
-    events.sort_by_key(|&(at, word)| (at, word & 0x0010_0000)); // Offs before ons at one instant.
+    events.sort_by_key(|&(at, _)| at);
     let words: Vec<[u32; 1]> = events.iter().map(|&(_, word)| [word]).collect();
     let packets = events
         .iter()
@@ -174,7 +270,7 @@ pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) ->
                 &batch,
                 batch.len(),
                 |index, result| {
-                    if !matches!(result, Ok(Applied::Started(_) | Applied::Released { .. })) {
+                    if result.is_err() {
                         failure.get_or_insert((index, result));
                     }
                 },
@@ -182,7 +278,7 @@ pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) ->
             .map_err(|e| io::Error::other(format!("MIDI block: {e:?}")))?;
         if let Some((index, result)) = failure {
             eprintln!(
-                "note event at frame {}: {result:?}",
+                "MIDI event at frame {}: {result:?}",
                 begin + batch[index].offset
             );
         }

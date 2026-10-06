@@ -7,9 +7,8 @@ use crate::{
     Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
     Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
-    Selector, Sequence, SequenceScope,
-    StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger,
-    VelocityCurve, VoiceChain,
+    Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
+    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -301,6 +300,17 @@ pub fn lower_with(
                 instrument.groups.iter().map(|g| g.voice_limit).collect(),
             )
             .map_err(core(Stage::Regions, "voice limits"))?;
+    }
+    if instrument.groups.iter().any(|g| g.monophonic_release) {
+        plan = plan
+            .with_monophonic_release(
+                instrument
+                    .groups
+                    .iter()
+                    .map(|g| g.monophonic_release)
+                    .collect(),
+            )
+            .map_err(core(Stage::Regions, "monophonic release"))?;
     }
     if !chains.is_empty() {
         plan = plan

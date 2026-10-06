@@ -460,3 +460,39 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
     assert!(two.is_finite() && four.is_finite());
     assert!(four < two * 0.5, "two {two}, four {four}");
 }
+
+
+#[test]
+fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
+    let zone = |group| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        group: Some(ir::GroupRef(group)),
+        ..ir::Zone::new(ir::AssetRef(group))
+    };
+    let ir = ir::Instrument {
+        assets: ["a", "b"].map(asset).to_vec(),
+        groups: vec![
+            ir::Group {
+                monophonic_release: true,
+                ..Default::default()
+            },
+            ir::Group::default(),
+        ],
+        zones: vec![zone(0), zone(1)],
+        ..ir::Instrument::default()
+    };
+    let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut voices = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.).unwrap();
+        rt.render(&mut [[0.0; 2]; 1024]).unwrap();
+        rt.voice_count()
+    };
+    assert_eq!(voices(&mut rt, 60), 2);
+    // Repeating the note cuts its earlier group-0 voice, not group 1's.
+    assert_eq!(voices(&mut rt, 60), 3);
+    // Another key leaves both alone.
+    assert_eq!(voices(&mut rt, 72), 5);
+}

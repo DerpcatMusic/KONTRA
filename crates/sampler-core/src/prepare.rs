@@ -378,6 +378,7 @@ pub struct Prepared {
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
+    pub(super) monophonic_release: Box<[bool]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -540,6 +541,7 @@ impl Prepared {
             voice_limit: None,
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
+            monophonic_release: Box::new([]),
             group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -666,6 +668,10 @@ impl Prepared {
             .map(|program| program.locals)
             .max()
             .unwrap_or(0)
+    }
+    /// Most voices one key's release phase can start together.
+    pub fn release_voices(&self) -> usize {
+        self.release_reserves.iter().flatten().map(|r| r.voices).max().unwrap_or(0)
     }
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {

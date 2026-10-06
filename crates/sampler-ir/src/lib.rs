@@ -138,6 +138,10 @@ pub struct Group {
     pub output: Output,
     /// Index into [`Instrument::voice_limits`] shared by this group's voices.
     pub voice_limit: Option<usize>,
+    /// A release-trigger group where playing a note again cuts that note's
+    /// release samples still sounding (Kontakt manual, Release Trigger
+    /// "Monophonic").
+    pub monophonic_release: bool,
 }
 
 /// Past `voices` sounding voices, starting another fades one out over
