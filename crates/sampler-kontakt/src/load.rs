@@ -19,6 +19,9 @@ pub struct Options {
     /// The instrument's file, whose library holds its script pictures;
     /// [`load`] fills it in when unset.
     pub library: Option<std::path::PathBuf>,
+    /// Native per-note pressure/timbre routing added to every zone; `None`
+    /// leaves expression to authored modulation (pitch bend stays native).
+    pub mpe: Option<sampler_core::lower::MpeDefaults>,
 }
 
 impl Default for Options {
@@ -28,6 +31,7 @@ impl Default for Options {
             keys: 0..=127,
             scripts: true,
             library: None,
+            mpe: Some(Default::default()),
         }
     }
 }
@@ -170,8 +174,7 @@ pub fn finish(
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
         .collect();
-    let resources = options.library.as_deref().map(Resources::of);
-    prepare_with(instrument, options.rate, pcm, options.scripts, resources)
+    prepare(instrument, pcm, options)
 }
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
@@ -272,26 +275,17 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
 }
 
 /// Lower a translated instrument whose asset audio is `pcm`, binding its
-/// scripts when `scripts` is set. Each script that compiles is bound and
-/// hands back its interface; one that fails is reported and left out.
+/// scripts when `options.scripts` is set. Each script that compiles is bound
+/// and hands back its interface, its pictures read from `options.library`;
+/// one that fails is reported and left out.
 pub fn prepare(
-    instrument: ir::Instrument,
-    rate: u32,
-    pcm: Vec<Pcm>,
-    scripts: bool,
-) -> Result<Loaded, LoadError> {
-    prepare_with(instrument, rate, pcm, scripts, None)
-}
-
-/// [`prepare`], reading the interfaces' pictures (frames, frame size) from
-/// `resources`; without them image assets keep default metadata.
-pub fn prepare_with(
     mut instrument: ir::Instrument,
-    rate: u32,
     pcm: Vec<Pcm>,
-    scripts: bool,
-    resources: Option<Resources>,
+    options: &Options,
 ) -> Result<Loaded, LoadError> {
+    let (rate, scripts) = (options.rate, options.scripts);
+    let resources = options.library.as_deref().map(Resources::of);
+    let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut names = Vec::new();
@@ -390,10 +384,30 @@ pub fn prepare_with(
     }
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
-    let lowered = sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| {
-        if compiled.is_empty() {
-            return Ok(plan);
+    if compiled.is_empty() && !instrument.behaviors.is_empty() {
+        // No script runs: lower without them, and without the switching
+        // they own.
+        let behaviors = std::mem::take(&mut instrument.behaviors);
+        let owned = instrument.switching.owner == ir::SwitchOwner::Behavior;
+        let (articulations, switching) = if owned {
+            (std::mem::take(&mut instrument.articulations), std::mem::take(&mut instrument.switching))
+        } else {
+            Default::default()
+        };
+        let lowered =
+            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| Ok(plan));
+        instrument.behaviors = behaviors;
+        if owned {
+            instrument.articulations = articulations;
+            instrument.switching = switching;
         }
+        return Ok(Loaded {
+            plan: lowered.map_err(LoadError::Lower)?,
+            instrument,
+            interfaces,
+        });
+    }
+    let lowered = sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
         sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
             module: "KSP".into(),
             message: e.to_string(),

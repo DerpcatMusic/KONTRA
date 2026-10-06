@@ -56,6 +56,8 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
+    /// Which input selects among [`Instrument::articulations`].
+    pub switching: Switching,
     pub modulators: Vec<Modulator>,
     pub routes: Vec<Route>,
     /// Transfer curves routes apply to their source value.
@@ -319,13 +321,103 @@ pub enum CounterScope {
     ChannelKey,
 }
 
-/// A selectable articulation, switched by keys and/or a control.
-#[derive(Clone, Debug, PartialEq)]
+/// A selectable articulation, switched by keys and/or an alternative driver.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
     pub name: String,
+    /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
+    /// reads them, and the first is the key a driver taps to select this.
     pub switch_keys: Vec<u8>,
     /// Active before any switch is played.
     pub default: bool,
+    /// What selects it when [`Switching::driver`] is not [`Driver::Keys`].
+    pub alternatives: Alternatives,
+}
+
+/// Non-key inputs that select one articulation. Only the family named by
+/// [`Switching::driver`] is live; the others are kept for switching modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Alternatives {
+    /// Note-on velocities that select it, then play the note.
+    pub velocities: Option<VelocityRange>,
+    /// Zero-based MIDI channel whose notes select it, then play.
+    pub channel: Option<u8>,
+    /// A controller value range that selects it.
+    pub controller: Option<ControllerRange>,
+    pub program: Option<u8>,
+}
+
+/// How articulations are selected: who interprets a switch and which input
+/// drives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Switching {
+    pub owner: SwitchOwner,
+    pub driver: Driver,
+    /// What played switch keys do while another driver is active.
+    pub keys: SwitchKeys,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchOwner {
+    /// The runtime holds the articulation; zones name the one they belong to.
+    #[default]
+    Native,
+    /// A behavior reads the switch keys and selects groups itself; drivers
+    /// select by tapping an articulation's first switch key into it.
+    Behavior,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Driver {
+    #[default]
+    Keys,
+    Velocity,
+    Channel,
+    Controller,
+    Program,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchKeys {
+    /// Still switch, alongside the driver.
+    #[default]
+    Keep,
+    /// No longer switch; they play notes. Native ownership only.
+    Play,
+    /// Dropped before anything sees them.
+    Swallow,
+}
+
+impl Instrument {
+    /// Give every articulation one value of each alternative family, in order
+    /// of its lowest switch key (articulations without keys last, in list
+    /// order): controller `controller` values 0.., channels 0.., programs 0..
+    /// and equal velocity splits of 1..=127. Families an articulation count
+    /// cannot fit (more than 16 channels, 127 velocities, 128 values) stay unset.
+    pub fn assign_alternatives(&mut self, controller: u8) {
+        let mut order: Vec<usize> = (0..self.articulations.len()).collect();
+        order.sort_by_key(|&i| {
+            let keys = &self.articulations[i].switch_keys;
+            (keys.iter().min().copied().unwrap_or(u8::MAX), i)
+        });
+        let n = order.len();
+        for (rank, &i) in order.iter().enumerate() {
+            let value = u8::try_from(rank).ok().filter(|&v| v < 128);
+            self.articulations[i].alternatives = Alternatives {
+                velocities: (n <= 127).then(|| VelocityRange {
+                    low: (1 + rank * 127 / n) as u8,
+                    high: ((rank + 1) * 127 / n) as u8,
+                }),
+                channel: value.filter(|_| n <= 16),
+                controller: value.map(|v| ControllerRange {
+                    controller,
+                    low: v,
+                    high: v,
+                }),
+                program: value,
+            };
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -512,6 +604,18 @@ pub struct Route {
     pub invert: bool,
     pub shape: Option<ShapeRef>,
     pub smoothing: Time,
+    /// Depth multiplier read from a second modulator (a modulator × modulator
+    /// product, e.g. LFO depth by the mod wheel). See [`RouteScale`].
+    pub scale: Option<RouteScale>,
+}
+
+/// The route's depth is multiplied by `shape(x)`, where `x` is the unipolar
+/// view of `source` ((v + 1) / 2 for bipolar sources) and no shape means `x`.
+/// The shape's output is used as-is, not mapped back to the source's range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RouteScale {
+    pub source: ModulatorRef,
+    pub shape: Option<ShapeRef>,
 }
 
 impl Route {
@@ -523,6 +627,7 @@ impl Route {
             invert: false,
             shape: None,
             smoothing: Time::ZERO,
+            scale: None,
         }
     }
 }
