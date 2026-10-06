@@ -176,3 +176,12 @@ Linear amplitude ramp, in integer steps, with a nonzero first step: for a note v
 - L = 30, F = 60 (velocity): gain (v-29)/61 at v = 32, 40, 48, 56, 64, 80 (measured 0.049, 0.180, 0.311, 0.443, 0.573, 0.837 vs 0.049, 0.180, 0.311, 0.443, 0.574, 0.836).
 - L = 24, F = 36 (key, vel 100): gain (k-23)/37 at k = 24, 30, 36, 48, 60 (measured 0.027, 0.188, 0.351, 0.677, 1.0); k = 42 and 54 read 0.503 and 0.810 vs 0.514 and 0.838 (pitch-shifted noise, about 0.2-0.3 dB level wobble).
 - The ramp is a linear amplitude gain, not equal-power and not dB-linear; the gain is not 0 at the low edge (first step is 1/(F+1)). Notes below L do not play. The high-edge fade-out is the mirror: with H = 100, F = 60 (velocity) gain = (H - v + 1)/(F + 1) = (101 - v)/61, measured 1.0 up to v = 40, then 0.868, 0.738, 0.607, 0.339 at v = 48, 56, 64, 80 (law: 0.869, 0.738, 0.607, 0.344). Notes above H do not play.
+
+## 12. Loudness metric, and Vista g36/g37 left/right split
+
+- The peaks and RMS in sections 2, 4 and 6 come from `compare.wav`, which returns the mono mix (L+R)/2. For uncorrelated channels that reads about 3 dB under the per-channel number. Sections added after this one use `loud_lr.py` / `lr_report.py` (per channel, combined = sqrt((L^2+R^2)/2), max-channel peak).
+- Vista g36 and g37 solo (key 48, vel 100, CC1 = CC11 = 127, solo via `allow_group` replacing the Vista script, instrument and group volume 0 dB): the right channel is louder than the left by a constant offset at every CC100.
+  - g36: L - R = -5.0 dB at every CC100 from 0 to 80. Example CC100 40: L -45.0, R -39.9, combined -41.8 dBFS RMS. CC100 88 and above is silent.
+  - g37: L - R = -4.4 dB (-4.6 at CC100 0-8). Example CC100 56: L -37.0, R -32.6, combined -34.3. CC100 96 is still audible at combined -45.7.
+  - The shape over CC100 is the same on both channels, so the split is a constant gain difference per group, not a CC-dependent pan.
+- Run through `scenarios/vista_g36_lr.txt` (CC20 selects the solo group: 36 or 37) and `lr_report.py`.
