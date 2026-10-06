@@ -1464,7 +1464,7 @@ mod tests {
     /// A UVI bank program loads through the host and its layers are mixer nodes.
     #[test]
     fn real_uvi_layers_become_mixer_nodes() {
-        let relative = "UVI/VWinds - Clarinets/VWinds-AClarinet.ufs";
+        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
         let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
         let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
         let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
@@ -1480,6 +1480,112 @@ mod tests {
         };
         let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
         assert!(groups > 0, "layers are nodes");
+    }
+
+    /// Peak of the last blocks after applying `mix` to a part with a held note.
+    fn settled(core: &mut V2Core, mix: &Mix) -> f32 {
+        core.set_mix(mix);
+        let mut peak = 0.0f32;
+        for block in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let r = core.render(128);
+            if block >= 390 {
+                peak = r.buses.iter().flat_map(|b| b[0][..128].iter().chain(&b[1][..128])).fold(peak, |p, x| p.max(x.abs()));
+            }
+        }
+        peak
+    }
+
+    /// Muting nodes silences the part and soloing one leaves only it. `kind`
+    /// picks the nodes the test drives; the instrument must play at `keys`.
+    fn mixer_nodes_pass_audio(path: std::path::PathBuf, kind: NodeKind) {
+        let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+        let nodes: Vec<usize> = (1..loaded.tree.nodes.len()).filter(|&n| loaded.tree.nodes[n].kind == kind).collect();
+        let count = loaded.tree.nodes.len() - 1;
+        // Try the middles of zones across the map until one key sounds.
+        let zones = &loaded.instrument.as_ref().unwrap().zones;
+        let mut keys: Vec<u8> = (0..8)
+            .filter_map(|n| zones.get(n * zones.len() / 8))
+            .map(|z| ((u16::from(z.keys.low) + u16::from(z.keys.high)) / 2) as u8)
+            .collect();
+        keys.dedup();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        let mut heard = false;
+        for (id, &key) in keys.iter().enumerate() {
+            core.event(0, on(HostNote { port: 0, channel: 0, key, id: id as i32 + 1, clap: true }));
+            heard = (0..150).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let r = core.render(128);
+                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
+            });
+            if heard {
+                break;
+            }
+        }
+        assert!(heard, "silent before any node is touched: keys {keys:?}, {:?}, samples {} zones {} missing {:?}", core.problems(0), loaded.report.decoded.samples, loaded.report.decoded.zones, loaded.report.missing.iter().take(6).collect::<Vec<_>>());
+        assert!(nodes.len() >= 2, "{kind:?} nodes: {}", nodes.len());
+        let mut mix = Mix::default();
+        mix.nodes[0] = vec![NodeMix::default(); count];
+        let open = settled(&mut core, &mix);
+        assert!(open > 1e-6, "audible with every node open");
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = true;
+        }
+        let muted = settled(&mut core, &mix);
+        let loose: Vec<_> = (1..loaded.tree.nodes.len()).filter(|&n| loaded.tree.nodes[n].kind == NodeKind::Group && loaded.tree.nodes[n].parent.is_some_and(|p| !nodes.contains(&p) && kind == NodeKind::Mic)).map(|n| loaded.tree.nodes[n].name.clone()).collect();
+        // An effect's tail may ring on after its input is muted.
+        assert!(muted < open * 0.05 + 1e-7, "muting every {kind:?} node leaves {muted} of {open}; groups outside: {loose:?}");
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = false;
+        }
+        // Soloing a node mutes the rest, so some solo is audible and the
+        // soloed set is quieter than or equal to everything.
+        let all = settled(&mut core, &mix);
+        let mut heard_solo = false;
+        for &n in &nodes {
+            mix.nodes[0][n - 1].solo = true;
+            let solo = settled(&mut core, &mix);
+            mix.nodes[0][n - 1].solo = false;
+            assert!(solo <= all * 1.01 + 1e-7, "solo {} louder than all: {solo} > {all}", loaded.tree.nodes[n].name);
+            heard_solo |= solo > 1e-6;
+        }
+        assert!(heard_solo, "no {kind:?} node is audible alone");
+        // A node with nothing soloed elsewhere: soloing one while every other
+        // is muted keeps exactly that one.
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = true;
+        }
+        mix.nodes[0][nodes[0] - 1].mute = false;
+        mix.nodes[0][nodes[0] - 1].solo = true;
+        let one = settled(&mut core, &mix);
+        mix.nodes[0][nodes[0] - 1].solo = false;
+        mix.nodes[0][nodes[0] - 1].mute = true;
+        let none = settled(&mut core, &mix);
+        assert!(none < open * 0.05 + 1e-7 && one >= none, "one {one}, none {none}");
+    }
+
+    #[test]
+    fn real_kontakt_mic_nodes_pass_audio() {
+        let relative = "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccato.nki";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        mixer_nodes_pass_audio(path, NodeKind::Mic);
+    }
+
+    #[test]
+    fn real_uvi_layer_nodes_pass_audio() {
+        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
+        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        mixer_nodes_pass_audio(path, NodeKind::Group);
     }
 
     #[test]
