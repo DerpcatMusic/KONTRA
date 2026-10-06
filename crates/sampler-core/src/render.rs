@@ -41,11 +41,10 @@ impl Runtime {
             self.render_voices(output, self.now);
             return;
         }
-        for (chunk, output) in output.chunks_mut(64).enumerate() {
-            let at = self.now + (chunk * 64) as u64;
+        for (chunk, output) in output.chunks_mut(super::dsp::BLOCK).enumerate() {
+            let at = self.now + (chunk * super::dsp::BLOCK) as u64;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
-                g.dsp.filters.begin(at);
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
