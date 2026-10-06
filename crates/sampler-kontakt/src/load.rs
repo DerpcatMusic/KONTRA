@@ -120,12 +120,11 @@ pub fn load_read(
             total: kept.len(),
             sample,
         });
-        let decoded = samples.decode(sample)?;
+        let decoded = samples.decode(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
         let frames = decoded.frames.into_boxed_slice();
         pcm.push(
-            Pcm::new(decoded.rate, frames).map_err(|e| LoadError::Invalid {
-                path: sample.clone(),
-                reason: e.to_string(),
+            Pcm::new(decoded.rate, frames).map_err(|e| {
+                LoadError::Invalid { path: sample.clone(), reason: e.to_string() }.at(crate::Stage::SampleResolve)
             })?,
         );
     }
@@ -179,7 +178,7 @@ pub fn load_read_streamed(
     for &asset in &kept {
         let location = &locations[asset];
         sources.push((
-            std::sync::Arc::new(samples.source(location)?) as std::sync::Arc<dyn crate::AssetSource>,
+            std::sync::Arc::new(samples.source(location).map_err(|e| e.at(crate::Stage::SampleResolve))?) as std::sync::Arc<dyn crate::AssetSource>,
             location.as_path(),
         ));
     }
@@ -373,6 +372,14 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
 /// and hands back its interface, its pictures read from `options.library`;
 /// one that fails is reported and left out.
 pub fn prepare(
+    instrument: ir::Instrument,
+    pcm: Vec<Pcm>,
+    options: &Options,
+) -> Result<Loaded, LoadError> {
+    prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
+}
+
+fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     options: &Options,
