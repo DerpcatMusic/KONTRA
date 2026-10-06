@@ -82,6 +82,55 @@ pub fn load(
             })?,
         );
     }
+    finish(instrument, &locations, &kept, pcm, options, progress)
+}
+
+/// Load the Kontakt instrument at `path` streamed: only heads (sized from
+/// read latency measured on up to 32 samples) and a page pool are resident.
+pub fn load_streamed(
+    path: &Path,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+    mut progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
+    let Kontakt {
+        mut instrument,
+        locations,
+        mut samples,
+    } = read(path)?;
+    let (low, high) = (*options.keys.start(), *options.keys.end());
+    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    progress(Progress::Translated {
+        zones: instrument.zones.len(),
+        assets: kept.len(),
+    });
+    let mut sources = Vec::with_capacity(kept.len());
+    for &asset in &kept {
+        let location = &locations[asset];
+        sources.push((samples.source(location)?, location.as_path()));
+    }
+    let heads = crate::stream::Streamer::heads(sources, options.rate, policy, 32)?;
+    let loaded = finish(
+        instrument,
+        &locations,
+        &kept,
+        heads.assets.clone(),
+        options,
+        progress,
+    )?;
+    crate::Streamed::new(loaded, heads)
+}
+
+/// Fit zones to their audio and lower the instrument with `pcm`, one asset
+/// per kept location.
+fn finish(
+    mut instrument: ir::Instrument,
+    locations: &[std::path::PathBuf],
+    kept: &[usize],
+    pcm: Vec<Pcm>,
+    options: &Options,
+    mut progress: impl FnMut(Progress),
+) -> Result<Loaded, LoadError> {
     progress(Progress::Lowering);
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {

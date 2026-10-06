@@ -14,14 +14,16 @@ pub mod nis;
 mod nks;
 mod samples;
 mod script;
+mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use library::{Kontakt, read};
-pub use load::{Loaded, Options, Progress, load, prepare};
+pub use load::{Loaded, Options, Progress, load, load_streamed, prepare};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
-pub use samples::{Decoded, Samples, decode};
+pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
+pub use stream::{SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]
