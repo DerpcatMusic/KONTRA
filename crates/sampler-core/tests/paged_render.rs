@@ -170,40 +170,65 @@ fn missing_interpolation_guard_rejects_every_layer_before_note_or_voice_publicat
 }
 
 #[test]
-fn a_missing_live_page_is_observable_and_does_not_orphan_host_pairing() {
-    let asset = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
-    let data = vec![[0.75; 2]; PAGE_FRAMES * 2];
-    let (mut cache, mut worker) = StreamCache::new(1).unwrap();
-    load(&mut cache, &mut worker, &asset, &data, 0);
-    let mut rt = runtime(vec![asset], vec![]).with_stream_cache(cache);
-    let mut output = [[0.; 2]; 8];
-    support::without_heap(|| {
-        let note = rt.note_on(input(), 60, 1.).unwrap();
-        let family = rt.create_family(note).unwrap();
-        let voice = rt
-            .start_family(
-                family,
-                0,
-                0,
-                1.,
-                Envelope::default(),
-                Playback {
-                    start: PAGE_FRAMES - 2,
-                    ..Playback::default()
-                },
-            )
-            .unwrap();
-        rt.finish_family(family).unwrap();
-        rt.render(&mut output).unwrap();
-        assert_eq!(&output[..2], &[[0.75; 2]; 2]);
-        assert_eq!(&output[2..], &[[0.; 2]; 6]);
-        assert_eq!(rt.stream_underruns(), 1);
-        assert!(!rt.voice_active(voice));
-        assert_eq!(rt.note_count(), 1);
-        rt.render(&mut output).unwrap();
-        assert_eq!(rt.stream_underruns(), 1);
-        assert_eq!(rt.note_off(input(), None), Ok(note));
-    });
+fn a_missing_live_page_fades_once_preserves_pairing_and_cannot_restart_from_a_late_page() {
+    for block in [1, 7, 64] {
+        let asset = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+        let data = vec![[0.75; 2]; PAGE_FRAMES * 2];
+        let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+        load(&mut cache, &mut worker, &asset, &data, 0);
+        let mut rt = runtime(vec![asset.clone()], vec![]).with_stream_cache(cache);
+        let mut output = [[0.; 2]; 64];
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            let family = rt.create_family(note).unwrap();
+            let voice = rt
+                .start_family(
+                    family,
+                    0,
+                    0,
+                    1.,
+                    Envelope::default(),
+                    Playback {
+                        start: PAGE_FRAMES - 2,
+                        ..Playback::default()
+                    },
+                )
+                .unwrap();
+            rt.finish_family(family).unwrap();
+            for chunk in output[..8].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(&output[..2], &[[0.75; 2]; 2]);
+            assert_eq!(rt.stream_underruns(), 1);
+            assert!(rt.voice_active(voice));
+            assert_eq!(rt.note_count(), 1);
+            assert!(
+                rt.visit_voice_demand(voice, 100, |_| panic!(
+                    "a fading failed source needs no more pages"
+                ))
+                .unwrap()
+            );
+            let cache = rt.stream_cache_mut().unwrap();
+            cache
+                .invalidate(PageKey {
+                    asset: asset.asset_id(),
+                    index: 0,
+                })
+                .unwrap();
+            load(cache, &mut worker, &asset, &data, 1);
+            for chunk in output[8..].chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (i, frame) in output[2..50].iter().enumerate() {
+                let expected = 0.75 * (47 - i) as f32 / 48.;
+                assert!(frame.iter().all(|x| (x - expected).abs() < 1e-7));
+            }
+            assert_eq!(&output[50..], &[[0.; 2]; 14]);
+            assert!(!rt.voice_active(voice));
+            assert_eq!(rt.stream_underruns(), 1);
+            assert_eq!(rt.note_off(input(), None), Ok(note));
+        });
+    }
 }
 
 #[test]
@@ -244,7 +269,7 @@ fn a_starved_source_drains_its_declared_dsp_tail_once_across_callback_boundaries
         assert!(audio[1..].iter().flatten().any(|x| x.abs() > 0.0001));
         rt.render(&mut audio).unwrap();
         assert_eq!(rt.voice_count(), 1);
-        rt.render(&mut audio[..3]).unwrap();
+        rt.render(&mut audio[..51]).unwrap();
         assert_eq!(rt.voice_count(), 0);
         assert_eq!(rt.stream_underruns(), 1);
         rt.render(&mut audio).unwrap();
@@ -348,4 +373,93 @@ fn stream_service_protects_all_voices_before_eviction_and_restores_cache_after_c
         unconfigured.service_streaming(1),
         Err(StreamError::NotConfigured)
     );
+}
+
+#[test]
+fn starvation_duration_uses_output_rate_and_missing_onsets_do_not_emit_a_fade() {
+    for rate in [44100_u32, 96000, 192000] {
+        let asset = Pcm::streamed(rate, PAGE_FRAMES * 2).unwrap();
+        let data = vec![[1., -0.4]; PAGE_FRAMES * 2];
+        let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+        load(&mut cache, &mut worker, &asset, &data, 0);
+        let mut r = region(
+            0,
+            Playback {
+                start: PAGE_FRAMES - 2,
+                ..Playback::default()
+            },
+        );
+        r.envelope = Envelope::default();
+        let data_asset = asset.asset_id();
+        let mut rt = from_plan(Prepared::new(rate, vec![asset], vec![r], 1).unwrap())
+            .with_stream_cache(cache);
+        let fade = rate.div_ceil(1000) as usize;
+        let mut output = vec![[0.; 2]; fade + 10];
+        support::without_heap(|| {
+            rt.trigger(input(), 60, 1.).unwrap();
+            for chunk in output.chunks_mut(1) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(&output[..2], &[[1., -0.4]; 2]);
+            assert!(output[2][0] < 1. && output[2][0] > 0.97);
+            assert!(
+                output[2..fade + 1]
+                    .windows(2)
+                    .all(|w| w[1][0] < w[0][0] && w[1][1] > w[0][1])
+            );
+            assert_eq!(&output[fade + 1..], &[[0.; 2]; 9]);
+            assert_eq!(rt.stream_underruns(), 1);
+            assert_eq!(rt.voice_count(), 0);
+            rt.stream_cache_mut()
+                .unwrap()
+                .invalidate(PageKey {
+                    asset: data_asset,
+                    index: 0,
+                })
+                .unwrap();
+            assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
+            rt.render(&mut output).unwrap();
+            assert!(output.iter().all(|f| *f == [0.; 2]));
+        });
+    }
+}
+
+#[test]
+fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_kernel_audio() {
+    let data: Box<[Frame]> = (0..PAGE_FRAMES * 2)
+        .map(|i| [(i as f32 * 0.05).sin(), (i as f32 * 0.021).cos()])
+        .collect();
+    let asset = Pcm::streamed(96000, data.len()).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(1).unwrap();
+    load(&mut cache, &mut worker, &asset, &data, 0);
+    let mut mapped = region(
+        0,
+        Playback {
+            start: PAGE_FRAMES - 300,
+            ..Playback::default()
+        },
+    );
+    mapped.envelope = Envelope::default();
+    let mut rt = runtime(vec![asset], vec![mapped]).with_stream_cache(cache);
+    let mut reference = runtime(vec![Pcm::new(96000, data).unwrap()], vec![mapped]);
+    let (mut actual, mut expected) = ([[0.; 2]; 256], [[0.; 2]; 256]);
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        reference.trigger(input(), 60, 1.).unwrap();
+        for chunk in actual.chunks_mut(17) {
+            rt.render(chunk).unwrap();
+        }
+        reference.render(&mut expected).unwrap();
+        // At 2x, radius 96 first reaches the missing page after 102 output frames.
+        assert_eq!(&actual[..102], &expected[..102]);
+        for (index, frame) in actual[102..150].iter().enumerate() {
+            for channel in 0..2 {
+                let faded = expected[101][channel] * (47 - index) as f32 / 48.;
+                assert!((frame[channel] - faded).abs() < 1e-7);
+            }
+        }
+        assert!(actual[150..].iter().all(|f| *f == [0.; 2]));
+        assert_eq!(rt.stream_underruns(), 1);
+        assert_eq!(rt.voice_count(), 0);
+    });
 }

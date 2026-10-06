@@ -141,10 +141,10 @@ fn render_source(
     context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
 ) -> (usize, bool, u64, bool) {
-    if let Some(chain) = chain {
-        let (produced, faults, underrun) =
-            chain.render(voice, source, output, states, context, kernel);
-        (produced, chain.done(voice), faults, underrun)
+    let was_starved = voice.cursor.starved();
+    let (produced, done, faults) = if let Some(chain) = chain {
+        let (produced, faults) = chain.render(voice, source, output, states, context, kernel);
+        (produced, chain.done(voice), faults)
     } else {
         let produced = voice.cursor.render(
             source,
@@ -154,8 +154,12 @@ fn render_source(
             context.expression,
             kernel,
         );
-        let ended = voice.cursor.done() || voice.envelope.done();
-        let underrun = produced < output.len() && !ended;
-        (produced, ended || underrun, 0, underrun)
-    }
+        (produced, voice.cursor.done() || voice.envelope.done(), 0)
+    };
+    (
+        produced,
+        done,
+        faults,
+        !was_starved && voice.cursor.starved(),
+    )
 }

@@ -125,6 +125,9 @@ impl Playback {
             fraction: 0.0,
             step,
             exit: None,
+            last: [0.; 2],
+            starvation: None,
+            fade_frames: output_rate.div_ceil(1000),
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -160,6 +163,9 @@ pub(super) struct Cursor {
     // First loop boundary that will no longer wrap. Earlier traversal remains
     // available to the interpolation window after release.
     exit: Option<u64>,
+    last: Frame,
+    starvation: Option<u32>,
+    fade_frames: u32,
 }
 
 struct ReadAddress {
@@ -242,7 +248,40 @@ impl Cursor {
     }
 
     pub(super) fn done(&self) -> bool {
-        self.position == u64::MAX || self.limit().is_some_and(|end| self.position >= end)
+        self.starvation.map_or_else(
+            || self.position == u64::MAX || self.limit().is_some_and(|end| self.position >= end),
+            |remaining| remaining == 0,
+        )
+    }
+
+    pub(super) fn starved(&self) -> bool {
+        self.starvation.is_some()
+    }
+
+    /// One millisecond of native fade from the last complete resampled frame.
+    /// No incomplete resampler frame is published and late pages cannot restart
+    /// this source. Cursor ownership remains until this bounded tail completes.
+    fn render_starvation(
+        &mut self,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+    ) -> usize {
+        let remaining = self.starvation.as_mut().unwrap();
+        let count = output
+            .len()
+            .min(*remaining as usize)
+            .min(envelope.remaining());
+        for frame in &mut output[..count] {
+            *remaining -= 1;
+            let fade = *remaining as f32 / self.fade_frames as f32;
+            let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+            for channel in 0..2 {
+                frame[channel] += self.last[channel] * gain * gains[channel] * level * fade;
+            }
+        }
+        count
     }
 
     /// Resolve an integer position on the traversal. Out-of-view guards are zero;
@@ -398,7 +437,11 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
+        if self.starved() {
+            return self.render_starvation(output, envelope, gain, gains);
+        }
         if gain == 0.0 || gains == [0.0; 2] {
+            self.last = [0.; 2];
             return self.advance_silent(output.len(), envelope);
         }
         if self.step == 1.0 && self.fraction == 0.0 && !self.crossfaded() {
@@ -430,6 +473,10 @@ impl Cursor {
                         mix(span.iter().rev(), destination, envelope, gain, gains)
                     }
                 }
+                self.last = match direction {
+                    Direction::Forward => *span.last().unwrap(),
+                    Direction::Reverse => span[0],
+                };
                 self.position = self.position.saturating_add(count as u64);
                 offset += count;
             }
@@ -485,7 +532,7 @@ impl Cursor {
         kernel: &Kernel,
     ) -> usize {
         let mut rendered = 0;
-        for frame in output {
+        while rendered < output.len() {
             if self.done() || envelope.done() {
                 break;
             }
@@ -533,7 +580,19 @@ impl Cursor {
                     ready.then_some(sample)
                 }
             };
-            let Some(source) = source else { break };
+            let Some(source) = source else {
+                self.starvation = Some(self.fade_frames);
+                return rendered
+                    + self.render_starvation(&mut output[rendered..], envelope, gain, gains);
+            };
+            // The existing mix fault guard still observes an overflowing kernel;
+            // never retain that nonfinite value as a later starvation tail.
+            self.last = if source.iter().all(|value| value.is_finite()) {
+                source
+            } else {
+                [0.; 2]
+            };
+            let frame = &mut output[rendered];
             let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
             for channel in 0..2 {
                 frame[channel] += source[channel] * gain * gains[channel] * level;

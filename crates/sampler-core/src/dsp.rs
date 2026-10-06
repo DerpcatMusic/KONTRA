@@ -240,8 +240,7 @@ impl PreparedVoiceChain {
         states: &mut [FilterState],
         context: RenderContext<'_>,
         kernel: &crate::resample::Kernel,
-    ) -> (usize, u64, bool) {
-        let mut underrun = false;
+    ) -> (usize, u64) {
         let mut faults = 0;
         let mut rendered = 0;
         let mut unity = EnvelopeState::new(Envelope::default());
@@ -254,7 +253,7 @@ impl PreparedVoiceChain {
                 .len()
                 .min(voice.envelope.remaining())
                 .min(voice.tail_remaining.map_or(usize::MAX, |n| n as usize));
-            let produced = if voice.source_failed || voice.cursor.done() || voice.envelope.done() {
+            let produced = if voice.cursor.done() || voice.envelope.done() {
                 0
             } else {
                 voice.cursor.render(
@@ -266,14 +265,6 @@ impl PreparedVoiceChain {
                     kernel,
                 )
             };
-            if produced < count
-                && !voice.source_failed
-                && !voice.cursor.done()
-                && !voice.envelope.done()
-            {
-                voice.source_failed = true;
-                underrun = true;
-            }
             for (index, frame) in chunk.iter_mut().enumerate() {
                 let at = context.at + (chunk_index * 64 + index) as u64;
                 let ended = index >= produced || voice.envelope.done();
@@ -325,7 +316,7 @@ impl PreparedVoiceChain {
                 }
             }
         }
-        (rendered, faults, underrun)
+        (rendered, faults)
     }
 
     pub(super) fn done(&self, voice: &Voice) -> bool {

@@ -3,8 +3,8 @@
 V2-11 is in progress. Resident and paged assets now render through the same native
 source/DSP path. The bounded cache/worker protocol, initial source readiness and
 observable source failure, a seekable WAV decoder and explicit bounded demand
-servicing are executable. Starvation fades/recovery and distinct offline preparation are
-still open; this is not yet a production disk-streaming service.
+servicing and a bounded starvation fade are executable. Cold-onset policy, optional
+recovery, storage deadline evidence and distinct offline preparation are still open; this is not yet a production disk-streaming service.
 
 ## Asset identity
 
@@ -129,20 +129,31 @@ frame guarantee only: worker horizons must still cover subsequent reads and late
 pitch/release changes. Scheduled manual sources can lose readiness before start;
 rendering checks actual reads again.
 
-The current live failure contract stops the unavailable source and increments
-`Runtime::stream_underruns()` once. It never replays delayed samples or pauses musical
-time. Existing voice DSP drains its declared zero-input tail across callback
-boundaries; host key pairing remains owned until the real note-off. Bus tails retain
-their existing separate ownership. **A dry source currently cuts at the miss**;
-preventive fades and recovery policy remain required before production readiness.
-Muted sources retain virtual advancement; their demand still includes needed data
-for a later unmute.
+The live failure contract stops reading the unavailable source and increments
+`Runtime::stream_underruns()` once. It renders a linear fade from the last complete
+resampled frame over `ceil(output_rate / 1000)` output frames (one millisecond,
+rounded up), ending at zero. This is an explicit native starvation fallback, not
+reconstructed library audio. Envelope and expression processing continue normally;
+voice DSP receives the fade and then drains its declared zero-input tail across
+callback boundaries. Natural envelope/choke completion can shorten the fallback.
+Late pages never restart a failed source, demand stops for it, and musical time never
+waits or replays delayed samples. Host key pairing remains until real note-off; bus
+tails retain their separate ownership. A first-read miss after a delayed admission
+has no prior source value and fades zero. Immediate not-ready onsets remain rejected
+before source admission and emit no fallback.
+
+Muted sources retain virtual advancement and clear their remembered source value,
+so a later missing-page unmute cannot revive stale audio. Their demand still includes
+needed data. Preventive lookahead fades and any explicitly selected recovery mode
+remain separate open policy work; no perceptual equivalence is claimed on failure.
 
 `tests/paged_render.rs` compares paged/resident PCM exactly across five source rates,
 both directions, wrap/reflected/crossfade loops, release and differing block
 partitions. It also checks atomic missing-guard rejection, host pairing after a live
-miss, and one-time DSP-tail drainage, with allocation/deallocation guards. Logs:
-`artifacts/paged-render-*`. These checks do not establish storage-latency tolerance
+miss, one-time DSP-tail drainage, 44.1/96/192 kHz fade lengths, late completion
+without resurrection, and missing sinc guards without partial-kernel leakage, with
+allocation/deallocation guards. Logs:
+`artifacts/paged-render-*` and `artifacts/stream-fade-*`. These checks do not establish storage-latency tolerance
 or Kontakt/Falcon performance parity.
 
 ## Seekable file decode boundary

@@ -309,8 +309,10 @@ source semantics and checksum/authentication validation are still required.
   draining owned DSP tails. A seekable WAV range decoder now fills worker pages
   from files. Explicit live service polls bounded completions, protects all voice
   horizons before eviction and requests first-use pages; overlapping interpolation
-  guards are resolved once. Multicodec resource admission, cold-onset planning,
-  fades/recovery, disk deadline evidence and offline readiness remain open.
+  guards are resolved once. Starved sources fade for one millisecond through their
+  original DSP and never restart on late data. Multicodec resource admission,
+  cold-onset planning, optional recovery, disk deadline evidence and offline
+  readiness remain open.
 
 - [ ] **P1; dependencies:** V2-09/10.
 - New immutable asset/view identities, decoding, residency, cache and demand service.
