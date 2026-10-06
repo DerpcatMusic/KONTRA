@@ -830,29 +830,6 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .collect()
 }
 
-/// A group's sends as sends of its bus, with the output and fader to use.
-/// The bus hears the signal after the fader, so a pre-fader send is scaled by
-/// the fader's inverse; a closed fader cannot be undone, so the first
-/// pre-fader send becomes the group's output and the rest are scaled to it.
-fn group_sends(group: &ir::Group, output: ir::Output) -> (ir::Output, ir::Gain, Vec<ir::Send>) {
-    let fader = group.gain.linear();
-    let send = |s: &ir::GroupSend, gain: f64| ir::Send {
-        to: ir::Output::Bus(s.to),
-        gain: ir::Gain::Linear(gain),
-        position: ir::SendPosition::PostChain,
-    };
-    if fader > 0.0 {
-        let sends = group.sends.iter().map(|s| send(s, s.gain.linear() * if s.pre_fader { 1.0 / fader } else { 1.0 })).collect();
-        return (output, group.gain, sends);
-    }
-    let Some(first) = group.sends.iter().find(|s| s.pre_fader && s.gain.linear() > 0.0) else {
-        return (output, group.gain, Vec::new());
-    };
-    let base = first.gain.linear();
-    let rest = group.sends.iter().filter(|s| s.pre_fader && !std::ptr::eq(*s, first)).map(|s| send(s, s.gain.linear() / base)).collect();
-    (ir::Output::Bus(first.to), ir::Gain::Linear(base), rest)
-}
-
 /// Give every group a bus of its own after the source's buses, so each is a
 /// mixer node, and describe the result as the part's tree: node 0 is the
 /// instrument, node `n > 0` is runtime bus `n - 1`.
@@ -881,7 +858,7 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
         };
         let at = existing.unwrap_or_else(|| {
             let output = instrument.groups[groups[0]].output;
-            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output });
+            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
             tree.nodes.push(MixNode { name, kind: NodeKind::Mic, parent: Some(node(output)), inserts: Vec::new(), sends: Vec::new() });
             instrument.buses.len()
         });
@@ -897,18 +874,19 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             Some(at) => ir::Output::Bus(ir::BusRef(at - 1)),
             None => group.output,
         };
-        let (output, fader, sends) = group_sends(group, output);
         tree.nodes.push(MixNode {
             name: name.clone(),
             kind: NodeKind::Group,
             parent: Some(node(output)),
             inserts: insert_names(instrument, group.chain),
-            sends: sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect(),
+            sends: Vec::new(),
         });
         let bus = ir::BusRef(instrument.buses.len());
-        instrument.buses.push(ir::Bus { name, chain: None, sends, output });
+        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
         instrument.groups[index].output = ir::Output::Bus(bus);
-        instrument.groups[index].gain = fader;
+        instrument.tap_group(index, bus);
+        let sends = instrument.buses[bus.0].sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect();
+        tree.nodes.last_mut().expect("pushed above").sends = sends;
     }
     tree
 }
@@ -1389,7 +1367,7 @@ mod tests {
     #[test]
     fn groups_become_nodes_that_mix_and_route_to_their_own_pairs() {
         let mut instrument = ir::Instrument { name: "kit".into(), ..Default::default() };
-        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master });
+        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master, gain: ir::Gain::UNITY });
         instrument.groups.push(ir::Group { name: "kick".into(), output: ir::Output::Bus(ir::BusRef(0)), ..Default::default() });
         instrument.groups.push(ir::Group::default());
         let tree = nest(&mut instrument);
@@ -1823,21 +1801,41 @@ mod tests {
 mod send_tests {
     use super::*;
 
-    fn group(gain: f64, sends: &[(f64, bool)]) -> ir::Group {
-        ir::Group {
-            gain: ir::Gain::Linear(gain),
-            sends: sends.iter().map(|&(g, pre)| ir::GroupSend { to: ir::BusRef(0), gain: ir::Gain::Linear(g), pre_fader: pre }).collect(),
-            ..Default::default()
-        }
+    fn instrument(fader: f64) -> ir::Instrument {
+        let mut i = ir::Instrument::default();
+        i.buses.push(ir::Bus { name: "aux".into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY });
+        let send = |gain, pre_fader| ir::GroupSend { to: ir::BusRef(0), gain: ir::Gain::Linear(gain), pre_fader };
+        i.groups.push(ir::Group { gain: ir::Gain::Linear(fader), sends: vec![send(0.5, true), send(0.5, false)], ..Default::default() });
+        i
+    }
+
+    fn tapped(fader: f64) -> (ir::Gain, Vec<f64>) {
+        let mut i = instrument(fader);
+        let tree = nest(&mut i);
+        let bus = &i.buses[1];
+        assert_eq!(i.groups[0].gain, ir::Gain::UNITY, "voices feed the tap unscaled");
+        assert_eq!(tree.nodes[2].sends.len(), 2);
+        (bus.gain, bus.sends.iter().map(|s| s.gain.linear()).collect())
     }
 
     #[test]
-    fn pre_fader_sends_undo_the_fader_and_a_closed_fader_plays_the_send() {
-        let (_, fader, sends) = group_sends(&group(0.5, &[(0.4, true), (0.4, false)]), ir::Output::Master);
-        assert_eq!(fader.linear(), 0.5);
-        assert_eq!(sends.iter().map(|s| s.gain.linear()).collect::<Vec<_>>(), [0.8, 0.4]);
-        let (out, fader, sends) = group_sends(&group(0.0, &[(0.5, true), (0.25, true), (0.9, false)]), ir::Output::Master);
-        assert_eq!((out, fader.linear()), (ir::Output::Bus(ir::BusRef(0)), 0.5));
-        assert_eq!(sends.iter().map(|s| s.gain.linear()).collect::<Vec<_>>(), [0.5]);
+    fn a_closed_fader_silences_the_output_but_not_the_pre_fader_send() {
+        let (out, sends) = tapped(0.0);
+        assert_eq!((out.linear(), sends), (0.0, vec![0.5, 0.0]));
+    }
+
+    #[test]
+    fn pre_and_post_sends_tap_either_side_of_a_minus_12_db_fader() {
+        let fader = 10f64.powf(-12.0 / 20.0);
+        let (out, sends) = tapped(fader);
+        assert_eq!(out.linear(), fader);
+        assert_eq!(sends, vec![0.5, 0.5 * fader]);
+    }
+
+    #[test]
+    fn lowering_hears_the_same_taps_without_a_host_mixer() {
+        let routed = instrument(0.25).with_group_taps();
+        assert_eq!(routed.buses[1].gain.linear(), 0.25);
+        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(1)));
     }
 }

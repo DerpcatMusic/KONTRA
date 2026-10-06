@@ -203,6 +203,48 @@ pub struct Zone {
 }
 
 impl Instrument {
+    /// Make `bus` the tap point of group `index`: the group's fader moves onto
+    /// the bus's output and its sends leave from the signal before it (pre-fader)
+    /// or scaled by it (post-fader). The group's voices then feed `bus` unscaled.
+    pub fn tap_group(&mut self, index: usize, bus: BusRef) {
+        let group = &mut self.groups[index];
+        let fader = group.gain.linear();
+        let bus = &mut self.buses[bus.0];
+        bus.gain = group.gain;
+        for send in group.sends.drain(..) {
+            let scale = if send.pre_fader { 1.0 } else { fader };
+            bus.sends.push(Send {
+                to: Output::Bus(send.to),
+                gain: Gain::Linear(send.gain.linear() * scale),
+                position: SendPosition::PostChain,
+            });
+        }
+        group.gain = Gain::UNITY;
+    }
+
+    /// Give every group that has sends a bus of its own to tap (what a host's
+    /// mixer already does for every group), so lowering hears the same mix.
+    pub fn with_group_taps(&self) -> Self {
+        let mut routed = self.clone();
+        for index in 0..routed.groups.len() {
+            if routed.groups[index].sends.is_empty() {
+                continue;
+            }
+            let group = &routed.groups[index];
+            let bus = BusRef(routed.buses.len());
+            routed.buses.push(Bus {
+                name: group.name.clone(),
+                chain: None,
+                sends: Vec::new(),
+                output: group.output,
+                gain: Gain::UNITY,
+            });
+            routed.groups[index].output = Output::Bus(bus);
+            routed.tap_group(index, bus);
+        }
+        routed
+    }
+
     /// Keep only the zones `keep` accepts and the assets they use, renumbering
     /// assets in their original order. Returns the original index of each
     /// remaining asset, so a caller can load just those.
@@ -874,6 +916,8 @@ pub struct Bus {
     pub chain: Option<ChainRef>,
     pub sends: Vec<Send>,
     pub output: Output,
+    /// Level of the bus's own output; its `sends` are tapped before it.
+    pub gain: Gain,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
