@@ -215,11 +215,12 @@ impl Polyphase {
     #[inline(always)]
     pub(super) fn dot(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
         let position = fraction * PHASES as f64;
-        let phase = (position as usize).min(PHASES - 1);
+        // `position` is in [0, PHASES]: the u32 conversion is exact and
+        // cheaper than a saturating usize one.
+        let phase = (position as u32 as usize).min(PHASES - 1);
         let t = (position - phase as f64) as f32;
         let stride = self.stride;
-        let a = &self.rows[phase * stride..][..stride];
-        let b = &self.rows[(phase + 1) * stride..][..stride];
+        let (a, b) = self.rows[phase * stride..][..2 * stride].split_at(stride);
         let window = &window.as_flattened()[..stride];
         // Independent lanes, interleaved left/right: no serial f32 reduction
         // and no deinterleave, so the loop vectorizes as written.

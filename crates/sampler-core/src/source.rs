@@ -751,9 +751,21 @@ impl Cursor {
         };
         let output = &mut output[..count];
         match bank {
-            Some(bank) => self.run(span, width, output, envelope, gain, gains, |f, w| {
-                bank.dot(f, w)
-            }),
+            Some(bank) => sampler_simd::dispatch(
+                #[inline(always)]
+                || {
+                    self.run(
+                        span,
+                        width,
+                        output,
+                        envelope,
+                        gain,
+                        gains,
+                        #[inline(always)]
+                        |f, w| bank.dot(f, w),
+                    )
+                },
+            ),
             None => {
                 let step = self.step;
                 self.run(span, width, output, envelope, gain, gains, |f, w| {
@@ -791,8 +803,8 @@ impl Cursor {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
             }
             let phase = fraction + step;
-            let whole = phase as i64 as f64;
-            fraction = phase - whole;
+            let whole = phase as i64;
+            fraction = phase - whole as f64;
             offset += whole as usize;
         }
         self.fraction = fraction;
