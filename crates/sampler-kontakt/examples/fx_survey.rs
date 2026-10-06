@@ -31,7 +31,8 @@ fn main() {
     let mut files = Vec::new();
     nkis(Path::new(&root), &mut files);
     files.sort();
-    let (mut read, mut with_fx) = (0, 0);
+    let (mut read, mut with_fx, mut with_ir) = (0, 0, 0);
+    let mut caveats = BTreeMap::<String, BTreeSet<usize>>::new();
     // module -> (instruments, slots by rack kind)
     let mut modules = BTreeMap::<String, (BTreeSet<usize>, BTreeMap<&str, usize>)>::new();
     for (i, path) in files.iter().enumerate() {
@@ -40,6 +41,12 @@ fn main() {
         };
         read += 1;
         let mut any = false;
+        with_ir += usize::from(!kontakt.instrument.impulses.is_empty());
+        for u in &kontakt.instrument.unsupported {
+            if u.feature.starts_with("Convolution") || u.feature == "impulse response" {
+                caveats.entry(u.feature.clone()).or_default().insert(i);
+            }
+        }
         for u in kontakt
             .instrument
             .unsupported
@@ -73,6 +80,10 @@ fn main() {
         "{} files, {read} read, {with_fx} with active effects",
         files.len()
     );
+    println!("{with_ir} instruments with a translated impulse response");
+    for (feature, set) in caveats {
+        println!("{:5} instruments  caveat: {feature}", set.len());
+    }
     let mut rows: Vec<_> = modules.into_iter().collect();
     rows.sort_by_key(|(_, (instruments, _))| std::cmp::Reverse(instruments.len()));
     for (module, (instruments, racks)) in rows {
