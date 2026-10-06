@@ -126,6 +126,8 @@ pub struct StreamCache {
     /// Decoder threads to unpark after a service pushed requests.
     wake: Vec<std::thread::Thread>,
     pushed: bool,
+    /// Where the eviction sweep resumes.
+    hand: usize,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -183,6 +185,7 @@ impl StreamCache {
                 store,
                 wake: Vec::new(),
                 pushed: false,
+                hand: 0,
             },
             StreamWorker {
                 requests: incoming,
@@ -293,22 +296,16 @@ impl StreamCache {
         if self.requests.is_full() {
             return Err(StreamError::Capacity);
         }
-        let slot = self
-            .entries
-            .iter()
-            .position(Option::is_none)
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, entry)| {
-                        entry
-                            .as_ref()
-                            .filter(|e| e.used != self.epoch)
-                            .map(|e| (i, e.used))
-                    })
-                    .min_by_key(|(_, used)| *used)
-                    .map(|(i, _)| i)
+        // Clock sweep: the next free slot or page this epoch has not
+        // protected. ponytail: not strict LRU (a page idle one epoch goes as
+        // soon as one idle for many); amortized O(1) instead of a full scan.
+        let count = self.entries.len();
+        let slot = (0..count)
+            .map(|i| (self.hand + i) % count)
+            .find(|&i| {
+                self.entries[i]
+                    .as_ref()
+                    .is_none_or(|e| e.used != self.epoch)
             })
             .ok_or(StreamError::Capacity)?;
         if self.recycled.is_full()
@@ -336,6 +333,7 @@ impl StreamCache {
             .expect("reserved request capacity");
         self.pushed = true;
         self.serial = serial;
+        self.hand = (slot + 1) % count;
         if let Some(old) = self.entries[slot].take() {
             let index = self
                 .index
