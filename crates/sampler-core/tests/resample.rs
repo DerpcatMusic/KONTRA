@@ -1,6 +1,6 @@
 use sampler_core::{
     Direction, Envelope, Error, Event, Expression, Inheritance, Input, Limits, Loop, LoopMode, Pcm,
-    Playback, Prepared, Protocol, Region, Runtime,
+    Playback, Prepared, Protocol, Region, ResampleQuality, Runtime,
 };
 use std::f64::consts::PI;
 mod support;
@@ -33,7 +33,11 @@ fn prepare(pcm: Pcm, rate: u32, playback: Playback) -> Result<Prepared, Error> {
         1,
     )
 }
+/// High quality: the traversal oracles below are the long windowed sinc.
 fn runtime(plan: Prepared) -> Runtime {
+    realtime(plan).with_resample_quality(ResampleQuality::High)
+}
+fn realtime(plan: Prepared) -> Runtime {
     Runtime::new(
         plan,
         Limits {
@@ -66,8 +70,12 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
     ] {
         let frequency = 0.037;
         let step = f64::from(source_rate) / f64::from(output_rate) * (semitones / 12.0_f64).exp2();
-        let mut baseline = [[0.0; 2]; 256];
-        for partition in [1, 7, 64, 256] {
+        // Each quality must be partition-independent on its own.
+        let mut baselines = [[[0.0; 2]; 256]; 2];
+        for (partition, quality) in [1, 7, 64, 256]
+            .into_iter()
+            .flat_map(|p| [(p, ResampleQuality::High), (p, ResampleQuality::Realtime)])
+        {
             let pcm = Pcm::new(
                 source_rate,
                 (0..4096)
@@ -78,7 +86,7 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
                     .collect(),
             )
             .unwrap();
-            let mut rt = runtime(
+            let mut rt = realtime(
                 prepare(
                     pcm,
                     output_rate,
@@ -89,7 +97,8 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
                     },
                 )
                 .unwrap(),
-            );
+            )
+            .with_resample_quality(quality);
             let mut audio = [[0.0; 2]; 256];
             support::without_heap(|| {
                 rt.trigger(input(), 60, 1.0).unwrap();
@@ -102,15 +111,21 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
                 rt.panic();
                 rt.flush_ended(|_| true);
             });
+            let baseline = &mut baselines[usize::from(quality == ResampleQuality::Realtime)];
             if partition == 1 {
-                baseline = audio;
+                *baseline = audio;
             } else {
-                assert_eq!(audio, baseline);
+                assert_eq!(audio, *baseline);
             }
             for (i, frame) in audio.iter().enumerate() {
                 let phase = 2.0 * PI * frequency * (512.0 + (128 + i) as f64 * step);
-                assert!((f64::from(frame[0]) - phase.cos()).abs() < 0.0001);
-                assert!((f64::from(frame[1]) - phase.sin()).abs() < 0.0001);
+                // A four-point cubic is within 2.1e-4 of a 0.037-cycle tone.
+                let tolerance = match quality {
+                    ResampleQuality::High => 0.0001,
+                    ResampleQuality::Realtime => 0.0005,
+                };
+                assert!((f64::from(frame[0]) - phase.cos()).abs() < tolerance);
+                assert!((f64::from(frame[1]) - phase.sin()).abs() < tolerance);
             }
         }
     }
@@ -583,7 +598,8 @@ fn absolute_pitch_overrides_tuning_and_survives_generated_note_transposition() {
                     note_cells: 0,
                 },
             )
-            .unwrap();
+            .unwrap()
+            .with_resample_quality(ResampleQuality::High);
             let mut reference = runtime(
                 prepare(
                     tone(),
@@ -872,7 +888,8 @@ fn initial_expression_precedes_selection_and_immediate_snapshot_programs() {
             note_cells: 0,
         },
     )
-    .unwrap();
+    .unwrap()
+    .with_resample_quality(ResampleQuality::High);
     let mut expected = [[0.0; 2]; 256];
     let mut actual = expected;
     support::without_heap(|| {
