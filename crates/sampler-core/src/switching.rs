@@ -116,6 +116,10 @@ impl Prepared {
         self.switching = switching;
         self
     }
+
+    pub fn switching(&self) -> &Switching {
+        &self.switching
+    }
 }
 
 impl Runtime {
