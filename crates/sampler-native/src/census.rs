@@ -108,6 +108,24 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
+fn library_root(path: &Path, root: &Path) -> PathBuf {
+    if root.is_file() {
+        return path.parent().unwrap_or(Path::new(".")).into();
+    }
+    path.ancestors()
+        .skip(1)
+        .take_while(|parent| parent.starts_with(root))
+        .find(|parent| parent.join("Samples").is_dir())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            path.strip_prefix(root)
+                .ok()
+                .and_then(Path::parent)
+                .and_then(|relative| relative.components().next())
+                .map_or_else(|| root.into(), |component| root.join(component))
+        })
+}
+
 pub fn run(args: &[OsString]) -> io::Result<()> {
     let roots = roots(args);
     if roots.is_empty() {
@@ -138,21 +156,8 @@ pub fn run(args: &[OsString]) -> io::Result<()> {
             loose_program(&path);
             continue;
         }
-        let library = path
-            .ancestors()
-            .skip(1)
-            .find(|p| p.join("Samples").is_dir())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| {
-                let root = roots.iter().find(|r| path.starts_with(r)).unwrap();
-                if root.is_file() {
-                    return path.parent().unwrap_or(Path::new(".")).into();
-                }
-                path.strip_prefix(root)
-                    .ok()
-                    .and_then(|relative| relative.components().next())
-                    .map_or_else(|| root.clone(), |component| root.join(component))
-            });
+        let root = roots.iter().find(|root| path.starts_with(root)).unwrap();
+        let library = library_root(&path, root);
         let counts = libraries.entry(library).or_default();
         if path
             .extension()
@@ -351,6 +356,26 @@ fn bank(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_grouping_cannot_ascend_outside_the_selected_root() {
+        let base = std::env::temp_dir().join(format!("v2-census-roots-{}", std::process::id()));
+        let root = base.join("libraries");
+        let library = root.join("authored");
+        std::fs::create_dir_all(base.join("Samples")).unwrap();
+        std::fs::create_dir_all(&library).unwrap();
+        let instrument = library.join("program.nki");
+        std::fs::write(&instrument, []).unwrap();
+        assert_eq!(library_root(&instrument, &root), library);
+        assert_eq!(library_root(&instrument, &instrument), library);
+        assert_eq!(library_root(&root.join("flat.nki"), &root), root);
+        std::fs::create_dir_all(library.join("Samples")).unwrap();
+        assert_eq!(
+            library_root(&library.join("nested/program.nki"), &root),
+            library
+        );
+        std::fs::remove_dir_all(base).unwrap();
+    }
 
     #[cfg(feature = "library-access")]
     #[test]
