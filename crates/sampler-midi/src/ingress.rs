@@ -257,10 +257,11 @@ impl Ingress {
                 value: Value::Bits7(0) | Value::Bits32(0),
             } => {
                 // RP-015: pedals (64-67) up, modulation (1) to 0, expression
-                // (11) to full. Volume, pan, bank, effects and sound
-                // controllers keep their values. This receiver has no pitch
-                // bend, pressure or RPN state to reset. Pedals first: a
-                // failed later admission must not leave notes sustained.
+                // (11) to full, bend centred, channel and poly pressure 0,
+                // RPN/NRPN selection null. Volume, pan, bank, effects, sound
+                // controllers and the bend range keep their values. Pedals
+                // first: a failed later admission must not leave notes
+                // sustained.
                 for (index, value) in [(64, 0), (65, 0), (66, 0), (67, 0), (1, 0), (11, u32::MAX)] {
                     runtime.dispatch_controller(
                         performance,
@@ -270,6 +271,13 @@ impl Ingress {
                         value,
                     )?;
                 }
+                runtime.set_input_expressions(input.channel_address(), None, |e| Expression {
+                    pitch_semitones: 0.0,
+                    pressure: 0,
+                    ..e
+                })?;
+                let channel = &mut self.channels[slot];
+                (channel.bend, channel.pressure, channel.rpn) = (0.0, 0, [127; 2]);
                 Applied::ResetControllers
             }
             Message::Control {
