@@ -173,3 +173,35 @@ fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
     rt.trigger(input(60), 60, 1.).unwrap();
     assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
 }
+
+#[test]
+fn timer_listener_plays_notes_on_its_period() {
+    let mut rt = runtime(
+        "on init
+           declare $n
+           set_listener($NI_SIGNAL_TIMER_MS, 10000)
+         end on
+         on listener
+           if ($NI_SIGNAL_TYPE = $NI_SIGNAL_TIMER_MS)
+             inc($n)
+             if ($n = 2)
+               { The second tick stops the timer. }
+               change_listener_par($NI_SIGNAL_TIMER_MS, 0)
+             end if
+             play_note(60, 100, 0, 100000)
+           end if
+         end on",
+    );
+    // 10 ms is 480 frames: silent before the first tick, sounding after.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+
+    level(&mut rt);
+    // Velocity 100: 0.5 · 100/127.
+    assert!(close(level(&mut rt), [0.3937; 2]));
+    for _ in 0..25 {
+        level(&mut rt);
+    }
+    // Two 100 ms notes, then no more ticks.
+    assert_eq!(level(&mut rt), [0.0; 2]);
+    assert_eq!(rt.voice_count(), 0);
+}

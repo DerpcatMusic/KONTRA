@@ -10,6 +10,7 @@ impl Runtime {
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
+        self.start_plan_programs();
         self.resume_yielded();
         self.apply_due();
         let mut offset = 0;
