@@ -673,6 +673,18 @@ impl Prepared {
     pub fn stage_count(&self) -> usize {
         self.stages.len()
     }
+    /// Bytes one voice slot costs under this plan: the voice itself, its chain
+    /// and delay state, and its modulation state. Control side, for sizing
+    /// `Limits::voices` against a memory budget.
+    pub fn voice_state_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let stages = self.voice_chains.iter().map(|c| c.stages()).max().unwrap_or(0);
+        let delay = self.voice_chains.iter().map(|c| c.delay_frames).max().unwrap_or(0);
+        size_of::<crate::Slot<crate::Voice>>()
+            + stages * size_of::<crate::dsp::ProcessorState>()
+            + delay * size_of::<[f64; 2]>()
+            + self.voice_modulation.bytes_per_voice()
+    }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()
     }

@@ -6,7 +6,10 @@
 //! supports resident stereo PCM with bounded rate conversion, native linear envelopes
 //! and sample-time commands; vendor fidelity requires separate conformance evidence.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Internal, non-owning links are unlinked before a slot can be reused. Public
 /// identities remain generational handles. The niche keeps each optional link
@@ -92,6 +95,9 @@ mod plans;
 mod prepare;
 pub use packed::Packed;
 mod release;
+mod grow;
+mod parallel;
+pub use parallel::Threads;
 mod render;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
@@ -386,6 +392,36 @@ impl<T> Arena<T> {
         }
     }
 
+    /// Empty slots and an all-free bitmap for `capacity` entries.
+    fn blank(capacity: usize) -> (Box<[Slot<T>]>, Box<[u64]>) {
+        let mut free = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
+        if !capacity.is_multiple_of(64) {
+            *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
+        }
+        let slots = std::iter::repeat_with(|| Slot { generation: 0, value: None })
+            .take(capacity)
+            .collect();
+        (slots, free)
+    }
+
+    /// Swap in larger storage from `blank`, moving every slot over at its
+    /// index so handles stay valid. The old storage ends up in the
+    /// arguments, to be freed off the audio thread. No allocation.
+    fn grow(&mut self, slots: &mut Box<[Slot<T>]>, free: &mut Box<[u64]>) {
+        let old = self.slots.len();
+        assert!(slots.len() > old);
+        slots[..old].swap_with_slice(&mut self.slots);
+        let words = old.div_ceil(64);
+        let kept = if old % 64 == 0 { u64::MAX } else { (1u64 << (old % 64)) - 1 };
+        for (w, &bits) in self.free.iter().enumerate() {
+            let mask = if w + 1 == words { kept } else { u64::MAX };
+            free[w] = (bits & mask) | (free[w] & !mask);
+        }
+        self.available += slots.len() - old;
+        std::mem::swap(&mut self.slots, slots);
+        std::mem::swap(&mut self.free, free);
+    }
+
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
         if self.available() == 0 {
             return Err(Error::Capacity);
@@ -509,10 +545,20 @@ pub struct Runtime {
     /// Voices stolen since the runtime started.
     steals: u64,
     voice_order: u64,
+    /// Worker pool and scratch for multicore rendering; None renders on the audio thread.
+    parallel: Option<parallel::Parallel>,
+    /// Render lanes new plans size their filter caches for.
+    lanes: Arc<std::sync::atomic::AtomicUsize>,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    /// Voice-pool growths adopted, and refused (see `grow`).
+    voice_growths: u64,
+    growth_failures: u64,
+    growth: Option<grow::GrowthQueues>,
+    /// Set on the audio side when the pool runs three quarters full.
+    voice_pressure: grow::Pressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
@@ -624,7 +670,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
-            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions)?,
+            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
@@ -652,10 +698,16 @@ impl Runtime {
             stolen: 0,
             steals: 0,
             voice_order: 0,
+            parallel: None,
+            lanes: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            voice_growths: 0,
+            growth_failures: 0,
+            growth: None,
+            voice_pressure: Arc::default(),
             steal_releases: false,
             cold_starts: false,
             cold_started: 0,
@@ -1175,6 +1227,7 @@ impl Runtime {
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
+        self.note_voice_pressure();
         if self.voices.available() == 0 {
             // ponytail: only silent voices waiting on the stream are taken; no
             // audible-voice stealing policy yet, so a full pool drops the start.

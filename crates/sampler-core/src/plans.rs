@@ -62,6 +62,8 @@ pub(super) struct Generation {
 pub(super) struct PlanQueues {
     pending: Consumer<PlanTransfer>,
     retired: Producer<PlanTransfer>,
+    /// Request of the newest adopted plan, for `PlanControl::grow_voices`.
+    installed: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Single control-side owner. Prepare, submit, consume retirements and destroy here.
@@ -77,9 +79,56 @@ pub struct PlanControl {
     notes: usize,
     performances: usize,
     sequence: u64,
+    /// Render lanes of the runtime (see `Runtime::set_threads`).
+    lanes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    installed: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    growth: Producer<super::grow::Growth>,
+    grown: Consumer<super::grow::Growth>,
+    pressure: super::grow::Pressure,
+    /// Sizes of the plans the runtime may still hold, for growth.
+    live: Vec<super::grow::Dims>,
+    growing: bool,
 }
 
 impl PlanControl {
+    /// Voice slots the pool has, or is being grown to.
+    pub fn voice_capacity(&self) -> usize {
+        self.voices
+    }
+
+    /// Whether the audio side saw the voice pool three quarters full since
+    /// the last `grow_voices`.
+    pub fn voice_pressure(&self) -> bool {
+        self.pressure.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Grow the voice pool to `voices` slots without stopping audio: builds the
+    /// larger per-voice state here and queues it for the audio thread, which
+    /// adopts it at the start of its next block. Plans submitted afterwards
+    /// are built for the new size. Fails (`Capacity`) when a growth or a plan
+    /// is still in flight, or `voices` is not larger; call again later.
+    /// `Runtime::stats().voice_capacity` shows the adopted size.
+    pub fn grow_voices(&mut self, voices: usize) -> Result<usize, PlanError> {
+        if self.growth.is_abandoned() {
+            return Err(PlanError::Disconnected);
+        }
+        while self.grown.pop().is_ok() {
+            self.growing = false;
+        }
+        let adopted = self.installed.load(std::sync::atomic::Ordering::Acquire) == self.sequence;
+        if self.growing || !adopted || voices <= self.voices {
+            return Err(PlanError::Capacity);
+        }
+        let parallel = self.lanes.load(std::sync::atomic::Ordering::Relaxed) > 1;
+        let growth = super::grow::Growth::build(voices, &self.live, parallel)
+            .map_err(|_| PlanError::Capacity)?;
+        self.pressure.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.growth.push(growth).map_err(|_| PlanError::Capacity)?;
+        self.growing = true;
+        self.voices = voices;
+        Ok(voices)
+    }
+
     /// Rejection returns the exact owned plan to the caller; nothing is published.
     pub fn submit(&mut self, prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
         let reason = if self.pending.is_abandoned() {
@@ -100,7 +149,12 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
-        let dsp = match super::dsp::DspState::new(&prepared, self.voices, self.expressions) {
+        let dsp = match super::dsp::DspState::new(
+            &prepared,
+            self.voices,
+            self.expressions,
+            self.lanes.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
             Ok(dsp) => dsp,
             Err(_) => {
                 return Err(RejectedPlan {
@@ -157,6 +211,7 @@ impl PlanControl {
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
+        let dims = super::grow::Dims::of(request, &prepared);
         match self.pending.push(PlanTransfer {
             request,
             prepared,
@@ -172,6 +227,7 @@ impl PlanControl {
         }) {
             Ok(()) => {
                 self.sequence = request;
+                self.live.push(dims);
                 Ok(request)
             }
             Err(PushError::Full(plan)) => Err(RejectedPlan {
@@ -182,7 +238,9 @@ impl PlanControl {
     }
 
     pub fn retired(&mut self) -> Option<PlanTransfer> {
-        self.retired.pop().ok()
+        let plan = self.retired.pop().ok()?;
+        self.live.retain(|d| d.request != plan.request);
+        Some(plan)
     }
 }
 
@@ -210,6 +268,18 @@ impl Runtime {
         runtime.plans = slots;
         let (pending, incoming) = RingBuffer::new(queued);
         let (retired, outgoing) = RingBuffer::new(queued);
+        let (growth, incoming_growth) = RingBuffer::new(1);
+        let (outgoing_growth, grown) = RingBuffer::new(1);
+        let installed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let live = vec![super::grow::Dims::of(
+            0,
+            &runtime.plans.get(runtime.active_plan.0).unwrap().prepared,
+        )];
+        runtime.growth = Some(super::grow::GrowthQueues {
+            incoming: incoming_growth,
+            outgoing: outgoing_growth,
+            waker: None,
+        });
         let control = PlanControl {
             pending,
             retired: outgoing,
@@ -221,10 +291,18 @@ impl Runtime {
             notes: limits.notes,
             performances: limits.performances,
             sequence: 0,
+            lanes: runtime.lanes.clone(),
+            installed: installed.clone(),
+            growth,
+            grown,
+            pressure: runtime.voice_pressure.clone(),
+            live,
+            growing: false,
         };
         runtime.plan_queues = Some(PlanQueues {
             pending: incoming,
             retired,
+            installed,
         });
         Ok((runtime, control))
     }
@@ -352,6 +430,9 @@ impl Runtime {
                 .expect("reserved plan generation slot"),
         );
         self.collect_retired_plans();
+        if let Some(queues) = &self.plan_queues {
+            queues.installed.store(request, std::sync::atomic::Ordering::Release);
+        }
         Ok(Some(request))
     }
 }

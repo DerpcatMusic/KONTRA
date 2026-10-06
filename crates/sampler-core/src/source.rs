@@ -764,10 +764,11 @@ impl Cursor {
         };
         let output = &mut output[..count];
         match bank {
-            Some(bank) => sampler_simd::dispatch(
+            Some(bank) => sampler_simd::dispatch_fused(
+                (self, output, envelope),
                 #[inline(always)]
-                || {
-                    self.run(
+                |(this, output, envelope)| {
+                    this.run(
                         span,
                         width,
                         output,
@@ -775,7 +776,20 @@ impl Cursor {
                         gain,
                         gains,
                         #[inline(always)]
-                        |f, w| bank.dot(f, w),
+                        |f, w| bank.dot::<false>(f, w),
+                    )
+                },
+                #[inline(always)]
+                |(this, output, envelope)| {
+                    this.run(
+                        span,
+                        width,
+                        output,
+                        envelope,
+                        gain,
+                        gains,
+                        #[inline(always)]
+                        |f, w| bank.dot::<true>(f, w),
                     )
                 },
             ),
@@ -1283,7 +1297,7 @@ impl ReadFrames for [Frame] {
 }
 /// The asset's resident pages, then cache pages.
 pub(super) struct PagedFrames<'a> {
-    pub cache: &'a crate::StreamCache,
+    pub cache: crate::stream::PageReader<'a>,
     pub asset: crate::AssetId,
     pub head: &'a [(usize, crate::Packed)],
 }
