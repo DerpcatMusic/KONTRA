@@ -798,3 +798,208 @@ fn children_capture_current_domain_controllers_independently_of_expression_inher
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_original_plans() {
+    use sampler_core::{BehaviorOwner, Instruction as I, Outcome, Program, WaitLifetime};
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![
+                    I::ReadControllerNumber { local: 0 },
+                    I::ReadControllerValue { local: 1 },
+                    I::Wait(4),
+                    I::ReadInputController {
+                        controller: 0,
+                        local: 2,
+                    },
+                    I::ForwardController,
+                ])
+                .unwrap()
+                .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_controller_program(0)
+        .unwrap();
+    let (mut rt, mut transfer) = Runtime::with_plan_updates(
+        plan,
+        Limits {
+            behaviors: 2,
+            behavior_cells: 6,
+            behavior_fuel: 8,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
+    let old = rt.active_plan();
+    let domain = rt.performance(1).unwrap();
+    let scope = ChannelScope {
+        protocol: Protocol::Midi2,
+        port: 2,
+        group: 3,
+        channels: 4,
+    };
+    let mut callbacks = None;
+    support::without_heap(|| {
+        assert_eq!(rt.start_plan_behavior(old, 0), Err(Error::InvalidInput));
+        let a = rt
+            .dispatch_controller(domain, scope, 1, 0x12345678)
+            .unwrap()
+            .unwrap();
+        let b = rt
+            .dispatch_controller(domain, scope, 1, 0x12345679)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rt.controller(domain, 1), Ok(0));
+        assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
+        assert_eq!(
+            rt.dispatch_controller(domain, scope, 1, 99),
+            Err(Error::Capacity)
+        );
+        assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
+        callbacks = Some([a, b]);
+    });
+    let [a, b] = callbacks.unwrap();
+    transfer
+        .submit(Box::new(Prepared::new(48000, vec![], vec![], 0).unwrap()))
+        .unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        assert_eq!(
+            rt.dispatch_controller(domain, scope, 1, 0x87654321),
+            Ok(None)
+        );
+        rt.render(&mut [[0.; 2]; 4]).unwrap();
+        assert_eq!(rt.controller(domain, 1), Ok(0x87654321));
+        rt.render(&mut []).unwrap();
+        assert_eq!(rt.controller(domain, 1), Ok(0x12345679));
+        assert_eq!(rt.controller(rt.performance(0).unwrap(), 1), Ok(0));
+        for (id, value) in [(a, 0x12345678), (b, 0x12345679)] {
+            assert_eq!(rt.behavior_local(id, 0), Ok(1));
+            assert_eq!(rt.behavior_local(id, 1), Ok(value));
+            assert_eq!(rt.behavior_local(id, 2), Ok(0x87654321));
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+        }
+        rt.flush_behaviors(|_, owner, _| {
+            assert_eq!(owner, BehaviorOwner::Plan(old));
+            false
+        });
+        assert_eq!(rt.collect_retired_plans(), 0);
+        rt.flush_behaviors(|_, _, _| true);
+        assert_eq!(rt.collect_retired_plans(), 1);
+        assert_eq!(
+            (
+                rt.note_count(),
+                rt.expression_count(),
+                rt.pending_commands()
+            ),
+            (0, 0, 0)
+        );
+    });
+    drop(transfer.retired().unwrap());
+}
+
+#[test]
+fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input() {
+    use sampler_core::{Instruction as I, Outcome, Program, WaitLifetime};
+    for (code, expected) in [
+        (
+            vec![
+                I::SetLocal {
+                    local: 0,
+                    value: 128,
+                },
+                I::ReadInputController {
+                    controller: 0,
+                    local: 0,
+                },
+                I::ForwardController,
+            ],
+            Outcome::Fault(Error::InvalidInput),
+        ),
+        (vec![I::Wait(4), I::ForwardController], Outcome::Cancelled),
+        (vec![I::ForwardController], Outcome::Fault(Error::Capacity)),
+    ] {
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(
+                vec![
+                    Program::new(code)
+                        .unwrap()
+                        .with_wait_lifetime(WaitLifetime::Callback),
+                ],
+                None,
+            )
+            .unwrap()
+            .with_controller_program(0)
+            .unwrap();
+        let mut rt = Runtime::new(
+            plan,
+            Limits {
+                behaviors: 1,
+                behavior_cells: 1,
+                behavior_fuel: 8,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let domain = rt.performance(0).unwrap();
+            let scope = ChannelScope {
+                protocol: Protocol::Midi1,
+                port: 0,
+                group: 0,
+                channels: 1,
+            };
+            let id = rt
+                .dispatch_controller(domain, scope, 64, u32::MAX)
+                .unwrap()
+                .unwrap();
+            if expected == Outcome::Cancelled {
+                rt.panic();
+            }
+            rt.render(&mut [[0.; 2]; 8]).unwrap();
+            assert_eq!(rt.input_controller(domain, 64), Ok(u32::MAX));
+            assert_eq!(rt.controller(domain, 64), Ok(0));
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(expected)));
+            rt.flush_behaviors(|_, _, _| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
+    }
+    let mut rt = runtime();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let scope = ChannelScope {
+            protocol: Protocol::Midi1,
+            port: 0,
+            group: 0,
+            channels: 1,
+        };
+        assert_eq!(
+            rt.dispatch_controller(domain, scope, 64, u32::MAX),
+            Err(Error::Capacity)
+        );
+        assert_eq!(rt.input_controller(domain, 64), Ok(0));
+        assert_eq!(
+            rt.dispatch_controller(domain, scope, 128, 0),
+            Err(Error::InvalidInput)
+        );
+        assert_eq!(
+            rt.dispatch_controller(
+                domain,
+                ChannelScope {
+                    channels: 0,
+                    ..scope
+                },
+                1,
+                0
+            ),
+            Err(Error::InvalidInput)
+        );
+    });
+}

@@ -200,6 +200,17 @@ impl<'a> Parser<'a> {
         let instruction = match token.kind {
             Kind::Word("play_note") => return self.play(local, true, depth),
             Kind::Word("$EVENT_ID") => Instruction::ReadEventId { local },
+            Kind::Word("$CC_NUM") => Instruction::ReadControllerNumber { local },
+            Kind::Word("%CC") => {
+                self.symbol(b'[')?;
+                self.expression(local, 0, depth + 1)?;
+                self.symbol(b']')?;
+                self.emit(Instruction::ReadInputController {
+                    controller: local,
+                    local,
+                })?;
+                Instruction::ControllerToMidi7 { local }
+            }
             Kind::Word("num_elements") => {
                 self.symbol(b'(')?;
                 let token = self.next()?;

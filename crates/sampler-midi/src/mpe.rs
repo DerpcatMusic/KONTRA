@@ -268,18 +268,8 @@ impl Mpe {
                 if voice.channel != self.zone.manager() {
                     Applied::Ignored
                 } else {
-                    let width = (1u32 << (self.members + 1)) - 1;
-                    let channels = match self.zone {
-                        Zone::Lower => width as u16,
-                        Zone::Upper => (width << (15 - self.members)) as u16,
-                    };
-                    let scope = ChannelScope {
-                        protocol: Protocol::Midi1,
-                        port: self.port,
-                        group: self.group,
-                        channels,
-                    };
-                    runtime.set_pedal_controller(
+                    let scope = self.manager_scope();
+                    runtime.dispatch_controller(
                         self.performance,
                         scope,
                         index,
@@ -301,11 +291,29 @@ impl Mpe {
                     && !matches!(index, 96 | 97)
                     && voice.channel == self.zone.manager() =>
             {
-                runtime.set_controller(self.performance, index, value.full_scale())?;
+                runtime.dispatch_controller(
+                    self.performance,
+                    self.manager_scope(),
+                    index,
+                    value.full_scale(),
+                )?;
                 Applied::Controller
             }
             _ => Applied::Unsupported,
         })
+    }
+
+    fn manager_scope(&self) -> ChannelScope {
+        let width = (1u32 << (self.members + 1)) - 1;
+        ChannelScope {
+            protocol: Protocol::Midi1,
+            port: self.port,
+            group: self.group,
+            channels: match self.zone {
+                Zone::Lower => width as u16,
+                Zone::Upper => (width << (15 - self.members)) as u16,
+            },
+        }
     }
 
     fn control(

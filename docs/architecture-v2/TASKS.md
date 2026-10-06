@@ -162,6 +162,11 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   separate, including same-key FIFO and independent host/script deadlines.
   Nested release callbacks now use preallocated dispatch frames instead of recursive
   interpreter calls, preserving per-callback fuel, wait ordering and release completion.
+  Controller callbacks now capture their input and original plan while separating
+  raw CC banks from downstream selection state. KSP CC consumption/remapping and
+  ordinary MIDI/MPE manager ingress share the same full-resolution/pedal services.
+  Virtual controllers, cross-context CC operations and ordered script-stage banks
+  remain open.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
 

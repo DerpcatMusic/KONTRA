@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Route controller callbacks through native input/downstream state and bounded
+  continuations. KSP CC consumption/remapping now reaches ordinary MIDI and MPE
+  manager ingress, preserving full-resolution forwarding and pedal ownership.
+
 - Consume pending attacks when scripts stop their own event before forwarding,
   avoiding a spurious callback fault while preserving later host key-up pairing.
 

@@ -99,6 +99,7 @@ pub(super) struct State {
 }
 
 pub(super) struct PerformanceState {
+    pub input_controllers: Box<[[u32; 128]]>,
     pub states: Box<[State]>,
     pub current: Box<[usize]>,
     free: Vec<usize>,
@@ -108,6 +109,7 @@ impl PerformanceState {
     pub fn validate(notes: usize, performances: usize) -> Result<usize, Error> {
         let capacity = notes.checked_add(performances).ok_or(Error::Capacity)?;
         std::alloc::Layout::array::<State>(capacity).map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<[u32; 128]>(performances).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<usize>(capacity).map_err(|_| Error::Capacity)?;
         Ok(capacity)
     }
@@ -124,6 +126,7 @@ impl PerformanceState {
         .into_boxed_slice();
         states[0].owners = performances;
         Self {
+            input_controllers: vec![[0; 128]; performances].into_boxed_slice(),
             states,
             current: vec![0; performances].into_boxed_slice(),
             free: (1..capacity).rev().collect(),

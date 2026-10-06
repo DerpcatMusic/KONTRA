@@ -12,7 +12,7 @@ manual surface. This subset is not the product's completion target.
 ## Accepted shape
 
 An optional first `on init` declares ordinary/script-instance and polyphonic integer variables, integer constants/arrays and supported scalar
-UI controls. Optional `on note` and/or `on release` follows; duplicate or misplaced callbacks fail compilation.
+UI controls. Optional `on note`, `on release` and `on controller` follow; duplicate or misplaced callbacks fail compilation.
 A note callback may suppress its original attack with `ignore_event($EVENT_ID)`. Release-only scripts keep
 ordinary native attack selection. Init accepts declarations, `make_perfview` and constant-expression initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
@@ -703,3 +703,35 @@ and both root boundary tests (`artifacts/input-ownership-*`). Fixtures cover FIF
 exact-ID retention, script/fault completion, source/host deadline separation, callback
 counts and both MPE zones. Vendor-specific `$NOTE_HELD` projection and multi-stage
 rules still need reference execution; no complete compatibility claim is made.
+
+
+## Controller event execution
+
+`on controller` now handles CCs through the shared native dispatcher. `$CC_NUM`
+retains the callback's event number across waits; `%CC[index]` reads the latest
+admitted input value in its performance domain, including consumed events. The
+source view rounds full-resolution values to 0–127; ordinary forwarding retains
+the original 32-bit value. `ignore_controller` consumes pending forwarding and
+`set_controller(number,value)` emits a new CC downstream without reentering the
+creating script. First wait, exit and callback completion forward an unsuppressed
+input once; late suppression cannot undo an already-published update.
+
+This follows the documented roles of [controller callbacks](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/callbacks)
+and [ignore_controller/set_controller](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands).
+The recorded v1 `SetController` command routes generated messages to the next slot;
+the new implementation uses native services directly and has no v1 runtime dependency.
+Ordered slots and vendor wake/forward ordering still need separate implementation
+and comparison. The current input bank is per performance domain, not per script slot.
+
+Controller callbacks share globals/control values with note/release/UI callbacks.
+They own their original prepared generation, captured event value and channel scope,
+with no fake note owner. Both ordinary MIDI ingress and MPE manager CCs use this
+path; consumed pedals never reach the gate. Remapping any MPE manager CC to a pedal
+retains the entire zone scope.
+
+Current limits: only integer CC numbers 0–127 and values 0–127 in set_controller;
+virtual pitch-bend/aftertouch IDs, parameter-controller dispatch, channel-mode
+semantics, generated notes from controller callbacks and cross-context CC reads/
+writes remain open. Source CC reads/writes currently require on controller. Faults
+are retained native outcomes; prior writes are not rolled back. No vendor parity
+claim follows from these authored fixtures.

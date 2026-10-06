@@ -28,6 +28,7 @@ pub struct Script {
     programs: Vec<Program>,
     on_note: Option<usize>,
     on_release: Option<usize>,
+    on_controller: Option<usize>,
     rate: u32,
     globals: Vec<i64>,
     note_cells: usize,
@@ -92,8 +93,12 @@ impl Script {
                 self.on_note,
             )?
             .with_control_programs(callbacks)?;
-        match self.on_release {
-            Some(program) => plan.with_release_program(program),
+        let plan = match self.on_release {
+            Some(program) => plan.with_release_program(program)?,
+            None => plan,
+        };
+        match self.on_controller {
+            Some(program) => plan.with_controller_program(program),
             None => Ok(plan),
         }
     }
@@ -130,6 +135,7 @@ enum CallbackKind {
     Note,
     Release,
     Control,
+    Controller,
 }
 
 enum Block {
@@ -602,6 +608,7 @@ impl<'a> Parser<'a> {
             CallbackKind::Note => self.emit(Instruction::ForwardAttack),
             CallbackKind::Release => self.emit(Instruction::ForwardReleaseGroups),
             CallbackKind::Control => Ok(()),
+            CallbackKind::Controller => self.emit(Instruction::ForwardController),
         }
     }
 
@@ -638,7 +645,24 @@ impl<'a> Parser<'a> {
                         Instruction::WriteEventVelocity7 { local: 0 }
                     })?;
                 }
-                Kind::Word("ignore_event") if !matches!(kind, CallbackKind::Control) => {
+                Kind::Word("ignore_controller") if matches!(kind, CallbackKind::Controller) => {
+                    self.emit(Instruction::SuppressController)?;
+                }
+                Kind::Word("set_controller") if matches!(kind, CallbackKind::Controller) => {
+                    self.symbol(b'(')?;
+                    self.scalar(0)?;
+                    self.symbol(b',')?;
+                    self.scalar(1)?;
+                    self.symbol(b')')?;
+                    self.emit(Instruction::ControllerFromMidi7 { local: 1 })?;
+                    self.emit(Instruction::WriteController {
+                        controller: 0,
+                        value: 1,
+                    })?;
+                }
+                Kind::Word("ignore_event")
+                    if matches!(kind, CallbackKind::Note | CallbackKind::Release) =>
+                {
                     self.symbol(b'(')?;
                     self.expect(
                         Kind::Word("$EVENT_ID"),
@@ -1070,7 +1094,7 @@ pub fn compile(
         array_cells: 0,
     };
     let mut programs = Vec::new();
-    let (mut on_note, mut on_release) = (None, None);
+    let (mut on_note, mut on_release, mut on_controller) = (None, None, None);
     let mut initialized = false;
     loop {
         let token = p.next()?;
@@ -1082,6 +1106,7 @@ pub fn compile(
                 programs,
                 on_note,
                 on_release,
+                on_controller,
                 rate,
                 globals: p.globals,
                 note_cells: p.note_cells,
@@ -1115,20 +1140,20 @@ pub fn compile(
                     return Err(p.error("duplicate UI control callback"));
                 }
                 let program = p.callback(CallbackKind::Control)?;
-                if program.requires_note() {
+                if program.requires_note() || program.requires_controller() {
                     return Err(Error {
                         offset: token.offset,
-                        message: "note-dependent operands are unsupported in UI callbacks",
+                        message: "event-dependent operands are unsupported in UI callbacks",
                     });
                 }
                 p.controls[index].callback = Some(programs.len());
                 programs.push(program);
             }
-            Kind::Word(kind @ ("note" | "release")) => {
-                let binding = if kind == "note" {
-                    &mut on_note
-                } else {
-                    &mut on_release
+            Kind::Word(kind @ ("note" | "release" | "controller")) => {
+                let binding = match kind {
+                    "note" => &mut on_note,
+                    "release" => &mut on_release,
+                    _ => &mut on_controller,
                 };
                 if binding.is_some() {
                     return Err(Error {
@@ -1137,11 +1162,17 @@ pub fn compile(
                     });
                 }
                 *binding = Some(programs.len());
-                programs.push(p.callback(if kind == "note" {
-                    CallbackKind::Note
-                } else {
-                    CallbackKind::Release
-                })?);
+                let program = p.callback(match kind {
+                    "note" => CallbackKind::Note,
+                    "release" => CallbackKind::Release,
+                    _ => CallbackKind::Controller,
+                })?;
+                if (kind == "controller" && program.requires_note())
+                    || (kind != "controller" && program.requires_controller())
+                {
+                    return Err(p.error("operand requires a different event context"));
+                }
+                programs.push(program);
             }
             _ => {
                 return Err(Error {

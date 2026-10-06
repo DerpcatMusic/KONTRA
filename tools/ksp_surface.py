@@ -232,7 +232,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'note_off', 'wait', 'ignore_event', 'change_note', 'change_velo', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec', 'num_elements', 'allow_group', 'disallow_group', '$ALL_GROUPS', '$NUM_GROUPS', 'select', 'in_range']
+        for name in ['on note', 'on release', 'on init', 'on controller', 'ignore_controller', 'set_controller', '$CC_NUM', '%CC', 'play_note', 'note_off', 'wait', 'ignore_event', 'change_note', 'change_velo', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec', 'num_elements', 'allow_group', 'disallow_group', '$ALL_GROUPS', '$NUM_GROUPS', 'select', 'in_range']
     },
     'chapters': chapters,
 }
