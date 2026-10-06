@@ -389,6 +389,39 @@ impl In {
         })
     }
 
+    /// Every input a host event becomes. MIDI 2.0 (N)RPNs have no single
+    /// MIDI 1.0 form: translate to the select + data-entry CC sequence
+    /// (M2-104), whose value is MSB-aligned in the 32-bit word.
+    #[cfg(feature = "plugin")]
+    pub fn from_events(body: &EventBody, mut each: impl FnMut(Self)) {
+        let (channel, select, bank, index, value) = match *body {
+            EventBody::RegisteredController {
+                channel,
+                bank,
+                index,
+                value,
+                ..
+            } => (channel, [101, 100], bank, index, value),
+            EventBody::AssignableController {
+                channel,
+                bank,
+                index,
+                value,
+                ..
+            } => (channel, [99, 98], bank, index, value),
+            _ => return Self::from_event(body).into_iter().for_each(each),
+        };
+        let data = [
+            (select[0], bank & 127),
+            (select[1], index & 127),
+            (6, (value >> 25) as u8),
+            (38, (value >> 18) as u8 & 127),
+        ];
+        for (cc, v) in data {
+            each(Self::Cc(channel & 15, cc, v));
+        }
+    }
+
     fn channel(self) -> u8 {
         match self {
             Self::HostOn(note, ..) => note.channel,
@@ -2708,6 +2741,23 @@ end on"#;
         );
         assert_eq!(ev(EventBody::NoteOn { group: 0, channel: 3, note: 60, velocity: 0 }), Some(In::NoteOff(3, 60)));
         assert_eq!(ev(EventBody::PerNoteCC { group: 0, channel: 0, note: 60, cc: 7, value: 0, registered: false }), None);
+    }
+
+    /// MIDI 2.0 forbids CC 6/38/98..=101; RPN 0 arrives as one Registered
+    /// Controller. It must still set the MPE member bend range.
+    #[test]
+    #[cfg(feature = "plugin")]
+    fn midi2_registered_controller_sets_mpe_bend_range() {
+        let mut r = router(&Articulate::default(), &Mpe { zone: Zone::Lower, ..Mpe::default() });
+        let mut output = Vec::new();
+        r.input(In::Bend(1, 12288), 0, &mut |o| output.push(o));
+        r.input(In::NoteOn(1, 60, 100), 0, &mut |o| output.push(o));
+        output.clear();
+        // 12 semitones in the MSB-aligned 7 bits, 50 cents in the next 7.
+        let body = EventBody::RegisteredController { group: 0, channel: 1, bank: 0, index: 0, value: (12 << 25) | (50 << 18) };
+        In::from_events(&body, |ev| r.input(ev, 0, &mut |o| output.push(o)));
+        let tune = 12.5 / 2.;
+        assert!(output.contains(&Out::Expression(1, 60, Expression { tune, ..Expression::default() })), "{output:?}");
     }
 
     #[test]
