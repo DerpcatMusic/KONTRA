@@ -1228,7 +1228,7 @@ impl Gen<'_, '_> {
             NumElements => {
                 let len = match args.first() {
                     Some(Arg::Var(v, _)) => self.var(*v).len.unwrap_or(1),
-                    Some(Arg::SysArray(a, _)) => a.len(),
+                    Some(Arg::SysArray(a)) => a.len(),
                     _ => 0,
                 };
                 self.set(dst, i64::from(len))?;

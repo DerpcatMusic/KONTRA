@@ -15,6 +15,10 @@ pub struct Environment {
     pub persisted: BTreeMap<String, Value>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
+    /// Controls a Creator Tools performance view (`.nckp`) declares when the
+    /// script calls `load_performance_view`, by variable name. Names the script
+    /// uses but this list lacks are assumed to be `ui_knob`s, with a warning.
+    pub performance_view: Vec<(String, WidgetKind)>,
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -118,6 +122,8 @@ pub struct Initial {
     /// Integer `$CONTROL_PAR_*` mirror keyed `(ui id, parameter)`.
     pub properties: HashMap<(i32, i32), i32>,
     pub text_properties: HashMap<(i32, i32), String>,
+    /// `set_control_par*_arr` writes keyed `(ui id, parameter, index)`.
+    pub indexed_properties: BTreeMap<(i32, i32, i32), Value>,
 }
 
 enum Flow {
@@ -149,6 +155,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             engine: HashMap::new(),
             properties: HashMap::new(),
             text_properties: HashMap::new(),
+            indexed_properties: BTreeMap::new(),
         },
         fuel: INIT_FUEL,
         depth: 0,
@@ -490,10 +497,6 @@ impl Eval<'_> {
         let index = usize::try_from(id.checked_sub(b::FIRST_UI_ID)?).ok()?;
         (index < self.hir.uis.len()).then_some(index)
     }
-    fn par_name(&self, par: i32) -> String {
-        symbol_name(self.hir, par).unwrap_or_else(|| par.to_string())
-    }
-
     fn set_property(&mut self, id: i32, par: i32, value: V, span: Span) {
         if par == b::CONTROL_PAR_VALUE
             && let Some(ui) = self.ui_index(id)
@@ -583,7 +586,7 @@ impl Eval<'_> {
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use Builtin::*;
-        if let Some(Arg::SysArray(array, _)) = args.first() {
+        if let Some(Arg::SysArray(array)) = args.first() {
             // Runtime-maintained arrays are all zero while initializing.
             return Ok(match builtin {
                 NumElements => V::I(array.len() as i32),
@@ -753,7 +756,15 @@ impl Eval<'_> {
                 V::I(0)
             }
             SetControlParArr | SetControlParStrArr | SetControlParRealArr => {
-                self.request(builtin, args)?;
+                let (id, par, value, index) = (
+                    self.int(args, 0)?,
+                    self.int(args, 1)?,
+                    self.arg(args, 2)?,
+                    self.int(args, 3)?,
+                );
+                self.st
+                    .indexed_properties
+                    .insert((id, par, index), value.value());
                 V::I(0)
             }
             GetControlPar | GetControlParReal => {
@@ -768,8 +779,17 @@ impl Eval<'_> {
                 let (id, par) = (self.int(args, 0)?, self.int(args, 1)?);
                 V::S(self.get_property(id, par).text())
             }
-            GetControlParArr | GetControlParRealArr => V::I(0),
-            GetControlParStrArr => V::S(String::new()),
+            GetControlParArr | GetControlParRealArr | GetControlParStrArr => {
+                let key = (self.int(args, 0)?, self.int(args, 1)?, self.int(args, 2)?);
+                match (self.st.indexed_properties.get(&key), builtin) {
+                    (Some(Value::Text(s)), GetControlParStrArr) => V::S(s.clone()),
+                    (Some(Value::Int(n)), GetControlParArr) => V::I(*n),
+                    (Some(Value::Real(r)), GetControlParRealArr) => V::R(*r),
+                    (_, GetControlParStrArr) => V::S(String::new()),
+                    (_, GetControlParRealArr) => V::R(0.0),
+                    _ => V::I(0),
+                }
+            }
             SetText | SetKnobLabel | SetControlHelp | AddTextLine => {
                 let ui = self.ui_of(Self::var(args, 0));
                 let text = self.text(args, 1)?;
@@ -882,6 +902,11 @@ impl Eval<'_> {
             }
             SetScriptTitle => {
                 self.st.model.interface.title = Some(self.text(args, 0)?);
+                V::I(0)
+            }
+            LoadPerformanceView => {
+                self.request(builtin, args)?;
+                self.st.model.interface.performance_view = true;
                 V::I(0)
             }
             MakePerfview => {
@@ -1106,7 +1131,7 @@ impl Eval<'_> {
             | ByMarks => V::I(0),
             SetZonePar | PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
             | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
-            | FsNavigate | LoadNativeUi | LoadPerformanceView | SetNksNavName | SetNksNavPar => {
+            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
@@ -1162,6 +1187,7 @@ fn placeholder() -> model::Widget {
         params: Vec::new(),
         range: None,
         properties: BTreeMap::new(),
+        indexed_properties: BTreeMap::new(),
         menu: Vec::new(),
         callback: None,
         persistence: Persistence::None,

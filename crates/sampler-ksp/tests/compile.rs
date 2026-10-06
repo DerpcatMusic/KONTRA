@@ -1057,3 +1057,63 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
     assert!(error.message.contains("nesting limit"));
     assert!(source.is_char_boundary(error.offset));
 }
+
+#[test]
+fn performance_view_controls_and_indexed_properties_reach_the_model() {
+    use sampler_ksp::model::{Value, WidgetKind};
+    let source = "on init load_performance_view(\"view\")
+        declare ui_label $L(1, 2)
+        set_control_par_str_arr(get_ui_id($L), $CONTROL_PAR_TEXT, \"two\", 1)
+        declare $t := get_control_par_arr(get_ui_id($Cut), $CONTROL_PAR_VALUE, 0)
+        end on
+        on ui_control($Cut) $t := $Cut + $Drive end on";
+    let limits = Limits {
+        source_bytes: 4096,
+        instructions: 256,
+        variables: 8,
+        array_cells: 0,
+    };
+    let env = sampler_ksp::Environment {
+        performance_view: vec![
+            ("$Cut".into(), WidgetKind::Slider),
+            ("$Mode".into(), WidgetKind::Menu),
+        ],
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(source, 48000, limits, &[], &env).unwrap();
+    let ui = &script.model().interface;
+    assert!(ui.performance_view);
+    let kinds: Vec<_> = ui
+        .widgets
+        .iter()
+        .map(|w| (w.name.as_str(), w.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("$Cut", WidgetKind::Slider),
+            ("$Mode", WidgetKind::Menu),
+            ("$L", WidgetKind::Label),
+            ("$Drive", WidgetKind::Knob),
+        ]
+    );
+    assert!(
+        ui.widgets
+            .iter()
+            .all(|w| w.name == "$L" || w.control.is_some())
+    );
+    assert_eq!(ui.widgets[0].callback, Some(0));
+    assert_eq!(
+        ui.widgets[2].indexed_properties["$CONTROL_PAR_TEXT"][&1],
+        Value::Text("two".into())
+    );
+    // `$Drive` was not described by the host: assumed a knob, with a warning.
+    assert!(
+        script
+            .warnings()
+            .iter()
+            .any(|w| w.message.contains("$Drive"))
+    );
+    // Without load_performance_view the name stays undeclared.
+    assert!(compile("on note $x := $Cut end on", 48000, limits).is_err());
+}

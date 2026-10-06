@@ -234,7 +234,13 @@ fn invalid_functions_and_expansion_pressure_fail_during_compilation() {
     source.push_str("on note call f11 end on");
     // v2: functions are subroutines, so doubling call trees no longer expand.
     assert!(compile(&source, 128).is_ok());
-    assert!(compile(&source, 8).unwrap_err().message.contains("budget"));
+    assert!(
+        compile(&source, 8)
+            .err()
+            .unwrap()
+            .message
+            .contains("budget")
+    );
     let source = "on init declare $a end on function increment inc($a) end function on note call increment call increment end on";
     assert!(compile(source, 4).is_err());
     assert!(compile(source, 64).is_ok());

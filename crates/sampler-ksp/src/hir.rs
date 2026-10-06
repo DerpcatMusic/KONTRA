@@ -205,7 +205,7 @@ pub enum Arg {
     Expr(Expr),
     Var(VarId, Span),
     /// Runtime-maintained array passed by reference (`search(%KEY_DOWN, 1)`).
-    SysArray(SysArray, Span),
+    SysArray(SysArray),
     Place(Place),
     Key(Box<str>),
 }
@@ -291,7 +291,6 @@ pub struct Hir {
     pub note_cells: u16,
     /// Undeclared uppercase vendor names, valued `OPAQUE_BASE + index`.
     pub symbols: Vec<Box<str>>,
-    pub conditions: std::collections::BTreeSet<String>,
     /// Non-fatal resolution findings.
     pub warnings: Vec<crate::diag::Fault>,
     /// Longest static `call` chain, for the VM's bounded frame stack.

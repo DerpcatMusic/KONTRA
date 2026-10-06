@@ -247,23 +247,20 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
     )
     .unwrap();
     assert!(!script.warnings().is_empty());
-    for source in ["on note change_velo($missing, 64) end on"] {
-        assert!(
-            sampler_ksp::compile(
-                source,
-                48000,
-                sampler_ksp::Limits {
-                    source_bytes: 4096,
-                    instructions: 128,
-                    variables: 4,
-                    array_cells: 0,
-                },
-                &[]
-            )
-            .is_err(),
-            "{source}"
-        );
-    }
+    assert!(
+        sampler_ksp::compile(
+            "on note change_velo($missing, 64) end on",
+            48000,
+            sampler_ksp::Limits {
+                source_bytes: 4096,
+                instructions: 128,
+                variables: 4,
+                array_cells: 0,
+            },
+            &[]
+        )
+        .is_err()
+    );
 }
 
 #[test]

@@ -48,6 +48,9 @@ pub struct Widget {
     pub range: Option<(i32, i32)>,
     /// Every `$CONTROL_PAR_*` written in `on init`, keyed by its KSP name.
     pub properties: BTreeMap<String, Value>,
+    /// Every `set_control_par*_arr` write in `on init`: KSP name -> index -> value
+    /// (table cells, label lines, wavetable/waveform per-index parameters).
+    pub indexed_properties: BTreeMap<String, BTreeMap<i32, Value>>,
     pub menu: Vec<MenuItem>,
     /// Entry point of `on ui_control`, an index into `Script::entries`.
     pub callback: Option<usize>,
@@ -179,6 +182,15 @@ pub(crate) fn assemble(
             .or_default()
             .insert(name(*par), Value::Text(v.clone()));
     }
+    let mut indexed: BTreeMap<i32, BTreeMap<String, BTreeMap<i32, Value>>> = BTreeMap::new();
+    for (&(id, par, index), v) in &init.indexed_properties {
+        indexed
+            .entry(id)
+            .or_default()
+            .entry(name(par))
+            .or_default()
+            .insert(index, v.clone());
+    }
     let real = |bits: i64| f64::from_bits(bits as u64);
     let mut widgets = Vec::with_capacity(hir.uis.len());
     for (i, ui) in hir.uis.iter().enumerate() {
@@ -212,6 +224,7 @@ pub(crate) fn assemble(
             params: ui.params.clone(),
             range: crate::eval::declared_range(ui).map(|(a, b)| (a.min(b), a.max(b))),
             properties: properties.remove(&ui_id).unwrap_or_default(),
+            indexed_properties: indexed.remove(&ui_id).unwrap_or_default(),
             menu: init
                 .model
                 .interface

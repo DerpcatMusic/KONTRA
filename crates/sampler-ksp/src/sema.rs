@@ -28,9 +28,17 @@ struct Sema<'a, 's> {
     array_cells: usize,
     in_init: bool,
     loops: usize,
+    /// Controls from the performance view file, once `load_performance_view` ran.
+    performance_view: &'s [(String, WidgetKind)],
+    performance_loaded: bool,
 }
 
-pub fn analyze(ast: ast::Ast, syms: &Interner<'_>, budget: Budget) -> Result<Hir> {
+pub fn analyze<'a, 's>(
+    ast: ast::Ast,
+    syms: &'s Interner<'a>,
+    budget: Budget,
+    performance_view: &'s [(String, WidgetKind)],
+) -> Result<Hir> {
     let mut s = Sema {
         syms,
         hir: Hir::default(),
@@ -42,6 +50,8 @@ pub fn analyze(ast: ast::Ast, syms: &Interner<'_>, budget: Budget) -> Result<Hir
         array_cells: 0,
         in_init: false,
         loops: 0,
+        performance_view,
+        performance_loaded: false,
     };
     let mut bodies = Vec::new();
     let mut callbacks = Vec::new();
@@ -329,6 +339,9 @@ impl<'a> Sema<'a, '_> {
                 if self.in_init {
                     self.declare_effect(b, &args);
                 }
+                if b == Builtin::LoadPerformanceView {
+                    self.load_performance_view(s.span)?;
+                }
                 StmtKind::Builtin(b, args)
             }
         }))
@@ -354,7 +367,13 @@ impl<'a> Sema<'a, '_> {
     }
 
     fn new_var(&mut self, name: Sym, span: Span, var: Var) -> Result<VarId> {
-        let folded = self.name(name).to_ascii_lowercase();
+        let id = self.push_var(span, var)?;
+        self.names.insert(name, id);
+        Ok(id)
+    }
+
+    fn push_var(&mut self, span: Span, var: Var) -> Result<VarId> {
+        let folded = var.name.to_ascii_lowercase();
         if self.folded.contains_key(&folded) {
             return fault(span, "duplicate variable declaration");
         }
@@ -364,8 +383,90 @@ impl<'a> Sema<'a, '_> {
         let id = VarId(self.hir.vars.len() as u32);
         self.hir.vars.push(var);
         self.folded.insert(folded, id);
-        self.names.insert(name, id);
         Ok(id)
+    }
+
+    /// `load_performance_view` declares the file's controls as UI variables.
+    fn load_performance_view(&mut self, span: Span) -> Result<()> {
+        self.performance_loaded = true;
+        for (name, kind) in self.performance_view {
+            if !self.folded.contains_key(&name.to_ascii_lowercase()) {
+                self.performance_widget(name, *kind, span)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn performance_widget(&mut self, name: &str, kind: WidgetKind, span: Span) -> Result<VarId> {
+        let (ty, array) = prefix_type(name);
+        let expected = match kind {
+            WidgetKind::Table => (Ty::Int, true),
+            WidgetKind::Xy => (Ty::Real, true),
+            WidgetKind::TextEdit => (Ty::Str, false),
+            _ => (Ty::Int, false),
+        };
+        if (ty, array) != expected || array {
+            return fault(
+                span,
+                format!("performance view control {name} has an unsupported type"),
+            );
+        }
+        // Creator Tools controls default to Kontakt's 0..1000000 parameter range.
+        let params = match kind {
+            WidgetKind::Knob | WidgetKind::Slider => vec![0, 1_000_000],
+            WidgetKind::ValueEdit => vec![0, 1_000_000, 1],
+            _ => vec![],
+        };
+        let home = if kind.has_control() {
+            Home::Control(self.hir.uis.len() as u32)
+        } else if ty == Ty::Str {
+            Home::Text(self.cells(1, true, span)?)
+        } else {
+            Home::Cell(self.cells(1, false, span)?)
+        };
+        let var = self.push_var(
+            span,
+            Var {
+                name: name.into(),
+                ty,
+                len: None,
+                home,
+                ui: Some(self.hir.uis.len() as u32),
+                persistence: Persistence::None,
+                span,
+            },
+        )?;
+        self.hir.uis.push(Ui {
+            kind,
+            var,
+            params,
+            callback: None,
+        });
+        Ok(var)
+    }
+
+    /// After `load_performance_view`, unknown `$` names are performance view
+    /// controls the host did not describe.
+    fn resolve_or_declare(&mut self, sym: Sym, span: Span) -> Result<Option<VarId>> {
+        if let Some(v) = self.resolve(sym) {
+            return Ok(Some(v));
+        }
+        let name = self.name(sym);
+        if !self.performance_loaded
+            || !name.starts_with('$')
+            || builtins::sys_var(name).is_some()
+            || builtins::constant(name).is_some()
+            || builtins::control_par(name).is_some()
+            || builtins::real_constant(name).is_some()
+        {
+            return Ok(None);
+        }
+        self.hir.warnings.push(crate::diag::Fault {
+            span,
+            message: format!("{name} is not in the performance view description; assumed ui_knob"),
+        });
+        self.performance_widget(name, WidgetKind::Knob, span)
+            .map(Some)
     }
 
     fn cells(&mut self, len: u32, text: bool, span: Span) -> Result<u32> {
@@ -554,8 +655,8 @@ impl<'a> Sema<'a, '_> {
             let value = self.expr(e)?;
             values.push(self.coerce(value, ty)?);
         }
-        Ok(Some(if len.is_some() {
-            if values.len() > len.unwrap() as usize {
+        Ok(Some(if let Some(len) = len {
+            if values.len() > len as usize {
                 return fault(d.init[0].span, "too many array initializers");
             }
             StmtKind::Fill(var, values)
@@ -583,18 +684,19 @@ impl<'a> Sema<'a, '_> {
             .copied()
     }
 
-    fn lookup(&self, sym: Sym, span: Span) -> Result<VarId> {
-        self.resolve(sym).ok_or_else(|| crate::diag::Fault {
-            span,
-            message: format!("undeclared variable {}", self.name(sym)),
-        })
+    fn lookup(&mut self, sym: Sym, span: Span) -> Result<VarId> {
+        self.resolve_or_declare(sym, span)?
+            .ok_or_else(|| crate::diag::Fault {
+                span,
+                message: format!("undeclared variable {}", self.name(sym)),
+            })
     }
 
     fn place(&mut self, target: &ast::Expr) -> Result<Place> {
         let A::Var(sym, index) = &target.kind else {
             return fault(target.span, "expected variable");
         };
-        let Some(var) = self.resolve(*sym) else {
+        let Some(var) = self.resolve_or_declare(*sym, target.span)? else {
             if builtins::sys_var(self.name(*sym)).is_some()
                 || SysArray::from_name(self.name(*sym)).is_some()
             {
@@ -862,7 +964,12 @@ impl<'a> Sema<'a, '_> {
 
     fn var(&mut self, sym: Sym, index: Option<&ast::Expr>, span: Span) -> Result<Expr> {
         let name = self.name(sym);
-        if let Some(var) = self.resolve(sym) {
+        let resolved = if index.is_none() {
+            self.resolve_or_declare(sym, span)?
+        } else {
+            self.resolve(sym)
+        };
+        if let Some(var) = resolved {
             let v = &self.hir.vars[var.0 as usize];
             let ty = v.ty;
             return Ok(match (index, v.len.is_some()) {
@@ -962,7 +1069,7 @@ impl<'a> Sema<'a, '_> {
             && self.resolve(*sym).is_none()
             && let Some(sys) = SysArray::from_name(self.name(*sym))
         {
-            return Ok(Arg::SysArray(sys, e.span));
+            return Ok(Arg::SysArray(sys));
         }
         let var = self.lookup(*sym, e.span)?;
         if array && self.hir.vars[var.0 as usize].len.is_none() {
@@ -1157,7 +1264,7 @@ pub fn fold(hir: &Hir, e: &Expr) -> Option<Const> {
                 },
                 Builtin::NumElements => match args.first()? {
                     Arg::Var(v, _) => Int(hir.vars[v.0 as usize].len? as i32),
-                    Arg::SysArray(a, _) => Int(a.len() as i32),
+                    Arg::SysArray(a) => Int(a.len() as i32),
                     _ => return None,
                 },
                 Builtin::GetUiId => {
