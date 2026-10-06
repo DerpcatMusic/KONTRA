@@ -1728,6 +1728,32 @@ mod tests {
         assert!(heard, "the scripted program is silent");
     }
 
+    /// Idle cost of a loaded part: blocks with no note playing. Prints the
+    /// share of one core; `KONTRA_KONTAKT_LIBRARIES=… cargo test idle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn idle_cost_of_a_loaded_instrument() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        for relative in [
+            "Una Corda Library/Instruments/Una Corda Pure.nki",
+            "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+            "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+        ] {
+            let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else { continue };
+            let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+            let mut core = V2Core::with_parts(1, 48000.0);
+            core.install(0, loaded.part);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let blocks = 48000 / 128 * 20;
+            let start = std::time::Instant::now();
+            for _ in 0..blocks {
+                core.render(128);
+            }
+            let spent = start.elapsed().as_secs_f64();
+            println!("IDLE {relative}: {:.4}% of a core ({:.1} us per 128-frame block)", spent / 20.0 * 100.0, spent / blocks as f64 * 1e6);
+        }
+    }
+
     #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
