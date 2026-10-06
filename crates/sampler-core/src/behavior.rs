@@ -255,6 +255,16 @@ pub enum Instruction {
         out: bool,
         stop: bool,
     },
+    /// Start plan-owned program `program` in this callback's plan and
+    /// performance context; it runs before this callback continues. Full
+    /// callback capacity skips the start.
+    StartProgram {
+        program: u32,
+    },
+    /// Start every program `Prepared::with_signal_programs` binds to `signal`.
+    Signal {
+        signal: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,6 +314,17 @@ impl Program {
         }
         self.texts = texts.iter().map(|t| super::ops::Text::new(t)).collect();
         Ok(self)
+    }
+
+    /// Offset `StartProgram` targets by `base`, for a program table that
+    /// concatenates several modules.
+    pub fn with_program_base(mut self, base: usize) -> Self {
+        for op in self.code.iter_mut() {
+            if let Instruction::StartProgram { program } = op {
+                *program = program.saturating_add(base as u32);
+            }
+        }
+        self
     }
 
     pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
@@ -1352,6 +1373,18 @@ impl Runtime {
                 let group = *self.local_cell_mut(id, group)?;
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_envelope(plan, group, stage, value)?;
+            }
+            Instruction::Signal { signal } => {
+                let plan = self.behavior_plan(owner)?;
+                self.signal_programs(id, plan, signal)?;
+            }
+            Instruction::StartProgram { program } => {
+                let plan = self.behavior_plan(owner)?;
+                let context = self.behaviors.get(id.0).unwrap().context;
+                match self.start_plan_context(plan, program as usize, context) {
+                    Ok(_) | Err(Error::Capacity) => {}
+                    Err(error) => return Err(error),
+                }
             }
             Instruction::FadeEvent {
                 event,

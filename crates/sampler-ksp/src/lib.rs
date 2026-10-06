@@ -24,7 +24,7 @@ pub mod ui;
 
 pub use diag::{Error, Kind};
 pub use eval::Environment;
-pub use lower::{Coverage, PGS_TAG, PROPERTY_TAG};
+pub use lower::{Coverage, LISTENER_TAG, PGS_TAG, PROPERTY_TAG};
 
 pub const PROFILE: &str = "ksp-8.12-v2";
 
@@ -104,6 +104,10 @@ pub struct Entry {
 pub struct Script {
     programs: Vec<Program>,
     entries: Vec<Entry>,
+    /// Programs started when the plan becomes active (listener timers).
+    starts: Vec<usize>,
+    /// PGS keys this script created, for the plan's shared store.
+    shared: Vec<([i32; 4], i64)>,
     rate: u32,
     cells: Vec<i64>,
     resources: ScriptResources,
@@ -203,6 +207,9 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut controls = Vec::new();
     let mut callbacks = Vec::new();
     let mut stages = Vec::new();
+    let mut starts = Vec::new();
+    let mut signals = Vec::new();
+    let mut shared = Vec::new();
     for (index, script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
@@ -225,15 +232,33 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             }
             controls.push(control.definition);
         }
+        signals.extend(
+            script
+                .entries
+                .iter()
+                .filter(|e| e.kind == EntryKind::PgsChanged)
+                .map(|e| sampler_core::SignalProgram {
+                    signal: lower::PGS_SIGNAL,
+                    program: base + e.program,
+                    stage: index,
+                }),
+        );
+        // Keys created by several scripts keep the first script's values.
+        shared.extend(script.shared.iter().copied());
+        starts.extend(script.starts.iter().map(|&p| sampler_core::PlanProgram {
+            program: base + p,
+            stage: index,
+        }));
         programs.extend(
             script
                 .programs
                 .into_iter()
-                .map(|p| p.with_script_instance(instance)),
+                .map(|p| p.with_script_instance(instance).with_program_base(base)),
         );
         instances.push(script.cells);
         resources.push(script.resources);
     }
+    let capacity = shared.len() + 4096;
     plan.with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
         // Keep source aliases separate from marked/all-event selectors.
@@ -242,7 +267,11 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_script_resources(resources)?
         .with_programs(programs, None)?
         .with_stages(stages)?
-        .with_control_programs(callbacks)
+        .with_control_programs(callbacks)?
+        .with_plan_programs(starts)?
+        .with_signal_programs(signals)?
+        // ponytail: fixed headroom for keys created at runtime, like the script stores.
+        .with_shared_store(shared, capacity)
 }
 
 /// Compile with no instrument facts and the default script slot.
@@ -365,12 +394,10 @@ pub fn compile_with(
     }
 
     // Lowering.
-    let pgs: BTreeSet<String> = init.model.pgs.keys().cloned().collect();
     let mut unit = lower::Unit {
         hir: &hir,
         controls: &ids,
         groups: &environment.groups,
-        pgs: &pgs,
         slot: environment.slot,
         budget: limits.instructions,
         limit: limits.instructions,
@@ -381,6 +408,7 @@ pub fn compile_with(
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
+    let mut starts = Vec::new();
     for callback in &hir.callbacks {
         use hir::CallbackKind as K;
         let (kind, context) = match callback.kind {
@@ -400,14 +428,46 @@ pub fn compile_with(
             K::Rpn => (EntryKind::Rpn, lower::Context::Plan),
             K::Nrpn => (EntryKind::Nrpn, lower::Context::Plan),
         };
-        let program = unit
-            .program(&callback.body, callback.span, context, callback.kind)
-            .map_err(|f| f.locate(source))?;
-        entries.push(Entry {
-            kind,
-            program: programs.len(),
-        });
-        programs.push(program);
+        // A timer listener body per timer signal set in on init, each
+        // started by a driver program; otherwise one unstarted program.
+        let timers: Vec<i32> = if kind == EntryKind::Listener {
+            init.model
+                .listeners
+                .keys()
+                .copied()
+                .filter(|s| [builtins::signal::TIMER_MS, builtins::signal::TIMER_BEAT].contains(s))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for signal in timers
+            .iter()
+            .map(|s| Some(*s))
+            .chain(timers.is_empty().then_some(None))
+        {
+            let program = unit
+                .program(
+                    &callback.body,
+                    callback.span,
+                    context,
+                    callback.kind,
+                    signal,
+                )
+                .map_err(|f| f.locate(source))?;
+            entries.push(Entry {
+                kind,
+                program: programs.len(),
+            });
+            programs.push(program);
+            if let Some(signal) = signal {
+                let body = programs.len() - 1;
+                let driver = unit
+                    .listener_driver(signal, body, callback.span)
+                    .map_err(|f| f.locate(source))?;
+                starts.push(programs.len());
+                programs.push(driver);
+            }
+        }
     }
     for (ui, control) in &mut host {
         control.callback = entries
@@ -440,10 +500,14 @@ pub fn compile_with(
     for (&key, &value) in &init.engine {
         store.push((key, i64::from(value)));
     }
+    for (&signal, &value) in &init.model.listeners {
+        store.push(([LISTENER_TAG, signal, 0, LISTENER_TAG], i64::from(value)));
+    }
+    let mut shared = Vec::new();
     for (key, values) in &init.model.pgs {
         let hash = lower::name_hash(key);
         for (i, &v) in values.iter().enumerate() {
-            store.push(([PGS_TAG, hash, i as i32, PGS_TAG], i64::from(v)));
+            shared.push(([PGS_TAG, hash, i as i32, PGS_TAG], i64::from(v)));
         }
     }
     // ponytail: fixed headroom for runtime-created keys; size from usage if exceeded.
@@ -476,6 +540,8 @@ pub fn compile_with(
     Ok(Script {
         programs,
         entries,
+        starts,
+        shared,
         rate,
         cells: init.cells,
         resources,
