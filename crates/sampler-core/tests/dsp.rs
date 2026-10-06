@@ -1,6 +1,6 @@
 use sampler_core::{
     Biquad, Envelope, Event, Expression, FilterKind, Input, Limits, Pcm, Playback, Prepared,
-    Protocol, Region, Runtime, VoiceChain, VoiceProcessor,
+    Processor, Protocol, Region, Runtime, VoiceChain,
 };
 mod support;
 fn limits() -> Limits {
@@ -29,12 +29,12 @@ fn input(id: i32) -> Input {
         external_id: Some(id),
     }
 }
-fn filter() -> VoiceProcessor {
-    VoiceProcessor::Biquad(Biquad::new(48000, FilterKind::LowPass, 12000., 0.5).unwrap())
+fn filter() -> Processor {
+    Processor::Biquad(Biquad::new(48000, FilterKind::LowPass, 12000., 0.5).unwrap())
 }
 fn plan(
-    pre: Vec<VoiceProcessor>,
-    post: Vec<VoiceProcessor>,
+    pre: Vec<Processor>,
+    post: Vec<Processor>,
     tail: u32,
     envelope: Envelope,
     frames: usize,
@@ -156,7 +156,7 @@ fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison
     let old = plan(vec![], vec![filter()], 4, Envelope::default(), 1);
     let new = plan(
         vec![],
-        vec![VoiceProcessor::Gain(0.5)],
+        vec![Processor::Gain(0.5)],
         0,
         Envelope::default(),
         1,
@@ -187,7 +187,7 @@ fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison
     let mut rt = Runtime::new(
         plan(
             vec![],
-            vec![VoiceProcessor::Gain(f64::MAX), filter()],
+            vec![Processor::Gain(f64::MAX), filter()],
             2,
             Envelope::default(),
             1,
@@ -205,9 +205,9 @@ fn processor_state_and_tails_retain_original_generation_and_faults_do_not_poison
         rt.flush_ended(|_| true);
         assert_eq!((rt.note_count(), rt.voice_count()), (0, 0));
     });
-    assert!(VoiceChain::new(vec![VoiceProcessor::Gain(f64::NAN)], vec![], 0).is_err());
+    assert!(VoiceChain::new(vec![Processor::Gain(f64::NAN)], vec![], 0).is_err());
     let incompatible =
-        VoiceProcessor::Biquad(Biquad::new(96000, FilterKind::LowPass, 1000., 1.).unwrap());
+        Processor::Biquad(Biquad::new(96000, FilterKind::LowPass, 1000., 1.).unwrap());
     assert!(
         Prepared::new(48000, vec![], vec![], 0)
             .unwrap()
@@ -394,8 +394,8 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
         for block in [1, 7, 64] {
             let mut rt = Runtime::new(
                 plan(
-                    vec![VoiceProcessor::StereoMatrix(before), filter()],
-                    vec![VoiceProcessor::StereoMatrix(after)],
+                    vec![Processor::StereoMatrix(before), filter()],
+                    vec![Processor::StereoMatrix(after)],
                     3,
                     Envelope::default(),
                     1,
@@ -428,7 +428,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
     let mut rt = Runtime::new(
         plan(
             vec![
-                VoiceProcessor::StereoMatrix([[f64::MAX, -f64::MAX], [0., 1.]]),
+                Processor::StereoMatrix([[f64::MAX, -f64::MAX], [0., 1.]]),
                 filter(),
             ],
             vec![],
@@ -454,7 +454,7 @@ fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
             let mut matrix = identity;
             matrix[index / 2][index % 2] = value;
             for pre in [true, false] {
-                let stage = vec![VoiceProcessor::StereoMatrix(matrix)];
+                let stage = vec![Processor::StereoMatrix(matrix)];
                 let (before, after) = if pre {
                     (stage, vec![])
                 } else {

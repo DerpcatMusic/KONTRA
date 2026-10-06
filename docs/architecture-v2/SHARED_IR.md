@@ -15,7 +15,7 @@ clarification makes it explicit. Do not build a complete engine per format.
 | Mutable execution state | Notes/families, expression, cursors/DSP history, script instances, continuations, control values and selection counters | One writer per domain; explicit generation retention and retirement |
 
 Current code implements pieces of the semantic/prepared representations through
-`Region`, `Playback`, `Envelope`, `Modulation`, control definitions, selection
+`Region`, `Playback`, `Envelope`, `Modulation`, [bus DAGs](BUS_DSP.md), control definitions, selection
 policies, independently bound script-instance integer banks, `Program`/`Instruction`
 and `Prepared`. These are real shared execution
 paths, not a completed universal instrument schema. KSP already lowers to the

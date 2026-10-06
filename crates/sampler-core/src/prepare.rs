@@ -103,6 +103,7 @@ struct PreparedRegion {
     gain: f32,
     velocity_curve: VelocityCurve,
     chain: Option<usize>,
+    bus: Option<usize>,
     envelope: Envelope,
     cursor: super::source::Cursor,
     root_key: Option<u8>,
@@ -122,6 +123,7 @@ struct Candidate {
 pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
+    pub(super) buses: super::bus::PreparedBuses,
     pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
     pub(super) gain_bindings: Box<[super::GainControl]>,
     pub(super) gain_controls: Box<[(super::ControlId, usize)]>,
@@ -233,6 +235,7 @@ impl Prepared {
                 gain: r.gain,
                 velocity_curve: VelocityCurve::Linear,
                 chain: None,
+                bus: None,
                 envelope: r.envelope,
                 cursor,
                 root_key: r.root_key,
@@ -268,6 +271,7 @@ impl Prepared {
         Ok(Self {
             rate,
             pcm: pcm.into_boxed_slice(),
+            buses: super::bus::PreparedBuses::default(),
             voice_chains: Box::new([]),
             gain_bindings: Box::new([]),
             gain_controls: Box::new([]),
@@ -856,6 +860,28 @@ impl Prepared {
         self.gain_controls = controls.into_boxed_slice();
         self.gain_bindings = gains.into_boxed_slice();
         self.validate_gain_controls()?;
+        Ok(self)
+    }
+}
+
+impl Prepared {
+    /// Bind each region to a bus, or directly to stereo output (`None`).
+    /// Graph construction, cycle validation and coefficient compilation run off audio.
+    pub fn with_buses(
+        mut self,
+        buses: Vec<super::Bus>,
+        bindings: Vec<Option<usize>>,
+    ) -> Result<Self, Error> {
+        if bindings.len() != self.regions.len()
+            || bindings.iter().flatten().any(|i| *i >= buses.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.buses = super::bus::PreparedBuses::new(self.rate, buses)?;
+        self.validate_gain_controls()?;
+        for (region, bus) in self.regions.iter_mut().zip(bindings) {
+            region.bus = bus;
+        }
         Ok(self)
     }
 }

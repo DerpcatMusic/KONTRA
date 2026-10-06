@@ -266,8 +266,10 @@ source semantics and checksum/authentication validation are still required.
   DSP tails, whole-chain choke and generation-owned state. Low/high shelving EQ now
   has response, resonance and inverse-pair evidence. Linear crossfaded wraps now
   preserve guard phase, finite exits and forward/reverse source views through the
-  common resampler. Reflected/other crossfade profiles, nonlinear effects, automated
-  filters and broader routing/scopes remain open.
+  common resampler. [Bus DSP](BUS_DSP.md) now uses a prepared stereo DAG with summed
+  histories, sends, sample-clock control ramps and generation-owned tails independent
+  of host note retirement. Reflected/other crossfade profiles, nonlinear effects,
+  automated filters and remaining routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,

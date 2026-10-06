@@ -109,7 +109,7 @@ impl Biquad {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum VoiceProcessor {
+pub enum Processor {
     /// Linear amplitude, including polarity inversion. Must be finite.
     Gain(f64),
     /// Rows are output L/R, columns input L/R. Coefficients must be finite.
@@ -119,11 +119,22 @@ pub enum VoiceProcessor {
     ControlGain(GainControl),
 }
 
-mod control;
-pub use control::GainControl;
-use control::GainRamp;
+impl Processor {
+    fn valid(&self) -> bool {
+        match self {
+            Processor::Gain(gain) => gain.is_finite(),
+            Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
+            Processor::ControlGain(binding) => binding.valid(),
+            Processor::Biquad(_) => true,
+        }
+    }
+}
 
-enum Processor {
+pub(super) mod control;
+pub use control::GainControl;
+pub(super) use control::GainRamp;
+
+pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
@@ -131,8 +142,8 @@ enum Processor {
 }
 
 pub(super) struct PreparedVoiceChain {
-    pre: Box<[Processor]>,
-    post: Box<[Processor]>,
+    pre: Box<[PreparedProcessor]>,
+    post: Box<[PreparedProcessor]>,
     tail_frames: u32,
 }
 
@@ -146,27 +157,20 @@ pub(super) struct RenderContext<'a> {
 /// Tail frames are an authored maximum after source/envelope completion, not a
 /// guessed silence threshold or a claim that an IIR has a mathematically finite tail.
 pub struct VoiceChain {
-    pre: Box<[VoiceProcessor]>,
-    post: Box<[VoiceProcessor]>,
+    pre: Box<[Processor]>,
+    post: Box<[Processor]>,
     tail_frames: u32,
 }
 impl VoiceChain {
     pub fn new(
-        pre_envelope: Vec<VoiceProcessor>,
-        post_envelope: Vec<VoiceProcessor>,
+        pre_envelope: Vec<Processor>,
+        post_envelope: Vec<Processor>,
         tail_frames: u32,
     ) -> Result<Self, Error> {
         if pre_envelope
             .iter()
             .chain(&post_envelope)
-            .any(|stage| match stage {
-                VoiceProcessor::Gain(gain) => !gain.is_finite(),
-                VoiceProcessor::StereoMatrix(matrix) => {
-                    matrix.iter().flatten().any(|v| !v.is_finite())
-                }
-                VoiceProcessor::ControlGain(binding) => !binding.valid(),
-                VoiceProcessor::Biquad(_) => false,
-            })
+            .any(|stage| !stage.valid())
         {
             return Err(Error::InvalidInput);
         }
@@ -185,36 +189,44 @@ impl VoiceChain {
         rate: u32,
         bindings: &mut Vec<GainControl>,
     ) -> Result<PreparedVoiceChain, Error> {
-        let mut compile = |stages: Box<[VoiceProcessor]>| -> Result<Box<[Processor]>, Error> {
-            stages
-                .into_vec()
-                .into_iter()
-                .map(|stage| {
-                    Ok(match stage {
-                        VoiceProcessor::Gain(gain) => Processor::Gain(gain),
-                        VoiceProcessor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
-                        VoiceProcessor::Biquad(filter) => {
-                            if filter.rate != rate {
-                                return Err(Error::InvalidInput);
-                            }
-                            Processor::Biquad(filter)
-                        }
-                        VoiceProcessor::ControlGain(binding) => {
-                            let lane = bindings.len();
-                            bindings.push(binding);
-                            Processor::ControlGain(lane)
-                        }
-                    })
-                })
-                .collect()
-        };
         Ok(PreparedVoiceChain {
-            pre: compile(self.pre)?,
-            post: compile(self.post)?,
+            pre: compile_processors(self.pre, rate, bindings)?,
+            post: compile_processors(self.post, rate, bindings)?,
             tail_frames: self.tail_frames,
         })
     }
 }
+pub(super) fn compile_processors(
+    stages: Box<[Processor]>,
+    rate: u32,
+    bindings: &mut Vec<GainControl>,
+) -> Result<Box<[PreparedProcessor]>, Error> {
+    if stages.iter().any(|stage| !stage.valid()) {
+        return Err(Error::InvalidInput);
+    }
+    stages
+        .into_vec()
+        .into_iter()
+        .map(|stage| {
+            Ok(match stage {
+                Processor::Gain(gain) => PreparedProcessor::Gain(gain),
+                Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
+                Processor::Biquad(filter) => {
+                    if filter.rate != rate {
+                        return Err(Error::InvalidInput);
+                    }
+                    PreparedProcessor::Biquad(filter)
+                }
+                Processor::ControlGain(binding) => {
+                    let lane = bindings.len();
+                    bindings.push(binding);
+                    PreparedProcessor::ControlGain(lane)
+                }
+            })
+        })
+        .collect()
+}
+
 impl PreparedVoiceChain {
     pub(super) fn stages(&self) -> usize {
         self.pre.len() + self.post.len()
@@ -228,8 +240,9 @@ impl PreparedVoiceChain {
         states: &mut [FilterState],
         context: RenderContext<'_>,
         kernel: &crate::resample::Kernel,
-    ) -> u64 {
+    ) -> (usize, u64) {
         let mut faults = 0;
+        let mut rendered = 0;
         let mut unity = EnvelopeState::new(Envelope::default());
         for (chunk_index, chunk) in output.chunks_mut(64).enumerate() {
             if self.done(voice) {
@@ -297,12 +310,13 @@ impl PreparedVoiceChain {
                     states.fill(FilterState::default());
                     faults += 1;
                 }
+                rendered += 1;
                 if let Some(remaining) = &mut voice.tail_remaining {
                     *remaining -= 1;
                 }
             }
         }
-        faults
+        (rendered, faults)
     }
 
     pub(super) fn done(&self, voice: &Voice) -> bool {
@@ -316,12 +330,12 @@ pub(super) struct FilterState {
     z: [[f64; 2]; 2],
 }
 impl FilterState {
-    fn finite(&self) -> bool {
+    pub(super) fn finite(&self) -> bool {
         self.z.iter().flatten().all(|v| v.is_finite())
     }
 }
-fn process(
-    stages: &[Processor],
+pub(super) fn process(
+    stages: &[PreparedProcessor],
     states: &mut [FilterState],
     mut value: [f64; 2],
     gains: &[GainRamp],
@@ -329,15 +343,15 @@ fn process(
 ) -> [f64; 2] {
     for (stage, state) in stages.iter().zip(states) {
         match stage {
-            Processor::Gain(gain) => value = value.map(|v| v * gain),
-            Processor::StereoMatrix(matrix) => {
+            PreparedProcessor::Gain(gain) => value = value.map(|v| v * gain),
+            PreparedProcessor::StereoMatrix(matrix) => {
                 value = matrix.map(|row| row[0] * value[0] + row[1] * value[1]);
             }
-            Processor::ControlGain(lane) => {
+            PreparedProcessor::ControlGain(lane) => {
                 let gain = gains[*lane].value(at);
                 value = value.map(|v| v * gain);
             }
-            Processor::Biquad(filter) => {
+            PreparedProcessor::Biquad(filter) => {
                 for (sample, z) in value.iter_mut().zip(&mut state.z) {
                     let output = filter.b[0] * *sample + z[0];
                     z[0] = filter.b[1] * *sample - filter.a[0] * output + z[1];
@@ -355,12 +369,13 @@ fn process(
     value
 }
 
-pub(super) struct VoiceDspState {
+pub(super) struct DspState {
     pub stride: usize,
     pub cells: Box<[FilterState]>,
     pub gains: Box<[GainRamp]>,
+    pub buses: crate::bus::BusState,
 }
-impl VoiceDspState {
+impl DspState {
     pub fn new(plan: &Prepared, voices: usize) -> Result<Self, Error> {
         let stride = plan
             .voice_chains
@@ -378,7 +393,8 @@ impl VoiceDspState {
         Ok(Self {
             stride,
             cells: values.into_boxed_slice(),
-            gains: Self::initial_gains(plan),
+            gains: control::initial_gains(plan, &plan.gain_bindings),
+            buses: crate::bus::BusState::new(plan)?,
         })
     }
     pub fn reset(&mut self, voice: usize) {
@@ -444,7 +460,7 @@ mod tests {
                     x = [input, x[0]];
                     y = [expected, y[0]];
                     let actual = process(
-                        &[Processor::Biquad(filter)],
+                        &[PreparedProcessor::Biquad(filter)],
                         &mut state,
                         [input, 0.],
                         &[],
@@ -513,7 +529,10 @@ mod tests {
                                 let input =
                                     [(f64::from(i) * 0.017).sin(), if i == 0 { 1. } else { 0. }];
                                 let output = process(
-                                    &[Processor::Biquad(boost), Processor::Biquad(cut)],
+                                    &[
+                                        PreparedProcessor::Biquad(boost),
+                                        PreparedProcessor::Biquad(cut),
+                                    ],
                                     &mut state,
                                     input,
                                     &[],

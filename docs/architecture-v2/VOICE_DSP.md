@@ -30,9 +30,10 @@ choke boundaries; chunk boundaries do not reset state. The source renderer retur
 its produced frame count so zero-input tail processing begins at the exact frame.
 This path is measured separately, with no automatic quality downgrade.
 
-The current pipeline is stereo, serial and voice-local. It has no additional buffered
+This pipeline is stereo, serial and voice-local. The separate [bus DAG](BUS_DSP.md)
+now processes summed signals using the same processor kernels and distinct histories. It has no additional buffered
 algorithmic latency; filter phase response is not a constant-delay compensation
-claim. Bus/family/master scopes, sends, arbitrary channel-layout conversion, oversampling,
+claim. Family scopes, arbitrary channel-layout conversion, oversampling,
 nonlinear processors, time-varying filter controls and broader destination
 modulation/smoothing remain required graph work. The model does not move filters across the
 envelope or sum independent voice histories to save work.
@@ -123,7 +124,7 @@ replaced, no production UI was switched and no broader conformance gate was clos
 
 ## Shared controls driving gain
 
-`VoiceProcessor::ControlGain(GainControl)` binds a stable `ControlId` to linear
+`Processor::ControlGain(GainControl)` binds a stable `ControlId` to linear
 amplitude endpoints and an explicit ramp length in output sample frames. A control's
 declared integer/real range maps to the endpoints; toggles map false/true, and a
 constant domain maps to the low endpoint. Raw typed values remain intact. Integer

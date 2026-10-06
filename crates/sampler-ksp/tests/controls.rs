@@ -606,7 +606,7 @@ fn waiting_ui_callback_controls_live_dsp_through_shared_values_without_a_window(
             vec![
                 sampler_core::VoiceChain::new(
                     vec![],
-                    vec![sampler_core::VoiceProcessor::ControlGain(
+                    vec![sampler_core::Processor::ControlGain(
                         sampler_core::GainControl {
                             control: LEVEL,
                             low: 0.,

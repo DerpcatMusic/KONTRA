@@ -555,7 +555,9 @@ impl Runtime {
                         cursor.with_step(step),
                     )
                     .expect("prepared and preflighted source admission");
-                self.voices.get_mut(voice.0).unwrap().chain = r.chain;
+                let state = self.voices.get_mut(voice.0).unwrap();
+                state.chain = r.chain;
+                state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }

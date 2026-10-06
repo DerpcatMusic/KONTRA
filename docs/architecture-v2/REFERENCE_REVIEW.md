@@ -350,3 +350,15 @@ path therefore has explicit exhausted-view and loop-bypass rules, tested against
 independently elapsed PCM, rather than adopting that placeholder as an oracle.
 KSP's documented microsecond unit and distinct DFD Sample Mod limit are tracked
 in the frontend contract. No source-engine equivalence is inferred from this read.
+
+
+## Shared bus processing and tails
+
+Inspected pinned Shortcircuit
+[`bus.cpp:98–229`](https://github.com/surge-synthesizer/shortcircuit-xt/blob/8785f09acd9f93682ce4f754fac1d3c62e5b1a9a/src/scxt-core/engine/bus.cpp#L98)
+and its MIT license header. It separates summed processing, send tap positions,
+upstream/self ringout and muted output. Native [bus routing](BUS_DSP.md) uses explicit
+DAG nodes and fixed tail budgets rather than importing its silence-threshold policy.
+The regression obligations are exact upstream tail boundaries, independent shared
+history, automation clock, mute continuity and generation retention without retaining
+all source notes. No implementation was copied or Shortcircuit suite executed.

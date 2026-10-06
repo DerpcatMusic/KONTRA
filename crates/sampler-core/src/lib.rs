@@ -47,8 +47,10 @@ mod stages;
 pub use stages::Stage;
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
+mod bus;
+pub use bus::{Bus, BusSend};
 mod dsp;
-pub use dsp::{Biquad, FilterKind, GainControl, VoiceChain, VoiceProcessor};
+pub use dsp::{Biquad, FilterKind, GainControl, Processor, VoiceChain};
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
@@ -220,6 +222,7 @@ struct Voice {
     cursor: source::Cursor,
     base_step: f64,
     chain: Option<usize>,
+    bus: Option<usize>,
     tail_remaining: Option<u32>,
     dsp_fade: Option<(u32, f32)>,
     envelope: EnvelopeState,
@@ -464,7 +467,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
-            dsp: dsp::VoiceDspState::new(&plan, limits.voices)?,
+            dsp: dsp::DspState::new(&plan, limits.voices)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
@@ -950,6 +953,7 @@ impl Runtime {
             cursor,
             base_step,
             chain: None,
+            bus: None,
             tail_remaining: None,
             dsp_fade: None,
             envelope: EnvelopeState::new(envelope),
@@ -1051,6 +1055,9 @@ impl Runtime {
             if self.voices.slots[i].value.is_some() {
                 self.end_voice(VoiceId(self.voices.id(i)));
             }
+        }
+        for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();
         for command in &self.commands {
