@@ -2002,6 +2002,38 @@ fn reversed_case_ranges_and_effect_loads_compile() {
     assert!(ui.diagnostics.iter().all(|d| !d.contains("disabled")), "{:?}", ui.diagnostics);
 }
 
+/// A budgeted refresh that spans script callbacks must still save one
+/// callback boundary's state, never half of one and half of the next.
+#[test]
+fn budgeted_persistence_refresh_spanning_callbacks_is_coherent() {
+    let script = "on init\ndeclare %data[128]\nmake_persistent(%data)\ndeclare $i\ndeclare ui_knob $k(0,10,1)\nend on\non ui_control($k)\n$i := 0\nwhile ($i < 128)\n%data[$i] := $k\ninc($i)\nend while\nend on";
+    let mut rig = Rig::new(&[script]);
+    let mut saved = rig.rt.persistence();
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 1);
+    let mut at = runtime::Refresh::default();
+    assert!(!rig.rt.refresh_persistence_within(&mut saved, &mut at, 64));
+    rig.rt.ui_control(&mut rig.engine, 0, 0, 2);
+    while !rig.rt.refresh_persistence_within(&mut saved, &mut at, 64) {}
+    let Value::IntArray(values) = &saved[0]["%data"] else { panic!("array") };
+    assert!(
+        values.iter().all(|v| *v == 2),
+        "torn persistent array: first={}, last={}",
+        values[0],
+        values[127]
+    );
+    assert!(at.changed);
+    // A script running between every call still lets the copy finish.
+    let mut at = runtime::Refresh::default();
+    let mut calls = 0;
+    while !rig.rt.refresh_persistence_within(&mut saved, &mut at, 8) {
+        rig.rt.ui_control(&mut rig.engine, 0, 0, 3);
+        calls += 1;
+        assert!(calls < 64, "busy script starved the snapshot");
+    }
+    let Value::IntArray(values) = &saved[0]["%data"] else { panic!("array") };
+    assert!(values.iter().all(|v| *v == 3));
+}
+
 /// Snapshots refreshed a small budget at a time (as the audio thread does,
 /// so big persistent tables never stall a block) end up equal to a whole
 /// refresh, and say whether anything changed.
