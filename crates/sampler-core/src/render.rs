@@ -1,10 +1,89 @@
 //! Sample-time segmentation and deterministic voice rendering.
 use super::{Error, Frame, Runtime, VoiceId, dsp::lanes::VOICES};
 
+/// Runtime health counters as plain data, for load reports and meters.
+/// Counters are cumulative since construction; timings cover `render` calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeStats {
+    /// Voices that ran out of resident stream pages and faded out.
+    pub stream_underruns: u64,
+    /// Voice starts rejected because every voice was busy and audible.
+    pub voice_drops: u64,
+    /// Output frames silenced because they were not finite.
+    pub nonfinite_frames: u64,
+    pub voices: usize,
+    /// Wall time of the last `render` call, and the peak since `reset_peak`.
+    pub render_nanos_last: u64,
+    pub render_nanos_peak: u64,
+    /// Frames of the last `render` call (its real-time budget is
+    /// frames / sample rate).
+    pub render_frames_last: u32,
+    /// Bytes of stream cache pages, allocated whether resident or not.
+    pub stream_cache_bytes: usize,
+}
+
+impl Runtime {
+    pub fn stats(&self) -> RuntimeStats {
+        RuntimeStats {
+            stream_underruns: self.stream_underruns,
+            voice_drops: self.voice_drops,
+            nonfinite_frames: self.nonfinite_frames,
+            voices: self.voices.count(),
+            render_nanos_last: self.render_time[0],
+            render_nanos_peak: self.render_time[1],
+            render_frames_last: self.render_time[2] as u32,
+            stream_cache_bytes: self.stream_cache.as_ref().map_or(0, |c| c.bytes()),
+        }
+    }
+
+    pub fn reset_peak(&mut self) {
+        self.render_time[1] = 0;
+    }
+
+    /// Resident PCM bytes (frames and octave levels) of every live plan, each
+    /// asset once. Control side: linear in assets per plan.
+    pub fn resident_bytes(&self) -> usize {
+        let plans: Vec<_> = self
+            .plans
+            .slots
+            .iter()
+            .filter_map(|s| s.value.as_ref())
+            .collect();
+        let mut bytes = 0;
+        for (i, plan) in plans.iter().enumerate() {
+            for pcm in &plan.prepared.pcm {
+                // ponytail: quadratic dedupe, only paid while plans overlap.
+                let shared = plans[..i].iter().any(|p| {
+                    p.prepared
+                        .pcm
+                        .iter()
+                        .any(|q| q.asset_id() == pcm.asset_id())
+                });
+                if !shared {
+                    bytes += pcm.resident_bytes();
+                }
+            }
+        }
+        bytes
+    }
+}
+
 impl Runtime {
     /// Events at the exclusive block end stay pending until the next render (including
     /// an empty block). Overflow is rejected before any output/state mutation.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Error> {
+        let start = std::time::Instant::now();
+        self.render_inner(output)?;
+        let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.render_time = [
+            nanos,
+            self.render_time[1].max(nanos),
+            output.len().min(u32::MAX as usize) as u64,
+        ];
+        Ok(())
+    }
+
+    fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Error> {
         let end = self
             .now
             .checked_add(output.len() as u64)
