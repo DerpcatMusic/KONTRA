@@ -1523,16 +1523,27 @@ impl Gen<'_, '_> {
                 self.cover(builtin, Coverage::Approximate);
                 return Ok(());
             }
-            SetEnginePar if self.engine_param(args).is_some() => {
-                // Mirror for get_engine_par, then drive the group or instrument layer.
-                self.arg(args, 1, dst)?;
-                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
-                let target = self.engine_param(args).unwrap();
+            SetEnginePar if self.engine_param(args, 3).is_some() => {
+                // Absolute: the group or instrument layer get_engine_par reads.
+                let target = self.engine_param(args, 3).unwrap();
                 self.arg(args, 1, t)?;
                 self.engine_units(target, t)?;
                 self.arg(args, 2, dst)?;
                 self.write_param(ParamScope::Group, target, dst, args, None)?;
                 self.set(dst, 0)?;
+                true
+            }
+            GetEnginePar if self.engine_param(args, 2).is_some() => {
+                // The group's current value, authored until a script sets it.
+                let target = self.engine_param(args, 2).unwrap();
+                self.arg(args, 1, dst)?;
+                self.emit(I::ReadParam {
+                    scope: ParamScope::Group,
+                    index: dst,
+                    target,
+                    local: dst,
+                })?;
+                self.engine_value(target, dst)?;
                 true
             }
             GetEnginePar => {
@@ -1756,12 +1767,10 @@ impl Gen<'_, '_> {
         }
     }
 
-    /// Group/instrument volume, pan and tune: `set_engine_par(p, v, group, -1, -1)`.
-    // ponytail: writes are offsets from the authored group values, assumed
-    // neutral (0 dB, centre, 0 st); pass authored values in when a library
-    // authors non-neutral groups and also sets them from script.
-    fn engine_param(&self, args: &[Arg]) -> Option<ModTarget> {
-        if self.const_int(args, 3) != Some(-1) || self.const_int(args, 4) != Some(-1) {
+    /// Group/instrument volume, pan and tune: `set_engine_par(p, v, group, -1, -1)`
+    /// and `get_engine_par(p, group, -1, -1)`; `slot` is the slot argument.
+    fn engine_param(&self, args: &[Arg], slot: usize) -> Option<ModTarget> {
+        if self.const_int(args, slot) != Some(-1) || self.const_int(args, slot + 1) != Some(-1) {
             return None;
         }
         let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
@@ -1869,6 +1878,52 @@ impl Gen<'_, '_> {
                 Ok(())
             }
         }
+    }
+
+    /// The inverse of [`Self::engine_units`], clamped to 0..=1000000.
+    fn engine_value(&mut self, target: ModTarget, local: u16) -> Result<()> {
+        let t = reg(local, 1)?;
+        if target == ModTarget::Decibels {
+            // v = 2^((millidecibels + 346768.2342) / 18000)
+            self.emit(I::Op(Op::IntegerToReal { local }))?;
+            for (value, operation) in [
+                (346_768.234_247_835_1, RealBinary::Add),
+                (std::f64::consts::LN_2 / 18000.0, RealBinary::Multiply),
+            ] {
+                self.set(t, real_bits(value))?;
+                self.emit(I::Op(Op::Real {
+                    lhs: local,
+                    rhs: t,
+                    operation,
+                }))?;
+            }
+            self.emit(I::Op(Op::RealUnary {
+                local,
+                operation: RealUnary::Exp,
+            }))?;
+            self.set(t, real_bits(0.5))?;
+            self.emit(I::Op(Op::Real {
+                lhs: local,
+                rhs: t,
+                operation: RealBinary::Add,
+            }))?;
+            self.emit(I::Op(Op::RealToInteger { local }))?;
+        } else {
+            let steps: &[(i64, IB)] = if target == ModTarget::Pan {
+                &[(500, IB::Multiply), (500_000, IB::Add)]
+            } else {
+                &[(5, IB::Multiply), (36, IB::Divide), (500_000, IB::Add)]
+            };
+            for &(value, operation) in steps {
+                self.set(t, value)?;
+                self.emit(I::Binary32 {
+                    lhs: local,
+                    rhs: t,
+                    operation,
+                })?;
+            }
+        }
+        self.clamp(local, 0, 1_000_000)
     }
 
     fn event_write(
