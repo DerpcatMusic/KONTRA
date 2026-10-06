@@ -123,6 +123,11 @@ fn unsupported(owner: impl Into<String>, feature: Feature) -> LowerError {
     }
 }
 
+/// Playback-rate ratios (source frames per output frame) the runtime can
+/// resample. A translator narrows zones whose keys would pitch past them.
+pub const PITCH_STEPS: std::ops::RangeInclusive<f64> =
+    crate::resample::MIN_STEP..=crate::resample::MAX_STEP;
+
 fn core(stage: Stage, owner: impl Into<String>) -> impl FnOnce(Error) -> LowerError {
     let owner = owner.into();
     move |error| LowerError::Core {
@@ -170,6 +175,12 @@ pub fn lower(
     let mut candidates = 0usize;
     for (i, zone) in instrument.zones.iter().enumerate() {
         let (region, chain) = lowering.zone(i, zone)?;
+        // Name the zone whose geometry the runtime would reject as a whole.
+        let source = &pcm[region.sample];
+        region
+            .playback
+            .cursor(source.frame_count(), source.sample_rate(), rate)
+            .map_err(core(Stage::Regions, format!("zone {i}")))?;
         candidates += usize::from(zone.keys.high - zone.keys.low) + 1;
         regions.push(region);
         chain_of.push(chain.map(|chain| {

@@ -168,7 +168,12 @@ impl Instrument {
             used[index - 1]
         });
         for zone in &mut self.zones {
-            zone.asset = AssetRef(renumbered.get(zone.asset.0).copied().unwrap_or(zone.asset.0));
+            zone.asset = AssetRef(
+                renumbered
+                    .get(zone.asset.0)
+                    .copied()
+                    .unwrap_or(zone.asset.0),
+            );
         }
         kept
     }
