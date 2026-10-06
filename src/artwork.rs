@@ -133,6 +133,7 @@ pub fn decode_file(path: &Path) -> Option<Image> {
 
 
 
+
 pub(crate) fn decode(bytes: &[u8]) -> Option<Image> {
     decode_report(bytes).ok()
 }

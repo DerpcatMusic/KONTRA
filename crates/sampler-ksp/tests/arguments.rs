@@ -130,26 +130,6 @@ fn expressions_drive_note_pitch_velocity_duration_and_waits_after_key_release() 
 #[test]
 fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
     for (body, rate, expected) in [
-        (
-            "change_note($EVENT_ID, -1)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_note($EVENT_ID, 128)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_velo($EVENT_ID, 0)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
-        (
-            "change_velo($EVENT_ID, 128)",
-            48000,
-            sampler_core::Error::InvalidInput,
-        ),
         ("wait(1 - 2)", 48000, sampler_core::Error::InvalidInput),
         (
             "wait(2147483647)",
@@ -471,5 +451,23 @@ fn generated_duration_expressions_choose_gate_or_whole_source_without_timers() {
                 );
             });
         }
+    }
+}
+
+#[test]
+fn out_of_range_event_writes_clamp_instead_of_faulting() {
+    // v2: Kontakt keeps the note; keys clamp to 0..=127, velocities to 1..=127.
+    for body in [
+        "change_note($EVENT_ID, -1)",
+        "change_note($EVENT_ID, 128)",
+        "change_velo($EVENT_ID, 0)",
+        "change_velo($EVENT_ID, 128)",
+    ] {
+        let mut rt = runtime(&format!("on note {body} end on"), 48000);
+        rt.trigger(input(1), 60, 1.).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished, "{body}");
+            true
+        });
     }
 }

@@ -222,6 +222,32 @@ pub enum Instruction {
     },
     /// Reals, text, subroutines, keyed state and effects; see `ops`.
     Op(super::ops::Op),
+    /// Set (or with `relative`, add to) a script voice parameter. `index` holds
+    /// the source event ID or group index (see [`super::ParamScope`]); `target`
+    /// is Decibels (millidecibels), Pan (-1000..=1000), Pitch (millicents) or
+    /// Attenuate (0..=1000 gain factor), with [`super::ModTarget`]'s laws.
+    WriteParam {
+        scope: super::ParamScope,
+        index: u16,
+        target: super::ModTarget,
+        local: u16,
+        relative: bool,
+    },
+    /// Read a script layer's own value, in `WriteParam` units.
+    ReadParam {
+        scope: super::ParamScope,
+        index: u16,
+        target: super::ModTarget,
+        local: u16,
+    },
+    /// Fade a source event in from silence, or out from its current level,
+    /// over the frame count in `frames`. With `stop`, its voices end at silence.
+    FadeEvent {
+        event: u16,
+        frames: u16,
+        out: bool,
+        stop: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -411,6 +437,28 @@ impl Program {
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
             }
+            if let Instruction::WriteParam {
+                index,
+                target,
+                local,
+                ..
+            }
+            | Instruction::ReadParam {
+                index,
+                target,
+                local,
+                ..
+            } = *op
+            {
+                use super::ModTarget as T;
+                if !matches!(target, T::Decibels | T::Pan | T::Pitch | T::Attenuate) {
+                    return Err(Error::InvalidInput);
+                }
+                locals = locals.max(usize::from(index.max(local)) + 1);
+            }
+            if let Instruction::FadeEvent { event, frames, .. } = *op {
+                locals = locals.max(usize::from(event.max(frames)) + 1);
+            }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
             {
@@ -516,6 +564,7 @@ pub struct BehaviorId(pub(super) Handle);
 pub enum Outcome {
     Finished,
     Cancelled,
+    /// Still running after one second of preemption (a runaway loop).
     FuelExhausted,
     Fault(Error),
 }
@@ -578,6 +627,8 @@ pub(super) struct Continuation {
     pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
     pub frames: super::ops::Frames,
+    /// Sample time of the first preemption.
+    pub yielded_at: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -633,6 +684,7 @@ impl Runtime {
             pc: 0,
             outcome: None,
             frames: Default::default(),
+            yielded_at: None,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -700,6 +752,7 @@ impl Runtime {
             pc: 0,
             outcome: None,
             frames: Default::default(),
+            yielded_at: None,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -797,6 +850,17 @@ impl Runtime {
     }
 
     pub(super) fn queue_behavior(&mut self, id: BehaviorId) {
+        // Behind a preempted callback of the same instrument: keep event order.
+        let plan = self.behaviors.get(id.0).map(|c| c.owner);
+        let plan = plan.and_then(|o| self.behavior_plan(o).ok());
+        if self
+            .yielded
+            .iter()
+            .any(|&y| self.yielded_plan(y).is_some() && self.yielded_plan(y) == plan)
+        {
+            self.yielded.push_back(id);
+            return;
+        }
         self.push_behavior_work(Ready::Resume {
             id,
             fuel: self.behavior_fuel,
@@ -847,8 +911,8 @@ impl Runtime {
                 continue;
             };
             if fuel == 0 {
-                self.fail_behavior(id, Outcome::FuelExhausted);
                 self.behavior_ready.remove(index);
+                self.yield_behavior(id);
                 continue;
             }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
@@ -868,6 +932,61 @@ impl Runtime {
             }
         }
         self.dispatching_behavior = false;
+    }
+
+    fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {
+        let c = self.behaviors.get(id.0)?;
+        if c.outcome.is_some() {
+            return None;
+        }
+        self.behavior_plan(c.owner).ok()
+    }
+
+    /// Out of fuel for this block: continue next block, unless it has been
+    /// running for a second, which only a runaway loop does.
+    fn yield_behavior(&mut self, id: BehaviorId) {
+        let now = self.now;
+        let c = self.behaviors.get_mut(id.0).unwrap();
+        let since = *c.yielded_at.get_or_insert(now);
+        if now - since >= u64::from(self.rate) {
+            self.fail_behavior(id, Outcome::FuelExhausted);
+            return;
+        }
+        self.preemptions += 1;
+        self.longest_preempted = self.longest_preempted.max(now - since);
+        // Capacity is the behavior arena's; each callback is queued at most once.
+        self.yielded.push_back(id);
+    }
+
+    /// Resume preempted callbacks with fresh fuel, oldest first. A callback
+    /// stays queued while an earlier one of its instrument preempted again
+    /// in this pass.
+    pub(super) fn resume_yielded(&mut self) {
+        let pending = self.yielded.len();
+        for done in 0..pending {
+            let Some(id) = self.yielded.pop_front() else {
+                break;
+            };
+            let Some(plan) = self.yielded_plan(id) else {
+                continue;
+            };
+            let requeued = self.yielded.len() - (pending - done - 1);
+            let blocked = self
+                .yielded
+                .iter()
+                .rev()
+                .take(requeued)
+                .any(|&y| self.yielded_plan(y) == Some(plan));
+            if blocked {
+                self.yielded.push_back(id);
+                continue;
+            }
+            self.push_behavior_work(Ready::Resume {
+                id,
+                fuel: self.behavior_fuel,
+            });
+            self.drain_behavior();
+        }
     }
 
     pub(super) fn push_behavior_work(&mut self, ready: Ready) {
@@ -1191,6 +1310,40 @@ impl Runtime {
                     return Err(Error::InvalidInput);
                 };
                 *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::WriteParam {
+                scope,
+                index,
+                target,
+                local,
+                relative,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let index = *self.local_cell_mut(id, index)?;
+                let value = *self.local_cell_mut(id, local)?;
+                self.write_param(plan, scope, index, target, value, relative)?;
+            }
+            Instruction::ReadParam {
+                scope,
+                index,
+                target,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let index = *self.local_cell_mut(id, index)?;
+                *self.local_cell_mut(id, local)? = self.read_param(plan, scope, index, target)?;
+            }
+            Instruction::FadeEvent {
+                event,
+                frames,
+                out,
+                stop,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                self.fade_event(plan, event, frames, out, stop)?;
             }
             Instruction::WriteControl { control, local } => {
                 let plan = self.behavior_plan(owner)?;

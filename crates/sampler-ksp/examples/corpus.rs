@@ -34,7 +34,13 @@ fn main() {
         let file = path.file_name().unwrap().to_string_lossy();
         total += 1;
         let started = std::time::Instant::now();
-        let script = match sampler_ksp::compile(&source, 48000, limits, &[]) {
+        let script = match sampler_ksp::compile_with(
+            &source,
+            48000,
+            limits,
+            &[],
+            &environment(path.parent().unwrap(), &source),
+        ) {
             Ok(script) => script,
             Err(e) => {
                 println!("{file}: compile: {e}");
@@ -101,4 +107,18 @@ fn main() {
         unsupported.values().sum::<usize>()
     );
     println!("compiled {compiled}/{total}, bound {bound}/{total}");
+}
+
+/// The script's performance view from `<dir>/<name>.nckp`, if present.
+fn environment(dir: &std::path::Path, source: &str) -> sampler_ksp::Environment {
+    let mut env = sampler_ksp::Environment::default();
+    if let Some(name) = sampler_ksp::nckp::view_name(source)
+        && let Ok(bytes) = std::fs::read(dir.join(format!("{name}.nckp")))
+    {
+        match sampler_ksp::nckp::parse(&bytes) {
+            Ok((view, _)) => env.performance_view = view,
+            Err(e) => println!("{name}.nckp: {e}"),
+        }
+    }
+    env
 }

@@ -36,6 +36,25 @@ pub struct PerformanceControl {
     pub params: Vec<i32>,
     /// Element count for array controls (`ui_table`, `ui_xy`).
     pub len: u32,
+    /// `$CONTROL_PAR_*` values the view sets, applied when the script calls
+    /// `load_performance_view`. `$CONTROL_PAR_PARENT_PANEL` names the panel
+    /// variable as text.
+    pub properties: Vec<(String, Value)>,
+    pub menu: Vec<MenuItem>,
+}
+
+/// A Creator Tools performance view: its controls in declaration order (UI
+/// ids are consecutive in this order, as in Kontakt) and page settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PerformanceView {
+    pub controls: Vec<PerformanceControl>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    /// `0xRRGGBB` page colour.
+    pub color: Option<i32>,
+    /// Picture names, as `$CONTROL_PAR_PICTURE` takes them.
+    pub wallpaper: Option<String>,
+    pub icon: Option<String>,
 }
 impl PerformanceControl {
     /// What a control the host did not describe is assumed to be.
@@ -53,6 +72,8 @@ impl PerformanceControl {
             kind,
             params,
             len,
+            properties: Vec::new(),
+            menu: Vec::new(),
         }
     }
 }
