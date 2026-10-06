@@ -833,20 +833,46 @@ impl Gen<'_, '_> {
     }
 
     fn sys_elem(&mut self, array: SysArray, index: &Expr, dst: u16) -> Result<()> {
-        if array == SysArray::Cc {
-            self.value(index, dst)?;
-            self.emit(I::ReadInputController {
-                controller: dst,
-                local: dst,
-            })?;
-            return self.emit(I::ControllerToMidi7 { local: dst });
+        if !self.sys_readable(array) {
+            self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
+            return self.set(dst, 0);
         }
-        if array == SysArray::KeyDown {
-            self.value(index, dst)?;
-            return self.emit(I::ReadKeyHeld { local: dst });
+        self.value(index, dst)?;
+        self.sys_read(array, dst)
+    }
+
+    fn sys_readable(&self, array: SysArray) -> bool {
+        match array {
+            SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::CcTouched => self.ctx == Context::Controller,
+            _ => false,
         }
-        self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
-        self.set(dst, 0)
+    }
+
+    /// Replace the index in `reg` by the element; uses `reg + 1` as scratch.
+    fn sys_read(&mut self, array: SysArray, at: u16) -> Result<()> {
+        match array {
+            SysArray::Cc => {
+                self.emit(I::ReadInputController {
+                    controller: at,
+                    local: at,
+                })?;
+                self.emit(I::ControllerToMidi7 { local: at })
+            }
+            SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            // Kontakt marks the controllers that changed for this callback:
+            // here, the one that triggered it.
+            SysArray::CcTouched => {
+                let number = reg(at, 1)?;
+                self.emit(I::ReadControllerNumber { local: number })?;
+                self.emit(I::CompareLocal {
+                    lhs: at,
+                    rhs: number,
+                    comparison: Cmp::Equal,
+                })
+            }
+            _ => self.set(at, 0),
+        }
     }
 
     // Text.
@@ -2106,18 +2132,23 @@ impl Gen<'_, '_> {
     }
 
     fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
-        let Some(Arg::Var(v, _)) = args.first() else {
-            self.ignore(
-                Builtin::Search,
-                "of a runtime-maintained array is not available; -1",
-            );
-            return self.set(dst, -1);
+        let (array, len) = match args.first() {
+            Some(Arg::Var(v, _)) => {
+                let Home::Cells { offset, len } = self.var(*v).home else {
+                    self.ignore(Builtin::Search, "of a text array is not available; -1");
+                    return self.set(dst, -1);
+                };
+                (Ok(ScriptArray { offset, len }), len)
+            }
+            Some(Arg::SysArray(sys)) if self.sys_readable(*sys) => (Err(*sys), sys.len()),
+            _ => {
+                self.ignore(
+                    Builtin::Search,
+                    "of this runtime-maintained array is not available; -1",
+                );
+                return self.set(dst, -1);
+            }
         };
-        let Home::Cells { offset, len } = self.var(*v).home else {
-            self.ignore(Builtin::Search, "of a text array is not available; -1");
-            return self.set(dst, -1);
-        };
-        let array = ScriptArray { offset, len };
         let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
         // Ascending registers: evaluation uses those above its target.
         if args.len() > 2 {
@@ -2142,11 +2173,23 @@ impl Gen<'_, '_> {
             comparison: Cmp::LessEqual,
         })?;
         let missing = self.jump_if_zero(t)?;
-        self.emit(I::ReadScriptArray {
-            array,
-            index: dst,
-            local: t,
-        })?;
+        match array {
+            Ok(array) => self.emit(I::ReadScriptArray {
+                array,
+                index: dst,
+                local: t,
+            })?,
+            Err(sys) => {
+                // t (and t + 1 as scratch) are above dst, value and end.
+                self.set(t, 0)?;
+                self.emit(I::Binary32 {
+                    lhs: t,
+                    rhs: dst,
+                    operation: IB::Add,
+                })?;
+                self.sys_read(sys, t)?;
+            }
+        }
         self.emit(I::CompareLocal {
             lhs: t,
             rhs: value,
