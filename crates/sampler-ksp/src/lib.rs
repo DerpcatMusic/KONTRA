@@ -120,6 +120,9 @@ pub struct Script {
     symbols: Vec<String>,
     slot: u8,
     usage: Limits,
+    /// `SET_CONDITION(NO_SYS_SCRIPT_PEDAL)`: the script, not the engine,
+    /// sustains notes on CC64.
+    owns_sustain: bool,
 }
 
 impl Script {
@@ -329,6 +332,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut starts = Vec::new();
     let mut signals = Vec::new();
     let mut shared = Vec::new();
+    let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
     for (index, script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
@@ -378,7 +382,8 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         resources.push(script.resources);
     }
     let capacity = shared.len() + 4096;
-    plan.with_programs(Vec::new(), None)?
+    plan.with_script_sustain(owns_sustain)
+        .with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
         // Keep source aliases separate from marked/all-event selectors.
         .with_source_event_limit(0x0fff_ffff)?
@@ -451,9 +456,9 @@ pub fn compile_with(
         }
     }
     let mut syms = lexer::Interner::default();
-    let (hir, init) = (|| {
+    let (hir, init, conditions) = (|| {
         let mut toks = lexer::lex(source, &mut syms)?;
-        lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
         let ast = parser::parse(&toks, &syms)?;
         let budget = sema::Budget {
             variables: limits.variables,
@@ -461,7 +466,7 @@ pub fn compile_with(
         };
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
         let init = eval::run(&hir, environment)?;
-        Ok((hir, init))
+        Ok((hir, init, conditions))
     })()
     .map_err(|f: diag::Fault| f.locate(source))?;
 
@@ -672,6 +677,7 @@ pub fn compile_with(
         coverage,
         symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
         slot: environment.slot,
+        owns_sustain: conditions.contains("NO_SYS_SCRIPT_PEDAL"),
         usage: Limits {
             source_bytes: source.len(),
             instructions: limits.instructions - unit.budget,

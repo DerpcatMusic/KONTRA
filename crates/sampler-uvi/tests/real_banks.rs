@@ -10,13 +10,17 @@ const AUGMENTED: &str = "UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestr
 
 /// Programs whose connections were all reported before (most did not even
 /// parse: their node count exceeded the old XML limit), with a key they map.
-const PROGRAMS: [(&str, u8); 3] = [
+const PROGRAMS: [(&str, u8); 5] = [
     // Velocity → gain, tempo-synced free sine LFO → pan, pitch bend.
     ("Presets/08 Ambient/Oceanic.uvip", 60),
     // Sine LFO → gain.
     ("Presets/04 Hybrid/Deep Brass.uvip", 60),
     // Sine LFO → pitch.
     ("Presets/01 Natural/Fragile Bow MW.uvip", 60),
+    // MultiLFO sine + noise → pitch, step envelopes → pan.
+    ("Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip", 60),
+    // Step envelope → gain.
+    ("Presets/02 Action/City Walker.uvip", 60),
 ];
 
 #[test]
