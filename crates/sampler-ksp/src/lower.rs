@@ -50,6 +50,8 @@ const AMP_ENVELOPE: &str = "ENV_AHDSR";
 /// Store key tags separating UI properties and PGS values from engine keys.
 pub const PROPERTY_TAG: i32 = i32::MIN;
 pub const PGS_TAG: i32 = i32::MIN + 1;
+/// `[LISTENER_TAG, signal, 0, LISTENER_TAG]`: a listener's `set_listener` value.
+pub const LISTENER_TAG: i32 = i32::MIN + 2;
 
 /// Host value slot for a system variable; see `Runtime::set_host_value`.
 pub fn host_slot(sys: SysVar) -> Option<u8> {
@@ -121,6 +123,7 @@ impl<'h> Unit<'h> {
         span: Span,
         context: Context,
         kind: CallbackKind,
+        signal: Option<i32>,
     ) -> Result<Program> {
         let ui_id = match kind {
             CallbackKind::UiControl(var) => self.hir.vars[var.0 as usize]
@@ -140,6 +143,7 @@ impl<'h> Unit<'h> {
             loops: Vec::new(),
             span,
             tdepth: 0,
+            signal,
         };
         g.block(body)?;
         g.forward()?;
@@ -171,6 +175,69 @@ impl<'h> Unit<'h> {
                 span,
                 builtin: None,
                 message: format!("invalid lowered program: {e:?}"),
+            })
+    }
+
+    /// A timer listener's driver: every period, start `body` (the listener
+    /// program for `signal`); a zero period polls every 10 ms until set.
+    // ponytail: $NI_SIGNAL_TIMER_BEAT assumes 120 BPM, like wait_ticks.
+    pub fn listener_driver(&mut self, signal: i32, body: usize, span: Span) -> Result<Program> {
+        let mut g = Gen {
+            u: self,
+            ctx: Context::Plan,
+            callback_type: b::cb::LISTENER,
+            ui_id: None,
+            code: Vec::new(),
+            texts: Vec::new(),
+            calls: Vec::new(),
+            starts: HashMap::new(),
+            loops: Vec::new(),
+            span,
+            tdepth: 0,
+            signal: Some(signal),
+        };
+        let (period, t) = (0, 1);
+        let top = g.here();
+        for (i, v) in [LISTENER_TAG, signal, 0, LISTENER_TAG]
+            .into_iter()
+            .enumerate()
+        {
+            g.set(2 + i as u16, i64::from(v))?;
+        }
+        g.emit(I::Op(Op::Store {
+            key: 2,
+            local: period,
+            write: false,
+        }))?;
+        g.clamp(period, 0, i32::MAX)?;
+        let idle = g.jump_if_zero(period)?;
+        let period = if signal == b::signal::TIMER_BEAT {
+            // Signals per quarter note to microseconds.
+            g.set(t, 500_000)?;
+            g.emit(I::Binary32 {
+                lhs: t,
+                rhs: period,
+                operation: IB::Divide,
+            })?;
+            t
+        } else {
+            period
+        };
+        g.emit(I::MicrosToFrames { local: period })?;
+        g.emit(I::WaitLocal { local: period })?;
+        g.emit(I::StartProgram {
+            program: body as u32,
+        })?;
+        g.emit(I::Jump { target: top })?;
+        g.land(idle);
+        g.emit(I::Wait(480))?;
+        g.emit(I::Jump { target: top })?;
+        Program::new(g.code)
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map_err(|e| Fault {
+                span,
+                builtin: None,
+                message: format!("invalid listener driver: {e:?}"),
             })
     }
 
@@ -215,6 +282,8 @@ struct Gen<'u, 'h> {
     loops: Vec<usize>,
     span: Span,
     tdepth: u32,
+    /// The timer signal a listener body program serves.
+    signal: Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -727,6 +796,10 @@ impl Gen<'_, '_> {
             SysVar::UiId => I::SetLocal {
                 local: dst,
                 value: i64::from(self.ui_id.unwrap_or(0)),
+            },
+            SysVar::SignalType if self.signal.is_some() => I::SetLocal {
+                local: dst,
+                value: i64::from(self.signal.unwrap()),
             },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
@@ -1558,6 +1631,18 @@ impl Gen<'_, '_> {
                 self.effect(builtin, args, dst)?;
                 return self.set(dst, 0);
             }
+            SetListener | ChangeListenerPar => {
+                // The timer driver reads the period from the store.
+                self.arg(args, 1, dst)?;
+                let key = [
+                    Key::Fixed(LISTENER_TAG),
+                    Key::Arg(0),
+                    Key::Fixed(0),
+                    Key::Fixed(LISTENER_TAG),
+                ];
+                self.store(args, key, dst, true)?;
+                true
+            }
             GetUiId => {
                 let id = self
                     .ui_index(args, 0)
@@ -1623,8 +1708,6 @@ impl Gen<'_, '_> {
             | RedirectOutput
             | StopWait
             | ResetKspTimer
-            | SetListener
-            | ChangeListenerPar
             | SetZonePar
             | SetVoiceLimit
             | LoadIrSample
