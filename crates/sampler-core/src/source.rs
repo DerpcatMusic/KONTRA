@@ -432,7 +432,9 @@ impl Cursor {
 
     fn advance(&mut self) {
         let phase = self.fraction + self.step;
-        let whole = phase.floor();
+        // Truncation is floor here (phase >= 0) and, unlike f64::floor on the
+        // SSE2 baseline, needs no libm call.
+        let whole = (phase as u64) as f64;
         self.fraction = phase - whole;
         self.position = self.position.saturating_add(whole as u64);
     }
@@ -580,8 +582,11 @@ impl Cursor {
     // 16x) never take this path; per-level loop traversal if that matters.
     fn sample_level(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         let levels = pcm.levels();
+        if levels.is_empty() || self.step < 2.0 || self.crossfaded() {
+            return None;
+        }
         let k = (self.step.log2().floor() as usize).min(levels.len());
-        if k == 0 || self.crossfaded() {
+        if k == 0 {
             return None;
         }
         let scale = 1_i64 << k;
@@ -604,7 +609,7 @@ impl Cursor {
         let j = x.floor();
         let first = usize::try_from(j as i64 - radius).ok()?;
         let taps = levels[k - 1].get(first..=first + 2 * radius as usize)?;
-        Some(kernel.sample(x - j, step, |offset| taps[(offset + radius) as usize]))
+        Some(kernel.sample_window(x - j, step, taps))
     }
 
     /// One complete output frame at the cursor, or None if any tap is missing.
@@ -635,7 +640,9 @@ impl Cursor {
                     _ => None,
                 }
             };
-            if let Some((span, reverse)) = contiguous {
+            if let Some((span, false)) = contiguous {
+                Some(kernel.sample_window(self.fraction, self.step, span))
+            } else if let Some((span, reverse)) = contiguous {
                 Some(kernel.sample(self.fraction, self.step, |offset| {
                     span[(if reverse {
                         radius - offset
@@ -657,6 +664,66 @@ impl Cursor {
         }
     }
 
+    /// Frames whose kernel windows all lie in one forward contiguous span,
+    /// resolved once; each frame then slices that span directly. Identical
+    /// arithmetic to the per-frame path, which handles everything else.
+    // ponytail: reverse spans and octave levels stay per-frame; add runs for
+    // them if reverse or mipmapped pitched voices dominate a profile.
+    fn render_run(
+        &mut self,
+        pcm: &(impl ReadFrames + ?Sized),
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        kernel: &Kernel,
+    ) -> usize {
+        if self.crossfaded() || self.step >= 2.0 && !pcm.levels().is_empty() {
+            return 0;
+        }
+        let count = output.len().min(envelope.remaining());
+        let radius = kernel.window(self.step);
+        let bank = kernel.polyphase(self.step);
+        let taps = 2 * radius as usize + 1;
+        // Frames read per output frame: the bank reads whole chunks.
+        let width = bank.map_or(taps, |bank| bank.width());
+        // Upper bound on the frames advanced by `count` steps.
+        let advance = (count as f64 * self.step).ceil() as i64 + 1;
+        let position = i128::from(self.position);
+        let (Some(left), Some(right)) = (
+            self.index(position - i128::from(radius)),
+            self.index(position + i128::from(advance + radius) + (width - taps) as i128),
+        ) else {
+            return 0;
+        };
+        if count == 0 || right.checked_sub(left) != Some(advance as usize + width - 1) {
+            return 0;
+        }
+        let Some(span) = pcm.span(left..right + 1) else {
+            return 0;
+        };
+        let start = self.position;
+        for frame in &mut output[..count] {
+            let offset = (self.position - start) as usize;
+            let window = &span[offset..offset + width];
+            let source = match bank {
+                Some(bank) => bank.sample(self.fraction, window),
+                None => kernel.sample_window(self.fraction, self.step, window),
+            };
+            self.last = if source.iter().all(|value| value.is_finite()) {
+                source
+            } else {
+                [0.; 2]
+            };
+            let level = envelope.constant_level().unwrap_or_else(|| envelope.next());
+            for channel in 0..2 {
+                frame[channel] += source[channel] * gain * gains[channel] * level;
+            }
+            self.advance();
+        }
+        count
+    }
+
     fn render_filtered(
         &mut self,
         pcm: &(impl ReadFrames + ?Sized),
@@ -670,6 +737,14 @@ impl Cursor {
         while rendered < output.len() {
             if self.done() || envelope.done() {
                 break;
+            }
+            if self.fade_in == 0 {
+                let run =
+                    self.render_run(pcm, &mut output[rendered..], envelope, gain, gains, kernel);
+                if run > 0 {
+                    rendered += run;
+                    continue;
+                }
             }
             let Some(source) = self.sample(pcm, kernel) else {
                 self.starvation = Some(self.fade_frames);
