@@ -18,7 +18,7 @@ use std::path::Path;
 
 use sampler_core::{
     BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime,
+    Region, Runtime, Threads,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Mpe, Packets, Zone};
@@ -564,6 +564,16 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
+/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
+/// One (the audio thread alone) unless set.
+fn render_threads() -> Threads {
+    match std::env::var("KONTRA_THREADS").as_deref() {
+        Ok("auto") => Threads::Auto,
+        Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
+        Err(_) => Threads::Fixed(1),
+    }
+}
+
 /// Capacities of a part, sized for its plan's script state.
 fn limits(plan: &Prepared) -> Limits {
     Limits {
@@ -759,7 +769,7 @@ impl CoreLoader for V2Loader {
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         let limits = limits(&prepared);
-        let runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let runtime = Runtime::new(prepared, limits).map_err(core)?.with_threads(render_threads());
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
             return Err(CoreError::Invalid(format!(
                 "{} mixer nodes for {} runtime buses",

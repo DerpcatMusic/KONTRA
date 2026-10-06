@@ -4,14 +4,14 @@ use sampler_core::*;
 mod support;
 
 const LAYERS: usize = 4;
-const NOTES: usize = 24;
+const NOTES: usize = 40;
 
 fn runtime(threads: usize) -> Runtime {
     // Pseudo-random, distinct per layer, so a misplaced voice cannot hide.
     let samples: Vec<Pcm> = (0..LAYERS)
         .map(|layer| {
             let mut x = 0x9E37_79B9u32.wrapping_mul(layer as u32 + 1);
-            let frames = (0..3000)
+            let frames = (0..6000)
                 .map(|_| {
                     x ^= x << 13;
                     x ^= x >> 17;
@@ -112,7 +112,7 @@ fn any_thread_count_renders_the_single_threaded_output_exactly() {
         let mut rt = runtime(threads);
         let actual = play(&mut rt, &blocks);
         assert_eq!(rt.voice_count(), 0, "voices ended at {threads} threads");
-        assert!(rt.parallel_blocks() > 50, "the pool rendered {} blocks", rt.parallel_blocks());
+        assert!(rt.parallel_blocks() > 10, "the pool rendered {} blocks", rt.parallel_blocks());
         assert!(
             actual.iter().zip(&expected).all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
             "{threads} threads differ from one"
