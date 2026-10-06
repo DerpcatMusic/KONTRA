@@ -1060,12 +1060,15 @@ mod tests {
 
     #[test]
     fn script_ui_effects_reach_the_interface() {
-        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_label $l(1, 1)\nend on\n\
-                      on ui_control($k)\n set_control_par(get_ui_id($l), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on\n";
+        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_label $l(1, 1)\n\
+                      set_key_type(36, $NI_KEY_TYPE_CONTROL)\nend on\n\
+                      on ui_control($k)\n set_control_par(get_ui_id($l), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\n\
+                      set_key_color(60, $KEY_COLOR_RED)\nend on\n";
         let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
         let mut ui = ScriptUi { views: vec![script.view()], resources: None };
         let before = ui.interfaces();
+        assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
         let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
         let region = Region {
             sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
@@ -1083,8 +1086,9 @@ mod tests {
             applied += usize::from(ui.apply(instance, effect));
             true
         });
-        assert_eq!(applied, 1);
+        assert_eq!(applied, 2);
         assert_ne!(ui.interfaces(), before, "the label is hidden");
+        assert_eq!(ui.keys()[60].color, Some(0), "red");
     }
 
     #[test]

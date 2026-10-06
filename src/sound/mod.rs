@@ -138,6 +138,16 @@ pub struct Loaded<P> {
     pub scripts: ScriptUi,
 }
 
+/// One key as the scripts show it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyLook {
+    /// A `$KEY_COLOR_*` index.
+    pub color: Option<u8>,
+    pub name: Option<String>,
+    /// A keyswitch or other control key rather than a playing key.
+    pub control: bool,
+}
+
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
@@ -150,6 +160,26 @@ impl ScriptUi {
     /// Apply an effect script `instance` emitted; true when it changed a view.
     pub fn apply(&mut self, instance: usize, effect: &sampler_core::Effect) -> bool {
         self.views.get_mut(instance).is_some_and(|v| v.apply_ui_effect(effect))
+    }
+
+    /// The keyboard as the scripts colour and name it, 128 keys; a later
+    /// script's settings win.
+    pub fn keys(&self) -> std::sync::Arc<[KeyLook]> {
+        let mut keys = vec![KeyLook::default(); 128];
+        for view in &self.views {
+            for (look, key) in keys.iter_mut().zip(&view.model().interface.keys) {
+                if let Some(color) = key.color.and_then(|c| u8::try_from(c).ok()) {
+                    look.color = Some(color);
+                }
+                if let Some(name) = key.name.as_ref().filter(|n| !n.is_empty()) {
+                    look.name = Some(name.clone());
+                }
+                if let Some(kind) = key.kind {
+                    look.control = kind == 1; // $NI_KEY_TYPE_CONTROL
+                }
+            }
+        }
+        keys.into()
     }
 
     /// The interfaces as they stand, like [`Loaded::interfaces`].
