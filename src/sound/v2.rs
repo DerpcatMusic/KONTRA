@@ -640,7 +640,11 @@ fn kontakt(
     let mut source = sampler_kontakt::read(&request.path).map_err(load)?;
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
-    let options = sampler_kontakt::Options { rate: request.sample_rate as u32, keys: 0..=127, scripts: true };
+    let options = sampler_kontakt::Options {
+        rate: request.sample_rate as u32,
+        library: Some(request.path.clone()),
+        ..Default::default()
+    };
     let progress = |p: sampler_kontakt::Progress<'_>| {
         progress(Progress(match p {
             sampler_kontakt::Progress::Translated { .. } => 50,
@@ -654,46 +658,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    let mut interfaces = loaded.interfaces;
-    for asset in interfaces.iter_mut().flat_map(|ui| &mut ui.assets) {
-        if let sampler_ui_ir::AssetKind::Image(meta) = &mut asset.kind {
-            *meta = picture_meta(&request.path, &asset.path).unwrap_or(*meta);
-        }
-    }
-    Ok(Loaded { part: loaded.plan, tree, report, interfaces })
-}
-
-/// The layout of the picture at `asset` (library-relative, `.png`) from the
-/// `.txt` beside it, in the nearest folder above `instrument` that has it.
-/// `relative` in the nearest folder above `instrument` that has it.
-fn locate(instrument: &Path, relative: &str) -> Option<std::path::PathBuf> {
-    instrument.ancestors().skip(1).map(|dir| dir.join(relative)).find(|p| p.is_file())
-}
-
-/// Its frame size comes from the image's PNG header.
-fn picture_meta(instrument: &Path, asset: &str) -> Option<sampler_ui_ir::ImageMeta> {
-    let txt = locate(instrument, &Path::new(asset).with_extension("txt").to_string_lossy());
-    let png = locate(instrument, asset);
-    if txt.is_none() && png.is_none() {
-        return None;
-    }
-    let mut meta = txt
-        .and_then(|t| std::fs::read_to_string(t).ok())
-        .map_or_else(Default::default, |t| sampler_ksp::ui::picture_meta(&t));
-    let header = png.and_then(|p| {
-        let mut head = [0u8; 24];
-        std::io::Read::read_exact(&mut std::fs::File::open(p).ok()?, &mut head).ok()?;
-        let be = |at: usize| u32::from_be_bytes(head[at..at + 4].try_into().unwrap());
-        (head[..8] == *b"\x89PNG\r\n\x1a\n").then(|| (be(16), be(20)))
-    });
-    if let Some((width, height)) = header {
-        let n = meta.frames.max(1);
-        meta.size = Some(match meta.axis {
-            sampler_ui_ir::Orientation::Horizontal => sampler_ui_ir::Size { width: width / n, height },
-            _ => sampler_ui_ir::Size { width, height: height / n },
-        });
-    }
-    Some(meta)
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -993,18 +958,6 @@ mod tests {
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
-    }
-
-    #[test]
-    fn script_pictures_read_their_layout_from_the_library() {
-        let dir = tempfile::tempdir().unwrap();
-        let pictures = dir.path().join("Resources/pictures");
-        std::fs::create_dir_all(&pictures).unwrap();
-        std::fs::write(pictures.join("knob.txt"), "Number of Animations: 31\nHas Alpha Channel: yes\n").unwrap();
-        let instrument = dir.path().join("Instruments/Piano.nki");
-        let meta = super::picture_meta(&instrument, "Resources/pictures/knob.png").unwrap();
-        assert_eq!(meta.frames, 31);
-        assert!(super::picture_meta(&instrument, "Resources/pictures/missing.png").is_none());
     }
 
     #[test]

@@ -223,18 +223,16 @@ fn ir_view_draws_the_ksp_corpus() {
 fn ir_view_real_instrument_memory() {
     let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
     // Only key 0's samples: the interfaces are what this measures.
-    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true };
+    let options = sampler_kontakt::Options { keys: 0..=0, ..Default::default() };
     let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
     let mut face = loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface");
-    // A wallpaper chosen by a persistent control resolves only after the saved state is
-    // restored, which `Script::ui` does not do yet; name a stand-in to measure.
+    // A wallpaper the saved state does not name can be given a stand-in to measure.
     if let (Some(a), Ok(n)) = (face.pages[0].background.image, std::env::var("KONTRA_UI_IR_WALLPAPER"))
         && face.assets[a.0].path.ends_with("/.png")
     {
         face.assets[a.0].path = format!("Resources/pictures/{n}.png");
     }
     let mut source = super::pictures::Source::of(&patch);
-    source.describe(&mut face);
     if std::env::var_os("DUMP_WIDGETS").is_some() {
         let r = ir_view::resolved(&face);
         for (n, w) in r.widgets.iter().enumerate() {

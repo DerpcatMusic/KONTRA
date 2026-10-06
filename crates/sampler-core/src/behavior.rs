@@ -240,6 +240,13 @@ pub enum Instruction {
         target: super::ModTarget,
         local: u16,
     },
+    /// Set a stage of group `group`'s amplitude envelope for voices that
+    /// start afterwards: frames, or for Sustain a 0..=1000 level.
+    WriteEnvelope {
+        group: u16,
+        stage: super::EnvelopeStage,
+        local: u16,
+    },
     /// Fade a source event in from silence, or out from its current level,
     /// over the frame count in `frames`. With `stop`, its voices end at silence.
     FadeEvent {
@@ -455,6 +462,9 @@ impl Program {
                     return Err(Error::InvalidInput);
                 }
                 locals = locals.max(usize::from(index.max(local)) + 1);
+            }
+            if let Instruction::WriteEnvelope { group, local, .. } = *op {
+                locals = locals.max(usize::from(group.max(local)) + 1);
             }
             if let Instruction::FadeEvent { event, frames, .. } = *op {
                 locals = locals.max(usize::from(event.max(frames)) + 1);
@@ -1332,6 +1342,16 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let index = *self.local_cell_mut(id, index)?;
                 *self.local_cell_mut(id, local)? = self.read_param(plan, scope, index, target)?;
+            }
+            Instruction::WriteEnvelope {
+                group,
+                stage,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let group = *self.local_cell_mut(id, group)?;
+                let value = *self.local_cell_mut(id, local)?;
+                self.write_envelope(plan, group, stage, value)?;
             }
             Instruction::FadeEvent {
                 event,

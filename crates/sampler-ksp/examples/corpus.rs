@@ -17,12 +17,7 @@ fn main() {
         .collect();
     paths.sort();
     let verbose = std::env::var_os("KSP_VERBOSE").is_some();
-    let limits = Limits {
-        source_bytes: usize::MAX,
-        instructions: usize::MAX,
-        variables: usize::MAX,
-        array_cells: usize::MAX,
-    };
+    let limits = Limits::LIBRARY;
     let (mut compiled, mut bound, mut total) = (0, 0, 0);
     let mut coverage = BTreeMap::<(&str, Coverage), usize>::new();
     let mut symbols = BTreeMap::<String, usize>::new();
