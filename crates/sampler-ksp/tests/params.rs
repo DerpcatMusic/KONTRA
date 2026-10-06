@@ -236,3 +236,26 @@ fn pgs_writes_reach_every_slot_and_run_pgs_changed() {
     // Only the reader's note 61 sounds.
     assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
 }
+
+#[test]
+fn sort_and_array_equal_run_at_runtime() {
+    let mut rt = runtime(
+        "on init
+           declare %a[4] := (59, 61, 58, 60)
+           declare %b[4] := (61, 60, 59, 58)
+         end on
+         on note
+           ignore_event($EVENT_ID)
+           sort(%a, 1)
+           if (array_equal(%a, %b))
+             sort(%a, 0, 1, 3)
+             { 61, 58, 59, 60 }
+             if (%a[1] = 58 and %a[3] = 60)
+               play_note(61, 127, 0, 100000)
+             end if
+           end if
+         end on",
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+}
