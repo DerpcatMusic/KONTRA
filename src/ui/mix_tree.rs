@@ -68,6 +68,7 @@ fn label(kind: Kind) -> &'static str {
     match kind {
         Kind::Instrument => "Instrument",
         Kind::Group => "Group",
+        Kind::Mic => "Mic",
         Kind::Bus => "Bus",
     }
 }

@@ -300,6 +300,26 @@ impl EnvelopeState {
         None
     }
 
+    /// Level after `frames` more frames, as if `next` ran that many times.
+    /// Linear stages jump; curved stages still step per frame.
+    // ponytail: curved stages step per frame; jump with Curve::at if modulation envelopes get hot.
+    pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
+        while frames > 0 && !matches!(self.phase, Phase::Sustain | Phase::Done) {
+            if self.curve().curvature != 0.0 {
+                self.next();
+                frames -= 1;
+                continue;
+            }
+            let step = frames.min(self.duration() - self.age);
+            self.age += step;
+            frames -= step;
+            if self.age == self.duration() {
+                self.enter(self.following());
+            }
+        }
+        self.level()
+    }
+
     pub(super) fn next(&mut self) -> f32 {
         let value = self.level();
         if matches!(self.phase, Phase::Sustain | Phase::Done) {

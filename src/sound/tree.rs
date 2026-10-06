@@ -19,6 +19,8 @@ pub enum NodeKind {
     Bus,
     /// A source group (a Kontakt group, a UVI keygroup layer).
     Group,
+    /// A microphone position's bus.
+    Mic,
 }
 
 /// One mixer node as the source describes it.
