@@ -10,11 +10,9 @@
 //! output (its parent or a DAW pair). Loading: Kontakt instruments through
 //! `sampler-kontakt` (cancelable, every group a mixer node), WAV files as one region.
 //!
-//! Not yet: scripts' UI and persistence (wait on the KSP compiler), member-channel
-//! MPE (every channel plays the zone's manager channel), MIDI 2.0 values at full
-//! precision in the zone (narrowed to MIDI 1.0, counted), per-note controllers
-//! and program changes (counted), node meters, streaming, a sample-rate change
-//! without reloading.
+//! Not yet: member-channel MPE (every channel plays the zone's manager channel),
+//! per-note controllers and program changes (counted), streaming, a sample-rate
+//! change without reloading.
 
 use std::path::Path;
 
@@ -151,8 +149,12 @@ fn peak(x: &[f32]) -> f32 {
 
 /// A MIDI 1.0 channel voice message into `part`'s zone, on its manager channel.
 fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
-    let words = [0x2000_0000 | u32::from(status & 0xf0) << 16 | u32::from(a & 127) << 8 | u32::from(b & 127)];
-    if let Some(Ok(packet)) = Packets::new(&words).next()
+    wire_packet(part, &[0x2000_0000 | u32::from(status & 0xf0) << 16 | u32::from(a & 127) << 8 | u32::from(b & 127)]);
+}
+
+/// A channel voice packet into `part`'s zone as is, on its group and manager channel.
+fn wire_packet(part: &mut Part, words: &[u32]) {
+    if let Some(Ok(packet)) = Packets::new(words).next()
         && let Err(ApplyError::Core(sampler_core::Error::Capacity)) = part.mpe.apply(&mut part.runtime, packet)
     {
         part.problems.capacity_drops += 1;
@@ -164,7 +166,7 @@ fn express(runtime: &mut Runtime, note: NoteId, change: impl FnOnce(&mut Express
     let Ok(owner) = runtime.expression_id(note) else { return };
     let Ok(mut expression) = runtime.expression(owner) else { return };
     change(&mut expression);
-    expression.gain = expression.gain.clamp(0.0, 1.0);
+    expression.gain = expression.gain.clamp(0.0, sampler_core::MAX_EXPRESSION_GAIN);
     expression.pan = expression.pan.clamp(-1.0, 1.0);
     let _ = runtime.set_expressions(&[(owner, expression)]);
 }
@@ -185,8 +187,8 @@ fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
     });
 }
 
-/// A channel voice packet into one part. MIDI 2.0 values narrow to the zone's
-/// MIDI 1.0; polyphonic pressure reaches held host notes at full precision.
+/// A channel voice packet into one part, MIDI 2.0 values at full precision;
+/// per-note messages reach held host notes.
 fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
     let [word, data] = words;
     let (kind, status, a, b) = (word >> 28, (word >> 16) as u8 & 0xf0, (word >> 8) as u8 & 127, word as u8 & 127);
@@ -197,7 +199,6 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
             note_expression(part, h.id, expression);
         }
     };
-    let narrowed = |part: &mut Part, lost: bool| part.problems.narrowed_input += u64::from(lost);
     match (kind, status) {
         (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
         (4, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX))),
@@ -210,26 +211,8 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
             let _ = part.runtime.all_notes_off(WIRE);
         }
         (2, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0) => wire_event(part, status, a, b),
-        (4, 0x90) => {
-            // MIDI 2.0 velocity 0 is a note-on; MIDI 1.0's would be a note-off.
-            let velocity = (data >> 25).max(1) as u8;
-            narrowed(part, data & 0x01ff_0000 != 0 || word & 0xff != 0);
-            wire_event(part, 0x90, a, velocity);
-        }
-        (4, 0x80) => wire_event(part, 0x80, a, (data >> 25) as u8),
-        (4, 0xb0) => {
-            narrowed(part, data & 0x01ff_ffff != 0);
-            wire_event(part, 0xb0, a, (data >> 25) as u8);
-        }
-        (4, 0xd0) => {
-            narrowed(part, data & 0x01ff_ffff != 0);
-            wire_event(part, 0xd0, (data >> 25) as u8, 0);
-        }
-        (4, 0xe0) => {
-            narrowed(part, data & 0x0003_ffff != 0);
-            let bend = data >> 18;
-            wire_event(part, 0xe0, (bend & 127) as u8, (bend >> 7) as u8);
-        }
+        // Notes, controllers, registered controllers (bend range), pressure, bend.
+        (4, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word & 0xf0f0_ffff, data]),
         _ => part.problems.ignored_input += 1,
     }
 }
@@ -957,6 +940,21 @@ mod tests {
         let e = part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap();
         assert!((e.pitch_semitones - 24.0).abs() < 1e-6, "three quarters of full scale is +24");
         assert_eq!(core.problems(0).ignored_input, 0);
+        // CLAP gain expression up to +12 dB, unclamped.
+        core.event(0, Event::Expression(super::super::event::HostPattern { port: -1, channel: -1, key: -1, id: -1, clap: true }, NoteExpression::Gain(3.0)));
+        let gain = |core: &V2Core| {
+            let part = core.parts[0].as_ref().unwrap();
+            part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap().gain
+        };
+        assert_eq!(gain(&core), 3.0);
+        // A MIDI 2.0 channel bend keeps its 32 bits: a quarter up over ±2
+        // semitones (the zone's pitch replaces the per-note bend).
+        core.event(0, Event::Ump([0x40e0_0000, 0xa000_0000]));
+        let part = core.parts[0].as_ref().unwrap();
+        let e = part.runtime.expression(part.runtime.expression_id(core.held[0].id).unwrap()).unwrap();
+        let bend = 2.0 * f64::from(0x2000_0000u32) / f64::from(0x7fff_ffffu32);
+        assert!((e.pitch_semitones - bend).abs() < 1e-9, "{}", e.pitch_semitones);
+        assert_eq!(core.problems(0).narrowed_input, 0);
     }
 
     #[test]
