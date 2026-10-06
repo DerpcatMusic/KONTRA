@@ -449,6 +449,18 @@ fn probe_instrument() {
             .filter(|(_, z)| (z.velocities.low..=z.velocities.high).contains(&vel))
         {
             let g = z.group.map(|g| &ir.groups[g.0]);
+            for r in &z.routes {
+                let r = &ir.routes[r.0];
+                eprintln!(
+                    "GROUTE zone {i} {:?} <- {:?} depth {:?} invert {} shape {:?} smooth {:?}",
+                    r.target,
+                    ir.modulators[r.source.0].source,
+                    r.depth,
+                    r.invert,
+                    r.shape.map(|s| &ir.shapes[s.0]),
+                    r.smoothing
+                );
+            }
             eprintln!(
                 "GAIN zone {i} grp {:?} zone gain {:?} pan {:?} group gain {:?} group pan {:?} vel {:?} keys {:?}-{:?} trig {:?}",
                 z.group,
@@ -494,10 +506,16 @@ fn probe_instrument() {
             let labels: Vec<_> = kept.iter().map(|&a| d.labels[a].clone()).collect();
             let zones = ir.zones.len();
             let loaded = sampler_kontakt::finish(ir, pcm, labels, &d.options).unwrap();
-            let mut words = vec![
-                0x2000_0000,
-                0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
-            ];
+            let mut words = vec![0x2000_0000];
+            // KONTRA_PROBE_CC="100=64;11=127": controllers sent before the note.
+            for cc in std::env::var("KONTRA_PROBE_CC").unwrap_or_default().split(';') {
+                if let Some((n, v)) = cc.split_once('=')
+                    && let (Ok(n), Ok(v)) = (n.parse::<u32>(), v.parse::<u32>())
+                {
+                    words.push(0x20B0_0000 | n << 8 | v);
+                }
+            }
+            words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
             words.resize(1500, 0x2000_0000);
             let out = render(loaded, &words);
             let sr = 48000;
