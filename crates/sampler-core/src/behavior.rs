@@ -220,6 +220,8 @@ pub enum Instruction {
         local: u16,
         target: usize,
     },
+    /// Reals, text, subroutines, keyed state and effects; see `ops`.
+    Op(super::ops::Op),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,8 +257,22 @@ pub struct Program {
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
     pub(super) requires_performance: bool,
+    pub(super) texts: Box<[super::ops::Text]>,
+    pub(super) text_constants: usize,
+    pub(super) script_texts: usize,
 }
 impl Program {
+    /// Text constants addressed by `TextPart::Constant`.
+    pub fn with_texts(mut self, texts: &[&str]) -> Result<Self, Error> {
+        if texts.len() < self.text_constants
+            || texts.iter().any(|t| t.len() > super::ops::TEXT_CAPACITY)
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.texts = texts.iter().map(|t| super::ops::Text::new(t)).collect();
+        Ok(self)
+    }
+
     pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
         self.script_instance = Some(instance);
         self
@@ -285,7 +301,25 @@ impl Program {
         let mut locals = 0;
         let mut note_cells = 0;
         let mut script_cells = 0;
+        let (mut script_texts, mut text_constants) = (0, 0);
         for op in &code {
+            if let Instruction::Op(op) = op {
+                locals = locals.max(op.locals());
+                let (cells, constants) = op.texts()?;
+                script_texts = script_texts.max(cells);
+                text_constants = text_constants.max(constants);
+                match *op {
+                    super::ops::Op::Call { target } if target as usize > code.len() => {
+                        return Err(Error::InvalidInput);
+                    }
+                    super::ops::Op::Emit { count, .. }
+                        if usize::from(count) > super::ops::EFFECT_ARGS =>
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                    _ => {}
+                }
+            }
             match *op {
                 Instruction::Play {
                     velocity: Velocity::Scale(value) | Velocity::Fixed(value),
@@ -468,6 +502,9 @@ impl Program {
             script_cells,
             script_instance: None,
             wait_lifetime: WaitLifetime::Gate,
+            texts: Box::new([]),
+            text_constants,
+            script_texts,
         })
     }
 }
@@ -540,6 +577,7 @@ pub(super) struct Continuation {
     pub outcome: Option<Outcome>,
     pub context: PlanContext,
     pub note_stage: Option<NoteStage>,
+    pub frames: super::ops::Frames,
 }
 
 #[derive(Clone, Copy)]
@@ -594,6 +632,7 @@ impl Runtime {
             program,
             pc: 0,
             outcome: None,
+            frames: Default::default(),
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -660,6 +699,7 @@ impl Runtime {
             program,
             pc: 0,
             outcome: None,
+            frames: Default::default(),
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1175,6 +1215,7 @@ impl Runtime {
                 return self.wait_behavior(id, frames);
             }
             Instruction::Wait(frames) => return self.wait_behavior(id, frames),
+            Instruction::Op(op) => return self.op_step(id, owner, op),
             Instruction::PlayMidi {
                 key,
                 velocity,

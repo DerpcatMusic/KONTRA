@@ -127,14 +127,11 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",
-        "on note ignore_event($EVENT_ID) message(1) end on",
         "on note ignore_event($EVENT_ID) wait($x) end on",
-        "on note ignore_event($EVENT_ID) wait(2147483648) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551616) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551615) end on",
         "on note ignore_event($EVENT_ID) wait(1)",
         "on note ignore_event($EVENT_ID) end on on note end on",
-        "on note ignore_event($OTHER_ID) end on",
         "{ unclosed",
         "{ { nested } }",
         "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, $missing, 1000) end on",
@@ -148,6 +145,20 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         assert!(error.offset <= source.len());
         assert!(source.is_char_boundary(error.offset));
         assert!(!error.message.is_empty());
+    }
+    // v2: message() is supported, decimal literals up to 2^32-1 wrap to i32
+    // like Kontakt, and undeclared uppercase names are opaque vendor constants
+    // reported as warnings.
+    for (source, warns) in [
+        ("on note ignore_event($EVENT_ID) message(1) end on", false),
+        (
+            "on note ignore_event($EVENT_ID) wait(2147483648) end on",
+            false,
+        ),
+        ("on note ignore_event($OTHER_ID) end on", true),
+    ] {
+        let script = compile(source, 48000, limits()).unwrap();
+        assert_eq!(!script.warnings().is_empty(), warns, "{source}");
     }
     let source = "on note ignore_event($EVENT_ID) wait($x) end on";
     let error = compile(source, 48000, limits()).err().unwrap();
@@ -344,8 +355,6 @@ fn polyphonic_source_state_reaches_release_callbacks_without_heap_or_note_aliasi
 fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets() {
     let init = "on init declare polyphonic $a end on";
     for source in [
-        format!("{init} on note ignore_event($EVENT_ID) $a := 2147483648 end on"),
-        format!("{init} on release $a := -2147483649 end on"),
         format!("{init} on release $a : = 1 end on"),
         format!("{init} on release $a := $missing end on"),
         format!("{init} on release $missing := 1 end on"),
@@ -354,14 +363,24 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
         "on init declare polyphonic $a declare polyphonic $a end on on release end on".into(),
         "on init declare polyphonic $NI_bad end on on release end on".into(),
         "on init declare polyphonic $EVENT_ID end on on release end on".into(),
-        "on init declare polyphonic $a $a := 1 end on on release end on".into(),
-        "on init declare polyphonic $a := 1 end on on release end on".into(),
         "on init declare polyphonic $ end on on release end on".into(),
     ] {
         let error = compile(&source, 48000, limits())
             .err()
             .expect("invalid source accepted");
         assert!(source.is_char_boundary(error.offset));
+    }
+    // v2: polyphonic initializers are ignored with a warning; literals wrap.
+    for source in [
+        "on init declare polyphonic $a $a := 1 end on on release end on",
+        "on init declare polyphonic $a := 1 end on on release end on",
+    ] {
+        assert!(
+            !compile(source, 48000, limits())
+                .unwrap()
+                .warnings()
+                .is_empty()
+        );
     }
     let source = format!("{init} on release $a := -2147483648 end on");
     assert!(
@@ -566,11 +585,9 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
         "if (0 < = 0) end if",
         "if (0 > = 0) end if",
         "if ($missing = 0) end if",
-        "if (2147483648 = 0) end if",
         "if (0 = 0) unsupported() end if",
         "exit unsupported()",
         "if (0 = 0) end while",
-        "exit()",
     ] {
         let source = format!("on release {body} end on");
         let error = compile(&source, 48000, limits())
@@ -586,15 +603,33 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
         )
         .is_err()
     );
-    // Parse deeply nested source iteratively, and account for unreachable code too.
-    let source = format!(
+    // v2: nesting is bounded (256 levels) and fails cleanly beyond it;
+    // unreachable code is still budgeted.
+    let deep = format!(
         "on release {}exit {}end on",
         "if (-2147483648 < 2147483647) ".repeat(1024),
         "end if ".repeat(1024)
     );
+    assert!(
+        compile(
+            &deep,
+            48000,
+            Limits {
+                source_bytes: deep.len(),
+                instructions: 1 << 20,
+                ..limits()
+            }
+        )
+        .is_err()
+    );
+    let source = format!(
+        "on release {}exit {}end on",
+        "if (-2147483648 < 2147483647) ".repeat(200),
+        "end if ".repeat(200)
+    );
     let budget = Limits {
         source_bytes: source.len(),
-        instructions: 4100,
+        instructions: 404,
         variables: 0,
         array_cells: 0,
     };
@@ -604,7 +639,7 @@ fn conditional_syntax_is_bounded_and_never_hides_invalid_dead_code() {
             &source,
             48000,
             Limits {
-                instructions: 4099,
+                instructions: 403,
                 ..budget
             }
         )
@@ -895,7 +930,7 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
             source,
             48000,
             Limits {
-                instructions: 7,
+                instructions: 5,
                 ..limits()
             }
         )
@@ -906,7 +941,7 @@ fn loops_obey_fuel_and_continue_targets_the_innermost_loop() {
             source,
             48000,
             Limits {
-                instructions: 6,
+                instructions: 4,
                 ..limits()
             }
         )
@@ -997,8 +1032,6 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
         "abs()",
         "abs(1,2)",
         "1 .nand. 2",
-        "2147483648",
-        "-2147483649",
         "~real + 1",
     ] {
         let source =
@@ -1023,4 +1056,88 @@ fn integer_expressions_respect_precedence_signed_boundaries_and_variable_updates
     .unwrap();
     assert!(error.message.contains("nesting limit"));
     assert!(source.is_char_boundary(error.offset));
+}
+
+#[test]
+fn performance_view_controls_and_indexed_properties_reach_the_model() {
+    use sampler_ksp::model::{PerformanceControl, Value, WidgetKind};
+    let source = "on init load_performance_view(\"view\")
+        declare ui_label $L(1, 2)
+        set_control_par_str_arr(get_ui_id($L), $CONTROL_PAR_TEXT, \"two\", 1)
+        declare $t := get_control_par_arr(get_ui_id($Cut), $CONTROL_PAR_VALUE, 0)
+        end on
+        on ui_control($Cut) $t := $Cut + $Drive end on";
+    let limits = Limits {
+        source_bytes: 4096,
+        instructions: 256,
+        variables: 8,
+        array_cells: 0,
+    };
+    let env = sampler_ksp::Environment {
+        performance_view: vec![
+            PerformanceControl::assumed("$Cut", WidgetKind::Slider),
+            PerformanceControl::assumed("$Mode", WidgetKind::Menu),
+        ],
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(source, 48000, limits, &[], &env).unwrap();
+    let ui = &script.model().interface;
+    assert!(ui.performance_view);
+    let kinds: Vec<_> = ui
+        .widgets
+        .iter()
+        .map(|w| (w.name.as_str(), w.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("$Cut", WidgetKind::Slider),
+            ("$Mode", WidgetKind::Menu),
+            ("$L", WidgetKind::Label),
+            ("$Drive", WidgetKind::Knob),
+        ]
+    );
+    assert!(
+        ui.widgets
+            .iter()
+            .all(|w| w.name == "$L" || w.control.is_some())
+    );
+    assert_eq!(ui.widgets[0].callback, Some(0));
+    assert_eq!(
+        ui.widgets[2].indexed_properties["$CONTROL_PAR_TEXT"][&1],
+        Value::Text("two".into())
+    );
+    // `$Drive` was not described by the host: assumed a knob, with a warning.
+    assert!(
+        script
+            .warnings()
+            .iter()
+            .any(|w| w.message.contains("$Drive"))
+    );
+    // Without load_performance_view the name stays undeclared.
+    assert!(compile("on note $x := $Cut end on", 48000, limits).is_err());
+}
+
+#[test]
+fn unsupported_and_approximate_builtins_are_positioned_diagnostics() {
+    let limits = Limits {
+        source_bytes: 4096,
+        instructions: 256,
+        variables: 8,
+        array_cells: 0,
+    };
+    let script = compile("on note\n  set_script_title(\"x\")\nend on", 48000, limits).unwrap();
+    let w = script
+        .warnings()
+        .iter()
+        .find(|w| w.builtin == Some("set_script_title"))
+        .unwrap();
+    assert_eq!(
+        (w.kind, w.line, w.column),
+        (sampler_ksp::Kind::Unsupported, 2, 3)
+    );
+    let error = compile("on note\n  nope(1)\nend on", 48000, limits)
+        .err()
+        .unwrap();
+    assert_eq!((error.kind, error.line), (sampler_ksp::Kind::Error, 2));
 }
