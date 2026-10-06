@@ -28,7 +28,7 @@ use super::mix::{Mix, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, MAX_BLOCK, Progress,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
 };
 
@@ -517,6 +517,11 @@ impl Core for V2Core {
         });
     }
 
+    fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool) {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return };
+        p.runtime.drain_effects(|e| e.instance.is_none_or(|i| each(usize::from(i.0), e)));
+    }
+
     fn voices(&self) -> Voices {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
         Voices { active, audible: active, dropouts: self.overflow }
@@ -679,7 +684,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new(), instrument: Some(std::sync::Arc::new(loaded.instrument)) })
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new(), instrument: Some(std::sync::Arc::new(loaded.instrument)), scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources } })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -730,7 +735,7 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     report.decoded.zones = 1;
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
-    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new(), instrument: None })
+    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new(), instrument: None, scripts: ScriptUi::default() })
 }
 
 impl CoreLoader for V2Loader {
@@ -743,7 +748,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: prepared, tree, report, interfaces, instrument, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: prepared, tree, report, interfaces, instrument, scripts, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -769,7 +774,7 @@ impl CoreLoader for V2Loader {
         }
         let part = Part::new(runtime, tree.clone())?;
         progress(Progress::DONE);
-        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument })
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument, scripts })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -1031,6 +1036,35 @@ mod tests {
         core.render(16);
         assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
         assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
+    }
+
+    #[test]
+    fn script_ui_effects_reach_the_interface() {
+        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_label $l(1, 1)\nend on\n\
+                      on ui_control($k)\n set_control_par(get_ui_id($l), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\nend on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let before = ui.interfaces();
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan);
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        assert!(core.set_control(0, sampler_ui_ir::ControlId(k), 1.0));
+        core.render(16);
+        let mut applied = 0;
+        core.take_effects(0, &mut |instance, effect| {
+            applied += usize::from(ui.apply(instance, effect));
+            true
+        });
+        assert_eq!(applied, 1);
+        assert_ne!(ui.interfaces(), before, "the label is hidden");
     }
 
     #[test]

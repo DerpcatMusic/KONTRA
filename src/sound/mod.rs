@@ -134,6 +134,30 @@ pub struct Loaded<P> {
     /// The translated instrument the part plays, for the views that show
     /// its articulations, mapping and sound; `None` for plain audio files.
     pub instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
+    /// The script interfaces' models, for runtime UI changes.
+    pub scripts: ScriptUi,
+}
+
+/// A part's script interfaces as its scripts change them at run time.
+#[derive(Default)]
+pub struct ScriptUi {
+    /// By script instance ([`sampler_core::ScriptInstanceId`]).
+    pub views: Vec<sampler_ksp::ScriptView>,
+    pub resources: Option<sampler_kontakt::Resources>,
+}
+
+impl ScriptUi {
+    /// Apply an effect script `instance` emitted; true when it changed a view.
+    pub fn apply(&mut self, instance: usize, effect: &sampler_core::Effect) -> bool {
+        self.views.get_mut(instance).is_some_and(|v| v.apply_ui_effect(effect))
+    }
+
+    /// The interfaces as they stand, like [`Loaded::interfaces`].
+    pub fn interfaces(&mut self) -> Vec<sampler_ui_ir::Interface> {
+        let resources = std::cell::RefCell::new(&mut self.resources);
+        let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
+        self.views.iter().filter_map(|v| v.ui(&picture).ok()).collect()
+    }
 }
 
 /// Browser-facing facts about a source, read without preparing it.
@@ -205,6 +229,9 @@ pub trait Core: Send {
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool;
     /// The control's current value, which scripts may also change.
     fn control_value(&self, part: usize, control: sampler_ui_ir::ControlId) -> Option<f64>;
+    /// Hand `part`'s queued script effects to `each` with their script
+    /// instance, in order, until it returns false; the rest stay queued.
+    fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
 
     fn voices(&self) -> Voices;
     /// `part`'s runtime problems since it was installed.
