@@ -11,7 +11,8 @@ use super::builtins::{self as b, CC_SLOTS, SysArray};
 use super::compile::{self, Callback, Program, Setup, Ty};
 use super::engine::{EnginePar, EventId, Fade, GroupMask, KspEngine, NoteLength, NoteSpec};
 use super::vm::{self, Ctx, Forward, Kind, Machine, POLY_ROWS, SlotState, Stacks, Thread, Yield};
-use super::{HostState, Interface, KeyState, Value};
+use super::{HostState, Interface, KeyState, Persisted, Value};
+pub use crate::sound::view::Refresh;
 use anyhow::{Context as _,Result, bail};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
@@ -85,8 +86,6 @@ const MAX_COMPLETIONS: u32 = 64;
 /// `on init` runs off the audio thread and may do far more work.
 pub const INIT_FUEL: u64 = 1_000_000_000;
 
-/// Saved values of persistent variables, per script slot, keyed by variable name.
-pub type Persisted = BTreeMap<String, Value>;
 
 /// Prepared argument details; collecting a fault never formats or allocates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -3102,16 +3101,6 @@ pub(super) fn refresh_range(
     }
 }
 
-/// Where an incremental refresh stands; start from the default.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Refresh {
-    value_revision: u64,
-    slot: usize,
-    item: usize,
-    at: usize,
-    /// Something differed from the buffer so far.
-    pub changed: bool,
-}
 
 /// Whether `saved`, refreshed by [`Runtime::refresh_persistence`], holds
 /// every string whole. Strings that may have been cut get twice the room for

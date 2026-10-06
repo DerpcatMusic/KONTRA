@@ -1,16 +1,17 @@
-use crate::articulate::{self, Articulate, In, Mpe, Route, Router};
+use crate::articulate::{Articulate, In, Mpe, Route};
 use crate::{artwork, library};
 use crate::{
     engine::{
-        BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Rack, Residency,
+        BUSES, Bank, BusControls, Engine, Heads, MAX_BLOCK, Mix, NO_AUX, PartControls, RACK_SLOTS, Residency,
         Streaming, TUNE_RANGE,
         overrides::{Edits, Override, Probe},
     },
     fx::{DIRECT, FxProcessor, OUTS},
     routing,
     import::{self, Instrument},
-    timing::{self, Align, Holds, Plan, Timing},
+    timing::{self, Holds, Plan, Timing},
     ksp::{Interface, KeyState, Live, LiveFault, Persisted, Refresh, Runtime},
+    sound::{BlockInfo, Core, Macros, Rendered, Transport, v1::{Prepared, V1Core}},
 };
 use crossbeam_queue::ArrayQueue;
 #[cfg(test)]
@@ -1061,6 +1062,10 @@ enum Handoff {
 #[expect(dead_code, reason = "held only to be dropped off the audio thread")]
 #[derive(Default)]
 struct Retired {
+    /// What the core's install replaced.
+    core: Option<crate::sound::v1::Retired>,
+    /// A handoff for a part generation that was already replaced.
+    stale: Option<Prepared>,
     bank: Option<Box<Bank>>,
     fx: Option<FxProcessor>,
     script: Option<Box<Runtime>>,
@@ -1131,7 +1136,7 @@ fn finish_zone_maps(s: &mut Dsp,p: &SamplerParams) {
         s.zone_completion = p.shared.zone_ready.pop();
     }
     let Some((part,generation,epoch,prepared)) = &mut s.zone_completion else { return };
-    let current = s.rack.parts.get(*part).is_some() && *epoch == s.script_epoch[*part]
+    let current = s.core.rack.parts.get(*part).is_some() && *epoch == s.script_epoch[*part]
         && part_atoms(&s.shared_parts,&p.shared,*part).is_some_and(|p|p.generation.load(Ordering::Acquire)==*generation)
         && s.installed_generation[*part] == *generation;
     if !current {
@@ -1143,13 +1148,13 @@ fn finish_zone_maps(s: &mut Dsp,p: &SamplerParams) {
     }
     if !prepared.installed && prepared.completed == 0 {
         if p.shared.discard.is_full() { return; }
-        prepared.success = s.rack.parts[*part].install_zone_map(prepared);
+        prepared.success = s.core.rack.parts[*part].install_zone_map(prepared);
         // Mark a failed attempt too, so it never installs after callbacks began.
         prepared.installed = true;
     }
     for _ in 0..64 {
         let Some(edit) = prepared.edits.get(prepared.completed).copied() else { break };
-        if !s.rack.parts[*part].finish_zone_edit(edit,prepared.success) { break; }
+        if !s.core.rack.parts[*part].finish_zone_edit(edit,prepared.success) { break; }
         prepared.completed += 1;
     }
     if prepared.completed == prepared.edits.len() && !p.shared.discard.is_full() {
@@ -1270,14 +1275,7 @@ fn load_irs(params: &SamplerParams) {
 fn persisted(saved: &str, i: &Instrument) -> Vec<Persisted> {
     serde_json::from_str(saved).unwrap_or_else(|_| i.script_state.clone())
 }
-#[derive(Clone)]
-pub(crate) struct PersistenceSnapshot {
-    script: Vec<Persisted>,
-    /// Worker-prepared slot list: audio updates values in place, including
-    /// edits whose new kernel has not finished building yet.
-    ir: Vec<crate::fx::IrSlotSettings>,
-    native: crate::engine::native_state::NativeSnapshot,
-}
+pub(crate) use crate::sound::v1::PersistenceSnapshot;
 /// Initialize `i`'s scripts off the audio thread, with a snapshot buffer shaped for them.
 fn scripts(
     i: &Instrument,
@@ -1906,7 +1904,7 @@ fn unsupported_host_brightness(events: &EventList, index: usize) -> bool {
 /// Worker-prepared snapshots, at most once per second of audio; no logging here.
 fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, channels: usize, offline: bool, cx: &ProcessContext) {
     if s.until_diagnostics > frames { s.until_diagnostics -= frames; return }
-    s.until_diagnostics = s.rack.parts[0].rate().max(1.0) as usize;
+    s.until_diagnostics = s.core.rack.parts[0].rate().max(1.0) as usize;
     if p.shared.discard.is_full() { return }
     // The callback is the only producer. Make room before taking a free
     // buffer, because the worker may have recycled buffers while this queue
@@ -1923,22 +1921,22 @@ fn capture_audio_diagnostics(s: &mut Dsp, p: &SamplerParams, frames: usize, chan
         })
     };
     let Some(mut spare) = spare else { return };
-    if spare.parts.len() != s.rack.parts.len() {
+    if spare.parts.len() != s.core.rack.parts.len() {
         if p.shared.discard.push(Retired { diagnostic: Some(spare), ..Default::default() }).is_err() {
             unreachable!("diagnostic spare must have retirement space");
         }
         return;
     }
     let audio = &mut s.diagnostic;
-    audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.rack.parts[0].rate();
+    audio.block = p.shared.blocks.load(Ordering::Relaxed); audio.sample_rate = s.core.rack.parts[0].rate();
     audio.block_size = frames; audio.output_channels = channels; audio.offline = offline;
     audio.unsupported_note_brightness = s.unsupported_note_brightness;
     audio.unsupported_host_expression = s.unsupported_host_expression;
-    audio.alignment_overflows=s.align.overflows();
+    audio.alignment_overflows=s.core.align.overflows();
     audio.host_note_end_rejections=s.host_note_end_rejections;
     audio.output_buses = std::array::from_fn(|bus| cx.bus_routing.output(bus).map_or(if bus == 0 { (0, channels.min(2)) } else { (0, 0) }, |r| (r.channel_start(), r.channel_count())));
     for (part, current) in audio.parts.iter_mut().enumerate() {
-        let e = &s.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
+        let e = &s.core.rack.parts[part]; let [pending_commands, pending_writes, pending_releases] = e.pending_work();
         *current = PartDiagnostics { generation:s.installed_generation[part], script_epoch:s.script_epoch[part],
             voices:e.active_voices(), audible:e.audible_voices(), underruns:e.underruns(), dropped_commands:e.dropped_commands(), host_note_drops:e.host_note_drops(),
             held_keys:std::array::from_fn(|channel| std::array::from_fn(|half| (0..64).fold(0, |keys, note|
@@ -2934,7 +2932,7 @@ fn input_offset(event: &LosslessEventRef<'_>) -> u32 {
     match event { LosslessEventRef::Typed(e) => e.sample_offset, LosslessEventRef::Exact(e) => e.sample_offset() }
 }
 
-fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool, rate: f64) {
+fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32, holding: bool) {
     let lit = |note:u8, velocity| { if let Some(lit) = p.shared.heard.get(note as usize) { lit.store(velocity,Ordering::Relaxed); } };
     match ev {
         In::NoteOn(_,note,velocity) | In::HostOn(crate::engine::HostNote { key:note, .. },velocity,_) => lit(note,velocity.max(1)),
@@ -2945,12 +2943,10 @@ fn feed_host_input(s: &mut Dsp, p: &SamplerParams, ev: In, port: u8, offset: u32
         In::Cc(_,1,value) => p.shared.modulation.store(u32::from(value),Ordering::Relaxed),
         _ => {},
     }
-    if holding { s.align.arrive(&mut s.rack,&mut s.routers,port,ev,s.align.clock + u64::from(offset),rate); }
-    else { articulate::dispatch(&mut s.rack,&mut s.routers,port,ev); }
+    s.core.event(port,ev,offset,holding);
     if let In::HostOff(pattern) | In::HostChoke(pattern) = ev {
         for key in (0..128).filter(|key| pattern.key == -1 || pattern.key == *key) {
-            let held = (0..16).any(|channel| s.rack.parts.iter().any(|e| e.host_key_held(channel,key as u8))
-                || holding && s.align.host_key_held(channel,key as u8));
+            let held = (0..16).any(|channel| s.core.key_held(channel,key as u8,holding));
             p.shared.heard[key as usize].store(u8::from(held),Ordering::Relaxed);
         }
     }
@@ -2962,7 +2958,7 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
     }
 }
 
-fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool, rate: f64) {
+fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool) {
     relay_typed_input(e,cx,thru);
     let Some(ev) = In::from_event(&e.body) else { return };
     if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::NoteBrightness(..)) {
@@ -2970,38 +2966,26 @@ fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, c
         else { s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1); }
         return;
     }
-    feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
+    feed_host_input(s,p,ev,e.port,e.sample_offset,holding);
 }
 
+/// Return `note`'s exact identity to the host. False if the host's output list refused it.
+fn end_host_note(cx: &mut ProcessContext, note: crate::engine::HostNote, offset: u32) -> bool {
+    !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
+        kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
+    })).is_ok()
+}
+
+/// Offer ended host notes to the host without ending the block (tests).
+#[cfg(test)]
 fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
-    for e in &mut s.rack.parts { e.mark_host_notes(); }
-    for part in 0..s.rack.parts.len() {
-        let mut index = 0;
-        while let Some((note,pinned)) = s.rack.parts[part].host_note_at(index) {
-            if pinned || s.rack.parts.iter().any(|e| e.host_note_pending(note)) || s.align.host_note_waiting(note) { index += 1; continue; }
-            let accepted = !note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
-                kind:ExactNoteKind::End, address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id), velocity:0.,
-            })).is_ok();
-            if !accepted { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
-            for e in &mut s.rack.parts { e.retire_host_note(note); }
-            s.align.retire_host_note(note);
-        }
-    }
-    // A disabled/remapped-away input can have a held alignment record but
-    // no engine root. Close it after key-up without leaking adapter owners.
-    let mut index=0;
-    while let Some((note,held))=s.align.host_note_at(index) {
-        if held || s.align.host_note_waiting(note) || s.rack.parts.iter().any(|e| e.host_note_present(note)) { index+=1; continue; }
-        let accepted=!note.clap || cx.output_events.try_push_exact(ExactEvent::new(offset,ExactEventBody::Note {
-            kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
-        })).is_ok();
-        if accepted { s.align.retire_host_note(note); } else { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); return; }
-    }
+    let refused = s.core.finish_host_notes(&mut |note| end_host_note(cx, note, offset));
+    s.host_note_end_rejections = s.host_note_end_rejections.saturating_add(refused);
 }
 
 pub struct Dsp {
-    /// Boxed: the rack is ~300 KB, too big for a host thread's stack.
-    rack: Box<Rack>,
+    /// The sound core: engine rack, articulation routers and alignment.
+    core: V1Core,
     until_poll: usize,
     audition_left: Vec<usize>,
     /// Epoch of each slot's installed runtime, returned with its persistence snapshots.
@@ -3016,7 +3000,6 @@ pub struct Dsp {
     /// while the scripts do not run they are current and need no refresh.
     live_seen: Vec<(u64, u64)>,
     snapshot_seen: Vec<(u64, u64)>,
-    routers: Vec<Router>,
     /// The channel each on-screen key started on, so its note-off follows it
     /// even if the part's instrument changed while the key was held.
     key_channels: KeyChannels,
@@ -3025,8 +3008,6 @@ pub struct Dsp {
     key_slots: KeySlots,
     /// Recent load: rises with any block's, falls over some 50 blocks.
     load: f32,
-    /// Notes held back so every part's attacks land on the grid.
-    align: Align,
     until_diagnostics: usize,
     shared_parts: Vec<Arc<PartShared>>,
     diagnostic: AudioDiagnostics,
@@ -3038,12 +3019,12 @@ pub struct Dsp {
 }
 impl Default for Dsp {
     fn default() -> Self {
-        Self { rack: Box::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
+        Self { core: V1Core::default(), until_poll: 0, audition_left: vec![0; RACK_SLOTS],
             script_epoch: vec![0; RACK_SLOTS], installed_generation: vec![0; RACK_SLOTS],
             live: None, snapshot: None, zone_completion: None, live_seen: vec![(0, 0); RACK_SLOTS],
-            snapshot_seen: vec![(0, 0); RACK_SLOTS], routers: (0..RACK_SLOTS).map(|_| Router::default()).collect(),
+            snapshot_seen: vec![(0, 0); RACK_SLOTS],
             key_channels: KeyChannels::default(), key_slots: KeySlots::default(), load: 0.0,
-            align: Align::default(), until_diagnostics: 0, shared_parts: Vec::new(),
+            until_diagnostics: 0, shared_parts: Vec::new(),
             diagnostic: AudioDiagnostics::with_parts(RACK_SLOTS), unsupported_note_brightness: 0, unsupported_host_expression: 0, host_note_end_rejections: 0, _diagnostics: crate::diagnostics::acquire() }
     }
 }
@@ -3052,7 +3033,7 @@ impl Default for Dsp {
 /// Adoption swaps existing voices, routers and held notes into these buffers;
 /// the emptied containers return to that worker for destruction.
 struct PreparedGrowth {
-    rack: Box<Rack>, align: Align, routers: Vec<Router>,
+    core: V1Core,
     audition_left: Vec<usize>, script_epoch: Vec<u64>, installed_generation: Vec<u64>,
     live_seen: Vec<(u64, u64)>, snapshot_seen: Vec<(u64, u64)>,
     key_slots: KeySlots, shared_parts: Vec<Arc<PartShared>>, diagnostic: AudioDiagnostics,
@@ -3060,22 +3041,19 @@ struct PreparedGrowth {
 impl PreparedGrowth {
     fn new(parts: Vec<Arc<PartShared>>, rate: f64) -> Self {
         let count = parts.len();
-        let mut rack = Box::new(Rack::with_slots(count)); rack.reset(rate);
-        Self { rack, align: Align::with_slots(count), routers: (0..count).map(|_| Router::default()).collect(),
+        Self { core: V1Core::with_parts(count, rate),
             audition_left: vec![0; count], script_epoch: vec![0; count], installed_generation: vec![0; count],
             live_seen: vec![(0, 0); count], snapshot_seen: vec![(0, 0); count],
             key_slots: KeySlots(std::array::from_fn(|_| vec![false; count])), shared_parts: parts,
             diagnostic: AudioDiagnostics::with_parts(count) }
     }
     fn adopt(&mut self, dsp: &mut Dsp) {
-        let rate = dsp.rack.parts[0].rate();
-        for engine in &mut self.rack.parts[dsp.rack.parts.len()..] { engine.reset(rate); }
-        dsp.rack.adopt_parts(&mut self.rack); dsp.align.adopt_parts(&mut self.align);
+        dsp.core.adopt(&mut self.core);
         macro_rules! preserve { ($($field:ident),*) => {$({
             for (old, new) in dsp.$field.iter_mut().zip(&mut self.$field) { std::mem::swap(old, new); }
             std::mem::swap(&mut dsp.$field, &mut self.$field);
         })*}; }
-        preserve!(routers, audition_left, script_epoch, installed_generation, live_seen, snapshot_seen);
+        preserve!(audition_left, script_epoch, installed_generation, live_seen, snapshot_seen);
         for (old, new) in dsp.key_slots.0.iter_mut().zip(&mut self.key_slots.0) {
             new[..old.len()].copy_from_slice(old); std::mem::swap(old, new);
         }
@@ -3111,29 +3089,6 @@ const SNAPSHOT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 const LIVE_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
 const LIVE_BUDGET: usize = 512;
 pub struct Sampler;
-
-/// Channel that makes the on-screen keyboard reach the part's first zone.
-fn preview_channel(e: &Engine) -> u8 {
-    e.bank()
-        .and_then(|b| {
-            b.zones()
-                .first()
-                .map(|z| b.groups()[z.group].channel.max(0) as u8)
-        })
-        .unwrap_or(0)
-}
-
-/// Mid-range velocity of the first zone on `note`.
-fn preview_velocity(e: &Engine, note: u8) -> u8 {
-    let zone = e.bank().and_then(|b| {
-        b.zones()
-            .iter()
-            .find(|z| (z.low_key..=z.high_key).contains(&note))
-    });
-    zone.map_or(100, |z| {
-        ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8
-    })
-}
 
 /// One round of every part's smart memory (see `engine/residency.rs`):
 /// take back the heads the audio thread swapped, send the next ones, and
@@ -3441,7 +3396,7 @@ impl PluginLogic for Sampler {
         ]
     }
     fn reset(s: &mut Dsp, p: &SamplerParams, c: &AudioConfig) {
-        s.rack.reset(c.sample_rate);
+        s.core.reset(c.sample_rate);
         p.shared
             .rate
             .store(c.sample_rate.to_bits(), Ordering::Release);
@@ -3449,8 +3404,6 @@ impl PluginLogic for Sampler {
         s.until_diagnostics = 0;
         s.audition_left.fill(0);
         for row in &mut s.key_slots.0 { row.fill(false); }
-        s.align.clear();
-        for router in &mut s.routers { router.reset_midi(); }
         // The voices are gone, and the host's releases for them may be too.
         p.shared.reset_midi();
         // So are the sound editor's voice dots.
@@ -3467,26 +3420,23 @@ impl PluginLogic for Sampler {
     ) -> ProcessStatus {
         let started = Instant::now();
         if !p.shared.discard.is_full() && let Some(mut growth) = p.shared.growth.pop() {
-            if growth.rack.parts.len() > s.rack.parts.len() { growth.adopt(s); }
-            p.shared.grown.store(s.rack.parts.len() as u64, Ordering::Release);
+            if growth.core.parts() > s.core.parts() { growth.adopt(s); }
+            p.shared.grown.store(s.core.parts() as u64, Ordering::Release);
             p.shared.discard.push(Retired { growth: Some(growth), ..Default::default() }).ok().unwrap();
             // Separate queues have no cross-queue ordering: only this
             // acknowledgment permits the loader to publish new-slot work.
             if let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
         }
-        let rate = s.rack.parts[0].rate();
+        let rate = s.core.sample_rate();
         let frames = b.num_samples();
         // Offline, a render waits for the disk and keeps every tail; live,
         // tails go before the deadline does.
         let offline = cx.process_mode.is_offline();
-        for engine in &mut s.rack.parts {
-            engine.blocking_streams = offline;
-        }
         if s.until_poll <= frames {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
             }
-            for (slot, engine) in s.rack.parts.iter().enumerate() {
+            for (slot, engine) in s.core.rack.parts.iter().enumerate() {
                 let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
                 for (m, out) in atoms.mics.iter().zip(outs_of(engine)) {
                     m.store(out, Ordering::Relaxed);
@@ -3497,17 +3447,17 @@ impl PluginLogic for Sampler {
             s.until_poll -= frames;
         }
         if !p.shared.discard.is_full() && let Some(controls) = p.shared.controls.pop() {
-            s.rack.set_controls(&controls);
+            s.core.set_mix(&controls);
             p.shared.discard.push(Retired { controls: Some(controls), ..Default::default() }).ok().unwrap();
         }
         if !p.shared.discard.is_full() && let Some(plan) = p.shared.plan.pop() {
-            let old = std::mem::replace(&mut s.align.plan, plan);
+            let old = std::mem::replace(&mut s.core.align.plan, plan);
             p.shared.discard.push(Retired { plan: Some(old), ..Default::default() }).ok().unwrap();
         }
         // Held back only while aligning; once not, what was held plays at once.
-        let holding = s.align.holding(cx.transport.playing);
+        let holding = s.core.holding(cx.transport.playing);
         if !p.shared.discard.is_full() && let Some(routes) = p.shared.routes.pop() {
-            for (r, route) in s.routers.iter_mut().zip(routes.iter().copied()) { r.set_route(route); }
+            for (r, route) in s.core.routers.iter_mut().zip(routes.iter().copied()) { r.set_route(route); }
             p.shared.discard.push(Retired { routes: Some(routes), ..Default::default() }).ok().unwrap();
         }
         // Retired banks, effects and scripts go back to the loader thread to be
@@ -3516,87 +3466,38 @@ impl PluginLogic for Sampler {
             let Some((slot, generation, handoff)) = p.shared.ready.pop() else {
                 break;
             };
-            let engine = &mut s.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire);
-            let retired = match handoff {
-                Handoff::Part {
-                    bank,
-                    fx,
-                    script,
-                    epoch,
-                } if current => {
-                    engine.reset(rate);
+            let (epoch, prepared) = match handoff {
+                Handoff::Part { bank, fx, script, epoch } => (Some(epoch), Prepared::Part { bank, fx, script }),
+                Handoff::Script { script, bank, epoch } => (Some(epoch), Prepared::Script { script, bank }),
+                Handoff::Fx(fx) => (None, Prepared::Fx(fx)),
+                Handoff::Bank(bank) => (None, Prepared::Bank(bank)),
+                Handoff::Heads(heads) => (None, Prepared::Heads(heads)),
+            };
+            let retired = if current {
+                if let Some(epoch) = epoch {
                     s.script_epoch[slot] = epoch;
+                }
+                if matches!(prepared, Prepared::Part { .. }) {
                     s.installed_generation[slot] = generation;
-                    Retired {
-                        script: engine.set_script(script),
-                        bank: engine.set_bank(bank),
-                        fx: Some(engine.set_fx(fx)),
-                        heads: None,
-                        ir: None,
-                        ..Retired::default()
-                    }
                 }
-                Handoff::Fx(fx) if current => Retired {
-                    fx: Some(engine.set_fx(fx)),
-                    ..Retired::default()
-                },
-                Handoff::Bank(bank) if current => {
-                    if engine.zone_upgrade_ready(&bank) {
-                        Retired { bank:engine.upgrade_bank(bank),..Retired::default() }
-                    } else {
-                        Retired { zone_preload:Some((slot,generation,s.script_epoch[slot],bank)),..Retired::default() }
-                    }
-                },
-                Handoff::Script { script, bank, epoch } if current => {
-                    engine.reset(rate);
-                    s.script_epoch[slot] = epoch;
-                    let mut retired=Retired {script:engine.set_script(script),..Retired::default()};
-                    if let Some(bank)=bank {retired.bank=engine.set_bank(Some(bank));}
-                    retired
+                let swapped_heads = matches!(prepared, Prepared::Heads(_));
+                let mut part = s.core.install(slot, prepared);
+                // Resized heads go back to the smart memory, or are freed if it is full.
+                if swapped_heads && let Some(heads) = part.heads.take()
+                    && let Err((.., heads)) = p.shared.heads.push((slot, generation, heads)) {
+                    part.heads = Some(heads);
                 }
-                Handoff::Heads(mut heads) if current => {
-                    engine.swap_heads(&mut heads);
-                    match p.shared.heads.push((slot, generation, heads)) {
-                        Ok(()) => Retired::default(),
-                        Err((.., heads)) => Retired {
-                            heads: Some(heads),
-                            ..Retired::default()
-                        },
-                    }
-                }
-                Handoff::Part {
-                    bank, fx, script, ..
-                } => Retired {
-                    bank,
-                    fx: Some(fx),
-                    script,
-                    heads: None,
-                    ir: None,
-                    ..Retired::default()
-                },
-                Handoff::Heads(heads) => Retired {
-                    heads: Some(heads),
-                    ..Retired::default()
-                },
-                Handoff::Fx(fx) => Retired {
-                    fx: Some(fx),
-                    ..Retired::default()
-                },
-                Handoff::Bank(bank) => Retired {
-                    bank: Some(bank),
-                    ..Retired::default()
-                },
-                Handoff::Script { script, bank, .. } => Retired {
-                    script,bank,
-                    ..Retired::default()
-                },
+                let zone_preload = part.deferred.take().map(|bank| (slot, generation, s.script_epoch[slot], bank));
+                Retired { core: Some(part), zone_preload, ..Retired::default() }
+            } else {
+                Retired { stale: Some(prepared), ..Retired::default() }
             };
             let _ = p.shared.discard.push(retired);
         }
         while !p.shared.discard.is_full() {
             let Some((slot, generation, IrHandoff { ir, epoch, rate: ir_rate, request })) = p.shared.ir_ready.pop() else { break };
-            let engine = &mut s.rack.parts[slot];
+            let engine = &mut s.core.rack.parts[slot];
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire) && epoch == s.script_epoch[slot];
             let settings_current = engine.fx().ir_settings(request.rack, request.slot).is_none_or(|s| s == request.settings);
             let ir = if !current { ir } else if ir_rate == engine.rate() && settings_current {
@@ -3615,48 +3516,38 @@ impl PluginLogic for Sampler {
             let current = generation == part_atoms(&s.shared_parts, &p.shared, slot).unwrap().generation.load(Ordering::Acquire)
                 && epoch == s.script_epoch[slot];
             let request = if current {
-                match s.rack.parts[slot].finish_array_job(request) {
+                match s.core.rack.parts[slot].finish_array_job(request) {
                     Ok(()) => continue,
                     Err(request) => request,
                 }
             } else { request };
             p.shared.array_retired.push((slot, generation, epoch, request)).ok().unwrap();
         }
-        let scripted = s.rack.parts.iter().filter(|e| e.script().is_some()).count();
-        for engine in &mut s.rack.parts {
-            engine.begin_audio_block(frames, scripted, offline);
-        }
-        s.rack.set_transport(cx.transport.playing, cx.transport.tempo, cx.transport.position_beats,
-            (cx.transport.time_sig_num, cx.transport.time_sig_den));
-        if !holding && s.align.next_due().is_some() {
-            s.align.flush(&mut s.rack, &mut s.routers);
-        }
+        s.core.begin_block(&BlockInfo { frames, offline, holding, transport: Transport {
+            playing: cx.transport.playing, tempo: cx.transport.tempo, beats: cx.transport.position_beats,
+            signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
+        } });
         while let Some((slot, o)) = p.shared.overrides.pop() {
-            if let Some(engine) = s.rack.parts.get_mut(slot) {
+            if let Some(engine) = s.core.rack.parts.get_mut(slot) {
                 engine.set_override(o);
             }
         }
         while let Some(e) = p.shared.file_selections.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch)
-                && let Some(engine) = s.rack.parts.get_mut(e.part)
                 && let Ok(path) = std::str::from_utf8(&e.path[..e.len])
             {
-                engine.ui_file_selection(e.slot, e.control, path);
+                s.core.ui_file_selection(e.part, e.slot, e.control, path);
             }
         }
         while let Some(e) = p.shared.edits.pop() {
             if e.epoch != 0 && s.script_epoch.get(e.part) == Some(&e.epoch) {
-                s.rack.parts[e.part].ui_control(e.slot, e.control, e.value);
-                s.routers[e.part].forget();
-                let picked = s.routers[e.part].articulation_of_control(e.slot, e.control);
-                s.align.picked(e.part, picked);
+                s.core.ui_control(e.part, e.slot, e.control, e.value);
             }
         }
         // Refresh lent live views and persistence snapshots in place, one at
         // a time and a budget a block; the loader shows and saves them.
         let version = |s: &Dsp, slot: usize| {
-            let changes = s.rack.parts[slot].script().map_or(0, Runtime::changes);
-            (s.script_epoch[slot], changes)
+            (s.script_epoch[slot], s.core.script_revision(slot))
         };
         if s.live.is_none() && !p.shared.lives.is_full() {
             s.live = (p.shared.live_requests.pop())
@@ -3664,11 +3555,7 @@ impl PluginLogic for Sampler {
         }
         if let Some((slot, seen, live, at)) = &mut s.live {
             let done = seen.0 != s.script_epoch[*slot]
-                || (s.rack.parts[*slot].script()).is_none_or(|rt| {
-                    rt.refresh_diagnostics(live);
-                    (*seen == s.live_seen[*slot] && live.refresh_interface && live.interface_current)
-                        || rt.refresh_live_within(live, at, LIVE_BUDGET)
-                });
+                || s.core.refresh_live(*slot, live, at, LIVE_BUDGET, *seen == s.live_seen[*slot]);
             if done && let Some((slot, seen, live, refresh)) = s.live.take() {
                 s.live_seen[slot] = seen;
                 let _ = p.shared.lives.push((slot, seen.0, live));
@@ -3679,38 +3566,28 @@ impl PluginLogic for Sampler {
                 }
             }
         }
-        for (e, r) in s.rack.parts.iter_mut().zip(&s.routers) {
-            e.attack = p.attack.value();
-            e.release = p.release.value();
-            e.cutoff = p.cutoff.value() * r.cutoff_scale();
-        }
+        s.core.set_macros(Macros { attack: p.attack.value(), release: p.release.value(), cutoff: p.cutoff.value() });
         if p.shared.panic.swap(false, Ordering::AcqRel) {
             p.shared.reset_midi();
             for row in &mut s.key_slots.0 { row.fill(false); }
-            s.align.clear();
-            for router in &mut s.routers { router.reset_midi(); }
-            s.rack.panic();
+            s.core.panic();
             s.audition_left.fill(0);
         }
         while let Some((slot, play)) = p.shared.keyboard.pop() {
             if slot == EVERY_PART {
                 // As host MIDI on port A, channel 1 plays it.
-                let (rack, routers) = (&mut s.rack, &mut s.routers);
                 match play {
-                    Play::Note(note, 0) => {
-                        let targets = &mut s.key_slots.0[note as usize & 127];
-                        articulate::dispatch_to(rack, routers, targets.iter_mut().enumerate().filter_map(|(slot, reached)| std::mem::take(reached).then_some(slot)), In::NoteOff(0, note));
-                    }
+                    Play::Note(note, 0) => s.core.event_to(&mut s.key_slots.0[note as usize & 127], In::NoteOff(0, note)),
                     Play::Note(note, velocity) => {
-                        articulate::dispatch_record(rack, routers, 0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
+                        s.core.event_recorded(0, In::NoteOn(0, note, velocity), &mut s.key_slots.0[note as usize & 127]);
                     }
-                    Play::Bend(value) => drop(articulate::dispatch(rack, routers, 0, In::Bend(0, value))),
-                    Play::Mod(value) => drop(articulate::dispatch(rack, routers, 0, In::Cc(0, 1, value))),
+                    Play::Bend(value) => s.core.event(0, In::Bend(0, value), 0, false),
+                    Play::Mod(value) => s.core.event(0, In::Cc(0, 1, value), 0, false),
                 }
                 continue;
             }
-            let Some(engine) = s.rack.parts.get(slot) else { continue };
-            let channel = preview_channel(engine);
+            if slot >= s.core.parts() { continue }
+            let channel = s.core.preview_channel(slot);
             let ev = match play {
                 Play::Note(note, 0) => In::NoteOff(s.key_channels.0[note as usize & 127], note),
                 Play::Note(note, velocity) => {
@@ -3720,26 +3597,14 @@ impl PluginLogic for Sampler {
                 Play::Bend(value) => In::Bend(channel, value),
                 Play::Mod(value) => In::Cc(channel, 1, value),
             };
-            articulate::play(&mut s.rack, &mut s.routers, slot, ev);
+            s.core.play(slot, ev);
         }
         // With no part selected there is none to audition.
         let selected = p.shared.selected.load(Ordering::Relaxed) as usize;
-        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.rack.parts.len() {
+        if p.shared.audition.swap(false, Ordering::AcqRel) && selected < s.core.parts() {
             let slot = selected;
-            let e = &mut s.rack.parts[slot];
-            for channel in 0..16 {
-                e.cc(channel, 120, 0);
-            }
             let requested = p.shared.audition_note.swap(128, Ordering::Relaxed);
-            let note = if requested < 128 {
-                requested as u8
-            } else {
-                e.bank()
-                    .and_then(|b| b.zones().first())
-                    .map_or(60, |z| z.root)
-            };
-            let (channel, velocity) = (preview_channel(e), preview_velocity(e, note));
-            e.note_on(channel, note, velocity);
+            s.core.audition(slot, (requested < 128).then_some(requested as u8));
             s.audition_left[slot] = (rate * 1.5) as usize;
         }
 
@@ -3755,17 +3620,16 @@ impl PluginLogic for Sampler {
             // not replace the host tuple or fan an old ID into a new key row.
             while incoming.peek().is_some_and(|e| at >= frames || input_offset(e) as usize <= at) {
                 match incoming.next().unwrap() {
-                    LosslessEventRef::Typed(e) => feed_typed_input(s,p,e,events.overflow().is_some(),cx,thru,holding,rate),
+                    LosslessEventRef::Typed(e) => feed_typed_input(s,p,e,events.overflow().is_some(),cx,thru,holding),
                     LosslessEventRef::Exact(exact) => match exact_host_input(exact) {
                         Some(ExactInput::Routed(ev,port)) => {
                             if let Some(e) = exact.fallback() { relay_typed_input(e,cx,thru); }
                             for e in exact.companions() { relay_typed_input(e,cx,thru); }
-                            feed_host_input(s,p,ev,port,exact.sample_offset(),holding,rate);
+                            feed_host_input(s,p,ev,port,exact.sample_offset(),holding);
                             // A switch or unmatched route creates no sounding
                             // owner. Return that exact identity immediately.
                             if let In::HostOn(note, ..) = ev
-                                && note.clap && !s.align.host_note_waiting(note)
-                                && !s.rack.parts.iter().any(|e| e.host_note_present(note)) {
+                                && note.clap && !s.core.owns(note) {
                                 if cx.output_events.try_push_exact(ExactEvent::new(exact.sample_offset(),ExactEventBody::Note {
                                     kind:ExactNoteKind::End,address:ExactNoteAddress::from_raw_signed(i16::from(note.port),i16::from(note.channel),i16::from(note.key),note.id),velocity:0.,
                                 })).is_err() { s.host_note_end_rejections=s.host_note_end_rejections.saturating_add(1); }
@@ -3774,8 +3638,8 @@ impl PluginLogic for Sampler {
                         Some(ExactInput::Brightness) => s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1),
                         Some(ExactInput::Unsupported) => s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1),
                         None => {
-                            if let Some(e) = exact.fallback() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
-                            for e in exact.companions() { feed_typed_input(s,p,e,false,cx,thru,holding,rate); }
+                            if let Some(e) = exact.fallback() { feed_typed_input(s,p,e,false,cx,thru,holding); }
+                            for e in exact.companions() { feed_typed_input(s,p,e,false,cx,thru,holding); }
                         }
                     },
                 }
@@ -3783,31 +3647,25 @@ impl PluginLogic for Sampler {
             if at >= frames {
                 break;
             }
-            let now = s.align.clock + at as u64;
             let mut due = incoming.peek().map_or(frames,|e| (input_offset(e) as usize).min(frames));
             if holding {
-                s.align.release(now, &mut s.rack, &mut s.routers);
-                if let Some(held) = s.align.next_due() {
-                    due = due.min(at + (held - now).min(frames as u64) as usize);
-                }
+                due = s.core.release_due(at, due);
             }
             let len = (due - at).min(MAX_BLOCK);
-            for (e, left) in s.rack.parts.iter_mut().zip(&mut s.audition_left) {
+            for (part, left) in s.audition_left.iter_mut().enumerate().take(s.core.parts()) {
                 if *left > 0 {
                     *left = left.saturating_sub(len);
                     if *left == 0 {
-                        for channel in 0..16 {
-                            e.cc(channel, 123, 0);
-                        }
+                        s.core.audition_stop(part);
                     }
                 }
             }
             for gain in &mut gains[..len] {
                 *gain = db_to_linear(p.volume.read());
             }
-            let ports = s.rack.bus_controls.map(|c| usize::from(c.port));
-            s.rack.tap = scope.checked_sub(1).filter(|&slot| slot < s.rack.parts.len());
-            let (buses, live) = s.rack.render_live(len);
+            let ports = s.core.bus_ports().map(usize::from);
+            s.core.set_tap(scope.checked_sub(1));
+            let Rendered { buses, live } = s.core.render(len);
             if scope == SCOPE_MASTER {
                 let mut mono = [0f32; MAX_BLOCK];
                 for (_, x) in buses.iter().enumerate().filter(|(bus, _)| live[*bus]) {
@@ -3844,12 +3702,14 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
-            if s.rack.tap.is_some() {
-                p.shared.scope.push(&s.rack.tapped[..len]);
+            if let Some(tapped) = s.core.tapped(len) {
+                p.shared.scope.push(tapped);
             }
             at += len;
         }
-        finish_host_notes(s,cx,frames.saturating_sub(1) as u32);
+        let offset = frames.saturating_sub(1) as u32;
+        let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
+        s.host_note_end_rejections = s.host_note_end_rejections.saturating_add(refused);
         if s.snapshot.is_none() && !p.shared.snapshots.is_full() {
             s.snapshot = (p.shared.snapshot_requests.pop())
                 .map(|(slot, epoch, saved)| (slot, (epoch, version(s, slot).1), saved, Refresh::default()));
@@ -3857,17 +3717,12 @@ impl PluginLogic for Sampler {
         if let Some((slot, seen, saved, at)) = &mut s.snapshot {
             let done = seen.0 != s.script_epoch[*slot]
                 || *seen == s.snapshot_seen[*slot]
-                || (s.rack.parts[*slot].script())
-                    .is_none_or(|rt| rt.refresh_persistence_within(&mut saved.script, at, REFRESH_BUDGET)
-                        && rt.native_state.refresh(&mut saved.native, 256));
+                || s.core.refresh_state(*slot, saved, at, REFRESH_BUDGET);
             if done && let Some((slot, seen, saved, at)) = s.snapshot.take() {
                 let mut saved = saved;
                 let mut changed = at.changed || saved.native.changed;
-                for value in saved.ir.iter_mut().filter(|_| seen.0 == s.script_epoch[slot]) {
-                    if let Some(settings) = s.rack.parts[slot].fx().ir_settings(value.rack, value.slot) {
-                        changed |= value.settings != settings;
-                        value.settings = settings;
-                    }
+                if seen.0 == s.script_epoch[slot] {
+                    changed |= s.core.fold_ir_settings(slot, &mut saved);
                 }
                 s.snapshot_seen[slot] = seen;
                 let _ = p.shared.snapshots.push((slot, seen.0, saved, changed));
@@ -3875,7 +3730,7 @@ impl PluginLogic for Sampler {
         }
         // Parameter writes have rendered: capture the block's latest settings.
         let mut arrays_queued = false;
-        for (part, engine) in s.rack.parts.iter_mut().enumerate() {
+        for (part, engine) in s.core.rack.parts.iter_mut().enumerate() {
             let generation = part_atoms(&s.shared_parts, &p.shared, part).unwrap().generation.load(Ordering::Acquire);
             while !p.shared.array_requests.is_full() {
                 let Some(request) = engine.pop_array_job() else { break };
@@ -3900,12 +3755,11 @@ impl PluginLogic for Sampler {
         }
         if arrays_queued && let Some(tasks) = cx.tasks::<Load>() { tasks.spawn_coalescing(Load); }
         p.shared.blocks.fetch_add(1, Ordering::Relaxed);
-        s.align.clock += frames as u64;
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
             let fall = 0.1f32.powf(frames as f32 / rate as f32);
             let m = &p.shared.meters;
-            let peaks = &mut s.rack.peaks;
+            let peaks = s.core.peaks_mut();
             for (slot, peak) in peaks.parts.iter().copied().enumerate() {
                 let atoms = part_atoms(&s.shared_parts, &p.shared, slot).unwrap();
                 Meters::publish(&atoms.meter, peak, fall, &atoms.clip);
@@ -3917,20 +3771,16 @@ impl PluginLogic for Sampler {
             peaks.parts.fill([0.0; 2]); peaks.buses.fill([0.0; 2]);
         }
         let watch = p.shared.probe.watch.load(Ordering::Relaxed);
-        if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < s.rack.parts.len()) {
-            let published = if s.rack.parts[slot].publish(group, &p.shared.probe) { watch } else { 0 };
+        if let Some((slot, group)) = Probe::watched(watch).filter(|(slot, _)| *slot < s.core.rack.parts.len()) {
+            let published = if s.core.rack.parts[slot].publish(group, &p.shared.probe) { watch } else { 0 };
             p.shared.probe.published.store(published, Ordering::Relaxed);
         }
-        let voices: usize = s.rack.parts.iter().map(Engine::active_voices).sum();
-        p.shared.voices.store(voices as u64, Ordering::Relaxed);
-        let audible: usize = s.rack.parts.iter().map(Engine::audible_voices).sum();
-        p.shared.audible.store(audible as u64, Ordering::Relaxed);
-        let dropouts: u64 = (s.rack.parts.iter())
-            .map(|e| e.underruns() + e.dropped_commands())
-            .sum();
-        p.shared.dropouts.store(dropouts, Ordering::Relaxed);
-        for (slot, e) in s.rack.parts.iter().enumerate() {
-            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(e.underruns(), Ordering::Relaxed);
+        let voices = s.core.voices();
+        p.shared.voices.store(voices.active as u64, Ordering::Relaxed);
+        p.shared.audible.store(voices.audible as u64, Ordering::Relaxed);
+        p.shared.dropouts.store(voices.dropouts, Ordering::Relaxed);
+        for slot in 0..s.core.parts() {
+            part_atoms(&s.shared_parts, &p.shared, slot).unwrap().underruns.store(s.core.underruns(slot), Ordering::Relaxed);
         }
         if frames > 0 && rate > 0. {
             // Positive `f32` bits order like the values: the UI swaps out the peak since it last looked.
@@ -3942,9 +3792,7 @@ impl PluginLogic for Sampler {
                 .cpu
                 .fetch_max(u64::from(load.to_bits()), Ordering::Relaxed);
             s.load = load.max(s.load * 0.98 + load * 0.02);
-            for e in &mut s.rack.parts {
-                e.load = s.load;
-            }
+            s.core.set_load(s.load);
         }
         capture_audio_diagnostics(s, p, frames, channels, offline, cx);
         ProcessStatus::Normal
@@ -3954,7 +3802,7 @@ impl PluginLogic for Sampler {
     }
     /// Auto-align's latency: the latest part's attack (see `timing.rs`).
     fn latency(s: &Dsp) -> u32 {
-        s.align.plan.latency(s.rack.parts[0].rate())
+        s.core.latency()
     }
 }
 /// What the UI shows of initialized scripts: the performance view (the last slot with one),
@@ -4144,7 +3992,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
     }
     let mut dsp = Dsp::default();
     Sampler::reset(&mut dsp, &params, &AudioConfig::new(48000., frames));
-    dsp.rack.parts[0] = engine;
+    dsp.core.rack.parts[0] = engine;
     dsp.script_epoch[0] = 1;
     params.shared.watched.store(true, Ordering::Relaxed);
     Load.run(&params);
@@ -4252,7 +4100,7 @@ pub(crate) fn bench_ui_worker(engine: Engine, instrument: Arc<Instrument>, progr
         "live_completion_gap_ms":summary(gaps),"view_mutex_acquire_ms":summary(waits),"shared_edit_ms":summary(edit_times),
         "load_runs":load_times.len(),"load_wall_ms":summary(load_times),"audio_process_ms":summary(process_times),
         "editor_frames":observer_gaps.len(),"editor_frame_gap_ms":summary(observer_gaps),"editor_requested_hz":if observer.is_some() {60} else {0},
-        "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.rack.parts[0])))
+        "latest_edits_published":publication_latencies.len(),"latest_edit_to_publication_observer_ms":summary(publication_latencies)}), std::mem::take(&mut dsp.core.rack.parts[0])))
 }
 
 /// Opt-in actual host pacing: audio and the editor run independently, while
@@ -4310,9 +4158,9 @@ fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &
                 let elapsed = at.elapsed().as_secs_f64()*1000.;
                 missed += usize::from(elapsed > frames as f64/48.);
                 process_times.push(elapsed);
-                peak_voices = peak_voices.max(dsp.rack.parts[0].active_voices());
+                peak_voices = peak_voices.max(dsp.core.rack.parts[0].active_voices());
                 if start.elapsed() >= warmup && start.elapsed() < warmup + Duration::from_secs_f64(edits as f64/60.) {
-                    edit_peak_voices = edit_peak_voices.max(dsp.rack.parts[0].active_voices());
+                    edit_peak_voices = edit_peak_voices.max(dsp.core.rack.parts[0].active_voices());
                 }
                 let mut audible = false;
                 for sample in data.iter().flatten() {
@@ -4331,7 +4179,7 @@ fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &
             let report = serde_json::json!({"blocks":block,"deadline_ms":frames as f64/48.,"process_deadline_misses":missed,
                 "late_starts_over_one_block":late_starts,"peak_voices":peak_voices,"peak_voices_during_edits":edit_peak_voices,
                 "audible_blocks":audible_blocks,"nonfinite_samples":nonfinite_samples,"output_peak":peak,
-                "underruns":dsp.rack.parts[0].underruns(),"dropped_commands":dsp.rack.parts[0].dropped_commands()});
+                "underruns":dsp.core.rack.parts[0].underruns(),"dropped_commands":dsp.core.rack.parts[0].dropped_commands()});
             (dsp, process_times, gaps, report)
         });
         let _stop_on_exit = Stop(&stop);
@@ -4378,8 +4226,8 @@ fn bench_ui_concurrent_audio(mut dsp: Dsp, params: &Arc<SamplerParams>, tasks: &
             anyhow::ensure!(audio_report["peak_voices_during_edits"].as_u64().unwrap_or(0)>0 && audio_report["output_peak"].as_f64().unwrap_or(0.)>0.,
                 "held-chord benchmark must play actual nonzero sample output: {audio_report}");
         }
-        dsp.rack.parts[0].panic();
-        Ok((report, std::mem::take(&mut dsp.rack.parts[0])))
+        dsp.core.rack.parts[0].panic();
+        Ok((report, std::mem::take(&mut dsp.core.rack.parts[0])))
     })
 }
 
@@ -4594,11 +4442,11 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
         process(&mut dsp, &none);
         Load.run(&p);
     }
-    let loaded = (dsp.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
+    let loaded = (dsp.core.rack.parts.iter().take(paths.len())).filter(|e| e.bank().is_some()).count();
     anyhow::ensure!(loaded == paths.len(), "only {loaded} of {} parts loaded", paths.len());
     let part_keys: Vec<Vec<u8>> = (0..paths.len())
         .map(|i| {
-            let b = dsp.rack.parts[i].bank().unwrap();
+            let b = dsp.core.rack.parts[i].bank().unwrap();
             let low = b.zones().iter().map(|z| z.low_key).min().unwrap_or(48);
             let high = b.zones().iter().map(|z| z.high_key).max().unwrap_or(72);
             // Keyswitches sit low: play the upper part of the range.
@@ -4707,10 +4555,10 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
             counts.push(millions);
             let now = p.shared.voices.load(Ordering::Relaxed);
             (voices, voice_blocks) = (voices.max(now), voice_blocks + now as usize);
-            audible_blocks += dsp.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
+            audible_blocks += dsp.core.rack.parts.iter().map(|e| e.audible_voices()).sum::<usize>();
             cpu = cpu.max(f32::from_bits(p.shared.cpu.swap(0, Ordering::Relaxed) as u32));
             if playing && b % (blocks / 4).max(1) == blocks / 8 {
-                census(&dsp.rack.parts[0].voice_census());
+                census(&dsp.core.rack.parts[0].voice_census());
             }
             pace.until(block * (b + 1) as u32);
         }
@@ -4832,7 +4680,7 @@ pub fn bench_host(paths: &[String], seconds: f64, notes: usize) -> anyhow::Resul
     }
     stop.store(true, Ordering::Relaxed);
     let _ = loader.join();
-    for (part, engine) in dsp.rack.parts.iter().enumerate() {
+    for (part, engine) in dsp.core.rack.parts.iter().enumerate() {
         if let Some(rt) = engine.script() {
             for diagnostic in rt.diagnostics() {
                 eprintln!("part {} script: {diagnostic}", part + 1);
@@ -5087,12 +4935,12 @@ pub(crate) mod tests {
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }), 0,
                 "installing the prepared snapshot allocated or freed on audio");
             assert!(dsp.script_epoch[0] > epoch); epoch = dsp.script_epoch[0];
-            assert!(dsp.rack.parts[0].bank().is_some());
+            assert!(dsp.core.rack.parts[0].bank().is_some());
             let instrument = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
             assert_eq!(instrument.name, snapshot.file_stem().unwrap().to_string_lossy());
             let (expected, _, errors) = scripts(&instrument, "", &[], &[], 48000.);
             assert!(errors.is_empty(), "{errors:?}");
-            assert!(dsp.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
+            assert!(dsp.core.rack.parts[0].script().unwrap().persistence() == expected.unwrap().persistence(), "snapshot persistence is the worker-installed state");
             assert_eq!(allocations(|| {
                 for _ in 0..32 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
             }), 0, "loaded snapshot processing allocated or freed on audio");
@@ -5111,7 +4959,7 @@ pub(crate) mod tests {
                 for _ in 0..16 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
             }), 0);
             Load.run(&p);
-            let expected = serde_json::to_string(&dsp.rack.parts[0].script().unwrap().persistence()).unwrap();
+            let expected = serde_json::to_string(&dsp.core.rack.parts[0].script().unwrap().persistence()).unwrap();
             if p.selection.read().unwrap().parts[0].script_state == expected {
                 settled = true;
                 break;
@@ -5119,7 +4967,7 @@ pub(crate) mod tests {
         }
         assert!(settled, "active snapshot persistence did not settle within 512 blocks");
         let before = p.selection.read().unwrap().parts[0].clone();
-        let bank = dsp.rack.parts[0].bank().unwrap() as *const Bank;
+        let bank = dsp.core.rack.parts[0].bank().unwrap() as *const Bank;
         let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
         let epoch = dsp.script_epoch[0];
         assert!(p.shared.queue_snapshot(0, &before, foreign));
@@ -5132,7 +4980,7 @@ pub(crate) mod tests {
         assert!(after == before, "foreign snapshot changed fields {changed:?}; script bytes {} -> {}, IR slots {} -> {}; source retained {}; generation {} -> {}, epoch {} -> {}, bank retained {}",
             before.script_state.len(), after.script_state.len(), before.ir_settings.len(), after.ir_settings.len(),
             before.source() == after.source(), generation, p.shared.part(0).unwrap().generation.load(Ordering::Acquire), epoch, dsp.script_epoch[0],
-            dsp.rack.parts[0].bank().unwrap() as *const Bank == bank);
+            dsp.core.rack.parts[0].bank().unwrap() as *const Bank == bank);
         assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot requires base instrument"));
         let report = p.shared.view.lock().unwrap().parts[0].load_report.clone().unwrap();
         assert_eq!(report["details"]["operation"], "snapshot_validation");
@@ -5142,7 +4990,7 @@ pub(crate) mod tests {
             event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
                 && event.details["status"] == "failed"));
         Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx);
-        assert_eq!(dsp.rack.parts[0].bank().unwrap() as *const Bank, bank);
+        assert_eq!(dsp.core.rack.parts[0].bank().unwrap() as *const Bank, bank);
         assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation);
         assert_eq!(dsp.script_epoch[0], epoch);
         println!("foreign snapshot rejected without replacing active state, bank, generation or script epoch");
@@ -5327,7 +5175,7 @@ end on"#;
         let mut dsp = Dsp::default();
         dsp.script_epoch[0] = 1;
         dsp.until_poll = usize::MAX;
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.core.rack.parts[0].set_script(Some(Box::new(rt)));
         p.shared.publish_live(true);
         let bank_gate = Arc::new(Barrier::new(2));
         *p.shared.load_gate.lock().unwrap() = Some((1, bank_gate.clone()));
@@ -5408,8 +5256,8 @@ end on"#;
 
         // Replace the runtime after a view is prepared but before it commits.
         let (slot, _, mut live) = p.shared.live_requests.pop().unwrap();
-        dsp.rack.parts[0].ui_control(0, 0, 13);
-        dsp.rack.parts[0].script().unwrap().refresh_live(&mut live);
+        dsp.core.rack.parts[0].ui_control(0, 0, 13);
+        dsp.core.rack.parts[0].script().unwrap().refresh_live(&mut live);
         p.shared.lives.push((slot, 1, live)).ok().unwrap();
         let publication_gate = Arc::new(Barrier::new(2));
         *p.shared.publish_gate.lock().unwrap() = Some(publication_gate.clone());
@@ -5418,7 +5266,7 @@ end on"#;
             std::thread::spawn(move || p.shared.publish_live(true))
         };
         publication_gate.wait();
-        let replacement = Box::new(dsp.rack.parts[0].script().unwrap().live());
+        let replacement = Box::new(dsp.core.rack.parts[0].script().unwrap().live());
         next_epoch(&mut p.shared.view.lock().unwrap(), 0, None, Some(replacement));
         publication_gate.wait();
         publisher.join().unwrap();
@@ -5482,9 +5330,9 @@ end on"#,dir.display());
             vec![crate::import::Zone::default()], vec![(std::path::PathBuf::new(), crate::audio::Sample {
                 rate:48000, frames:vec![[0.25;2];48000],
             })]).unwrap();
-        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
-        dsp.rack.parts[0].set_script(Some(rt));
-        dsp.rack.parts[0].note_on(0,60,100);
+        dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.core.rack.parts[0].set_script(Some(rt));
+        dsp.core.rack.parts[0].note_on(0,60,100);
         let mut outputs = vec![vec![0.;64];2];
         let mut refs:Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[],&mut refs,64);
@@ -5497,13 +5345,13 @@ end on"#,dir.display());
             let path = dir.join(name).to_string_lossy().into_owned();
             assert!(p.shared.select_control_file(0,1,0,0,&path));
             assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
-            let u = dsp.rack.parts[0].script().unwrap().interface(0);
+            let u = dsp.core.rack.parts[0].script().unwrap().interface(0);
             assert_eq!(u.controls[1].properties["$CONTROL_PAR_TEXT"],crate::ksp::Value::Text(format!("{}:{name}",name.trim_end_matches(".nka"))));
             assert_eq!(u.controls[0].properties["$CONTROL_PAR_FILEPATH"],crate::ksp::Value::Text(path));
             assert_eq!(p.shared.array_requests.len(),1);
             load_arrays(&p);
             assert_eq!(allocations(|| { for _ in 0..10 { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); } }),0);
-            assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
+            assert_eq!(dsp.core.rack.parts[0].script().unwrap().interface(0).controls[0].properties["$CONTROL_PAR_FILE_TYPE"],crate::ksp::Value::Int(2));
             peaks.push(buffer.output(0).iter().copied().map(f32::abs).fold(0.,f32::max));
             load_arrays(&p);
         }
@@ -5515,7 +5363,7 @@ end on"#,dir.display());
         dsp.script_epoch[0]=2;
         assert_eq!(allocations(|| { Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx); }),0);
         assert!(p.shared.array_requests.is_empty(),"queued old selections must not execute on a replacement script");
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        assert!(dsp.core.rack.parts[0].script().unwrap().diagnostics().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -5559,7 +5407,7 @@ end on"#, dir.display(), dir.display());
             view.parts[0].script_epoch = 1;
             view.parts[0].interface = Some(Arc::new(rt.interface(0)));
         }
-        dsp.rack.parts[0].set_script(Some(rt));
+        dsp.core.rack.parts[0].set_script(Some(rt));
         let mut outputs = vec![vec![0.; 64]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 64);
@@ -5573,17 +5421,17 @@ end on"#, dir.display(), dir.display());
         p.shared.edit_control(0, 1, 1);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
         assert_eq!(p.shared.array_requests.len(), 1);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0));
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0));
         load_arrays(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "600 cells do not copy in one block");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "600 cells do not copy in one block");
         assert_eq!(allocations(|| {
             tick(&mut dsp, &mut buffer, &mut cx);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()));
         assert_eq!(allocations(|| {
-            assert!(dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained));
+            assert!(dsp.core.rack.parts[0].script().unwrap().refresh_live(&mut retained));
         }), 0);
         assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
             crate::ksp::Value::IntArray(vec![84;600]),
@@ -5591,40 +5439,40 @@ end on"#, dir.display(), dir.display());
         load_arrays(&p); // Free parse buffers on the worker and return the prepared job.
         tick(&mut dsp, &mut buffer, &mut cx);
         assert_eq!(allocations(|| {
-            for value in [0, 1, 0] { dsp.rack.parts[0].ui_control(0, 1, value); }
+            for value in [0, 1, 0] { dsp.core.rack.parts[0].ui_control(0, 1, value); }
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         assert_eq!(p.shared.array_requests.len(), 2, "one destination has two prepared jobs");
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s| s.contains("prepared request queue")));
+        assert!(dsp.core.rack.parts[0].script().unwrap().diagnostics().iter().any(|s| s.contains("prepared request queue")));
         load_arrays(&p);
         assert_eq!(allocations(|| {
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
-        assert_eq!(allocations(|| { dsp.rack.parts[0].script().unwrap().refresh_live(&mut retained); }), 0);
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:42:42".into()));
+        assert_eq!(allocations(|| { dsp.core.rack.parts[0].script().unwrap().refresh_live(&mut retained); }), 0);
         assert_eq!(retained.interface.as_ref().unwrap().controls[0].properties["$CONTROL_PAR_VALUE"],
             crate::ksp::Value::IntArray(vec![42;600]),
             "a subsequent file invalidates the same retained table snapshot");
         assert_eq!(allocations(|| {
             for _ in 0..3 { tick(&mut dsp, &mut buffer, &mut cx); }
         }), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(4), "each accepted or rejected job completes once");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()), "different paths on the same variable read different files");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(4), "each accepted or rejected job completes once");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().interface(0).controls[2].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text("1:84:84".into()), "different paths on the same variable read different files");
         load_arrays(&p);
         tick(&mut dsp, &mut buffer, &mut cx);
-        dsp.rack.parts[0].ui_control(0, 1, 0);
+        dsp.core.rack.parts[0].ui_control(0, 1, 0);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_arrays(&p);
         let (new_rt, _) = crate::engine::load_scripts(&instrument, Vec::new(), 48000.);
         let mut retired = None;
         p.shared.view.lock().unwrap().parts[0].script_epoch = 2;
         assert_eq!(allocations(|| {
-            retired = dsp.rack.parts[0].set_script(new_rt);
+            retired = dsp.core.rack.parts[0].set_script(new_rt);
             dsp.script_epoch[0] = 2;
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         load_arrays(&p);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$completed"], crate::ksp::Value::Int(0), "stale results never enter the replacement script");
         drop(retired);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -5690,7 +5538,7 @@ end on"#,dir.display());
             view.parts[0].script_epoch=1;
             view.parts[0].interface=Some(Arc::new(rt.as_deref().unwrap().interface(0)));
         }
-        dsp.rack.parts[0].set_script(rt);
+        dsp.core.rack.parts[0].set_script(rt);
         let mut outputs=vec![vec![0.;64];2];
         let mut refs:Vec<_>=outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer=AudioBuffer::from_slices_checked(&[],&mut refs,64);
@@ -5709,42 +5557,42 @@ end on"#,dir.display());
         assert_eq!(std::fs::read(dir.join("reals.nka")).unwrap(),b"?reals\n0.25\n-1.5\n");
         assert_eq!(std::fs::read(dir.join("names.nka")).unwrap(),"!names\nΩ\n😀\n".as_bytes());
         assert_eq!(allocations(||for _ in 0..3 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$success"],crate::ksp::Value::Int(3));
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$success"],crate::ksp::Value::Int(3));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,2);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.core.rack.parts[0].ui_control(0,0,2);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         assert!(!dir.join("missing").exists());
         assert_eq!(allocations(||tick(&mut dsp,&mut buffer,&mut cx)),0);
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: file could not be written")));
+        assert!(dsp.core.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: file could not be written")));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,3);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.core.rack.parts[0].ui_control(0,0,3);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         assert_eq!(p.shared.array_requests.len(),2);
         load_arrays(&p);
         assert_eq!(std::fs::read(dir.join("queued.nka")).unwrap(),b"%integers\n51\n-3\n7\n");
         assert_eq!(allocations(||for _ in 0..2 {tick(&mut dsp,&mut buffer,&mut cx);}),0);
-        let saved=dsp.rack.parts[0].script().unwrap().persistence();
+        let saved=dsp.core.rack.parts[0].script().unwrap().persistence();
         assert_eq!(saved[0]["$done"],crate::ksp::Value::Int(7));
         assert_eq!(saved[0]["$success"],crate::ksp::Value::Int(5));
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: prepared request queue")));
+        assert!(dsp.core.rack.parts[0].script().unwrap().diagnostics().iter().any(|s|s.starts_with("save_array_str: prepared request queue")));
         load_arrays(&p);tick(&mut dsp,&mut buffer,&mut cx);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,4);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.core.rack.parts[0].ui_control(0,0,4);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         let (rt,_)=crate::engine::load_scripts(&instrument,Vec::new(),48000.);
         let mut retired=None;
         p.shared.view.lock().unwrap().parts[0].script_epoch=2;
         assert_eq!(allocations(||{
-            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=2;
+            retired=dsp.core.rack.parts[0].set_script(rt);dsp.script_epoch[0]=2;
         }),0);
         load_arrays(&p);
         assert!(!dir.join("stale.nka").exists(),"stale queued write never begins");
         drop(retired);
         assert_eq!(allocations(||{
-            dsp.rack.parts[0].ui_control(0,0,5);tick(&mut dsp,&mut buffer,&mut cx);
+            dsp.core.rack.parts[0].ui_control(0,0,5);tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         let committed=std::fs::read(dir.join("committed.nka")).unwrap();
@@ -5752,12 +5600,12 @@ end on"#,dir.display());
         let mut retired=None;
         p.shared.view.lock().unwrap().parts[0].script_epoch=3;
         assert_eq!(allocations(||{
-            retired=dsp.rack.parts[0].set_script(rt);dsp.script_epoch[0]=3;
+            retired=dsp.core.rack.parts[0].set_script(rt);dsp.script_epoch[0]=3;
             tick(&mut dsp,&mut buffer,&mut cx);
         }),0);
         load_arrays(&p);
         assert_eq!(std::fs::read(dir.join("committed.nka")).unwrap(),committed,"committed save is not rolled back when completion becomes stale");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$done"],crate::ksp::Value::Int(0));
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$done"],crate::ksp::Value::Int(0));
         drop(retired);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -5939,7 +5787,7 @@ end on"#,dir.display());
         let mut dsp = Dsp::default();
         dsp.until_poll = usize::MAX;
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].set_script(Some(Box::new(old)));
+        dsp.core.rack.parts[0].set_script(Some(Box::new(old)));
         p.shared.ready.push((0, 0, Handoff::Script { script: Some(Box::new(new)), bank:None, epoch: 2 })).ok().unwrap();
         let transport = TransportInfo::default();
         let mut outgoing = EventList::with_capacity(0);
@@ -5967,7 +5815,7 @@ end on"#,dir.display());
         assert_eq!(p.shared.live_requests.len(), 1, "the stale buffer is returned exactly once");
         p.shared.snapshot_requests.push((0, 2, new_saved)).ok().unwrap();
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 0, 37);
+            dsp.core.rack.parts[0].ui_control(0, 0, 37);
             for _ in 0..100 { Sampler::process(&mut dsp, &p, &mut buffer, &none, &mut cx); }
         }), 0);
         let (_, epoch, saved, changed) = p.shared.snapshots.pop().unwrap();
@@ -5994,8 +5842,8 @@ end on"#,dir.display());
         dsp.script_epoch[0] = 1;
         dsp.until_poll = usize::MAX;
         let live = Box::new(rt.live());
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
-        dsp.rack.parts[0].ui_control(0, 0, 42);
+        dsp.core.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.core.rack.parts[0].ui_control(0, 0, 42);
         p.shared.live_requests.push((0, dsp.script_epoch[0], live)).ok().unwrap();
         moose::core::tasks::warm_pool();
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6788,25 +6636,25 @@ end on"#;
         s.installed_generation[0]=0;
         { let mut v=p.shared.view.lock().unwrap();v.parts[0].instrument=Some(Arc::new(i));v.parts[0].script_epoch=7; }
         let source=p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
-        s.rack.parts[0].set_bank(Some(Box::new(Bank::load(&source).unwrap())));
-        s.rack.parts[0].set_script(rt);
+        s.core.rack.parts[0].set_bank(Some(Box::new(Bank::load(&source).unwrap())));
+        s.core.rack.parts[0].set_script(rt);
         let mut old_reference=Engine::default();old_reference.set_bank(Some(Box::new(bank(zones.clone()))));
-        s.rack.parts[0].note_on(0,59,100);old_reference.note_on(0,59,100);
-        s.rack.parts[0].render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
+        s.core.rack.parts[0].note_on(0,59,100);old_reference.note_on(0,59,100);
+        s.core.rack.parts[0].render(&mut [0.;128],&mut [0.;128]);old_reference.render(&mut [0.;128],&mut [0.;128]);
         let scalar=|e:&Engine,name:&str|e.script().unwrap().persistence()[0][name].clone();
-        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,1)),0);
-        assert_eq!(scalar(&s.rack.parts[0],"$resumed"),crate::ksp::Value::Int(0));
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(allocations(||s.core.rack.parts[0].ui_control(0,0,1)),0);
+        assert_eq!(scalar(&s.core.rack.parts[0],"$resumed"),crate::ksp::Value::Int(0));
+        assert_eq!(s.core.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
         assert_eq!(allocations(|| {
-            while let Some(job)=s.rack.parts[0].pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
+            while let Some(job)=s.core.rack.parts[0].pop_zone_job() { p.shared.zone_requests.push((0,0,7,job)).ok().unwrap(); }
         }),0);
         assert_eq!(p.shared.zone_requests.len(),3);
         let mut ram_fill=Box::new(Bank::load(&source).unwrap());
-        assert!(!s.rack.parts[0].zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
+        assert!(!s.core.rack.parts[0].zone_upgrade_ready(&ram_fill),"pending writes postpone a baseline RAM fill");
         load_zone_maps(&p); // real serialized preparation, outside the audio allocation gate
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
+        assert_eq!(scalar(&s.core.rack.parts[0],"$done"),crate::ksp::Value::Int(0),"preparation alone cannot complete IDs");
         assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
-        let e=&s.rack.parts[0];
+        let e=&s.core.rack.parts[0];
         assert_eq!(scalar(e,"$done"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$success"),crate::ksp::Value::Int(3));
         assert_eq!(scalar(e,"$resumed"),crate::ksp::Value::Int(1));
@@ -6819,12 +6667,12 @@ end on"#;
         let mut new_reference=Engine::default();new_reference.set_bank(Some(Box::new(bank(mapped))));
         let (mut al,mut ar,mut oldl,mut oldr,mut newl,mut newr)=([0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048],[0.;2048]);
         assert_eq!(allocations(|| {
-            s.rack.parts[0].note_on(0,60,100);new_reference.note_on(0,60,100);
-            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+            s.core.rack.parts[0].note_on(0,60,100);new_reference.note_on(0,60,100);
+            s.core.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
         }),0);
         assert!(newl.iter().any(|v|v.abs()>0.01),"remapped WT really produces PCM");
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"new WT mapping plus untouched old sampler voice matches independent reference");
-        assert!(s.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
+        assert!(s.core.rack.parts[0].voice_census().iter().any(|v|v.group==0 && v.wavetable.is_some()));
         save("remapped-actual.wav",&al,&ar);save("old-sampler-reference.wav",&oldl,&oldr);save("new-wavetable-reference.wav",&newl,&newr);
         let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();
         save("remapped-independent-reference.wav",&expected_l,&expected_r);
@@ -6833,14 +6681,14 @@ end on"#;
         // retaining both mapped keys and the already playing WT window.
         { let chains=p.shared.zone_chains.lock().unwrap();let chain=chains.last().unwrap();
           ram_fill.rebase_zone_preload(&chain.context.upgrade().unwrap(),chain.state.clone(),&||false).unwrap(); }
-        assert!(s.rack.parts[0].zone_upgrade_ready(&ram_fill));
+        assert!(s.core.rack.parts[0].zone_upgrade_ready(&ram_fill));
         let mut old_bank=None;
         assert_eq!(allocations(|| {
-            old_bank=s.rack.parts[0].upgrade_bank(ram_fill);
-            s.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
+            old_bank=s.core.rack.parts[0].upgrade_bank(ram_fill);
+            s.core.rack.parts[0].render(&mut al,&mut ar);old_reference.render(&mut oldl,&mut oldr);new_reference.render(&mut newl,&mut newr);
         }),0);
         assert!(old_bank.is_some());drop(old_bank);
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
+        assert_eq!(s.core.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::LowKey),Some(60));
         assert!(al.iter().zip(oldl.iter().zip(&newl)).chain(ar.iter().zip(oldr.iter().zip(&newr))).all(|(a,(old,new))|(a-old-new).abs()<1e-5),"RAM fill retains remapped playback and active voice phase");
         save("upgraded-actual.wav",&al,&ar);
         let expected_l:Vec<_>=oldl.iter().zip(&newl).map(|(a,b)|a+b).collect();let expected_r:Vec<_>=oldr.iter().zip(&newr).map(|(a,b)|a+b).collect();save("upgraded-independent-reference.wav",&expected_l,&expected_r);
@@ -6879,25 +6727,25 @@ end on"#;
         // A new source bank may share dimensions, but an old prepared job
         // must not edit it or claim successful completion.
         while p.shared.discard.pop().is_some() {}
-        assert_eq!(allocations(||s.rack.parts[0].ui_control(0,0,0)),0);
-        while let Some(job)=s.rack.parts[0].pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        assert_eq!(allocations(||s.core.rack.parts[0].ui_control(0,0,0)),0);
+        while let Some(job)=s.core.rack.parts[0].pop_zone_job() {p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
         load_zone_maps(&p);
         let replacement=Box::new(bank(zones.clone()));
         let mut retired=None;
-        assert_eq!(allocations(|| {retired=s.rack.parts[0].set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
-        assert_eq!(scalar(&s.rack.parts[0],"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
+        assert_eq!(allocations(|| {retired=s.core.rack.parts[0].set_bank(Some(replacement));finish_zone_maps(&mut s,&p);}),0);
+        assert_eq!(s.core.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(&s.core.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(scalar(&s.core.rack.parts[0],"$success"),crate::ksp::Value::Int(3),"stale source completions fail");
         drop(retired);
         // Runtime epoch replacement suppresses delivery entirely.
         while p.shared.discard.pop().is_some() {}
-        s.rack.parts[0].ui_control(0,0,1);
-        while let Some(job)=s.rack.parts[0].pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
+        s.core.rack.parts[0].ui_control(0,0,1);
+        while let Some(job)=s.core.rack.parts[0].pop_zone_job(){p.shared.zone_requests.push((0,0,7,job)).ok().unwrap();}
         load_zone_maps(&p);
         s.script_epoch[0]=8;
         assert_eq!(allocations(||finish_zone_maps(&mut s,&p)),0);
-        assert_eq!(scalar(&s.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
-        assert_eq!(s.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
+        assert_eq!(scalar(&s.core.rack.parts[0],"$done"),crate::ksp::Value::Int(6));
+        assert_eq!(s.core.rack.parts[0].bank().unwrap().zone_par(1,ZonePar::Group),Some(1));
         // Offline hosts and the Part script-before-bank install order use
         // the same preparation boundary; init is synchronous and returns -1.
         let init_source=Instrument {groups:groups.clone(),zones:zones.clone(),scripts:vec![r#"on init
@@ -7010,9 +6858,9 @@ end on"#.into()],
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
-        dsp.rack.parts[0].set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.));
-        dsp.rack.parts[0].set_script(rt);
+        dsp.core.rack.parts[0].set_bank(Some(Box::new(Bank::from_samples(i.groups.clone(), Vec::new(), Vec::new()).unwrap())));
+        dsp.core.rack.parts[0].set_fx(crate::engine::effects(&i, rt.as_deref(), 48000.));
+        dsp.core.rack.parts[0].set_script(rt);
         {
             let mut view = p.shared.view.lock().unwrap();
             let v = &mut view.parts[0];
@@ -7029,10 +6877,10 @@ end on"#.into()],
             Sampler::process(dsp, &p, buffer, &events, cx);
         };
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 0, 1);
+            dsp.core.rack.parts[0].ui_control(0, 0, 1);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0, "queuing the IR allocated or freed on the audio thread");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "", "completion waits for installation");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "", "completion waits for installation");
         assert_eq!(p.shared.ir_requests.len(), 1);
         let pending = p.shared.ir_requests.pop().unwrap();
         for _ in 0..p.shared.ready.capacity() {
@@ -7046,25 +6894,25 @@ end on"#.into()],
         while p.shared.ready.pop().is_some() {}
         while p.shared.ir_ready.pop().is_some() {}
         load_irs(&p);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "");
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0, "installing or completing the IR allocated or freed on the audio thread");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "1:1");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "1:1");
         assert_eq!(p.shared.discard.len(), 1, "the worker receives the old kernel");
         while p.shared.discard.pop().is_some() {}
         // Native switches use 0/1, coalesce through the same worker path,
         // and read back before/after installation without RT allocation.
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 3, 1);
-            dsp.rack.parts[0].ui_control(0, 4, 1);
+            dsp.core.rack.parts[0].ui_control(0, 3, 1);
+            dsp.core.rack.parts[0].ui_control(0, 4, 1);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         for name in ["$read_reverse", "$read_automatic"] {
-            assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
+            assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0][name], crate::ksp::Value::Int(1));
         }
         assert_eq!(p.shared.ir_requests.len(), 1, "two switches need one IR rebuild");
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        let installed = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        let installed = dsp.core.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
         assert_eq!((installed.reverse, installed.auto_gain), (Some(true), Some(true)));
         let (instrument, loads) = {
             let view = p.shared.view.lock().unwrap();
@@ -7099,23 +6947,23 @@ end on"#.into()],
         while p.shared.discard.pop().is_some() {}
         let before = p.shared.view.lock().unwrap().parts[0].irs.clone();
         assert!(matches!(before[0].load, FxLoad::Ir { .. }));
-        dsp.rack.parts[0].ui_control(0, 0, 0);
+        dsp.core.rack.parts[0].ui_control(0, 0, 0);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "2:0");
         assert!(p.shared.view.lock().unwrap().parts[0].irs == before, "failed loads keep the IR");
         // Knob edits coalesce into one worker rebuild, retaining the loaded IR
         // and exact requested values without issuing an async-file completion.
         let snapshot = PersistenceSnapshot {
-            script: dsp.rack.parts[0].script().unwrap().persistence(),
+            script: dsp.core.rack.parts[0].script().unwrap().persistence(),
             ir: vec![crate::fx::IrSlotSettings { rack: crate::fx::Rack::Insert, slot: 0, settings: crate::fx::params::IrSettings::DEFAULT, file: None }],
-            native: dsp.rack.parts[0].script().unwrap().native_state.snapshot(),
+            native: dsp.core.rack.parts[0].script().unwrap().native_state.snapshot(),
         };
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], Box::new(snapshot))).ok().unwrap();
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 1, 1000000);
-            dsp.rack.parts[0].ui_control(0, 2, 250000);
+            dsp.core.rack.parts[0].ui_control(0, 1, 1000000);
+            dsp.core.rack.parts[0].ui_control(0, 2, 250000);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         let (_, _, snapshot, changed) = p.shared.snapshots.pop().expect("host state snapshot before worker completion");
@@ -7130,23 +6978,23 @@ end on"#.into()],
         // A newer edit arriving while the worker builds must win. Execute that
         // callback before the handoff so the obsolete kernel is rejected.
         assert_eq!(allocations(|| {
-            dsp.rack.parts[0].ui_control(0, 1, 0);
-            dsp.rack.parts[0].ui_control(0, 3, 0);
-            dsp.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
+            dsp.core.rack.parts[0].ui_control(0, 1, 0);
+            dsp.core.rack.parts[0].ui_control(0, 3, 0);
+            dsp.core.rack.parts[0].render(&mut [0.; 64], &mut [0.; 64]);
             tick(&mut dsp, &mut buffer, &mut cx);
         }), 0);
         assert_eq!(p.shared.ir_requests.len(), 1, "stale settings rebuild at the latest requested values");
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
-        assert_eq!(dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "2:0");
-        dsp.rack.parts[0].ui_control(0, 0, 2);
+        assert_eq!(dsp.core.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().values, [0.25, 0.5, 0.]);
+        assert_eq!(dsp.core.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap().reverse, Some(false), "newer switch wins over the stale prepared kernel");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$read_reverse"], crate::ksp::Value::Int(0));
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "2:0");
+        dsp.core.rack.parts[0].ui_control(0, 0, 2);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "3:0");
         crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
         let journal = std::fs::read_to_string(crate::diagnostics::log_path().unwrap()).unwrap();
         assert!(journal.lines().any(|line| {
@@ -7155,34 +7003,34 @@ end on"#.into()],
             data["code"] == "ir_load_failed" && data["requested"] == "broken" && data["resolved"].as_str().is_some_and(|p| p.ends_with("Broken.wav"))
                 && v["part"] == 0 && data["message"].as_str().is_some_and(|s| s.contains("decoding failed") && s.contains("no suitable format reader"))
         }), "the worker preserves the requested name, resolved path, part and decoder's failure reason");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.core.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         p.shared.rate.store(44100f64.to_bits(), Ordering::Release);
-        dsp.rack.parts[0].reset(44100.);
+        dsp.core.rack.parts[0].reset(44100.);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "3:0", "wrong-rate kernels are retried without installation or premature completion");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "3:0", "wrong-rate kernels are retried without installation or premature completion");
         assert_eq!(p.shared.ir_requests.len(), 1);
         load_irs(&p);
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
-        let flags = dsp.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "4:1", "the original request ID completes after rebuilding at the new rate");
+        let flags = dsp.core.rack.parts[0].fx().ir_settings(crate::fx::Rack::Insert, 0).unwrap();
         assert_eq!((flags.reverse, flags.auto_gain), (Some(false), Some(true)), "rate rebuild retains latest switches");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.core.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         load_irs(&p);
         dsp.script_epoch[0] = 2;
         assert_eq!(allocations(|| tick(&mut dsp, &mut buffer, &mut cx)), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().last_message(), "4:1", "a replaced script never gets a stale completion");
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().last_message(), "4:1", "a replaced script never gets a stale completion");
         dsp.script_epoch[0] = 1;
-        dsp.rack.parts[0].ui_control(0, 0, 1);
+        dsp.core.rack.parts[0].ui_control(0, 0, 1);
         tick(&mut dsp, &mut buffer, &mut cx);
         p.shared.part(0).unwrap().generation.store(1, Ordering::Release);
         load_irs(&p);
         assert!(p.shared.ir_ready.is_empty(), "replaced instruments discard queued loads");
-        dsp.rack.parts[0].ui_control(0, 0, 1);
-        dsp.rack.parts[0].set_script(None);
-        assert!(dsp.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
+        dsp.core.rack.parts[0].ui_control(0, 0, 1);
+        dsp.core.rack.parts[0].set_script(None);
+        assert!(dsp.core.rack.parts[0].pop_ir_request().is_none(), "script replacement clears requests before they receive the new epoch");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7214,7 +7062,7 @@ end on"#;
         assert!(errors.iter().all(Option::is_none), "{errors:?}");
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.core.rack.parts[0].set_script(Some(Box::new(rt)));
         let mut outputs = [vec![0.;128], vec![0.;128]];
         let mut refs: Vec<_> = outputs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut buffer = AudioBuffer::from_slices_checked(&[], &mut refs, 128);
@@ -7234,12 +7082,12 @@ end on"#;
             let mut cx = ProcessContext::new(&transport, 48_000., 128, &mut outgoing);
             assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0,
                 "host timing updates and transport listeners must not allocate or free");
-            let interface = dsp.rack.parts[0].script().unwrap().interface(0);
+            let interface = dsp.core.rack.parts[0].script().unwrap().interface(0);
             assert_eq!(interface.controls[0].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(position.into()));
             assert_eq!(interface.controls[1].properties["$CONTROL_PAR_TEXT"], crate::ksp::Value::Text(transition.into()),
                 "seeks/tempo changes must not fabricate start/stop transitions");
         }
-        assert!(dsp.rack.parts[0].script().unwrap().diagnostics().is_empty());
+        assert!(dsp.core.rack.parts[0].script().unwrap().diagnostics().is_empty());
     }
 
     #[test]
@@ -7379,7 +7227,7 @@ end on"#;
             view.parts[0].interface = parsed.interface;
             dsp.script_epoch[0] = epoch;
         }
-        dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+        dsp.core.rack.parts[0].set_script(Some(Box::new(rt)));
 
         p.shared.edit_control(0, 0, 1);
         let shown = p.shared.view.lock().unwrap().parts[0]
@@ -7416,7 +7264,7 @@ end on"#;
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
         let (slot, _, live) = p.shared.lives.pop().unwrap();
         p.shared.live_requests.push((slot, dsp.script_epoch[slot], live)).ok().unwrap();
-        let saved = Box::new(PersistenceSnapshot { script: dsp.rack.parts[0].script().unwrap().persistence(), ir: Vec::new(), native: dsp.rack.parts[0].script().unwrap().native_state.snapshot() });
+        let saved = Box::new(PersistenceSnapshot { script: dsp.core.rack.parts[0].script().unwrap().persistence(), ir: Vec::new(), native: dsp.core.rack.parts[0].script().unwrap().native_state.snapshot() });
         p.shared.snapshot_requests.push((0, dsp.script_epoch[0], saved)).ok().unwrap();
         // As if the scripts changed since: both refresh in full.
         (dsp.live_seen[0], dsp.snapshot_seen[0]) = ((u64::MAX, 0), (u64::MAX, 0));
@@ -7439,7 +7287,7 @@ end on"#;
             live.keys[&36].color,
             Some(crate::ksp::Value::Text("$KEY_COLOR_BLUE".into()))
         );
-        let saved = dsp.rack.parts[0].script().unwrap().persistence();
+        let saved = dsp.core.rack.parts[0].script().unwrap().persistence();
         assert_eq!(
             saved[0]["$legato"],
             crate::ksp::Value::Int(1),
@@ -7452,7 +7300,7 @@ end on"#;
             "Panic must not allocate or free on the audio thread");
         assert_eq!(p.shared.bend.load(Ordering::Relaxed), 8192);
         assert_eq!(p.shared.modulation.load(Ordering::Relaxed), 0);
-        assert_eq!(dsp.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
+        assert_eq!(dsp.core.rack.parts[0].script().unwrap().persistence()[0]["$legato"], crate::ksp::Value::Int(1),
             "Panic must preserve edited instrument controls");
     }
     #[test]
@@ -7467,8 +7315,8 @@ end on"#;
             let bank = Bank::from_samples(vec![group],vec![import::Zone::default()],vec![(PathBuf::new(),
                 crate::audio::Sample { rate:48000, frames:vec![[0.25;2];4096] })]).unwrap();
             let mut dsp = Dsp::default();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
-            dsp.rack.parts[0].cc(0,74,32);
+            dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.core.rack.parts[0].cc(0,74,32);
             dsp
         };
         let brightness = Event::on_port(64,0,EventBody::PerNoteCC {
@@ -7511,7 +7359,7 @@ end on"#;
         let reference = SamplerParams::new();
         assert_eq!(render(&mut actual,&p,&with_expression),render(&mut expected,&reference,&plain));
         assert_eq!(actual.unsupported_note_brightness,1);
-        assert_eq!(actual.rack.parts[0].cc_state()[0][74],32);
+        assert_eq!(actual.core.rack.parts[0].cc_state()[0][74],32);
         drain_audio_diagnostics(&p);
         actual.until_diagnostics = 0;
         render(&mut actual,&p,&EventList::with_capacity(0));
@@ -7544,10 +7392,10 @@ end on"#;
         for length in [0,16,12000,-1,i32::MIN] {
             let params=SamplerParams::new();
             let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
-            dsp.rack.parts[0].reset(48000.);
+            dsp.core.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];4096] })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
             let mut on=EventList::with_capacity(4);
             on.try_push_exact(ExactEvent::new(64,ExactEventBody::DetailedNote {
                 kind:ExactNoteKind::On,address,velocity:0.8,tuning:0.,length:Some(length) })).unwrap();
@@ -7573,10 +7421,10 @@ end on"#;
             if let Some(expected)=reference { assert_eq!(pcm,expected,"optional length changed onset audio"); }
             else { reference=Some(pcm); }
             assert_eq!(allocations(|| { render(&mut dsp,&none); }),0);
-            assert!(dsp.rack.parts[0].host_key_held(4,60),"length hint released the exact host owner");
-            assert!(dsp.rack.parts[0].voice_census().iter().any(|v| !v.released));
+            assert!(dsp.core.rack.parts[0].host_key_held(4,60),"length hint released the exact host owner");
+            assert!(dsp.core.rack.parts[0].voice_census().iter().any(|v| !v.released));
             assert_eq!(allocations(|| { render(&mut dsp,&off); }),0);
-            assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close the owner");
+            assert!(!dsp.core.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close the owner");
             assert_eq!(dsp.unsupported_host_expression,0);
         }
         for (length,velocity,tuning) in [(Some(16),f32::NAN,0.),(Some(16),0.8,f32::NAN)] {
@@ -7593,17 +7441,17 @@ end on"#;
         use crate::{audio::Sample, import::{Group,Zone}, engine::{HostExpression,HostPattern}};
         for anonymous in [false,true] { for scripted in [false,true] { for holding in [false,true] {
             let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
-            dsp.rack.parts[0].reset(48000.);
+            dsp.core.rack.parts[0].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000, frames:(0..24000).map(|n| [0.2+n as f32/240000.;2]).collect() })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
             if scripted {
                 let script="on note\nignore_event($EVENT_ID)\nwait(1000)\nplay_note($EVENT_NOTE,$EVENT_VELOCITY,0,-1)\nend on";
                 let (rt,errors)=Runtime::with_scripts(&[script],&mut crate::ksp::LogEngine::new(Vec::new(),48000.),0,Vec::new());
-                assert!(errors.iter().all(Option::is_none)); dsp.rack.parts[0].set_script(Some(Box::new(rt)));
+                assert!(errors.iter().all(Option::is_none)); dsp.core.rack.parts[0].set_script(Some(Box::new(rt)));
             }
-            dsp.align.plan.on=holding; dsp.align.plan.transport_only=false;
-            dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
+            dsp.core.align.plan.on=holding; dsp.core.align.plan.transport_only=false;
+            dsp.core.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
             let address=|id| ExactNoteAddress::from_vst3_signed(0,4,60,id);
             let ids=if anonymous { [-1,-1] } else { [42,43] };
             let mut on=EventList::with_capacity(4);
@@ -7634,7 +7482,7 @@ end on"#;
             let earliest=16+usize::from(holding)*480+usize::from(scripted)*48;
             let first_sound=first_sound.expect("valid nonzero VST3 tuning silenced the note");
             assert!((earliest..earliest+32).contains(&first_sound),"offset/alignment/script wait lost: {first_sound} vs {earliest}");
-            let voices=dsp.rack.parts[0].voice_census();
+            let voices=dsp.core.rack.parts[0].voice_census();
             assert_eq!(voices.len(),2,"duplicate ID created or retuned a root");
             for semitones in [2.5,-3.5] {
                 let expected=2f64.powf(semitones/12.);
@@ -7644,9 +7492,9 @@ end on"#;
             assert_eq!(dsp.unsupported_host_expression,0);
             if !anonymous {
                 let pattern=HostPattern { port:0,channel:4,key:60,id:42,clap:false };
-                assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Tune(4.25)),0,0,holding,48000.)),0);
+                assert_eq!(allocations(|| feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Tune(4.25)),0,0,holding)),0);
                 for _ in 0..4 { assert_eq!(allocations(|| { render(&mut dsp,&none); }),0); }
-                let voices=dsp.rack.parts[0].voice_census();
+                let voices=dsp.core.rack.parts[0].voice_census();
                 for semitones in [4.25,-3.5] {
                     assert_eq!(voices.iter().filter(|v| (v.step-2f64.powf(semitones/12.)).abs()<1e-6).count(),1,
                         "later owner expression changed its same-key neighbor");
@@ -7658,7 +7506,7 @@ end on"#;
                     kind:ExactNoteKind::Off,address:address(*id),velocity:0.,tuning:f32::NAN,length:None })).unwrap();
             }
             for block in 0..5 { assert_eq!(allocations(|| { render(&mut dsp,if block==0 { &off } else { &none }); }),0); }
-            assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close tuned owners");
+            assert!(!dsp.core.rack.parts[0].host_key_held(4,60),"explicit NoteOff failed to close tuned owners");
         } } }
     }
 
@@ -7667,12 +7515,12 @@ end on"#;
         use crate::{audio::Sample, import::{Group,Zone,Wavetable}};
         for wavetable in [false,true] { for cents in [f32::MAX,-f32::MAX] {
             let params=SamplerParams::new(); let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
-            dsp.rack.parts[0].reset(48000.);
+            dsp.core.rack.parts[0].reset(48000.);
             let group=Group { wavetable:wavetable.then_some(Wavetable { quality:2,form1_type:16,
                 form1:0.5,inharmonic:0.5,..Default::default() }),..Default::default() };
             let bank=Bank::from_samples(vec![group],vec![Zone::default()],vec![(PathBuf::new(),
                 Sample { rate:48000,frames:vec![[0.2;2];49152] })]).unwrap();
-            dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
+            dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
             let address=ExactNoteAddress::from_vst3_signed(0,4,60,42);
             let mut on=EventList::with_capacity(1);
             on.try_push_exact(ExactEvent::new(16,ExactEventBody::DetailedNote {
@@ -7692,17 +7540,17 @@ end on"#;
             };
             for block in 0..8 {
                 assert_eq!(allocations(|| render(&mut dsp,if block==0 { &on } else { &none })),0);
-                let voices=dsp.rack.parts[0].voice_census();
+                let voices=dsp.core.rack.parts[0].voice_census();
                 assert_eq!(voices.len(),1,"finite onset tuning was rejected");
                 // The existing sample traversal cap and overflow-safe wavetable
                 // clock bound actual motion, independently of the cached ratio.
                 assert!(voices[0].pos.is_finite());
                 assert!((0. ..=if wavetable { 2048. } else { 128.*8.*32. }).contains(&voices[0].pos));
             }
-            assert!(dsp.rack.parts[0].host_key_held(4,60));
+            assert!(dsp.core.rack.parts[0].host_key_held(4,60));
             assert_eq!(dsp.unsupported_host_expression,0);
             assert_eq!(allocations(|| render(&mut dsp,&off)),0);
-            assert!(!dsp.rack.parts[0].host_key_held(4,60),"explicit Off lost the extreme-tuned owner");
+            assert!(!dsp.core.rack.parts[0].host_key_held(4,60),"explicit Off lost the extreme-tuned owner");
         } }
     }
 
@@ -7712,9 +7560,9 @@ end on"#;
         let params=SamplerParams::new();
         let mut dsp=Dsp::default(); dsp.until_poll=usize::MAX;
         for (part,size) in [(0,256),(1,24000)] {
-            dsp.rack.parts[part].reset(48000.);
+            dsp.core.rack.parts[part].reset(48000.);
             let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];size] })]).unwrap();
-            dsp.rack.parts[part].set_bank(Some(Box::new(bank)));
+            dsp.core.rack.parts[part].set_bank(Some(Box::new(bank)));
         }
         let address=|id| ExactNoteAddress::from_raw_signed(0,4,60,id);
         let mut on=EventList::with_capacity(4);
@@ -7737,7 +7585,7 @@ end on"#;
             Sampler::process(&mut dsp,&params,&mut buffer,&on,&mut cx);
             Sampler::process(&mut dsp,&params,&mut buffer,&reuse,&mut cx);
         }),0);
-        let voices=dsp.rack.parts[1].voice_census();
+        let voices=dsp.core.rack.parts[1].voice_census();
         assert!(voices.iter().any(|v| v.released && v.step>1.9));
         assert!(voices.iter().any(|v| !v.released && (v.step-1.).abs()<0.01),"old-id expression changed the new same-key note");
         assert!(params.shared.heard[60].load(Ordering::Relaxed)>0,"old key-up cleared the newer host key");
@@ -7753,9 +7601,9 @@ end on"#;
         }).collect();
         assert_eq!(ended.len(),2);
         for id in [10,11] { assert!(ended.contains(&address(id))); }
-        assert!(dsp.rack.parts.iter().all(|e| e.host_note_at(0).is_none()));
+        assert!(dsp.core.rack.parts.iter().all(|e| e.host_note_at(0).is_none()));
         for holding in [false,true] {
-            dsp.align.plan.on=holding;
+            dsp.core.align.plan.on=holding;
             let unmatched=ExactNoteAddress::from_raw_signed(7,4,60,12+i32::from(holding));
             let mut absent=EventList::with_capacity(2);
             absent.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:unmatched,velocity:0.8 })).unwrap();
@@ -7764,7 +7612,7 @@ end on"#;
         }
         let mut art=crate::articulate::Articulate::default();
         art.sync("switch",&[("Switch".into(),Some(60),None)]);
-        for router in &mut dsp.routers { router.set_route(crate::articulate::Route::new("switch",&art,&crate::articulate::Mpe::default())); }
+        for router in &mut dsp.core.routers { router.set_route(crate::articulate::Route::new("switch",&art,&crate::articulate::Mpe::default())); }
         let switch=ExactNoteAddress::from_raw_signed(0,4,60,14);
         let mut switched=EventList::with_capacity(2);
         switched.try_push_exact(ExactEvent::new(0,ExactEventBody::Note { kind:ExactNoteKind::On,address:switch,velocity:0.8 })).unwrap();
@@ -7782,16 +7630,16 @@ end on"#;
         let transport=TransportInfo::default(); let mut output=EventList::with_capacity(1);
         let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
         assert_eq!(allocations(|| {
-            feed_host_input(&mut dsp,&params,In::HostOn(first,100,0.),0,0,false,48000.);
-            feed_host_input(&mut dsp,&params,In::HostOn(second,100,0.),0,0,false,48000.);
-            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false,48000.);
+            feed_host_input(&mut dsp,&params,In::HostOn(first,100,0.),0,0,false);
+            feed_host_input(&mut dsp,&params,In::HostOn(second,100,0.),0,0,false);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,0,false);
             finish_host_notes(&mut dsp,&mut cx,127);
             assert_eq!(dsp.host_note_end_rejections,1,"repeated failures scanned the full owner pool");
-            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
+            assert!(dsp.core.rack.parts.iter().all(|e| !e.host_note_present(first) && e.host_note_present(second)));
             cx.output_events.clear();
             finish_host_notes(&mut dsp,&mut cx,127);
             assert_eq!(dsp.host_note_end_rejections,1);
-            assert!(dsp.rack.parts.iter().all(|e| !e.host_note_present(second)));
+            assert!(dsp.core.rack.parts.iter().all(|e| !e.host_note_present(second)));
         }),0);
     }
 
@@ -7799,33 +7647,33 @@ end on"#;
     fn delayed_exact_expression_retains_owner_until_safe_same_id_reuse() {
         use crate::{audio::Sample, import::{Group,Zone}, engine::{HostNote,HostPattern,HostExpression}};
         let params=SamplerParams::new(); let mut dsp=Dsp::default();
-        dsp.rack.parts[0].reset(48000.);
+        dsp.core.rack.parts[0].reset(48000.);
         let bank=Bank::from_samples(vec![Group::default()],vec![Zone::default()],vec![(PathBuf::new(),Sample { rate:48000,frames:vec![[0.2;2];32] })]).unwrap();
-        dsp.rack.parts[0].set_bank(Some(Box::new(bank)));
-        dsp.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
+        dsp.core.rack.parts[0].set_bank(Some(Box::new(bank)));
+        dsp.core.align.plan.parts[0]=Holds::of(&timing::Timing { override_ms:Some(0.),..Default::default() },&[],10.);
         let note=HostNote { port:0,channel:4,key:60,id:10,clap:true };
         let pattern=HostPattern { port:0,channel:4,key:60,id:10,clap:true };
         let transport=TransportInfo::default(); let mut output=EventList::with_capacity(128);
         let mut cx=ProcessContext::new(&transport,48000.,128,&mut output);
         let (mut left,mut right)=([0.;64],[0.;64]);
         assert_eq!(allocations(|| {
-            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,true,48000.);
-            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,96,true,48000.);
-            feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Gain(0.)),0,240,true,48000.);
-            dsp.align.release(600,&mut dsp.rack,&mut dsp.routers);
-            dsp.rack.parts[0].render(&mut left,&mut right);
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,true);
+            feed_host_input(&mut dsp,&params,In::HostOff(pattern),0,96,true);
+            feed_host_input(&mut dsp,&params,In::HostExpression(pattern,HostExpression::Gain(0.)),0,240,true);
+            dsp.core.align.release(600,&mut dsp.core.rack,&mut dsp.core.routers);
+            dsp.core.rack.parts[0].render(&mut left,&mut right);
             finish_host_notes(&mut dsp,&mut cx,63);
-            assert_eq!(dsp.rack.parts[0].active_voices(),0);
-            assert!(dsp.align.host_note_waiting(note),"delayed old expression lost its owner pin");
-            assert!(dsp.rack.parts[0].host_note_present(note));
-            assert!(!dsp.rack.parts[0].admit_host_note(note),"same ID became reusable before delayed work completed");
+            assert_eq!(dsp.core.rack.parts[0].active_voices(),0);
+            assert!(dsp.core.align.host_note_waiting(note),"delayed old expression lost its owner pin");
+            assert!(dsp.core.rack.parts[0].host_note_present(note));
+            assert!(!dsp.core.rack.parts[0].admit_host_note(note),"same ID became reusable before delayed work completed");
             assert!(!cx.output_events.lossless_iter().any(|event| matches!(event,LosslessEventRef::Exact(e) if matches!(e.body(),ExactEventBody::Note { kind:ExactNoteKind::End,.. }))));
-            dsp.align.release(720,&mut dsp.rack,&mut dsp.routers);
+            dsp.core.align.release(720,&mut dsp.core.rack,&mut dsp.core.routers);
             finish_host_notes(&mut dsp,&mut cx,63);
-            assert!(!dsp.align.host_note_waiting(note));
-            assert!(!dsp.rack.parts[0].host_note_present(note));
-            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,false,48000.);
-            dsp.rack.parts[0].render(&mut left,&mut right);
+            assert!(!dsp.core.align.host_note_waiting(note));
+            assert!(!dsp.core.rack.parts[0].host_note_present(note));
+            feed_host_input(&mut dsp,&params,In::HostOn(note,100,0.),0,0,false);
+            dsp.core.rack.parts[0].render(&mut left,&mut right);
             assert!(left.iter().any(|sample| sample.abs()>1e-6),"old gain expression leaked into reused host ID");
         }),0);
     }
@@ -7879,8 +7727,8 @@ end on"#;
             };
             let sample = Sample { rate: 48000, frames: vec![[0.5, 0.25]; 100] };
             let bank = Bank::from_samples(vec![Group::default()], vec![zone], vec![(PathBuf::new(), sample)]);
-            dsp.rack.parts[slot].set_bank(Some(Box::new(bank.unwrap())));
-            dsp.rack.controls[slot].channel = channel;
+            dsp.core.rack.parts[slot].set_bank(Some(Box::new(bank.unwrap())));
+            dsp.core.rack.controls[slot].channel = channel;
         }
         let mut outputs = vec![vec![0f32; 256]; 2];
         let mut refs: Vec<_> = outputs.iter_mut().map(|o| o.as_mut_slice()).collect();
@@ -7894,7 +7742,7 @@ end on"#;
             }
         };
         let none = EventList::with_capacity(0);
-        let voices = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.rack.parts[s].active_voices() > 0);
+        let voices = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.core.rack.parts[s].active_voices() > 0);
 
         p.shared.press_key(EVERY_PART, 60, 100);
         run(&mut dsp, &none, 1);
@@ -7907,7 +7755,7 @@ end on"#;
         run(&mut dsp, &host, 1);
         p.shared.release_key(60);
         run(&mut dsp, &none, 400);
-        let count = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.rack.parts[s].active_voices());
+        let count = |dsp: &Dsp| [0, 1, 2, 3].map(|s| dsp.core.rack.parts[s].active_voices());
         assert_eq!(count(&dsp), [1, 1, 0, 1]);
 
         // A selected part plays alone.
@@ -7939,7 +7787,7 @@ end on"#;
             }),
             ..Zone::default()
         };
-        dsp.rack.parts[1].set_bank(Some(Box::new(
+        dsp.core.rack.parts[1].set_bank(Some(Box::new(
             Bank::from_samples(
                 vec![group],
                 vec![zone],
@@ -7953,8 +7801,8 @@ end on"#;
             )
             .unwrap(),
         )));
-        dsp.rack.controls[1].port = 1;
-        dsp.rack.controls[1].output = 2;
+        dsp.core.rack.controls[1].port = 1;
+        dsp.core.rack.controls[1].output = 2;
         let mut events = EventList::with_capacity(4);
         events.push(Event::on_port(
             16,
@@ -8080,8 +7928,8 @@ end on"#;
         let mut cx =
             ProcessContext::new(&transport, 48000., 2048, &mut outgoing).with_bus_routing(routing);
         Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx);
-        assert!(dsp.rack.parts[0].bank().is_some() && dsp.rack.parts[1].bank().is_some());
-        for part in &dsp.rack.parts[..2] {
+        assert!(dsp.core.rack.parts[0].bank().is_some() && dsp.core.rack.parts[1].bank().is_some());
+        for part in &dsp.core.rack.parts[..2] {
             assert_eq!(part.bank().unwrap().zones().len(), 2000, "file-handle pressure must not discard harp zones");
         }
         for ch in [0, 2] {
@@ -8097,11 +7945,11 @@ end on"#;
             &EventList::with_capacity(0),
             &mut cx,
         );
-        assert!(dsp.rack.parts[0].bank().is_none());
-        assert!(dsp.rack.parts[1].bank().is_some());
-        assert!(dsp.rack.parts[1].active_voices() > 0);
+        assert!(dsp.core.rack.parts[0].bank().is_none());
+        assert!(dsp.core.rack.parts[1].bank().is_some());
+        assert!(dsp.core.rack.parts[1].active_voices() > 0);
         // Scripts run on the audio thread; their persistent values reach the host state.
-        assert!(dsp.rack.parts[1].script().is_some());
+        assert!(dsp.core.rack.parts[1].script().is_some());
         Load.run(&p);
         Sampler::process(
             &mut dsp,
@@ -8126,7 +7974,7 @@ end on"#;
                 &mut cx,
             );
             assert!(dsp.script_epoch[1] > epoch);
-            assert!(dsp.rack.parts[1].bank().is_some() && dsp.rack.parts[1].script().is_some());
+            assert!(dsp.core.rack.parts[1].bank().is_some() && dsp.core.rack.parts[1].script().is_some());
             Load.run(&p);
             Sampler::process(
                 &mut dsp,
@@ -8156,7 +8004,7 @@ end on"#;
             &mut cx,
         );
         assert!(p.shared.ready.is_empty());
-        assert!(dsp.rack.parts[1].bank().is_some());
+        assert!(dsp.core.rack.parts[1].bank().is_some());
     }
     #[test]
     #[ignore = "requires the owner's local Chorus multi"]
@@ -8316,7 +8164,7 @@ end on"
         assert!(errors.is_empty(), "{errors:?}");
         let mut dsp = Dsp::default();
         let p = SamplerParams::new();
-        let e = &mut dsp.rack.parts[0];
+        let e = &mut dsp.core.rack.parts[0];
         e.set_bank(Some(Box::new(Bank::from_samples(groups, zones, samples).unwrap())));
         e.set_script(rt);
         let fx = i.fx.processor(e.rate() as f32, MAX_BLOCK);
@@ -8381,9 +8229,9 @@ end on"
             let mut dsp = Dsp::default();
             let p = SamplerParams::new();
             for (slot, pad) in [(0, 480), (1, 1440)] {
-                dsp.rack.parts[slot].set_bank(Some(late_bank(&[(0, 127, pad)])));
-                dsp.rack.controls[slot].channel = slot as i16;
-                dsp.rack.controls[slot].output = slot as u8;
+                dsp.core.rack.parts[slot].set_bank(Some(late_bank(&[(0, 127, pad)])));
+                dsp.core.rack.controls[slot].channel = slot as i16;
+                dsp.core.rack.controls[slot].output = slot as u8;
             }
             let selection = Selection {
                 auto_align: on,
@@ -8444,7 +8292,7 @@ end on"
         assert_eq!(plan.latency_ms, 200.0);
         let mut s = timing::Scheduler::default();
         assert_eq!(
-            s.arrive(articulate::In::NoteOn(0, 60, 100), 0, &plan.parts[0], 48_000.0, &Router::default()),
+            s.arrive(crate::articulate::In::NoteOn(0, 60, 100), 0, &plan.parts[0], 48_000.0, &crate::articulate::Router::default()),
             None
         );
         assert_eq!(s.next_due(), Some(120 * 48), "the stale 100 ms measurement is ignored; the manual 80 ms offset remains");
@@ -8457,11 +8305,11 @@ end on"
     fn two_articulations_with_different_attacks_land_on_the_grid() {
         let articulate = Articulate {
             source: "arts.nki".into(),
-            mode: articulate::Mode::Channel,
+            mode: crate::articulate::Mode::Channel,
             articulations: ["Short", "Long"]
                 .iter()
                 .enumerate()
-                .map(|(n, name)| articulate::Articulation {
+                .map(|(n, name)| crate::articulate::Articulation {
                     name: (*name).into(),
                     key: Some(24 + n as u8),
                     channel: n as u8,
@@ -8492,10 +8340,10 @@ end on"
             let mut dsp = Dsp::default();
             let p = SamplerParams::new();
             // Soft notes play the 5 ms zone, loud ones the 40 ms zone.
-            dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 64, 240), (65, 127, 1920)])));
-            dsp.rack.controls[0].channel = -1;
-            dsp.routers[0].set_route(Route::new("arts.nki", &articulate, &Mpe::default()));
-            dsp.align.plan = plan(&selection);
+            dsp.core.rack.parts[0].set_bank(Some(late_bank(&[(0, 64, 240), (65, 127, 1920)])));
+            dsp.core.rack.controls[0].channel = -1;
+            dsp.core.routers[0].set_route(Route::new("arts.nki", &articulate, &Mpe::default()));
+            dsp.core.align.plan = plan(&selection);
             assert_eq!(Sampler::latency(&dsp), 1920);
             first_sound(&render_notes(&mut dsp, &p, &[(1000, channel, 60, velocity)], 6000)[0])
         };
@@ -8617,12 +8465,12 @@ end on"
     fn growing_to_129_parts_preserves_notes_and_releases_high_keyboard_targets_without_heap_work() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
-        dsp.rack.parts[0].note_on(0, 59, 100);
-        dsp.align.plan.on = true;
-        dsp.align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.));
-        dsp.align.arrive(&mut dsp.rack, &mut dsp.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
-        assert_eq!(dsp.align.next_due(), Some(480));
+        dsp.core.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.core.rack.parts[0].note_on(0, 59, 100);
+        dsp.core.align.plan.on = true;
+        dsp.core.align.plan.parts.fill(Holds::of(&Timing { override_ms: Some(0.), ..Default::default() }, &[], 10.));
+        dsp.core.align.arrive(&mut dsp.core.rack, &mut dsp.core.routers, 0, In::NoteOn(0, 62, 100), 0, 48000.);
+        assert_eq!(dsp.core.align.next_due(), Some(480));
         let selection = Selection { parts: (0..129).map(|slot| Part {
             path: format!("/virtual/dynamic-{slot}.nki"), channel: (slot % 16) as i16,
             ..Default::default()
@@ -8650,10 +8498,10 @@ end on"
         for _ in 0..BUSES { routing.push_output(2, BusActivation::Active); }
         let mut cx = ProcessContext::new(&transport, 48000., 128, &mut midi_out).with_bus_routing(routing);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert_eq!(dsp.rack.parts.len(), 129);
-        assert!(dsp.rack.parts[0].key_down(0, 59), "growth preserves held notes");
-        assert_eq!(dsp.rack.parts[0].active_voices(), 1);
-        assert_eq!(dsp.align.next_due(), Some(480), "growth preserves queued notes");
+        assert_eq!(dsp.core.rack.parts.len(), 129);
+        assert!(dsp.core.rack.parts[0].key_down(0, 59), "growth preserves held notes");
+        assert_eq!(dsp.core.rack.parts[0].active_voices(), 1);
+        assert_eq!(dsp.core.align.next_due(), Some(480), "growth preserves queued notes");
         p.shared.sync_overrides(&edited);
         assert_eq!(p.shared.sent.lock().unwrap()[128], edited.parts[128].edits.0);
         p.shared.part(128).unwrap().generation.store(73, Ordering::Release);
@@ -8662,22 +8510,22 @@ end on"
         p.shared.scope.source.store(129, Ordering::Relaxed);
         p.shared.press_key(128, 60, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts[128].key_down(0, 60));
-        assert_eq!(dsp.rack.tap, Some(128), "high part scope is distinct from the master sentinel");
+        assert!(dsp.core.rack.parts[128].key_down(0, 60));
+        assert_eq!(dsp.core.rack.tap, Some(128), "high part scope is distinct from the master sentinel");
         assert!(p.shared.part(128).unwrap().meter.iter().any(|m| f32::from_bits(m.load(Ordering::Relaxed)) > 0.));
         p.shared.release_key(60);
         p.shared.scope.source.store(SCOPE_MASTER, Ordering::Relaxed);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(!dsp.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
-        assert_eq!(dsp.rack.tap, None, "master scope remains independent of part count");
+        assert!(!dsp.core.rack.parts[128].key_down(0, 60), "part 128 is not the old key-owner sentinel");
+        assert_eq!(dsp.core.rack.tap, None, "master scope remains independent of part count");
         p.shared.press_key(EVERY_PART, 61, 100);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts[0].key_down(0, 61) && dsp.rack.parts[128].key_down(0, 61));
-        dsp.rack.controls[128].channel = 15;
+        assert!(dsp.core.rack.parts[0].key_down(0, 61) && dsp.core.rack.parts[128].key_down(0, 61));
+        dsp.core.rack.controls[128].channel = 15;
         p.shared.release_key(61);
         dsp.until_diagnostics = 0;
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(!dsp.rack.parts[128].key_down(0, 61), "release uses the saved targets despite route changes");
+        assert!(!dsp.core.rack.parts[128].key_down(0, 61), "release uses the saved targets despite route changes");
         drain_audio_diagnostics(&p);
         let audio = p.shared.diagnostic_latest.lock().unwrap().clone().unwrap();
         assert_eq!(audio.parts.len(), 129);
@@ -8697,11 +8545,11 @@ end on"
         assert_eq!(p.shared.diagnostic_audio.len(), 2);
         p.shared.panic.store(true, Ordering::Release);
         assert_eq!(allocations(|| { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }), 0);
-        assert!(dsp.rack.parts.iter().all(|e| (0..16).all(|ch| !e.key_down(ch, 59) && !e.key_down(ch, 61))));
+        assert!(dsp.core.rack.parts.iter().all(|e| (0..16).all(|ch| !e.key_down(ch, 59) && !e.key_down(ch, 61))));
         assert_eq!(allocations(|| {
             for _ in 0..128 { Sampler::process(&mut dsp, &p, &mut buffer, &events, &mut cx); }
         }), 0);
-        assert!(dsp.rack.parts.iter().all(|e| e.active_voices() == 0));
+        assert!(dsp.core.rack.parts.iter().all(|e| e.active_voices() == 0));
         assert!(dsp.key_slots.0.iter().all(|row| row.iter().all(|held| !held)));
     }
 
@@ -8776,10 +8624,10 @@ end on"
     fn diagnostics_audio_handoff_is_bounded_and_reports_held_channel_state() {
         let p = SamplerParams::new();
         let mut dsp = Dsp::default();
-        dsp.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
-        dsp.rack.parts[0].note_on(2, 60, 100);
-        dsp.rack.parts[0].cc(2, 64, 127);
-        dsp.rack.parts[0].cc(2, 66, 127);
+        dsp.core.rack.parts[0].set_bank(Some(late_bank(&[(0, 127, 0)])));
+        dsp.core.rack.parts[0].note_on(2, 60, 100);
+        dsp.core.rack.parts[0].cc(2, 64, 127);
+        dsp.core.rack.parts[0].cc(2, 66, 127);
         dsp.installed_generation[0] = 41;
         p.shared.part(0).unwrap().generation.store(42, Ordering::Relaxed);
         let mut outputs = vec![vec![0f32; 128]; 2];

@@ -16,12 +16,17 @@ plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-t
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
+# The sampler-core (v2) sound core behind the seam in src/sound/v2.rs.
+core-v2 = ["dep:sampler-core", "dep:sampler-ir", "dep:sampler-kontakt"]
 # Reads a library's own access data to open its encrypted content (src/access.rs).
 library-access = ["dep:aes"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
 shots = ["plugin", "dep:mui"]
 
 [dependencies]
+sampler-core = { path = "crates/sampler-core", optional = true }
+sampler-ir = { path = "crates/sampler-ir", optional = true }
+sampler-kontakt = { path = "crates/sampler-kontakt", optional = true }
 rustc-hash = "=2.1.3"
 anyhow = "1"
 aes = { version = "0.8", optional = true }
@@ -145,7 +150,7 @@ vello = { path = "vendor/vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-uvi", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 

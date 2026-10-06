@@ -11,6 +11,7 @@ sampler-core = { path = "../sampler-core" }
 sampler-midi = { path = "../sampler-midi" }
 sampler-ksp = { path = "../sampler-ksp" }
 sampler-kontakt = { path = "../sampler-kontakt" }
+sampler-ir = { path = "../sampler-ir" }
 
 [lints.rust]
 unsafe_code = "forbid"
