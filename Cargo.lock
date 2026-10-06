@@ -3721,6 +3721,7 @@ dependencies = [
  "realfft",
  "rtrb",
  "sampler-ir",
+ "sampler-pool",
  "sampler-simd",
 ]
 
@@ -3770,6 +3771,10 @@ dependencies = [
  "sampler-uvi",
  "serde_json",
 ]
+
+[[package]]
+name = "sampler-pool"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-simd"
