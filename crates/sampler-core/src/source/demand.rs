@@ -1,5 +1,5 @@
 use super::Cursor;
-use crate::{Action, AssetId, EnvelopeState, Error, Runtime, VoiceId};
+use crate::{Action, AssetId, Direction, EnvelopeState, Error, Runtime, VoiceId};
 use std::ops::Range;
 
 /// A borrowed demand description: it does not pin a plan or transfer sample data.
@@ -23,6 +23,32 @@ impl Runtime {
         frames: u32,
         mut accept: impl FnMut(SampleDemand) -> bool,
     ) -> Result<bool, Error> {
+        let Some(VoiceDemand {
+            cursor,
+            envelope,
+            at,
+            frames,
+            asset,
+        }) = self.voice_demand(voice, frames)?
+        else {
+            return Ok(true);
+        };
+        Ok(cursor.visit_demand(frames, envelope, |offset, frames| {
+            accept(SampleDemand {
+                asset,
+                frames,
+                deadline: at + u64::from(offset),
+            })
+        }))
+    }
+
+    /// A voice's cursor at its rendered pitch over the horizon, from its
+    /// first output frame `at`; `None` when it starts beyond the horizon.
+    pub(crate) fn voice_demand(
+        &self,
+        voice: VoiceId,
+        frames: u32,
+    ) -> Result<Option<VoiceDemand>, Error> {
         let end = self
             .now
             .checked_add(u64::from(frames))
@@ -41,23 +67,72 @@ impl Runtime {
                 .expect("a pending source owns its start command")
         };
         if at >= end {
-            return Ok(true);
+            return Ok(None);
         }
         let expression = self.expressions.get(note.expression.0).unwrap();
-        let cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
-        let frames = ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX));
-        let asset = self.plans.get(note.plan.0).unwrap().prepared.pcm[v.sample].asset_id();
-        Ok(cursor.visit_demand(frames, v.envelope, |offset, frames| {
-            accept(SampleDemand {
-                asset,
-                frames,
-                deadline: at + u64::from(offset),
-            })
+        Ok(Some(VoiceDemand {
+            cursor: v.cursor.with_step(v.base_step * expression.rendered.ratio),
+            envelope: v.envelope,
+            at,
+            frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
+            asset: self.plans.get(note.plan.0).unwrap().prepared.pcm[v.sample].asset_id(),
         }))
     }
 }
 
+pub(crate) struct VoiceDemand {
+    pub cursor: Cursor,
+    pub envelope: EnvelopeState,
+    pub at: u64,
+    pub frames: u32,
+    pub asset: AssetId,
+}
+
 impl Cursor {
+    /// Physical frames a stretch of `frames` output frames may read, when that
+    /// stretch maps linearly (before any loop boundary or crossfade): a
+    /// superset of `visit_demand`'s ranges, ignoring envelope ends. With the
+    /// traversal direction, and the virtual offset of the cursor's window
+    /// start, to recover first-use deadlines.
+    pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
+        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        let length = (self.end - self.start) as f64;
+        let low = self.position as f64 - radius;
+        let high =
+            self.position as f64 + self.fraction + f64::from(frames) * self.step + radius + 1.;
+        if let Some(r) = self.loop_range {
+            let fade = match r.shape {
+                crate::LoopShape::Crossfade { frames }
+                | crate::LoopShape::EqualPowerCrossfade { frames } => frames as f64,
+                _ => 0.,
+            };
+            if self.exit.is_some() || high + fade >= self.first_boundary(r) as f64 {
+                return None;
+            }
+        }
+        let (low, high) = (low.max(0.) as usize, high.min(length).max(0.) as usize);
+        let range = match self.direction {
+            Direction::Forward => self.start + low..self.start + high.max(low),
+            Direction::Reverse => self.end - high.max(low)..self.end - low,
+        };
+        Some((
+            range,
+            self.direction,
+            self.position as f64 + self.fraction + radius,
+        ))
+    }
+
+    /// Output frames until a linear stretch (see `linear_reach`) first reads
+    /// physical frame `index`; `lead` is the reach's third value.
+    pub(crate) fn first_use(&self, index: usize, direction: Direction, lead: f64) -> u32 {
+        let offset = match direction {
+            Direction::Forward => index - self.start,
+            Direction::Reverse => self.end - 1 - index,
+        } as f64;
+        // One frame early: a deadline may only err towards urgency.
+        (((offset - lead) / self.step).floor() - 1.).max(0.) as u32
+    }
+
     pub(crate) fn visit_demand(
         mut self,
         frames: u32,
@@ -136,6 +211,46 @@ fn extend(
 mod tests {
     use super::*;
     use crate::{Direction, Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn a_linear_reach_covers_every_read_no_later_than_its_first_use() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for looped in [false, true] {
+                for step in [0.5, 1., 1.37, 2., 3.9] {
+                    let mut cursor = Playback {
+                        start: 3,
+                        end: Some(4000),
+                        direction,
+                        loop_range: looped.then_some(Loop {
+                            start: 2000,
+                            end: 3900,
+                            shape: LoopShape::Crossfade { frames: 64 },
+                            mode: LoopMode::UntilRelease,
+                            passes: None,
+                        }),
+                        ..Playback::default()
+                    }
+                    .cursor(4096, 48000, 48000)
+                    .unwrap()
+                    .with_step(step);
+                    for _ in 0..7 {
+                        cursor.advance();
+                    }
+                    let (reach, dir, lead) = cursor.linear_reach(300).expect("before the loop");
+                    assert_eq!(dir, direction);
+                    let envelope = EnvelopeState::new(Envelope::one_shot(0, 10_000, 0));
+                    assert!(cursor.visit_demand(300, envelope, |frame, range| {
+                        assert!(reach.start <= range.start && range.end <= reach.end);
+                        for index in range {
+                            assert!(cursor.first_use(index, dir, lead) <= frame);
+                        }
+                        true
+                    }));
+                    assert!(!looped || cursor.linear_reach(20_000).is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn overlapping_windows_keep_every_first_use_deadline_across_loop_and_release_topology() {

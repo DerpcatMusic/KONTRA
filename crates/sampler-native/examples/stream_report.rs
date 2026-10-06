@@ -3,6 +3,7 @@
 //! overlapping notes across its range in 64-frame blocks (servicing the page
 //! cache before each), then purges heads idle for ten seconds.
 use sampler_core::{Limits, PAGE_FRAMES, Runtime};
+
 use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::{path::Path, time::Instant};
 
@@ -63,18 +64,20 @@ fn main() {
     } = streamed;
     let plan = loaded.plan;
     let rate = plan.sample_rate();
+    let x: usize = std::env::var("LIMITS_X").map_or(1, |v| v.parse().unwrap());
+    let pick = |name: &str| std::env::var("LIMITS_ONLY").map_or(x, |o| if o == name { x } else { 1 });
     let limits = Limits {
-        notes: 256,
+        notes: 256 * pick("notes"),
         channels: 16,
         performances: 1,
-        expressions: 256,
-        families: 256,
-        decisions: 1024,
+        expressions: 256 * pick("expressions"),
+        families: 256 * pick("families"),
+        decisions: 1024 * pick("decisions"),
         voices,
-        commands: 1024,
-        behaviors: 64,
-        behavior_fuel: 1 << 20,
-        behavior_cells: plan.behavior_local_count().saturating_mul(64),
+        commands: 1024 * pick("commands"),
+        behaviors: 64 * pick("behaviors"),
+        behavior_fuel: (1 << 20) * pick("fuel"),
+        behavior_cells: plan.behavior_local_count().saturating_mul(64 * pick("behavior_cells")),
         note_cells: plan.note_cell_count().saturating_mul(256),
     };
     let mut rt = Runtime::new(plan, limits)
@@ -113,8 +116,9 @@ fn main() {
         })
         .collect();
     let mut buffer = [[0.0f32; 2]; 64];
+    let horizon = (report.head_frames + buffer.len()) as u32;
     let (mut next, mut times, mut refused, mut reloaded) = (0, Vec::new(), 0, 0);
-    let mut peak = 0.0f32;
+    let (mut peak, mut most) = (0.0f32, 0);
     for start in (0..frames + 3 * rate as usize).step_by(buffer.len()) {
         let mut batch = Vec::new();
         while next < packets.len() && packets[next].offset < start + buffer.len() {
@@ -125,7 +129,7 @@ fn main() {
             next += 1;
         }
         let t = Instant::now();
-        let _ = rt.service_streaming(PAGE_FRAMES as u32);
+        let _ = rt.service_streaming(horizon);
         ingress
             .render(&mut rt, &mut buffer, &batch, batch.len(), |_, result| {
                 if let Err(e) = &result {
@@ -137,6 +141,7 @@ fn main() {
             })
             .unwrap();
         times.push(t.elapsed().as_secs_f64() * 1e6);
+        most = most.max(rt.stats().voices);
         rt.flush_behaviors(|_, _, _| true);
         rt.flush_ended(|_| true);
         peak = buffer.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
@@ -155,7 +160,7 @@ fn main() {
         times.last().unwrap(),
     );
     println!(
-        "stream underruns {}, voice drops {}, nonfinite {}, refused events {refused}, heads reloaded {reloaded}; RSS {} (peak {})",
+        "voices peak {most}, stream underruns {}, voice drops {}, nonfinite {}, refused events {refused}, heads reloaded {reloaded}; RSS {} (peak {})",
         stats.stream_underruns,
         stats.voice_drops,
         stats.nonfinite_frames,
