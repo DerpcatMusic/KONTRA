@@ -298,30 +298,40 @@ impl Runtime {
         let first = self.voices.slots[voices[0]].value.as_ref().unwrap();
         let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
         let dsp = &mut plan.dsp;
-        lanes::process(
-            chain.pre(),
-            0,
-            &mut dsp.cells,
-            &batch,
-            &mut block,
-            &dsp.parameters,
-            at,
-            &mut dsp.filters,
+        sampler_simd::dispatch(
+            #[inline(always)]
+            || {
+                lanes::process(
+                    chain.pre(),
+                    0,
+                    &mut dsp.cells,
+                    &batch,
+                    &mut block,
+                    &dsp.parameters,
+                    at,
+                    &mut dsp.filters,
+                )
+            },
         );
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let len = batch.ends[2 * lane];
             lanes::scale(&mut block, lane, &super::dsp::levels(v, len), len);
         }
-        lanes::process(
-            chain.post(),
-            chain.pre().len(),
-            &mut dsp.cells,
-            &batch,
-            &mut block,
-            &dsp.parameters,
-            at,
-            &mut dsp.filters,
+        sampler_simd::dispatch(
+            #[inline(always)]
+            || {
+                lanes::process(
+                    chain.post(),
+                    chain.pre().len(),
+                    &mut dsp.cells,
+                    &batch,
+                    &mut block,
+                    &dsp.parameters,
+                    at,
+                    &mut dsp.filters,
+                )
+            },
         );
         let mut done = [false; VOICES];
         for (lane, &i) in voices.iter().enumerate() {
