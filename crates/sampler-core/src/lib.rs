@@ -66,7 +66,9 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod script_params;
 mod voice_mod;
+pub use script_params::ParamScope;
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
@@ -279,6 +281,10 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
+    /// The region's group, for script group layers.
+    group: Option<u32>,
+    /// Script-layer gains at the end of the last rendered chunk.
+    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -460,6 +466,10 @@ pub struct Runtime {
     behavior_locals: Box<[i64]>,
     note_stride: usize,
     note_values: Box<[i64]>,
+    note_params: Box<[script_params::NoteParams]>,
+    /// Set once a script writes a voice parameter; voices then render in chunks.
+    // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
+    script_params: bool,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -544,6 +554,7 @@ impl Runtime {
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
             modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
+            script: script_params::EngineLayers::new(plan.group_count),
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
@@ -589,6 +600,9 @@ impl Runtime {
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
+            note_params: vec![script_params::NoteParams::default(); limits.notes]
+                .into_boxed_slice(),
+            script_params: false,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -865,6 +879,7 @@ impl Runtime {
             ..release::ReleaseTimes::default()
         };
         self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
+        self.note_params[id.index] = script_params::NoteParams::default();
         self.plans.get_mut(plan.0).unwrap().projections.admit(
             id.index,
             0,
@@ -1050,6 +1065,8 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
+            group: None,
+            script_gains: None,
         })?);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
