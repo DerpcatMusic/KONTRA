@@ -548,31 +548,31 @@ impl crate::Runtime {
                 if asset.resident_frames().is_some() {
                     continue;
                 }
-                // A busy head lock reads as none: its pages are merely requested.
-                let head = asset.try_head().map_or(0, |h| h.len());
+                // A busy lock reads as nothing resident: pages are merely requested.
+                let head = asset.try_head();
+                let head = head.as_deref().map_or(&[][..], |h| h);
                 let mut failure = None;
                 let complete = self
                     .visit_voice_demand(crate::VoiceId(self.voices.id(index)), frames, |demand| {
-                        let frames = demand.frames.start.max(head)..demand.frames.end;
-                        if frames.is_empty() {
-                            return true;
-                        }
-                        if !requesting {
-                            cache
-                                .protect(asset, frames)
-                                .expect("validated source demand");
-                            return true;
-                        }
-                        for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
-                            match cache.request(asset, page, demand.deadline) {
-                                Ok(status) => ready &= status == PageStatus::Ready,
-                                Err(error) => {
-                                    failure = Some(error);
-                                    return false;
+                        crate::prepare::uncovered(head, demand.frames, |frames| {
+                            if !requesting {
+                                cache
+                                    .protect(asset, frames)
+                                    .expect("validated source demand");
+                                return true;
+                            }
+                            for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES
+                            {
+                                match cache.request(asset, page, demand.deadline) {
+                                    Ok(status) => ready &= status == PageStatus::Ready,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        return false;
+                                    }
                                 }
                             }
-                        }
-                        true
+                            true
+                        })
                     })
                     .expect("live voice and validated horizon");
                 if let Some(error) = failure {
@@ -594,16 +594,17 @@ impl crate::Runtime {
             return Ok(());
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
-        let head = asset.try_head().map_or(0, |h| h.len());
+        let head = asset.try_head();
+        let head = head.as_deref().map_or(&[][..], |h| h);
         let ready = cursor.visit_demand(1, crate::EnvelopeState::new(envelope), |_, range| {
-            let start = range.start.max(head);
-            start >= range.end
-                || (start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES).all(|index| {
+            crate::prepare::uncovered(head, range, |frames| {
+                (frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES).all(|index| {
                     cache.status(PageKey {
                         asset: asset.asset_id(),
                         index,
                     }) == PageStatus::Ready
                 })
+            })
         });
         if ready {
             Ok(())
