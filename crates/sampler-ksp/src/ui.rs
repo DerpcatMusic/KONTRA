@@ -176,14 +176,17 @@ impl Builder<'_> {
             // Kontakt's factory fonts carry their own colour and size, sampled
             // from NI's font chart (KSP manual, control parameters).
             const COLORS: [u32; 26] = [
-                0xfefefe, 0xfefefe, 0x373733, 0xcccccc, 0xe3c269, 0xe4d182, 0x7d3012, 0x853519, 0x48443c, 0x000000,
-                0xd9d9d9, 0x898c8d, 0x1b1b1a, 0xd2dce1, 0xb9b9b9, 0x5f5f5f, 0x000000, 0xfefefe, 0xfefefe, 0x000000,
-                0x7f7f7f, 0x7f7f7f, 0x000000, 0x7f7f7f, 0xffffff, 0x0c2431,
+                0xfefefe, 0xfefefe, 0x373733, 0xcccccc, 0xe3c269, 0xe4d182, 0x7d3012, 0x853519,
+                0x48443c, 0x000000, 0xd9d9d9, 0x898c8d, 0x1b1b1a, 0xd2dce1, 0xb9b9b9, 0x5f5f5f,
+                0x000000, 0xfefefe, 0xfefefe, 0x000000, 0x7f7f7f, 0x7f7f7f, 0x000000, 0x7f7f7f,
+                0xffffff, 0x0c2431,
             ];
             let factory = usize::try_from(font).ok().filter(|&f| f < COLORS.len());
             self.ui.styles.push(ir::TextStyle {
                 font: ir::Font::Stock(font),
-                size: factory.filter(|f| matches!(f, 1 | 5 | 7 | 16 | 17 | 20)).map(|_| 13.),
+                size: factory
+                    .filter(|f| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
+                    .map(|_| 13.),
                 color: factory.map_or(ir::Rgba::default(), |f| ir::Rgba::rgb(COLORS[f])),
                 align: match align {
                     0 => ir::Align::Left,

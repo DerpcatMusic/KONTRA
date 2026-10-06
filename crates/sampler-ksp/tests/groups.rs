@@ -333,12 +333,18 @@ fn an_ignored_silent_note_with_a_held_release_retires() {
     rt.key_up(note, None).unwrap();
     rt.render(&mut audio).unwrap();
     rt.flush_behaviors(|_, _, _| true);
-    assert!(rt.release_context(note).unwrap().gate.is_none(), "release held");
+    assert!(
+        rt.release_context(note).unwrap().gate.is_none(),
+        "release held"
+    );
     rt.flush_ended(|_| true);
     assert_eq!(rt.note_count(), 0);
     assert_eq!(rt.voice_count(), 0);
     assert_eq!(audio, [[0.; 2]; 8]);
-    assert_eq!(rt.release_reserve(), sampler_core::ReleaseReserve::default());
+    assert_eq!(
+        rt.release_reserve(),
+        sampler_core::ReleaseReserve::default()
+    );
 }
 
 #[test]
@@ -390,7 +396,11 @@ fn no_sys_script_pedal_disables_native_sustain() {
         let note = rt.trigger(input(60), 60, 1.).unwrap();
         rt.key_up(note, None).unwrap();
         assert_eq!(rt.pedals(channel).unwrap(), (true, false));
-        assert_eq!(rt.release_context(note).unwrap().gate.is_some(), owned, "{source}");
+        assert_eq!(
+            rt.release_context(note).unwrap().gate.is_some(),
+            owned,
+            "{source}"
+        );
         rt.sustain(channel, false).unwrap();
         assert!(rt.release_context(note).unwrap().gate.is_some(), "{source}");
     }
