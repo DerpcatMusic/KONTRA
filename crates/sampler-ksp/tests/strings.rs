@@ -189,3 +189,39 @@ fn playing_from_a_released_note_is_ignored_not_a_fault() {
     }
     assert_eq!(faults, Vec::<String>::new());
 }
+
+/// `$EVENT_PAR_0..3` carry a script's own values from a note to its release
+/// callback, as Analog Strings tags the notes it owns; large ids survive.
+#[test]
+fn user_event_parameters_reach_the_release_callback() {
+    let mut rt = run(
+        "on init declare $a declare $b end on
+         on note
+           ignore_event($EVENT_ID)
+           set_event_par($EVENT_ID, 0, 1234567)
+           set_event_par($EVENT_ID, 3, -5)
+         end on
+         on release
+           $a := get_event_par($EVENT_ID, 0)
+           $b := get_event_par($EVENT_ID, 3)
+         end on",
+        &[],
+    );
+    rt.note_off(
+        sampler_core::Input {
+            protocol: sampler_core::Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(60),
+        },
+        None,
+    )
+    .unwrap();
+    for _ in 0..10 {
+        rt.render(&mut [[0.; 2]; 64]).unwrap();
+        rt.flush_behaviors(|_, _, _| true);
+    }
+    assert_eq!((cell(&rt, 0), cell(&rt, 1)), (1234567, -5));
+}

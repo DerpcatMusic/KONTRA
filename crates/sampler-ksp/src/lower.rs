@@ -1663,6 +1663,37 @@ impl Gen<'_, '_> {
                 }
                 true
             }
+            // The four user parameters ($EVENT_PAR_0..3) a script keeps on an
+            // event, e.g. a note's tag that its release callback reads back.
+            // They share the note's modulator-value store under ids above the
+            // modulator range (sampler_core::USER_EVENT_PAR).
+            SetEventPar | GetEventPar
+                if matches!(self.const_int(args, 1), Some(0..=3))
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                let id = reg(dst, 2)?;
+                self.set(
+                    id,
+                    i64::from(sampler_core::USER_EVENT_PAR)
+                        + i64::from(self.const_int(args, 1).unwrap()),
+                )?;
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventPar {
+                    self.arg(args, 2, t)?;
+                    self.emit(I::WriteModValue {
+                        event: dst,
+                        id,
+                        local: t,
+                    })?;
+                } else {
+                    self.emit(I::ReadModValue {
+                        event: dst,
+                        id,
+                        local: dst,
+                    })?;
+                }
+                true
+            }
             SetEventPar | GetEventPar
                 if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
             {
