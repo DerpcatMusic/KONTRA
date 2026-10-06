@@ -3,8 +3,16 @@ use std::{f64::consts::PI, sync::OnceLock};
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
 pub(super) const MAX_STEP: f64 = 16.0;
+/// Octave levels that cover steps up to MAX_STEP.
+pub(super) const OCTAVES: usize = 4;
 const RADIUS: usize = 48;
 const SHORT_RADIUS: usize = 12;
+
+/// Source frames any quality reads on each side of a voice's position at
+/// `step`: what a resident range around a start needs beyond its frames.
+pub fn read_radius(step: f64) -> usize {
+    Kernel::radius(step) as usize
+}
 const RESOLUTION: usize = 1024;
 
 /// Rate-conversion quality. Realtime interpolates upsampled and unity-rate
@@ -93,10 +101,10 @@ pub(super) const DECIMATION_REACH: i64 = 2 * RADIUS as i64;
 /// Octave levels 1..=log2(MAX_STEP), each the previous low-passed by the long
 /// kernel (0.9 of the new Nyquist) and decimated by two, sample j centered on
 /// frame 2j of the finer level. Control-side only.
-pub(super) fn octaves(frames: &[[f32; 2]]) -> Box<[Box<[[f32; 2]]>]> {
+pub(super) fn octaves(frames: &[[f32; 2]], depth: usize) -> Box<[Box<[[f32; 2]]>]> {
     let table = Kernel::new(ResampleQuality::High).long;
     let mut levels: Vec<Box<[[f32; 2]]>> = Vec::new();
-    for _ in 0..MAX_STEP.log2() as usize {
+    for _ in 0..depth.min(OCTAVES) {
         let finer = levels.last().map_or(frames, |level| level);
         if finer.len() < 2 {
             break;
@@ -129,6 +137,131 @@ fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     })
 }
 
+/// Stretches of the polyphase bank: eight per octave above unity.
+const STRETCHES: usize = 8;
+/// Phases per input frame; coefficients interpolate linearly between rows.
+const PHASES: usize = 64;
+
+/// The short sinc pre-evaluated for one stretch: `PHASES + 1` rows of
+/// `2 * radius + 1` f32 taps, row p for fraction p / PHASES, each row
+/// normalized to unit sum (so any interpolated row is too).
+pub(super) struct Polyphase {
+    stretch: f64,
+    radius: usize,
+    // Row length in f32: each tap twice (left, right), rounded up to a chunk.
+    stride: usize,
+    rows: Box<[f32]>,
+}
+
+/// f32 lanes per accumulation chunk: four stereo frames.
+const CHUNK: usize = 8;
+
+impl Polyphase {
+    fn new(table: &Table, stretch: f64) -> Self {
+        let radius = table.radius(stretch) as usize;
+        let taps = 2 * radius + 1;
+        let stride = (2 * taps).div_ceil(CHUNK) * CHUNK;
+        let mut rows = vec![0.0_f32; (PHASES + 1) * stride];
+        for (phase, row) in rows.chunks_exact_mut(stride).enumerate() {
+            let fraction = phase as f64 / PHASES as f64;
+            let mut coefficients = [0.0_f64; MAX_TAPS];
+            // Reuse the reference evaluation: a unit impulse reads one tap.
+            for (k, coefficient) in coefficients[..taps].iter_mut().enumerate() {
+                let tap = k as i64 - radius as i64;
+                let impulse = |o| if o == tap { [1.0; 2] } else { [0.0; 2] };
+                *coefficient = f64::from(table.sample(fraction, stretch, impulse)[0]);
+            }
+            let sum: f64 = coefficients[..taps].iter().sum();
+            for (pair, c) in row
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(&coefficients[..taps])
+            {
+                pair.fill((c / sum) as f32);
+            }
+        }
+        Self {
+            stretch,
+            radius,
+            stride,
+            rows: rows.into_boxed_slice(),
+        }
+    }
+
+    /// Interpolate at `fraction` from `window`, the 2 * radius + 1 frames
+    /// centered on tap 0, in traversal order.
+    #[inline]
+    /// Frames a padded window spans: taps rounded up to whole chunks.
+    pub(super) fn width(&self) -> usize {
+        self.stride / 2
+    }
+
+    /// Interpolate at `fraction` from `window`, frames from tap -radius in
+    /// traversal order: `width()` frames read directly (frames past the taps
+    /// meet zero coefficients and must be finite), shorter ones are padded.
+    #[inline]
+    pub(super) fn sample(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
+        if window.len() < self.width() {
+            let mut padded = [[0.0; 2]; MAX_WIDTH];
+            let taps = 2 * self.radius + 1;
+            padded[..taps].copy_from_slice(&window[..taps]);
+            return self.dot(fraction, &padded[..self.width()]);
+        }
+        self.dot(fraction, window)
+    }
+
+    /// [`Self::sample`] for a window of at least `width()` frames.
+    #[inline(always)]
+    pub(super) fn dot(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
+        let position = fraction * PHASES as f64;
+        let phase = (position as usize).min(PHASES - 1);
+        let t = (position - phase as f64) as f32;
+        let stride = self.stride;
+        let a = &self.rows[phase * stride..][..stride];
+        let b = &self.rows[(phase + 1) * stride..][..stride];
+        let window = &window.as_flattened()[..stride];
+        // Independent lanes, interleaved left/right: no serial f32 reduction
+        // and no deinterleave, so the loop vectorizes as written.
+        let mut sum = [[0.0_f32; 4]; 2];
+        let (a, b, x) = (
+            a.as_chunks::<CHUNK>().0,
+            b.as_chunks::<CHUNK>().0,
+            window.as_chunks::<CHUNK>().0,
+        );
+        for ((a, b), x) in a.iter().zip(b).zip(x) {
+            accumulate(&mut sum, t, a, b, x);
+        }
+        // Fold in register order (lanes k and k + 4), then the stereo pairs.
+        // The lanes leave through memory: otherwise SLP vectorization permutes
+        // them to suit this stereo fold and turns every load into scalar loads.
+        let sum = std::hint::black_box(sum);
+        let half: [f32; 4] = std::array::from_fn(|k| sum[0][k] + sum[1][k]);
+        [half[0] + half[2], half[1] + half[3]]
+    }
+}
+
+#[inline(always)]
+fn accumulate(
+    sum: &mut [[f32; 4]; 2],
+    t: f32,
+    a: &[f32; CHUNK],
+    b: &[f32; CHUNK],
+    x: &[f32; CHUNK],
+) {
+    for (half, sum) in sum.iter_mut().enumerate() {
+        let (a, b, x) = (&a[4 * half..], &b[4 * half..], &x[4 * half..]);
+        for k in 0..4 {
+            sum[k] += (a[k] + t * (b[k] - a[k])) * x[k];
+        }
+    }
+}
+
+/// Widest polyphase window: radius 12 at stretch 2.
+const MAX_TAPS: usize = 2 * 2 * SHORT_RADIUS + 1;
+/// Its padded width in frames.
+const MAX_WIDTH: usize = (2 * MAX_TAPS).div_ceil(CHUNK) * CHUNK / 2;
+
 /// The runtime's rate converter: immutable tables shared by every runtime,
 /// prepared by Runtime construction and never lazily initialized by rendering.
 #[derive(Clone, Copy)]
@@ -136,17 +269,35 @@ pub(super) struct Kernel {
     quality: ResampleQuality,
     long: &'static Table,
     short: &'static Table,
+    bank: &'static [Polyphase; STRETCHES],
 }
 
 impl Kernel {
     pub(super) fn new(quality: ResampleQuality) -> Self {
         static LONG: OnceLock<Table> = OnceLock::new();
         static SHORT: OnceLock<Table> = OnceLock::new();
+        static BANK: OnceLock<[Polyphase; STRETCHES]> = OnceLock::new();
+        let short = SHORT.get_or_init(|| Table::new(SHORT_RADIUS, 0.8));
         Self {
             quality,
             long: LONG.get_or_init(|| Table::new(RADIUS, 0.9)),
-            short: SHORT.get_or_init(|| Table::new(SHORT_RADIUS, 0.8)),
+            short,
+            bank: BANK
+                .get_or_init(|| std::array::from_fn(|i| Polyphase::new(short, Self::stretch(i)))),
         }
+    }
+
+    fn stretch(index: usize) -> f64 {
+        ((index + 1) as f64 / STRETCHES as f64).exp2()
+    }
+
+    /// The bank entry for 1 < step <= 2: the narrowest stretch at or above
+    /// step, so the band edge sits at most an eighth of an octave low.
+    pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
+        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > 2.0 {
+            return None;
+        }
+        self.bank.iter().find(|entry| entry.stretch >= step)
     }
 
     /// The widest window any quality reads at `step`: demand prediction uses it.
@@ -156,6 +307,9 @@ impl Kernel {
 
     /// Frames read on each side of the current position at `step`.
     pub(super) fn window(&self, step: f64) -> i64 {
+        if let Some(bank) = self.polyphase(step) {
+            return bank.radius as i64;
+        }
         match self.quality {
             ResampleQuality::High => self.long.radius(step),
             ResampleQuality::Realtime if step <= 1.0 => 2,
@@ -168,13 +322,31 @@ impl Kernel {
         &self,
         fraction: f64,
         step: f64,
-        read: impl FnMut(i64) -> [f32; 2],
+        mut read: impl FnMut(i64) -> [f32; 2],
     ) -> [f32; 2] {
+        if let Some(bank) = self.polyphase(step) {
+            let radius = bank.radius as i64;
+            let mut window = [[0.0; 2]; MAX_WIDTH];
+            for (frame, offset) in window.iter_mut().zip(-radius..=radius) {
+                *frame = read(offset);
+            }
+            return bank.sample(fraction, &window);
+        }
         match self.quality {
             ResampleQuality::High => self.long.sample(fraction, step, read),
             ResampleQuality::Realtime if step <= 1.0 => cubic(fraction, read),
             ResampleQuality::Realtime => self.short.sample(fraction, step, read),
         }
+    }
+
+    /// `sample` over a contiguous forward window of 2 * window(step) + 1 frames.
+    #[inline]
+    pub(super) fn sample_window(&self, fraction: f64, step: f64, window: &[[f32; 2]]) -> [f32; 2] {
+        if let Some(bank) = self.polyphase(step) {
+            return bank.sample(fraction, window);
+        }
+        let radius = self.window(step);
+        self.sample(fraction, step, |offset| window[(offset + radius) as usize])
     }
 }
 

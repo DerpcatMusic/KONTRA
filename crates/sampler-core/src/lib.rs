@@ -57,7 +57,7 @@ mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend};
-pub use resample::ResampleQuality;
+pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
@@ -90,10 +90,14 @@ pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
     ReleaseStatus, ReleaseVelocity, Trigger,
 };
+pub use render::RuntimeStats;
 mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
-pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
+pub use prepare::{
+    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve,
+    service_mipmaps,
+};
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
@@ -452,6 +456,9 @@ pub struct Runtime {
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    voice_drops: u64,
+    /// Last and peak `render` nanoseconds, and the last call's frames.
+    render_time: [u64; 3],
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
@@ -582,6 +589,8 @@ impl Runtime {
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            voice_drops: 0,
+            render_time: [0; 3],
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
@@ -1087,11 +1096,30 @@ impl Runtime {
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
         self.check_source_ready(asset, cursor, envelope)?;
-        let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
-        let next_sibling = f.first_voice;
+        f.voices.checked_add(1).ok_or(Error::Capacity)?;
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
+        if self.voices.available() == 0 {
+            // ponytail: only silent voices waiting on the stream are taken; no
+            // audible-voice stealing policy yet, so a full pool drops the start.
+            let waiting = (0..self.voices.slots.len()).find(|&i| {
+                self.voices.slots[i]
+                    .value
+                    .as_ref()
+                    .is_some_and(|v| v.started && v.cursor.waiting())
+            });
+            match waiting {
+                Some(i) => self.end_voice(VoiceId(self.voices.id(i))),
+                None => {
+                    self.voice_drops = self.voice_drops.saturating_add(1);
+                    return Err(Error::Capacity);
+                }
+            }
+        }
+        let f = self.families.get(family.0).unwrap();
+        let count = f.voices + 1;
+        let next_sibling = f.first_voice;
         let id = VoiceId(self.voices.insert(Voice {
             family,
             siblings: Siblings {
