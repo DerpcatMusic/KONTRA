@@ -9,7 +9,7 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <ControlSignalSources>
       <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocityAmount="1" VelocitySens="0.5" DecayCurve="0.5"/>
       <LFO Name="Vibrato" Freq="5"/>
-      <StepEnvelope Name="Steps"/>
+      <AHD Name="Steps"/>
     </ControlSignalSources>
     <EventProcessors>
       <ScriptProcessor Name="Arp"><script><![CDATA[function onNote(e) playNote(e.note, e.velocity) end]]></script></ScriptProcessor>
