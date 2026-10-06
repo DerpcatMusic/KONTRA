@@ -108,7 +108,7 @@ and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 
 ## Still open
 
-Broader language parsing, shared/persistent state, real/array/string values, note-handle
+Broader language parsing, persistent state, real/array/string values, note-handle
 locals, controller callbacks, consumed controller projections, rich engine queries,
 beat/transport waits, async services and compatibility profiles are not implemented.
 Their implementations must use these ownership/time services and extend the
@@ -267,3 +267,36 @@ A plan callback's fault/abort does not release an unrelated key. Global panic ca
 both owner types; channel sound-off only cancels matching note-owned callbacks.
 Completion delivery now names the explicit `BehaviorOwner`, with no legacy wrapper.
 See [control interaction admission](CONTROL_STATE.md#instrument-owned-ui-callbacks).
+
+## Script-instance integer state
+
+`Prepared::with_script_instances` defines initialized scalar banks, each identified
+by a dense `ScriptInstanceId` scoped to that plan. `Program::with_script_instance`
+binds a callback program to exactly one bank. `ReadScriptCell`/`WriteScriptCell`
+operands can address cells only in that binding; they cannot switch instances.
+Preparation validates even dead-code references against the declared layout, checks
+both instance/cell address ranges, and revalidates when programs or banks are replaced.
+Programs without script operations do not require an instance.
+
+Mutable banks are cloned off audio during runtime construction or plan submission.
+All callbacks for that instance share the audio-owner bank; note cells and callback
+locals remain separate. Note and plan callback pins retain their original generation.
+Completion, cancellation and callback slot reuse do not reinitialize shared state.
+A fault retains writes already executed; this is not a callback-wide transaction.
+Prepared replacement initializes new banks and does not change waiting old callbacks.
+All banks accompany retired plans for off-audio destruction, including queue failure
+restoration. `Runtime::script_cell` is a checked audio-owner query, not UI access to
+live runtime memory or a complete language-state snapshot.
+
+Heap-audited native checks cover independent instances, overlapping notes/UI callbacks,
+waits, generation replacement, terminal/outcome backpressure, stale handles, cancellation,
+arithmetic faults, callback slot reuse and schema/local-capacity rejection. KSP ordinary
+integer variables now lower into this service. The 16-bit bank and scalar-cell addresses
+are not a proposed bound for future language arrays; array/string/real/object storage,
+script-module registration, persistence and ordered source event stages remain open.
+
+Script-state validation: all 203 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs use
+`artifacts/script-state-{debug,release,msrv,clippy,boundary}.log`. The regenerated
+KSP inventory retains all 25 chapters, 288 sections and 1,605 identifiers; the
+ordinary integer-variable section is now partial, not complete or vendor-verified.

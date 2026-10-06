@@ -366,3 +366,139 @@ fn ui_handlers_wait_and_control_note_playback_without_fabricated_notes() {
         assert!(compile(invalid, 48000, limits(), &[("$button", BUTTON)]).is_err());
     }
 }
+
+#[test]
+fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_per_note() {
+    let source = "on init
+        declare $shared := -2147483648
+        declare $seen
+        $shared := 0
+        declare polyphonic $owned
+        declare ui_button $button
+    end on
+    on note
+        ignore_event($EVENT_ID)
+        $owned := $shared
+        $shared := 1
+        wait(1000)
+        if ($owned = 0)
+            if ($shared = 7)
+                play_note($EVENT_NOTE, 127, 0, 1000)
+            end if
+        end if
+    end on
+    on ui_control($button)
+        $shared := 7
+        wait(500)
+        $seen := $shared
+    end on
+    on release
+        $seen := $owned
+    end on";
+    for block in [1, 7, 64] {
+        let script = compile(source, 48000, limits(), &[("$button", BUTTON)]).unwrap();
+        assert_eq!(script.global_cells(), 2);
+        assert_eq!(script.note_cells(), 1);
+        let presentation = script.controls().to_vec();
+        let mut rt = Runtime::new(
+            script.bind(plan()).unwrap(),
+            Limits {
+                notes: 4,
+                channels: 0,
+                performances: 1,
+                families: 4,
+                expressions: 4,
+                voices: 4,
+                decisions: 0,
+                commands: 8,
+                behaviors: 8,
+                behavior_fuel: 64,
+                behavior_cells: 16,
+                note_cells: 4,
+            },
+        )
+        .unwrap();
+        drop(presentation);
+        support::without_heap(|| {
+            let plan = rt.active_plan();
+            let instance = ScriptInstanceId(0);
+            assert_eq!(rt.script_cell(plan, instance, 0), Ok(0));
+            assert_eq!(rt.script_cell(plan, instance, 1), Ok(0));
+            let input = Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            };
+            let first = rt.trigger(input, 60, 1.).unwrap();
+            let second = rt
+                .trigger(
+                    Input {
+                        external_id: Some(2),
+                        ..input
+                    },
+                    60,
+                    1.,
+                )
+                .unwrap();
+            assert_eq!(rt.note_cell(first, 0), Ok(0));
+            assert_eq!(rt.note_cell(second, 0), Ok(1));
+            rt.invoke_control(
+                plan,
+                None,
+                ControlWrite {
+                    id: BUTTON,
+                    value: ControlValue::Integer(1),
+                },
+            )
+            .unwrap();
+            let mut output = [[0.; 2]; 144];
+            for chunk in output.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            for (frame, value) in output.iter().enumerate() {
+                assert_eq!(*value, [f32::from((48..96).contains(&frame)); 2]);
+            }
+            assert_eq!(rt.script_cell(plan, instance, 0), Ok(7));
+            assert_eq!(rt.script_cell(plan, instance, 1), Ok(7));
+            rt.key_up(first, None).unwrap();
+            assert_eq!(rt.script_cell(plan, instance, 1), Ok(0));
+            rt.key_up(second, None).unwrap();
+            assert_eq!(rt.script_cell(plan, instance, 1), Ok(1));
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.family_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+    for source in [
+        "on init declare $a := 2147483648 end on",
+        "on init declare $a := -2147483649 end on",
+        "on init declare $a declare polyphonic $a end on",
+        "on init declare $a declare ui_button $a end on",
+        "on init declare $a := $EVENT_NOTE end on",
+        "on init declare $a := end on",
+        "on init declare $a declare $b $a := $b end on",
+    ] {
+        assert!(compile(source, 48000, limits(), &[]).is_err(), "{source}");
+    }
+    assert!(
+        compile(
+            "on init declare $a declare $b end on",
+            48000,
+            sampler_ksp::Limits {
+                variables: 1,
+                ..limits()
+            },
+            &[]
+        )
+        .is_err()
+    );
+}

@@ -4255,7 +4255,9 @@
           "anchor": "---integer-variable-",
           "title": "$ (integer variable)",
           "symbols": {},
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-variable-"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables#---integer-variable-",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "---integer-array-",

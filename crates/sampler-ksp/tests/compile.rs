@@ -366,7 +366,6 @@ fn polyphonic_declarations_and_callback_tables_reject_invalid_scopes_and_budgets
         "on init declare polyphonic $EVENT_ID end on on release end on".into(),
         "on init declare polyphonic $a $a := 1 end on on release end on".into(),
         "on init declare polyphonic $a := 1 end on on release end on".into(),
-        "on init declare $a end on on release end on".into(),
         "on init declare polyphonic $ end on on release end on".into(),
     ] {
         let error = compile(&source, 48000, limits())

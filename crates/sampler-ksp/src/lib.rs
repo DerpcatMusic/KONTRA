@@ -3,7 +3,7 @@
 //! Native sample-time lowering is explicit; this is not a Kontakt fidelity claim.
 use sampler_core::{
     Comparison, ControlDefinition, ControlDomain, ControlId, ControlValue, Duration, Inheritance,
-    Instruction, Prepared, Program, Velocity, WaitLifetime,
+    Instruction, Prepared, Program, ScriptInstanceId, Velocity, WaitLifetime,
 };
 use std::collections::BTreeMap;
 
@@ -22,6 +22,7 @@ pub struct Script {
     on_note: Option<usize>,
     on_release: Option<usize>,
     rate: u32,
+    globals: Vec<i64>,
     note_cells: usize,
     controls: Vec<Control>,
     performance_view: bool,
@@ -51,6 +52,10 @@ impl Script {
         &self.controls
     }
 
+    pub fn global_cells(&self) -> usize {
+        self.globals.len()
+    }
+
     pub fn note_cells(&self) -> usize {
         self.note_cells
     }
@@ -65,10 +70,18 @@ impl Script {
             .iter()
             .filter_map(|c| c.callback.map(|program| (c.definition.id, program)))
             .collect();
-        let plan = plan.with_programs(Vec::new(), None)?;
+        let plan = plan
+            .with_programs(Vec::new(), None)?
+            .with_script_instances(vec![self.globals])?;
         let plan = plan.with_controls(self.controls.into_iter().map(|c| c.definition).collect())?;
         let plan = plan
-            .with_programs(self.programs, self.on_note)?
+            .with_programs(
+                self.programs
+                    .into_iter()
+                    .map(|p| p.with_script_instance(ScriptInstanceId(0)))
+                    .collect(),
+                self.on_note,
+            )?
             .with_control_programs(callbacks)?;
         match self.on_release {
             Some(program) => plan.with_release_program(program),
@@ -109,6 +122,7 @@ enum Block {
 }
 #[derive(Clone, Copy)]
 enum Variable {
+    Global(u16),
     Note(u16),
     Control(usize),
 }
@@ -123,6 +137,7 @@ struct Parser<'a> {
     variables: BTreeMap<&'a str, Variable>,
     bindings: BTreeMap<&'a str, ControlId>,
     controls: Vec<Control>,
+    globals: Vec<i64>,
     note_cells: usize,
     performance_view: bool,
     variable_limit: usize,
@@ -265,18 +280,19 @@ impl<'a> Parser<'a> {
                 Kind::Word("end") => return self.expect(Kind::Word("on"), "expected end on"),
                 Kind::Word("make_perfview") => self.performance_view = true,
                 Kind::Word("declare") => {
-                    let kind = self.next()?;
-                    let Kind::Word(
-                        kind @ ("polyphonic" | "ui_knob" | "ui_slider" | "ui_button" | "ui_switch"),
-                    ) = kind.kind
-                    else {
-                        return Err(self.error("unsupported declaration type"));
-                    };
                     let token = self.next()?;
+                    let (kind, token) = match token.kind {
+                        Kind::Word(
+                            kind @ ("polyphonic" | "ui_knob" | "ui_slider" | "ui_button"
+                            | "ui_switch"),
+                        ) => (kind, self.next()?),
+                        Kind::Word(name) if name.starts_with('$') => ("integer", token),
+                        _ => return Err(self.error("unsupported declaration type")),
+                    };
                     let Kind::Word(name) = token.kind else {
                         return Err(Error {
                             offset: token.offset,
-                            message: "expected polyphonic variable name",
+                            message: "expected integer variable name",
                         });
                     };
                     if !name.strip_prefix('$').is_some_and(|name| {
@@ -309,7 +325,12 @@ impl<'a> Parser<'a> {
                     if self.variables.len() >= self.variable_limit {
                         return Err(self.error("variable budget exceeded"));
                     }
-                    let variable = if kind == "polyphonic" {
+                    let variable = if kind == "integer" {
+                        let cell = u16::try_from(self.globals.len())
+                            .map_err(|_| self.error("native script-cell index range exceeded"))?;
+                        self.globals.push(0);
+                        Variable::Global(cell)
+                    } else if kind == "polyphonic" {
                         let cell = u16::try_from(self.note_cells)
                             .map_err(|_| self.error("native note-cell index range exceeded"))?;
                         self.note_cells += 1;
@@ -360,26 +381,48 @@ impl<'a> Parser<'a> {
                         Variable::Control(index)
                     };
                     self.variables.insert(name, variable);
+                    if kind == "integer" {
+                        let checkpoint = self.offset;
+                        if self.next()?.kind == Kind::Symbol(b':') {
+                            let Variable::Global(cell) = variable else {
+                                unreachable!()
+                            };
+                            let value = i64::from(self.integer()?);
+                            self.globals[usize::from(cell)] = value;
+                        } else {
+                            self.offset = checkpoint;
+                        }
+                    }
                 }
                 Kind::Word(name) if name.starts_with('$') => {
-                    let Variable::Control(index) = self.variable(name, token.offset)? else {
-                        return Err(self.error("polyphonic state cannot be initialized in on init"));
-                    };
+                    let variable = self.variable(name, token.offset)?;
                     self.symbol(b':')?;
                     let value = i64::from(self.integer()?);
-                    let control = &mut self.controls[index].definition;
-                    let ControlDomain::Integer { min, max } = control.domain else {
-                        unreachable!()
-                    };
-                    if !(min..=max).contains(&value) {
-                        return Err(self.error("initial control value outside declared range"));
+                    match variable {
+                        Variable::Global(cell) => self.globals[usize::from(cell)] = value,
+                        Variable::Note(_) => {
+                            return Err(
+                                self.error("polyphonic state cannot be initialized in on init")
+                            );
+                        }
+                        Variable::Control(index) => {
+                            let control = &mut self.controls[index].definition;
+                            let ControlDomain::Integer { min, max } = control.domain else {
+                                unreachable!()
+                            };
+                            if !(min..=max).contains(&value) {
+                                return Err(
+                                    self.error("initial control value outside declared range")
+                                );
+                            }
+                            control.default = ControlValue::Integer(value);
+                        }
                     }
-                    control.default = ControlValue::Integer(value);
                 }
                 _ => {
                     return Err(Error {
                         offset: token.offset,
-                        message: "only declarations and literal control initialization are supported in on init",
+                        message: "only declarations and literal scalar initialization are supported in on init",
                     });
                 }
             }
@@ -398,6 +441,7 @@ impl<'a> Parser<'a> {
         self.symbol(b':')?;
         self.scalar(0)?;
         self.emit(match variable {
+            Variable::Global(cell) => Instruction::WriteScriptCell { cell, local: 0 },
             Variable::Note(cell) => Instruction::WriteNoteCell { cell, local: 0 },
             Variable::Control(index) => Instruction::WriteControl {
                 control: self.controls[index].definition.id,
@@ -440,6 +484,7 @@ impl<'a> Parser<'a> {
             Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
             Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
             Kind::Word(name) => match self.variable(name, token.offset)? {
+                Variable::Global(cell) => Instruction::ReadScriptCell { local, cell },
                 Variable::Note(cell) => Instruction::ReadNoteCell { local, cell },
                 Variable::Control(index) => Instruction::ReadControl {
                     local,
@@ -701,6 +746,7 @@ pub fn compile(
         variables: BTreeMap::new(),
         bindings,
         controls: Vec::new(),
+        globals: Vec::new(),
         note_cells: 0,
         performance_view: false,
         variable_limit: limits.variables,
@@ -719,6 +765,7 @@ pub fn compile(
                 on_note,
                 on_release,
                 rate,
+                globals: p.globals,
                 note_cells: p.note_cells,
                 controls: p.controls,
                 performance_view: p.performance_view,

@@ -66,6 +66,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
+mod script;
+pub use script::ScriptInstanceId;
 mod schedule;
 mod variation;
 use gate::Channel;
@@ -415,6 +417,7 @@ impl Runtime {
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
+            scripts: plan.script_initial.clone(),
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,

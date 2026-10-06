@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add generation-owned script-instance integer banks and explicit program bindings. KSP globals now share values across note/release/UI waits while polyphonic cells stay per-note; schema validation, replacement, faults, cancellation and deferred destruction preserve ownership.
+
 - Add native delayed/curved envelopes and one-shot AHD with exact duration boundaries, captured release/choke levels and physical-key-independent source completion. Source-clock curve anchoring preserves block partition identity; Kontakt/Falcon curve and clock mappings remain separate required profiles.
 
 - Add prepared per-region constant, linear and power velocity response through shared attack/release admission, preserving raw velocity and layer predicates. Defer other format frontends in favor of full Kontakt/Falcon, DSP, MIDI, core and UI completion.

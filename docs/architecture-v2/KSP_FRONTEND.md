@@ -11,15 +11,15 @@ manual surface. This subset is not the product's completion target.
 
 ## Accepted shape
 
-An optional first `on init` declares polyphonic integer variables and supported scalar
+An optional first `on init` declares ordinary/script-instance and polyphonic integer variables and supported scalar
 UI controls. Optional `on note` and/or `on release` follows; duplicate or misplaced callbacks fail compilation.
 A note callback must begin with `ignore_event($EVENT_ID)`. Release-only scripts keep
-ordinary native attack selection. Init accepts declarations, `make_perfview` and literal control initialization.
+ordinary native attack selection. Init accepts declarations, `make_perfview` and literal scalar initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
 
 Note/release bodies accept literal `wait(...)` and bare `play_note(...)` calls,
 and assignments from signed 32-bit integer literals, `$EVENT_NOTE`, or another
-declared polyphonic/control integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
+declared global/polyphonic/control integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
 between the originating note and its release callback, including overlapping waits.
 Generated notes use `$EVENT_NOTE` with optional constant transposition, constant
 velocity 1–127, zero offset and positive constant duration. Brace comments and
@@ -43,7 +43,7 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 ## Explicit rejection and limits
 
 The compiler rejects arithmetic expressions, dynamic command arguments (including
-`$EVENT_VELOCITY`), globals, arrays, real/string values, select/case, compound Boolean expressions, other
+`$EVENT_VELOCITY`), arrays, real/string values, select/case, compound Boolean expressions, other
 callbacks, implicit note forwarding, nested comments,
 nonzero sample offsets, input-linked negative duration and whole-source duration zero.
 Some primitives already exist natively; that alone does not establish their KSP
@@ -62,7 +62,7 @@ independent native scheduling/audio/ownership tests pass; Kontakt behavioral and
 fidelity remain **unverified**. No Kontakt binary comparison has been performed.
 Polyphonic declarations and scalar assignments now lower into
 [note-owned integer cells](BEHAVIOR.md#note-owned-integer-state). Full typed arithmetic,
-global/script-instance state and the other language/value services remain open.
+persistent/typed script state and the other language/value services remain open.
 Native storage is signed 64-bit; this compiler admits only signed 32-bit values,
 key/held-state reads, comparisons and copies. It does not lower KSP arithmetic into native checked-64-bit
 addition or claim vendor overflow behavior.
@@ -254,3 +254,26 @@ A source fixture changes a button, waits without any musical note, sets a switch
 from another control and subsequently changes native note playback. It independently
 checks exact PCM, retained outcomes and zero callback heap activity. This proves
 native service integration, not Kontakt scheduling/gesture equivalence.
+
+## Script-instance globals
+
+Ordinary `declare $name` variables start at zero; inline signed literal initializers
+and literal assignments in `on init` prepare their values off audio. Note, release
+and UI callbacks share the same instance bank, including across waits. Polyphonic
+variables retain their separate per-note cells. This follows the distinctions in
+[NI's variable reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables).
+
+The native service supports independently bound script instances in one generation.
+The current `Script::bind` installs one KSP instance and its callback table; ordered
+multi-slot event forwarding and native UVI callback registration remain open. Instance
+state is not encoded as UI controls or borrowed from a note. Schema/operand validation
+occurs before activation, and retired state travels back through the plan transfer
+for off-audio destruction. Rebinding an instrument starts new initial state while
+waiting old callbacks retain their originating bank.
+
+The authored fixture combines two same-key note callbacks, a waiting UI callback,
+global sharing, per-note memory, release reads and exact independently expected PCM
+across blocks 1/7/64 under allocator instrumentation. Declarations also reject duplicate
+names, malformed/range-invalid initialization and exhausted variable budgets. Full
+init execution, arithmetic, constants, arrays, persistence and Kontakt differential
+fidelity remain required work.

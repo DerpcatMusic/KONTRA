@@ -128,6 +128,7 @@ pub struct Prepared {
     pub(super) release_reserves: [[super::ReleaseReserve; 2]; 128],
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
+    pub(super) script_initial: Box<[Box<[i64]>]>,
     note_program: Option<usize>,
     pub(super) release_program: Option<usize>,
     pub(super) note_cells: usize,
@@ -267,6 +268,7 @@ impl Prepared {
             offsets,
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
+            script_initial: Box::new([]),
             note_program: None,
             release_program: None,
             note_cells: 0,
@@ -295,6 +297,7 @@ impl Prepared {
             return Err(Error::InvalidInput);
         }
         self.validate_program_controls(&programs)?;
+        self.validate_program_scripts(&programs)?;
         self.note_cells = programs.iter().map(|p| p.note_cells).max().unwrap_or(0);
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
