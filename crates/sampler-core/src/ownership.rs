@@ -29,6 +29,9 @@ pub struct Expression {
     pub pitch_semitones: f64,
     pub pressure: u32,
     pub timbre: u32,
+    /// Raw pitch-bend position, -1..=1, independent of the bend range that
+    /// turns it into `pitch_semitones`; read by pitch-bend modulation routes.
+    pub bend: f64,
 }
 
 impl Default for Expression {
@@ -40,6 +43,7 @@ impl Default for Expression {
             pressure: 0,
             // Centre, so timbre-darkening laws are identity for non-MPE notes.
             timbre: 0x8000_0000,
+            bend: 0.0,
         }
     }
 }
@@ -51,6 +55,7 @@ impl Expression {
             && self.pan.is_finite()
             && (-1.0..=1.0).contains(&self.pan)
             && self.pitch_semitones.is_finite()
+            && (-1.0..=1.0).contains(&self.bend)
     }
 
     pub(super) fn gains(self) -> [f32; 2] {

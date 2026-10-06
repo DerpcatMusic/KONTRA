@@ -313,7 +313,7 @@ fn config_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    Some(dirs::config_dir()?.join("kontra"))
+    Some(dirs::config_dir()?.join("kontra2"))
 }
 
 /// The app's data folder: chosen artwork, and multis saved with no library
@@ -322,7 +322,7 @@ pub fn data_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("data"));
     }
-    Some(dirs::data_dir()?.join("kontra"))
+    Some(dirs::data_dir()?.join("kontra2"))
 }
 
 /// One library found.
