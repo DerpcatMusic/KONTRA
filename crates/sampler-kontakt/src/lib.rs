@@ -24,6 +24,7 @@ mod stream;
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
 pub use library::{Kontakt, read, read_program};
+// Stage and Kind are defined below with LoadError.
 pub use load::{
     Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_read_streamed,
     load_streamed, prepare, stream_instrument,
@@ -70,9 +71,100 @@ pub enum LoadError {
     Lower(sampler_core::lower::LowerError),
     /// The caller canceled the load.
     Canceled,
+    /// An error tagged with the pipeline stage it came from and the place in
+    /// this crate that tagged it. See [`LoadError::at`].
+    Staged {
+        stage: Stage,
+        at: &'static std::panic::Location<'static>,
+        source: Box<LoadError>,
+    },
+}
+
+/// Where in loading a failure happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Stage {
+    /// Opening the file or its container; encrypted content.
+    Container,
+    /// Decoding the container's records.
+    Parse,
+    /// Translating records to the instrument IR.
+    Translate,
+    /// Finding and decoding sample audio.
+    SampleResolve,
+    /// Compiling the instrument's scripts.
+    ScriptCompile,
+    /// Binding scripts and modulation to the plan.
+    Bind,
+    /// Lowering the IR to a playable plan.
+    Prepare,
+}
+
+/// What kind of failure a [`LoadError`] is, without its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Io,
+    Decode,
+    Access,
+    Invalid,
+    Lower,
+    Canceled,
 }
 
 impl LoadError {
+    /// Tag this error with `stage` and the caller's source location. An error
+    /// already tagged keeps its first (innermost) stage; a cancel is not a failure.
+    #[track_caller]
+    pub fn at(self, stage: Stage) -> Self {
+        match self {
+            Self::Staged { .. } | Self::Canceled => self,
+            source => Self::Staged {
+                stage,
+                at: std::panic::Location::caller(),
+                source: Box::new(source),
+            },
+        }
+    }
+
+    /// The failure without its stage tag.
+    pub fn cause(&self) -> &Self {
+        match self {
+            Self::Staged { source, .. } => source.cause(),
+            other => other,
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
+        match self.cause() {
+            Self::Io { .. } => Kind::Io,
+            Self::Decode { .. } => Kind::Decode,
+            Self::Access { .. } => Kind::Access,
+            Self::Invalid { .. } => Kind::Invalid,
+            Self::Lower(_) => Kind::Lower,
+            Self::Canceled | Self::Staged { .. } => Kind::Canceled,
+        }
+    }
+
+    /// The stage that failed: the tag when there is one, else the stage the
+    /// kind usually means. `None` for a cancel.
+    pub fn stage(&self) -> Option<Stage> {
+        match self {
+            Self::Staged { stage, .. } => Some(*stage),
+            Self::Io { .. } | Self::Access { .. } => Some(Stage::Container),
+            Self::Decode { .. } => Some(Stage::Parse),
+            Self::Invalid { .. } => Some(Stage::Translate),
+            Self::Lower(_) => Some(Stage::Prepare),
+            Self::Canceled => None,
+        }
+    }
+
+    /// Where this crate tagged the error, when it did.
+    pub fn location(&self) -> Option<&'static std::panic::Location<'static>> {
+        match self {
+            Self::Staged { at, .. } => Some(at),
+            _ => None,
+        }
+    }
+
     pub(crate) fn io(path: &std::path::Path, error: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
@@ -103,6 +195,9 @@ impl std::fmt::Display for LoadError {
             Self::Invalid { path, reason } => write!(f, "{}: {reason}", path.display()),
             Self::Lower(error) => write!(f, "lowering: {error}"),
             Self::Canceled => f.write_str("load canceled"),
+            Self::Staged { stage, at, source } => {
+                write!(f, "[{stage:?} at {}:{}] {source}", at.file(), at.line())
+            }
         }
     }
 }
@@ -113,6 +208,7 @@ impl std::error::Error for LoadError {
             Self::Io { error, .. } => Some(error),
             Self::Decode { error, .. } => Some(error),
             Self::Lower(error) => Some(error),
+            Self::Staged { source, .. } => Some(source.as_ref()),
             _ => None,
         }
     }
@@ -466,5 +562,27 @@ impl<'a> Records<'a> {
                     .expect("validated structured record"),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+
+    #[test]
+    fn errors_carry_their_stage_and_where_it_was_tagged() {
+        let e = read(std::path::Path::new("/nonexistent/x.nki")).err().unwrap();
+        assert_eq!(e.kind(), Kind::Io);
+        assert_eq!(e.stage(), Some(Stage::Container));
+        let bad = std::env::temp_dir().join("kontra-stage-test.nki");
+        std::fs::write(&bad, b"not a kontakt file").unwrap();
+        let e = read(&bad).err().unwrap();
+        std::fs::remove_file(&bad).ok();
+        assert!(e.location().is_some_and(|l| l.file().ends_with("library.rs")), "{e}");
+        assert!(matches!(e.stage(), Some(Stage::Container | Stage::Parse)), "{e}");
+        // The first tag wins when an error is tagged again.
+        let again = e.at(Stage::Prepare);
+        assert_ne!(again.stage(), Some(Stage::Prepare));
+        assert_eq!(LoadError::Canceled.at(Stage::Bind).stage(), None);
     }
 }

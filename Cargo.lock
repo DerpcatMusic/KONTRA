@@ -805,6 +805,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpus-health"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+ "sampler-ir",
+ "sampler-kontakt",
+ "sampler-midi",
+ "sampler-uvi",
+ "serde_json",
+]
+
+[[package]]
 name = "cpal"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
