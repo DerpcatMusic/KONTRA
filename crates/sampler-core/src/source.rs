@@ -2,7 +2,7 @@
 use crate::{
     Error, Frame,
     envelope::EnvelopeState,
-    resample::{Kernel, MAX_STEP, MIN_STEP},
+    resample::{DECIMATION_REACH, Kernel, MAX_STEP, MIN_STEP},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -574,11 +574,46 @@ impl Cursor {
         rendered
     }
 
+    /// Resample from octave level floor(log2(step)) when its whole support maps
+    /// to one contiguous run of the view. Seams fall back to the original frames.
+    // ponytail: loops shorter than twice the reach (~150 frames at 2x, ~1.6k at
+    // 16x) never take this path; per-level loop traversal if that matters.
+    fn sample_level(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
+        let levels = pcm.levels();
+        let k = (self.step.log2().floor() as usize).min(levels.len());
+        if k == 0 || self.crossfaded() {
+            return None;
+        }
+        let scale = 1_i64 << k;
+        let step = self.step / scale as f64;
+        let radius = kernel.window(step);
+        let reach = DECIMATION_REACH * (scale - 1) + (radius + 2) * scale;
+        let position = i128::from(self.position);
+        let left = self.index(position - i128::from(reach))?;
+        let right = self.index(position + i128::from(reach))?;
+        if left.abs_diff(right) != 2 * reach as usize {
+            return None;
+        }
+        // Physical direction of this run (a reflected ping-pong span reverses).
+        let index = self.index(position)? as f64;
+        let x = if right > left {
+            index + self.fraction
+        } else {
+            index - self.fraction
+        } / scale as f64;
+        let j = x.floor();
+        let first = usize::try_from(j as i64 - radius).ok()?;
+        let taps = levels[k - 1].get(first..=first + 2 * radius as usize)?;
+        Some(kernel.sample(x - j, step, |offset| taps[(offset + radius) as usize]))
+    }
+
     /// One complete output frame at the cursor, or None if any tap is missing.
     fn sample(&self, pcm: &(impl ReadFrames + ?Sized), kernel: &Kernel) -> Option<Frame> {
         let position = i128::from(self.position);
         if self.step == 1.0 && self.fraction == 0.0 {
             self.read(pcm, position)
+        } else if let Some(sample) = self.sample_level(pcm, kernel) {
+            Some(sample)
         } else {
             let radius = kernel.window(self.step);
             let left = self.index(position - i128::from(radius));
@@ -1022,6 +1057,26 @@ pub use demand::SampleDemand;
 pub(super) trait ReadFrames {
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
+    /// Pre-decimated octave levels, level 1 first.
+    fn levels(&self) -> &[Box<[Frame]>] {
+        &[]
+    }
+}
+/// Resident frames with any octave levels.
+pub(super) struct Resident<'a> {
+    pub frames: &'a [Frame],
+    pub levels: &'a [Box<[Frame]>],
+}
+impl ReadFrames for Resident<'_> {
+    fn frame(&self, index: usize) -> Option<Frame> {
+        self.frames.frame(index)
+    }
+    fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        self.frames.span(range)
+    }
+    fn levels(&self) -> &[Box<[Frame]>] {
+        self.levels
+    }
 }
 impl ReadFrames for [Frame] {
     fn frame(&self, index: usize) -> Option<Frame> {
