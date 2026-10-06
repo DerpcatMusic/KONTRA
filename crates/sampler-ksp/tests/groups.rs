@@ -314,6 +314,33 @@ fn faulted_suppressed_release_cannot_retain_a_gate_or_reserved_layers() {
     });
 }
 
+/// Una Corda's shape: the script ignores the host note and its release and
+/// plays its own notes. The ignored host event has nothing left to sound, so
+/// it ends (as a Kontakt event does) instead of holding its gate forever, and
+/// its release layers never fire.
+#[test]
+fn an_ignored_silent_note_with_a_held_release_retires() {
+    let mut rt = runtime(
+        "on note ignore_event($EVENT_ID) end on
+         on release ignore_event($EVENT_ID) end on",
+    );
+    let note = rt.trigger(input(60), 60, 1.).unwrap();
+    let mut audio = [[0.; 2]; 8];
+    rt.render(&mut audio).unwrap();
+    rt.flush_behaviors(|_, _, _| true);
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 1, "a held key keeps its note");
+    rt.key_up(note, None).unwrap();
+    rt.render(&mut audio).unwrap();
+    rt.flush_behaviors(|_, _, _| true);
+    assert!(rt.release_context(note).unwrap().gate.is_none(), "release held");
+    rt.flush_ended(|_| true);
+    assert_eq!(rt.note_count(), 0);
+    assert_eq!(rt.voice_count(), 0);
+    assert_eq!(audio, [[0.; 2]; 8]);
+    assert_eq!(rt.release_reserve(), sampler_core::ReleaseReserve::default());
+}
+
 #[test]
 fn a_scheduled_script_noteoff_can_forward_a_later_suppressed_physical_release() {
     use sampler_core::{Event, ScriptInstanceId};
