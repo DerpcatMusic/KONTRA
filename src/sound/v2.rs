@@ -524,6 +524,16 @@ impl Core for V2Core {
         &mut self.peaks
     }
 
+    fn take_node_peaks(&mut self, part: usize, each: &mut dyn FnMut(usize, [f32; 2])) {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return };
+        let nodes = &p.buses;
+        p.runtime.take_bus_peaks(|bus, peak| {
+            if let Some(node) = nodes.iter().position(|&b| b == Some(bus)) {
+                each(node, peak);
+            }
+        });
+    }
+
     fn voices(&self) -> Voices {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
         Voices { active, audible: active, dropouts: self.overflow }
@@ -988,6 +998,9 @@ mod tests {
         core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
         let r = core.render(128);
         assert!(loud(&r, 3, 128) && !loud(&r, 0, 128), "the node left the instrument for pair 4");
+        let mut nodes = Vec::new();
+        core.take_node_peaks(0, &mut |node, peak| nodes.push((node, peak[0] > 0.0)));
+        assert_eq!(nodes, [(1, true)], "the group node meters its signal");
         mix.nodes[0][0].mute = true;
         core.set_mix(&mix);
         assert!(!loud(&core.render(128), 3, 128), "muted node");
