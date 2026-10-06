@@ -3,8 +3,11 @@
 V2-11 is in progress. Resident and paged assets now render through the same native
 source/DSP path. The bounded cache/worker protocol, initial source readiness and
 observable source failure, a seekable WAV decoder and explicit bounded demand
-servicing and a bounded starvation fade are executable. Cold-onset policy, optional
-recovery, storage deadline evidence and distinct offline preparation are still open; this is not yet a production disk-streaming service.
+servicing and a bounded starvation fade are executable. A Kontakt streaming service
+(resident start ranges sized from measured latency, decode threads, purge, trim and
+reload) runs real instruments; cold-onset policy for purged assets (a purged start is
+refused until reloaded), optional recovery and distinct offline preparation are
+still open.
 
 ## Asset identity
 
@@ -53,6 +56,30 @@ The next implementation must provide bounded page/storage admission, owner-stamp
 worker messages, eviction/retirement without audio-thread destruction, exact paged
 reads, visible not-ready/underrun outcomes and distinct live/offline contracts.
 It must integrate these services into actual rendering before V2-11 can close.
+
+## Resident ranges, service and the Kontakt streamer
+
+A streamed asset can hold resident frame ranges (`Pcm::set_ranges`: ascending,
+disjoint, any offset). Voices read them before the page cache; the service requests
+and protects only pages a demand reads outside them, and a start is ready when its
+first window is resident or cached. Purging (empty ranges) makes the next start
+fail `NotReady` and marks the asset cold for reload.
+
+`service_streaming` visits each page once per run of demand at its first deadline.
+Voices whose horizon maps linearly (no loop boundary or crossfade within reach)
+visit their pages directly, without walking every output frame. The horizon must
+cover the start ranges' latency budget plus one block; a page's worth is the
+practical choice, as it bounds only service work, not memory.
+
+`sampler_kontakt::load_streamed` opens every sample as a random-access reader
+(loose WAV/NCW or encrypted archive members), times reads on a probe of them, and
+keeps per zone start `(p95 latency + slack) x rate x zone step + guards` frames
+resident, where the zone step comes from its highest key, tuning, sample rate and
+`StreamPolicy::headroom` semitones of bend. A pool of decode threads
+(`StreamPolicy::decoders`) fills cache pages; `Streamer::purge`/`trim` drop idle
+start ranges least recently played first under a byte budget and `reload` restores
+cold ones. `crates/sampler-native/examples/stream_report.rs` plays a real
+instrument in real time and reports resident bytes, block time, underruns and RSS.
 
 ## Evidence and references
 
