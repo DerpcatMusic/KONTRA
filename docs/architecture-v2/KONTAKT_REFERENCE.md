@@ -163,3 +163,16 @@ Measured on a 1 s segment from level 0 to 1 (flex envelope on Volume, `scenarios
 | +0.380 | 7.22 | 19.0 | 0.026 |
 
 So k is about K * abs(s - 0.5) with K between about 14 and 19 (slightly increasing with abs(s - 0.5); the Vista g37 shaper sweep and Una g98 fit K 15-18). Slope value 0 (CC 0) acts as linear, not as the most concave curve. The positive (convex) side sets the final level quickly: s - 0.5 = +0.38 reaches 90% at 0.28 s. Level reaches the target by the end of the stage.
+
+## 11. Zone crossfade (fade-in) law
+
+Measured on a one-zone noise instrument by setting `$ZONE_PAR_LOW_VELO` / `$ZONE_PAR_FADE_LOW_VELO` / `$ZONE_PAR_LOW_KEY` / `$ZONE_PAR_FADE_LOW_KEY` from `on init` (`set_snapshot_type(3)`), RMS of each note divided by the same note with no fade (dB), `tools/kontakt-reference/zone_rms.py`.
+
+Linear amplitude ramp, in integer steps, with a nonzero first step: for a note value v inside the fade-in (low edge L, fade length F, applies to velocity and key alike):
+
+    gain(v) = (v - L + 1) / (F + 1)   for L <= v <= L + F,   1 above
+
+- L = 1, F = 100 (velocity): measured gain v/101 at v = 4, 8, 16, 24, 32, 40, 48, 56, 64, 80 within 0.02 dB.
+- L = 30, F = 60 (velocity): gain (v-29)/61 at v = 32, 40, 48, 56, 64, 80 (measured 0.049, 0.180, 0.311, 0.443, 0.573, 0.837 vs 0.049, 0.180, 0.311, 0.443, 0.574, 0.836).
+- L = 24, F = 36 (key, vel 100): gain (k-23)/37 at k = 24, 30, 36, 48, 60 (measured 0.027, 0.188, 0.351, 0.677, 1.0); k = 42 and 54 read 0.503 and 0.810 vs 0.514 and 0.838 (pitch-shifted noise, about 0.2-0.3 dB level wobble).
+- The ramp is a linear amplitude gain, not equal-power and not dB-linear; the gain is not 0 at the low edge (first step is 1/(F+1)). Notes below L do not play. The high-edge fade-out (`FADE_HIGH_*`) was not measured; assume the mirror.
