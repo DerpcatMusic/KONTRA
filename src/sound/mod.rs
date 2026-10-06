@@ -117,6 +117,12 @@ pub struct LoadRequest {
     /// Program index inside a bank/multi file.
     pub program: u32,
     pub sample_rate: f64,
+    /// What selects articulations; other than keys, each articulation gets
+    /// its own velocity split, channel, CC 32 value or program.
+    pub driver: sampler_ir::Driver,
+    /// Per-note pressure and timbre reach every zone (louder, brighter), for
+    /// MPE controllers; otherwise only routes the instrument authored do.
+    pub mpe: bool,
 }
 
 /// A prepared part with what the shell shows of it.
@@ -138,6 +144,12 @@ pub struct Loaded<P> {
     pub scripts: ScriptUi,
     /// The streamed samples, when the part reads them from disk as it plays.
     pub stream: Option<std::sync::Arc<Stream>>,
+}
+
+/// [`crate::plugin::Part::driver`] as the translator's driver.
+pub fn driver(n: u8) -> sampler_ir::Driver {
+    use sampler_ir::Driver::*;
+    [Keys, Velocity, Channel, Controller, Program].get(usize::from(n)).copied().unwrap_or(Keys)
 }
 
 /// A part's streamed samples: their decode threads and resident start data.
@@ -291,6 +303,9 @@ pub trait Core: Send {
     fn voices(&self) -> Voices;
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
+    /// The articulation `part` plays, by index in its instrument, when the
+    /// runtime rather than a script holds it.
+    fn articulation(&self, part: usize) -> Option<usize>;
     /// `part`'s clock in frames, as [`Stream::trim`] counts it.
     fn clock(&self, part: usize) -> u64;
     /// Output latency in frames that the core reports to the host.
