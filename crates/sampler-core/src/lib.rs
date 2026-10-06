@@ -142,6 +142,9 @@ pub struct NoteId(Handle);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeId(u64);
 
+/// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
+pub const USER_EVENT_PAR: u16 = 1001;
+
 /// Why a region mapped to a key did not sound for one selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
