@@ -20,6 +20,8 @@ struct Processing {
     bus: bool,
     automated: bool,
     mips: bool,
+    /// Plain sources whose levels `service_mipmaps` builds after warmup.
+    lazy: bool,
 }
 
 fn prepare(
@@ -29,7 +31,7 @@ fn prepare(
     shaped: bool,
     processing: Processing,
     muted: bool,
-) -> Runtime {
+) -> (Runtime, Vec<Pcm>) {
     let Processing {
         transpose,
         source_rate,
@@ -37,6 +39,7 @@ fn prepare(
         bus,
         automated,
         mips,
+        ..
     } = processing;
     let source_rate = if source_rate == 0 { rate } else { source_rate };
     let notes = voices / LAYERS;
@@ -50,7 +53,8 @@ fn prepare(
                 Pcm::new(source_rate, frames).unwrap()
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let kept = samples.clone();
     let regions = (0..LAYERS)
         .map(|sample| Region {
             sample,
@@ -172,7 +176,7 @@ fn prepare(
         .unwrap();
     }
     assert_eq!(rt.voice_count(), voices);
-    rt
+    (rt, kept)
 }
 
 fn measure(
@@ -184,11 +188,17 @@ fn measure(
     processing: Processing,
     muted: bool,
 ) {
-    let mut rt = prepare(rate, voices, reserved, shaped, processing, muted);
+    let (mut rt, samples) = prepare(rate, voices, reserved, shaped, processing, muted);
     let mut audio = vec![[0.; 2]; block];
     for _ in 0..64 {
         rt.render(&mut audio).unwrap();
     }
+    if processing.lazy {
+        let held = sampler_core::service_mipmaps(&samples, usize::MAX, 0);
+        eprintln!("lazy octave levels: {held} bytes");
+    }
+    let resident: usize = samples.iter().map(Pcm::resident_bytes).sum();
+    eprintln!("resident PCM: {resident} bytes");
     let mut times = [0u128; TRIALS];
     let resampled =
         processing.transpose != 0. || processing.source_rate != 0 && processing.source_rate != rate;
@@ -304,13 +314,13 @@ fn main() {
         return;
     }
     if args.first().is_some_and(|arg| arg == "--case") {
-        // --case TRANSPOSE FILTERS SVF(0|1) BLOCK VOICES: one pitched row.
+        // --case TRANSPOSE FILTERS SVF(0|1) BLOCK VOICES [MIPS 0 none|1 eager|2 lazy]
         let n = |i: usize| args[i].parse::<f64>().expect("numeric --case field");
-        assert_eq!(
-            args.len(),
-            6,
-            "expected --case TRANSPOSE FILTERS SVF BLOCK VOICES"
+        assert!(
+            (6..=7).contains(&args.len()),
+            "expected --case TRANSPOSE FILTERS SVF BLOCK VOICES [MIPS]"
         );
+        let mips = if args.len() == 7 { n(6) } else { 0. };
         measure(
             48000,
             n(4) as usize,
@@ -321,6 +331,8 @@ fn main() {
                 transpose: n(1),
                 filters: n(2) as usize,
                 automated: n(3) != 0.,
+                mips: mips == 1.,
+                lazy: mips == 2.,
                 ..Processing::default()
             },
             muted,
