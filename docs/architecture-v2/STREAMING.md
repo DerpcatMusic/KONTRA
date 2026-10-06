@@ -2,8 +2,8 @@
 
 V2-11 is in progress. Resident and paged assets now render through the same native
 source/DSP path. The bounded cache/worker protocol, initial source readiness and
-observable source failure are executable. Automatic demand scheduling, file decoder
-integration, click-free starvation recovery and distinct offline preparation are
+observable source failure and a seekable WAV decoder are executable. Automatic
+demand scheduling, click-free starvation recovery and distinct offline preparation are
 still open; this is not yet a production disk-streaming service.
 
 ## Asset identity
@@ -141,3 +141,22 @@ partitions. It also checks atomic missing-guard rejection, host pairing after a 
 miss, and one-time DSP-tail drainage, with allocation/deallocation guards. Logs:
 `artifacts/paged-render-*`. These checks do not establish storage-latency tolerance
 or Kontakt/Falcon performance parity.
+
+## Seekable file decode boundary
+
+The native WAV reader now shares one seekable RIFF parser/range decoder between
+resident loading and worker page filling. Opening reads bounded chunk metadata and
+skips audio bodies; `read_frames` seeks directly to a validated half-open range and
+uses fixed page-sized scratch storage. Existing PCM16/float32 mono/stereo support
+is unchanged. Unknown padded chunks are skipped; malformed sizes, duplicate format
+or data chunks, partial frames, nonfinite samples and truncated reads fail explicitly.
+The resident loader retains its 256 MiB input limit; page decoding does not allocate
+a full decoded asset. A retained source owns one streamed asset revision; source
+bytes must remain immutable while that revision is used.
+
+The native file-worker fixture opens a real temporary WAV, fills owned cache jobs
+on another thread, then compares native paged rendering against authored samples,
+including the short last page and EOF. A counted seekable reader verifies opening
+reads no audio and range reads consume only their requested bytes. Logs:
+`artifacts/stream-wave-*`. This is the first concrete worker decoder, not yet a
+multicodec registry or disk-latency/overload acceptance test.

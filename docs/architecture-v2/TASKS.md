@@ -306,7 +306,8 @@ source semantics and checksum/authentication validation are still required.
   worker buffers, protects current demand and rejects stale completions without
   audio-thread destruction. Paged/resident rendering now shares source and DSP
   kernels, rejects missing onset guards atomically and reports live misses while
-  draining owned DSP tails. Decoder integration, demand scheduling, preventive
+  draining owned DSP tails. A seekable WAV range decoder now fills worker pages
+  from files. Multicodec resource admission, demand scheduling, preventive
   fades/recovery and offline readiness remain open.
 
 - [ ] **P1; dependencies:** V2-09/10.
