@@ -1,0 +1,7 @@
+on init
+declare $i
+end on
+on note
+set_engine_par($ENGINE_PAR_ATTACK, %CC[21] * 7874, 0, 0, -1)
+set_engine_par($ENGINE_PAR_ATK_CURVE, %CC[20] * 7874, 0, 0, -1)
+end on
