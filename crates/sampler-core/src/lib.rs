@@ -94,9 +94,9 @@ mod packed;
 mod plans;
 mod prepare;
 pub use packed::Packed;
-mod release;
 mod grow;
 mod parallel;
+mod release;
 pub use parallel::Threads;
 mod render;
 pub use release::{
@@ -147,6 +147,15 @@ pub struct NoteId(Handle);
 /// Process-local ownership domain. Remains stable across moves and plan changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeId(u64);
+
+/// A built-in event parameter a script reads with `get_event_par`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventInfo {
+    /// Nonzero while the event has a sounding voice, 0 once it ended.
+    ZoneId,
+    /// The event's MIDI channel (0-based).
+    MidiChannel,
+}
 
 /// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
 pub const USER_EVENT_PAR: u16 = 1001;
@@ -440,9 +449,12 @@ impl<T> Arena<T> {
         if !capacity.is_multiple_of(64) {
             *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
         }
-        let slots = std::iter::repeat_with(|| Slot { generation: 0, value: None })
-            .take(capacity)
-            .collect();
+        let slots = std::iter::repeat_with(|| Slot {
+            generation: 0,
+            value: None,
+        })
+        .take(capacity)
+        .collect();
         (slots, free)
     }
 
@@ -454,7 +466,11 @@ impl<T> Arena<T> {
         assert!(slots.len() > old);
         slots[..old].swap_with_slice(&mut self.slots);
         let words = old.div_ceil(64);
-        let kept = if old % 64 == 0 { u64::MAX } else { (1u64 << (old % 64)) - 1 };
+        let kept = if old % 64 == 0 {
+            u64::MAX
+        } else {
+            (1u64 << (old % 64)) - 1
+        };
         for (w, &bits) in self.free.iter().enumerate() {
             let mask = if w + 1 == words { kept } else { u64::MAX };
             free[w] = (bits & mask) | (free[w] & !mask);

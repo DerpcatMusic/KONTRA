@@ -78,7 +78,6 @@ fn runtime(voices: usize, threads: usize) -> (Runtime, PlanControl) {
     (rt, control)
 }
 
-
 fn trigger(rt: &mut Runtime, ids: std::ops::Range<usize>) {
     for id in ids {
         rt.trigger_with_expression(
@@ -92,7 +91,10 @@ fn trigger(rt: &mut Runtime, ids: std::ops::Range<usize>) {
             },
             48 + id as u8,
             1.,
-            Expression { gain: 0.5 + id as f64 * 0.02, ..Expression::default() },
+            Expression {
+                gain: 0.5 + id as f64 * 0.02,
+                ..Expression::default()
+            },
         )
         .unwrap();
     }
@@ -118,7 +120,6 @@ fn performance(rt: &mut Runtime, mut grow: impl FnMut(&mut Runtime)) -> Vec<Fram
     out
 }
 
-
 #[test]
 fn a_grown_pool_renders_what_a_big_pool_would() {
     for threads in [1, 2] {
@@ -130,19 +131,36 @@ fn a_grown_pool_renders_what_a_big_pool_would() {
         let actual = performance(&mut small, |rt| {
             assert!(control.voice_pressure(), "no pressure at a full pool");
             assert_eq!(control.grow_voices(NOTES * LAYERS), Ok(NOTES * LAYERS));
-            assert_eq!(rt.stats().voice_capacity, 16, "grew before the audio thread took it");
+            assert_eq!(
+                rt.stats().voice_capacity,
+                16,
+                "grew before the audio thread took it"
+            );
         });
         let stats = small.stats();
-        assert_eq!((stats.voice_capacity, stats.voice_growths, stats.growth_failures), (NOTES * LAYERS, 1, 0));
+        assert_eq!(
+            (
+                stats.voice_capacity,
+                stats.voice_growths,
+                stats.growth_failures
+            ),
+            (NOTES * LAYERS, 1, 0)
+        );
         assert_eq!(stats.voice_drops, 0);
         assert!(
-            actual.iter().zip(&expected).all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
+            actual
+                .iter()
+                .zip(&expected)
+                .all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
             "{threads} threads: grown pool differs"
         );
         if threads > 1 {
             assert!(small.parallel_blocks() > 10);
         }
         // The old storage came back; a second growth is accepted.
-        assert_eq!(control.grow_voices(NOTES * LAYERS * 2), Ok(NOTES * LAYERS * 2));
+        assert_eq!(
+            control.grow_voices(NOTES * LAYERS * 2),
+            Ok(NOTES * LAYERS * 2)
+        );
     }
 }

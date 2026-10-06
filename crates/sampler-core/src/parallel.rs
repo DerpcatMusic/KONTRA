@@ -7,11 +7,7 @@
 //! rendering adds them in, so the result is identical.
 use super::{
     Frame, Runtime, Slot, Voice, VoiceId,
-    dsp::{
-        BLOCK, MAX_LANES, RenderContext, lanes,
-        lanes::VOICES,
-        svf::FilterContext,
-    },
+    dsp::{BLOCK, MAX_LANES, RenderContext, lanes, lanes::VOICES, svf::FilterContext},
     render::render_source,
 };
 use sampler_pool::{Claims, Disjoint, Pool, Slab};
@@ -85,8 +81,21 @@ pub(super) struct Parallel {
 
 impl Parallel {
     fn new(threads: usize, voices: usize) -> Self {
-        let Scratch { scratch, outcomes, claims, runs } = Scratch::new(voices);
-        Self { pool: Pool::new(threads - 1), threads, scratch, outcomes, claims, runs, blocks: 0 }
+        let Scratch {
+            scratch,
+            outcomes,
+            claims,
+            runs,
+        } = Scratch::new(voices);
+        Self {
+            pool: Pool::new(threads - 1),
+            threads,
+            scratch,
+            outcomes,
+            claims,
+            runs,
+            blocks: 0,
+        }
     }
     /// Slots the scratch covers.
     pub(super) fn voices(&self) -> usize {
@@ -112,7 +121,9 @@ impl Runtime {
         let expressions = self.expressions.slots.len();
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
             // An allocation failure leaves that plan short; blocks using it render on one thread.
-            let _ = generation.dsp.ensure_lanes(&generation.prepared, expressions, n);
+            let _ = generation
+                .dsp
+                .ensure_lanes(&generation.prepared, expressions, n);
         }
         self.parallel = (n > 1).then(|| Parallel::new(n, self.voices.slots.len()));
     }
@@ -148,7 +159,14 @@ impl Runtime {
         }
         let tasks = par.runs.len().min(par.threads * 4);
         {
-            let Parallel { pool, scratch, outcomes, claims, runs, .. } = &mut par;
+            let Parallel {
+                pool,
+                scratch,
+                outcomes,
+                claims,
+                runs,
+                ..
+            } = &mut par;
             let view = View {
                 plans: &self.plans,
                 families: &self.families,
@@ -195,7 +213,10 @@ impl Runtime {
                     continue;
                 }
                 let f = self.families.get(v.family.0).unwrap();
-                let plan = self.plans.get(self.notes.get(f.note.0).unwrap().plan.0).unwrap();
+                let plan = self
+                    .plans
+                    .get(self.notes.get(f.note.0).unwrap().plan.0)
+                    .unwrap();
                 // A plan adopted before the thread count rose may lack lane caches.
                 if plan.modulation.program(i).is_some() || plan.dsp.filters.len() < lanes {
                     return false;
@@ -243,7 +264,9 @@ impl Runtime {
                     dsp.buses.fed(bus, outcome.produced);
                 }
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(outcome.faults);
-                self.stream_underruns = self.stream_underruns.saturating_add(u64::from(outcome.underrun));
+                self.stream_underruns = self
+                    .stream_underruns
+                    .saturating_add(u64::from(outcome.underrun));
             }
         }
         for run in &par.runs {
@@ -328,7 +351,12 @@ impl View<'_> {
             };
             render_source(v, &source, segment, chain, states, context, self.kernel)
         };
-        self.outcomes.claim(i)[0] = Outcome { produced, done, faults, underrun };
+        self.outcomes.claim(i)[0] = Outcome {
+            produced,
+            done,
+            faults,
+            underrun,
+        };
     }
 
     /// `Runtime::render_batch`, into scratch.
@@ -390,7 +418,10 @@ impl View<'_> {
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;
         }
-        let plan = self.plans.get(plan_id.expect("a batch has a voice")).unwrap();
+        let plan = self
+            .plans
+            .get(plan_id.expect("a batch has a voice"))
+            .unwrap();
         let first = slots[0].as_ref().unwrap()[0].value.as_ref().unwrap();
         let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
         let mut cells: lanes::Cells<'_> =

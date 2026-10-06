@@ -209,7 +209,9 @@ impl StreamCache {
     }
     /// Unpark the decoder threads if requests were queued since the last call.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed) | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        if std::mem::take(&mut self.pushed)
+            | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             for thread in &self.wake {
                 thread.unpark();
             }
@@ -420,7 +422,10 @@ impl StreamCache {
     }
     /// The read-only view rendering uses; shareable across render threads.
     pub fn reader(&self) -> PageReader<'_> {
-        PageReader { entries: &self.entries, index: &self.index }
+        PageReader {
+            entries: &self.entries,
+            index: &self.index,
+        }
     }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
         self.reader().frame(asset, frame)
