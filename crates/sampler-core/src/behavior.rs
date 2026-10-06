@@ -261,6 +261,10 @@ pub enum Instruction {
     StartProgram {
         program: u32,
     },
+    /// Start every program `Prepared::with_signal_programs` binds to `signal`.
+    Signal {
+        signal: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1369,6 +1373,10 @@ impl Runtime {
                 let group = *self.local_cell_mut(id, group)?;
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_envelope(plan, group, stage, value)?;
+            }
+            Instruction::Signal { signal } => {
+                let plan = self.behavior_plan(owner)?;
+                self.signal_programs(id, plan, signal)?;
             }
             Instruction::StartProgram { program } => {
                 let plan = self.behavior_plan(owner)?;
