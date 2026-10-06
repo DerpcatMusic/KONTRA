@@ -269,11 +269,14 @@ fn zone_routes_lower_to_voice_modulation() {
         ir::Route::new(
             ir::ModulatorRef(1),
             ir::Target::Pitch,
-            ir::Depth::Pitch(ir::Pitch::Cents(200.0)),
+            ir::Depth::Pitch(ir::Pitch::Cents(1200.0)),
         ),
     ];
     let plan = lower(&ir, 48000, vec![constant(0.5)], no_behaviors).unwrap();
+    // The authored bend depth is the plain-MIDI default range.
+    assert_eq!(plan.bend_range(), 12.0);
     let mut rt = Runtime::new(plan, limits()).unwrap();
+    assert_eq!(rt.bend_range(), 12.0);
     let out = play(&mut rt, 60, 0.5);
     assert!((out[0] - 0.25).abs() < 1e-6, "{out:?}");
 

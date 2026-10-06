@@ -202,6 +202,7 @@ pub struct Prepared {
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
+    bend_range: f64,
     conditions: Box<[Box<[ControllerCondition]>]>,
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
@@ -357,6 +358,7 @@ impl Prepared {
             keyswitches: [None; 128],
             articulated: false,
             switching: Default::default(),
+            bend_range: 2.0,
             conditions: Box::new([]),
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
@@ -967,5 +969,32 @@ impl Prepared {
             region.bus = bus;
         }
         Ok(self)
+    }
+}
+
+impl Prepared {
+    /// Default channel pitch-bend range in semitones (either direction) for
+    /// plain MIDI bend; an RPN 0 on the channel overrides it.
+    pub fn with_bend_range(mut self, semitones: f64) -> Result<Self, Error> {
+        if !(semitones.is_finite() && (0.0..=96.0).contains(&semitones)) {
+            return Err(Error::InvalidInput);
+        }
+        self.bend_range = semitones;
+        Ok(self)
+    }
+
+    pub fn bend_range(&self) -> f64 {
+        self.bend_range
+    }
+}
+
+impl super::Runtime {
+    /// The active plan's default channel pitch-bend range in semitones.
+    pub fn bend_range(&self) -> f64 {
+        self.plans
+            .get(self.active_plan.0)
+            .unwrap()
+            .prepared
+            .bend_range
     }
 }
