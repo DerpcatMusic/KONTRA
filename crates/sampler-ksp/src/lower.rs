@@ -151,6 +151,7 @@ impl<'h> Unit<'h> {
             ui_id,
             code: Vec::new(),
             texts: Vec::new(),
+            group_table: None,
             calls: Vec::new(),
             starts: HashMap::new(),
             loops: Vec::new(),
@@ -202,6 +203,7 @@ impl<'h> Unit<'h> {
             ui_id: None,
             code: Vec::new(),
             texts: Vec::new(),
+            group_table: None,
             calls: Vec::new(),
             starts: HashMap::new(),
             loops: Vec::new(),
@@ -289,6 +291,8 @@ struct Gen<'u, 'h> {
     ui_id: Option<i32>,
     code: Vec<I>,
     texts: Vec<String>,
+    /// Base of the group names, appended once as consecutive text constants.
+    group_table: Option<u16>,
     calls: Vec<(usize, FnId)>,
     starts: HashMap<FnId, usize>,
     /// Condition position of each enclosing `while`, for `continue`.
@@ -418,6 +422,37 @@ impl Gen<'_, '_> {
                 (self.texts.len() - 1) as u16
             }
         }
+    }
+    /// (base, count) of the instrument's group names, in group order, for
+    /// runtime `group_name` and `find_group`.
+    fn group_table(&mut self) -> (u16, u16) {
+        let count = self.u.groups.len() as u16;
+        if let Some(base) = self.group_table {
+            return (base, count);
+        }
+        let base = self.texts.len() as u16;
+        for name in self.u.groups.iter() {
+            let mut end = name.len().min(sampler_core::TEXT_CAPACITY);
+            while !name.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.texts.push(name[..end].to_owned());
+        }
+        self.group_table = Some(base);
+        (base, count)
+    }
+    /// `arg` built into a scratch text; the caller releases it with `tdepth -= 1`.
+    fn text_arg(&mut self, args: &[Arg], i: usize, free: u16) -> Result<Option<TextRef>> {
+        let Some(Arg::Expr(e)) = args.get(i) else {
+            return Ok(None);
+        };
+        if e.ty != Ty::Str {
+            return Ok(None);
+        }
+        let scratch = self.scratch();
+        self.emit(I::Op(Op::TextClear { text: scratch }))?;
+        self.append(e, scratch, free)?;
+        Ok(Some(scratch))
     }
     fn scratch(&mut self) -> TextRef {
         let n = self.tdepth;
@@ -932,9 +967,18 @@ impl Gen<'_, '_> {
                     .and_then(|i| self.u.groups.get(usize::try_from(i).ok()?))
                     .cloned();
                 self.cover(Builtin::GroupName, Coverage::Native);
-                match name {
-                    Some(name) => TextPart::Constant(self.constant(&name)),
-                    None => {
+                match (name, self.expr(args, 0)) {
+                    (Some(name), _) => TextPart::Constant(self.constant(&name)),
+                    (None, Some(index)) if self.const_int(args, 0).is_none() => {
+                        self.value(index, free)?;
+                        let (base, count) = self.group_table();
+                        TextPart::Table {
+                            base,
+                            count,
+                            index: free,
+                        }
+                    }
+                    _ => {
                         self.warn("group_name of an unknown group is empty");
                         return Ok(());
                     }
@@ -1536,6 +1580,23 @@ impl Gen<'_, '_> {
                 }
                 true
             }
+            FindGroup | GetGroupIdx if self.const_text(args, 0).is_none() => {
+                let free = reg(dst, 1)?;
+                let Some(text) = self.text_arg(args, 0, free)? else {
+                    self.ignore(builtin, "needs a text name; -1");
+                    return self.set(dst, -1);
+                };
+                let (base, count) = self.group_table();
+                self.emit(I::Op(Op::TextFind {
+                    text,
+                    base,
+                    count,
+                    local: dst,
+                }))?;
+                self.tdepth -= 1;
+                self.cover(builtin, Coverage::Native);
+                return Ok(());
+            }
             FindGroup | GetGroupIdx => {
                 let index = self.const_text(args, 0).and_then(|name| {
                     self.u
@@ -1554,8 +1615,13 @@ impl Gen<'_, '_> {
                 match name {
                     Some(name) => self.set(dst, i64::from(crate::eval::lookup_index(&name)))?,
                     None => {
-                        self.ignore(builtin, "needs a constant name; -1");
-                        return self.set(dst, -1);
+                        let free = reg(dst, 1)?;
+                        let Some(text) = self.text_arg(args, args.len() - 1, free)? else {
+                            self.ignore(builtin, "needs a text name; -1");
+                            return self.set(dst, -1);
+                        };
+                        self.emit(I::Op(Op::TextIndex { text, local: dst }))?;
+                        self.tdepth -= 1;
                     }
                 }
                 self.cover(builtin, Coverage::Approximate);

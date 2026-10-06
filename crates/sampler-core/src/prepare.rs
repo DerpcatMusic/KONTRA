@@ -374,6 +374,8 @@ pub struct Prepared {
     /// CC64 holds no gate: a behavior implements sustain itself.
     pub(super) script_sustain: bool,
     pub(super) script_release_triggers: bool,
+    /// Controller values a script set in `on init`, before any input.
+    pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
@@ -537,6 +539,7 @@ impl Prepared {
             source_event_limit: i32::MAX,
             script_sustain: false,
             script_release_triggers: false,
+            initial_controllers: Vec::new(),
             region_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
