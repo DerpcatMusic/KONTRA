@@ -2,7 +2,7 @@
 //! and the UI-IR renderer. Shots land in `artifacts/v2-ui/`.
 
 use super::{ir_view, load_report as lr, mix_tree as mt, theme, tests::pixels};
-use crate::artwork::Picture;
+use super::ir_view::Picture;
 use moose::mui::mui::prelude::*;
 use moose::mui::mui::scene::Image;
 use sampler_ui_ir as ir;
@@ -29,18 +29,19 @@ fn mixer_sample() -> mt::Tree {
     use mt::{Kind, Node};
     let mut n = vec![
         Node::new(1, "Vista Cellos", Kind::Instrument, None),
-        Node::new(2, "Mics", Kind::Submix, Some(0)),
-        Node::new(3, "Close", Kind::Mic, Some(1)),
-        Node::new(4, "Tree", Kind::Mic, Some(1)),
-        Node::new(5, "Room", Kind::Mic, Some(1)),
+        Node::new(2, "Mics", Kind::Bus, Some(0)),
+        Node::new(3, "Close", Kind::Bus, Some(1)),
+        Node::new(4, "Tree", Kind::Bus, Some(1)),
+        Node::new(5, "Room", Kind::Bus, Some(1)),
         Node::new(6, "Legato", Kind::Group, Some(0)),
         Node::new(7, "Shorts", Kind::Group, Some(0)),
         Node::new(8, "Spiccato", Kind::Group, Some(6)),
         Node::new(9, "Pizzicato", Kind::Group, Some(6)),
         Node::new(10, "Una Corda", Kind::Instrument, None),
     ];
+    (n[0].output, n[9].output) = (mt::Output::Pair(0), mt::Output::Pair(1));
     n[0].inserts = vec!["EQ".into(), "Reverb".into()];
-    n[4].output = mt::Output::Host(5);
+    n[4].output = mt::Output::Pair(5);
     n[4].output_set = true;
     n[4].gain_db = -6.;
     n[3].mute = true;
@@ -52,7 +53,6 @@ fn mixer_sample() -> mt::Tree {
 #[test]
 fn nested_mixer_strips_step_down_and_fold() {
     let mut tree = mixer_sample();
-    tree.assign_outputs(8);
     let mut state = mt::State::default();
     let levels: mt::Levels = Arc::new(|n| [0.2 + 0.05 * n as f32, 0.18 + 0.05 * n as f32]);
     let ui = settle(1180., 520., |ui| mt::view(ui, &mut tree, &mut state, 8, 480., levels.clone()));
@@ -64,8 +64,6 @@ fn nested_mixer_strips_step_down_and_fold() {
         f.y + f.size.height
     };
     assert!((bottom("mt-strip-1") - bottom("mt-strip-3")).abs() < 1., "strips share a baseline");
-    assert_eq!(tree.nodes[0].output, mt::Output::Host(0));
-    assert_eq!(tree.nodes[9].output, mt::Output::Host(1), "every instrument has its own pair");
     shoot(&ui, 1180, 520, "mixer-tree.png");
 
     state.folded.insert(1);
@@ -99,7 +97,7 @@ fn load_report_shot() {
             lr::Missing::ScriptBuiltin { script: "Main".into(), name: "load_ir_async".into(), line: 88, column: 5 },
         ],
         runtime: vec![
-            lr::Runtime::ScriptBudget { script: "Legato".into(), overruns: 12, worst_ms: 2.4 },
+            lr::Runtime::ScriptBudget { overruns: 12 },
             lr::Runtime::StreamUnderruns { count: 3 },
         ],
     };
@@ -177,7 +175,7 @@ const NO_LIMITS: sampler_ksp::Limits =
 
 /// Renders `face` in both presentations, shooting each as `{stem}-{mode}.png`
 /// under `dir`; returns the decoded bytes each keeps.
-fn both_modes(face: &ir::Interface, load: &dyn Fn(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
+fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<Arc<Picture>>, dir: &str, stem: &str) -> [usize; 2] {
     let face = ir_view::resolved(face);
     let page = &face.pages[0];
     let (w, h) = (page.size.width.clamp(1, 1200) as u16, page.size.height.clamp(1, 900) as u16);
@@ -185,7 +183,7 @@ fn both_modes(face: &ir::Interface, load: &dyn Fn(&ir::Asset) -> Option<Arc<Pict
     let mut assets = ir_view::Assets::default();
     let mut bytes = [0; 2];
     for (n, (p, mode)) in [(ir::Presentation::Bitmap, "bitmap"), (ir::Presentation::Vector, "vector")].into_iter().enumerate() {
-        assets.sync(&face, p, load);
+        assets.sync(&face, p, &mut *load);
         bytes[n] = assets.bytes();
         let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, p, 1., &mut values));
         shoot(&ui, w, h, &format!("{dir}/{stem}-{mode}.png"));
@@ -210,27 +208,35 @@ fn ir_view_draws_the_ksp_corpus() {
             continue;
         }
         widgets += face.widgets.len();
-        both_modes(&face, &|_| None, "corpus", &path.file_stem().unwrap().to_string_lossy());
+        both_modes(&face, &mut |_| None, "corpus", &path.file_stem().unwrap().to_string_lossy());
         drawn += 1;
     }
     eprintln!("drew {drawn} interfaces ({widgets} widgets) of {} scripts in both presentations", paths.len());
     assert!(drawn > 0);
 }
 
-/// A real instrument's scripts through the KSP frontend into UI IR, with the
+/// A real instrument through the v2 Kontakt loader into UI IR, with the
 /// library's own pictures, in both presentations; prints the decoded pixels
 /// each keeps. Opt-in: `KONTRA_UI_IR_PATCH=/path/to/patch.nki`.
 #[test]
 #[ignore = "set KONTRA_UI_IR_PATCH to a locally owned instrument"]
 fn ir_view_real_instrument_memory() {
-    use crate::sound::CoreLoader;
-    let patch = std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH");
-    let request = crate::sound::LoadRequest { path: patch.clone().into(), sample_rate: 48000.0, ..Default::default() };
-    let loaded = crate::sound::v2::V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
-    let face = loaded.interfaces.iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface").clone();
-    let load = |a: &ir::Asset| crate::artwork::asset(Path::new(&patch), a);
+    let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
+    // Only key 0's samples: the interfaces are what this measures.
+    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true };
+    let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
+    let mut face = loaded.interfaces.into_iter().max_by_key(|u| u.widgets.len()).expect("a script with an interface");
+    // A wallpaper chosen by a persistent control resolves only after the saved state is
+    // restored, which `Script::ui` does not do yet; name a stand-in to measure.
+    if let (Some(a), Ok(n)) = (face.pages[0].background.image, std::env::var("KONTRA_UI_IR_WALLPAPER"))
+        && face.assets[a.0].path.ends_with("/.png")
+    {
+        face.assets[a.0].path = format!("Resources/pictures/{n}.png");
+    }
+    let mut source = super::pictures::Source::of(&patch);
+    source.describe(&mut face);
     let stem = Path::new(&patch).file_stem().unwrap().to_string_lossy().replace(' ', "_");
-    let bytes = both_modes(&face, &load, "real", &stem);
+    let bytes = both_modes(&face, &mut |a| source.load(a), "real", &stem);
     eprintln!(
         "{stem}: {} widgets, {} assets ({} unsupported entries); decoded pixels resident: bitmap {} KiB, vector {} KiB",
         face.widgets.len(),

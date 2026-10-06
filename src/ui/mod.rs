@@ -27,13 +27,16 @@ mod keyboard;
 mod logs;
 mod menu;
 mod mixer;
-mod part;
-#[allow(dead_code, reason = "kinds and helpers the v2 core does not produce yet")]
+// The v2 views take plain data the core does not produce yet (submix/bus
+// nodes, effect and modulation reports).
+#[allow(dead_code)]
 mod mix_tree;
 mod ir_view;
-#[allow(dead_code, reason = "kinds the v2 core does not report yet")]
+#[allow(dead_code)]
 mod load_report;
-mod v2_bridge;
+mod bridge;
+mod pictures;
+mod part;
 pub(crate) mod picker;
 mod rack;
 mod spectrum;
@@ -380,9 +383,9 @@ struct EditorState {
     /// The mixer shows the output tree, else the flat console.
     flat_mixer: bool,
     mix_tree: mix_tree::State,
-    /// Each part's script interface as drawn.
-    faces: std::collections::HashMap<usize, part::Face>,
     report: load_report::State,
+    /// Each part's library interface as drawn, by slot.
+    faces: HashMap<usize, part::Face>,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -830,8 +833,8 @@ fn build(
         mixer: Default::default(),
         flat_mixer: false,
         mix_tree: Default::default(),
-        faces: Default::default(),
         report: Default::default(),
+        faces: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -1110,13 +1113,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     content.push(match cx.state.tab {
         Tab::Rack => rack::view(ui, cx),
         Tab::Mixer => mixer_view(ui, cx, bridge),
-        Tab::Report => match cx.part().map(|_| cx.state.selected) {
-            Some(slot) => {
-                let report = v2_bridge::report(cx, slot);
-                load_report::view(ui, &mut cx.state.report, &report)
-            }
-            None => part::welcome(cx),
-        },
+        Tab::Report => report_view(ui, cx),
         Tab::Logs => logs::view(ui, cx),
     });
     cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
@@ -1143,15 +1140,25 @@ fn mixer_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> E
     let body = if cx.state.flat_mixer {
         mixer::view(ui, cx, bridge)
     } else {
-        let mut tree = v2_bridge::tree(cx);
-        let levels = v2_bridge::levels(cx.p, &tree);
+        let mut tree = bridge::tree(cx);
+        let levels = bridge::levels(cx.p, &tree);
         let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
         let el = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
-        v2_bridge::apply(cx, &tree);
+        bridge::apply(cx, &tree);
         cx.state.meters.animating.store(true, Ordering::Relaxed);
         el
     };
     col![bar, rule(), body].gap(0).flex(1).min_h(0).min_w(0)
+}
+
+/// The selected part's load report.
+fn report_view(ui: &mut Ui, cx: &mut Cx) -> El {
+    if cx.part().is_none() {
+        return caption("Select a loaded instrument to see its report").fill(secondary());
+    }
+    let slot = cx.state.selected;
+    let report = bridge::report(cx, slot);
+    load_report::view(ui, &mut cx.state.report, &report)
 }
 
 impl Cx<'_> {

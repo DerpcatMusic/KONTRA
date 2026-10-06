@@ -121,49 +121,6 @@ pub fn decode_file(path: &Path) -> Option<Image> {
     decode_report(&read_file(path).ok()?).ok()
 }
 
-/// A library picture cut into its animation frames.
-#[derive(Debug)]
-pub struct Picture {
-    pub frames: Vec<Arc<Image>>,
-}
-
-/// `relative` (say `Resources/pictures/knob.png`) in the nearest folder
-/// above `instrument` that has it.
-pub fn locate(instrument: &Path, relative: &str) -> Option<std::path::PathBuf> {
-    instrument.ancestors().skip(1).map(|dir| dir.join(relative)).find(|p| p.is_file())
-}
-
-/// A script interface's image `asset`, read from the library of
-/// `instrument` and cut into the frames its metadata names.
-pub fn asset(instrument: &Path, asset: &sampler_ui_ir::Asset) -> Option<Arc<Picture>> {
-    let sampler_ui_ir::AssetKind::Image(meta) = asset.kind else { return None };
-    let image = decode_file(&locate(instrument, &asset.path)?)?;
-    let n = meta.frames.max(1);
-    let across = meta.axis == sampler_ui_ir::Orientation::Horizontal;
-    let (w, h) = if across { (image.width / n, image.height) } else { (image.width, image.height / n) };
-    let frames = (0..n)
-        .map(|i| if across { crop(&image, i * w, 0, w, h) } else { crop(&image, 0, i * h, w, h) })
-        .collect::<Option<Vec<_>>>()?;
-    Some(Arc::new(Picture { frames }))
-}
-
-/// The `w` by `h` pixels of `image` at `x`, `y`; `None` outside it.
-pub fn crop(image: &Image, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> {
-    if w == 0 || h == 0 || x.checked_add(w)? > image.width || y.checked_add(h)? > image.height {
-        return None;
-    }
-    if x == 0 && y == 0 && w == image.width && h == image.height {
-        return Some(Arc::new(image.clone()));
-    }
-    let stride = image.width as usize * 4;
-    let mut rgba = Vec::new();
-    rgba.try_reserve_exact((w as usize).checked_mul(h as usize)?.checked_mul(4)?).ok()?;
-    for row in y as usize..(y + h) as usize {
-        let at = row * stride + x as usize * 4;
-        rgba.extend_from_slice(&image.rgba[at..at + w as usize * 4]);
-    }
-    Image::rgba(w, h, rgba).map(Arc::new)
-}
 
 
 

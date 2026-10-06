@@ -665,10 +665,15 @@ fn kontakt(
 
 /// The layout of the picture at `asset` (library-relative, `.png`) from the
 /// `.txt` beside it, in the nearest folder above `instrument` that has it.
+/// `relative` in the nearest folder above `instrument` that has it.
+fn locate(instrument: &Path, relative: &str) -> Option<std::path::PathBuf> {
+    instrument.ancestors().skip(1).map(|dir| dir.join(relative)).find(|p| p.is_file())
+}
+
 /// Its frame size comes from the image's PNG header.
 fn picture_meta(instrument: &Path, asset: &str) -> Option<sampler_ui_ir::ImageMeta> {
-    let txt = crate::artwork::locate(instrument, &Path::new(asset).with_extension("txt").to_string_lossy());
-    let png = crate::artwork::locate(instrument, asset);
+    let txt = locate(instrument, &Path::new(asset).with_extension("txt").to_string_lossy());
+    let png = locate(instrument, asset);
     if txt.is_none() && png.is_none() {
         return None;
     }
