@@ -24,6 +24,8 @@ pub struct Samples {
     root: PathBuf,
     archives: HashMap<PathBuf, Archive>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
+    /// Numeric headers only; repeated zone trims need no additional disk reads.
+    frame_counts: HashMap<PathBuf, u64>,
     /// Lower-case basename to loose files under `root`, built on first miss.
     loose: Option<HashMap<String, Vec<PathBuf>>>,
 }
@@ -35,6 +37,7 @@ impl Samples {
             root: root.canonicalize().unwrap_or_else(|_| root.into()),
             archives: HashMap::new(),
             keys: HashMap::new(),
+            frame_counts: HashMap::new(),
             loose: None,
         }
     }
@@ -136,6 +139,9 @@ impl Samples {
     /// of a WAV or the 120-byte NCW header.
     pub fn frames(&mut self, location: &Path) -> Result<u64, LoadError> {
         use std::io::{Read, Seek, SeekFrom};
+        if let Some(&count) = self.frame_counts.get(location) {
+            return Ok(count);
+        }
         let mut head = Vec::new();
         match archive_member(location) {
             Some((archive, member)) => {
@@ -171,10 +177,12 @@ impl Samples {
                     .map_err(|e| LoadError::io(location, e))?;
             }
         }
-        frames(&head).ok_or_else(|| LoadError::Invalid {
+        let count = frames(&head).ok_or_else(|| LoadError::Invalid {
             path: location.into(),
             reason: "unreadable sample header".into(),
-        })
+        })?;
+        self.frame_counts.insert(location.into(), count);
+        Ok(count)
     }
 
     /// The archive key `member` needs, if it is encrypted.
