@@ -22,10 +22,10 @@ trait ReadBytes: Read {
         Ok(buf)
     }
 
-    fn read_as<T: ToEndian, E: Endian>(&mut self) -> Result<T>
+    fn read_as<T, E>(&mut self) -> Result<T>
     where
-        E: 'static,
-        T: Sized + Default + Copy,
+        E: Endian + 'static,
+        T: ToEndian + Sized + Default + Copy,
     {
         let size = std::mem::size_of::<T>();
         let mut buf = vec![0u8; size];

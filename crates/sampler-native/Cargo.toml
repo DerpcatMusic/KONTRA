@@ -10,8 +10,15 @@ publish = false
 sampler-core = { path = "../sampler-core" }
 sampler-midi = { path = "../sampler-midi" }
 sampler-ksp = { path = "../sampler-ksp" }
-sampler-kontakt = { path = "../sampler-kontakt" }
+sampler-kontakt = { path = "../sampler-kontakt", default-features = false }
 sampler-ir = { path = "../sampler-ir" }
+sampler-uvi = { path = "../sampler-uvi", default-features = false }
+serde_json = "1"
+dirs = "5"
+
+[features]
+default = ["library-access"]
+library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
 
 [lints.rust]
 unsafe_code = "forbid"

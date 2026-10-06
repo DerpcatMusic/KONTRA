@@ -60,7 +60,7 @@ impl Bank {
     }
 
     pub fn slot_list(&self) -> Result<super::SlotList, Error> {
-        (&self.0.children[7]).try_into()
+        self.0.find_first(0x37).ok_or(Error::Static("Missing bank slot list"))?.try_into()
     }
 }
 

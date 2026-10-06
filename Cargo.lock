@@ -3701,11 +3701,14 @@ dependencies = [
 name = "sampler-native"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",
+ "sampler-uvi",
+ "serde_json",
 ]
 
 [[package]]
@@ -3730,7 +3733,6 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
- "serde",
  "serde_json",
  "sha2",
  "symphonia",

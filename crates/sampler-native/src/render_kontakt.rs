@@ -65,6 +65,10 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
         }
     })
     .map_err(|e| io::Error::other(e.to_string()))?;
+    render(loaded, output, notes)
+}
+
+pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, notes: &[Note]) -> io::Result<()> {
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
