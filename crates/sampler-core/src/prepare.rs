@@ -20,6 +20,8 @@ struct PcmData {
     id: AssetId,
     rate: u32,
     frames: Option<Box<[Frame]>>,
+    // Pre-decimated octave levels (level 1 first); empty unless mipmapped.
+    levels: Box<[Box<[Frame]>]>,
     length: usize,
 }
 impl Pcm {
@@ -30,6 +32,17 @@ impl Pcm {
             return Err(Error::InvalidInput);
         }
         Self::create(rate, frames.len(), Some(frames))
+    }
+    /// `new` plus pre-decimated octave levels (about +100% memory, built here).
+    /// Voices pitched up by an octave or more resample from the coarsest level
+    /// at or below their step, so the kernel stays under two octaves wide
+    /// instead of stretching to the full step. Windows that touch a loop seam,
+    /// crossfade or view edge read the original frames.
+    pub fn mipmapped(rate: u32, frames: Box<[Frame]>) -> Result<Self, Error> {
+        let mut pcm = Self::new(rate, frames)?;
+        let data = std::sync::Arc::get_mut(&mut pcm.0).expect("freshly constructed");
+        data.levels = crate::resample::octaves(data.frames.as_deref().unwrap());
+        Ok(pcm)
     }
     /// Metadata for worker-decoded pages. The worker registry must resolve this
     /// revision's ID to the corresponding immutable decoded source.
@@ -50,6 +63,7 @@ impl Pcm {
             id: AssetId(id),
             rate,
             frames,
+            levels: Box::default(),
             length,
         })))
     }
@@ -64,6 +78,9 @@ impl Pcm {
     }
     pub fn resident_frames(&self) -> Option<&[Frame]> {
         self.0.frames.as_deref()
+    }
+    pub(crate) fn levels(&self) -> &[Box<[Frame]>] {
+        &self.0.levels
     }
 }
 
@@ -184,6 +201,7 @@ pub struct Prepared {
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
+    pub(super) voice_modulation: super::voice_mod::VoiceModulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
     pub(super) sequence_cells: usize,
     pub(super) shuffle_entries: usize,
@@ -333,6 +351,7 @@ impl Prepared {
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
+            voice_modulation: Default::default(),
             sequences: Box::new([]),
             sequence_cells: 0,
             shuffle_entries: 0,
@@ -392,6 +411,22 @@ impl Prepared {
             self.stages = Box::new([super::Stage::default()]);
         }
         self.stages[0].release = Some(program);
+        Ok(self)
+    }
+
+    /// Bind per-voice modulation programs: one optional program per authored
+    /// region, and per region the source frames a full sample-start route spans.
+    pub fn with_voice_modulation(
+        mut self,
+        programs: Vec<super::ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
+    ) -> Result<Self, Error> {
+        if regions.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        self.voice_modulation =
+            super::voice_mod::VoiceModulation::new(programs, regions, start_ranges)?;
         Ok(self)
     }
 
