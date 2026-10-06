@@ -229,7 +229,7 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
         rows.push(interactive(el, on));
     }
     let list = col(rows).gap(1).align(Align::Stretch).max_size(Size::new(1e6, CONTROL * 12.)).scroll().shrink(0).id(format!("arts-{slot}"));
-    col![head, list].gap(SPACE).align(Align::Stretch)
+    row![col![head, list].gap(SPACE).align(Align::Stretch).w(TEXT * 56.).min_w(0), spacer()].w(Len::Pct(100.))
 }
 
 // Mapping ---------------------------------------------------------------
@@ -465,7 +465,7 @@ fn info(cx: &Cx, slot: usize, inst: Option<&ir::Instrument>) -> El {
     if let Some(f) = cx.state.faces.get(&slot) {
         rows.push(pair("Interface", format!("{:.1} MB of pictures decoded", f.bytes() as f64 / (1024. * 1024.))));
     }
-    col(rows).gap(TIGHT).align(Align::Stretch).max_size(Size::new(TEXT * 60., 1e6)).w(Len::Pct(100.))
+    row![col(rows).gap(TIGHT).align(Align::Stretch).w(TEXT * 60.).min_w(0), spacer()].w(Len::Pct(100.))
 }
 
 /// The keys `slot`'s articulations switch on, for the keyboard's marks.
