@@ -1,14 +1,11 @@
 //! Offset-seeded UVI byte transforms. Namespaces and content keys come from the caller.
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use roxmltree::{Document, ParsingOptions};
 use sha2::{Digest, Sha256};
 
 const MIX: u64 = 0xc6a4_a793_5bd1_e995;
 const STEP: u64 = 0x5851_f42d_4c95_7f2d;
-pub const PROGRAM_LIMIT: usize = 16 << 20;
-pub(crate) const PROGRAM_XML_LIMIT: usize = 32 << 20;
-pub(crate) const PROGRAM_NODE_LIMIT: u32 = 250_000;
+pub(crate) const PROGRAM_XML_LIMIT: usize = crate::XML_LIMIT as usize;
 
 #[derive(Debug)]
 pub(crate) struct NeedsProgramNamespace;
@@ -296,19 +293,7 @@ fn decode_base64(text: &str, limit: usize) -> Result<Vec<u8>> {
 /// Decode a PasswordV2 Program wrapper using the caller's local reader namespace.
 /// Clear Program/UVI4 XML passes through; unsupported legacy protection is explicit.
 pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
-    ensure!(
-        text.len() <= PROGRAM_XML_LIMIT,
-        "UVI Program XML exceeds resource limit"
-    );
-    let doc = Document::parse_with_options(
-        text,
-        ParsingOptions {
-            allow_dtd: false,
-            nodes_limit: PROGRAM_NODE_LIMIT,
-            ..Default::default()
-        },
-    )
-    .context("Invalid UVI Program XML")?;
+    let doc = crate::parse_program_xml(text).context("Invalid UVI Program XML")?;
     let root = doc.root_element();
     let program = if root.has_tag_name("Program") {
         root
@@ -339,7 +324,7 @@ pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
     );
     let key = key_from_string(&password[..end]);
     let encoded: String = program.children().filter_map(|n| n.text()).collect();
-    let mut decoded = decode_base64(&encoded, PROGRAM_LIMIT)?;
+    let mut decoded = decode_base64(&encoded, PROGRAM_XML_LIMIT)?;
     ensure!(
         decoded.len().is_multiple_of(8),
         "Encrypted UVI Program is not 8-byte padded"
@@ -350,15 +335,8 @@ pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
     }
     let decoded =
         String::from_utf8(decoded).context("Decoded UVI Program is not UTF-8; check namespace")?;
-    let inner = Document::parse_with_options(
-        &decoded,
-        ParsingOptions {
-            allow_dtd: false,
-            nodes_limit: PROGRAM_NODE_LIMIT,
-            ..Default::default()
-        },
-    )
-    .context("Decoded UVI Program is not XML; check namespace")?;
+    let inner = crate::parse_program_xml(&decoded)
+        .context("Decoded UVI Program is not XML; check namespace")?;
     ensure!(
         inner.root_element().has_tag_name("Program"),
         "Decoded UVI XML has no Program root"
@@ -369,6 +347,33 @@ pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_and_protected_programs_share_large_bounded_xml_admission() {
+        let xml = format!(
+            "<Program><!--{}-->{}</Program>",
+            "a".repeat(17 << 20),
+            "<p/>".repeat(260_000)
+        );
+        assert_eq!(decode_program(&xml, &[]).unwrap(), xml);
+        let namespace = b"authored large-program namespace";
+        let mut password = b"authored large-program password\0".to_vec();
+        let mut payload = xml.as_bytes().to_vec();
+        payload.resize(payload.len().div_ceil(8) * 8, 0);
+        transform(
+            &mut payload,
+            key_from_string(&password[..password.len() - 1]),
+            0,
+        );
+        transform(&mut password, key_from_string(namespace), 0);
+        let wrapper = format!(
+            "<Program PasswordV2=\"{}\">{}</Program>",
+            STANDARD.encode(password),
+            STANDARD.encode(payload)
+        );
+        assert_eq!(decode_program(&wrapper, namespace).unwrap(), xml);
+        assert!(decode_program("<!DOCTYPE Program><Program/>", namespace).is_err());
+    }
 
     #[test]
     fn authored_cipher_and_password_wrapper() {
