@@ -434,7 +434,7 @@ impl Cursor {
         let phase = self.fraction + self.step;
         // Truncation is floor here (phase >= 0) and, unlike f64::floor on the
         // SSE2 baseline, needs no libm call.
-        let whole = (phase as u64) as f64;
+        let whole = (phase as i64) as f64;
         self.fraction = phase - whole;
         self.position = self.position.saturating_add(whole as u64);
     }
@@ -702,15 +702,39 @@ impl Cursor {
         let Some(span) = pcm.span(left..right + 1) else {
             return 0;
         };
-        let start = self.position;
-        for frame in &mut output[..count] {
-            let offset = (self.position - start) as usize;
-            let window = &span[offset..offset + width];
-            let source = match bank {
-                Some(bank) => bank.sample(self.fraction, window),
-                None => kernel.sample_window(self.fraction, self.step, window),
-            };
-            self.last = if source.iter().all(|value| value.is_finite()) {
+        let output = &mut output[..count];
+        match bank {
+            Some(bank) => self.run(span, width, output, envelope, gain, gains, |f, w| {
+                bank.dot(f, w)
+            }),
+            None => {
+                let step = self.step;
+                self.run(span, width, output, envelope, gain, gains, |f, w| {
+                    kernel.sample_window(f, step, w)
+                })
+            }
+        }
+        count
+    }
+
+    /// The [`Self::render_run`] frame loop over one contiguous span, with the
+    /// cursor in locals; same arithmetic as [`Self::advance`].
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        span: &[Frame],
+        width: usize,
+        output: &mut [Frame],
+        envelope: &mut EnvelopeState,
+        gain: f32,
+        gains: [f32; 2],
+        sample: impl Fn(f64, &[Frame]) -> Frame,
+    ) {
+        let (mut fraction, step, mut offset, mut last) = (self.fraction, self.step, 0, self.last);
+        for frame in output {
+            let source = sample(fraction, &span[offset..offset + width]);
+            last = if source.iter().all(|value| value.is_finite()) {
                 source
             } else {
                 [0.; 2]
@@ -719,9 +743,14 @@ impl Cursor {
             for channel in 0..2 {
                 frame[channel] += source[channel] * gain * gains[channel] * level;
             }
-            self.advance();
+            let phase = fraction + step;
+            let whole = phase as i64 as f64;
+            fraction = phase - whole;
+            offset += whole as usize;
         }
-        count
+        self.fraction = fraction;
+        self.position += offset as u64;
+        self.last = last;
     }
 
     fn render_filtered(
