@@ -281,6 +281,11 @@ pub(crate) struct PartShared {
 }
 
 impl PartShared {
+    /// Node `node`'s post-fader level: the part's own for the root.
+    pub(crate) fn level(&self, node: usize) -> [f32; 2] {
+        if node == 0 { Meters::read(&self.meter) } else { [0.; 2] }
+    }
+
     pub(crate) fn problems(&self) -> RuntimeProblems {
         let [a, b, c, d, e, f] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
