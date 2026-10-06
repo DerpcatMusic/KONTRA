@@ -55,6 +55,22 @@ ordinary tuned notes, and failed rate admission. Callback heap guards and block
 sizes 1/7/64/256 cover the path. Registered per-note Pitch 7.25 and live per-note
 pitch bend remain unimplemented; this attribute does not imply those capabilities.
 
+## Channel bend and pressure (non-MPE)
+
+`Ingress` turns plain channel pitch bend, channel pressure and polyphonic
+pressure (MIDI 1.0 and 2.0) into per-note `Expression` through
+`Runtime::set_input_expressions`, the same projection MPE uses, so the native
+pressure/timbre defaults and IR routes apply. Bend and channel pressure reach
+every live note admitted from that group/channel, release tails included; poly
+pressure reaches the notes of that key. New notes start at the channel's current
+bend and pressure. Range is RPN 0 on the channel (MIDI 1.0 CC 101/100/6/38, or
+the MIDI 2.0 registered controller 0/0), else the instrument default
+`Prepared::bend_range`: lowering takes the largest authored pitch-bend → pitch
+depth (Kontakt's pitch-bend modulator), otherwise 2 semitones. Updates are
+all-or-nothing and allocation-free; owners shared by linked notes change once.
+The RPN CCs still dispatch as controllers first. KSP's `on controller` does not
+yet observe bend or pressure (the core controller space stops at CC 127).
+
 ## Native integration and time
 
 The independent offline executable now uses UMP for its note input. Its demo

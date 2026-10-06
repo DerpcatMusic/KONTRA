@@ -85,7 +85,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         assets: HashMap::new(),
         locations: Vec::new(),
         start_criteria: Vec::new(),
+        voice_groups: Vec::new(),
     };
+    if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
+        out.voice_groups(&chunk.data)
+            .map_err(|e| decode("voice groups", e))?;
+    }
     let groups = GroupList::try_from(
         program
             .0
@@ -316,6 +321,54 @@ struct Translation {
         ir::GroupRef,
         Vec<ni_file::kontakt::objects::StartCriteriaParams>,
     )>,
+    /// Kontakt voice group index -> `ir.voice_limits` index.
+    voice_groups: Vec<Option<usize>>,
+}
+
+const VOICE_GROUPS: u16 = 0x32;
+
+/// One `BVoiceLimit` (version 0x60): name, kill mode (Any, Oldest, Newest,
+/// Highest, Lowest), prefer released, max voices, fade ms, exclusion group.
+fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error> {
+    fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], ni_file::Error> {
+        let (head, rest) = data
+            .split_first_chunk::<N>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice limit".into()))?;
+        *data = rest;
+        Ok(*head)
+    }
+    let header = take::<3>(data)?;
+    if header != [0, 0x60, 0] {
+        return Err(ni_file::Error::Generic(format!(
+            "voice limit header {header:02x?}"
+        )));
+    }
+    let chars = u32::from_le_bytes(take(data)?) as usize;
+    if data.len() < chars * 2 {
+        return Err(ni_file::Error::Generic("truncated voice limit name".into()));
+    }
+    *data = &data[chars * 2..];
+    let kill = match i16::from_le_bytes(take(data)?) {
+        0 => ir::Kill::Any,
+        1 => ir::Kill::Oldest,
+        2 => ir::Kill::Newest,
+        3 => ir::Kill::Highest,
+        4 => ir::Kill::Lowest,
+        other => return Err(ni_file::Error::Generic(format!("voice kill mode {other}"))),
+    };
+    let prefer_released = take::<1>(data)?[0] != 0;
+    let voices = i32::from_le_bytes(take(data)?).max(1) as u32;
+    let fade = i32::from_le_bytes(take(data)?).max(0);
+    let exclusion = i32::from_le_bytes(take(data)?);
+    Ok((
+        ir::VoiceLimit {
+            voices,
+            kill,
+            prefer_released,
+            fade: ir::Time::Milliseconds(f64::from(fade)),
+        },
+        exclusion,
+    ))
 }
 
 /// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
@@ -340,6 +393,38 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
+    /// defined voice groups, then one voice limit per defined group.
+    fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
+        let (instrument, _) = voice_limit(&mut data)?;
+        self.ir.voice_limit = Some(instrument);
+        let (defined, mut data) = data
+            .split_first_chunk::<16>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice groups".into()))?;
+        self.voice_groups = vec![None; 128];
+        for g in 0..128 {
+            if defined[g / 8] & (1 << (g % 8)) != 0 {
+                let (limit, exclusion) = voice_limit(&mut data)?;
+                if exclusion >= 0 {
+                    self.unsupported(
+                        &format!("voice group {g}"),
+                        "voice group exclusion group",
+                        exclusion,
+                        ir::Reason::NotModeled,
+                    );
+                }
+                self.ir.voice_limits.push(limit);
+                self.voice_groups[g] = Some(self.ir.voice_limits.len() - 1);
+            }
+        }
+        if !data.is_empty() {
+            return Err(ni_file::Error::Generic(format!(
+                "{} bytes after the voice groups",
+                data.len()
+            )));
+        }
+        Ok(())
+    }
     fn unsupported(
         &mut self,
         location: &str,
@@ -363,20 +448,16 @@ impl Translation {
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
-        if v.release_trigger && v.rls_trig_counter != 0 {
-            self.unsupported(
-                &at,
-                "release trigger counter decay",
-                v.rls_trig_counter,
-                not_modeled,
-            );
-        }
         if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
-        if v.voice_group_index >= 0 {
-            self.unsupported(&at, "voice group", v.voice_group_index, not_modeled);
-        }
+        let voice_limit = usize::try_from(v.voice_group_index).ok().and_then(|g| {
+            let limit = self.voice_groups.get(g).copied().flatten();
+            if limit.is_none() {
+                self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
+            }
+            limit
+        });
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
@@ -558,6 +639,13 @@ impl Translation {
                     ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
                     ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
                     ModSource::Constant => ir::ModulationSource::Constant,
+                    // Kontakt manual (Source module, T): counts down from T ms
+                    // at note-on and holds its value at note-off.
+                    ModSource::ReleaseTriggerCounter if v.rls_trig_counter > 0 => {
+                        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(
+                            v.rls_trig_counter,
+                        )))
+                    }
                     ModSource::RandomUnipolar => ir::ModulationSource::Random,
                     ModSource::Unassigned => continue,
                     other => {
@@ -611,6 +699,7 @@ impl Translation {
                 law: ir::PanLaw::Balance,
             },
             tune: ir::Pitch::Ratio(f64::from(v.tune)),
+            voice_limit,
             ..Default::default()
         });
         Ok(Some(GroupInfo {
@@ -668,15 +757,14 @@ impl Translation {
             "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
-        let shape = match target.shaper.as_ref().filter(|s| s.enabled) {
+        // The invert flag does not act through an enabled shaper: Vista Full
+        // Strings stores identical shaped crossfade copies (mic `cl`/`dc`,
+        // `BALANCE_COMP`) that differ only in the flag and must play alike,
+        // and no inversion order makes both play the same.
+        let shaper = target.shaper.as_ref().filter(|s| s.enabled);
+        let invert = target.invert && shaper.is_none();
+        let shape = match shaper {
             None => None,
-            Some(_) if target.invert => {
-                return report(
-                    self,
-                    "inverted shaped modulation (order)",
-                    ir::Reason::UnknownLaw,
-                );
-            }
             Some(shaper) => {
                 use ni_file::kontakt::objects::ShaperCurve;
                 let points: Vec<(f64, f64)> = match &shaper.curve {
@@ -688,15 +776,22 @@ impl Translation {
                             .map(|(n, y)| (n as f64 / last, f64::from(*y)))
                             .collect()
                     }
-                    ShaperCurve::Breakpoints(points)
-                        if !points.is_empty() && points.iter().all(|p| p.curve == 0.0) =>
-                    {
+                    ShaperCurve::Breakpoints(points) if !points.is_empty() => {
+                        if points.iter().any(|p| p.curve != 0.0) {
+                            // Segment curvature (-1..1) has no known law.
+                            self.unsupported(
+                                at,
+                                "curved modulation shaper segment (linear used)",
+                                &target.param,
+                                ir::Reason::UnknownLaw,
+                            );
+                        }
                         points
                             .iter()
                             .map(|p| (f64::from(p.x), f64::from(p.y)))
                             .collect()
                     }
-                    _ => return report(self, "curved modulation shaper", ir::Reason::UnknownLaw),
+                    _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
                 };
                 self.ir.shapes.push(ir::Shape { points });
                 Some(ir::ShapeRef(self.ir.shapes.len() - 1))
@@ -706,7 +801,7 @@ impl Translation {
             source,
             target: route_target,
             depth,
-            invert: target.invert,
+            invert,
             shape,
             smoothing: ir::Time::Milliseconds(f64::from(target.lag_ms)),
             scale: None,
@@ -1181,14 +1276,24 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 mod saved_tests {
     #[test]
     fn saved_values_keep_their_types_and_skip_arrays() {
-        let entries = ["$level 17", "~mix 0.5", "@label two words", "%table 1 2 3", "$bad x"].map(String::from);
+        let entries = [
+            "$level 17",
+            "~mix 0.5",
+            "@label two words",
+            "%table 1 2 3",
+            "$bad x",
+        ]
+        .map(String::from);
         let saved = super::saved(&entries);
         assert_eq!(
             saved,
             [
                 ("$level".to_owned(), sampler_ir::Saved::Int(17)),
                 ("~mix".to_owned(), sampler_ir::Saved::Real(0.5)),
-                ("@label".to_owned(), sampler_ir::Saved::Text("two words".into())),
+                (
+                    "@label".to_owned(),
+                    sampler_ir::Saved::Text("two words".into())
+                ),
             ]
         );
     }
@@ -1228,6 +1333,7 @@ mod modulation {
             assets: HashMap::new(),
             locations: Vec::new(),
             start_criteria: Vec::new(),
+            voice_groups: Vec::new(),
         }
     }
 
