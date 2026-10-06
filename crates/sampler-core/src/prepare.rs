@@ -173,7 +173,7 @@ pub struct Prepared {
     pub(super) release_reserves: [[super::ReleaseReserve; 2]; 128],
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
-    pub(super) script_initial: Box<[Box<[i64]>]>,
+    pub(super) script_initial: Box<[super::ops::ScriptBank]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,

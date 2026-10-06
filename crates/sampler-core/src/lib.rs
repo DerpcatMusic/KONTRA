@@ -87,7 +87,12 @@ pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
 mod integer;
 pub use integer::{IntegerBinary, IntegerUnary};
+mod ops;
 mod script;
+pub use ops::{
+    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, real, real_bits,
+};
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
 mod variation;
@@ -421,6 +426,7 @@ pub struct Runtime {
     now: u64,
     order: u64,
     nonfinite_frames: u64,
+    ops: ops::OpState,
 }
 
 impl Runtime {
@@ -521,6 +527,7 @@ impl Runtime {
             now: 0,
             order: 0,
             nonfinite_frames: 0,
+            ops: ops::OpState::default(),
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
