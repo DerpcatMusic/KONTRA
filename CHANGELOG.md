@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add native state-variable filters with sample-clock cutoff/Q automation in voice
+  and bus chains. Generalize the existing control mapping, share coefficient work
+  per generation and keep audio histories independent across voices and replacement.
+
 - Add causal stereo feedback delays to shared native voice/bus processing. Prepare
   rings off audio, retain silent echo gaps and invalidate old history without clearing
   long buffers. Verify independent recurrence, generation tails and fault containment.

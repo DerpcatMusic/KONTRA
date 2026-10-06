@@ -32,12 +32,12 @@ impl Runtime {
     }
 
     fn render_segment(&mut self, output: &mut [Frame]) {
-        let routed = self.plans.slots.iter().any(|s| {
+        let chunked = self.plans.slots.iter().any(|s| {
             s.value
                 .as_ref()
-                .is_some_and(|g| g.prepared.buses.len() != 0)
+                .is_some_and(|g| g.prepared.buses.len() != 0 || !g.dsp.filters.is_empty())
         });
-        if !routed {
+        if !chunked {
             self.render_voices(output, self.now);
             return;
         }
@@ -45,6 +45,9 @@ impl Runtime {
             let at = self.now + (chunk * 64) as u64;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
+                for filter in &mut g.dsp.filters {
+                    filter.begin(at);
+                }
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
@@ -109,7 +112,8 @@ impl Runtime {
             delay: &mut plan.dsp.delay_samples
                 [delay_begin..delay_begin + chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
-            gains: &plan.dsp.gains,
+            parameters: &plan.dsp.parameters,
+            filters: &mut plan.dsp.filters,
             at,
         };
         let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {

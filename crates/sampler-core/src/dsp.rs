@@ -116,8 +116,9 @@ pub enum Processor {
     /// Source profiles own pan/width laws; this stage does not clamp or normalize.
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
-    ControlGain(GainControl),
+    ControlGain(ControlRange),
     Delay(Delay),
+    StateVariable(StateVariableFilter),
 }
 
 impl Processor {
@@ -126,6 +127,7 @@ impl Processor {
             Processor::Gain(gain) => gain.is_finite(),
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
+            Processor::StateVariable(filter) => filter.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -133,9 +135,11 @@ impl Processor {
 
 pub(super) mod control;
 mod delay;
-pub use control::GainControl;
-pub(super) use control::GainRamp;
+pub(super) mod svf;
+pub(super) use control::ControlRamp;
+pub use control::{ControlRange, Parameter};
 pub use delay::Delay;
+pub use svf::{StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
     Gain(f64),
@@ -143,6 +147,7 @@ pub(super) enum PreparedProcessor {
     Biquad(Biquad),
     ControlGain(usize),
     Delay { delay: Delay, offset: usize },
+    StateVariable(usize),
 }
 
 pub(super) struct PreparedVoiceChain {
@@ -155,7 +160,8 @@ pub(super) struct PreparedVoiceChain {
 pub(super) struct RenderContext<'a> {
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
-    pub gains: &'a [GainRamp],
+    pub parameters: &'a [ControlRamp],
+    pub filters: &'a mut [svf::FilterCache],
     pub at: u64,
 }
 
@@ -193,12 +199,13 @@ impl VoiceChain {
     pub(super) fn compile(
         self,
         rate: u32,
-        bindings: &mut Vec<GainControl>,
+        bindings: &mut Vec<ControlRange>,
+        filters: &mut Vec<svf::PreparedFilter>,
     ) -> Result<PreparedVoiceChain, Error> {
         let mut delay_frames = 0;
         Ok(PreparedVoiceChain {
-            pre: compile_processors(self.pre, rate, bindings, &mut delay_frames)?,
-            post: compile_processors(self.post, rate, bindings, &mut delay_frames)?,
+            pre: compile_processors(self.pre, rate, bindings, &mut delay_frames, filters)?,
+            post: compile_processors(self.post, rate, bindings, &mut delay_frames, filters)?,
             tail_frames: self.tail_frames,
             delay_frames,
         })
@@ -207,8 +214,9 @@ impl VoiceChain {
 pub(super) fn compile_processors(
     stages: Box<[Processor]>,
     rate: u32,
-    bindings: &mut Vec<GainControl>,
+    bindings: &mut Vec<ControlRange>,
     delay_frames: &mut usize,
+    filters: &mut Vec<svf::PreparedFilter>,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -218,6 +226,11 @@ pub(super) fn compile_processors(
         .into_iter()
         .map(|stage| {
             Ok(match stage {
+                Processor::StateVariable(filter) => {
+                    let index = filters.len();
+                    filters.push(filter.compile(rate, bindings)?);
+                    PreparedProcessor::StateVariable(index)
+                }
                 Processor::Delay(delay) => {
                     let offset = *delay_frames;
                     *delay_frames = offset
@@ -299,16 +312,25 @@ impl PreparedVoiceChain {
                     } else {
                         raw[index].map(f64::from)
                     },
-                    context.gains,
+                    context.parameters,
                     at,
                     context.delay,
+                    context.filters,
                 );
                 let level = voice
                     .envelope
                     .constant_level()
                     .unwrap_or_else(|| voice.envelope.next());
                 value = value.map(|v| v * f64::from(level));
-                value = process(&self.post, post, value, context.gains, at, context.delay);
+                value = process(
+                    &self.post,
+                    post,
+                    value,
+                    context.parameters,
+                    at,
+                    context.delay,
+                    context.filters,
+                );
                 let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
                     f64::from(initial) * f64::from(voice.tail_remaining.unwrap()) / f64::from(total)
                 });
@@ -358,12 +380,16 @@ pub(super) fn process(
     stages: &[PreparedProcessor],
     states: &mut [ProcessorState],
     mut value: [f64; 2],
-    gains: &[GainRamp],
+    parameters: &[ControlRamp],
     at: u64,
     delay_samples: &mut [[f64; 2]],
+    filters: &mut [svf::FilterCache],
 ) -> [f64; 2] {
     for (stage, state) in stages.iter().zip(states) {
         match stage {
+            PreparedProcessor::StateVariable(index) => {
+                value = filters[*index].process(&mut state.z, value, parameters, at);
+            }
             PreparedProcessor::Delay { delay, offset } => {
                 value = delay.process(
                     state,
@@ -376,7 +402,7 @@ pub(super) fn process(
                 value = matrix.map(|row| row[0] * value[0] + row[1] * value[1]);
             }
             PreparedProcessor::ControlGain(lane) => {
-                let gain = gains[*lane].value(at);
+                let gain = parameters[*lane].value(at);
                 value = value.map(|v| v * gain);
             }
             PreparedProcessor::Biquad(filter) => {
@@ -410,9 +436,10 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
 pub(super) struct DspState {
     pub stride: usize,
     pub cells: Box<[ProcessorState]>,
-    pub gains: Box<[GainRamp]>,
+    pub parameters: Box<[ControlRamp]>,
     pub delay_stride: usize,
     pub delay_samples: Box<[[f64; 2]]>,
+    pub filters: Box<[svf::FilterCache]>,
     pub buses: crate::bus::BusState,
 }
 impl DspState {
@@ -435,8 +462,14 @@ impl DspState {
             stride,
             cells: allocate(cells)?,
             delay_stride,
+            filters: plan
+                .filters
+                .iter()
+                .copied()
+                .map(svf::FilterCache::new)
+                .collect(),
             delay_samples: allocate(delay_count)?,
-            gains: control::initial_gains(plan, &plan.gain_bindings),
+            parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
         })
     }
@@ -508,6 +541,7 @@ mod tests {
                         [input, 0.],
                         &[],
                         0,
+                        &mut [],
                         &mut [],
                     );
                     assert!((actual[0] - expected).abs() < 1e-13);
@@ -581,6 +615,7 @@ mod tests {
                                     input,
                                     &[],
                                     0,
+                                    &mut [],
                                     &mut [],
                                 );
                                 for (actual, expected) in output.into_iter().zip(input) {

@@ -1,6 +1,6 @@
 //! Prepared stereo bus DAGs. A bus owns summed-signal history, never note identity.
-use crate::dsp::{GainRamp, PreparedProcessor, ProcessorState, allocate};
-use crate::{Error, Frame, GainControl, Prepared, Processor};
+use crate::dsp::{ControlRamp, PreparedProcessor, ProcessorState, allocate};
+use crate::{ControlRange, Error, Frame, Prepared, Processor};
 
 const BLOCK: usize = 64;
 
@@ -32,7 +32,8 @@ pub(super) struct PreparedBuses {
     order: Box<[usize]>,
     cells: usize,
     delay_frames: usize,
-    pub gains: Box<[GainControl]>,
+    filters: Box<[crate::dsp::svf::PreparedFilter]>,
+    pub parameters: Box<[ControlRange]>,
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
 impl PreparedBuses {
@@ -69,9 +70,10 @@ impl PreparedBuses {
         if order.len() != buses.len() {
             return Err(Error::InvalidInput);
         }
-        let mut gains = Vec::new();
+        let mut parameters = Vec::new();
         let mut cells = 0usize;
         let mut delay_frames = 0;
+        let mut filters = Vec::new();
         let nodes = buses
             .into_iter()
             .map(|bus| {
@@ -83,8 +85,9 @@ impl PreparedBuses {
                     processors: crate::dsp::compile_processors(
                         bus.processors.into_boxed_slice(),
                         rate,
-                        &mut gains,
+                        &mut parameters,
                         &mut delay_frames,
+                        &mut filters,
                     )?,
                     sends: bus.sends.into_boxed_slice(),
                     states: begin..cells,
@@ -92,7 +95,7 @@ impl PreparedBuses {
                 })
             })
             .collect::<Result<Box<[_]>, Error>>()?;
-        let mut controls: Vec<_> = gains
+        let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()
             .map(|(i, binding)| (binding.control, i))
@@ -103,7 +106,8 @@ impl PreparedBuses {
             order: order.into_boxed_slice(),
             cells,
             delay_frames,
-            gains: gains.into_boxed_slice(),
+            filters: filters.into_boxed_slice(),
+            parameters: parameters.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
         })
     }
@@ -132,7 +136,8 @@ pub(super) struct BusState {
     buffers: Box<[Buffer]>,
     cells: Box<[ProcessorState]>,
     delay_samples: Box<[[f64; 2]]>,
-    pub gains: Box<[GainRamp]>,
+    pub parameters: Box<[ControlRamp]>,
+    filters: Box<[crate::dsp::svf::FilterCache]>,
 }
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
@@ -140,7 +145,14 @@ impl BusState {
             buffers: allocate(plan.buses.len())?,
             cells: allocate(plan.buses.cells)?,
             delay_samples: allocate(plan.buses.delay_frames)?,
-            gains: crate::dsp::control::initial_gains(plan, &plan.buses.gains),
+            filters: plan
+                .buses
+                .filters
+                .iter()
+                .copied()
+                .map(crate::dsp::svf::FilterCache::new)
+                .collect(),
+            parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
         })
     }
     pub fn begin(&mut self) {
@@ -167,6 +179,9 @@ impl BusState {
     }
     pub fn render(&mut self, graph: &PreparedBuses, output: &mut [Frame], at: u64) -> u64 {
         let mut faults = 0;
+        for filter in &mut self.filters {
+            filter.begin(at);
+        }
         for &index in &graph.order {
             let node = &graph.nodes[index];
             let buffer = &mut self.buffers[index];
@@ -185,9 +200,10 @@ impl BusState {
                     &node.processors,
                     states,
                     frame.map(f64::from),
-                    &self.gains,
+                    &self.parameters,
                     at + frame_index as u64,
                     &mut self.delay_samples,
+                    &mut self.filters,
                 );
                 let result = value.map(|v| v as f32);
                 if result.iter().all(|v| v.is_finite()) && states.iter().all(ProcessorState::finite)

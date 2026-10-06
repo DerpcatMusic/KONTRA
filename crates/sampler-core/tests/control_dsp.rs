@@ -65,13 +65,13 @@ fn plan(domain: ControlDomain, default: ControlValue, ramp_frames: u32) -> Prepa
             VoiceChain::new(
                 vec![],
                 vec![
-                    Processor::ControlGain(GainControl {
+                    Processor::ControlGain(ControlRange {
                         control: LEVEL,
                         low: 0.,
                         high: 1.,
                         ramp_frames,
                     }),
-                    Processor::ControlGain(GainControl {
+                    Processor::ControlGain(ControlRange {
                         control: MUTE,
                         low: 1.,
                         high: 0.,
@@ -280,7 +280,7 @@ fn domain_projection_keeps_extreme_ranges_finite_and_schema_changes_validate_bin
             .with_controls(vec![])
             .is_err()
     );
-    let missing = Processor::ControlGain(GainControl {
+    let missing = Processor::ControlGain(ControlRange {
         control: ControlId(999),
         low: 0.,
         high: 1.,
@@ -297,7 +297,7 @@ fn domain_projection_keeps_extreme_ranges_finite_and_schema_changes_validate_bin
     for (low, high) in [(f64::NAN, 1.), (0., f64::INFINITY), (-f64::MAX, f64::MAX)] {
         assert!(
             VoiceChain::new(
-                vec![Processor::ControlGain(GainControl {
+                vec![Processor::ControlGain(ControlRange {
                     control: LEVEL,
                     low,
                     high,
@@ -314,7 +314,7 @@ fn domain_projection_keeps_extreme_ranges_finite_and_schema_changes_validate_bin
 #[test]
 fn one_control_drives_multiple_dsp_bindings_and_schema_order_is_not_identity() {
     let bindings = |frames| {
-        Processor::ControlGain(GainControl {
+        Processor::ControlGain(ControlRange {
             control: LEVEL,
             low: 0.,
             high: 1.,

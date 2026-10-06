@@ -1,16 +1,16 @@
 use crate::{ControlDomain, ControlId, ControlValue, Error, Prepared};
 
-/// Map a control's declared range linearly to amplitude, with a sample-clock ramp.
+/// Map a control's declared range to destination units, with a sample-clock ramp.
 /// Integer, real and toggle controls share the same value owner; constant domains
-/// select `low`. Signed gain supports polarity inversion.
+/// select `low`. The processor field defines the units and validates its range.
 #[derive(Clone, Copy, Debug)]
-pub struct GainControl {
+pub struct ControlRange {
     pub control: ControlId,
     pub low: f64,
     pub high: f64,
     pub ramp_frames: u32,
 }
-impl GainControl {
+impl ControlRange {
     pub(super) fn valid(self) -> bool {
         self.low.is_finite() && self.high.is_finite() && (self.high - self.low).is_finite()
     }
@@ -23,6 +23,54 @@ impl GainControl {
         } else {
             (self.low + (self.high - self.low) * normalized)
                 .clamp(self.low.min(self.high), self.low.max(self.high))
+        }
+    }
+}
+
+/// A processor parameter, in the units declared by its destination field.
+#[derive(Clone, Copy, Debug)]
+pub enum Parameter {
+    Constant(f64),
+    Control(ControlRange),
+}
+
+impl Parameter {
+    pub(super) fn bounds(self) -> [f64; 2] {
+        match self {
+            Self::Constant(value) => [value; 2],
+            Self::Control(binding) => [binding.low, binding.high],
+        }
+    }
+
+    pub(super) fn valid(self) -> bool {
+        match self {
+            Self::Constant(value) => value.is_finite(),
+            Self::Control(binding) => binding.valid(),
+        }
+    }
+
+    pub(super) fn compile(self, bindings: &mut Vec<ControlRange>) -> PreparedParameter {
+        match self {
+            Self::Constant(value) => PreparedParameter::Constant(value),
+            Self::Control(binding) => {
+                let lane = bindings.len();
+                bindings.push(binding);
+                PreparedParameter::Control(lane)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum PreparedParameter {
+    Constant(f64),
+    Control(usize),
+}
+impl PreparedParameter {
+    pub fn value(self, parameters: &[ControlRamp], at: u64) -> f64 {
+        match self {
+            Self::Constant(value) => value,
+            Self::Control(lane) => parameters[lane].value(at),
         }
     }
 }
@@ -55,13 +103,13 @@ fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
 /// One trajectory per prepared binding, shared by all voices in that generation.
 /// Evaluation is a function of absolute sample time, never voice/render call count.
 #[derive(Clone, Copy)]
-pub(crate) struct GainRamp {
+pub(crate) struct ControlRamp {
     from: f64,
     target: f64,
     start: u64,
     frames: u32,
 }
-impl GainRamp {
+impl ControlRamp {
     pub(super) fn value(self, at: u64) -> f64 {
         let elapsed = at.saturating_sub(self.start);
         if elapsed >= u64::from(self.frames) {
@@ -82,21 +130,21 @@ impl GainRamp {
 }
 
 impl Prepared {
-    pub(crate) fn validate_gain_controls(&self) -> Result<(), Error> {
-        for binding in self.gain_bindings.iter().chain(self.buses.gains.iter()) {
+    pub(crate) fn validate_dsp_controls(&self) -> Result<(), Error> {
+        for binding in self.dsp_bindings.iter().chain(self.buses.parameters.iter()) {
             self.control_index(binding.control)?;
         }
         Ok(())
     }
 }
 
-pub(crate) fn initial_gains(plan: &Prepared, bindings: &[GainControl]) -> Box<[GainRamp]> {
+pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> Box<[ControlRamp]> {
     bindings
         .iter()
         .map(|binding| {
             let definition = plan.controls[plan.control_index(binding.control).unwrap()];
             let target = binding.target(normalized(definition.domain, definition.default));
-            GainRamp {
+            ControlRamp {
                 from: target,
                 target,
                 start: 0,
@@ -115,17 +163,17 @@ impl super::DspState {
         at: u64,
     ) {
         let definition = plan.controls[index];
-        edit_gains(
-            &mut self.gains,
-            &plan.gain_bindings,
-            &plan.gain_controls,
+        edit_parameters(
+            &mut self.parameters,
+            &plan.dsp_bindings,
+            &plan.dsp_controls,
             definition,
             value,
             at,
         );
-        edit_gains(
-            &mut self.buses.gains,
-            &plan.buses.gains,
+        edit_parameters(
+            &mut self.buses.parameters,
+            &plan.buses.parameters,
             &plan.buses.controls,
             definition,
             value,
@@ -134,9 +182,9 @@ impl super::DspState {
     }
 }
 
-fn edit_gains(
-    gains: &mut [GainRamp],
-    bindings: &[GainControl],
+fn edit_parameters(
+    parameters: &mut [ControlRamp],
+    bindings: &[ControlRange],
     controls: &[(ControlId, usize)],
     definition: crate::ControlDefinition,
     value: ControlValue,
@@ -147,6 +195,6 @@ fn edit_gains(
     let value = normalized(definition.domain, value);
     for &(_, lane) in &controls[from..until] {
         let binding = bindings[lane];
-        gains[lane].set(at, binding.target(value), binding.ramp_frames);
+        parameters[lane].set(at, binding.target(value), binding.ramp_frames);
     }
 }

@@ -7,16 +7,30 @@ use std::{hint::black_box, time::Instant};
 
 const LAYERS: usize = 4;
 const TRIALS: usize = 512;
+const CUTOFF: sampler_core::ControlId = sampler_core::ControlId(1);
+
+#[derive(Clone, Copy, Default)]
+struct Processing {
+    transpose: f64,
+    filters: usize,
+    bus: bool,
+    automated: bool,
+}
 
 fn prepare(
     rate: u32,
     voices: usize,
     reserved: usize,
     shaped: bool,
-    processing: (f64, usize, bool),
+    processing: Processing,
     muted: bool,
 ) -> Runtime {
-    let (transpose, filters, bus) = processing;
+    let Processing {
+        transpose,
+        filters,
+        bus,
+        automated,
+    } = processing;
     let notes = voices / LAYERS;
     let samples = (0..LAYERS)
         .map(|layer| {
@@ -53,15 +67,35 @@ fn prepare(
         .collect();
     let mut prepared = Prepared::new(rate, samples, regions, LAYERS).unwrap();
     if filters != 0 {
-        let filter = sampler_core::Processor::Biquad(
-            sampler_core::Biquad::new(
-                rate,
-                sampler_core::FilterKind::LowPass,
-                f64::from(rate) / 4.,
-                0.5,
+        let filter = if automated {
+            prepared = prepared
+                .with_controls(vec![sampler_core::ControlDefinition {
+                    id: CUTOFF,
+                    domain: sampler_core::ControlDomain::Real { min: 0., max: 1. },
+                    default: sampler_core::ControlValue::Real(0.),
+                }])
+                .unwrap();
+            sampler_core::Processor::StateVariable(sampler_core::StateVariableFilter {
+                mode: sampler_core::SvfMode::LowPass,
+                cutoff_hz: sampler_core::Parameter::Control(sampler_core::ControlRange {
+                    control: CUTOFF,
+                    low: f64::from(rate) / 16.,
+                    high: f64::from(rate) / 3.,
+                    ramp_frames: 256,
+                }),
+                q: sampler_core::Parameter::Constant(0.5),
+            })
+        } else {
+            sampler_core::Processor::Biquad(
+                sampler_core::Biquad::new(
+                    rate,
+                    sampler_core::FilterKind::LowPass,
+                    f64::from(rate) / 4.,
+                    0.5,
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        );
+        };
         prepared = if bus {
             prepared
                 .with_buses(
@@ -134,7 +168,7 @@ fn measure(
     voices: usize,
     reserved: usize,
     shaped: bool,
-    processing: (f64, usize, bool),
+    processing: Processing,
     muted: bool,
 ) {
     let mut rt = prepare(rate, voices, reserved, shaped, processing, muted);
@@ -149,7 +183,18 @@ fn measure(
     } else {
         [expected, -expected]
     };
-    for elapsed in &mut times {
+    for (iteration, elapsed) in times.iter_mut().enumerate() {
+        if processing.automated {
+            rt.edit_controls(
+                rt.active_plan(),
+                None,
+                &[sampler_core::ControlWrite {
+                    id: CUTOFF,
+                    value: sampler_core::ControlValue::Real((iteration % 2) as f64),
+                }],
+            )
+            .unwrap();
+        }
         let begin = Instant::now();
         black_box(&mut rt).render(black_box(&mut audio)).unwrap();
         *elapsed = begin.elapsed().as_nanos();
@@ -165,10 +210,15 @@ fn measure(
     let p99 = times[(TRIALS - 1) * 99 / 100] as f64 / 1000.;
     let maximum = times[TRIALS - 1] as f64 / 1000.;
     let deadline = block as f64 * 1_000_000. / f64::from(rate);
-    let (_, filters, bus) = processing;
+    let Processing {
+        filters,
+        bus,
+        automated,
+        ..
+    } = processing;
     let envelope = if shaped { "sustain" } else { "unity" };
     println!(
-        "{bus},{filters},{muted},{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
+        "{bus},{filters},{automated},{muted},{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
         voices / LAYERS,
         p99 / deadline * 100.,
         median * 1000. / (voices * block) as f64
@@ -189,22 +239,25 @@ fn main() {
         std::env::consts::OS
     );
     println!(
-        "bus,filters,muted,envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
+        "bus,filters,automated,muted,envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
     );
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     let muted = args.last().is_some_and(|arg| arg == "--muted");
     if muted {
         args.pop();
     }
-    if args
-        .first()
-        .is_some_and(|arg| matches!(arg.as_str(), "--filters" | "--bus-filters"))
-    {
-        let bus = args[0] == "--bus-filters";
+    if args.first().is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "--filters" | "--bus-filters" | "--svf" | "--bus-svf"
+        )
+    }) {
+        let bus = args[0].starts_with("--bus-");
+        let automated = args[0].ends_with("svf");
         assert_eq!(
             args.len(),
             2,
-            "expected --filters/--bus-filters COUNT [--muted]"
+            "expected --filters/--bus-filters/--svf/--bus-svf COUNT [--muted]"
         );
         let filters: usize = args[1].parse().expect("integer stage count");
         assert!((1..=16).contains(&filters));
@@ -216,7 +269,12 @@ fn main() {
                     voices,
                     voices,
                     false,
-                    (0., filters, bus),
+                    Processing {
+                        filters,
+                        bus,
+                        automated,
+                        ..Processing::default()
+                    },
                     muted,
                 );
             }
@@ -239,7 +297,10 @@ fn main() {
                     voices,
                     voices,
                     false,
-                    (transpose, 0, false),
+                    Processing {
+                        transpose,
+                        ..Processing::default()
+                    },
                     muted,
                 );
             }
@@ -256,7 +317,7 @@ fn main() {
                         voices,
                         reserved,
                         shaped,
-                        (0.0, 0, false),
+                        Processing::default(),
                         muted,
                     );
                 }

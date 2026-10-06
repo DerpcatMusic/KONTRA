@@ -160,8 +160,9 @@ pub struct Prepared {
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
     pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
-    pub(super) gain_bindings: Box<[super::GainControl]>,
-    pub(super) gain_controls: Box<[(super::ControlId, usize)]>,
+    pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
+    pub(super) dsp_bindings: Box<[super::ControlRange]>,
+    pub(super) dsp_controls: Box<[(super::ControlId, usize)]>,
     regions: Box<[PreparedRegion]>,
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
@@ -308,8 +309,9 @@ impl Prepared {
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
             voice_chains: Box::new([]),
-            gain_bindings: Box::new([]),
-            gain_controls: Box::new([]),
+            dsp_bindings: Box::new([]),
+            filters: Box::new([]),
+            dsp_controls: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             group_count: 0,
             source_event_limit: i32::MAX,
@@ -881,20 +883,22 @@ impl Prepared {
         for (region, chain) in self.regions.iter_mut().zip(bindings) {
             region.chain = chain;
         }
-        let mut gains = Vec::new();
+        let mut parameters = Vec::new();
+        let mut filters = Vec::new();
         self.voice_chains = chains
             .into_iter()
-            .map(|chain| chain.compile(self.rate, &mut gains))
+            .map(|chain| chain.compile(self.rate, &mut parameters, &mut filters))
             .collect::<Result<_, _>>()?;
-        let mut controls: Vec<_> = gains
+        let mut controls: Vec<_> = parameters
             .iter()
             .enumerate()
             .map(|(lane, binding)| (binding.control, lane))
             .collect();
         controls.sort_unstable();
-        self.gain_controls = controls.into_boxed_slice();
-        self.gain_bindings = gains.into_boxed_slice();
-        self.validate_gain_controls()?;
+        self.dsp_controls = controls.into_boxed_slice();
+        self.dsp_bindings = parameters.into_boxed_slice();
+        self.filters = filters.into_boxed_slice();
+        self.validate_dsp_controls()?;
         Ok(self)
     }
 }
@@ -913,7 +917,7 @@ impl Prepared {
             return Err(Error::InvalidInput);
         }
         self.buses = super::bus::PreparedBuses::new(self.rate, buses)?;
-        self.validate_gain_controls()?;
+        self.validate_dsp_controls()?;
         for (region, bus) in self.regions.iter_mut().zip(bindings) {
             region.bus = bus;
         }
