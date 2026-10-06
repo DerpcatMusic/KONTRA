@@ -1297,7 +1297,7 @@ impl ReadFrames for [Frame] {
 }
 /// The asset's resident pages, then cache pages.
 pub(super) struct PagedFrames<'a> {
-    pub cache: &'a crate::StreamCache,
+    pub cache: crate::stream::PageReader<'a>,
     pub asset: crate::AssetId,
     pub head: &'a [(usize, crate::Packed)],
 }

@@ -85,6 +85,8 @@ mod plans;
 mod prepare;
 pub use packed::Packed;
 mod release;
+mod parallel;
+pub use parallel::Threads;
 mod render;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
@@ -453,6 +455,8 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
+    /// Worker pool and scratch for multicore rendering; None renders on the audio thread.
+    parallel: Option<parallel::Parallel>,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
@@ -587,6 +591,7 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
+            parallel: None,
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
