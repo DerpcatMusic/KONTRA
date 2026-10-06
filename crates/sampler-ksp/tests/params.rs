@@ -299,7 +299,7 @@ fn key_down_reads_held_input_keys() {
     let mut rt = runtime(
         "on note
            ignore_event($EVENT_ID)
-           if (%KEY_DOWN[60] = 1 and %KEY_DOWN[61] = 0)
+           if (%KEY_DOWN[60] = 1 and %KEY_DOWN[61] = 0 and search(%KEY_DOWN, 1) = 60)
              play_note(61, 127, 0, 100000)
            end if
          end on",
