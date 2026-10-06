@@ -89,11 +89,6 @@ fn font() -> &'static [Font] {
 const TITLE: [(&str, f32); 2] = [("wght", 760.), ("wdth", 88.)];
 const LABEL: [(&str, f32); 2] = [("wght", 600.), ("wdth", 100.)];
 
-/// `text`'s advance at `size` px in the app's own face.
-pub(super) fn advance(text: &str, size: f64) -> f64 {
-    measure(text, &[]) * size / 100.
-}
-
 /// `text`'s advance at 100 px.
 fn measure(text: &str, axes: &[(&str, f32)]) -> f64 {
     mui_text::shape_run(font(), text, 100., axes).map_or(0., |r| r.advance)
@@ -275,7 +270,7 @@ fn cache_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("covers"));
     }
-    Some(crate::cache::dir()?.join("covers"))
+    Some(dirs::cache_dir()?.join("kontra").join("covers"))
 }
 
 /// [`render`], from the app's cache when drawn before; drawn, it is kept there.

@@ -364,23 +364,26 @@ pub struct Prepared {
     pub(super) group_count: u32,
     pub(super) source_event_limit: i32,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) group_params: Box<[super::GroupParams]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
     pub(super) release_options: [super::ReleaseOptions; 2],
     pub(super) release_reserves: [[super::ReleaseReserve; 2]; 128],
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
-    pub(super) script_initial: Box<[Box<[i64]>]>,
+    pub(super) script_initial: Box<[super::ops::ScriptBank]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     keyswitches: [Option<u32>; 128],
     articulated: bool,
+    pub(super) switching: super::Switching,
     conditions: Box<[Box<[ControllerCondition]>]>,
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
+    pub(super) voice_modulation: super::voice_mod::VoiceModulation,
     pub(super) sequences: Box<[super::variation::PreparedSequence]>,
     pub(super) sequence_cells: usize,
     pub(super) shuffle_entries: usize,
@@ -513,6 +516,7 @@ impl Prepared {
             group_count: 0,
             source_event_limit: i32::MAX,
             region_groups: Box::new([]),
+            group_params: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
             release_reserves: [[super::ReleaseReserve::default(); 2]; 128],
@@ -526,10 +530,12 @@ impl Prepared {
             control_programs: Box::new([]),
             keyswitches: [None; 128],
             articulated: false,
+            switching: Default::default(),
             conditions: Box::new([]),
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
+            voice_modulation: Default::default(),
             sequences: Box::new([]),
             sequence_cells: 0,
             shuffle_entries: 0,
@@ -589,6 +595,22 @@ impl Prepared {
             self.stages = Box::new([super::Stage::default()]);
         }
         self.stages[0].release = Some(program);
+        Ok(self)
+    }
+
+    /// Bind per-voice modulation programs: one optional program per authored
+    /// region, and per region the source frames a full sample-start route spans.
+    pub fn with_voice_modulation(
+        mut self,
+        programs: Vec<super::ModProgram>,
+        regions: Vec<Option<usize>>,
+        start_ranges: Vec<u32>,
+    ) -> Result<Self, Error> {
+        if regions.len() != self.regions.len() {
+            return Err(Error::InvalidInput);
+        }
+        self.voice_modulation =
+            super::voice_mod::VoiceModulation::new(programs, regions, start_ranges)?;
         Ok(self)
     }
 

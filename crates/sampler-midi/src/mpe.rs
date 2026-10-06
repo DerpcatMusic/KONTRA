@@ -29,30 +29,39 @@ struct Binding {
     member: Controls,
 }
 
+/// Pressure and timbre at 32 bits (MIDI 1.0 values upscaled, MIDI 2.0 as sent).
 #[derive(Clone, Copy)]
 struct Controls {
     pitch: f64,
-    pressure: u8,
-    timbre: u8,
+    pressure: u32,
+    timbre: Value,
 }
+const CENTER: u32 = 0x8000_0000;
 impl Default for Controls {
     fn default() -> Self {
         Self {
             pitch: 0.0,
             pressure: 0,
-            timbre: 64,
+            timbre: Value::Bits7(64),
         }
     }
 }
 impl Controls {
     fn expression(self, manager: Self) -> Expression {
+        // Offsets from centre add; MIDI 1.0 pairs combine at their own 7 bits.
+        let timbre = match (self.timbre, manager.timbre) {
+            (Value::Bits7(a), Value::Bits7(b)) => {
+                Value::Bits7((i16::from(a) + i16::from(b) - 64).clamp(0, 127) as u8).full_scale()
+            }
+            (a, b) => {
+                let sum = i64::from(a.full_scale()) + i64::from(b.full_scale()) - i64::from(CENTER);
+                sum.clamp(0, i64::from(u32::MAX)) as u32
+            }
+        };
         Expression {
             pitch_semitones: self.pitch + manager.pitch,
-            pressure: Value::Bits7(self.pressure.max(manager.pressure)).full_scale(),
-            timbre: Value::Bits7(
-                (i16::from(self.timbre) + i16::from(manager.timbre) - 64).clamp(0, 127) as u8,
-            )
-            .full_scale(),
+            pressure: self.pressure.max(manager.pressure),
+            timbre,
             ..Expression::default()
         }
     }
@@ -68,8 +77,8 @@ impl Controls {
 #[derive(Clone, Copy)]
 enum Control {
     Pitch(f64),
-    Pressure(u8),
-    Timbre(u8),
+    Pressure(u32),
+    Timbre(Value),
 }
 
 #[derive(Clone, Copy)]
@@ -86,7 +95,9 @@ impl Default for Parameter {
     }
 }
 
-/// One explicitly configured MIDI 1.0 zone in one runtime/port/group domain.
+/// One explicitly configured zone in one runtime/port/group domain. MIDI 1.0
+/// and 2.0 channel voice messages both play it; 2.0 values keep their
+/// precision (velocity, controllers, pressure, pitch bend).
 /// Construct and drop on the control thread. The binding budget includes tails
 /// and unaccepted terminal notes. No pins are added and no heap work occurs in apply.
 ///
@@ -103,11 +114,12 @@ pub struct Mpe {
     members: u8,
     limit: usize,
     controls: [Controls; 16],
-    bends: [u16; 16],
+    bends: [Value; 16],
     ranges: [u8; 2],
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
+    transpose: f64,
 }
 impl Mpe {
     pub fn new(
@@ -160,11 +172,12 @@ impl Mpe {
             members,
             limit: notes,
             controls: [Controls::default(); 16],
-            bends: [8192; 16],
+            bends: [Value::Bits14(8192); 16],
             ranges: [2, 48],
             parameters: [Parameter::default(); 16],
             bindings,
             changes,
+            transpose: 0.0,
         })
     }
 
@@ -189,9 +202,7 @@ impl Mpe {
         if voice.group != self.group {
             return Err(ApplyError::DisabledGroup);
         }
-        if voice.version != Version::Midi1 {
-            return Err(ApplyError::ProtocolMismatch);
-        }
+        let midi2 = voice.version == Version::Midi2;
         if !self.zone.contains(voice.channel, self.members) {
             return Ok(Applied::Unsupported);
         }
@@ -211,30 +222,17 @@ impl Mpe {
                 key,
                 velocity,
                 attribute,
-            } if attribute.kind == 0 => {
-                if self.bindings.len() == self.limit {
-                    return Err(Error::Capacity.into());
-                }
-                let member = if voice.channel == self.zone.manager() {
-                    Controls::default()
+            } if attribute.kind == 0 => Applied::Started(self.admit(
+                runtime,
+                voice.channel,
+                Input { key, ..input },
+                // A MIDI 2.0 velocity of 0 still starts a note.
+                if midi2 {
+                    velocity.normalized().max(1.0 / 65535.0)
                 } else {
-                    self.controls[usize::from(voice.channel)]
-                };
-                let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
-                let note = runtime.trigger_in(
-                    self.performance,
-                    Input { key, ..input },
-                    NotePitch::Key(key),
-                    velocity.normalized(),
-                    expression,
-                )?;
-                self.bindings.push(Binding {
-                    note,
-                    channel: voice.channel,
-                    member,
-                });
-                Applied::Started(note)
-            }
+                    velocity.normalized()
+                },
+            )?),
             Message::NoteOff {
                 key,
                 velocity,
@@ -248,7 +246,7 @@ impl Mpe {
                 velocity,
                 attribute,
             },
-            Message::PitchBend(Value::Bits14(value)) => {
+            Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
                 let range = self.ranges[usize::from(voice.channel != self.zone.manager())];
                 let applied = self.control(
                     runtime,
@@ -258,12 +256,20 @@ impl Mpe {
                 self.bends[usize::from(voice.channel)] = value;
                 applied
             }
-            Message::ChannelPressure(Value::Bits7(value)) => {
-                self.control(runtime, voice.channel, Control::Pressure(value))?
+            Message::ChannelPressure(value @ (Value::Bits7(_) | Value::Bits32(_))) => {
+                self.control(runtime, voice.channel, Control::Pressure(value.full_scale()))?
             }
+            // MIDI 2.0 Registered Controller 0:0, pitch bend sensitivity
+            // (semitones in the top 7 bits).
+            Message::ChannelControl {
+                space: crate::Controllers::Registered,
+                bank: 0,
+                index: 0,
+                value,
+            } => self.range(runtime, voice.channel, (value >> 25) as u8)?,
             Message::Control {
                 index: index @ (64 | 66),
-                value: Value::Bits7(value),
+                value: value @ (Value::Bits7(_) | Value::Bits32(_)),
             } => {
                 if voice.channel != self.zone.manager() {
                     Applied::Ignored
@@ -274,15 +280,16 @@ impl Mpe {
                         input.channel_address(),
                         scope.channels,
                         index,
-                        Value::Bits7(value).full_scale(),
+                        value.full_scale(),
                     )?;
                     Applied::Pedal
                 }
             }
             Message::Control {
                 index: 74,
-                value: Value::Bits7(value),
+                value: value @ (Value::Bits7(_) | Value::Bits32(_)),
             } => self.control(runtime, voice.channel, Control::Timbre(value))?,
+            // MIDI 2.0 carries RPNs as Registered Controllers, not CC 6/38/98..=101.
             Message::Control {
                 index: index @ (6 | 38 | 98..=101),
                 value: Value::Bits7(value),
@@ -303,6 +310,80 @@ impl Mpe {
             }
             _ => Applied::Unsupported,
         })
+    }
+
+    /// Admit a note whose identity another transport owns (a host note ID) as
+    /// if it arrived on `channel` of this zone, so the zone's pedals and gestures
+    /// reach it. `input` must lie in this zone's MIDI 1.0 port and group for
+    /// pedals to hold it; its `external_id` keeps it distinct from wire notes.
+    pub fn trigger(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !self.zone.contains(channel, self.members) {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        Ok(self.admit(runtime, channel, input, velocity)?)
+    }
+
+    /// Offset every note of the zone, held or not, by `semitones` on top of its
+    /// bends (a part's tuning). Commits only if every owner accepts it.
+    pub fn transpose(&mut self, runtime: &mut Runtime, semitones: f64) -> Result<Applied, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !semitones.is_finite() {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        let previous = std::mem::replace(&mut self.transpose, semitones);
+        let manager = Some(self.zone.manager());
+        self.project(runtime, self.controls, manager, Control::Pitch(0.0))
+            .inspect_err(|_| self.transpose = previous)
+            .map_err(Into::into)
+    }
+
+    fn admit(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        if self.bindings.len() == self.limit {
+            return Err(Error::Capacity);
+        }
+        let member = if channel == self.zone.manager() {
+            Controls::default()
+        } else {
+            self.controls[usize::from(channel)]
+        };
+        let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        expression.pitch_semitones += self.transpose;
+        let note = runtime.trigger_in(
+            self.performance,
+            input,
+            NotePitch::Key(input.key),
+            velocity,
+            expression,
+        )?;
+        self.bindings.push(Binding {
+            note,
+            channel,
+            member,
+        });
+        Ok(note)
     }
 
     fn manager_scope(&self) -> ChannelScope {
@@ -351,7 +432,8 @@ impl Mpe {
                 } else {
                     binding.member
                 };
-                let combined = member.expression(manager_controls);
+                let mut combined = member.expression(manager_controls);
+                combined.pitch_semitones += self.transpose;
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {
@@ -435,8 +517,13 @@ impl Mpe {
     }
 }
 
-fn pitch(value: u16, range: f64) -> f64 {
-    let centered = f64::from(value) - 8192.0;
+fn pitch(value: Value, range: f64) -> f64 {
+    let (value, center) = match value {
+        Value::Bits32(v) => (f64::from(v), f64::from(CENTER)),
+        Value::Bits14(v) => (f64::from(v), 8192.0),
+        other => (f64::from(other.full_scale()), f64::from(CENTER)),
+    };
+    let centered = value - center;
     // Exact center and endpoints; MPE permits meaningful receiver combination.
-    range * centered / if value < 8192 { 8192.0 } else { 8191.0 }
+    range * centered / if centered < 0.0 { center } else { center - 1.0 }
 }

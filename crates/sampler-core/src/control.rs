@@ -232,6 +232,16 @@ impl Runtime {
         Ok(generation.controls.values[generation.prepared.control_index(id)?])
     }
 
+    /// The control's id, domain and default in `plan`.
+    pub fn control_definition(
+        &self,
+        plan: PlanId,
+        id: ControlId,
+    ) -> Result<ControlDefinition, Error> {
+        let prepared = &self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared;
+        Ok(prepared.controls[prepared.control_index(id)?])
+    }
+
     pub fn control_revision(&self, plan: PlanId) -> Result<u64, Error> {
         Ok(self
             .plans

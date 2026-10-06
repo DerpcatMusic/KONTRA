@@ -209,39 +209,10 @@ fn finish(answer: &Answer, operation: &Arc<Operation>, picked: Option<Picked>) {
     crate::ui::logs::wake_worker();
 }
 
-fn extensions(file_type: i32) -> Result<&'static [&'static str], String> {
-    match file_type {
-        0 => Ok(&["mid", "midi"]),
-        1 => Ok(&["wav", "aif", "aiff", "ncw"]),
-        2 => Ok(&["nka"]),
-        _ => Err("Unsupported file selector type".into()),
-    }
-}
-
 fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
     let open = DialogKind::OpenFile { multiple: false };
     let folder = DialogKind::PickFolder { multiple: false };
     let (title, kind, directory, filter): (_, _, _, Option<(&str, Vec<String>)>) = match ask {
-        Ask::ScriptFile {
-            from, file_type, ..
-        } => (
-            "Select an instrument file",
-            open,
-            Some(from.clone()),
-            Some((
-                "Instrument files",
-                extensions(*file_type)?
-                    .iter()
-                    .map(|s| (*s).into())
-                    .collect(),
-            )),
-        ),
-        Ask::Snapshot { from, .. } => (
-            "Load a snapshot for this instrument",
-            open,
-            Some(from.clone()),
-            Some(("Kontakt snapshot", vec!["nksn".into()])),
-        ),
         Ask::Folder { from, single } => (
             if *single {
                 "A Kontakt library folder"
@@ -258,14 +229,13 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
             Some(library.clone()),
             Some(("Pictures", vec!["png".into(), "jpg".into(), "jpeg".into()])),
         ),
-        Ask::Samples { .. } => ("A folder of WAV or AIFF samples", folder, None, None),
         Ask::Multi { from, name } => (
             "Save the rack as a multi",
             DialogKind::SaveFile {
-                file_name: Some(format!("{name}.{}", crate::import::SAVED_MULTI)),
+                file_name: Some(format!("{name}.{}", crate::library::MULTI)),
             },
             Some(from.clone()),
-            Some(("KONTRA multi", vec![crate::import::SAVED_MULTI.into()])),
+            Some(("KONTRA 2 multi", vec![crate::library::MULTI.into()])),
         ),
         Ask::Reveal(_) => return Err("Reveal does not use a file dialog.".into()),
     };
@@ -287,49 +257,12 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
 fn selected(ask: Ask, path: Option<PathBuf>) -> Option<Picked> {
     let path = path?;
     Some(match ask {
-        Ask::ScriptFile {
-            part,
-            epoch,
-            slot,
-            control,
-            from,
-            file_type,
-        } => {
-            let result = match from.canonicalize() {
-                Ok(base) if base.is_dir() => extensions(file_type)
-                    .and_then(|extensions| super::selected_file(&base, &path, extensions)),
-                _ => Err("File selector base directory is unavailable".into()),
-            };
-            Picked::ScriptFile {
-                part,
-                epoch,
-                slot,
-                control,
-                result,
-            }
-        }
-        Ask::Snapshot { slot, source, .. } => Picked::Snapshot { slot, source, path },
         Ask::Folder { single, .. } => Picked::Folder(path, single),
         Ask::Artwork { library } => Picked::Artwork {
             library,
             picture: path,
         },
         Ask::Multi { .. } => Picked::Multi(path),
-        Ask::Samples { out } => {
-            let options = crate::creator::Options {
-                source: path,
-                name: String::new(),
-                vendor: String::new(),
-                out,
-                kontra: true,
-                kontakt: true,
-            };
-            Picked::Created(
-                crate::creator::create(&options, &|_| {})
-                    .map(|created| created.kontra.unwrap_or_default())
-                    .map_err(|error| format!("{error:#}")),
-            )
-        }
         Ask::Reveal(path) => Picked::Revealed(crate::ui::menu::reveal(&path)),
     })
 }

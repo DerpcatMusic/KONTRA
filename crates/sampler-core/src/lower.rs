@@ -3,10 +3,11 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Bus, BusSend, ControllerCondition, Direction, Envelope, EnvelopeCurve, Error,
-    FilterKind, Keyswitch, Loop, LoopMode, LoopShape, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, SelectionPolicy, Sequence, SequenceScope, StateVariableFilter, SvfMode,
-    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
+    FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
+    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
+    Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
+    SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -28,6 +29,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Modulation,
 }
 
 /// IR meaning the runtime cannot yet execute.
@@ -52,6 +54,8 @@ pub enum Feature {
     Delay,
     PreChainSend,
     Controls,
+    /// Pitch bend routed anywhere but pitch (where it is native expression).
+    PitchBendSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,15 +141,64 @@ fn core(stage: Stage, owner: impl Into<String>) -> impl FnOnce(Error) -> LowerEr
     }
 }
 
+/// Native per-note expression every lowered zone receives on top of its
+/// authored modulation. Pitch bend needs no route: the note's expression bend
+/// (sampler-midi's MPE member-channel bend, or a host's per-note tuning) is
+/// always native. Both laws are identity at rest (zero pressure, centre
+/// timbre), so non-MPE playing is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MpeDefaults {
+    /// Gain boost at full pressure in decibels; 0 disables.
+    pub pressure_db: f64,
+    /// How far a per-voice low-pass closes, in semitones below fully open, as
+    /// timbre falls from centre (CC74 64) to 0; 0 disables.
+    pub timbre_semitones: f64,
+}
+
+impl Default for MpeDefaults {
+    fn default() -> Self {
+        Self {
+            pressure_db: 6.0,
+            timbre_semitones: 60.0,
+        }
+    }
+}
+
+/// Lowering choices that are not part of the instrument.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    /// `None` leaves pressure and timbre to authored routes only.
+    pub mpe: Option<MpeDefaults>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            mpe: Some(MpeDefaults::default()),
+        }
+    }
+}
+
+/// [`lower_with`] default [`Options`]: native MPE on every zone.
+pub fn lower(
+    instrument: &ir::Instrument,
+    rate: u32,
+    pcm: Vec<Pcm>,
+    bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
+) -> Result<Prepared, LowerError> {
+    lower_with(instrument, rate, pcm, &Options::default(), bind_behaviors)
+}
+
 /// Lower `instrument` for output at `rate`. `pcm[i]` is the decoded audio of
 /// `instrument.assets[i]`. `bind_behaviors` receives every behavior module and
 /// the plan built so far; it compiles them with its language frontend (for
 /// KSP, `sampler_ksp`) and returns the bound plan. It is not called when the
 /// instrument has no behaviors.
-pub fn lower(
+pub fn lower_with(
     instrument: &ir::Instrument,
     rate: u32,
     pcm: Vec<Pcm>,
+    options: &Options,
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
     instrument.validate().map_err(LowerError::Invalid)?;
@@ -158,16 +211,13 @@ pub fn lower(
     if !instrument.controls.is_empty() {
         return Err(unsupported("controls", Feature::Controls));
     }
-    if let Some((i, route)) = instrument.routes.iter().enumerate().next() {
-        return Err(unsupported(
-            format!("route {i}"),
-            Feature::ModulationRoute(route.target),
-        ));
-    }
     let lowering = Lowering {
         ir: instrument,
         rate,
         pcm: &pcm,
+        mpe: options
+            .mpe
+            .filter(|m| m.pressure_db != 0.0 || m.timbre_semitones != 0.0),
     };
     let mut regions = Vec::with_capacity(instrument.zones.len());
     let mut chains = Vec::new();
@@ -190,6 +240,29 @@ pub fn lower(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    if !instrument.groups.is_empty() {
+        // Group membership and authored values for script group edits
+        // (`purge_group`, `set_engine_par`); selection is unaffected.
+        let count = instrument.groups.len() as u32;
+        let members = instrument
+            .zones
+            .iter()
+            .map(|z| z.group.map(|g| g.0 as u32))
+            .collect();
+        let params = instrument
+            .groups
+            .iter()
+            .map(|g| GroupParams {
+                decibels: 20.0 * g.gain.linear().max(1e-9).log10(),
+                pan: g.pan.position,
+                semitones: g.tune.semitones(),
+            })
+            .collect();
+        plan = plan
+            .with_groups(count, members)
+            .and_then(|p| p.with_group_params(params))
+            .map_err(core(Stage::Regions, "groups"))?;
+    }
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)
@@ -214,6 +287,7 @@ pub fn lower(
             .map_err(core(Stage::Regions, "velocity responses"))?;
     }
     plan = lowering.buses(plan)?;
+    plan = lowering.modulation(plan)?;
     plan = lowering.variation(plan)?;
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
@@ -229,6 +303,7 @@ struct Lowering<'a> {
     ir: &'a ir::Instrument,
     rate: u32,
     pcm: &'a [Pcm],
+    mpe: Option<MpeDefaults>,
 }
 
 impl Lowering<'_> {
@@ -360,6 +435,10 @@ impl Lowering<'_> {
         let ir::ModulationSource::Envelope(e) = &modulator.source else {
             return Err(unsupported(owner, Feature::AmplitudeSource));
         };
+        self.adsr(owner, e, one_shot)
+    }
+
+    fn adsr(&self, owner: &str, e: &ir::Envelope, one_shot: bool) -> Result<Envelope, LowerError> {
         let curve = |curve: ir::Curve| match curve {
             ir::Curve::Linear => Ok(EnvelopeCurve::default()),
             ir::Curve::Exponential(k) => {
@@ -384,6 +463,229 @@ impl Lowering<'_> {
             curve(e.decay_shape)?,
             curve(e.release_shape)?,
         ))
+    }
+
+    /// One voice modulation program per distinct zone route list.
+    fn modulation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        if self.mpe.is_none() && self.ir.zones.iter().all(|z| z.routes.is_empty()) {
+            return Ok(plan);
+        }
+        let mut programs: Vec<ModProgram> = Vec::new();
+        let mut known = std::collections::HashMap::new();
+        let mut bindings = Vec::with_capacity(self.ir.zones.len());
+        for (i, zone) in self.ir.zones.iter().enumerate() {
+            if self.mpe.is_none() && zone.routes.is_empty() {
+                bindings.push(None);
+                continue;
+            }
+            let index = match known.get(&(&zone.routes, zone.chain)) {
+                Some(&index) => index,
+                None => {
+                    let program = self.program(&format!("zone {i}"), zone)?;
+                    let index = programs.len();
+                    programs.push(program);
+                    known.insert((&zone.routes, zone.chain), index);
+                    index
+                }
+            };
+            // A program whose routes all belong to native expression is no program.
+            bindings.push((!programs[index].routes.is_empty()).then_some(index));
+        }
+        let ranges = self
+            .ir
+            .zones
+            .iter()
+            .map(|z| z.playback.start_range.min(u64::from(u32::MAX)) as u32)
+            .collect();
+        plan.with_voice_modulation(programs, bindings, ranges)
+            .map_err(core(Stage::Modulation, "zones"))
+    }
+
+    fn program(&self, owner: &str, zone: &ir::Zone) -> Result<ModProgram, LowerError> {
+        let mut program = ModProgram::default();
+        let mut sources = std::collections::HashMap::new();
+        let mut shapes = std::collections::HashMap::new();
+        for &route_ref in &zone.routes {
+            let route = &self.ir.routes[route_ref.0];
+            let owner = format!("{owner} route {}", route_ref.0);
+            let modulator = &self.ir.modulators[route.source.0];
+            if modulator.scope != ir::Scope::Voice {
+                return Err(unsupported(owner, Feature::ModulatorScope(modulator.scope)));
+            }
+            let target = match (route.target, route.depth) {
+                // Pitch bend to pitch is the note's native expression bend.
+                (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
+                    continue;
+                }
+                (ir::Target::Amplitude, ir::Depth::Normalized(i)) => (ModTarget::Attenuate, i),
+                (ir::Target::Amplitude, ir::Depth::Gain(g)) => {
+                    (ModTarget::Decibels, 20.0 * g.linear().log10())
+                }
+                (ir::Target::Pitch, ir::Depth::Pitch(p)) => (ModTarget::Pitch, p.semitones()),
+                (ir::Target::Pan, ir::Depth::Normalized(d)) => (ModTarget::Pan, d),
+                (ir::Target::SampleStart, ir::Depth::Normalized(d)) => (ModTarget::SampleStart, d),
+                (
+                    ir::Target::Processor {
+                        chain,
+                        index,
+                        parameter,
+                    },
+                    depth,
+                ) if Some(chain) == zone.chain && self.modulable_filter(chain, index) => {
+                    match (parameter, depth) {
+                        (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
+                            (ModTarget::Cutoff, p.semitones())
+                        }
+                        (ir::ProcessorParameter::Resonance, ir::Depth::Gain(g)) => {
+                            (ModTarget::Resonance, 20.0 * g.linear().log10())
+                        }
+                        _ => {
+                            return Err(unsupported(owner, Feature::ModulationRoute(route.target)));
+                        }
+                    }
+                }
+                _ => return Err(unsupported(owner, Feature::ModulationRoute(route.target))),
+            };
+            let mut source_of = |modulator: ir::ModulatorRef,
+                                 program: &mut ModProgram|
+             -> Result<usize, LowerError> {
+                if let Some(&index) = sources.get(&modulator) {
+                    return Ok(index);
+                }
+                let m = &self.ir.modulators[modulator.0];
+                if m.scope != ir::Scope::Voice {
+                    return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
+                }
+                program.sources.push(self.mod_source(&owner, &m.source)?);
+                sources.insert(modulator, program.sources.len() - 1);
+                Ok(program.sources.len() - 1)
+            };
+            let source = source_of(route.source, &mut program)?;
+            let scale = match route.scale {
+                None => None,
+                Some(scale) => Some(ModScale {
+                    source: source_of(scale.source, &mut program)?,
+                    shape: None,
+                }),
+            };
+            let mut shape_of = |shape: ir::ShapeRef, program: &mut ModProgram| {
+                *shapes.entry(shape).or_insert_with(|| {
+                    program.shapes.push(self.ir.shapes[shape.0].points.clone());
+                    program.shapes.len() - 1
+                })
+            };
+            let shape = route.shape.map(|shape| shape_of(shape, &mut program));
+            let scale = scale.map(|s| ModScale {
+                shape: route
+                    .scale
+                    .and_then(|r| r.shape)
+                    .map(|shape| shape_of(shape, &mut program)),
+                ..s
+            });
+            program.routes.push(ModRoute {
+                source,
+                target: target.0,
+                depth: target.1,
+                invert: route.invert,
+                shape,
+                lag: self.frames(route.smoothing),
+                scale,
+            });
+        }
+        if let Some(mpe) = self.mpe {
+            if mpe.pressure_db != 0.0 {
+                program.sources.push(ModSource::Pressure);
+                program.routes.push(ModRoute::new(
+                    program.sources.len() - 1,
+                    ModTarget::Decibels,
+                    mpe.pressure_db,
+                ));
+            }
+            if mpe.timbre_semitones != 0.0 {
+                // -1 at timbre 0, 0 from centre up: only darker than centre.
+                program
+                    .shapes
+                    .push(vec![(0.0, -1.0), (0.5, 0.0), (1.0, 0.0)]);
+                program.sources.push(ModSource::Timbre);
+                program.routes.push(ModRoute {
+                    shape: Some(program.shapes.len() - 1),
+                    ..ModRoute::new(
+                        program.sources.len() - 1,
+                        ModTarget::Tone,
+                        mpe.timbre_semitones,
+                    )
+                });
+            }
+        }
+        Ok(program)
+    }
+
+    /// Voice cutoff/Q modulation scales every state-variable filter in the
+    /// chain, so it is exact only when the addressed filter is the only one.
+    fn modulable_filter(&self, chain: ir::ChainRef, index: usize) -> bool {
+        let chain = &self.ir.chains[chain.0];
+        let processors: Vec<_> = chain
+            .pre_amplitude
+            .iter()
+            .chain(&chain.post_amplitude)
+            .collect();
+        let svf = |p: &ir::Processor| {
+            matches!(
+                p,
+                ir::Processor::Filter(ir::Filter {
+                    kind: ir::FilterKind::LowPass { poles: 2 }
+                        | ir::FilterKind::HighPass { poles: 2 }
+                        | ir::FilterKind::BandPass { poles: 2 }
+                        | ir::FilterKind::Notch { poles: 2 }
+                        | ir::FilterKind::AllPass,
+                    ..
+                })
+            )
+        };
+        svf(processors[index]) && processors.iter().filter(|p| svf(p)).count() == 1
+    }
+
+    fn mod_source(
+        &self,
+        owner: &str,
+        source: &ir::ModulationSource,
+    ) -> Result<ModSource, LowerError> {
+        Ok(match source {
+            ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
+                shape: match lfo.shape {
+                    ir::LfoShape::Sine => LfoShape::Sine,
+                    ir::LfoShape::Triangle => LfoShape::Triangle,
+                    ir::LfoShape::Square => LfoShape::Square,
+                    ir::LfoShape::SawUp => LfoShape::SawUp,
+                    ir::LfoShape::SawDown => LfoShape::SawDown,
+                    ir::LfoShape::SampleAndHold => LfoShape::SampleAndHold,
+                    ir::LfoShape::Random => LfoShape::Random,
+                },
+                rate: match lfo.rate {
+                    ir::Frequency::Hertz(hz) => LfoRate::Hertz(hz),
+                    ir::Frequency::Beats(beats) => LfoRate::Beats(beats),
+                },
+                phase: lfo.phase,
+                delay: self.frames(lfo.delay),
+                fade: self.frames(lfo.fade_in),
+                retrigger: lfo.retrigger,
+            }),
+            ir::ModulationSource::Controller(cc) => ModSource::Controller(*cc),
+            ir::ModulationSource::Velocity => ModSource::Velocity,
+            ir::ModulationSource::Key => ModSource::Key,
+            // Pressure arrives as the note's expression pressure: MPE channel
+            // pressure or polyphonic aftertouch.
+            ir::ModulationSource::ChannelPressure | ir::ModulationSource::PolyPressure => {
+                ModSource::Pressure
+            }
+            ir::ModulationSource::Timbre => ModSource::Timbre,
+            ir::ModulationSource::Random => ModSource::Random,
+            ir::ModulationSource::Constant => ModSource::Constant,
+            ir::ModulationSource::PitchBend => {
+                return Err(unsupported(owner, Feature::PitchBendSource));
+            }
+        })
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
@@ -623,9 +925,15 @@ impl Lowering<'_> {
             i if i < default => i as u32 + 1,
             i => i as u32,
         };
+        let switching = self.ir.switching;
+        let behavior = switching.owner == ir::SwitchOwner::Behavior;
+        // A behavior reads its own switch keys; freed keys play notes.
+        let native_keys = !behavior
+            && (switching.driver == ir::Driver::Keys || switching.keys != ir::SwitchKeys::Play);
         let switches = articulations
             .iter()
             .enumerate()
+            .filter(|_| native_keys)
             .flat_map(|(i, a)| {
                 a.switch_keys.iter().map(move |&key| Keyswitch {
                     key,
@@ -639,12 +947,59 @@ impl Lowering<'_> {
             .iter()
             .map(|z| z.articulation.map(|a| id(a.0)))
             .collect();
+        let selectors = articulations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| {
+                let alt = a.alternatives;
+                let (controller, low, high) = match switching.driver {
+                    ir::Driver::Keys => return None,
+                    ir::Driver::Velocity => alt.velocities.map(|v| (0, v.low, v.high))?,
+                    ir::Driver::Channel => alt.channel.map(|c| (0, c, c))?,
+                    ir::Driver::Controller => {
+                        alt.controller.map(|c| (c.controller, c.low, c.high))?
+                    }
+                    ir::Driver::Program => alt.program.map(|p| (0, p, p))?,
+                };
+                let switch = if behavior {
+                    Switch::Tap(*a.switch_keys.first()?)
+                } else {
+                    Switch::Articulation(id(i))
+                };
+                Some(Selector {
+                    controller,
+                    low,
+                    high,
+                    switch,
+                })
+            })
+            .collect();
+        let switching = Switching::new(
+            match switching.driver {
+                ir::Driver::Keys => Driver::Keys,
+                ir::Driver::Velocity => Driver::Velocity,
+                ir::Driver::Channel => Driver::Channel,
+                ir::Driver::Controller => Driver::Controller,
+                ir::Driver::Program => Driver::Program,
+            },
+            match switching.keys {
+                ir::SwitchKeys::Keep => SwitchKeys::Keep,
+                ir::SwitchKeys::Play => SwitchKeys::Play,
+                ir::SwitchKeys::Swallow => SwitchKeys::Swallow,
+            },
+            articulations
+                .iter()
+                .flat_map(|a| a.switch_keys.iter().copied()),
+            selectors,
+        )
+        .map_err(core(Stage::Articulations, "articulation drivers"))?;
         plan.with_articulations(
             tags,
             switches,
             SelectionPolicy::Onset,
             SelectionPolicy::Onset,
         )
+        .map(|plan| plan.with_switching(switching))
         .map_err(core(Stage::Articulations, "articulations"))
     }
 
