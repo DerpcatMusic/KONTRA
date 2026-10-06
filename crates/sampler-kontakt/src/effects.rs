@@ -759,6 +759,7 @@ pub(crate) fn instrument_buses(
             chain,
             sends,
             output,
+            gain: sampler_ir::Gain::UNITY,
         });
     };
     let feeds = sends
