@@ -1,6 +1,7 @@
 //! An instrument's resource files (script pictures and their `.txt`
-//! layouts): loose `Resources/pictures` folders near the instrument, else
-//! its resource container (`.nkr`), opened with the library's own key.
+//! layouts, performance views): loose `Resources/<kind>` folders near the
+//! instrument, else its resource container (`.nkr`), opened with the
+//! library's own key.
 
 use std::{
     collections::HashMap,
@@ -36,10 +37,11 @@ impl Resources {
                 break;
             }
             for res in entries(folder).into_iter().filter(|p| named(p, "Resources")) {
-                for pics in entries(&res).into_iter().filter(|p| named(p, "pictures")) {
-                    for f in entries(&pics) {
+                for sub in entries(&res).into_iter().filter(|p| p.is_dir()) {
+                    let kind = sub.file_name().unwrap().to_string_lossy().to_lowercase();
+                    for f in entries(&sub) {
                         let name = f.file_name().unwrap().to_string_lossy().to_lowercase();
-                        files.entry(format!("resources/pictures/{name}")).or_insert(f);
+                        files.entry(format!("resources/{kind}/{name}")).or_insert(f);
                     }
                 }
             }

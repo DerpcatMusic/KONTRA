@@ -15,6 +15,13 @@ impl Prepared {
         Ok(self)
     }
 
+    /// Each group's authored volume, pan and tune, which scripts read and set
+    /// absolutely (`get_engine_par`); groups beyond `bases` are neutral.
+    pub fn with_group_bases(mut self, bases: Vec<crate::GroupBase>) -> Self {
+        self.group_bases = bases.into_boxed_slice();
+        self
+    }
+
     pub fn group_count(&self) -> u32 {
         self.group_count
     }
