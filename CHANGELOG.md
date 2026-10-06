@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add prepared stereo matrix stages to shared voice DSP for explicit channel
+  routing, width and pan-law coefficients, retaining stage order, filter tails
+  and existing voice ownership without a separate format-specific processor.
+
 - Read modern NIS item/layer/child framing as borrowed views and decode clear
   preset subtrees through the shared bounded codec. Preserve unknown metadata,
   reject malformed/ambiguous profiles, and keep protected inputs explicit.

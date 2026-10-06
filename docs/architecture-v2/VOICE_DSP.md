@@ -7,7 +7,8 @@ It does not establish Kontakt/Falcon filter equivalence or complete the DSP grap
 Multiple regions may reference one chain; each admitted voice has separate stereo
 history. `VoiceChain` specifies ordered processors before and after the amplitude
 envelope and an explicit maximum tail duration in output frames. Current processors
-are finite static/control-driven linear gain (including polarity inversion) and prepared native biquads:
+are finite static/control-driven linear gain (including polarity inversion), static
+2×2 stereo matrices and prepared native biquads:
 low-pass, high-pass, unity-peak band-pass, notch, all-pass, peaking and low/high-shelf EQ.
 
 ## Ownership and execution
@@ -31,12 +32,23 @@ This path is measured separately, with no automatic quality downgrade.
 
 The current pipeline is stereo, serial and voice-local. It has no additional buffered
 algorithmic latency; filter phase response is not a constant-delay compensation
-claim. Bus/family/master scopes, sends, channel-layout conversion, oversampling,
+claim. Bus/family/master scopes, sends, arbitrary channel-layout conversion, oversampling,
 nonlinear processors, time-varying filter controls and broader destination
 modulation/smoothing remain required graph work. The model does not move filters across the
 envelope or sum independent voice histories to save work.
 
 ## Numerical and tail policy
+
+Stereo matrix rows are output L/R and columns input L/R. Each output uses both
+original input samples, evaluated in f64; in-place channel updates cannot feed
+themselves accidentally. Coefficients are finite but not clamped or normalized.
+This represents swaps, polarity, mono folds, mid/side transforms, stereo width and
+balance/pan coefficients without imposing a single vendor law. Importers must
+derive the correct source law and place the stage explicitly in the chain.
+Coefficients are immutable per prepared generation; audio-rate matrix automation
+is not yet implemented. Existing voice tail, fault containment and retirement
+owners apply. Tests cover noncommuting stage order, mid/side roundtrip, crossfeed,
+filter impulse tails, block partitions, slot reuse and overflow containment.
 
 Coefficients follow the [RBJ Audio EQ Cookbook published by W3C](https://www.w3.org/TR/audio-eq-cookbook/),
 with normalized double-precision transposed direct-form II state. Frequency must

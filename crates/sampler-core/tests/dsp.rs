@@ -374,3 +374,94 @@ fn dsp_state_capacity_and_chain_bindings_fail_before_runtime_publication() {
         assert!(matches!(result, Err(sampler_core::Error::InvalidInput)));
     }
 }
+
+#[test]
+fn stereo_matrices_preserve_both_inputs_order_filter_tails_and_voice_reuse() {
+    let identity = [[1., 0.], [0., 1.]];
+    let swap = [[0., 1.], [1., 0.]];
+    let mid_side = [[0.5, 0.5], [0.5, -0.5]];
+    let decode = [[1., 1.], [1., -1.]];
+    let shear = [[1., 0.5], [0., 2.]];
+    for (before, after, expected) in [
+        (identity, identity, [1., -0.5]),
+        (swap, identity, [-0.5, 1.]),
+        ([[0.5; 2]; 2], identity, [0.25; 2]),
+        (mid_side, decode, [1., -0.5]),
+        (shear, swap, [-1., 0.75]),
+        (swap, shear, [0., 2.]),
+        ([[1., 0.25], [-0.5, 1.]], identity, [0.875, -1.]),
+    ] {
+        for block in [1, 7, 64] {
+            let mut rt = Runtime::new(
+                plan(
+                    vec![VoiceProcessor::StereoMatrix(before), filter()],
+                    vec![VoiceProcessor::StereoMatrix(after)],
+                    3,
+                    Envelope::default(),
+                    1,
+                ),
+                limits(),
+            )
+            .unwrap();
+            support::without_heap(|| {
+                for id in [1, 2] {
+                    let note = rt.trigger(input(id), 60, 1.).unwrap();
+                    let mut audio = [[0.; 2]; 8];
+                    for chunk in audio.chunks_mut(block) {
+                        rt.render(chunk).unwrap();
+                    }
+                    for (index, frame) in audio.into_iter().enumerate() {
+                        // This independently known filter has impulse [1/4, 1/2, 1/4].
+                        let response = [0.25, 0.5, 0.25, 0., 0., 0., 0., 0.][index];
+                        for channel in 0..2 {
+                            assert!((frame[channel] - expected[channel] * response).abs() < 1e-7);
+                        }
+                    }
+                    assert_eq!(rt.voice_count(), 0);
+                    rt.key_up(note, None).unwrap();
+                    rt.flush_ended(|_| true);
+                    assert_eq!(rt.note_count(), 0);
+                }
+            });
+        }
+    }
+    let mut rt = Runtime::new(
+        plan(
+            vec![
+                VoiceProcessor::StereoMatrix([[f64::MAX, -f64::MAX], [0., 1.]]),
+                filter(),
+            ],
+            vec![],
+            3,
+            Envelope::default(),
+            1,
+        ),
+        limits(),
+    )
+    .unwrap();
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        let mut audio = [[0.; 2]; 8];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.; 2]; 8]);
+        assert_eq!(rt.nonfinite_frames(), 1);
+        rt.key_up(note, None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
+    for index in 0..4 {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut matrix = identity;
+            matrix[index / 2][index % 2] = value;
+            for pre in [true, false] {
+                let stage = vec![VoiceProcessor::StereoMatrix(matrix)];
+                let (before, after) = if pre {
+                    (stage, vec![])
+                } else {
+                    (vec![], stage)
+                };
+                assert!(VoiceChain::new(before, after, 0).is_err());
+            }
+        }
+    }
+}
