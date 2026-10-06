@@ -387,28 +387,85 @@ fn probe_instrument() {
         ir.articulations.len(),
         ir.zones.len()
     );
-    let d = decoded(path, key);
+    let mut d = decoded(path, key);
+    if std::env::var_os("KONTRA_PROBE_NOSCRIPT").is_some() {
+        d.instrument.behaviors.clear();
+    }
     eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),
         d.instrument.behaviors.len()
     );
     let z = &d.instrument.zones;
-    let vel = z.iter().filter(|z| (z.velocities.low..=z.velocities.high).contains(&100)).count();
+    let vel = z
+        .iter()
+        .filter(|z| (z.velocities.low..=z.velocities.high).contains(&100))
+        .count();
     let mut conds = std::collections::BTreeMap::<String, usize>::new();
     for z in z {
-        *conds.entry(format!("{:?} {:?}", z.trigger, z.conditions)).or_default() += 1;
+        *conds
+            .entry(format!("{:?} {:?}", z.trigger, z.conditions))
+            .or_default() += 1;
     }
+    if let Ok(pat) = std::env::var("KONTRA_PROBE_GREP") {
+        for b in &d.instrument.behaviors {
+            let lines: Vec<&str> = b.source.lines().collect();
+            for (i, l) in lines.iter().enumerate() {
+                if pat.split(',').any(|p| l.contains(p))
+                    || pat.split(';').any(|r| {
+                        r.split_once("..").is_some_and(|(a, b)| {
+                            a.parse::<usize>().is_ok_and(|a| {
+                                b.parse::<usize>().is_ok_and(|b| (a..b).contains(&i))
+                            })
+                        })
+                    })
+                {
+                    eprintln!("SRC {i}: {l}");
+                }
+            }
+        }
+    }
+    for b in &d.instrument.behaviors {
+        eprintln!(
+            "STATE {} entries: {:?}",
+            b.state.len(),
+            &b.state[..b.state.len().min(40)]
+        );
+    }
+    let mut tags = std::collections::BTreeMap::<String, usize>::new();
+    for z in z
+        .iter()
+        .filter(|z| (z.velocities.low..=z.velocities.high).contains(&100))
+    {
+        *tags
+            .entry(format!("{:?} grp {:?}", z.articulation, z.group))
+            .or_default() += 1;
+    }
+    eprintln!(
+        "velocity-100 articulation tags: {tags:?} owner {:?} default {:?}",
+        d.instrument.switching,
+        d.instrument
+            .articulations
+            .iter()
+            .map(|a| (a.name.clone(), a.default))
+            .collect::<Vec<_>>()
+    );
     eprintln!("velocity-100 zones {vel}; trigger/conditions: {conds:?}");
     let loaded = d.drive(ir::Driver::Controller);
     let mut feats = std::collections::BTreeMap::<String, usize>::new();
     for u in &loaded.instrument.unsupported {
         if u.feature != "script" {
-            *feats.entry(format!("{:?} {}", u.reason, u.feature)).or_default() += 1;
+            *feats
+                .entry(format!("{:?} {}", u.reason, u.feature))
+                .or_default() += 1;
         }
     }
     eprintln!("non-script reports: {feats:?}");
-    eprintln!("zones after finish: {} pcm {}", loaded.instrument.zones.len(), d.pcm.len());
+    eprintln!(
+        "zones after finish: {} pcm {}",
+        loaded.instrument.zones.len(),
+        d.pcm.len()
+    );
     let plan = loaded.plan;
     let limits = Limits {
         notes: 64,
