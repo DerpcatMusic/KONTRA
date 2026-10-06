@@ -58,3 +58,28 @@ fn installed_multi_opens_without_single_instrument_translation() {
     let multi = sampler_kontakt::read_multi(&path).unwrap();
     assert!(!multi.programs.is_empty() && !multi.sample_names.is_empty());
 }
+
+#[test]
+fn ncw_signature_failure_identifies_the_block_and_channel() {
+    let mut bytes = ncw::encode_pcm(
+        &vec![0; 513],
+        ncw::PcmSpec {
+            channels: 1,
+            bits_per_sample: 16,
+            sample_rate: 48000,
+        },
+        ncw::StereoMode::Direct,
+    )
+    .unwrap();
+    let reader = ncw::NcwReader::read(std::io::Cursor::new(&bytes)).unwrap();
+    let at = reader.header.data_offset as usize + reader.block_offsets[1] as usize;
+    bytes[at] ^= 1;
+    let mut reader = ncw::NcwReader::read(std::io::Cursor::new(&bytes)).unwrap();
+    assert!(matches!(
+        reader.decode_samples(),
+        Err(ncw::NcwError::InvalidBlockSignatureAt {
+            block: 1,
+            channel: 0
+        })
+    ));
+}

@@ -165,7 +165,12 @@ impl<R: Read + Seek> NcwReader<R> {
         channels.resize_with(num_channels, Vec::new);
         let mut mid_side = false;
         for (channel_index, channel) in channels.iter_mut().enumerate() {
-            let block_header = BlockHeader::read(&mut group)?;
+            let block_header = BlockHeader::read(&mut group).map_err(|error| match error {
+                Error::InvalidBlockSignature => Error::InvalidBlockSignatureAt {
+                    block: index, channel: channel_index,
+                },
+                other => other,
+            })?;
             if block_header.sample_format() != self.sample_format {
                 return Err(Error::InvalidHeader("sample format changes between blocks"));
             }
