@@ -12,14 +12,16 @@ mod load;
 mod mapping;
 pub mod nis;
 mod nks;
+mod resources;
 mod samples;
 mod script;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use library::{Kontakt, read};
-pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, load_read, prepare};
+pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, load_read, prepare, prepare_with};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
+pub use resources::Resources;
 pub use samples::{Decoded, Samples, decode};
 pub use script::{Script, Strings};
 

@@ -312,6 +312,7 @@ impl Translation {
                 name: processor.attribute("Name").unwrap_or("script").into(),
                 language: ir::Language::Lua,
                 source,
+                slot: None,
                 state: Vec::new(),
                 requires: Vec::new(),
             });
