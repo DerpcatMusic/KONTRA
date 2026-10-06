@@ -1695,7 +1695,8 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
             },
         ])
         .unwrap();
-        assert!(program.requires_note());
+        assert!(!program.requires_note());
+        assert!(program.requires_performance());
         let plan = Prepared::new(48000, vec![], vec![], 0)
             .unwrap()
             .with_programs(vec![program], None)

@@ -15,8 +15,8 @@ fn compile(source: &str) -> Result<sampler_ksp::Script, sampler_ksp::Error> {
         &[],
     )
 }
-fn runtime(source: &str) -> Runtime {
-    let plan = compile(source)
+fn plan(source: &str) -> Prepared {
+    compile(source)
         .unwrap()
         .bind(
             Prepared::new(
@@ -37,27 +37,30 @@ fn runtime(source: &str) -> Runtime {
             )
             .unwrap(),
         )
-        .unwrap();
+        .unwrap()
+}
+fn limits(plan: &Prepared) -> Limits {
     let behavior_cells = plan.behavior_local_count() * 4;
     let note_cells = plan.note_cell_count() * 4;
-    Runtime::new(
-        plan,
-        Limits {
-            notes: 4,
-            performances: 2,
-            channels: 2,
-            families: 4,
-            voices: 4,
-            expressions: 4,
-            decisions: 0,
-            commands: 4,
-            behaviors: 4,
-            behavior_cells,
-            behavior_fuel: 512,
-            note_cells,
-        },
-    )
-    .unwrap()
+    Limits {
+        notes: 4,
+        performances: 2,
+        channels: 2,
+        families: 4,
+        voices: 4,
+        expressions: 4,
+        decisions: 0,
+        commands: 4,
+        behaviors: 4,
+        behavior_cells,
+        behavior_fuel: 512,
+        note_cells,
+    }
+}
+fn runtime(source: &str) -> Runtime {
+    let plan = plan(source);
+    let limits = limits(&plan);
+    Runtime::new(plan, limits).unwrap()
 }
 fn origin() -> ChannelAddress {
     ChannelAddress {
@@ -66,6 +69,236 @@ fn origin() -> ChannelAddress {
         group: 2,
         channel: 3,
     }
+}
+
+#[test]
+fn controller_generated_notes_retain_routing_and_assets_without_physical_keys() {
+    let source = "on init declare %ids[2] end on
+        on controller
+            ignore_controller
+            wait(125)
+            %ids[$CC_NUM - 1] := play_note(60,127,125,0)
+        end on";
+    for block in [1, 7, 64] {
+        let prepared = plan(source);
+        let budget = limits(&prepared);
+        let (mut rt, mut worker) = Runtime::with_plan_updates(prepared, budget, 2, 1).unwrap();
+        let old = rt.active_plan();
+        let a = origin();
+        let b = ChannelAddress {
+            port: 9,
+            group: 3,
+            channel: 15,
+            ..a
+        };
+        support::without_heap(|| {
+            for (index, address) in [a, b].into_iter().enumerate() {
+                let domain = rt.performance(index).unwrap();
+                rt.set_controller(domain, 11, index as u32 + 20).unwrap();
+                rt.dispatch_controller(
+                    domain,
+                    address,
+                    1 << address.channel,
+                    index as u8 + 1,
+                    u32::MAX,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (0, 0, 0)
+            );
+        });
+        worker
+            .submit(Box::new(Prepared::new(48000, vec![], vec![], 0).unwrap()))
+            .unwrap();
+        support::without_heap(|| {
+            rt.poll_plan_update().unwrap();
+            let mut silence = [[0.; 2]; 6];
+            rt.render(&mut silence).unwrap();
+            assert_eq!(silence, [[0.; 2]; 6]);
+            rt.render(&mut []).unwrap();
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.voice_count()),
+                (2, 2, 2)
+            );
+            for index in 0..2 {
+                let alias = rt.script_cell(old, ScriptInstanceId(0), index).unwrap() as i32;
+                let note = rt.resolve_source_event(old, alias).unwrap().unwrap();
+                assert_eq!(rt.note_plan(note), Ok(old));
+                assert_eq!(rt.input_held(note), Ok(false));
+                assert_eq!(rt.note_controller(note, 11), Ok(index + 20));
+                assert_eq!(rt.resolve_source_event(rt.active_plan(), alias), Ok(None));
+            }
+            // The copied input address includes port/group/channel, independently
+            // of the callback's target mask; scoped hard silence reaches one root.
+            assert_eq!(rt.all_sound_off(b), Ok(1));
+            let mut audio = [[0.; 2]; 20];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            assert_eq!(&audio[..10], &[[1.; 2]; 10]);
+            assert_eq!(&audio[10..], &[[0.; 2]; 10]);
+            rt.flush_behaviors(|_, owner, outcome| {
+                assert_eq!(owner, BehaviorOwner::Plan(old));
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| panic!("generated notes must not send host terminals"));
+            assert_eq!(
+                (rt.note_count(), rt.expression_count(), rt.family_count()),
+                (0, 0, 0)
+            );
+            assert_eq!(rt.collect_retired_plans(), 1);
+        });
+        assert!(worker.retired().is_some());
+    }
+}
+
+#[test]
+fn controller_note_ids_support_fixed_stops_fault_cleanup_and_scoped_wait_cancellation() {
+    let mut faulted = runtime(
+        "on init declare %values[1] end on
+        on controller ignore_controller play_note(60,127,0,125)
+            %values[1] := 7
+        end on",
+    );
+    support::without_heap(|| {
+        let domain = faulted.performance(0).unwrap();
+        let callback = faulted
+            .dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            faulted.behavior_outcome(callback),
+            Ok(Some(Outcome::Fault(Error::InvalidInput)))
+        );
+        let mut audio = [[0.; 2]; 8];
+        faulted.render(&mut audio).unwrap();
+        assert_eq!(&audio[..6], &[[1.; 2]; 6]);
+        assert_eq!(&audio[6..], &[[0.; 2]; 2]);
+        faulted.flush_behaviors(|_, _, _| true);
+        faulted.flush_ended(|_| panic!("no host key was admitted"));
+        assert_eq!(
+            (
+                faulted.note_count(),
+                faulted.expression_count(),
+                faulted.pending_commands()
+            ),
+            (0, 0, 0)
+        );
+    });
+    let mut rt = runtime(
+        "on init declare $id end on
+        on controller ignore_controller
+            if (%CC[1] = 127)
+                $id := play_note(60,127,0,1000)
+            else
+                note_off($id,0)
+            end if
+        end on",
+    );
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap();
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (1, 1, 1)
+        );
+        rt.dispatch_controller(domain, origin(), 1 << 3, 1, 0)
+            .unwrap();
+        assert_eq!((rt.voice_count(), rt.pending_commands()), (0, 0));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| panic!("no host key was admitted"));
+        assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+    });
+    // Admission failure leaves a previously stored ID and timer queue unchanged.
+    let prepared = plan(
+        "on init declare $id := 99 end on
+        on controller $id := play_note(60,127,0,1000) end on",
+    );
+    let mut budget = limits(&prepared);
+    budget.notes = 1;
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let held = Input {
+            protocol: origin().protocol,
+            port: origin().port,
+            group: origin().group,
+            channel: origin().channel,
+            key: 60,
+            external_id: Some(3),
+        };
+        rt.note_on(held, 60, 1.).unwrap();
+        let domain = rt.performance(0).unwrap();
+        let id = rt
+            .dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rt.behavior_outcome(id),
+            Ok(Some(Outcome::Fault(Error::Capacity)))
+        );
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+            Ok(99)
+        );
+        assert_eq!(
+            (
+                rt.note_count(),
+                rt.expression_count(),
+                rt.voice_count(),
+                rt.pending_commands()
+            ),
+            (1, 1, 0, 0)
+        );
+        rt.note_off(held, None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.note_count(), rt.expression_count()), (0, 0));
+    });
+    let mut rt = runtime("on controller ignore_controller wait(125) play_note(60,127,0,0) end on");
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        let a = rt
+            .dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        let other = ChannelAddress {
+            port: 9,
+            ..origin()
+        };
+        let b = rt
+            .dispatch_controller(domain, other, 1 << 3, 1, u32::MAX)
+            .unwrap()
+            .unwrap();
+        rt.all_sound_off(origin()).unwrap();
+        assert_eq!(rt.behavior_outcome(a), Ok(Some(Outcome::Cancelled)));
+        assert_eq!(rt.behavior_outcome(b), Ok(None));
+        assert_eq!(rt.pending_commands(), 1);
+        let mut audio = [[0.; 2]; 32];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(&audio[6..22], &[[1.; 2]; 16]);
+        assert!(
+            audio[..6]
+                .iter()
+                .chain(&audio[22..])
+                .all(|frame| *frame == [0.; 2])
+        );
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| panic!("no host key was admitted"));
+        assert_eq!(
+            (
+                rt.note_count(),
+                rt.expression_count(),
+                rt.pending_commands()
+            ),
+            (0, 0, 0)
+        );
+    });
 }
 
 #[test]

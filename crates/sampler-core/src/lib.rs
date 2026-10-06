@@ -166,6 +166,7 @@ pub struct Limits {
 enum NoteOrigin {
     Input(Input, Expression, usize),
     Child(NoteId, bool, Inheritance),
+    Generated(PlanId, ChannelAddress, usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -634,7 +635,9 @@ impl Runtime {
         velocity: f64,
     ) -> Result<NoteId, Error> {
         let performance = match origin {
-            NoteOrigin::Input(_, _, performance) => performance,
+            NoteOrigin::Input(_, _, performance) | NoteOrigin::Generated(_, _, performance) => {
+                performance
+            }
             NoteOrigin::Child(parent, ..) => {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?;
                 self.selections[parent.0.index].performance
@@ -647,6 +650,13 @@ impl Runtime {
                 false,
                 Inheritance::Independent,
                 expression,
+            ),
+            NoteOrigin::Generated(..) => (
+                None,
+                None,
+                false,
+                Inheritance::Independent,
+                Expression::default(),
             ),
             NoteOrigin::Child(parent, linked, inheritance) => (
                 None,
@@ -663,13 +673,17 @@ impl Runtime {
         let parent_note = parent
             .map(|p| self.notes.get(p.0).ok_or(Error::StaleHandle))
             .transpose()?;
-        let address = input
-            .map(Input::channel_address)
-            .or_else(|| parent_note.map(|n| n.address))
-            .ok_or(Error::InvalidInput)?;
+        let address = match origin {
+            NoteOrigin::Input(input, ..) => input.channel_address(),
+            NoteOrigin::Child(..) => parent_note.unwrap().address,
+            NoteOrigin::Generated(_, address, _) => address,
+        };
         let parent_expression = parent_note.map(|n| n.expression);
         let next_sibling = parent_note.and_then(|n| n.first_child);
-        let plan = parent_note.map_or(self.active_plan, |n| n.plan);
+        let plan = match origin {
+            NoteOrigin::Generated(plan, ..) => plan,
+            _ => parent_note.map_or(self.active_plan, |n| n.plan),
+        };
         let expression = match (inheritance, parent_expression) {
             (Inheritance::Linked, Some(id)) => {
                 let owner = self.expressions.get_mut(id.0).unwrap();

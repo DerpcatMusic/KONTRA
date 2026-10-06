@@ -178,7 +178,8 @@ source semantics and checksum/authentication validation are still required.
   ordinary MIDI/MPE manager ingress share the same full-resolution/pedal services.
   Note/release CC reads and writes now reuse the retained note performance/channel
   context across waits; UI CC context, virtual controllers and ordered stage banks
-  remain open.
+  remain open. Controller callbacks now generate parentless notes in their retained
+  plan/domain, including source offsets and stored-ID stops; no fake host input is used.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
 

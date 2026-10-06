@@ -85,7 +85,7 @@ pub enum Instruction {
         inheritance: Inheritance,
         duration: Duration,
     },
-    /// Generate a key-mapped child from integer registers. Key 0..127,
+    /// Generate a key-mapped event from integer registers in a routed callback. Key 0..127,
     /// MIDI 1 velocity 1..127; duration policy is explicit.
     PlayMidi {
         key: u16,
@@ -401,7 +401,14 @@ impl Program {
                     | Instruction::SuppressAttack
                     | Instruction::SuppressRelease
                     | Instruction::Play { .. }
-                    | Instruction::PlayMidi { .. }
+                    | Instruction::PlayMidi {
+                        inheritance: Inheritance::Linked | Inheritance::Snapshot,
+                        ..
+                    }
+                    | Instruction::PlayMidi {
+                        duration: DurationValue::Fixed(Duration::Gate | Duration::FramesOrGate(_)),
+                        ..
+                    }
                     | Instruction::ReadEventId { .. }
                     | Instruction::ReadVelocity7 { .. }
                     | Instruction::WriteEventKey { .. }
@@ -429,7 +436,9 @@ impl Program {
             || code.iter().any(|op| {
                 matches!(
                     op,
-                    Instruction::ReadInputController { .. } | Instruction::WriteController { .. }
+                    Instruction::ReadInputController { .. }
+                        | Instruction::WriteController { .. }
+                        | Instruction::PlayMidi { .. }
                 )
             });
         if requires_note && requires_controller {
@@ -1041,14 +1050,13 @@ impl Runtime {
                 if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
-                let note = owner.note()?;
                 // Reserve the external identity before publishing any child/audio.
                 // Failed admission may leave a numeric gap, never a reused ID.
                 let source_id = result
-                    .map(|_| self.reserve_source_id(self.note_plan(note)?))
+                    .map(|_| self.reserve_source_id(self.behavior_plan(owner)?))
                     .transpose()?;
                 let child = self.play_behavior(
-                    note,
+                    id,
                     super::NotePitch::Key(key as u8),
                     velocity as f64 / 127.,
                     inheritance,
@@ -1073,7 +1081,7 @@ impl Runtime {
                     Velocity::Scale(scale) => n.velocity * scale,
                     Velocity::Fixed(value) => value,
                 };
-                self.play_behavior(note, pitch, velocity, inheritance, duration, 0)?;
+                self.play_behavior(id, pitch, velocity, inheritance, duration, 0)?;
             }
         }
         Ok(false)
@@ -1096,7 +1104,7 @@ impl Runtime {
 
     fn play_behavior(
         &mut self,
-        note: NoteId,
+        id: BehaviorId,
         pitch: super::NotePitch,
         velocity: f64,
         inheritance: Inheritance,
@@ -1118,12 +1126,23 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         let linked = matches!(duration, Duration::Gate | Duration::FramesOrGate(_));
+        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let origin = match callback.owner {
+            BehaviorOwner::Note(note) => super::NoteOrigin::Child(note, linked, inheritance),
+            BehaviorOwner::Plan(plan) => {
+                if linked || inheritance != Inheritance::Independent {
+                    return Err(Error::InvalidInput);
+                }
+                let event = callback.controller.ok_or(Error::InvalidInput)?;
+                super::NoteOrigin::Generated(plan, event.origin, event.performance)
+            }
+        };
         self.reclaim_internal_notes(super::ReleaseReserve::default());
         // Protect the duration command while child selection reserves its
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let child = self.trigger_child(note, pitch, velocity, linked, inheritance, offset_micros);
+        let child = self.select(origin, pitch, velocity, offset_micros);
         self.reserved_commands -= command;
         let child = child?;
         self.note_events[child.0.index].fixed_duration = frames.is_some();
