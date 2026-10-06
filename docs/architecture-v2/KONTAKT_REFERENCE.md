@@ -58,3 +58,34 @@ Note: SV cutoff law `25*800^x` predicts 774 Hz for x = 0.5135, the AR LP2/4 modu
 ## 4. Group solo levels (Kontakt, allow_group handler, vel 100, held 3 s)
 
 Vista - 3 Cellos key 48 (CC1 = 127, CC11 = 127): g37 -46.6 pk / -60.8 rms, g36 -50.7 / -65.6, g33 -50.9 / -64.9, g5/g4/g1 silent. Barbarian Brass key 55: g8 -29.2 / -43.1, g32 -26.0 / -39.7, g52 -26.2 / -44.9, g0/g4 silent (g0 trace -94). Group ids 0-based.
+
+## 5. AHDSR attack (Kontakt, noise sample, linear curve, KSP set_engine_par on group 0 mod slot 0)
+
+Attack time law (v = engine value 0..1,000,000). Full attack is about 2 x T50 (time to 50% of sustain):
+
+| v | T50 | T25 | T75 | full attack |
+|---|---|---|---|---|
+| 78,740 | 6 ms | 4 | 10 | ~12 ms |
+| 236,220 | 13 ms | 9 | 18 | ~26 ms |
+| 393,700 | 39 ms | 19 | 54 | ~78 ms |
+| 551,180 | 118 ms | 43 | 189 | ~0.24 s |
+| 629,920 | ~0.27 s | | | ~0.54 s |
+| 708,660 | 0.554 s | 0.280 | 0.882 | ~1.1 s |
+| 866,140 | 2.362 s | 1.162 | 3.559 | ~4.7 s |
+| 999,998 | 5.082 s | 2.553 | 7.616 | ~10.2 s (sample-limited) |
+
+Attack curve (ENGINE_PAR_ATK_CURVE, c = (v-500000)/500000) at attack v=629,920 (T ~0.545 s). Level a(u) at fraction u of the attack time; total time is independent of the curve:
+
+| c | .1 | .2 | .3 | .4 | .5 | .6 | .7 | .8 | .9 |
+|---|---|---|---|---|---|---|---|---|---|
+| -1.000 | 0.000 | 0.000 | 0.001 | 0.002 | 0.006 | 0.016 | 0.046 | 0.120 | 0.322 |
+| -0.748 | 0.001 | 0.004 | 0.009 | 0.018 | 0.032 | 0.067 | 0.129 | 0.238 | 0.502 |
+| -0.496 | 0.016 | 0.035 | 0.066 | 0.108 | 0.159 | 0.236 | 0.336 | 0.486 | 0.740 |
+| -0.244 | 0.074 | 0.142 | 0.239 | 0.327 | 0.399 | 0.507 | 0.597 | 0.702 | 0.893 |
+| +0.008 | 0.097 | 0.196 | 0.297 | 0.370 | 0.507 | 0.574 | 0.699 | 0.793 | 0.890 |
+| +0.260 | 0.141 | 0.264 | 0.379 | 0.457 | 0.591 | 0.696 | 0.771 | 0.824 | 0.958 |
+| +0.512 | 0.309 | 0.519 | 0.682 | 0.740 | 0.836 | 0.919 | 0.942 | 0.951 | 0.998 |
+| +0.764 | 0.677 | 0.860 | 0.962 | 0.941 | 0.945 | 1.031 | 1.002 | 0.974 | 1.047 |
+| +1.000 | ~1 throughout (90% within ~11 ms) | | | | | | | | |
+
+Concave side fits a = (e^{ku}-1)/(e^k-1) with k ~ 10 (c=-1), 6.0 (-0.748), 3.15 (-0.496), 0.72 (-0.244). Positive side is far more extreme than negative.
