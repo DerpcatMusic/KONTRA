@@ -11,7 +11,7 @@
 //! Layout: every prepared program is flat arrays (sources, routes, shapes);
 //! runtime state is structure-of-arrays sized at runtime construction for the
 //! largest program, so rendering never allocates.
-use crate::{Envelope, Error, envelope::EnvelopeState};
+use crate::{Envelope, EnvelopeCurve, Error, envelope::EnvelopeState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
@@ -52,6 +52,8 @@ pub enum ModSource {
     Lfo(Lfo),
     /// Gated by the voice's family: releases with it.
     Envelope(Envelope),
+    /// Index into [`ModProgram::breakpoints`]; gated like `Envelope`.
+    Breakpoints(usize),
     Velocity,
     /// Note number / 127.
     Key,
@@ -135,10 +137,29 @@ impl ModRoute {
     }
 }
 
+/// A point a breakpoint envelope glides to from the previous level (0 at the
+/// start) over `frames`, along `curve`.
+#[derive(Clone, Copy, Debug)]
+pub struct Breakpoint {
+    pub frames: u32,
+    pub level: f32,
+    pub curve: EnvelopeCurve,
+}
+
+/// A multi-segment envelope. It holds at `points[sustain]` while gated; a
+/// release glides from the current level through the points after
+/// `sustain` (jumping there if it is not reached yet), then holds the last.
+#[derive(Clone, Debug, Default)]
+pub struct Breakpoints {
+    pub points: Vec<Breakpoint>,
+    pub sustain: Option<usize>,
+}
+
 /// One voice modulation program, shared by the regions bound to it.
 #[derive(Clone, Debug, Default)]
 pub struct ModProgram {
     pub sources: Vec<ModSource>,
+    pub breakpoints: Vec<Breakpoints>,
     pub routes: Vec<ModRoute>,
     /// Piecewise-linear transfer curves over 0..=1 as ascending (x, y) points.
     pub shapes: Vec<Vec<(f64, f64)>>,
@@ -148,6 +169,8 @@ pub struct ModProgram {
 enum Prepared {
     Lfo(Lfo),
     Envelope(usize),
+    /// Index into the program's breakpoint envelopes and the voice's segments.
+    Breakpoints(usize),
     Velocity,
     Key,
     Controller(u8),
@@ -161,6 +184,7 @@ struct Program {
     sources: Box<[Prepared]>,
     bipolar: Box<[bool]>,
     envelopes: Box<[Envelope]>,
+    breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
     shapes: Box<[Box<[(f32, f32)]>]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
@@ -177,6 +201,7 @@ pub(crate) struct VoiceModulation {
     start_ranges: Box<[u32]>,
     sources: usize,
     envelopes: usize,
+    breakpoints: usize,
     routes: usize,
 }
 
@@ -214,6 +239,16 @@ impl VoiceModulation {
                         ModSource::Envelope(envelope) => {
                             envelopes.push(envelope);
                             Prepared::Envelope(envelopes.len() - 1)
+                        }
+                        ModSource::Breakpoints(index) => {
+                            let b = program.breakpoints.get(index).ok_or(Error::InvalidInput)?;
+                            if b.points.len() > u32::MAX as usize - 1
+                                || b.sustain.is_some_and(|s| s >= b.points.len())
+                                || b.points.iter().any(|p| !p.level.is_finite())
+                            {
+                                return Err(Error::InvalidInput);
+                            }
+                            Prepared::Breakpoints(index)
                         }
                         ModSource::Velocity => Prepared::Velocity,
                         ModSource::Key => Prepared::Key,
@@ -260,6 +295,7 @@ impl VoiceModulation {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
                 sources,
                 envelopes: envelopes.into_boxed_slice(),
+                breakpoints: program.breakpoints.into_boxed_slice(),
                 filter: reaches(&[ModTarget::Cutoff, ModTarget::Resonance]),
                 tone: reaches(&[ModTarget::Tone]),
                 start: reaches(&[ModTarget::SampleStart]),
@@ -272,6 +308,11 @@ impl VoiceModulation {
             envelopes: compiled
                 .iter()
                 .map(|p| p.envelopes.len())
+                .max()
+                .unwrap_or(0),
+            breakpoints: compiled
+                .iter()
+                .map(|p| p.breakpoints.len())
                 .max()
                 .unwrap_or(0),
             routes: compiled.iter().map(|p| p.routes.len()).max().unwrap_or(0),
@@ -309,7 +350,7 @@ impl VoiceModulation {
                 Prepared::Lfo(lfo) if lfo.delay == 0 && lfo.fade == 0 => {
                     wave(lfo.shape, lfo.phase, seed ^ index as u64)
                 }
-                Prepared::Lfo(_) | Prepared::Envelope(_) => 0.0,
+                Prepared::Lfo(_) | Prepared::Envelope(_) | Prepared::Breakpoints(_) => 0.0,
                 other => other.input(inputs, seed, index),
             };
             let bipolar = program.bipolar[route.source];
@@ -333,7 +374,9 @@ impl Prepared {
             Self::Timbre => f64::from(inputs.timbre) * FULL_SCALE,
             Self::Random => uniform(hash(seed, index as u64, u64::MAX)),
             Self::Constant => 1.0,
-            Self::Lfo(_) | Self::Envelope(_) => unreachable!("stateful sources"),
+            Self::Lfo(_) | Self::Envelope(_) | Self::Breakpoints(_) => {
+                unreachable!("stateful sources")
+            }
         }
     }
 }
@@ -484,6 +527,7 @@ impl Default for Outputs {
 pub(crate) struct VoiceModState {
     sources: usize,
     envelopes: usize,
+    breakpoints: usize,
     routes: usize,
     program: Box<[Option<u32>]>,
     seed: Box<[u64]>,
@@ -499,6 +543,56 @@ pub(crate) struct VoiceModState {
     values: Box<[f64]>,
     lagged: Box<[f64]>,
     envelope: Box<[EnvelopeState]>,
+    segments: Box<[Segment]>,
+}
+
+/// A voice's position in one breakpoint envelope.
+#[derive(Clone, Copy, Debug, Default)]
+struct Segment {
+    /// The point being glided to; past the end, the last level holds.
+    index: u32,
+    age: u32,
+    from: f32,
+    level: f32,
+    released: bool,
+}
+
+impl Segment {
+    fn advance(&mut self, envelope: &Breakpoints, mut frames: u32) -> f32 {
+        while let Some(point) = envelope.points.get(self.index as usize) {
+            let left = point.frames - self.age;
+            if frames < left {
+                self.age += frames;
+                let t = f64::from(self.age) / f64::from(point.frames);
+                self.level = self.from + (point.level - self.from) * point.curve.value(t) as f32;
+                return self.level;
+            }
+            frames -= left;
+            self.age = point.frames;
+            self.level = point.level;
+            if !self.released && envelope.sustain == Some(self.index as usize) {
+                return self.level;
+            }
+            self.index += 1;
+            self.age = 0;
+            self.from = self.level;
+        }
+        self.level
+    }
+
+    fn release(&mut self, envelope: &Breakpoints) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        if let Some(sustain) = envelope.sustain
+            && self.index as usize <= sustain
+        {
+            self.index = sustain as u32 + 1;
+            self.age = 0;
+            self.from = self.level;
+        }
+    }
 }
 
 impl VoiceModState {
@@ -510,6 +604,7 @@ impl VoiceModState {
         Ok(Self {
             sources: modulation.sources,
             envelopes: modulation.envelopes,
+            breakpoints: modulation.breakpoints,
             routes: modulation.routes,
             program: crate::dsp::allocate(voices)?,
             seed: crate::dsp::allocate(voices)?,
@@ -526,6 +621,7 @@ impl VoiceModState {
                 slots(modulation.envelopes)?,
             )
             .collect(),
+            segments: crate::dsp::allocate(slots(modulation.breakpoints)?)?,
         })
     }
 
@@ -533,6 +629,7 @@ impl VoiceModState {
         Self {
             sources: 0,
             envelopes: 0,
+            breakpoints: 0,
             routes: 0,
             program: Box::new([]),
             seed: Box::new([]),
@@ -545,6 +642,7 @@ impl VoiceModState {
             values: Box::new([]),
             lagged: Box::new([]),
             envelope: Box::new([]),
+            segments: Box::new([]),
         }
     }
 
@@ -582,6 +680,9 @@ impl VoiceModState {
         for (i, envelope) in p.envelopes.iter().enumerate() {
             self.envelope[voice * self.envelopes + i] = EnvelopeState::new(*envelope);
         }
+        for segment in &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()] {
+            *segment = Segment::default();
+        }
         self.outputs[voice] = self.evaluate(p, voice, inputs, clock, 0, true);
         self.previous[voice] = self.outputs[voice];
         self.times[voice] = [clock.now; 2];
@@ -589,9 +690,13 @@ impl VoiceModState {
 
     pub fn release(&mut self, modulation: &VoiceModulation, voice: usize) {
         if let Some(program) = self.program(voice) {
-            let count = modulation.programs[program as usize].envelopes.len();
-            for state in &mut self.envelope[voice * self.envelopes..][..count] {
+            let p = &modulation.programs[program as usize];
+            for state in &mut self.envelope[voice * self.envelopes..][..p.envelopes.len()] {
                 state.release();
+            }
+            let segments = &mut self.segments[voice * self.breakpoints..][..p.breakpoints.len()];
+            for (segment, envelope) in segments.iter_mut().zip(&p.breakpoints) {
+                segment.release(envelope);
             }
         }
     }
@@ -679,6 +784,9 @@ impl VoiceModState {
                 Prepared::Envelope(e) => {
                     f64::from(self.envelope[voice * self.envelopes + e].advance(frames))
                 }
+                Prepared::Breakpoints(b) => f64::from(
+                    self.segments[voice * self.breakpoints + b].advance(&p.breakpoints[b], frames),
+                ),
                 other => other.input(inputs, seed, i),
             };
         }

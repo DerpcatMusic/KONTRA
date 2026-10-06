@@ -385,27 +385,33 @@ impl Runtime {
         family.open = false;
         let mut voice = family.first_voice;
         while let Some(index) = voice {
-            let state = self.voices.at_mut(index);
-            voice = state.siblings.next;
-            if frames == 0 || !state.started {
-                self.end_voice(VoiceId(self.voices.id(index.get())));
-            } else if state.chain.is_some() {
-                if state
-                    .tail_remaining
-                    .is_none_or(|remaining| frames < remaining)
-                {
-                    let current = state.dsp_fade.map_or(1., |(total, initial)| {
-                        initial * state.tail_remaining.unwrap() as f32 / total as f32
-                    });
-                    state.tail_remaining = Some(frames);
-                    state.dsp_fade = Some((frames, current));
-                }
-            } else {
-                state.envelope.choke(frames);
-            }
+            voice = self.voices.at_mut(index).siblings.next;
+            self.choke_voice(index, frames);
         }
         self.retire_family(id);
         self.cancel_closed_work();
+    }
+
+    /// Fade one voice from its current level over at most `frames`; zero or an
+    /// unstarted voice ends now. Existing shorter tails are unchanged.
+    pub(super) fn choke_voice(&mut self, index: super::Index, frames: u32) {
+        let state = self.voices.at_mut(index);
+        if frames == 0 || !state.started {
+            self.end_voice(VoiceId(self.voices.id(index.get())));
+        } else if state.chain.is_some() {
+            if state
+                .tail_remaining
+                .is_none_or(|remaining| frames < remaining)
+            {
+                let current = state.dsp_fade.map_or(1., |(total, initial)| {
+                    initial * state.tail_remaining.unwrap() as f32 / total as f32
+                });
+                state.tail_remaining = Some(frames);
+                state.dsp_fade = Some((frames, current));
+            }
+        } else {
+            state.envelope.choke(frames);
+        }
     }
 
     pub(super) fn retire_family(&mut self, id: FamilyId) {
@@ -450,6 +456,7 @@ impl Runtime {
             .unwrap()
             .modulation
             .stop(id.0.index);
+        self.stolen -= usize::from(v.stolen);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
