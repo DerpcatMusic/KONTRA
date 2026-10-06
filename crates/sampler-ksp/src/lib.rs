@@ -19,6 +19,7 @@ mod lower;
 pub mod model;
 mod parser;
 mod sema;
+pub mod ui;
 
 pub use diag::{Error, Kind};
 pub use eval::Environment;
@@ -94,9 +95,19 @@ pub struct Script {
     services: Vec<&'static str>,
     coverage: Vec<(&'static str, Coverage, usize)>,
     symbols: Vec<String>,
+    slot: u8,
 }
 
 impl Script {
+    /// The interface as format-neutral UI IR, validated. `picture` gives the
+    /// metadata of a library-relative image path, e.g. from
+    /// [`ui::picture_meta`] over the picture's `.txt`.
+    pub fn ui(
+        &self,
+        picture: &dyn Fn(&str) -> Option<sampler_ui_ir::ImageMeta>,
+    ) -> Result<sampler_ui_ir::Interface, sampler_ui_ir::Error> {
+        ui::interface(&self.model, self.slot, picture)
+    }
     pub fn has_performance_view(&self) -> bool {
         self.model.interface.performance_view
     }
@@ -446,5 +457,6 @@ pub fn compile_with(
         services,
         coverage,
         symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
+        slot: environment.slot,
     })
 }
