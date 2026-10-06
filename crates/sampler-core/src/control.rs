@@ -107,7 +107,10 @@ impl Prepared {
         for &(control, program) in &callbacks {
             self.control_index(control)?;
             let program = self.programs.get(program).ok_or(Error::InvalidInput)?;
-            if program.requires_note || program.wait_lifetime != super::WaitLifetime::Callback {
+            if program.requires_note
+                || program.requires_controller
+                || program.wait_lifetime != super::WaitLifetime::Callback
+            {
                 return Err(Error::InvalidInput);
             }
         }

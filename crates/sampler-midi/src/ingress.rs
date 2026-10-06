@@ -123,7 +123,7 @@ impl Ingress {
                 index: index @ (64 | 66),
                 value,
             } => {
-                runtime.set_pedal_controller(
+                runtime.dispatch_controller(
                     performance,
                     sampler_core::ChannelScope {
                         protocol: input.protocol,
@@ -137,7 +137,17 @@ impl Ingress {
                 Applied::Pedal
             }
             Message::Control { index, value } if index < 120 => {
-                runtime.set_controller(performance, index, value.full_scale())?;
+                runtime.dispatch_controller(
+                    performance,
+                    sampler_core::ChannelScope {
+                        protocol: input.protocol,
+                        port: input.port,
+                        group: input.group,
+                        channels: 1 << input.channel,
+                    },
+                    index,
+                    value.full_scale(),
+                )?;
                 Applied::Controller
             }
             Message::Control {

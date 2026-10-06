@@ -34,6 +34,7 @@ pub use control::{
     ControlClient, ControlDefinition, ControlDomain, ControlId, ControlOperation,
     ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite, RejectedControls,
 };
+mod controller_event;
 mod performance;
 pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod behavior;

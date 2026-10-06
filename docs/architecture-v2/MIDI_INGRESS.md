@@ -309,3 +309,16 @@ New lower/upper-zone fixtures cover early script stop, same-key overlap, member 
 manager pitch, physical release and cleanup. No additional adapter-side key cache is
 introduced. The new distinction also preserves a queued host key-up when a script
 replaces its own note-end deadline.
+
+
+## Scriptable controller ingress
+
+Ordinary MIDI 1/MIDI 2 CC ingress and supported MPE manager CCs now call the native
+controller dispatcher before downstream projection. Original full-resolution values
+survive automatic forwarding; source remaps explicitly choose their resolution.
+Sustain/sostenuto pass through the same callback boundary, and MPE manager remaps
+retain the full configured zone scope even when their original CC was not a pedal.
+Specialized MPE pressure/timbre/pitch and RPN handling, and ordinary channel modes,
+retain their existing dedicated paths; dispatch parity for those is still open.
+Admission errors return through ApplyError; admitted callback faults remain available
+through Runtime::flush_behaviors. There is no second controller VM or note owner.

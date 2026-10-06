@@ -554,3 +554,28 @@ weakening the native rejection of a physically closed deferred attack. The sourc
 fixture covers both immediate note_off forms, one release callback, silence and
 retained raw input until host key-up. Validation: 273 native debug/release tests and
 strict Clippy pass (`artifacts/pending-attack-*`).
+
+
+## Controller input and downstream state
+
+`dispatch_controller` admits a plan-owned callback before changing downstream
+performance state. A prepared optional controller binding and validated program
+context use the existing continuation pool, explicit dispatcher, fuel, wait queue
+and retained outcomes. Each callback stores its performance index, complete channel
+scope, original CC number/value and a pending-forward bit. Immutable domain identities
+and the existing plan pin remain valid across waits and prepared-plan replacement.
+
+A separate preallocated input bank holds 128 full-resolution CCs per performance
+domain; note selection snapshots still capture only accepted downstream values.
+Failed callback admission changes neither bank. A callback fault consumes pending
+forwarding while leaving already-published side effects intact. Cancellation and
+panic use the same continuation cleanup. Generated writes bypass the creating
+callback; pedal writes reuse transactional channel-capacity and gate services.
+
+Fixtures cover low-bit MIDI 2 precision, overlapping waits, latest-input versus
+captured-event reads, generation retirement/backpressure, pool and pedal capacity,
+faults/panic, source remapping and lower/upper MPE manager scope, all without runtime
+heap activity. Ordered multi-stage controller projections remain open.
+
+Validation: 279 native tests pass in debug/release/Rust 1.92, strict all-target
+Clippy and both root boundary tests pass (`artifacts/controller-events-*`).

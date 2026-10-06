@@ -42,6 +42,32 @@ pub enum Instruction {
     ForwardReleaseGroups,
     SuppressAttack,
     SuppressRelease,
+    /// Accept or consume a controller event before downstream state changes.
+    ForwardController,
+    SuppressController,
+    ReadControllerNumber {
+        local: u16,
+    },
+    /// The captured full-resolution value of this callback's input event.
+    ReadControllerValue {
+        local: u16,
+    },
+    /// Latest input value in the callback's performance domain, including consumed CCs.
+    ReadInputController {
+        controller: u16,
+        local: u16,
+    },
+    /// Publish a full-resolution CC downstream without reentering the creating callback.
+    WriteController {
+        controller: u16,
+        value: u16,
+    },
+    ControllerToMidi7 {
+        local: u16,
+    },
+    ControllerFromMidi7 {
+        local: u16,
+    },
     /// Generate a mapped child with an explicit release policy.
     Play {
         transpose: i8,
@@ -211,6 +237,7 @@ pub struct Program {
     pub(super) script_instance: Option<super::ScriptInstanceId>,
     pub(super) wait_lifetime: WaitLifetime,
     pub(super) requires_note: bool,
+    pub(super) requires_controller: bool,
 }
 impl Program {
     pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
@@ -221,6 +248,10 @@ impl Program {
     /// Whether any instruction needs a musical note context, including dead code.
     pub fn requires_note(&self) -> bool {
         self.requires_note
+    }
+
+    pub fn requires_controller(&self) -> bool {
+        self.requires_controller
     }
 
     pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
@@ -258,6 +289,10 @@ impl Program {
             | Instruction::WriteGroup {
                 group: Some(local), ..
             }
+            | Instruction::ReadControllerNumber { local }
+            | Instruction::ReadControllerValue { local }
+            | Instruction::ControllerToMidi7 { local }
+            | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
             | Instruction::ReadVelocity7 { local }
             | Instruction::WriteEventKey { local }
@@ -292,6 +327,14 @@ impl Program {
             | Instruction::Binary32 { lhs, rhs, .. } = *op
             {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
+            }
+            if let Instruction::ReadInputController { controller, local }
+            | Instruction::WriteController {
+                controller,
+                value: local,
+            } = *op
+            {
+                locals = locals.max(usize::from(controller.max(local)) + 1);
             }
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
@@ -345,7 +388,22 @@ impl Program {
                     | Instruction::WriteNoteCell { .. }
             )
         });
+        let requires_controller = code.iter().any(|op| {
+            matches!(
+                op,
+                Instruction::ForwardController
+                    | Instruction::SuppressController
+                    | Instruction::ReadControllerNumber { .. }
+                    | Instruction::ReadControllerValue { .. }
+                    | Instruction::ReadInputController { .. }
+                    | Instruction::WriteController { .. }
+            )
+        });
+        if requires_note && requires_controller {
+            return Err(Error::InvalidInput);
+        }
         Ok(Self {
+            requires_controller,
             requires_note,
             code: code.into_boxed_slice(),
             locals,
@@ -389,6 +447,7 @@ pub(super) struct Continuation {
     pub program: usize,
     pub pc: usize,
     pub outcome: Option<Outcome>,
+    pub controller: Option<super::controller_event::ControllerEvent>,
 }
 
 #[derive(Clone, Copy)]
@@ -409,7 +468,7 @@ impl Runtime {
     fn start_behavior_now(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
-        if program >= plan.programs.len() {
+        if program >= plan.programs.len() || plan.programs[program].requires_controller {
             return Err(Error::InvalidInput);
         }
         if !n.gate() && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
@@ -418,6 +477,7 @@ impl Runtime {
         let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
+            controller: None,
             program,
             pc: 0,
             outcome: None,
@@ -445,13 +505,25 @@ impl Runtime {
         plan: super::PlanId,
         program: usize,
     ) -> Result<(), Error> {
+        self.validate_plan_context(plan, program, false)
+    }
+
+    pub(super) fn validate_plan_context(
+        &self,
+        plan: super::PlanId,
+        program: usize,
+        controller: bool,
+    ) -> Result<(), Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
         let program = generation
             .prepared
             .programs
             .get(program)
             .ok_or(Error::InvalidInput)?;
-        if program.requires_note || program.wait_lifetime != WaitLifetime::Callback {
+        if program.requires_note
+            || (program.requires_controller && !controller)
+            || program.wait_lifetime != WaitLifetime::Callback
+        {
             return Err(Error::InvalidInput);
         }
         if self.behaviors.available() == 0 || generation.callbacks == usize::MAX {
@@ -465,15 +537,29 @@ impl Runtime {
         plan: super::PlanId,
         program: usize,
     ) -> Result<BehaviorId, Error> {
-        self.validate_plan_behavior(plan, program)?;
+        self.start_plan_context(plan, program, None)
+    }
+
+    pub(super) fn start_plan_context(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+        controller: Option<super::controller_event::ControllerEvent>,
+    ) -> Result<BehaviorId, Error> {
+        self.validate_plan_context(plan, program, controller.is_some())?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Plan(plan),
+            controller,
             program,
             pc: 0,
             outcome: None,
         })?);
         generation.callbacks += 1;
+        if let Some(event) = controller {
+            self.performance_state.input_controllers[event.performance]
+                [usize::from(event.number)] = event.value;
+        }
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
         self.resume_behavior(id);
@@ -644,6 +730,49 @@ impl Runtime {
         op: Instruction,
     ) -> Result<bool, Error> {
         match op {
+            Instruction::ForwardController => {
+                self.forward_controller(id)?;
+            }
+            Instruction::SuppressController => {
+                self.controller_event_mut(id)?.pending = false;
+            }
+            Instruction::ReadControllerNumber { local } => {
+                let value = self.controller_event_mut(id)?.number;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::ReadControllerValue { local } => {
+                let value = self.controller_event_mut(id)?.value;
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::ReadInputController { controller, local } => {
+                let number = *self.local_cell_mut(id, controller)?;
+                let event = *self.controller_event_mut(id)?;
+                let value = self.performance_state.input_controllers[event.performance]
+                    .get(usize::try_from(number).map_err(|_| Error::InvalidInput)?)
+                    .ok_or(Error::InvalidInput)?;
+                *self.local_cell_mut(id, local)? = i64::from(*value);
+            }
+            Instruction::WriteController { controller, value } => {
+                let number = u8::try_from(*self.local_cell_mut(id, controller)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let value = u32::try_from(*self.local_cell_mut(id, value)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let event = *self.controller_event_mut(id)?;
+                self.publish_controller(event.performance, event.scope, number, value)?;
+            }
+            Instruction::ControllerToMidi7 { local } => {
+                let cell = self.local_cell_mut(id, local)?;
+                let value = u32::try_from(*cell).map_err(|_| Error::InvalidInput)?;
+                *cell = ((u64::from(value) * 127 + u64::from(u32::MAX) / 2) / u64::from(u32::MAX))
+                    as i64;
+            }
+            Instruction::ControllerFromMidi7 { local } => {
+                let cell = self.local_cell_mut(id, local)?;
+                if !(0..=127).contains(cell) {
+                    return Err(Error::InvalidInput);
+                }
+                *cell = (*cell * i64::from(u32::MAX)) / 127;
+            }
             Instruction::ForwardAttack => {
                 self.forward_attack(owner.note()?)?;
             }

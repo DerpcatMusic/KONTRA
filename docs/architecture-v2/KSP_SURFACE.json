@@ -24,6 +24,26 @@
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
     },
+    "on controller": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "ignore_controller": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "set_controller": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "$CC_NUM": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "%CC": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "play_note": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"

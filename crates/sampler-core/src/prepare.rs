@@ -138,6 +138,7 @@ pub struct Prepared {
     pub(super) script_initial: Box<[Box<[i64]>]>,
     note_program: Option<usize>,
     pub(super) release_program: Option<usize>,
+    pub(super) controller_program: Option<usize>,
     pub(super) note_cells: usize,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[(super::ControlId, usize)]>,
@@ -285,6 +286,7 @@ impl Prepared {
             script_initial: Box::new([]),
             note_program: None,
             release_program: None,
+            controller_program: None,
             note_cells: 0,
             controls: Box::new([]),
             control_programs: Box::new([]),
@@ -307,7 +309,9 @@ impl Prepared {
         mut programs: Vec<super::Program>,
         note_program: Option<usize>,
     ) -> Result<Self, Error> {
-        if note_program.is_some_and(|index| index >= programs.len()) {
+        if note_program
+            .is_some_and(|index| programs.get(index).is_none_or(|p| p.requires_controller))
+        {
             return Err(Error::InvalidInput);
         }
         self.validate_program_controls(&programs)?;
@@ -332,6 +336,7 @@ impl Prepared {
         self.programs = programs.into_boxed_slice();
         self.note_program = note_program;
         self.release_program = None;
+        self.controller_program = None;
         self.control_programs = Box::new([]);
         Ok(self)
     }
@@ -340,11 +345,9 @@ impl Prepared {
     /// an independently reserved continuation and may wait beyond gate closure.
     /// Replacing the complete program table clears this binding.
     pub fn with_release_program(mut self, program: usize) -> Result<Self, Error> {
-        if !self
-            .programs
-            .get(program)
-            .is_some_and(|p| p.wait_lifetime == super::WaitLifetime::Callback)
-        {
+        if !self.programs.get(program).is_some_and(|p| {
+            !p.requires_controller && p.wait_lifetime == super::WaitLifetime::Callback
+        }) {
             return Err(Error::InvalidInput);
         }
         self.release_program = Some(program);
