@@ -25,6 +25,10 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn find(relative: &str) -> Option<PathBuf> {
     let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        assert!(
+            std::env::var_os("KONTRA_REQUIRE_LIBRARIES").is_none(),
+            "KONTRA_REQUIRE_LIBRARIES is set but KONTRA_KONTAKT_LIBRARIES is not"
+        );
         eprintln!("skipped: KONTRA_KONTAKT_LIBRARIES is unset");
         return None;
     };
@@ -32,6 +36,10 @@ fn find(relative: &str) -> Option<PathBuf> {
         .map(|root| root.join(relative))
         .find(|p| p.is_file());
     if found.is_none() {
+        assert!(
+            std::env::var_os("KONTRA_REQUIRE_LIBRARIES").is_none(),
+            "{relative} is not installed but KONTRA_REQUIRE_LIBRARIES is set"
+        );
         eprintln!("skipped: {relative} is not installed");
     }
     found
