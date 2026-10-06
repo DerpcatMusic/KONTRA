@@ -142,6 +142,17 @@ pub struct Group {
     /// release samples still sounding (Kontakt manual, Release Trigger
     /// "Monophonic").
     pub monophonic_release: bool,
+    /// Extra routes of the group's sound to buses (aux sends), beside `output`.
+    pub sends: Vec<GroupSend>,
+}
+
+/// A group's send to a bus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupSend {
+    pub to: BusRef,
+    pub gain: Gain,
+    /// Taken before the group's own gain (fader), else after it.
+    pub pre_fader: bool,
 }
 
 /// Past `voices` sounding voices, starting another fades one out over

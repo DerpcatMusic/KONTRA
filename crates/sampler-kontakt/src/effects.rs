@@ -920,6 +920,7 @@ mod tests {
                 output: ir::Output::Master,
                 voice_limit: None,
                 monophonic_release: false,
+                sends: Vec::new(),
             }],
             ..Default::default()
         };

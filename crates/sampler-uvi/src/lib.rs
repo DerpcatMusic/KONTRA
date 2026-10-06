@@ -456,6 +456,7 @@ impl Translation {
             };
             // A closed fader with a pre-fader send: the sound is the send's.
             // (The IR has one output per group: the first such send is used.)
+            let mut skip = None;
             if number(layer, "Gain", 1.0)? == 0.0 {
                 let send = layer
                     .children()
@@ -469,6 +470,7 @@ impl Translation {
                         Some((bus, number(r, "Gain", 1.0).ok()?))
                     });
                 if let Some((bus, send_gain)) = send.filter(|s| s.1 > 0.0) {
+                    skip = Some(bus);
                     base.gain = ir::Gain::Linear(gain * send_gain);
                     base.output = ir::Output::Bus(bus);
                     self.unsupported(
@@ -477,6 +479,30 @@ impl Translation {
                         send_gain,
                     );
                 }
+            }
+            // The layer's other sends to aux buses (the host's mixer places them).
+            for router in layer
+                .children()
+                .filter(|n| n.has_tag_name("BusRouters"))
+                .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+                .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+            {
+                let Some(bus) = router
+                    .attribute("Destination")
+                    .and_then(|d| d.rsplit('/').next())
+                    .and_then(|to| auxes.iter().find(|(n, _)| n == to))
+                    .map(|a| a.1)
+                else {
+                    continue;
+                };
+                if skip == Some(bus) {
+                    continue;
+                }
+                base.sends.push(ir::GroupSend {
+                    to: bus,
+                    gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
+                    pre_fader: number(router, "PreFader", 0.0)? != 0.0,
+                });
             }
             // Oscillators get groups of their own only where a keygroup stacks
             // several; otherwise the layer's group is oscillator 1.
