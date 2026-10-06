@@ -774,7 +774,13 @@ fn kontakt(
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load(e.to_string()),
     };
-    let mut source = sampler_kontakt::read(&request.path).map_err(load)?;
+    let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
+    let mut source = if multi {
+        sampler_kontakt::read_program(&request.path, request.program as usize)
+    } else {
+        sampler_kontakt::read(&request.path)
+    }
+    .map_err(load)?;
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
@@ -1379,6 +1385,26 @@ mod tests {
         let mut mix = Mix::default();
         mix.nodes[0] = vec![NodeMix::default(); loaded.tree.nodes.len() - 1];
         core.set_mix(&mix);
+    }
+
+    /// Each program of a Kontakt multi loads as its own rack part.
+    #[test]
+    fn real_multi_programs_load_as_parts() {
+        let relative = "Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let count = sampler_kontakt::read_multi(&path).unwrap().programs.len();
+        assert!(count > 1, "a multi has several programs");
+        let names: Vec<_> = (0..2)
+            .map(|program| {
+                let request = LoadRequest { path: path.clone(), program, sample_rate: 48000.0, ..Default::default() };
+                V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().instrument.unwrap().name.clone()
+            })
+            .collect();
+        assert_ne!(names[0], names[1]);
     }
 
     #[test]
