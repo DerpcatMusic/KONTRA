@@ -80,8 +80,10 @@ pub use pitch::NotePitch;
 mod groups;
 mod note_event;
 pub use note_event::NoteProperties;
+mod packed;
 mod plans;
 mod prepare;
+pub use packed::Packed;
 mod release;
 mod render;
 pub use release::{
