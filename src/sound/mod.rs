@@ -136,6 +136,31 @@ pub struct Loaded<P> {
     pub instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
     /// The script interfaces' models, for runtime UI changes.
     pub scripts: ScriptUi,
+    /// The streamed samples, when the part reads them from disk as it plays.
+    pub stream: Option<std::sync::Arc<Stream>>,
+}
+
+/// A part's streamed samples: their decode threads and resident start data.
+pub struct Stream {
+    pub streamer: sampler_kontakt::Streamer,
+    pub assets: Vec<sampler_core::Pcm>,
+    pub report: sampler_kontakt::StreamReport,
+}
+
+impl Stream {
+    /// Bytes held in memory: start data plus the page pool.
+    pub fn resident_bytes(&self) -> u64 {
+        let heads: usize = self.assets.iter().map(sampler_core::Pcm::resident_bytes).sum();
+        (heads + self.report.pool_bytes) as u64
+    }
+
+    /// Drop the start data of samples not played since `before` (the part's
+    /// [`Core::clock`]), least recently played first, until the rest fit in
+    /// `budget` bytes; they read again from disk when next played.
+    pub fn trim(&self, budget: u64, before: u64) -> usize {
+        let pool = self.report.pool_bytes as u64;
+        self.streamer.trim(&self.assets, budget.saturating_sub(pool).try_into().unwrap_or(usize::MAX), before)
+    }
 }
 
 /// One key as the scripts show it.
@@ -266,6 +291,8 @@ pub trait Core: Send {
     fn voices(&self) -> Voices;
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
+    /// `part`'s clock in frames, as [`Stream::trim`] counts it.
+    fn clock(&self, part: usize) -> u64;
     /// Output latency in frames that the core reports to the host.
     fn latency(&self) -> u32;
 }

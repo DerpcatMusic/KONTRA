@@ -47,6 +47,10 @@ pub struct Decoded {
     /// Script callbacks the part can run at once, sized from its scripts.
     #[serde(default)]
     pub script_callbacks: usize,
+    /// Bytes the samples take fully decoded; a streamed part holds only
+    /// their start data. 0 when not counted.
+    #[serde(default)]
+    pub full_bytes: u64,
 }
 
 impl Decoded {
@@ -137,6 +141,7 @@ impl LoadReport {
                 controls: instrument.controls.len(),
                 keys: key_bits(instrument),
                 script_callbacks: 0,
+                full_bytes: 0,
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
