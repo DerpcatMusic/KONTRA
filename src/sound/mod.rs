@@ -128,6 +128,9 @@ pub struct Loaded<P> {
     /// The source's script interfaces, in script order; their image assets
     /// carry the library's own metadata.
     pub interfaces: Vec<sampler_ui_ir::Interface>,
+    /// The translated instrument the part plays, for the views that show
+    /// its articulations, mapping and sound; `None` for plain audio files.
+    pub instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
 }
 
 /// Browser-facing facts about a source, read without preparing it.

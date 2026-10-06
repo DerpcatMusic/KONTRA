@@ -400,6 +400,8 @@ pub(crate) struct PartView {
     /// The instrument's script interfaces, in script order.
     // TODO(v2 UI): drawn by the UI agent's sampler-ui-ir renderer.
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
+    /// The translated instrument: articulations, mapping, sound.
+    pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
 }
@@ -1014,6 +1016,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.tree = Some(Arc::new(loaded.tree));
             v.report = Some(Arc::new(loaded.report));
             v.interfaces = loaded.interfaces.into();
+            v.instrument = loaded.instrument;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
