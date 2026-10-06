@@ -205,3 +205,148 @@ fn deferred_mapping_keeps_original_plan_full_resolution_and_live_expression_owne
     });
     drop(control.retired().unwrap());
 }
+
+#[test]
+fn event_edits_commit_once_keep_admission_and_release_identity_and_retry_atomically() {
+    use sampler_core::{NotePitch, NoteProperties};
+    let mut rt = Runtime::new(plan(1.), limits()).unwrap();
+    support::without_heap(|| {
+        let blocker = rt.trigger(input(1), 60, 1.).unwrap();
+        let original = NoteProperties {
+            pitch: NotePitch::Absolute(59.25),
+            velocity: 0.123456789123,
+        };
+        let note = rt
+            .note_on_pitched(
+                input(2),
+                original.pitch,
+                original.velocity,
+                Expression::default(),
+            )
+            .unwrap();
+        let expression = rt.expression_id(note).unwrap();
+        let edited = NoteProperties {
+            pitch: NotePitch::Key(60),
+            velocity: 0.5,
+        };
+        assert_eq!(rt.initial_note_properties(note), Ok(original));
+        rt.edit_note_event(note, edited).unwrap();
+        for invalid in [
+            NoteProperties {
+                pitch: NotePitch::Key(128),
+                ..edited
+            },
+            NoteProperties {
+                pitch: NotePitch::Absolute(f64::NAN),
+                ..edited
+            },
+            NoteProperties {
+                velocity: f64::NAN,
+                ..edited
+            },
+            NoteProperties {
+                velocity: -1.,
+                ..edited
+            },
+            NoteProperties {
+                velocity: 1.01,
+                ..edited
+            },
+        ] {
+            assert_eq!(rt.edit_note_event(note, invalid), Err(Error::InvalidInput));
+            assert_eq!(rt.note_event(note), Ok(edited));
+        }
+        let reserve = rt.release_reserve();
+        assert_eq!(rt.forward_attack(note), Err(Error::Capacity));
+        assert_eq!(rt.note_pitch(note), Ok(original.pitch));
+        assert_eq!(rt.note(note).unwrap().1, original.velocity);
+        assert_eq!(rt.release_reserve(), reserve);
+        rt.key_up(blocker, None).unwrap();
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        rt.flush_ended(|_| true);
+        assert!(rt.forward_attack(note).unwrap());
+        assert_eq!(rt.note_pitch(note), Ok(edited.pitch));
+        assert_eq!(rt.note(note).unwrap().1, edited.velocity);
+        assert_eq!(rt.expression_id(note), Ok(expression));
+        assert_eq!(rt.initial_note_properties(note), Ok(original));
+        let late = NoteProperties {
+            pitch: NotePitch::Key(61),
+            velocity: 1.,
+        };
+        rt.edit_note_event(note, late).unwrap();
+        assert!(!rt.forward_attack(note).unwrap());
+        assert_eq!(rt.note_event(note), Ok(late));
+        let mut audio = [[0.; 2]; 1];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio, [[0.5; 2]]);
+        assert_eq!(rt.note_off(input(2), None), Ok(note));
+        rt.render(&mut audio).unwrap();
+        assert_eq!(
+            audio,
+            [[-0.25; 2]],
+            "release uses committed key and velocity"
+        );
+        rt.render(&mut audio).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_event(note), Err(Error::StaleHandle));
+        assert_eq!(rt.initial_note_properties(note), Err(Error::StaleHandle));
+        assert_eq!(rt.edit_note_event(note, late), Err(Error::StaleHandle));
+        let fresh = rt.note_on(input(3), 62, 0.75).unwrap();
+        let properties = NoteProperties {
+            pitch: NotePitch::Key(62),
+            velocity: 0.75,
+        };
+        assert_eq!(rt.note_event(fresh), Ok(properties));
+        assert_eq!(rt.initial_note_properties(fresh), Ok(properties));
+        rt.panic();
+        rt.flush_ended(|_| true);
+    });
+}
+
+#[test]
+fn event_edit_instructions_derive_register_and_note_requirements_even_when_unreachable() {
+    use sampler_core::{Instruction, Program, WaitLifetime};
+    for op in [
+        Instruction::WriteEventKey { local: 7 },
+        Instruction::WriteEventVelocity7 { local: 7 },
+    ] {
+        let program = Program::new(vec![Instruction::End, op])
+            .unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback);
+        assert!(program.requires_note());
+        let prepared = plan(1.).with_programs(vec![program], None).unwrap();
+        assert_eq!(prepared.behavior_local_count(), 8);
+        let budget = Limits {
+            behaviors: 1,
+            behavior_cells: 7,
+            behavior_fuel: 8,
+            ..limits()
+        };
+        assert!(matches!(
+            Runtime::new(prepared, budget),
+            Err(Error::Capacity)
+        ));
+        let prepared = plan(1.)
+            .with_programs(
+                vec![
+                    Program::new(vec![Instruction::End, op])
+                        .unwrap()
+                        .with_wait_lifetime(WaitLifetime::Callback),
+                ],
+                None,
+            )
+            .unwrap();
+        let mut rt = Runtime::new(
+            prepared,
+            Limits {
+                behavior_cells: 8,
+                ..budget
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            rt.start_plan_behavior(rt.active_plan(), 0),
+            Err(Error::InvalidInput)
+        );
+    }
+}

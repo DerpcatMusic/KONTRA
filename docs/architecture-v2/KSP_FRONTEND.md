@@ -372,17 +372,58 @@ publish no partial sound/reservations and leave pending mapping retryable; a fai
 inside a callback instead follows the existing retained-fault and gate-cleanup policy.
 
 [NI event commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
-restrict note changes to before the first wait and demonstrate waiting before querying
+restrict changes to the sounding note to before the first wait and demonstrate waiting before querying
 a voice's zone ID. The reviewed v1 `yielded`/`forward` path provides regression context
 for first-yield/completion forwarding, not fresh vendor differential evidence. New
 fixtures check ordinary empty callbacks, conditional suppression, first/repeated/zero
 waits, exit, late suppression, original high-resolution/MPE-style expression ownership,
 release reservations, failed admission, plan replacement and terminal backpressure.
 All runtime paths are heap-audited. Ordered multi-slot/controller/release forwarding,
-event mutation and full Kontakt/Falcon differential fidelity remain open.
+broader event mutation and full Kontakt/Falcon differential fidelity remain open.
 
 Original-forwarding validation: all 218 native tests pass in debug, release and Rust
 1.92; strict all-target Clippy and both root boundary tests pass. The targeted debug
 check also verifies rejection after key-up while sustain still holds the gate, so
 forwarding cannot reserve an already-passed release phase. Logs use
 `artifacts/forward-attack-{debug,targeted,release,msrv,clippy,boundary}.log`.
+
+
+## Script-visible note edits
+
+`change_note($EVENT_ID, expression)` and `change_velo($EVENT_ID, expression)` now
+lower to shared native event-property writes inside `on note`. Expressions use the
+existing signed-32 evaluator. Native validation accepts keys 0–127 and MIDI 1
+velocities 1–127; out-of-range values fault before mutation. This is an explicit
+native policy, not a measured claim about Kontakt's out-of-range behavior. Other
+event targets/groups and use from other callbacks are rejected at compile time.
+
+Each logical note has immutable admission properties, a current script-visible
+view, and committed audio properties. Before forwarding, edits affect mapping,
+velocity gain and release reservation. Forwarding commits them only after complete
+preflight succeeds. After forwarding, edits update `$EVENT_NOTE`/`$EVENT_VELOCITY`
+and subsequent generated-note expressions, while existing audio and release mapping
+keep their committed properties. Suppressed notes can still edit/read their view.
+Physical note-off pairing and the expression owner never change.
+
+This follows the late-variable-update distinction in the pinned
+[NI event-command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands).
+The legacy `ChangeNote`/`ChangeVelo` implementation ignores edits after `at_engine`;
+that behavior was not copied. Vendor differential evidence is still required.
+
+`NoteProperties`, `initial_note_properties`, `note_event` and `edit_note_event` are
+format-neutral native services. Initial values retain absolute MIDI 2 pitch and
+full-resolution velocity. KSP explicitly projects these to key/7-bit semantics;
+setting a KSP key replaces absolute pitch with the original plan's tuned key. Cold
+per-note storage is allocated at runtime construction, generation-checked on every
+public access, and reset at shared admission for both physical and generated notes.
+No old-core dependency or format-specific ownership path is introduced.
+
+Tests cover before/after-wait audio, read-after-write arguments, suppressed callbacks
+continuing after key-up, release identity, failed preflight/retry, invalid inputs,
+stale/reused handles, full-resolution admission, expression ownership and unreachable
+instruction register/context validation. Runtime paths run under the heap guard.
+The manual inventory now has 27 partial named overrides; none claims vendor parity.
+
+Event-edit validation: all 221 native tests pass in debug, release and Rust 1.92;
+strict all-target Clippy and both root boundary tests pass. Logs use
+`artifacts/event-edits-{debug,release,msrv,clippy,boundary}.log`.

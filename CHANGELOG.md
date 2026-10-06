@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Implement KSP current-event `change_note`/`change_velo` through shared native
+  note properties. Pre-forward edits affect mapping; late edits update script reads
+  without changing running audio, release mapping or physical-key ownership.
+  Full event targets, ordered stages and vendor fidelity remain incomplete.
+
 - Forward unsuppressed KSP note callbacks at wait, exit or completion on the original
   native note identity. Conditional suppression no longer requires a leading command;
   selection retains high-resolution velocity, expression and original-plan ownership.

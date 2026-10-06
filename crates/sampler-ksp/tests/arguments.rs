@@ -129,6 +129,26 @@ fn expressions_drive_note_pitch_velocity_duration_and_waits_after_key_release() 
 #[test]
 fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
     for (body, rate, expected) in [
+        (
+            "change_note($EVENT_ID, -1)",
+            48000,
+            sampler_core::Error::InvalidInput,
+        ),
+        (
+            "change_note($EVENT_ID, 128)",
+            48000,
+            sampler_core::Error::InvalidInput,
+        ),
+        (
+            "change_velo($EVENT_ID, 0)",
+            48000,
+            sampler_core::Error::InvalidInput,
+        ),
+        (
+            "change_velo($EVENT_ID, 128)",
+            48000,
+            sampler_core::Error::InvalidInput,
+        ),
         ("wait(1 - 2)", 48000, sampler_core::Error::InvalidInput),
         (
             "wait(2147483647)",
@@ -198,6 +218,27 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
         )
         .is_err()
     );
+    for source in [
+        "on release change_note($EVENT_ID, 61) end on",
+        "on release change_velo($EVENT_ID, 64) end on",
+        "on note change_note($ALL_EVENTS, 61) end on",
+        "on note change_velo(1, 64) end on",
+    ] {
+        assert!(
+            sampler_ksp::compile(
+                source,
+                48000,
+                sampler_ksp::Limits {
+                    source_bytes: 4096,
+                    instructions: 128,
+                    variables: 4,
+                },
+                &[]
+            )
+            .is_err(),
+            "{source}"
+        );
+    }
 }
 
 #[test]
@@ -278,4 +319,85 @@ fn note_callbacks_forward_the_original_once_at_wait_exit_or_completion() {
             });
         }
     }
+}
+
+#[test]
+fn edits_before_forwarding_map_audio_and_late_edits_only_change_event_values() {
+    let source = "on note
+        change_note($EVENT_ID, $EVENT_NOTE + 1)
+        change_velo($EVENT_ID, $EVENT_VELOCITY / 2)
+        wait(125)
+        change_note($EVENT_ID, $EVENT_NOTE + 9)
+        change_velo($EVENT_ID, $EVENT_VELOCITY * 2 - 2)
+        play_note($EVENT_NOTE - 10, $EVENT_VELOCITY, 0, 125)
+        wait(125)
+        end on";
+    for block in [1, 7, 64] {
+        let mut rt = runtime(source, 48000);
+        support::without_heap(|| {
+            let note = rt.trigger(input(1), 60, 1.).unwrap();
+            assert_eq!(rt.note(note).unwrap(), (61, 63. / 127., true));
+            assert_eq!(rt.initial_note_properties(note).unwrap().velocity, 1.);
+            let mut audio = [[0.; 2]; 12];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            rt.render(&mut []).unwrap();
+            assert_eq!(
+                rt.note_event(note).unwrap().pitch,
+                sampler_core::NotePitch::Key(70)
+            );
+            assert_eq!(rt.note_event(note).unwrap().velocity, 124. / 127.);
+            assert_eq!(rt.note(note).unwrap(), (61, 63. / 127., true));
+            for (frame, actual) in audio.iter().enumerate() {
+                let expected = 63_f32 / 127. + if frame >= 6 { 124_f32 / 127. } else { 0. };
+                assert_eq!(*actual, [expected; 2], "{block}, {frame}");
+            }
+            assert_eq!(rt.note_off(input(1), None), Ok(note));
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio, [[0.; 2]; 12]);
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+                (0, 0, 0)
+            );
+        });
+    }
+    let mut rt = runtime(
+        "on note ignore_event($EVENT_ID)
+        change_note($EVENT_ID, 61) change_velo($EVENT_ID, 32)
+        wait(125) play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 125) end on",
+        48000,
+    );
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        let mut audio = [[0.; 2]; 13];
+        rt.render(&mut audio).unwrap();
+        for (frame, actual) in audio.iter().enumerate() {
+            assert_eq!(
+                *actual,
+                [if (6..12).contains(&frame) {
+                    32_f32 / 127.
+                } else {
+                    0.
+                }; 2]
+            );
+        }
+        assert_eq!(
+            rt.note(note).unwrap().0,
+            60,
+            "suppressed attack never commits edits"
+        );
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+    });
 }

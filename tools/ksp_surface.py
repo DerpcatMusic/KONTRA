@@ -181,6 +181,7 @@ for source in sources:
             ('control-statements', 'if ... else ... end if'),
             ('control-statements', 'continue'), ('control-statements', 'while ()'),
             ('time-related-commands', 'wait()'), ('event-commands', 'ignore_event()'),
+            ('event-commands', 'change_note()'), ('event-commands', 'change_velo()'),
         ]:
             section['implementation'] = 'partial_native_subset'
             section['evidence'] = 'KSP_FRONTEND.md'
@@ -226,7 +227,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec']
+        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', 'change_note', 'change_velo', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec']
     },
     'chapters': chapters,
 }
