@@ -1,5 +1,5 @@
 //! Prepared stereo bus DAGs. A bus owns summed-signal history, never note identity.
-use crate::dsp::{FilterState, GainRamp, PreparedProcessor};
+use crate::dsp::{GainRamp, PreparedProcessor, ProcessorState, allocate};
 use crate::{Error, Frame, GainControl, Prepared, Processor};
 
 const BLOCK: usize = 64;
@@ -31,6 +31,7 @@ pub(super) struct PreparedBuses {
     nodes: Box<[PreparedBus]>,
     order: Box<[usize]>,
     cells: usize,
+    delay_frames: usize,
     pub gains: Box<[GainControl]>,
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
@@ -70,6 +71,7 @@ impl PreparedBuses {
         }
         let mut gains = Vec::new();
         let mut cells = 0usize;
+        let mut delay_frames = 0;
         let nodes = buses
             .into_iter()
             .map(|bus| {
@@ -82,6 +84,7 @@ impl PreparedBuses {
                         bus.processors.into_boxed_slice(),
                         rate,
                         &mut gains,
+                        &mut delay_frames,
                     )?,
                     sends: bus.sends.into_boxed_slice(),
                     states: begin..cells,
@@ -99,6 +102,7 @@ impl PreparedBuses {
             nodes,
             order: order.into_boxed_slice(),
             cells,
+            delay_frames,
             gains: gains.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
         })
@@ -126,23 +130,16 @@ impl Default for Buffer {
 
 pub(super) struct BusState {
     buffers: Box<[Buffer]>,
-    cells: Box<[FilterState]>,
+    cells: Box<[ProcessorState]>,
+    delay_samples: Box<[[f64; 2]]>,
     pub gains: Box<[GainRamp]>,
 }
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
-        fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
-            std::alloc::Layout::array::<T>(count).map_err(|_| Error::Capacity)?;
-            let mut values = Vec::new();
-            values
-                .try_reserve_exact(count)
-                .map_err(|_| Error::Capacity)?;
-            values.resize_with(count, T::default);
-            Ok(values.into_boxed_slice())
-        }
         Ok(Self {
             buffers: allocate(plan.buses.len())?,
             cells: allocate(plan.buses.cells)?,
+            delay_samples: allocate(plan.buses.delay_frames)?,
             gains: crate::dsp::control::initial_gains(plan, &plan.buses.gains),
         })
     }
@@ -163,7 +160,7 @@ impl BusState {
     }
     pub fn reset(&mut self) {
         self.begin();
-        self.cells.fill(FilterState::default());
+        self.cells.fill(ProcessorState::default());
         for buffer in &mut self.buffers {
             buffer.remaining = 0;
         }
@@ -181,7 +178,7 @@ impl BusState {
                 } else if buffer.remaining != 0 {
                     buffer.remaining -= 1;
                 } else {
-                    states.fill(FilterState::default());
+                    states.fill(ProcessorState::default());
                     break;
                 }
                 let value = crate::dsp::process(
@@ -190,13 +187,15 @@ impl BusState {
                     frame.map(f64::from),
                     &self.gains,
                     at + frame_index as u64,
+                    &mut self.delay_samples,
                 );
                 let result = value.map(|v| v as f32);
-                if result.iter().all(|v| v.is_finite()) && states.iter().all(FilterState::finite) {
+                if result.iter().all(|v| v.is_finite()) && states.iter().all(ProcessorState::finite)
+                {
                     *frame = result.map(|v| if v.is_subnormal() { 0. } else { v });
                 } else {
                     *frame = [0.; 2];
-                    states.fill(FilterState::default());
+                    states.fill(ProcessorState::default());
                     faults += 1;
                 }
                 produced += 1;

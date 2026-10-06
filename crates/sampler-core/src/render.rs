@@ -104,7 +104,10 @@ impl Runtime {
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let begin = i * plan.dsp.stride;
         let states = &mut plan.dsp.cells[begin..begin + chain.map_or(0, |c| c.stages())];
+        let delay_begin = i * plan.dsp.delay_stride;
         let context = super::dsp::RenderContext {
+            delay: &mut plan.dsp.delay_samples
+                [delay_begin..delay_begin + chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             gains: &plan.dsp.gains,
             at,
@@ -137,7 +140,7 @@ fn render_source(
     source: &(impl super::source::ReadFrames + ?Sized),
     output: &mut [Frame],
     chain: Option<&super::dsp::PreparedVoiceChain>,
-    states: &mut [super::dsp::FilterState],
+    states: &mut [super::dsp::ProcessorState],
     context: super::dsp::RenderContext<'_>,
     kernel: &super::resample::Kernel,
 ) -> (usize, bool, u64, bool) {

@@ -117,6 +117,7 @@ pub enum Processor {
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     ControlGain(GainControl),
+    Delay(Delay),
 }
 
 impl Processor {
@@ -125,30 +126,35 @@ impl Processor {
             Processor::Gain(gain) => gain.is_finite(),
             Processor::StereoMatrix(matrix) => matrix.iter().flatten().all(|v| v.is_finite()),
             Processor::ControlGain(binding) => binding.valid(),
-            Processor::Biquad(_) => true,
+            Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
 }
 
 pub(super) mod control;
+mod delay;
 pub use control::GainControl;
 pub(super) use control::GainRamp;
+pub use delay::Delay;
 
 pub(super) enum PreparedProcessor {
     Gain(f64),
     StereoMatrix([[f64; 2]; 2]),
     Biquad(Biquad),
     ControlGain(usize),
+    Delay { delay: Delay, offset: usize },
 }
 
 pub(super) struct PreparedVoiceChain {
     pre: Box<[PreparedProcessor]>,
     post: Box<[PreparedProcessor]>,
     tail_frames: u32,
+    pub delay_frames: usize,
 }
 
 pub(super) struct RenderContext<'a> {
     pub expression: Frame,
+    pub delay: &'a mut [[f64; 2]],
     pub gains: &'a [GainRamp],
     pub at: u64,
 }
@@ -189,10 +195,12 @@ impl VoiceChain {
         rate: u32,
         bindings: &mut Vec<GainControl>,
     ) -> Result<PreparedVoiceChain, Error> {
+        let mut delay_frames = 0;
         Ok(PreparedVoiceChain {
-            pre: compile_processors(self.pre, rate, bindings)?,
-            post: compile_processors(self.post, rate, bindings)?,
+            pre: compile_processors(self.pre, rate, bindings, &mut delay_frames)?,
+            post: compile_processors(self.post, rate, bindings, &mut delay_frames)?,
             tail_frames: self.tail_frames,
+            delay_frames,
         })
     }
 }
@@ -200,6 +208,7 @@ pub(super) fn compile_processors(
     stages: Box<[Processor]>,
     rate: u32,
     bindings: &mut Vec<GainControl>,
+    delay_frames: &mut usize,
 ) -> Result<Box<[PreparedProcessor]>, Error> {
     if stages.iter().any(|stage| !stage.valid()) {
         return Err(Error::InvalidInput);
@@ -209,6 +218,13 @@ pub(super) fn compile_processors(
         .into_iter()
         .map(|stage| {
             Ok(match stage {
+                Processor::Delay(delay) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset
+                        .checked_add(delay.frames as usize)
+                        .ok_or(Error::Capacity)?;
+                    PreparedProcessor::Delay { delay, offset }
+                }
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
                 Processor::Biquad(filter) => {
@@ -237,7 +253,7 @@ impl PreparedVoiceChain {
         voice: &mut Voice,
         pcm: &(impl crate::source::ReadFrames + ?Sized),
         output: &mut [Frame],
-        states: &mut [FilterState],
+        states: &mut [ProcessorState],
         context: RenderContext<'_>,
         kernel: &crate::resample::Kernel,
     ) -> (usize, u64) {
@@ -285,20 +301,22 @@ impl PreparedVoiceChain {
                     },
                     context.gains,
                     at,
+                    context.delay,
                 );
                 let level = voice
                     .envelope
                     .constant_level()
                     .unwrap_or_else(|| voice.envelope.next());
                 value = value.map(|v| v * f64::from(level));
-                value = process(&self.post, post, value, context.gains, at);
+                value = process(&self.post, post, value, context.gains, at, context.delay);
                 let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
                     f64::from(initial) * f64::from(voice.tail_remaining.unwrap()) / f64::from(total)
                 });
                 let result = std::array::from_fn::<_, 2, _>(|channel| {
                     (value[channel] * f64::from(context.expression[channel]) * fade) as f32
                 });
-                if result.iter().all(|v| v.is_finite()) && states.iter().all(FilterState::finite) {
+                if result.iter().all(|v| v.is_finite()) && states.iter().all(ProcessorState::finite)
+                {
                     for channel in 0..2 {
                         frame[channel] += if result[channel].is_subnormal() {
                             0.
@@ -307,7 +325,7 @@ impl PreparedVoiceChain {
                         };
                     }
                 } else {
-                    states.fill(FilterState::default());
+                    states.fill(ProcessorState::default());
                     faults += 1;
                 }
                 rendered += 1;
@@ -326,23 +344,33 @@ impl PreparedVoiceChain {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct FilterState {
+pub(super) struct ProcessorState {
     z: [[f64; 2]; 2],
+    delay_position: u32,
+    delay_filled: u32,
 }
-impl FilterState {
+impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
         self.z.iter().flatten().all(|v| v.is_finite())
     }
 }
 pub(super) fn process(
     stages: &[PreparedProcessor],
-    states: &mut [FilterState],
+    states: &mut [ProcessorState],
     mut value: [f64; 2],
     gains: &[GainRamp],
     at: u64,
+    delay_samples: &mut [[f64; 2]],
 ) -> [f64; 2] {
     for (stage, state) in stages.iter().zip(states) {
         match stage {
+            PreparedProcessor::Delay { delay, offset } => {
+                value = delay.process(
+                    state,
+                    &mut delay_samples[*offset..*offset + delay.frames as usize],
+                    value,
+                );
+            }
             PreparedProcessor::Gain(gain) => value = value.map(|v| v * gain),
             PreparedProcessor::StereoMatrix(matrix) => {
                 value = matrix.map(|row| row[0] * value[0] + row[1] * value[1]);
@@ -369,10 +397,22 @@ pub(super) fn process(
     value
 }
 
+pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
+    std::alloc::Layout::array::<T>(count).map_err(|_| Error::Capacity)?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| Error::Capacity)?;
+    values.resize_with(count, T::default);
+    Ok(values.into_boxed_slice())
+}
+
 pub(super) struct DspState {
     pub stride: usize,
-    pub cells: Box<[FilterState]>,
+    pub cells: Box<[ProcessorState]>,
     pub gains: Box<[GainRamp]>,
+    pub delay_stride: usize,
+    pub delay_samples: Box<[[f64; 2]]>,
     pub buses: crate::bus::BusState,
 }
 impl DspState {
@@ -384,21 +424,24 @@ impl DspState {
             .max()
             .unwrap_or(0);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
-        std::alloc::Layout::array::<FilterState>(cells).map_err(|_| Error::Capacity)?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(cells)
-            .map_err(|_| Error::Capacity)?;
-        values.resize(cells, FilterState::default());
+        let delay_stride = plan
+            .voice_chains
+            .iter()
+            .map(|chain| chain.delay_frames)
+            .max()
+            .unwrap_or(0);
+        let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
         Ok(Self {
             stride,
-            cells: values.into_boxed_slice(),
+            cells: allocate(cells)?,
+            delay_stride,
+            delay_samples: allocate(delay_count)?,
             gains: control::initial_gains(plan, &plan.gain_bindings),
             buses: crate::bus::BusState::new(plan)?,
         })
     }
     pub fn reset(&mut self, voice: usize) {
-        self.cells[voice * self.stride..(voice + 1) * self.stride].fill(FilterState::default());
+        self.cells[voice * self.stride..(voice + 1) * self.stride].fill(ProcessorState::default());
     }
 }
 
@@ -449,7 +492,7 @@ mod tests {
                 ),
             ] {
                 let filter = Biquad::new(rate, kind, frequency, 0.7).unwrap();
-                let mut state = [FilterState::default()];
+                let mut state = [ProcessorState::default()];
                 let (mut x, mut y) = ([0.; 2], [0.; 2]);
                 let mut response = [[0.; 2]; 3];
                 for sample in 0..4096 {
@@ -465,6 +508,7 @@ mod tests {
                         [input, 0.],
                         &[],
                         0,
+                        &mut [],
                     );
                     assert!((actual[0] - expected).abs() < 1e-13);
                     assert_eq!(actual[1], 0., "stereo channels must not share state");
@@ -524,7 +568,7 @@ mod tests {
                             };
                             let boost = Biquad::new(rate, kind(gain_db), frequency, q).unwrap();
                             let cut = Biquad::new(rate, kind(-gain_db), frequency, q).unwrap();
-                            let mut state = [FilterState::default(); 2];
+                            let mut state = [ProcessorState::default(); 2];
                             for i in 0..4096 {
                                 let input =
                                     [(f64::from(i) * 0.017).sin(), if i == 0 { 1. } else { 0. }];
@@ -537,6 +581,7 @@ mod tests {
                                     input,
                                     &[],
                                     0,
+                                    &mut [],
                                 );
                                 for (actual, expected) in output.into_iter().zip(input) {
                                     assert!(

@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add causal stereo feedback delays to shared native voice/bus processing. Prepare
+  rings off audio, retain silent echo gaps and invalidate old history without clearing
+  long buffers. Verify independent recurrence, generation tails and fault containment.
+
 - Accept variable generated-note durations in KSP UI/controller handlers and shared
   functions. Validate parent-only durations against actual callback ownership before
   publishing notes; keep fixed/whole-source playback independent.
