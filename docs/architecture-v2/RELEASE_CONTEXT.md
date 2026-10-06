@@ -114,3 +114,11 @@ Physical note-off after an already ended script event consumes input ownership w
 rewriting the original logical release context or dispatching a duplicate callback.
 The existing explicit native `release`/`Event::Release` operation deliberately aborts
 the input owner as well; source note-off and callback faults do not use that policy.
+
+## Monophonic release-trigger groups
+
+Source: KONTAKT_Manual.pdf p.205 (Group Editor, Release Trigger "Monophonic"):
+repeated release samples of the same note cut the previous ones.
+`ir::Group.monophonic_release` carries it; core cuts a new voice's same-key,
+other-note earlier voices in that group (`cut_monophonic_release`, steal.rs).
+The 10 ms cut fade is an assumption, not in the manual.
