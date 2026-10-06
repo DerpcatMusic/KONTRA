@@ -363,11 +363,10 @@ impl ScriptHost {
 
     fn install(&self) -> mlua::Result<()> {
         let lua = &self.lua;
-        // Luau's sandbox: read-only libraries; the prelude and the scripts
-        // write their globals to a local environment that reads through.
-        lua.sandbox(true)?;
+        // Only table/string/math/coroutine are loaded (no io, os, debug,
+        // package); `lua.sandbox` would give every coroutine its own proxy
+        // environment, which breaks the globals the prelude and scripts share.
         let globals = lua.globals();
-        globals.raw_set("_G", &globals)?;
         let shared = &self.shared;
 
         // Luau calls the interrupt at calls and loop back-edges: a callback
@@ -420,6 +419,14 @@ impl ScriptHost {
             })?,
         )?;
         let s = shared.clone();
+        native.set(
+            "defglobal",
+            // The main environment: a coroutine's own is a throwaway proxy.
+            lua.create_function({
+                let env = globals.clone();
+                move |_, (name, value): (String, Value)| env.raw_set(name, value)
+            })?,
+        )?;
         native.set("nextId", lua.create_function(move |_, ()| Ok(s.next_id()))?)?;
         let s = shared.clone();
         native.set(
