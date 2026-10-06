@@ -603,6 +603,7 @@ impl Runtime {
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
                     held,
+                    self.note_params[note.0.index].mods,
                 );
                 let start = prepared
                     .voice_modulation
@@ -660,6 +661,7 @@ impl Runtime {
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
                     held,
+                    self.note_params[note.0.index].mods,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),
