@@ -108,6 +108,7 @@ pub struct Mpe {
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
+    transpose: f64,
 }
 impl Mpe {
     pub fn new(
@@ -165,6 +166,7 @@ impl Mpe {
             parameters: [Parameter::default(); 16],
             bindings,
             changes,
+            transpose: 0.0,
         })
     }
 
@@ -310,6 +312,25 @@ impl Mpe {
         Ok(self.admit(runtime, channel, input, velocity)?)
     }
 
+    /// Offset every note of the zone, held or not, by `semitones` on top of its
+    /// bends (a part's tuning). Commits only if every owner accepts it.
+    pub fn transpose(&mut self, runtime: &mut Runtime, semitones: f64) -> Result<Applied, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !semitones.is_finite() {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        let previous = std::mem::replace(&mut self.transpose, semitones);
+        let manager = Some(self.zone.manager());
+        self.project(runtime, self.controls, manager, Control::Pitch(0.0))
+            .inspect_err(|_| self.transpose = previous)
+            .map_err(Into::into)
+    }
+
     fn admit(
         &mut self,
         runtime: &mut Runtime,
@@ -325,7 +346,8 @@ impl Mpe {
         } else {
             self.controls[usize::from(channel)]
         };
-        let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        expression.pitch_semitones += self.transpose;
         let note = runtime.trigger_in(
             self.performance,
             input,
@@ -387,7 +409,8 @@ impl Mpe {
                 } else {
                     binding.member
                 };
-                let combined = member.expression(manager_controls);
+                let mut combined = member.expression(manager_controls);
+                combined.pitch_semitones += self.transpose;
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {

@@ -1004,7 +1004,7 @@ fn mpe_filter_destinations_follow_captured_notes_across_member_channel_reuse() {
 }
 
 #[test]
-fn host_owned_notes_follow_zone_bends_and_pedals() {
+fn host_owned_notes_follow_zone_bends_transposition_and_pedals() {
     let mut rt = runtime_with_channels(16);
     let mut mpe = Mpe::new(&rt, 7, 3, Zone::Lower, 15, 4).unwrap();
     let input = sampler_core::Input {
@@ -1020,6 +1020,10 @@ fn host_owned_notes_follow_zone_bends_and_pedals() {
     start(&mut mpe, &mut rt, 0, 60);
     apply(&mut mpe, &mut rt, bend(0, 16383)).unwrap();
     assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0));
+    mpe.transpose(&mut rt, -12.0).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, pitch(16383, 2.0) - 12.0);
+    apply(&mut mpe, &mut rt, bend(0, 8192)).unwrap();
+    assert_eq!(expression(&rt, note).pitch_semitones, -12.0, "bends keep the offset");
     assert_eq!(
         apply(&mut mpe, &mut rt, packet(0xb0, 0, 64, 127)).unwrap(),
         Applied::Pedal
