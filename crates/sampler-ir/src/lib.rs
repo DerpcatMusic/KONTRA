@@ -684,9 +684,19 @@ pub struct Behavior {
     pub name: String,
     pub language: Language,
     pub source: String,
+    /// The source's script slot, when it numbers them (Kontakt's 0..=4).
+    pub slot: Option<u8>,
     /// Persisted values restored before the first callback, keyed by variable.
-    pub state: Vec<(String, i64)>,
+    pub state: Vec<(String, Saved)>,
     pub requires: Vec<Capability>,
+}
+
+/// A persisted script variable's saved value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Saved {
+    Int(i64),
+    Real(f64),
+    Text(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

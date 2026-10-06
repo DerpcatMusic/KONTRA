@@ -2,7 +2,8 @@
 //! the samples it needs, compile its scripts and lower it. What could not be
 //! carried over is returned with the plan, never dropped silently.
 
-use crate::{Kontakt, LoadError, read};
+use crate::{Kontakt, LoadError, Resources, read};
+use sampler_ksp::model::Value;
 use sampler_core::{Pcm, Prepared, lower::LowerError};
 use sampler_ir as ir;
 use std::{ops::RangeInclusive, path::Path};
@@ -15,6 +16,9 @@ pub struct Options {
     pub keys: RangeInclusive<u8>,
     /// Compile and bind the instrument's KSP; when off, scripts are reported.
     pub scripts: bool,
+    /// The instrument's file, whose library holds its script pictures;
+    /// [`load`] fills it in when unset.
+    pub library: Option<std::path::PathBuf>,
 }
 
 impl Default for Options {
@@ -23,6 +27,7 @@ impl Default for Options {
             rate: 48000,
             keys: 0..=127,
             scripts: true,
+            library: None,
         }
     }
 }
@@ -47,7 +52,7 @@ pub struct Loaded {
     pub instrument: ir::Instrument,
     pub plan: Prepared,
     /// The bound scripts' interfaces, in script order. Image assets carry
-    /// default metadata: the caller, which knows the library, reads theirs.
+    /// the library's picture layouts when [`Options::library`] is known.
     pub interfaces: Vec<sampler_ui_ir::Interface>,
 }
 
@@ -64,7 +69,11 @@ pub fn load_cancelable(
     progress: impl FnMut(Progress),
     canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
-    load_read(read(path)?, options, progress, canceled)
+    let options = Options {
+        library: options.library.clone().or_else(|| Some(path.into())),
+        ..options.clone()
+    };
+    load_read(read(path)?, &options, progress, canceled)
 }
 
 /// [`load_cancelable`] for an instrument already [`read`], so a caller can
@@ -157,7 +166,8 @@ pub fn finish(
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
         .collect();
-    prepare(instrument, options.rate, pcm, options.scripts)
+    let resources = options.library.as_deref().map(Resources::of);
+    prepare_with(instrument, options.rate, pcm, options.scripts, resources)
 }
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
@@ -258,13 +268,25 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
 }
 
 /// Lower a translated instrument whose asset audio is `pcm`, binding its
-/// scripts when `scripts` is set and every one of them compiles. Scripts
-/// interact through shared state, so a partial set is never bound.
+/// scripts when `scripts` is set. Each script that compiles is bound and
+/// hands back its interface; one that fails is reported and left out.
 pub fn prepare(
+    instrument: ir::Instrument,
+    rate: u32,
+    pcm: Vec<Pcm>,
+    scripts: bool,
+) -> Result<Loaded, LoadError> {
+    prepare_with(instrument, rate, pcm, scripts, None)
+}
+
+/// [`prepare`], reading the interfaces' pictures (frames, frame size) from
+/// `resources`; without them image assets keep default metadata.
+pub fn prepare_with(
     mut instrument: ir::Instrument,
     rate: u32,
     pcm: Vec<Pcm>,
     scripts: bool,
+    resources: Option<Resources>,
 ) -> Result<Loaded, LoadError> {
     let limits = sampler_ksp::Limits {
         source_bytes: 4 << 20,
@@ -273,15 +295,24 @@ pub fn prepare(
         array_cells: 1 << 22,
     };
     let mut compiled = Vec::new();
-    let mut failed = Vec::new();
-    let mut notes = Vec::new();
+    let mut names = Vec::new();
     let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
-    for (slot, behavior) in instrument.behaviors.iter().enumerate() {
-        // ponytail: script order stands in for the Kontakt slot; bypassed or
-        // empty slots before a script shift it.
+    for (index, behavior) in instrument.behaviors.iter().enumerate() {
         let environment = sampler_ksp::Environment {
             groups: groups.clone(),
-            slot: slot.min(u8::MAX.into()) as u8,
+            slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
+            persisted: behavior
+                .state
+                .iter()
+                .map(|(name, saved)| {
+                    let value = match saved {
+                        ir::Saved::Int(n) => Value::Int(*n as i32),
+                        ir::Saved::Real(r) => Value::Real(*r),
+                        ir::Saved::Text(t) => Value::Text(t.clone()),
+                    };
+                    (name.clone(), value)
+                })
+                .collect(),
             ..Default::default()
         };
         let result = match behavior.language {
@@ -294,7 +325,7 @@ pub fn prepare(
         };
         match result {
             Ok(script) => {
-                notes.extend(script.warnings().iter().map(|w| ir::Unsupported {
+                instrument.unsupported.extend(script.warnings().iter().map(|w| ir::Unsupported {
                     location: format!("{} line {}", behavior.name, w.line),
                     feature: match w.builtin {
                         Some(builtin) => format!("script {:?}: {builtin}", w.kind),
@@ -303,9 +334,10 @@ pub fn prepare(
                     value: w.message.clone(),
                     reason: ir::Reason::NotModeled,
                 }));
+                names.push(behavior.name.clone());
                 compiled.push(script);
             }
-            Err(error) => failed.push(ir::Unsupported {
+            Err(error) => instrument.unsupported.push(ir::Unsupported {
                 location: behavior.name.clone(),
                 feature: "script".into(),
                 value: error,
@@ -313,35 +345,31 @@ pub fn prepare(
             }),
         }
     }
-    instrument.unsupported.append(&mut notes);
+    let resources = resources.map(std::cell::RefCell::new);
+    let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
-    if failed.is_empty() {
-        for (script, behavior) in compiled.iter().zip(&instrument.behaviors) {
-            match script.ui(&|_| None) {
-                Ok(ui) => interfaces.push(ui),
-                Err(e) => instrument.unsupported.push(ir::Unsupported {
-                    location: behavior.name.clone(),
-                    feature: "script interface".into(),
-                    value: format!("{e:?}"),
-                    reason: ir::Reason::InvalidValue,
-                }),
-            }
+    for (script, name) in compiled.iter().zip(&names) {
+        match script.ui(&picture) {
+            Ok(ui) => interfaces.push(ui),
+            Err(e) => instrument.unsupported.push(ir::Unsupported {
+                location: name.clone(),
+                feature: "script interface".into(),
+                value: format!("{e:?}"),
+                reason: ir::Reason::InvalidValue,
+            }),
         }
     }
-    let lowered = if failed.is_empty() {
-        sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| {
-            sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
-                module: "KSP".into(),
-                message: e.to_string(),
-            })
+    // ponytail: lowering hands the closure every behavior but binding uses
+    // only the compiled ones; failed scripts simply have no module.
+    let lowered = sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| {
+        if compiled.is_empty() {
+            return Ok(plan);
+        }
+        sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
+            module: "KSP".into(),
+            message: e.to_string(),
         })
-    } else {
-        instrument.unsupported.append(&mut failed);
-        let behaviors = std::mem::take(&mut instrument.behaviors);
-        let lowered = sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| Ok(plan));
-        instrument.behaviors = behaviors;
-        lowered
-    };
+    });
     Ok(Loaded {
         plan: lowered.map_err(LoadError::Lower)?,
         instrument,
