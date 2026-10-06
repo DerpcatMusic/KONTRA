@@ -363,6 +363,7 @@ pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
+    pub(super) impulses: Vec<std::sync::Arc<super::dsp::Impulse>>,
     pub(super) voice_chains: Box<[super::dsp::PreparedVoiceChain]>,
     pub(super) filters: Box<[super::dsp::svf::PreparedFilter]>,
     pub(super) dsp_bindings: Box<[super::ControlRange]>,
@@ -515,6 +516,7 @@ impl Prepared {
             rate,
             pcm: pcm.into_boxed_slice(),
             buses: super::bus::PreparedBuses::default(),
+            impulses: Vec::new(),
             voice_chains: Box::new([]),
             dsp_bindings: Box::new([]),
             filters: Box::new([]),
@@ -1130,6 +1132,13 @@ impl Prepared {
 }
 
 impl Prepared {
+    /// The impulse responses [`super::Processor::Convolution`] indexes; set
+    /// before [`Prepared::with_buses`].
+    pub fn with_impulses(mut self, impulses: Vec<super::Impulse>) -> Self {
+        self.impulses = impulses.into_iter().map(std::sync::Arc::new).collect();
+        self
+    }
+
     /// Bind each region to a bus, or directly to stereo output (`None`).
     /// Graph construction, cycle validation and coefficient compilation run off audio.
     pub fn with_buses(
@@ -1142,7 +1151,7 @@ impl Prepared {
         {
             return Err(Error::InvalidInput);
         }
-        self.buses = super::bus::PreparedBuses::new(self.rate, buses)?;
+        self.buses = super::bus::PreparedBuses::new(self.rate, buses, &self.impulses)?;
         self.validate_dsp_controls()?;
         for (region, bus) in self.regions.iter_mut().zip(bindings) {
             region.bus = bus;
