@@ -45,8 +45,8 @@ pub use behavior::{
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback};
 mod envelope;
-pub use envelope::Envelope;
 use envelope::EnvelopeState;
+pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
 mod ownership;

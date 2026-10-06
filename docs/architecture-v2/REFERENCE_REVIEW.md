@@ -139,3 +139,25 @@ was reviewed; no implementation was copied. The v1 authored unrolled fixture at
 forward/reverse integer traversals, fractional reflection and high-rate multi-turn
 reads in `tests/source.rs` and `tests/resample.rs`. These test native declared
 semantics, not Shortcircuit/Kontakt/Falcon parity. Crossfade partner phase remains open.
+
+## Envelope follow-up
+
+Reviewed pinned sfizz `ADSREnvelope.cpp:122–180` and `tests/ADSREnvelopeT.cpp:32–112`
+([implementation](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/src/sfizz/ADSREnvelope.cpp#L122),
+[tests](https://github.com/sfztools/sfizz/blob/f5c6e29f23b8057867c08e88f5f6ac6738baa30b/tests/ADSREnvelopeT.cpp#L32)).
+Its BSD-2-Clause license was inspected; no implementation was copied or external
+suite executed. Its attack publishes an advanced value; the native KONTRA contract
+publishes the initial zero and reaches endpoints at the exclusive duration. Its
+release uses an exponential threshold: native completion instead uses an exact
+frame duration. Preserve these differences rather than treating all ADSRs alike.
+Reference delay and release-in-attack cases inform the new native analytic tests.
+This DSP inspection does not resume SFZ frontend work, which remains deferred.
+
+Also inspected v1 `src/engine/ahdsr.rs:27–158` and UVI reference checkout
+`src/uvi/modulation.rs:339–455`. Kontakt's older implementation uses a 32-frame
+control clock, rounded f32 coefficients and a nonlinear source-parameter mapping;
+UVI's DAHDSR uses a different curve map and carries fractional stage-clock overflow.
+These observations are migration requirements, not new vendor measurements. Native
+stage curves/delay/AHD are now executable, but vendor clock/parameter interpretation
+and exact fixture migration remain open. Do not call the native curve unit either
+vendor's curve unit or silently substitute audio-rate timing for an authored profile.

@@ -112,7 +112,7 @@ p99 4.280 / 5.330 / 38.020 us, maxima 8.300 / 22.740 / 54.031 us, zero deadline
 misses for the same three workloads. These are uncontrolled local measurements,
 not a worst-case execution-time proof.
 
-Still open: envelope curves, tempo-relative durations, live envelope modulation,
+Still open: vendor curve/clock profiles, tempo-relative durations, live envelope modulation,
 repedaling, automatic stealing/reserves, release-trigger mapping, and audio-host
 integration. The native linear envelope is not a compatibility interpretation
 of Kontakt/HISE/Falcon or other engines.
@@ -133,3 +133,48 @@ or their complete velocity modulation behavior.
 
 Velocity-response validation: all 195 native debug tests and strict all-target
 Clippy pass (`artifacts/velocity-response-{debug,clippy}.log`).
+
+## Curved DAHDSR and one-shot AHD
+
+`Envelope::with_delay` adds an output-frame delay; sample playback continues under
+that silent stage. `with_curves` independently prepares attack, decay and release
+shapes. `EnvelopeCurve::exponential(k)` uses the native normalized shape
+`expm1(k*t)/expm1(k)`, with `k=0` exactly linear and finite `k` in [-32,32]. Positive
+values start slowly, negative values start quickly. These units are deliberately
+not a Kontakt/Falcon parameter interpretation.
+
+Curve coefficients are prepared off audio. Rendering advances an f64 difference
+recurrence, anchored to its absolute stage age every 64 samples rather than host
+blocks. The near-zero formula uses the continuous limit of `expm1(x)/x`, including
+subnormal curvature inputs. There is no per-sample power operation and no heap work.
+Stage endpoints are explicit; no approximate asymptote decides completion. Linear
+stages retain their original arithmetic. Constant sustain and unity paths remain.
+
+`Envelope::one_shot` runs AHD to zero independently of key-up and retires its source
+at the exclusive decay endpoint. It can also have a delay and stage curves. A
+physical key still retains its logical identity after AHD completion. Panic, explicit
+stops and family chokes retain authority; a choke captures the next curved sample
+and uses the existing linear fade, never extending a finite AHD or release tail.
+Envelope gating and source-loop exit policy remain distinct.
+
+The analytic fixture checks all stage/release boundaries, independent curvature
+signs/extremes and near-zero inputs across several regular/irregular block sizes,
+including empty renders. Additional heap-audited cases cover one-shot early gate
+closure, zero-duration stages, held-key retention, curved-release choking and exact
+retirement. Private clock checks reach u32::MAX boundaries without iterating billions
+of samples. These establish native semantics, not vendor fidelity.
+
+Kontakt's [modulation manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/modulation)
+describes an attack-curve control, AHD-only mode and flexible envelopes. The [UVI
+parameter reference](https://lua.uvi.net/_elements.html) lists independent DAHDSR
+stage curves, delay and trigger modes. The older implementations contain distinct
+control-clock and parameter mappings. Matching those profiles, including retrigger,
+shared scope and control-rate interpolation, remains required; the new native shape
+must not silently replace them under an equivalence claim.
+
+Curved-envelope validation: all 199 native tests pass in debug, release and Rust
+1.92, strict all-target Clippy passes, and both root boundary tests pass. Logs use
+`artifacts/curved-envelopes-{debug,release,msrv,clippy,boundary}.log`. The existing
+resident render workload also completes with its exact PCM assertions; its current
+CSV is `artifacts/curved-envelopes-workload.csv`. That workload checks the retained
+constant/sustain fast paths, not curve cost or comparative vendor performance.

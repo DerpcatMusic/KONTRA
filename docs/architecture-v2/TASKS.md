@@ -211,7 +211,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   Independent unrolled PCM, analytic released interpolation, muted phase and
   heap-checked retirement cover both initial directions and short/high-rate loops.
   Finite pass counts now share traversal/guard/tail boundaries and allow natural-EOF
-  release loops without duration commands. Crossfades, filters/effects and broader
+  release loops without duration commands. Native DAHDSR delay, independent stage
+  curves and one-shot AHD now share source ownership and bounded rendering. Vendor
+  curve/clock profiles remain unverified. Crossfades, filters/effects and broader
   graph services remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
