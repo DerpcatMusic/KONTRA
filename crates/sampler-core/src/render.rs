@@ -479,6 +479,7 @@ impl Runtime {
             filters: super::dsp::svf::FilterContext {
                 bank: &mut plan.dsp.filters,
                 expression: Some((n.expression, expression.value)),
+                reverbs: &mut [],
             },
             at,
         };
