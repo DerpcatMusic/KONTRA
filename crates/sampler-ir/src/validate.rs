@@ -199,6 +199,11 @@ impl Check<'_> {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::StereoMatrix(matrix) => {
+                    for x in matrix.as_flattened() {
+                        self.finite(*x, "stereo matrix")?;
+                    }
+                }
                 Processor::Filter(filter) => {
                     if let crate::Frequency::Hertz(hz) = filter.cutoff {
                         self.within(hz, f64::MIN_POSITIVE..=f64::MAX, "cutoff")?;

@@ -47,7 +47,11 @@ fn main() {
             .filter(|u| u.feature == "effect")
         {
             any = true;
-            let module = u.value.rsplit_once(" v").map_or(&*u.value, |(m, _)| m);
+            let module = u.value.split_once(" v0x").map_or(&*u.value, |(m, _)| m);
+            if std::env::var_os("FX_VALUES").is_some() {
+                let rest = u.value.split_once(" v0x").map_or("", |(_, v)| v);
+                println!("VALUE {module}\t{rest}");
+            }
             let rack = if u.location.starts_with("group") {
                 "group insert"
             } else if u.location.starts_with("bus") {
