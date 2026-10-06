@@ -84,7 +84,7 @@ fn authored_program_translates_loads_and_renders() {
     );
     assert_eq!(
         (ir.groups.len(), ir.zones.len(), ir.assets.len()),
-        (1, 1, 1)
+        (2, 1, 1), // the script may pick one of the keygroup's two oscillators
     );
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
