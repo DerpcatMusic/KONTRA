@@ -34,8 +34,9 @@ This pipeline is stereo, serial and voice-local. The separate [bus DAG](BUS_DSP.
 now processes summed signals using the same processor kernels and distinct histories. It has no additional buffered
 algorithmic latency; filter phase response is not a constant-delay compensation
 claim. Family scopes, arbitrary channel-layout conversion, oversampling,
-nonlinear processors, time-varying filter controls and broader destination
-modulation/smoothing remain required graph work. The model does not move filters across the
+nonlinear processors and broader destination
+modulation/smoothing remain required graph work. Shared-control state-variable filters
+now support sample-clock cutoff/Q automation as described below. The model does not move filters across the
 envelope or sum independent voice histories to save work.
 
 ## Numerical and tail policy
@@ -124,7 +125,7 @@ replaced, no production UI was switched and no broader conformance gate was clos
 
 ## Shared controls driving gain
 
-`Processor::ControlGain(GainControl)` binds a stable `ControlId` to linear
+`Processor::ControlGain(ControlRange)` binds a stable `ControlId` to linear
 amplitude endpoints and an explicit ramp length in output sample frames. A control's
 declared integer/real range maps to the endpoints; toggles map false/true, and a
 constant domain maps to the low endpoint. Raw typed values remain intact. Integer
@@ -238,3 +239,67 @@ diffusion and Kontakt/Falcon delay parameter/sonic profiles remain open. This ex
 integer-delay kernel is not a complete vendor delay model or an interpolation-quality
 claim. Full native MSRV and strict all-target Clippy checks pass; logs use
 `artifacts/delay-*`.
+
+
+## Sample-clock state-variable filters
+
+`Processor::StateVariable(StateVariableFilter)` supplies native low/high-pass,
+unity-peak band-pass, notch and all-pass responses. It uses trapezoidal integration
+with two f64 integrator histories per channel, following the public-domain
+[Cytomic SVF derivation](https://cytomic.com/files/dsp/SvfLinearTrapOptimised2.pdf).
+These histories occupy the existing processor state cells and inherit voice/bus
+reset, tail and fault containment. Static biquads retain their separate algorithm.
+This is not a proprietary filter model.
+
+`cutoff_hz` and `q` each accept `Parameter::Constant` or `Parameter::Control`.
+The existing gain-only `GainControl` API was replaced directly by `ControlRange`;
+gain and filter destinations now share the same prepared bindings, control owner,
+sorted fan-out index and absolute-time ramps. No alias or second control bank was
+added. Cutoff ramps linearly in hertz and resonance in Q, with independent authored
+sample lengths. Coefficients are recalculated from these parameters, never linearly
+interpolated as biquad coefficients. Adapters still own source frequency curves,
+resonance conventions and smoothing rules.
+
+Preparation validates the complete endpoint ranges: cutoff strictly between zero
+and Nyquist, positive Q, finite mappings and positive finite representable filter
+coefficients at every endpoint pair. Unknown control IDs and schema replacement
+that removes a referenced ID fail before runtime publication. Controls remain
+available without a UI and receive direct, queued, scheduled and script edits
+through their existing services.
+
+Each authored filter has one lazy 64-sample coefficient window in its retained
+generation, shared by voices referencing that chain. The render scheduler segments
+these plans into at most 64 samples and resets cache validity at every event boundary.
+Coefficients are calculated once per needed filter/sample; unchanged parameters reuse
+the last coefficient tuple. Inactive chains perform no coefficient calculations.
+Audio history is never shared between voices. The window does not introduce latency
+or reduce automation to block rate. Buses use the same kernel with separate caches
+and summed-signal histories. Replacement generations own independent trajectories,
+coefficient windows and audio histories.
+
+Evidence includes an independent implicit-integrator solver for all five responses,
+cutoff ramp reversal, simultaneous Q/cutoff events, two overlapping voices, voice/bus
+scope, blocks 1/7/64/129, old-generation scheduled edits, static edge frequencies at
+44.1/48/96 kHz, invalid ranges and missing control IDs. A separate impulse-response
+check verifies analytic DC/cutoff/Nyquist targets. Audio paths remain heap guarded.
+Full per-note modulation graphs, LFO/envelope destination routing and Kontakt/Falcon
+parameter/audio equivalence remain open.
+
+`render_workloads --svf COUNT` and `--bus-svf COUNT` exercise moving cutoff through
+1–16 filters. Each callback retargets a 256-frame ramp; control submission, warmup,
+output validation and sorting are outside the timed renderer. Every block is checked
+against a settled constant-input oracle. This isolates renderer cost under parameter
+movement; it is not a transient/sonic or competitor benchmark. Raw local observations
+are `artifacts/svf-{voice,bus,biquad-baseline,voice-inline}.csv`; native checks use
+`artifacts/svf-*`.
+
+
+The first local four-filter voice run measured 4,417.911 us median at 1,024 voices,
+48 kHz and 64 frames. Inlining the measured per-sample kernel reduced the follow-up
+median to 2,647.838 us (p99 3,395.853 us), still over the 1,333.333 us deadline. The
+same-run four-static-biquad baseline also missed that deadline (1,936.326 us median).
+Four automated bus filters measured 50.661 us median / 62.221 us p99 for the same
+voice count and block size. These are unpinned local observations with uncontrolled
+scheduling/frequency, not a demonstrated worst case or an interchangeable routing
+optimization. Production per-voice throughput and competitor performance gates remain
+open; no quality reduction or movement of authored voice filters to buses is implied.

@@ -173,7 +173,7 @@ fn voice_and_bus_gains_share_control_values_without_sharing_scope_or_clock() {
     const LEVEL: ControlId = ControlId(7);
     for block in [1, 7, 129] {
         let gain = || {
-            Processor::ControlGain(GainControl {
+            Processor::ControlGain(ControlRange {
                 control: LEVEL,
                 low: 0.,
                 high: 1.,
@@ -302,7 +302,7 @@ fn invalid_bus_graphs_and_controls_fail_before_publication() {
             tail_frames: 0,
         }],
         vec![Bus {
-            processors: vec![Processor::ControlGain(GainControl {
+            processors: vec![Processor::ControlGain(ControlRange {
                 control: ControlId(1),
                 low: 0.,
                 high: 1.,

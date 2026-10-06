@@ -56,7 +56,10 @@ pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusSend};
 mod dsp;
-pub use dsp::{Biquad, Delay, FilterKind, GainControl, Processor, VoiceChain};
+pub use dsp::{
+    Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
+    VoiceChain,
+};
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};

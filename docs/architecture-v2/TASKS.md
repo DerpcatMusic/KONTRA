@@ -270,8 +270,10 @@ source semantics and checksum/authentication validation are still required.
   histories, sends, sample-clock control ramps and generation-owned tails independent
   of host note retirement. Causal stereo matrix-feedback delays now share the voice/bus
   kernel, prepared storage and tail owners, with constant-work history invalidation.
-  Fractional/modulated delays and vendor effect profiles remain open. Reflected/other crossfade profiles, nonlinear effects,
-  automated filters and remaining routing/scopes remain open.
+  Fractional/modulated delays and vendor effect profiles remain open. Shared-control
+  trapezoidal state-variable filters now automate cutoff/Q at sample rate, sharing
+  coefficient windows while retaining independent voice/bus histories. Reflected/other
+  crossfade profiles, nonlinear effects and remaining modulation routing/scopes remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,
