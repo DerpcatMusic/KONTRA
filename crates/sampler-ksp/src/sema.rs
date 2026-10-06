@@ -478,6 +478,7 @@ impl<'a> Sema<'a, '_> {
             || builtins::constant(name).is_some()
             || builtins::control_par(name).is_some()
             || builtins::real_constant(name).is_some()
+            || vendor_name(name)
         {
             return Ok(None);
         }
@@ -522,16 +523,7 @@ impl<'a> Sema<'a, '_> {
             || SysArray::from_name(text).is_some()
             || builtins::constant(text).is_some()
             || builtins::control_par(text).is_some()
-            || [
-                "NI_",
-                "CONTROL_PAR_",
-                "EVENT_PAR_",
-                "ENGINE_PAR_",
-                "ZONE_PAR_",
-                "LOOP_PAR_",
-            ]
-            .iter()
-            .any(|p| text[1..].starts_with(p))
+            || vendor_name(text)
         {
             return fault(span, "invalid or reserved variable name");
         }
@@ -1303,4 +1295,19 @@ pub fn fold(hir: &Hir, e: &Expr) -> Option<Const> {
         }
         _ => return None,
     })
+}
+
+/// Kontakt's reserved constant families, including members this frontend
+/// does not know (`$CONTROL_PAR_NKS_TYPE`): never variables or controls.
+fn vendor_name(name: &str) -> bool {
+    [
+        "NI_",
+        "CONTROL_PAR_",
+        "EVENT_PAR_",
+        "ENGINE_PAR_",
+        "ZONE_PAR_",
+        "LOOP_PAR_",
+    ]
+    .iter()
+    .any(|p| name.get(1..).is_some_and(|n| n.starts_with(p)))
 }

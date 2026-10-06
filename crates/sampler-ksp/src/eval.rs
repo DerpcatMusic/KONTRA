@@ -169,6 +169,32 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
         e.block(&init.body)?;
     }
+    // On load Kontakt restores saved persistent values, then runs
+    // `on persistence_changed`, before the interface is shown.
+    for (i, var) in hir.vars.iter().enumerate() {
+        if var.persistence != Persistence::None
+            && var.len.is_none()
+            && let Some(saved) = env.persisted.get(&*var.name)
+        {
+            let v = match saved.clone() {
+                Value::Int(n) => V::I(n),
+                Value::Real(r) => V::R(r),
+                Value::Text(s) => V::S(s),
+            };
+            e.write_var(VarId(i as u32), v);
+        }
+    }
+    if let Some(cb) = hir
+        .callbacks
+        .iter()
+        .find(|c| c.kind == CallbackKind::PersistenceChanged)
+        && let Err(f) = e.block(&cb.body)
+    {
+        e.warn(
+            f.span,
+            format!("on persistence_changed at load: {}", f.message),
+        );
+    }
     Ok(e.st)
 }
 
