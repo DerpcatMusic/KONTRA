@@ -4,7 +4,7 @@ mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 pub use predicates::ControllerCondition;
 use predicates::Matching;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard};
 
 /// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
@@ -25,16 +25,21 @@ struct PcmData {
     // Pre-decimated octave levels (level 1 first), built by `Pcm::mipmapped`
     // or `service_mipmaps`. Audio only try-locks: a busy lock reads as none.
     levels: Levels,
-    // Deepest octave voices asked for, and the clock of the last request.
+    // Deepest octave voices asked for, and the runtime clock of the last
+    // render that read this asset.
     wanted: AtomicU8,
     used: AtomicU64,
+    // A streamed asset's resident first frames, whole pages; empty when purged.
+    head: Mutex<Box<[Frame]>>,
+    // A start was refused because the head was missing.
+    cold: AtomicBool,
     length: usize,
 }
 type LevelData = Box<[Box<[Frame]>]>;
 type Levels = Mutex<LevelData>;
 /// Control-side lock that survives an audio-thread panic.
-fn lock(levels: &Levels) -> MutexGuard<'_, LevelData> {
-    levels.lock().unwrap_or_else(|e| e.into_inner())
+fn lock<T>(data: &Mutex<T>) -> MutexGuard<'_, T> {
+    data.lock().unwrap_or_else(|e| e.into_inner())
 }
 impl Pcm {
     /// Validate once without copying the owned frame buffer. All public access is
@@ -67,6 +72,49 @@ impl Pcm {
         }
         Self::create(rate, frames, None)
     }
+    /// `streamed` with its first frames resident, so starts need no page.
+    pub fn headed(rate: u32, frames: usize, head: Box<[Frame]>) -> Result<Self, Error> {
+        let pcm = Self::streamed(rate, frames)?;
+        pcm.set_head(head)?;
+        Ok(pcm)
+    }
+    /// Control side: replace a streamed asset's head (frames from 0, whole
+    /// pages unless it is the whole asset); empty purges it. Returns the old
+    /// head to drop here, off audio. A start that finds no head fails
+    /// `NotReady` and marks the asset cold (`take_cold`).
+    pub fn set_head(&self, head: Box<[Frame]>) -> Result<Box<[Frame]>, Error> {
+        let whole = head.len() == self.0.length || head.len().is_multiple_of(crate::PAGE_FRAMES);
+        if self.0.frames.is_some()
+            || head.len() > self.0.length
+            || !whole
+            || head.iter().flatten().any(|x| !x.is_finite())
+        {
+            return Err(Error::InvalidInput);
+        }
+        Ok(std::mem::replace(&mut *lock(&self.0.head), head))
+    }
+    pub fn head_frames(&self) -> usize {
+        lock(&self.0.head).len()
+    }
+    /// Whether a start was refused for a missing head since the last call.
+    pub fn take_cold(&self) -> bool {
+        self.0.cold.swap(false, Relaxed)
+    }
+    /// Runtime clock at the end of the last render that read this asset (0 if
+    /// never).
+    pub fn last_played(&self) -> u64 {
+        self.0.used.load(Relaxed)
+    }
+    /// Audio side: the head unless the control side is swapping it.
+    pub(crate) fn try_head(&self) -> Option<MutexGuard<'_, Box<[Frame]>>> {
+        self.0.head.try_lock().ok()
+    }
+    pub(crate) fn mark_cold(&self) {
+        self.0.cold.store(true, Relaxed);
+    }
+    pub(crate) fn touch(&self, now: u64) {
+        self.0.used.store(now, Relaxed);
+    }
     fn create(rate: u32, length: usize, frames: Option<Box<[Frame]>>) -> Result<Self, Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
@@ -81,6 +129,8 @@ impl Pcm {
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
+            head: Mutex::default(),
+            cold: AtomicBool::new(false),
             length,
         })))
     }
@@ -112,9 +162,10 @@ impl Pcm {
         let levels = lock(&self.0.levels);
         levels.iter().map(|l| l.len()).sum::<usize>() * size_of::<Frame>()
     }
-    /// Bytes of resident frames and octave levels; zero for streamed assets.
+    /// Bytes of resident frames, octave levels and any streamed head.
     pub fn resident_bytes(&self) -> usize {
-        self.0.frames.as_ref().map_or(0, |f| f.len()) * size_of::<Frame>() + self.level_bytes()
+        (self.0.frames.as_ref().map_or(0, |f| f.len()) + self.head_frames()) * size_of::<Frame>()
+            + self.level_bytes()
     }
 }
 
