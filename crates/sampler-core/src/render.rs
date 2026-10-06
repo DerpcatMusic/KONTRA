@@ -9,6 +9,9 @@ pub struct RuntimeStats {
     pub stream_underruns: u64,
     /// Voice starts rejected because every voice was busy and audible.
     pub voice_drops: u64,
+    /// Voices started silent because their first frames were not resident
+    /// (`set_cold_starts`); they fade in when their pages arrive.
+    pub cold_starts: u64,
     /// Output frames silenced because they were not finite.
     pub nonfinite_frames: u64,
     pub voices: usize,
@@ -27,6 +30,7 @@ impl Runtime {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
             voice_drops: self.voice_drops,
+            cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),
             render_nanos_last: self.render_time[0],

@@ -536,6 +536,13 @@ impl crate::Runtime {
     /// or failed pages (inspect page status and explicitly invalidate failures).
     /// A queue/cache error leaves accepted requests intact and reports incomplete
     /// service. Requery after events. Cold onsets require control-side preloading.
+    /// Start sources whose first frames are not resident (say, purged start
+    /// ranges) silent, fading in once their pages arrive, instead of refusing
+    /// them `NotReady`. They still mark the asset cold for reload.
+    pub fn set_cold_starts(&mut self, on: bool) {
+        self.cold_starts = on;
+    }
+
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
         self.now
             .checked_add(u64::from(frames))
@@ -658,14 +665,17 @@ impl crate::Runtime {
         Ok(ready)
     }
 
+    /// Whether a source can start: `Ok(true)` for a cold start (its first
+    /// window is not resident, and `set_cold_starts` allows starting it
+    /// silent until its pages arrive).
     pub(crate) fn check_source_ready(
         &self,
         asset: &Pcm,
         cursor: crate::source::Cursor,
         envelope: crate::Envelope,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         if asset.resident_frames().is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
         let head = asset.try_head();
@@ -681,9 +691,12 @@ impl crate::Runtime {
             })
         });
         if ready {
-            Ok(())
+            return Ok(false);
+        }
+        asset.mark_cold();
+        if self.cold_starts {
+            Ok(true)
         } else {
-            asset.mark_cold();
             Err(Error::NotReady)
         }
     }

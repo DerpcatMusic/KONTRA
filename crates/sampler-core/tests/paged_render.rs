@@ -596,6 +596,38 @@ fn a_resident_head_starts_cold_voices_and_streams_the_rest() {
 }
 
 #[test]
+fn a_cold_start_waits_silently_for_its_page_then_fades_in() {
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 2];
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let (cache, mut worker) = StreamCache::new(4).unwrap();
+    let mut rt =
+        runtime(vec![asset.clone()], vec![region(0, Playback::default())]).with_stream_cache(cache);
+    assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
+    rt.set_cold_starts(true);
+    let mut output = vec![[0.; 2]; 256];
+    support::without_heap(|| {
+        rt.trigger(input(), 60, 1.).unwrap();
+        assert!(!rt.service_streaming(PAGE_FRAMES as u32).unwrap());
+        rt.render(&mut output).unwrap();
+    });
+    assert!(output.iter().all(|f| f == &[0.; 2]));
+    assert!(asset.take_cold());
+    let mut job = worker.next_job().unwrap();
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    support::without_heap(|| {
+        rt.service_streaming(PAGE_FRAMES as u32).unwrap();
+        rt.render(&mut output).unwrap();
+    });
+    // A short fade-in, then the source at full level.
+    assert!(output[0][0] > 0. && output[0][0] < output[255][0] && output[60] == output[255]);
+    assert!(output.windows(2).all(|w| w[0][0] <= w[1][0]));
+    let stats = rt.stats();
+    assert_eq!((stats.cold_starts, stats.stream_underruns), (1, 0));
+}
+
+#[test]
 fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
     let data = vec![[0.5; 2]; PAGE_FRAMES * 3];
     let asset = Pcm::streamed(48000, data.len()).unwrap();
