@@ -129,15 +129,18 @@ frame guarantee only: worker horizons must still cover subsequent reads and late
 pitch/release changes. Scheduled manual sources can lose readiness before start;
 rendering checks actual reads again.
 
-The live failure contract stops reading the unavailable source and increments
-`Runtime::stream_underruns()` once. It renders a linear fade from the last complete
-resampled frame over `ceil(output_rate / 1000)` output frames (one millisecond,
-rounded up), ending at zero. This is an explicit native starvation fallback, not
-reconstructed library audio. Envelope and expression processing continue normally;
-voice DSP receives the fade and then drains its declared zero-input tail across
-callback boundaries. Natural envelope/choke completion can shorten the fallback.
-Late pages never restart a failed source, demand stops for it, and musical time never
-waits or replays delayed samples. Host key pairing remains until real note-off; bus
+The live failure contract increments `Runtime::stream_underruns()` once per miss and
+renders a linear fade from the last complete resampled frame over
+`ceil(output_rate / 1000)` output frames (one millisecond, rounded up), ending at
+zero. This is an explicit native starvation fallback, not reconstructed library audio.
+Envelope and expression processing continue normally; voice DSP receives the fade.
+Natural envelope/choke completion can shorten the fallback. The cursor keeps
+advancing in musical time while the voice waits silently, and it keeps demanding the
+window at its current position. When that window is resident again the source fades
+back in over the same millisecond, in time; delayed samples are never replayed. A
+waiting voice that reaches its source end finishes normally. When the voice pool is
+full, a new start reclaims a started voice that is waiting before it is rejected;
+rejected starts count in `Runtime::stats().voice_drops`. Host key pairing remains until real note-off; bus
 tails retain their separate ownership. A first-read miss after a delayed admission
 has no prior source value and fades zero. Immediate not-ready onsets remain rejected
 before source admission and emit no fallback.

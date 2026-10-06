@@ -50,8 +50,9 @@ to control for destruction. Global panic clears all bus histories and tail budge
 Channel sound-off cannot selectively erase a mixed shared tail without also changing
 other contributors; domain-specific routing/cleanup profiles remain frontend work.
 
-A nonfinite/unrepresentable bus output or poisoned state clears that bus's processor
-history and suppresses the frame, incrementing the existing observable fault counter.
+A nonfinite/unrepresentable bus output or poisoned state in a block (up to 64 frames)
+clears that bus's processor history and suppresses that bus block, incrementing the
+observable fault counter once.
 Other bus histories continue. The final output retains the existing finite-sum guard.
 The native graph rejects feedback: feedback delays, latency compensation, multichannel
 layouts, dynamic routing and family-specific graphs remain required extensions.
