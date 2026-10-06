@@ -91,7 +91,9 @@ impl Runtime {
         if n.key_down() {
             return Err(Error::InvalidInput);
         }
-        if self.release_times[note.0.index].groups_forwarded {
+        if self.release_times[note.0.index].groups_forwarded
+            || self.release_times[note.0.index].held
+        {
             return Ok(false);
         }
         self.plans

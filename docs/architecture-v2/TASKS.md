@@ -155,6 +155,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   allow/disallow and first-yield release-group commits use the same services.
   Stored source IDs now support individual note_off and optional deadline overrides
   through shared, retained key-up scheduling, including plan-owned UI callbacks.
+  Release callbacks can suppress and later forward the same note, preserving physical
+  key-up context, group selection, pedal holds and owned release-layer reservations.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.
 
@@ -304,7 +306,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   now share native ownership/retirement. Generation-scoped source aliases and
   generated-note return IDs now survive scalar/array storage without pinning notes.
   Offsets, full event-targeted commands and
-  ordered multi-slot/controller/release forwarding remain open. Original note
+  ordered multi-slot/controller forwarding remain open. Single-stage suppressed
+  releases now resume through native pedal-aware services. Original note
   forwarding now commits once on the same identity before KSP wait/exit/completion.
   Per-note allow/disallow groups now select attacks, generated children and
   automatic release layers with a once-only release-group commit. Names, purge,

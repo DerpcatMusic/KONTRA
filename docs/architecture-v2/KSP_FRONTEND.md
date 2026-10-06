@@ -525,7 +525,7 @@ can still configure the selection inherited by their generated children. Release
 callbacks edit the same note's draft and commit its automatic release selection at
 first wait, exit or completion. This commit occurs once; a later edit can configure
 another generated child but cannot rewrite an already selected release or the
-snapshot waiting for pedal-up. This is partial release forwarding: event suppression,
+snapshot waiting for pedal-up. Suppression now defers that commit as described below;
 ordered source slots and full Kontakt system-script behavior remain open.
 
 The [NI group commands reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands)
@@ -640,11 +640,43 @@ Same-time ordering remains stable and an exclusive block-end event stays pending
 
 The NI general-command examples distinguish fixed durations and explicit overrides;
 legacy timer/stage code was inspected as a reference, not executed or copied.
-All-event/marked selectors, release-event suppression/forwarding and ordered script
-slots remain unimplemented. Pedal behavior, event lifetime details and exact timing
+All-event/marked selectors and ordered script slots remain unimplemented. Pedal behavior, event lifetime details and exact timing
 still need vendor differential evidence; this is not full `note_off` parity.
 
 Validation: 261 native tests in debug, release and Rust 1.92, strict all-target Clippy,
 and both root boundary tests. Logs: `artifacts/note-off-*`. New fixtures cover exact
 PCM at blocks 1/7/64, callbacks, full-queue replacement, invalid offset/velocity,
 exclusive-end ordering, silent-source ownership, panic and stale IDs after reuse.
+
+
+## Suppressed release forwarding
+
+`ignore_event($EVENT_ID)` now works in `on release`. The original physical key-up
+is recorded once, with its original timestamp and release velocity. The callback
+can suppress downstream release before its first forwarding boundary, wait, alter
+group selection and call `note_off($EVENT_ID)` (or its timed form) to resume it.
+A forwarded release cannot subsequently be ignored. First-yield/exit/completion
+does not silently undo explicit suppression; an unresumed event remains live until
+an explicit release or hard cleanup, including after a resident source finishes.
+
+Native `SuppressRelease`, `suppress_release` and `resume_release` share one retained
+note owner with the ordinary pedal/release path. Suppression postpones automatic
+key-release layers and the effective gate; pedal-up cannot bypass it. Forwarding
+commits the current group draft, starts the key-release layers once, then closes the
+gate when pedals permit. Later group edits cannot rewrite the committed gate-release
+selection. Resuming does not dispatch a second release callback or fabricate a new
+physical key-up. `$NOTE_HELD` already reports false throughout the deferred period.
+
+Timed forwarding uses `Event::ForwardRelease` and the same bounded, pinned deadline
+replacement as key-up. Panic, all-sound-off and callback fault/cancellation discard
+held release work. Explicit forced native closure also returns unused key-release
+reserves before selecting its gate-release phase. No waiting callback or rejected
+terminal can transfer ownership to a reused note slot.
+
+The [NI event-command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+permits release suppression; native tests exercise its delayed-release shape through
+our DSP at blocks 1/7/64, group edits, pedals before/after forwarding, reserved layers,
+full command capacity and faults. Ordered source-slot propagation and Kontakt's
+special hard-cleanup callback rules remain unimplemented/unverified. This still does
+not establish vendor parity. Validation: 266 native tests in debug/release/Rust 1.92,
+strict Clippy and both root boundary tests (`artifacts/release-forward-*`).

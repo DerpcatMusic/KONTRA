@@ -220,3 +220,88 @@ fn release_group_commit_survives_pedal_hold_and_late_callback_edits() {
         assert_eq!(audio, [[-0.25; 2]; 8]);
     });
 }
+
+#[test]
+fn suppressed_release_waits_and_forwards_once_with_groups_and_pedals_at_exact_samples() {
+    use sampler_core::{Event, KeyRelease, Outcome, ReleaseCause, ReleaseReserve};
+    let source = "on note disallow_group($ALL_GROUPS) allow_group(0) end on
+      on release
+        ignore_event($EVENT_ID)
+        wait(125)
+        disallow_group($ALL_GROUPS) allow_group(1)
+        note_off($EVENT_ID,42)
+        wait(125)
+        disallow_group($ALL_GROUPS) allow_group(0)
+        note_off($EVENT_ID)
+      end on";
+    for pedal_up in [5, 22] {
+        for block in [1, 7, 64] {
+            let mut rt = runtime(source);
+            support::without_heap(|| {
+                let channel = rt.register_channel(input(60).channel_address()).unwrap();
+                rt.sustain(channel, true).unwrap();
+                let note = rt.trigger(input(60), 60, 1.).unwrap();
+                rt.schedule_event(2, Event::KeyUp(note, Some(0.25)))
+                    .unwrap();
+                rt.schedule_event(pedal_up, Event::Sustain(channel, false))
+                    .unwrap();
+                let mut audio = [[0.; 2]; 32];
+                for chunk in audio.chunks_mut(block) {
+                    rt.render(chunk).unwrap();
+                }
+                let end = 11usize.max(pedal_up as usize);
+                assert!(audio[..end].iter().all(|f| *f == [0.125; 2]));
+                assert!(audio[end..].iter().all(|f| *f == [-0.25; 2]));
+                let context = rt.release_context(note).unwrap();
+                assert_eq!(
+                    context.key.unwrap(),
+                    KeyRelease {
+                        at: 2,
+                        velocity: Some(0.25),
+                        cause: ReleaseCause::KeyUp
+                    }
+                );
+                assert_eq!(context.gate.unwrap().at, end as u64);
+                assert!(!rt.resume_release(note).unwrap());
+                rt.render(&mut [[0.; 2]; 64]).unwrap();
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    true
+                });
+                rt.flush_ended(|_| true);
+                assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+                assert_eq!(rt.release_reserve(), ReleaseReserve::default());
+            });
+        }
+    }
+    let mut rt = runtime("on release wait(0) ignore_event($EVENT_ID) end on");
+    let note = rt.trigger(input(60), 60, 1.).unwrap();
+    rt.key_up(note, None).unwrap();
+    assert!(rt.release_context(note).unwrap().gate.is_some()); // Forwarded cannot be ignored later.
+}
+
+#[test]
+fn faulted_suppressed_release_cannot_retain_a_gate_or_reserved_layers() {
+    let mut rt = runtime("on release ignore_event($EVENT_ID) wait(-1) end on");
+    support::without_heap(|| {
+        let note = rt.trigger(input(60), 60, 1.).unwrap();
+        rt.key_up(note, None).unwrap();
+        assert_eq!(
+            rt.release_context(note).unwrap().gate.unwrap().cause,
+            sampler_core::ReleaseCause::BehaviorFault
+        );
+        assert_eq!(
+            rt.release_reserve(),
+            sampler_core::ReleaseReserve::default()
+        );
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(
+                outcome,
+                sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput)
+            );
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+    });
+}

@@ -638,14 +638,18 @@ impl<'a> Parser<'a> {
                         Instruction::WriteEventVelocity7 { local: 0 }
                     })?;
                 }
-                Kind::Word("ignore_event") if note => {
+                Kind::Word("ignore_event") if !matches!(kind, CallbackKind::Control) => {
                     self.symbol(b'(')?;
                     self.expect(
                         Kind::Word("$EVENT_ID"),
                         "only suppression of the originating event is supported",
                     )?;
                     self.symbol(b')')?;
-                    self.emit(Instruction::SuppressAttack)?;
+                    self.emit(if note {
+                        Instruction::SuppressAttack
+                    } else {
+                        Instruction::SuppressRelease
+                    })?;
                 }
                 Kind::Word("wait") => {
                     self.symbol(b'(')?;

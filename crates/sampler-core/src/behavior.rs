@@ -41,6 +41,7 @@ pub enum Instruction {
     ForwardAttack,
     ForwardReleaseGroups,
     SuppressAttack,
+    SuppressRelease,
     /// Generate a mapped child with an explicit release policy.
     Play {
         transpose: i8,
@@ -330,6 +331,7 @@ impl Program {
                 Instruction::ForwardAttack
                     | Instruction::ForwardReleaseGroups
                     | Instruction::SuppressAttack
+                    | Instruction::SuppressRelease
                     | Instruction::Play { .. }
                     | Instruction::PlayMidi { .. }
                     | Instruction::ReadEventId { .. }
@@ -619,6 +621,9 @@ impl Runtime {
             Instruction::SuppressAttack => {
                 self.suppress_attack(owner.note()?)?;
             }
+            Instruction::SuppressRelease => {
+                self.suppress_release(owner.note()?)?;
+            }
             Instruction::WriteGroup {
                 group,
                 allowed,
@@ -684,10 +689,13 @@ impl Runtime {
                     .ok_or(Error::ClockOverflow)?;
                 let plan = self.behavior_plan(owner)?;
                 if let Some(note) = self.resolve_source_event(plan, event)?
-                    && self.key_down(note)?
                     && (frames.is_some() || !self.note_events[note.0.index].fixed_duration)
                 {
-                    self.replace_key_up_at(note, at, None)?;
+                    if self.key_down(note)? {
+                        self.replace_key_up_at(note, at, None)?;
+                    } else if self.release_times[note.0.index].held {
+                        self.replace_release_forward_at(note, at)?;
+                    }
                 }
             }
             Instruction::ReadVelocity7 { local } => {

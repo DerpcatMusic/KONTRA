@@ -493,3 +493,20 @@ state, invalid program/cell/context, summed capacity rejection and all u16 cells
 each of two independent namespaces. This establishes state isolation, not ordered
 Kontakt/Falcon script execution. Validation: 263 native tests in debug/release/MSRV,
 strict Clippy and both root boundary tests (`artifacts/polyphonic-instances-*`).
+
+
+## Deferred release ownership
+
+The note's cold release state now separates physical key-up from an explicitly held
+release. `suppress_release` applies before the release-group forwarding boundary;
+`resume_release` commits groups, resolves pending key-release selection once and
+reuses the pedal-aware gate closure. Physical context remains unchanged. Existing
+pedal updates and all-notes-off respect the hold; forced/hard closure clears it and
+returns every pending release reservation. A group forwarding barrier alone cannot
+undo an explicit hold. Faulted callbacks use the existing hard-close path.
+
+`Event::ForwardRelease` targets the full retained note handle. Scheduling validates
+the held gate, owns a work pin and cancels when that hold ends. Both deadline-replacement
+APIs share one capacity/clock/ownership transaction. Replacing, consuming or cancelling
+commands returns pins exactly once. Native callback and source tests cover this path
+without allocation, including automatic key-release and gate-release layers together.
