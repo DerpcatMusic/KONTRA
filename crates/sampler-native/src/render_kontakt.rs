@@ -138,7 +138,7 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
     let count = events.last().map_or(0, |e| e.0) + frame(3.0);
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let mut out = BufWriter::new(
         OpenOptions::new()
             .write(true)

@@ -155,7 +155,8 @@ second scope beside the event-rate note projection above, with its own rate.
 `lower::Options::default()` adds to every zone: note pressure → `+6 dB` gain at
 full pressure, and timbre → the tone low-pass, open from centre (CC74 64) up and
 closing to 60 semitones below open at CC74 0. Per-note pitch bend is the note's
-native expression bend (sampler-midi member-channel bend), so IR pitch-bend →
+native expression bend (sampler-midi member-channel or plain channel bend; the
+authored depth becomes the plain-MIDI bend range), so IR pitch-bend →
 pitch routes are not lowered as modulation. All defaults are identity at rest;
 `Expression::default().timbre` is centre. `Options { mpe: None }` (and
 `sampler_kontakt::Options::mpe`) turns them off.

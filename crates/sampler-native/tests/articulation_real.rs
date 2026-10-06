@@ -53,7 +53,7 @@ fn render(loaded: sampler_kontakt::Loaded, words: &[u32]) -> Vec<[f32; 2]> {
     let mut rt = Runtime::new(plan, limits).unwrap();
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let mut articulator = Articulator::new(&rt, rt.performance(0).unwrap(), 0).unwrap();
     let mut out = vec![[0.0; 2]; 64 * words.len() + 24000];
     for (i, &word) in words.iter().enumerate() {
