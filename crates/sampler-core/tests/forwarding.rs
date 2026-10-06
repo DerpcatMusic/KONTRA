@@ -306,11 +306,107 @@ fn event_edits_commit_once_keep_admission_and_release_identity_and_retry_atomica
 }
 
 #[test]
+fn stored_event_edits_resolve_only_inside_the_callback_generation() {
+    use sampler_core::{Instruction as I, NotePitch, Outcome, Program, WaitLifetime};
+    let make = || {
+        let program = |value| {
+            Program::new(vec![
+                I::SetLocal { local: 0, value: 1 },
+                I::SetLocal { local: 1, value },
+                I::WriteEventKey {
+                    event: Some(0),
+                    local: 1,
+                },
+                I::WriteEventVelocity7 {
+                    event: Some(0),
+                    local: 1,
+                },
+            ])
+            .unwrap()
+            .with_wait_lifetime(WaitLifetime::Callback)
+        };
+        Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![program(61), program(128)], None)
+            .unwrap()
+    };
+    let (mut rt, mut worker) = Runtime::with_plan_updates(
+        make(),
+        Limits {
+            behaviors: 2,
+            behavior_cells: 4,
+            behavior_fuel: 8,
+            ..limits()
+        },
+        2,
+        1,
+    )
+    .unwrap();
+    let old = rt.active_plan();
+    let first = rt.note_on(input(1), 60, 1.).unwrap();
+    assert_eq!(rt.source_event_id(first), Ok(1));
+    worker.submit(Box::new(make())).unwrap();
+    support::without_heap(|| {
+        rt.poll_plan_update().unwrap();
+        let second = rt.note_on(input(2), 60, 1.).unwrap();
+        assert_eq!(rt.source_event_id(second), Ok(2));
+        let callback = rt.start_plan_behavior(rt.active_plan(), 0).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.note_event(first).unwrap().pitch, NotePitch::Key(60));
+        assert_eq!(rt.note_event(second).unwrap().pitch, NotePitch::Key(60));
+        rt.flush_behaviors(|_, _, _| true);
+        let callback = rt.start_plan_behavior(old, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+        let changed = rt.note_event(first).unwrap();
+        assert_eq!(changed.pitch, NotePitch::Key(61));
+        assert_eq!(changed.velocity, 61. / 127.);
+        assert_eq!(rt.note_event(second).unwrap().pitch, NotePitch::Key(60));
+        let callback = rt.start_plan_behavior(old, 1).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(callback),
+            Ok(Some(Outcome::Fault(Error::InvalidInput)))
+        );
+        assert_eq!(rt.note_event(first), Ok(changed));
+        rt.flush_behaviors(|_, _, _| true);
+        rt.note_off(input(1), None).unwrap();
+        rt.note_off(input(2), None).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.collect_retired_plans(), 1);
+    });
+    assert!(worker.retired().is_some());
+    for op in [
+        I::WriteEventKey {
+            event: Some(7),
+            local: 0,
+        },
+        I::WriteEventVelocity7 {
+            event: Some(7),
+            local: 0,
+        },
+    ] {
+        let program = Program::new(vec![I::End, op]).unwrap();
+        assert!(!program.requires_note());
+        let prepared = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![program], None)
+            .unwrap();
+        assert_eq!(prepared.behavior_local_count(), 8);
+    }
+}
+
+#[test]
 fn event_edit_instructions_derive_register_and_note_requirements_even_when_unreachable() {
     use sampler_core::{Instruction, Program, WaitLifetime};
     for op in [
-        Instruction::WriteEventKey { local: 7 },
-        Instruction::WriteEventVelocity7 { local: 7 },
+        Instruction::WriteEventKey {
+            event: None,
+            local: 7,
+        },
+        Instruction::WriteEventVelocity7 {
+            event: None,
+            local: 7,
+        },
     ] {
         let program = Program::new(vec![Instruction::End, op])
             .unwrap()

@@ -226,7 +226,7 @@ fn evaluated_invalid_arguments_fault_without_partial_notes_or_timers() {
         "on release change_note($EVENT_ID, 61) end on",
         "on release change_velo($EVENT_ID, 64) end on",
         "on note change_note($ALL_EVENTS, 61) end on",
-        "on note change_velo(1, 64) end on",
+        "on note change_velo($missing, 64) end on",
     ] {
         assert!(
             sampler_ksp::compile(

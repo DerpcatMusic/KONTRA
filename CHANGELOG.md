@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Support stored individual event IDs in KSP pitch/velocity edits through shared
+  native event projections, preserving running audio, physical key pairing and
+  generation isolation when old IDs outlive their note slots.
+
 - Generate notes directly from routed controller callbacks through shared ownership,
   retaining original plans and source addresses across waits. Scoped hard silence
   cancels pending controller generation without affecting unrelated domains.

@@ -638,17 +638,24 @@ impl<'a> Parser<'a> {
                 Kind::Word("call") => self.call_function(kind)?,
                 Kind::Word(command @ ("change_note" | "change_velo")) if note => {
                     self.symbol(b'(')?;
-                    self.expect(
-                        Kind::Word("$EVENT_ID"),
-                        "only edits of the originating event are supported",
-                    )?;
-                    self.symbol(b',')?;
+                    let begin = self.code.len();
                     self.scalar(0)?;
+                    let event =
+                        if matches!(self.code[begin..], [Instruction::ReadEventId { local: 0 }]) {
+                            self.code.pop();
+                            self.emitted -= 1;
+                            None
+                        } else {
+                            Some(0)
+                        };
+                    self.symbol(b',')?;
+                    let local = u16::from(event.is_some());
+                    self.scalar(local)?;
                     self.symbol(b')')?;
                     self.emit(if command == "change_note" {
-                        Instruction::WriteEventKey { local: 0 }
+                        Instruction::WriteEventKey { event, local }
                     } else {
-                        Instruction::WriteEventVelocity7 { local: 0 }
+                        Instruction::WriteEventVelocity7 { event, local }
                     })?;
                 }
                 Kind::Word("ignore_controller") if matches!(kind, CallbackKind::Controller) => {

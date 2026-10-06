@@ -112,11 +112,15 @@ pub enum Instruction {
         local: u16,
     },
     /// Replace script-visible pitch with a tuning-table key in 0..127.
+    /// None targets the callback note; Some reads a plan-scoped source ID.
+    /// Unknown/retired IDs are no-ops; running audio keeps its committed properties.
     WriteEventKey {
+        event: Option<u16>,
         local: u16,
     },
     /// Replace script-visible velocity with a MIDI 1 value in 1..127.
     WriteEventVelocity7 {
+        event: Option<u16>,
         local: u16,
     },
     /// Convert nonnegative microseconds to sample frames, rounding upward.
@@ -316,8 +320,8 @@ impl Program {
             | Instruction::ControllerFromMidi7 { local }
             | Instruction::ReadEventId { local }
             | Instruction::ReadVelocity7 { local }
-            | Instruction::WriteEventKey { local }
-            | Instruction::WriteEventVelocity7 { local }
+            | Instruction::WriteEventKey { local, .. }
+            | Instruction::WriteEventVelocity7 { local, .. }
             | Instruction::MicrosToFrames { local }
             | Instruction::WaitLocal { local }
             | Instruction::ReadKey { local }
@@ -360,6 +364,15 @@ impl Program {
             } = *op
             {
                 locals = locals.max(usize::from(controller.max(local)) + 1);
+            }
+            if let Instruction::WriteEventKey {
+                event: Some(event), ..
+            }
+            | Instruction::WriteEventVelocity7 {
+                event: Some(event), ..
+            } = *op
+            {
+                locals = locals.max(usize::from(event) + 1);
             }
             if let Instruction::KeyUpEvent { event, delay } = *op {
                 locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
@@ -411,8 +424,8 @@ impl Program {
                     }
                     | Instruction::ReadEventId { .. }
                     | Instruction::ReadVelocity7 { .. }
-                    | Instruction::WriteEventKey { .. }
-                    | Instruction::WriteEventVelocity7 { .. }
+                    | Instruction::WriteEventKey { event: None, .. }
+                    | Instruction::WriteEventVelocity7 { event: None, .. }
                     | Instruction::WriteGroup { .. }
                     | Instruction::ReadKey { .. }
                     | Instruction::ReadKeyDown { .. }
@@ -930,19 +943,36 @@ impl Runtime {
                 let key = self.note_event(owner.note()?)?.pitch.key();
                 *self.local_cell_mut(id, local)? = i64::from(key);
             }
-            Instruction::WriteEventKey { local } | Instruction::WriteEventVelocity7 { local } => {
-                let note = owner.note()?;
-                let mut event = self.note_event(note)?;
+            Instruction::WriteEventKey {
+                event: target,
+                local,
+            }
+            | Instruction::WriteEventVelocity7 {
+                event: target,
+                local,
+            } => {
                 let value = *self.local_cell_mut(id, local)?;
-                if matches!(op, Instruction::WriteEventKey { .. }) {
-                    if !(0..=127).contains(&value) {
-                        return Err(Error::InvalidInput);
+                let key = matches!(op, Instruction::WriteEventKey { .. });
+                if !(i64::from(!key)..=127).contains(&value) {
+                    return Err(Error::InvalidInput);
+                }
+                let note = match target {
+                    None => owner.note()?,
+                    Some(local) => {
+                        let source = i32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)?;
+                        let Some(note) =
+                            self.resolve_source_event(self.behavior_plan(owner)?, source)?
+                        else {
+                            return Ok(false);
+                        };
+                        note
                     }
+                };
+                let mut event = self.note_event(note)?;
+                if key {
                     event.pitch = super::NotePitch::Key(value as u8);
                 } else {
-                    if !(1..=127).contains(&value) {
-                        return Err(Error::InvalidInput);
-                    }
                     event.velocity = value as f64 / 127.;
                 }
                 self.edit_note_event(note, event)?;
