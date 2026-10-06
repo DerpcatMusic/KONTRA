@@ -451,7 +451,10 @@ impl Translation {
         if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
-        let voice_limit = usize::try_from(v.voice_group_index).ok().and_then(|g| {
+        // 1-based (0 = none): Una Corda's groups use 1 and 2 with voice
+        // groups 0 and 1 defined, Afflatus 2 Horns KS 1..=8 with 0..=7.
+        let voice_group = usize::try_from(v.voice_group_index - 1).ok();
+        let voice_limit = voice_group.and_then(|g| {
             let limit = self.voice_groups.get(g).copied().flatten();
             if limit.is_none() {
                 self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
