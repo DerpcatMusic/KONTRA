@@ -233,6 +233,19 @@ pub enum Instruction {
         local: u16,
         relative: bool,
     },
+    /// Set the "from script" modulator value (locals: source event ID,
+    /// modulator id, value) that [`super::ModSource::Script`] reads.
+    WriteModValue {
+        event: u16,
+        id: u16,
+        local: u16,
+    },
+    /// Read it back into `local` (0 when unset).
+    ReadModValue {
+        event: u16,
+        id: u16,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -489,6 +502,11 @@ impl Program {
                     return Err(Error::InvalidInput);
                 }
                 locals = locals.max(usize::from(index.max(local)) + 1);
+            }
+            if let Instruction::WriteModValue { event, id, local }
+            | Instruction::ReadModValue { event, id, local } = *op
+            {
+                locals = locals.max(usize::from(event.max(id).max(local)) + 1);
             }
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
@@ -1414,6 +1432,27 @@ impl Runtime {
                 let index = *self.local_cell_mut(id, index)?;
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_param(plan, scope, index, target, value, relative)?;
+            }
+            Instruction::WriteModValue {
+                event,
+                id: slot,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let slot = *self.local_cell_mut(id, slot)?;
+                let value = *self.local_cell_mut(id, local)?;
+                self.write_mod_value(plan, event, slot, value)?;
+            }
+            Instruction::ReadModValue {
+                event,
+                id: slot,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let slot = *self.local_cell_mut(id, slot)?;
+                *self.local_cell_mut(id, local)? = self.read_mod_value(plan, event, slot)?;
             }
             Instruction::ReadParam {
                 scope,
