@@ -119,6 +119,7 @@ impl Missing {
     fn detail(&self) -> String {
         match self {
             Self::ScriptError { line, column, message, .. } => format!("line {line}:{column}  {message}"),
+            Self::ScriptBuiltin { script, line, column: 0, .. } => format!("\u{201c}{script}\u{201d} line {line}"),
             Self::ScriptBuiltin { script, line, column, .. } => format!("\u{201c}{script}\u{201d} line {line}:{column}"),
             Self::Sample { path } => path.clone(),
             Self::Access { reason, .. } => reason.clone(),
