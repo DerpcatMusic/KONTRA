@@ -117,7 +117,7 @@ impl Runtime {
             at,
         };
         let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {
-            render_source(v, pcm, segment, chain, states, context, self.kernel)
+            render_source(v, pcm, segment, chain, states, context, &self.kernel)
         } else {
             let source = super::source::PagedFrames {
                 cache: self
@@ -126,7 +126,7 @@ impl Runtime {
                     .expect("preflighted stream cache"),
                 asset: asset.asset_id(),
             };
-            render_source(v, &source, segment, chain, states, context, self.kernel)
+            render_source(v, &source, segment, chain, states, context, &self.kernel)
         };
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));

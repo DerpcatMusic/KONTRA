@@ -440,8 +440,12 @@ fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_
         },
     );
     mapped.envelope = Envelope::default();
-    let mut rt = runtime(vec![asset], vec![mapped]).with_stream_cache(cache);
-    let mut reference = runtime(vec![Pcm::new(96000, data).unwrap()], vec![mapped]);
+    // The long (High) kernel's guard is what reaches the missing page here.
+    let mut rt = runtime(vec![asset], vec![mapped])
+        .with_resample_quality(ResampleQuality::High)
+        .with_stream_cache(cache);
+    let mut reference = runtime(vec![Pcm::new(96000, data).unwrap()], vec![mapped])
+        .with_resample_quality(ResampleQuality::High);
     let (mut actual, mut expected) = ([[0.; 2]; 256], [[0.; 2]; 256]);
     support::without_heap(|| {
         rt.trigger(input(), 60, 1.).unwrap();
