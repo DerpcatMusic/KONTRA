@@ -73,7 +73,7 @@ fn unpack_fixed<const B: usize, const DELTA: bool>(
     out: &mut [i32; crate::SAMPLES_PER_BLOCK],
 ) {
     let mask = (1u64 << B) - 1;
-    for (group, values) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+    for (group, values) in out.chunks_exact_mut(8).enumerate() {
         for (k, value) in values.iter_mut().enumerate() {
             let bit = k * B;
             // Never clamps (at most 63 * 32 + 28); it drops the bounds check.

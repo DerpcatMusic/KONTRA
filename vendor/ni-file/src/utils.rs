@@ -30,13 +30,10 @@ pub(crate) fn get_files(path: &str) -> Result<Vec<PathBuf>, NIFileError> {
 
 #[allow(dead_code)]
 pub fn format_hex(buffer: &[u8]) -> String {
-    format!(
-        "{}",
-        &buffer
+    buffer
             .iter()
             .map(|x| format!("{:02x}", x))
-            .collect::<String>()
-    )
+            .collect::<String>().to_string()
 }
 
 #[allow(dead_code)]

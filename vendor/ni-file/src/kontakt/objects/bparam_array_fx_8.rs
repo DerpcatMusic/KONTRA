@@ -60,12 +60,13 @@ impl BParamArrayBParFX8 {
     }
 
     pub fn len(&self) -> usize {
-        self.items
-            .iter()
-            .filter(|p| p.is_some())
-            .collect::<Vec<&Option<_>>>()
-            .len()
+        self.items.iter().filter(|p| p.is_some()).count()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.iter().all(Option::is_none)
+    }
+
 }
 
 impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {

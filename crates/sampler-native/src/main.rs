@@ -1,6 +1,8 @@
 //! Independent offline composition root; no legacy application or engine dependency.
+mod census;
 mod kontakt;
 mod render_kontakt;
+mod render_uvi;
 mod wave;
 use sampler_core::{
     Instruction, Limits, Outcome, Pcm, PlanControl, Prepared, Program, Region, Runtime,
@@ -311,6 +313,22 @@ fn demo_sample() -> Pcm {
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
+        [command, roots @ ..] if command == "census" => census::run(roots),
+        [command, bank, program, output, rest @ ..]
+            if command == "render-uvi" && rest.len() <= 1 =>
+        {
+            let sequence = rest
+                .first()
+                .map_or(Some(render_kontakt::DEFAULT_SEQUENCE), |s| s.to_str());
+            let notes = render_kontakt::parse(sequence.unwrap_or(""))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            render_uvi::run(
+                Path::new(bank),
+                program.to_str().unwrap_or(""),
+                Path::new(output),
+                &notes,
+            )
+        }
         [command, input]
             if command == "inspect-kontakt-chunks"
                 || command == "inspect-kontakt-nks"
@@ -362,7 +380,7 @@ fn run() -> io::Result<()> {
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
+            "usage: sampler-native census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }
