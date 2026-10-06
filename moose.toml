@@ -6,10 +6,10 @@ au_manufacturer = "Mtri"
 
 [[plugin]]
 name = "KONTRA"
-bundle_id = "kontra"
+bundle_id = "kontra2"
 crate = "kontakto"
 category = "instrument"
-fourcc = "Kntr"
+fourcc = "Knt2"
 vst3_subcategory = "Sampler"
 
 midi_input = true
