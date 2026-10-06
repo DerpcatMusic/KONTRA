@@ -85,7 +85,7 @@ impl Runtime {
             }
             Event::ScriptKeyUp(id) => {
                 let n = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
-                if !n.key_down() && !(n.gate() && self.release_times[id.0.index].held) {
+                if !(n.key_down() || (n.gate() && self.release_times[id.0.index].held)) {
                     return Err(Error::ClosedNote);
                 }
             }

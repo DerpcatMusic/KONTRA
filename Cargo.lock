@@ -1863,6 +1863,8 @@ dependencies = [
  "rfd 0.17.2",
  "rustc-hash 2.1.3",
  "sampler-core",
+ "sampler-ir",
+ "sampler-kontakt",
  "serde",
  "serde_json",
  "sha2",
@@ -3542,6 +3544,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rtrb"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3647,13 +3658,22 @@ name = "sampler-core"
 version = "0.1.0"
 dependencies = [
  "rtrb",
+ "sampler-ir",
 ]
+
+[[package]]
+name = "sampler-ir"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-kontakt"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "ncw",
+ "ni-file",
  "sampler-core",
+ "sampler-ir",
  "sampler-ksp",
 ]
 
@@ -3678,6 +3698,7 @@ name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ir",
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",
@@ -3686,6 +3707,26 @@ dependencies = [
 [[package]]
 name = "sampler-ui-ir"
 version = "0.1.0"
+
+[[package]]
+name = "sampler-uvi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "crc32fast",
+ "dirs",
+ "flate2",
+ "libc",
+ "roxmltree",
+ "sampler-core",
+ "sampler-ir",
+ "sampler-kontakt",
+ "serde",
+ "serde_json",
+ "sha2",
+ "symphonia",
+]
 
 [[package]]
 name = "scopeguard"
@@ -3945,10 +3986,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5773a4c030a19d9bfaa090f49746ff35c75dfddfa700df7a5939d5e076a57039"
 dependencies = [
  "lazy_static",
+ "symphonia-bundle-flac",
  "symphonia-codec-pcm",
  "symphonia-core",
  "symphonia-format-riff",
  "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-bundle-flac"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c91565e180aea25d9b80a910c546802526ffd0072d0b8974e3ebe59b686c9976"
+dependencies = [
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+ "symphonia-utils-xiph",
 ]
 
 [[package]]
@@ -3994,6 +4048,16 @@ dependencies = [
  "lazy_static",
  "log",
  "symphonia-core",
+]
+
+[[package]]
+name = "symphonia-utils-xiph"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27c85ab799a338446b68eec77abf42e1a6f1bb490656e121c6e27bfbab9f16"
+dependencies = [
+ "symphonia-core",
+ "symphonia-metadata",
 ]
 
 [[package]]

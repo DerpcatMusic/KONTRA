@@ -34,19 +34,20 @@ impl Runtime {
 
     fn render_segment(&mut self, output: &mut [Frame]) {
         let chunked = self.plans.slots.iter().any(|s| {
-            s.value
-                .as_ref()
-                .is_some_and(|g| g.prepared.buses.len() != 0 || !g.dsp.filters.is_empty())
+            s.value.as_ref().is_some_and(|g| {
+                g.prepared.buses.len() != 0
+                    || !g.dsp.filters.is_empty()
+                    || !g.prepared.voice_modulation.is_empty()
+            })
         });
         if !chunked {
             self.render_voices(output, self.now);
             return;
         }
-        for (chunk, output) in output.chunks_mut(64).enumerate() {
-            let at = self.now + (chunk * 64) as u64;
+        for (chunk, output) in output.chunks_mut(super::dsp::BLOCK).enumerate() {
+            let at = self.now + (chunk * super::dsp::BLOCK) as u64;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
-                g.dsp.filters.begin(at);
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
@@ -92,16 +93,55 @@ impl Runtime {
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
         let gains = expression.rendered.gains;
-        v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
+        // Modulated voices render at most one BLOCK chunk per call (render_segment
+        // chunks whenever a plan has programs) into scratch, then mix with ramps.
+        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        let points = plan.modulation.program(i).map(|_| {
+            let performance = self.selections[f.note.0.index].performance;
+            let inputs = super::voice_mod::Inputs::new(
+                n,
+                expression.value,
+                &self.performance_state.current(performance).controllers,
+            );
+            let clock = super::voice_mod::Clock {
+                rate: f64::from(self.rate),
+                tempo: self.tempo,
+                now: at + segment.len() as u64,
+            };
+            let (from, to) = plan.modulation.advance(
+                &plan.prepared.voice_modulation,
+                i,
+                &inputs,
+                clock,
+                segment.len() as u32,
+            );
+            plan.dsp.filters.modulation = [
+                (from.filter[0] + to.filter[0]) * 0.5,
+                (from.filter[1] + to.filter[1]) * 0.5,
+            ];
+            (from, to)
+        });
+        v.cursor = v.cursor.with_step(match points {
+            None => v.base_step * expression.rendered.ratio,
+            Some((from, to)) => {
+                (v.base_step * expression.rendered.ratio * ((from.pitch + to.pitch) / 24.0).exp2())
+                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
+            }
+        });
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
-        let segment = if let Some(bus) = bus {
+        let target = if let Some(bus) = bus {
             plan.dsp.buses.input(bus, segment.len())
         } else {
             segment
+        };
+        let (segment, mixed) = if points.is_some() {
+            (&mut scratch[..target.len()], Some(target))
+        } else {
+            (target, None)
         };
         let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let begin = i * plan.dsp.stride;
@@ -118,8 +158,12 @@ impl Runtime {
             },
             at,
         };
-        let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {
-            render_source(v, pcm, segment, chain, states, context, self.kernel)
+        let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+            let pcm = super::source::Resident {
+                frames,
+                levels: asset.levels(),
+            };
+            render_source(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
             let source = super::source::PagedFrames {
                 cache: self
@@ -128,8 +172,13 @@ impl Runtime {
                     .expect("preflighted stream cache"),
                 asset: asset.asset_id(),
             };
-            render_source(v, &source, segment, chain, states, context, self.kernel)
+            render_source(v, &source, segment, chain, states, context, &self.kernel)
         };
+        if let (Some((from, to)), Some(target)) = (points, mixed) {
+            plan.dsp.filters.modulation = [1.0; 2];
+            plan.modulation
+                .mix(i, segment, target, from, to, f64::from(self.rate));
+        }
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
         if let Some(bus) = bus {

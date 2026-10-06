@@ -55,6 +55,7 @@ mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusSend};
+pub use resample::ResampleQuality;
 mod dsp;
 pub use dsp::{
     Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
@@ -65,6 +66,8 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod voice_mod;
+pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
@@ -86,6 +89,7 @@ use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
 mod integer;
+pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod ops;
 mod script;
@@ -162,6 +166,27 @@ pub enum Error {
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
 }
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Capacity => "a prepared capacity is exhausted",
+            Self::InvalidInput => "invalid input",
+            Self::NotReady => "required source data is not resident",
+            Self::StaleHandle => "the handle no longer refers to a live object",
+            Self::DuplicateInput => "the input is already held",
+            Self::ClosedNote => "the note's gate is closed",
+            Self::ClosedFamily => "the family is sealed",
+            Self::PastEvent => "the event time is in the past",
+            Self::ClockOverflow => "the sample clock would overflow",
+            Self::ArithmeticOverflow => "arithmetic overflow",
+            Self::RevisionConflict => "the revision changed",
+            Self::RandomBudget => "random selection exceeded its draw budget",
+        })
+    }
+}
+
+impl std::error::Error for Error {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -399,6 +424,8 @@ impl<T> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
+    /// Quarter notes per minute for tempo-synced modulation.
+    tempo: f64,
     plans: Arena<Generation>,
     active_plan: PlanId,
     plan_queues: Option<PlanQueues>,
@@ -412,7 +439,7 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
-    kernel: &'static resample::Kernel,
+    kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     families: Arena<Family>,
@@ -445,6 +472,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Select rate-conversion quality: Realtime (the default) for live playback,
+    /// High for offline renders and reference comparisons. Control side; takes
+    /// effect at the next rendered frame and keeps every voice's source phase.
+    pub fn set_resample_quality(&mut self, quality: ResampleQuality) {
+        self.kernel = resample::Kernel::new(quality);
+    }
+    pub fn with_resample_quality(mut self, quality: ResampleQuality) -> Self {
+        self.set_resample_quality(quality);
+        self
+    }
+
     pub fn id(&self) -> RuntimeId {
         RuntimeId(self.notes.runtime)
     }
@@ -505,12 +543,14 @@ impl Runtime {
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
+            modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
         })?);
         Ok(Self {
             rate,
+            tempo: 120.0,
             plans,
             active_plan,
             plan_queues: None,
@@ -522,7 +562,7 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
-            kernel: resample::Kernel::shared(),
+            kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
             families: Arena::new(id, limits.families),
