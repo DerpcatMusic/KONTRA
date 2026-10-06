@@ -6,7 +6,10 @@
 //! supports resident stereo PCM with bounded rate conversion, native linear envelopes
 //! and sample-time commands; vendor fidelity requires separate conformance evidence.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Internal, non-owning links are unlinked before a slot can be reused. Public
 /// identities remain generational handles. The niche keeps each optional link
@@ -457,6 +460,8 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     /// Worker pool and scratch for multicore rendering; None renders on the audio thread.
     parallel: Option<parallel::Parallel>,
+    /// Render lanes new plans size their filter caches for.
+    lanes: Arc<std::sync::atomic::AtomicUsize>,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
@@ -567,7 +572,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
-            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions)?,
+            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
@@ -592,6 +597,7 @@ impl Runtime {
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             parallel: None,
+            lanes: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,

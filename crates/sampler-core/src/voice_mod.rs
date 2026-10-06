@@ -181,6 +181,22 @@ pub(crate) struct VoiceModulation {
 }
 
 impl VoiceModulation {
+    /// Bytes of [`VoiceModState`] one voice slot needs.
+    pub fn bytes_per_voice(&self) -> usize {
+        use std::mem::size_of;
+        if self.is_empty() {
+            return 0;
+        }
+        size_of::<Option<u32>>()
+            + size_of::<u64>()
+            + size_of::<u32>()
+            + 2 * size_of::<Outputs>()
+            + size_of::<[u64; 2]>()
+            + size_of::<[[f64; 2]; 2]>()
+            + self.sources * 2 * size_of::<f64>()
+            + self.routes * size_of::<f64>()
+            + self.envelopes * size_of::<EnvelopeState>()
+    }
     pub fn new(
         programs: Vec<ModProgram>,
         regions: Vec<Option<usize>>,

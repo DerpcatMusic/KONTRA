@@ -85,6 +85,13 @@ impl Runtime {
     /// on the audio thread alone.
     pub fn set_threads(&mut self, threads: Threads) {
         let n = threads.count();
+        // Plans prepared from now on size for `n`; adopted ones grow here.
+        self.lanes.store(n, std::sync::atomic::Ordering::Relaxed);
+        let expressions = self.expressions.slots.len();
+        for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            // An allocation failure leaves that plan short; blocks using it render on one thread.
+            let _ = generation.dsp.ensure_lanes(&generation.prepared, expressions, n);
+        }
         self.parallel = (n > 1).then(|| Parallel::new(n, self.voices.slots.len()));
     }
 
@@ -111,7 +118,7 @@ impl Runtime {
             return false;
         }
         let mut par = self.parallel.take().expect("checked");
-        let eligible = self.plan_runs(&mut par.runs, frames);
+        let eligible = self.plan_runs(&mut par.runs, frames, par.threads);
         let voices: usize = par.runs.iter().map(|r| r.count).sum();
         if !eligible || voices < MIN_VOICES_PER_THREAD * par.threads {
             self.parallel = Some(par);
@@ -149,7 +156,7 @@ impl Runtime {
 
     /// Group the active voices into runs as `render_voices` does. False when
     /// a voice needs state this path does not parallelize.
-    fn plan_runs(&self, runs: &mut Vec<Run>, frames: usize) -> bool {
+    fn plan_runs(&self, runs: &mut Vec<Run>, frames: usize, lanes: usize) -> bool {
         runs.clear();
         let mut open: Option<((usize, usize), usize)> = None;
         for word in 0..self.voice_activity.len() {
@@ -166,8 +173,9 @@ impl Runtime {
                     continue;
                 }
                 let f = self.families.get(v.family.0).unwrap();
-                let plan = self.notes.get(f.note.0).unwrap().plan.0;
-                if self.plans.get(plan).unwrap().modulation.program(i).is_some() {
+                let plan = self.plans.get(self.notes.get(f.note.0).unwrap().plan.0).unwrap();
+                // A plan adopted before the thread count rose may lack lane caches.
+                if plan.modulation.program(i).is_some() || plan.dsp.filters.len() < lanes {
                     return false;
                 }
                 match (key, open) {
