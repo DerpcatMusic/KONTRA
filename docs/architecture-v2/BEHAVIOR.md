@@ -547,3 +547,10 @@ callback ordering or implement ordered script slots.
 
 Validation: 272 native tests pass in debug, release and Rust 1.92; strict all-target
 Clippy and both root boundary tests pass (`artifacts/callback-dispatch-*`).
+
+A scripted stop before pending attack forwarding now suppresses that attack before
+release dispatch. Implicit forwarding therefore completes harmlessly, without
+weakening the native rejection of a physically closed deferred attack. The source
+fixture covers both immediate note_off forms, one release callback, silence and
+retained raw input until host key-up. Validation: 273 native debug/release tests and
+strict Clippy pass (`artifacts/pending-attack-*`).

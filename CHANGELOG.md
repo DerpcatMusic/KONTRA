@@ -10,6 +10,9 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Consume pending attacks when scripts stop their own event before forwarding,
+  avoiding a spurious callback fault while preserving later host key-up pairing.
+
 - Dispatch nested native callbacks through bounded, preallocated work storage. Deep
   release chains preserve callback fuel and wait ordering without growing the audio
   thread stack; gate completion retains its owner through callback side effects.
