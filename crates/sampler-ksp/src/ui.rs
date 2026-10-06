@@ -25,7 +25,42 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_Z_LAYER",
     "$CONTROL_PAR_PARENT_PANEL",
     "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_TEXTPOS_Y",
+    "$CONTROL_PAR_ALLOW_AUTOMATION",
+    "$CONTROL_PAR_AUTOMATION_ID",
+    "$CONTROL_PAR_SHORT_NAME",
+    "$CONTROL_PAR_MOUSE_BEHAVIOUR",
+    "$CONTROL_PAR_LABEL",
+    "$CONTROL_PAR_PICTURE_STATE",
+    "$CONTROL_PAR_SHOW_ARROWS",
+    "grid_x",
+    "grid_y",
 ];
+
+/// `$CONTROL_PAR_*_COLOR` properties by IR colour slot.
+type ColorSlot = fn(&mut ir::Colors) -> &mut Option<ir::Rgba>;
+const COLORS: [(&str, ColorSlot); 10] = [
+    ("$CONTROL_PAR_BG_COLOR", |c| &mut c.background),
+    ("$CONTROL_PAR_ON_COLOR", |c| &mut c.on),
+    ("$CONTROL_PAR_OFF_COLOR", |c| &mut c.off),
+    ("$CONTROL_PAR_BAR_COLOR", |c| &mut c.bar),
+    ("$CONTROL_PAR_PEAK_COLOR", |c| &mut c.peak),
+    ("$CONTROL_PAR_OVERLOAD_COLOR", |c| &mut c.overload),
+    ("$CONTROL_PAR_ZERO_LINE_COLOR", |c| &mut c.zero_line),
+    ("$CONTROL_PAR_WAVE_COLOR", |c| &mut c.wave),
+    ("$CONTROL_PAR_WAVE_CURSOR_COLOR", |c| &mut c.wave_cursor),
+    ("$CONTROL_PAR_SLICEMARKERS_COLOR", |c| &mut c.slice_markers),
+];
+
+/// KSP colours are `0xRRGGBB`, or `0xAARRGGBB` when the top byte is set.
+fn color(v: i32) -> ir::Rgba {
+    let v = v as u32;
+    let a = (v >> 24) as u8;
+    ir::Rgba {
+        a: if a == 0 { 255 } else { a },
+        ..ir::Rgba::rgb(v & 0xFF_FFFF)
+    }
+}
 
 /// Kontakt's default instrument width in pixels.
 const DEFAULT_WIDTH: u32 = 633;
@@ -166,6 +201,8 @@ pub fn interface(
         for (name, v) in props {
             if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE" {
                 background.image = Some(bld.asset(&text(v)));
+            } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_PICTURE" {
+                bld.ui.icon = Some(bld.asset(&text(v)));
             } else {
                 let target = if id == b::INST_WALLPAPER_ID {
                     "$INST_WALLPAPER_ID"
@@ -176,17 +213,22 @@ pub fn interface(
             }
         }
     }
-    if m.height_px.is_none() && m.height_grid.is_some() {
-        bld.unsupported(None, "set_ui_height", format!("{:?}", m.height_grid));
-    }
-    // ponytail: 100 px when the script never sets a height; Kontakt's own default may differ.
-    let height = m.height_px.unwrap_or(100).max(1) as u32;
+    let height_rows = match m.height_px {
+        None => m.height_grid.map(|r| r.max(1) as u32),
+        Some(_) => None,
+    };
+    // ponytail: 100 px when the script sets no height at all; Kontakt's own default may differ.
+    let height = match (m.height_px, height_rows) {
+        (Some(px), _) => px.max(1) as u32,
+        (None, Some(_)) => 0,
+        (None, None) => 100,
+    };
     let width = m.width_px.map_or(DEFAULT_WIDTH, |w| w.max(1) as u32);
     bld.ui.pages.push(ir::Page {
         name: m.title.clone().unwrap_or_default(),
         size: ir::Size { width, height },
         background,
-        ..Default::default()
+        height_rows,
     });
 
     let by_id: HashMap<i32, usize> = m
@@ -218,51 +260,53 @@ pub fn interface(
             WidgetValue::Reals(v) => v.len(),
             _ => 0,
         } as u32;
-        let (kind, size) = match w.kind {
-            WidgetKind::Panel => (ir::Kind::Panel, (0, 0)),
-            WidgetKind::Knob => (
-                ir::Kind::Knob {
-                    range: range(1_000_000),
-                    display: display(),
-                },
-                (92, 52),
-            ),
-            WidgetKind::Slider => (
-                ir::Kind::Slider {
-                    range: range(1_000_000),
-                    orientation: ir::Orientation::Horizontal,
-                },
-                (92, 16),
-            ),
-            WidgetKind::Button => (ir::Kind::Button { momentary: false }, (92, 20)),
-            WidgetKind::Switch => (ir::Kind::Switch, (92, 20)),
-            WidgetKind::Menu => (
-                ir::Kind::Menu {
-                    items: w
-                        .menu
-                        .iter()
-                        .map(|m| ir::MenuItem {
-                            text: m.text.clone(),
-                            value: m.value,
-                            visible: m.visible,
-                        })
-                        .collect(),
-                },
-                (92, 20),
-            ),
-            WidgetKind::Label => (ir::Kind::Label, (92, 20)),
-            WidgetKind::ValueEdit => (
-                ir::Kind::ValueEdit {
-                    range: range(1_000_000),
-                    display: display(),
-                    arrows: false,
-                },
-                (92, 20),
-            ),
+        let kind = match w.kind {
+            WidgetKind::Panel => ir::Kind::Panel,
+            WidgetKind::Knob => ir::Kind::Knob {
+                range: range(1_000_000),
+                display: display(),
+            },
+            WidgetKind::Slider => ir::Kind::Slider {
+                range: range(1_000_000),
+                orientation: ir::Orientation::Horizontal,
+            },
+            WidgetKind::Button => ir::Kind::Button { momentary: false },
+            WidgetKind::Switch => ir::Kind::Switch,
+            WidgetKind::Menu => ir::Kind::Menu {
+                items: w
+                    .menu
+                    .iter()
+                    .map(|m| ir::MenuItem {
+                        text: m.text.clone(),
+                        value: m.value,
+                        visible: m.visible,
+                    })
+                    .collect(),
+            },
+            WidgetKind::Label => ir::Kind::Label,
+            WidgetKind::ValueEdit => ir::Kind::ValueEdit {
+                range: range(1_000_000),
+                display: display(),
+                arrows: int("$CONTROL_PAR_SHOW_ARROWS") != Some(0),
+            },
             WidgetKind::Table => {
                 // declare ui_table %t[columns](width, height, range); negative is bipolar.
                 let r = w.params.get(2).copied().unwrap_or(100);
-                let kind = ir::Kind::Table {
+                let mut cells = match &w.value {
+                    WidgetValue::Ints(v) => v.clone(),
+                    _ => vec![0; len as usize],
+                };
+                for (&i, v) in w
+                    .indexed_properties
+                    .get("$CONTROL_PAR_VALUE")
+                    .into_iter()
+                    .flatten()
+                {
+                    if let (Some(c), Value::Int(n)) = (cells.get_mut(i as usize), v) {
+                        *c = *n;
+                    }
+                }
+                ir::Kind::Table {
                     columns: len,
                     range: ir::Range {
                         min: if r < 0 { f64::from(r) } else { 0.0 },
@@ -271,40 +315,63 @@ pub fn interface(
                         step: Some(1.0),
                     },
                     bipolar: r < 0,
-                    cells: Vec::new(),
-                };
-                (kind, (92, 92))
+                    cells,
+                }
             }
-            WidgetKind::Xy => (ir::Kind::Xy { cursors: len / 2 }, (92, 92)),
-            WidgetKind::Waveform => (ir::Kind::Waveform, (184, 92)),
-            WidgetKind::Wavetable => (ir::Kind::Wavetable, (184, 92)),
-            WidgetKind::LevelMeter => (
-                ir::Kind::LevelMeter {
-                    orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
-                        ir::Orientation::Horizontal
-                    } else {
-                        ir::Orientation::Vertical
-                    },
+            WidgetKind::Xy => ir::Kind::Xy { cursors: len / 2 },
+            WidgetKind::Waveform => ir::Kind::Waveform,
+            WidgetKind::Wavetable => ir::Kind::Wavetable,
+            WidgetKind::LevelMeter => ir::Kind::LevelMeter {
+                orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
+                    ir::Orientation::Horizontal
+                } else {
+                    ir::Orientation::Vertical
                 },
-                (8, 92),
-            ),
-            WidgetKind::FileSelector => (ir::Kind::FileSelector, (184, 184)),
-            WidgetKind::TextEdit => (ir::Kind::TextEdit, (92, 20)),
-            WidgetKind::MouseArea => (ir::Kind::MouseArea, (92, 92)),
+            },
+            WidgetKind::FileSelector => ir::Kind::FileSelector,
+            WidgetKind::TextEdit => ir::Kind::TextEdit,
+            WidgetKind::MouseArea => ir::Kind::MouseArea,
         };
-        // ponytail: per-kind default sizes approximate Kontakt's; scripts that
-        // place controls by pixel nearly always set WIDTH/HEIGHT.
+        // Missing sizes stay 0: the renderer applies Kontakt's stock sizes.
+        let (width, height) = (int("$CONTROL_PAR_WIDTH"), int("$CONTROL_PAR_HEIGHT"));
         let rect = ir::Rect::new(
             int("$CONTROL_PAR_POS_X").unwrap_or(0),
             int("$CONTROL_PAR_POS_Y").unwrap_or(0),
-            int("$CONTROL_PAR_WIDTH").map_or(size.0, |v| v.max(0) as u32),
-            int("$CONTROL_PAR_HEIGHT").map_or(size.1, |v| v.max(0) as u32),
+            width.map_or(0, |v| v.max(0) as u32),
+            height.map_or(0, |v| v.max(0) as u32),
         );
         let mut out = ir::Widget::new(w.name.clone(), page, rect, kind);
+        out.auto_size = width.is_none() || height.is_none();
         out.source_id = Some(w.ui_id);
         out.z = int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
         let hide = int("$CONTROL_PAR_HIDE").unwrap_or(0);
         out.hidden = hide & b::HIDE_WHOLE_CONTROL != 0;
+        // move_control(x, y) places on Kontakt's grid; (0, 0) hides.
+        if let (Some(column), Some(row)) = (int("grid_x"), int("grid_y")) {
+            if column > 0 && row > 0 {
+                out.placement = ir::Placement::Grid {
+                    column: column as u32,
+                    row: row as u32,
+                };
+            } else {
+                out.hidden = true;
+            }
+        }
+        out.text_y = int("$CONTROL_PAR_TEXTPOS_Y");
+        out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
+        out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {
+            axis: if m < 0 {
+                ir::Orientation::Horizontal
+            } else {
+                ir::Orientation::Vertical
+            },
+            sensitivity: m.unsigned_abs(),
+        });
+        for (name, slot) in COLORS {
+            if let Some(c) = int(name) {
+                *slot(&mut out.colors) = Some(color(c));
+            }
+        }
         out.hide = ir::Parts {
             background: hide & 1 != 0,
             value: hide & 2 != 0,
@@ -321,19 +388,32 @@ pub fn interface(
             _ => ir::Binding::None,
         };
         // Kontakt captions controls with their variable name until TEXT is set.
-        out.text = w.text("$CONTROL_PAR_TEXT").map_or_else(
-            || match w.kind {
-                WidgetKind::Knob
-                | WidgetKind::Slider
-                | WidgetKind::Button
-                | WidgetKind::Switch
-                | WidgetKind::ValueEdit => w.name[1..].to_string(),
-                _ => String::new(),
-            },
-            str::to_string,
-        );
+        let lines = w
+            .indexed_properties
+            .get("$CONTROL_PAR_TEXT")
+            .or_else(|| w.indexed_properties.get("$CONTROL_PAR_TEXTLINE"))
+            .map(|l| l.values().map(text).collect::<Vec<_>>().join("\n"));
+        out.text = lines
+            .as_deref()
+            .or(w.text("$CONTROL_PAR_TEXT"))
+            .map_or_else(
+                || match w.kind {
+                    WidgetKind::Knob
+                    | WidgetKind::Slider
+                    | WidgetKind::Button
+                    | WidgetKind::Switch
+                    | WidgetKind::ValueEdit => w.name[1..].to_string(),
+                    _ => String::new(),
+                },
+                str::to_string,
+            );
         out.tooltip = w.text("$CONTROL_PAR_HELP").unwrap_or_default().into();
-        out.automation.name = w.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into);
+        out.automation = ir::Automation {
+            name: w.text("$CONTROL_PAR_AUTOMATION_NAME").map(Into::into),
+            short_name: w.text("$CONTROL_PAR_SHORT_NAME").map(Into::into),
+            allowed: int("$CONTROL_PAR_ALLOW_AUTOMATION") != Some(0),
+            id: int("$CONTROL_PAR_AUTOMATION_ID").and_then(|n| u32::try_from(n).ok()),
+        };
         if let Some(font) = int("$CONTROL_PAR_FONT_TYPE") {
             let align = int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1);
             out.style = Some(bld.style(font, align));
@@ -349,13 +429,16 @@ pub fn interface(
                 | WidgetKind::LevelMeter => ir::Role::Strip,
                 _ => ir::Role::Background,
             };
-            out.images.push(ir::ImageUse::new(bld.asset(p), role));
+            let mut image = ir::ImageUse::new(bld.asset(p), role);
+            image.frame = int("$CONTROL_PAR_PICTURE_STATE").and_then(|f| u32::try_from(f).ok());
+            out.images.push(image);
         }
         if let Some(p) = w
             .text("$CONTROL_PAR_CURSOR_PICTURE")
             .filter(|p| !p.is_empty())
         {
-            out.images.push(ir::ImageUse::new(bld.asset(p), ir::Role::Handle));
+            out.images
+                .push(ir::ImageUse::new(bld.asset(p), ir::Role::Handle));
         }
         if let Some(parent) = int("$CONTROL_PAR_PARENT_PANEL") {
             match by_id.get(&parent) {
@@ -369,12 +452,20 @@ pub fn interface(
             bld.unsupported(Some(i), "$HIDE_PART_MOD_LIGHT", hide.to_string());
         }
         for (name, v) in &w.properties {
-            if !MAPPED.contains(&name.as_str()) {
+            if !MAPPED.contains(&name.as_str()) && !COLORS.iter().any(|(c, _)| c == name) {
                 bld.unsupported(Some(i), name.clone(), text(v));
             }
         }
         // One entry per indexed property: tables write thousands of cells.
         for (name, values) in &w.indexed_properties {
+            let mapped = match name.as_str() {
+                "$CONTROL_PAR_VALUE" => w.kind == WidgetKind::Table,
+                "$CONTROL_PAR_TEXT" | "$CONTROL_PAR_TEXTLINE" => true,
+                _ => false,
+            };
+            if mapped {
+                continue;
+            }
             let shown: Vec<_> = values
                 .iter()
                 .take(8)
