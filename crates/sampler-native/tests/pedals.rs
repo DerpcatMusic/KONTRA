@@ -6,7 +6,7 @@
 //! Timing is asserted on the engine's own sample clock (`release_context`), and
 //! release-trigger firings are observed as new release-phase families per block.
 
-use sampler_core::{FamilyId, Limits, NoteId, Outcome, Runtime, Trigger};
+use sampler_core::{FamilyId, Limits, NoteId, Outcome, Runtime, Stealing, Trigger};
 use sampler_midi::{Applied, ApplyError, Ingress, Mpe, Packets, TimedPacket, Version, Zone};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -123,6 +123,8 @@ struct Run {
     release_zones: bool,
     /// Live logical notes (input and script-generated) after each block.
     notes: Vec<usize>,
+    /// Voices fading after being stolen, after each block.
+    stolen: Vec<usize>,
     script_outcomes: Vec<String>,
 }
 
@@ -239,6 +241,9 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         .any(|z| z.trigger != sampler_ir::Trigger::Attack);
     let limits = limits(&loaded.plan, setup.voices);
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+    // As a host plays instruments: steal at capacity rather than reject.
+    rt.set_voice_stealing(Some(Stealing::for_limits(RATE as u32, setup.voices)))
+        .unwrap();
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
     let ingress = Ingress::new(0, groups);
@@ -266,6 +271,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         reserve_returned: false,
         release_zones,
         notes: Vec::new(),
+        stolen: Vec::new(),
         script_outcomes: Vec::new(),
     };
     let mut buffer = vec![[0f32; 2]; setup.block];
@@ -347,6 +353,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         });
         rt.flush_ended(|_| true);
         run.notes.push(rt.note_count());
+        run.stolen.push(rt.stolen_voices());
         run.peak_voices = run.peak_voices.max(rt.voice_count());
         run.out.extend_from_slice(&buffer);
         begin += len;
@@ -848,13 +855,13 @@ fn mpe(setup: Setup) {
     assert_gate(&run, name, b, 1, 1.5, 1.8);
 }
 
-/// A voice pool that fits two notes. The native core does not steal: a note
-/// that does not fit is rejected whole at note-on (its note-off then finds
-/// nothing), admitted notes keep their reserved release phase, and capacity
-/// is fully returned for later notes.
+/// A voice pool that fits two notes plus stealing headroom
+/// ([`Stealing::for_limits`]): every note is admitted, later notes (and the
+/// release triggers at pedal-up) steal the oldest released, then quietest,
+/// voices, and each stolen voice fades out over the 10 ms steal fade rather
+/// than being cut or rejecting the note.
 fn voice_limit(setup: Setup) {
     let a = setup.keys.0;
-    // The pool is exactly what the first two notes use under the pedal.
     let Some(two) = play(
         setup,
         &[
@@ -869,10 +876,10 @@ fn voice_limit(setup: Setup) {
         return;
     };
     sane(&two, "voice probe");
-    let setup = Setup {
-        voices: two.peak_voices,
-        ..setup
-    };
+    // Polyphony (voices less a quarter of headroom) is 1.5 times what two
+    // notes use under the pedal: four notes cannot all fit.
+    let voices = 2 * two.peak_voices.max(2);
+    let setup = Setup { voices, ..setup };
     let keys = [a, a + 2, a + 4, a + 7];
     let mut events = vec![(0.0, Cc(0, 64, 127))];
     for (i, &key) in keys.iter().enumerate() {
@@ -888,30 +895,29 @@ fn voice_limit(setup: Setup) {
     };
     let name = "voice limit";
     sane(&run, name);
-    assert!(run.peak_voices <= setup.voices);
+    assert!(run.peak_voices <= voices);
+    assert_eq!(run.other, [], "{name}: no admission is rejected");
     let admitted: Vec<u8> = run.played.iter().map(|p| p.key).collect();
-    assert_eq!(admitted, [a, a + 2, a], "{name}: admitted keys");
-    let capacity = Err(ApplyError::Core(sampler_core::Error::Capacity));
-    let stale = Err(ApplyError::Core(sampler_core::Error::StaleHandle));
-    assert_eq!(
-        run.other,
-        [
-            (at(0.1), On(0, a + 4, 100), capacity),
-            (at(0.15), On(0, a + 7, 100), capacity),
-            (at(0.3), Off(0, a + 4), stale),
-            (at(0.3), Off(0, a + 7), stale),
-        ]
+    assert_eq!(admitted, [a, a + 2, a + 4, a + 7, a], "{name}: admitted keys");
+    // Stolen voices fade: they outlive the stealing block, and every one is
+    // gone within the fade (plus the block it started in and the next).
+    let fade = Stealing::for_limits(RATE as u32, voices).fade as usize;
+    assert!(
+        run.stolen.iter().any(|&n| n > 0),
+        "{name}: nothing was stolen at {voices} voices"
     );
-    assert_gate(&run, name, a, 0, 0.3, 0.6);
-    assert_gate(&run, name, a + 2, 0, 0.3, 0.6);
+    let longest = run
+        .stolen
+        .split(|&n| n == 0)
+        .map(<[usize]>::len)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        longest <= fade.div_ceil(run.block) + 2,
+        "{name}: stolen voices faded for {longest} blocks"
+    );
+    assert_gate(&run, name, a + 7, 0, 0.3, 0.6);
     assert_gate(&run, name, a, 1, late + 0.2, late + 0.2);
-    let fired: Vec<usize> = run.played.iter().map(|p| p.fired.len()).collect();
-    let expected = [two.played[0].fired.len(), two.played[1].fired.len()];
-    assert_eq!(
-        fired,
-        [expected[0], expected[1], expected[0]],
-        "{name}: releases"
-    );
 }
 
 /// Same input, same PCM: across runs, across host block partitions, and (with
@@ -987,7 +993,13 @@ mod una_corda_pure {
 /// legato releases, four dynamics, two mic sets) and a legato script.
 mod vista_3_cellos {
     use super::*;
-    const SETUP: Setup = Setup::new(CELLOS, (48, 55));
+    // Its legato script tracks held keys through %KEY_DOWN and
+    // search(%KEY_DOWN, 1), which sampler-ksp does not maintain yet (reads 0,
+    // -1): bound, it never plays. Exercise the native release-trigger path.
+    const SETUP: Setup = Setup {
+        scripts: false,
+        ..Setup::new(CELLOS, (48, 55))
+    };
 
     #[test]
     fn profile() {
@@ -1015,8 +1027,12 @@ mod vista_3_cellos {
 /// so it runs the scenarios where LFO voices matter, with a large pool.
 mod analog_strings {
     use super::*;
+    // Bound, its scripts are silent (they rely on %KEY_DOWN, %CC_TOUCHED,
+    // sort and computed find_mod, not maintained or executed by sampler-ksp
+    // yet): exercise the native layers.
     const SETUP: Setup = Setup {
         voices: 4096,
+        scripts: false,
         ..Setup::new(ANALOG, (60, 67))
     };
 
@@ -1157,3 +1173,4 @@ fn scripted(setup: Setup) {
 fn block_of(frame: usize) -> usize {
     frame / BLOCK * BLOCK
 }
+
