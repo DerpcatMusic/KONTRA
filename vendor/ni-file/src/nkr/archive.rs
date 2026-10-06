@@ -240,18 +240,65 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
         } else {
             e.offset = file_offset + header_size;
             e.key_index = u32::from_le_bytes(header[10..14].try_into().unwrap());
-            // Members naming the library key (0x100) are encrypted whatever their
-            // header magic: Solo's shared NKR uses the 22-byte header.
+            // A key hint can describe encrypted data even with the 22-byte
+            // header (Solo's shared NKR), but plaintext PNGs are verified below.
             e.encoded = magic == 0x16ccf80a || e.key_index == 0x100;
             let at = if magic == 0x2ae905fa { 14 } else { 19 };
             e.size = u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as u64;
             if e.offset + e.size > length {
                 Some("Truncated NKX member payload")
             } else {
+                // Shared NKR resources also use the 22-byte header and a key
+                // hint for plaintext pictures. Validate the whole PNG before
+                // overriding that hint; an encrypted member still needs its key.
+                if magic == 0x2ae905fa && e.encoded && e.size <= 32 << 20
+                    && &header[22..30] == b"\x89PNG\r\n\x1a\n"
+                {
+                    r.seek(SeekFrom::Start(e.offset))?;
+                    if clear_png(&r.read_bytes(e.size as usize)?) {
+                        e.encoded = false;
+                    }
+                }
                 None
             }
         }
     };
     e.valid = e.issue.is_none();
     Ok(())
+}
+
+/// A complete plaintext PNG, including chunk framing and every CRC. A matching
+/// signature alone must never cause encrypted bytes to bypass their cipher.
+fn clear_png(bytes: &[u8]) -> bool {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return false;
+    }
+    let (mut at, mut data) = (8usize, false);
+    while let Some(header) = bytes.get(at..at + 8) {
+        let size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let Some(end) = at.checked_add(12).and_then(|n| n.checked_add(size)) else {
+            return false;
+        };
+        let Some(chunk) = bytes.get(at + 4..end) else {
+            return false;
+        };
+        let kind = &header[4..8];
+        if !kind.iter().all(u8::is_ascii_alphabetic)
+            || (at == 8 && (kind != b"IHDR" || size != 13))
+            || (at != 8 && kind == b"IHDR")
+        {
+            return false;
+        }
+        let mut crc = flate2::Crc::new();
+        crc.update(&chunk[..chunk.len() - 4]);
+        if crc.sum() != u32::from_be_bytes(chunk[chunk.len() - 4..].try_into().unwrap()) {
+            return false;
+        }
+        data |= kind == b"IDAT" && size > 0;
+        if kind == b"IEND" {
+            return size == 0 && data && end == bytes.len();
+        }
+        at = end;
+    }
+    false
 }

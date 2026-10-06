@@ -28,6 +28,10 @@ and validates its complete PNG framing. Authored tests cover NKR versions
 Implementation: `fed97989`.
 An installed Solo `Pyramid v1.0.6.nkr` test also validates an encrypted PNG
 buffer and confirms that reading the same member without local access fails.
+The older Areia NKR also has plaintext PNGs bearing a library-key hint. Only
+complete PNG framing with intact chunk CRCs overrides that hint; explicitly
+encrypted headers still require local access. All 2,220 pictures in the 12
+installed NKR containers return recognizable image buffers.
 
 ## UVI programs
 
