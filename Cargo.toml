@@ -24,6 +24,8 @@ sampler-core = { path = "crates/sampler-core" }
 sampler-ir = { path = "crates/sampler-ir" }
 sampler-kontakt = { path = "crates/sampler-kontakt" }
 sampler-midi = { path = "crates/sampler-midi" }
+sampler-ksp = { path = "crates/sampler-ksp" }
+sampler-ui-ir = { path = "crates/sampler-ui-ir" }
 rustc-hash = "=2.1.3"
 anyhow = "1"
 png = { version = "0.18", optional = true }
