@@ -30,8 +30,12 @@ pub enum Coverage {
     Native,
     /// Executed with a documented approximation.
     Approximate,
-    /// Queued to the host through the effect outbox.
+    /// Queued to the host through the effect outbox for an engine change
+    /// the runtime does not apply itself.
     Effect,
+    /// Queued to the host through the effect outbox for a service the host
+    /// owns: interface properties, keyboard, text, messages, files, PGS.
+    Host,
     /// Not executed at runtime; a warning was recorded.
     Ignored,
 }
@@ -942,7 +946,7 @@ impl Gen<'_, '_> {
         if text.is_some() {
             self.tdepth -= 1;
         }
-        self.cover(builtin, Coverage::Effect);
+        self.cover(builtin, host_service(builtin));
         Ok(())
     }
 
@@ -1469,8 +1473,7 @@ impl Gen<'_, '_> {
                     operation: IB::Multiply,
                 })?;
                 self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
-                self.effect(builtin, args, dst)?;
-                true
+                return self.effect(builtin, args, dst);
             }
             SetEnginePar if self.engine_param(args).is_some() => {
                 // Mirror for get_engine_par, then drive the group or instrument layer.
@@ -1713,7 +1716,8 @@ impl Gen<'_, '_> {
         if self.const_int(args, 3) != Some(-1) || self.const_int(args, 4) != Some(-1) {
             return None;
         }
-        match self.const_text(args, 0)?.trim_start_matches('$') {
+        let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
+        match name.trim_start_matches('$') {
             "ENGINE_PAR_VOLUME" => Some(ModTarget::Decibels),
             "ENGINE_PAR_PAN" => Some(ModTarget::Pan),
             "ENGINE_PAR_TUNE" => Some(ModTarget::Pitch),
@@ -2027,5 +2031,57 @@ impl Gen<'_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+/// Outbox coverage: host-owned services, or engine changes left to the host.
+fn host_service(builtin: Builtin) -> Coverage {
+    use Builtin::*;
+    match builtin {
+        SetControlPar
+        | SetControlParReal
+        | SetControlParArr
+        | SetControlParRealArr
+        | SetControlParStr
+        | SetControlParStrArr
+        | SetText
+        | AddTextLine
+        | SetKnobLabel
+        | SetKnobUnit
+        | SetKnobDefval
+        | SetControlHelp
+        | MoveControl
+        | MoveControlPx
+        | HidePart
+        | AddMenuItem
+        | SetMenuItemStr
+        | SetMenuItemVisibility
+        | SetMenuItemValue
+        | SetTableStepsShown
+        | SetUiWfProperty
+        | AttachLevelMeter
+        | FsNavigate
+        | SetNksNavName
+        | SetNksNavPar
+        | ResetNksNav
+        | SetKeyColor
+        | SetKeyName
+        | SetKeyType
+        | SetKeyPressed
+        | SetKeyPressedSupport
+        | SetKeyrange
+        | RemoveKeyrange
+        | Message
+        | LoadArray
+        | SaveArray
+        | LoadArrayStr
+        | SaveArrayStr
+        | PgsSetKeyVal
+        | PgsSetStrKeyVal
+        | PgsCreateKey
+        | PgsCreateStrKey => Coverage::Host,
+        // Silenced in the runtime; the effect only lets the host free samples.
+        PurgeGroup => Coverage::Native,
+        _ => Coverage::Effect,
     }
 }
