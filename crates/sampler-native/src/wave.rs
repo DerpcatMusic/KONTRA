@@ -164,7 +164,7 @@ mod tests {
         frames(&mut bytes, &pcm).unwrap();
         let result = decode(&bytes).unwrap();
         assert_eq!(result.sample_rate(), 48000);
-        assert_eq!(result.frames(), &pcm);
+        assert_eq!(result.resident_frames().unwrap(), &pcm);
         for end in 0..bytes.len() {
             assert!(decode(&bytes[..end]).is_err());
         }
@@ -193,7 +193,7 @@ mod tests {
         mono.extend(i16::MIN.to_le_bytes());
         mono.extend(i16::MAX.to_le_bytes());
         assert_eq!(
-            decode(&mono).unwrap().frames(),
+            decode(&mono).unwrap().resident_frames().unwrap(),
             &[[-1.0; 2], [32767.0 / 32768.0; 2]]
         );
     }

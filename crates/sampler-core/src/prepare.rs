@@ -1,11 +1,11 @@
-//! Control-thread compilation of immutable resident assets and native mappings.
+//! Control-thread compilation of immutable assets and native mappings.
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
 pub use predicates::ControllerCondition;
 use predicates::Matching;
 
-/// Validated immutable resident PCM. Construct, clone and drop handles on the
+/// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
 #[derive(Clone, Debug)]
 pub struct Pcm(std::sync::Arc<PcmData>);
@@ -19,7 +19,8 @@ pub struct AssetId(u64);
 struct PcmData {
     id: AssetId,
     rate: u32,
-    frames: Box<[Frame]>,
+    frames: Option<Box<[Frame]>>,
+    length: usize,
 }
 impl Pcm {
     /// Validate once without copying the owned frame buffer. All public access is
@@ -28,6 +29,17 @@ impl Pcm {
         if rate == 0 || frames.is_empty() || frames.iter().flatten().any(|x| !x.is_finite()) {
             return Err(Error::InvalidInput);
         }
+        Self::create(rate, frames.len(), Some(frames))
+    }
+    /// Metadata for worker-decoded pages. The worker registry must resolve this
+    /// revision's ID to the corresponding immutable decoded source.
+    pub fn streamed(rate: u32, frames: usize) -> Result<Self, Error> {
+        if rate == 0 || frames == 0 {
+            return Err(Error::InvalidInput);
+        }
+        Self::create(rate, frames, None)
+    }
+    fn create(rate: u32, length: usize, frames: Option<Box<[Frame]>>) -> Result<Self, Error> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ASSET: AtomicU64 = AtomicU64::new(1);
         #[allow(deprecated, reason = "fetch_update supports the Rust 1.92 minimum")]
@@ -38,6 +50,7 @@ impl Pcm {
             id: AssetId(id),
             rate,
             frames,
+            length,
         })))
     }
     pub fn asset_id(&self) -> AssetId {
@@ -46,8 +59,11 @@ impl Pcm {
     pub fn sample_rate(&self) -> u32 {
         self.0.rate
     }
-    pub fn frames(&self) -> &[Frame] {
-        &self.0.frames
+    pub fn frame_count(&self) -> usize {
+        self.0.length
+    }
+    pub fn resident_frames(&self) -> Option<&[Frame]> {
+        self.0.frames.as_deref()
     }
 }
 
@@ -237,7 +253,7 @@ impl Prepared {
                     f64::from(r.key_low) - f64::from(root) + tuning.0[r.key_low as usize];
             }
             let cursor = playback.cursor(
-                pcm[r.sample].frames().len(),
+                pcm[r.sample].frame_count(),
                 pcm[r.sample].sample_rate(),
                 rate,
             )?;

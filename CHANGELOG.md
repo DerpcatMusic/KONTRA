@@ -10,13 +10,18 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Render metadata-only streamed assets through the shared native source/DSP path.
+  Reject missing onset guards without partial layers and report live starvation
+  while preserving host pairing and declared DSP tails. Automatic streaming and
+  click-free starvation handling remain in development.
+
 - Add a bounded decoded-page cache/worker protocol with owned buffer recycling,
-  demand protection, deadline ordering and stale-result rejection. Actual streamed
-  rendering and decoder integration remain in development.
+  demand protection, deadline ordering and stale-result rejection. File decoder
+  integration remains in development.
 
 - Add immutable decoded asset IDs and read-only source demand with sample deadlines,
   pitch-dependent interpolation guards and separate crossfade ranges. These are
-  streaming foundations; playback still uses resident PCM.
+  streaming foundations; paged rendering is now also executable.
 
 - Add prepared stereo bus routing with shared processor kernels, independent summed
   histories, sample-clock controls and tails that retain plans without retaining host

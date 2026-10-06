@@ -1,15 +1,17 @@
 # Native sample residency and streaming
 
-V2-11 is in progress. Playback still uses resident PCM. The first executable pieces
-are immutable asset identity, demand prediction and bounded decoded-page ownership.
-The cache/worker protocol is executable; paged rendering, actual decoder integration,
-onset readiness and starvation policies are not complete.
+V2-11 is in progress. Resident and paged assets now render through the same native
+source/DSP path. The bounded cache/worker protocol, initial source readiness and
+observable source failure are executable. Automatic demand scheduling, file decoder
+integration, click-free starvation recovery and distinct offline preparation are
+still open; this is not yet a production disk-streaming service.
 
 ## Asset identity
 
 `Pcm::asset_id()` identifies one immutable decoded asset revision within the process.
-Cloning a PCM handle across views or prepared plans preserves both the sample buffer
-and this identity. Constructing another revision assigns a new, non-reused identity,
+Cloning a PCM handle across views or prepared plans preserves its optional sample
+buffer and identity. `Pcm::streamed(rate, frames)` admits metadata without allocating
+sample storage; `frame_count()` and `resident_frames()` distinguish the two cases. Constructing another revision assigns a new, non-reused identity,
 even when its current samples happen to be equal. These are runtime identities, not
 persistent filenames or content hashes. Content deduplication belongs on control;
 rendering does not hash samples, compare paths or increment shared references.
@@ -104,3 +106,38 @@ the cache after that worker exits. Cache transfer paths run under heap guards.
 Native/MSRV, strict Clippy and root boundary checks pass; targeted release checks
 also cover the cache protocol (`artifacts/stream-cache-*`). This is not yet evidence
 of streamed source playback or storage-latency tolerance.
+
+## Paged native rendering and initial admission
+
+`Runtime::with_stream_cache` transfers the cache during control-side setup. The
+current caller services requests/completions through `stream_cache_mut`; rendering
+only borrows it. It performs no decoding, waiting, page destruction or shared-handle
+cloning. Paged and resident reads use one generic source traversal/resampler and
+processor path, with contiguous-span acceleration for either storage kind.
+Out-of-view padding is zero; an unavailable physical frame is a distinct failure.
+A filtered output frame commits neither cursor, envelope nor output until every
+required guard and crossfade leg is available.
+
+Attack/release selection preflights the complete selected layer set before publishing
+sources or sequence decisions. The first frame's actual pitch, source offset,
+interpolation guards and crossfade legs must be ready, even for muted sources.
+`Error::NotReady` rejects that admission without partial layers. This is an initial
+frame guarantee only: worker horizons must still cover subsequent reads and later
+pitch/release changes. Scheduled manual sources can lose readiness before start;
+rendering checks actual reads again.
+
+The current live failure contract stops the unavailable source and increments
+`Runtime::stream_underruns()` once. It never replays delayed samples or pauses musical
+time. Existing voice DSP drains its declared zero-input tail across callback
+boundaries; host key pairing remains owned until the real note-off. Bus tails retain
+their existing separate ownership. **A dry source currently cuts at the miss**;
+preventive fades and recovery policy remain required before production readiness.
+Muted sources retain virtual advancement; their demand still includes needed data
+for a later unmute.
+
+`tests/paged_render.rs` compares paged/resident PCM exactly across five source rates,
+both directions, wrap/reflected/crossfade loops, release and differing block
+partitions. It also checks atomic missing-guard rejection, host pairing after a live
+miss, and one-time DSP-tail drainage, with allocation/deallocation guards. Logs:
+`artifacts/paged-render-*`. These checks do not establish storage-latency tolerance
+or Kontakt/Falcon performance parity.

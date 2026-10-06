@@ -21,7 +21,8 @@ fn decode(worker: &mut StreamWorker, asset: &Pcm) -> (PageKey, *const Frame) {
     assert_eq!(job.key().asset, asset.asset_id());
     let range = job.range();
     let pointer = job.frames_mut().as_ptr();
-    job.frames_mut().copy_from_slice(&asset.frames()[range]);
+    job.frames_mut()
+        .copy_from_slice(&asset.resident_frames().unwrap()[range]);
     let key = job.key();
     worker.complete(job, Ok(())).unwrap();
     (key, pointer)
@@ -79,20 +80,16 @@ fn decoded_pages_share_buffers_across_views_and_protected_pages_survive_eviction
             cache
                 .span(asset.asset_id(), 2 * PAGE_FRAMES..2 * PAGE_FRAMES + 3)
                 .unwrap(),
-            &asset.frames()[2 * PAGE_FRAMES..]
+            &asset.resident_frames().unwrap()[2 * PAGE_FRAMES..]
         );
-        assert!(
-            cache
-                .frame(asset.asset_id(), asset.frames().len())
-                .is_none()
-        );
+        assert!(cache.frame(asset.asset_id(), asset.frame_count()).is_none());
         assert_eq!(cache.request(&asset, 3, 0), Err(StreamError::InvalidRange));
         assert_eq!(
             cache.request(&asset, usize::MAX, 0),
             Err(StreamError::InvalidRange)
         );
         assert_eq!(
-            cache.protect(&asset, 0..asset.frames().len() + 1),
+            cache.protect(&asset, 0..asset.frame_count() + 1),
             Err(StreamError::InvalidRange)
         );
     });
@@ -160,7 +157,7 @@ fn late_completion_cannot_overwrite_a_reused_slot_and_returns_its_buffer() {
         assert_eq!(cache.status(key(&asset, 0)), PageStatus::Missing);
         assert_eq!(
             cache.frame(asset.asset_id(), 2 * PAGE_FRAMES),
-            Some(asset.frames()[2 * PAGE_FRAMES])
+            Some(asset.resident_frames().unwrap()[2 * PAGE_FRAMES])
         );
         assert_eq!(decode(&mut worker, &asset).0, key(&asset, 1));
         assert_eq!(cache.poll(), Some(PageUpdate::Loaded(key(&asset, 1))));
@@ -195,7 +192,8 @@ fn failed_or_foreign_decodes_preserve_pool_ownership_and_never_publish_bad_sampl
         let mut job = worker.next_job().unwrap();
         assert!(job.frames_mut().iter().all(|frame| *frame == [0.; 2]));
         let range = job.range();
-        job.frames_mut().copy_from_slice(&asset.frames()[range]);
+        job.frames_mut()
+            .copy_from_slice(&asset.resident_frames().unwrap()[range]);
         worker.complete(job, Ok(())).unwrap();
         assert_eq!(cache.poll(), Some(PageUpdate::Loaded(key(&asset, 0))));
     });
@@ -214,7 +212,10 @@ fn worker_disconnect_keeps_resident_data_but_rejects_unserviceable_requests() {
         assert_eq!(cache.request(&asset, 0, 0), Ok(PageStatus::Ready));
         assert_eq!(cache.request(&asset, 1, 1), Err(StreamError::Disconnected));
         assert_eq!(cache.request(&asset, 2, 1), Err(StreamError::Disconnected));
-        assert_eq!(cache.frame(asset.asset_id(), 1), Some(asset.frames()[1]));
+        assert_eq!(
+            cache.frame(asset.asset_id(), 1),
+            Some(asset.resident_frames().unwrap()[1])
+        );
     });
 }
 
@@ -230,7 +231,7 @@ fn worker_thread_publishes_owned_pages_that_survive_endpoint_shutdown() {
         let mut job = worker.next_job().unwrap();
         let range = job.range();
         job.frames_mut()
-            .copy_from_slice(&worker_asset.frames()[range]);
+            .copy_from_slice(&worker_asset.resident_frames().unwrap()[range]);
         worker.complete(job, Ok(())).unwrap();
         // Worker endpoint/free buffers are destroyed on this worker thread.
     });
@@ -239,7 +240,7 @@ fn worker_thread_publishes_owned_pages_that_survive_endpoint_shutdown() {
         assert_eq!(cache.poll(), Some(PageUpdate::Loaded(key(&asset, 0))));
         assert_eq!(
             cache.span(asset.asset_id(), 0..PAGE_FRAMES).unwrap(),
-            &asset.frames()[..PAGE_FRAMES]
+            &asset.resident_frames().unwrap()[..PAGE_FRAMES]
         );
         assert_eq!(cache.request(&asset, 0, 0), Ok(PageStatus::Ready));
         assert_eq!(cache.request(&asset, 1, 0), Err(StreamError::Disconnected));

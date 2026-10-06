@@ -140,6 +140,8 @@ pub struct Input {
 pub enum Error {
     Capacity,
     InvalidInput,
+    /// Required decoded source data is not resident; no source was admitted.
+    NotReady,
     StaleHandle,
     DuplicateInput,
     ClosedNote,
@@ -233,6 +235,7 @@ struct Voice {
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
+    source_failed: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,6 +395,8 @@ pub struct Runtime {
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
     kernel: &'static resample::Kernel,
+    stream_cache: Option<StreamCache>,
+    stream_underruns: u64,
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
@@ -494,6 +499,8 @@ impl Runtime {
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             kernel: resample::Kernel::shared(),
+            stream_cache: None,
+            stream_underruns: 0,
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
@@ -917,7 +924,7 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let cursor = playback.cursor(
-            plan.pcm[sample].frames().len(),
+            plan.pcm[sample].frame_count(),
             plan.pcm[sample].sample_rate(),
             self.rate,
         )?;
@@ -943,6 +950,9 @@ impl Runtime {
         let base_step = cursor.step();
         let step = self.pitch_range(owner, true)?.apply(base_step)?;
         let cursor = cursor.with_step(step);
+        let note = self.notes.get(f.note.0).unwrap();
+        let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
+        self.check_source_ready(asset, cursor, envelope)?;
         let count = f.voices.checked_add(1).ok_or(Error::Capacity)?;
         let next_sibling = f.first_voice;
         if at > self.now && self.available_commands() == 0 {
@@ -964,6 +974,7 @@ impl Runtime {
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
+            source_failed: false,
         })?);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);

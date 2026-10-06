@@ -205,7 +205,7 @@ impl StreamCache {
     /// Protect resident and in-flight pages for this epoch. Returns complete
     /// readiness separately from protection; absent/failed pages are not ready.
     pub fn protect(&mut self, asset: &Pcm, frames: Range<usize>) -> Result<bool, StreamError> {
-        if frames.start >= frames.end || frames.end > asset.frames().len() {
+        if frames.start >= frames.end || frames.end > asset.frame_count() {
             return Err(StreamError::InvalidRange);
         }
         let first = frames.start / PAGE_FRAMES;
@@ -230,7 +230,7 @@ impl StreamCache {
     ) -> Result<PageStatus, StreamError> {
         let start = page
             .checked_mul(PAGE_FRAMES)
-            .filter(|start| *start < asset.frames().len())
+            .filter(|start| *start < asset.frame_count())
             .ok_or(StreamError::InvalidRange)?;
         let key = PageKey {
             asset: asset.asset_id(),
@@ -291,7 +291,7 @@ impl StreamCache {
             .ok_or(StreamError::SequenceExhausted)?;
         let request = Request {
             key,
-            len: PAGE_FRAMES.min(asset.frames().len() - start),
+            len: PAGE_FRAMES.min(asset.frame_count() - start),
             deadline,
             slot,
             serial,
@@ -479,5 +479,43 @@ impl StreamWorker {
                 job: done.job,
                 result: done.result,
             })
+    }
+}
+
+impl crate::Runtime {
+    /// Setup/control-side ownership transfer. Construct and destroy runtime/cache
+    /// on control; the audio path only moves page buffers through bounded queues.
+    pub fn with_stream_cache(mut self, cache: StreamCache) -> Self {
+        self.stream_cache = Some(cache);
+        self
+    }
+    /// Audio-side demand/poll access. Protect current demand before requesting
+    /// replacement pages; never invalidate pages still needed by playing voices.
+    pub fn stream_cache_mut(&mut self) -> Option<&mut StreamCache> {
+        self.stream_cache.as_mut()
+    }
+    pub fn stream_underruns(&self) -> u64 {
+        self.stream_underruns
+    }
+
+    pub(crate) fn check_source_ready(
+        &self,
+        asset: &Pcm,
+        cursor: crate::source::Cursor,
+        envelope: crate::Envelope,
+    ) -> Result<(), Error> {
+        if asset.resident_frames().is_some() {
+            return Ok(());
+        }
+        let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
+        let ready = cursor.visit_demand(1, crate::EnvelopeState::new(envelope), |_, range| {
+            (range.start / PAGE_FRAMES..=(range.end - 1) / PAGE_FRAMES).all(|index| {
+                cache.status(PageKey {
+                    asset: asset.asset_id(),
+                    index,
+                }) == PageStatus::Ready
+            })
+        });
+        if ready { Ok(()) } else { Err(Error::NotReady) }
     }
 }
