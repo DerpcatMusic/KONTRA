@@ -121,6 +121,7 @@ pub struct Mpe {
     controls: [Controls; 16],
     bends: [Value; 16],
     ranges: [u8; 2],
+    bend_override: Option<u8>,
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
@@ -179,11 +180,19 @@ impl Mpe {
             controls: [Controls::default(); 16],
             bends: [Value::Bits14(8192); 16],
             ranges: [2, 48],
+            bend_override: None,
             parameters: [Parameter::default(); 16],
             bindings,
             changes,
             transpose: 0.0,
         })
+    }
+
+    /// Fix the bend range of every channel in whole semitones, whatever RPN 0
+    /// says; `None` returns to RPN 0. Held bends keep their pitch until the
+    /// next bend message.
+    pub fn set_bend_range(&mut self, semitones: Option<u8>) {
+        self.bend_override = semitones.filter(|&r| r <= 96);
     }
 
     /// Whole-semitone manager and shared member bend sensitivities.
@@ -252,7 +261,9 @@ impl Mpe {
                 attribute,
             },
             Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
-                let range = self.ranges[usize::from(voice.channel != self.zone.manager())];
+                let range = self
+                    .bend_override
+                    .unwrap_or(self.ranges[usize::from(voice.channel != self.zone.manager())]);
                 let applied = self.control(
                     runtime,
                     voice.channel,
@@ -510,6 +521,10 @@ impl Mpe {
             return Err(Error::InvalidInput);
         }
         let manager = channel == self.zone.manager();
+        if self.bend_override.is_some() {
+            self.ranges[usize::from(!manager)] = value;
+            return Ok(Applied::Configuration);
+        }
         let mut controls = self.controls;
         for (index, control) in controls.iter_mut().enumerate() {
             let channel = index as u8;

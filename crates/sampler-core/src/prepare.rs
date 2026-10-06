@@ -391,7 +391,7 @@ pub struct Prepared {
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) signal_programs: Box<[super::SignalProgram]>,
     pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
-    keyswitches: [Option<u32>; 128],
+    pub(super) keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,
     bend_range: f64,
