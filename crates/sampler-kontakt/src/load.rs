@@ -49,10 +49,17 @@ pub struct Loaded {
 }
 
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
-pub fn load(
+pub fn load(path: &Path, options: &Options, progress: impl FnMut(Progress)) -> Result<Loaded, LoadError> {
+    load_cancelable(path, options, progress, || false)
+}
+
+/// [`load`], stopping with [`LoadError::Canceled`] once `canceled` returns true;
+/// it is polled before each sample is decoded and before lowering.
+pub fn load_cancelable(
     path: &Path,
     options: &Options,
     mut progress: impl FnMut(Progress),
+    canceled: impl Fn() -> bool,
 ) -> Result<Loaded, LoadError> {
     let Kontakt {
         mut instrument,
@@ -67,6 +74,9 @@ pub fn load(
     });
     let mut pcm = Vec::with_capacity(kept.len());
     for (done, &asset) in kept.iter().enumerate() {
+        if canceled() {
+            return Err(LoadError::Canceled);
+        }
         let sample = &locations[asset];
         progress(Progress::Decoding {
             done,
@@ -81,6 +91,9 @@ pub fn load(
                 reason: e.to_string(),
             })?,
         );
+    }
+    if canceled() {
+        return Err(LoadError::Canceled);
     }
     progress(Progress::Lowering);
     let labels = kept
