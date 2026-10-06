@@ -15,7 +15,6 @@ sampler-ir = { path = "../sampler-ir" }
 sampler-uvi = { path = "../sampler-uvi", default-features = false }
 serde_json = "1"
 dirs = "5"
-roxmltree = "=0.21.1"
 
 [features]
 default = ["library-access"]

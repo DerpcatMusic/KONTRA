@@ -103,18 +103,7 @@ pub struct Uvi {
 
 /// Translate the program at `path`; sample paths resolve from its folder.
 pub fn read(path: &Path) -> Result<Uvi, Error> {
-    let io = |error| Error::Io {
-        path: path.into(),
-        error,
-    };
-    let size = std::fs::metadata(path).map_err(io)?.len();
-    if size > XML_LIMIT {
-        return Err(Error::Invalid {
-            path: path.into(),
-            reason: "program exceeds 32 MiB".into(),
-        });
-    }
-    let text = std::fs::read_to_string(path).map_err(io)?;
+    let text = read_text(path)?;
     translate(&text, path.parent().unwrap_or(Path::new("."))).map_err(|e| match e {
         Translate::Xml(error) => Error::Xml {
             path: path.into(),
@@ -134,6 +123,42 @@ pub enum Translate {
     Invalid(String),
 }
 
+impl std::fmt::Display for Translate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Xml(error) => error.fmt(f),
+            Self::Invalid(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for Translate {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Xml(error) => Some(error),
+            Self::Invalid(_) => None,
+        }
+    }
+}
+
+/// Parse decoded program XML with the same bounds used by the loader and census.
+/// Large installed Falcon programs exceed 200,000 nodes; retain a 32 MiB byte
+/// bound and a one-million-node bound, and reject DTDs.
+pub fn parse_program_xml(text: &str) -> Result<Document<'_>, Translate> {
+    if text.len() as u64 > XML_LIMIT {
+        return Err(Translate::Invalid("program exceeds 32 MiB".into()));
+    }
+    Document::parse_with_options(
+        text,
+        ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: 1_000_000,
+            ..Default::default()
+        },
+    )
+    .map_err(Translate::Xml)
+}
+
 /// Translate program XML whose relative sample paths resolve from `folder`.
 pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
     let (instrument, locations) = translate_with(text, Source::Disk(folder.into()))?;
@@ -150,12 +175,7 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
-    let options = ParsingOptions {
-        allow_dtd: false,
-        nodes_limit: 200_000,
-        ..Default::default()
-    };
-    let doc = Document::parse_with_options(text, options).map_err(Translate::Xml)?;
+    let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
         "Program" => root,
@@ -723,7 +743,15 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
                 .and_then(|bytes| audio::decode(&[bytes]).map(|(d, _)| d))
         })
         .collect();
-    assemble(instrument, locations, decoded, rate)
+    assemble(
+        instrument,
+        locations,
+        decoded,
+        &sampler_kontakt::Options {
+            rate,
+            ..Default::default()
+        },
+    )
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
@@ -733,9 +761,30 @@ pub fn load_program(
     program: &str,
     rate: u32,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    load_program_with_options(
+        bank,
+        program,
+        &sampler_kontakt::Options {
+            rate,
+            ..Default::default()
+        },
+    )
+}
+
+/// Load only sample zones overlapping `options.keys`, as Kontakt's loader does.
+/// This bounds offline renders to the played range without changing translation.
+pub fn load_program_with_options(
+    bank: &Bank,
+    program: &str,
+    options: &sampler_kontakt::Options,
+) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations) =
+    let (mut instrument, locations) =
         translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    let kept = instrument.retain_zones(|zone| {
+        zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
+    });
+    let locations: Vec<_> = kept.iter().map(|&asset| locations[asset].clone()).collect();
     let decoded = locations
         .iter()
         .map(|authored| {
@@ -744,7 +793,7 @@ pub fn load_program(
                 .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
         })
         .collect();
-    assemble(instrument, locations, decoded, rate)
+    assemble(instrument, locations, decoded, options)
 }
 
 fn read_text(path: &Path) -> Result<String, Error> {
@@ -789,7 +838,7 @@ fn assemble(
     mut instrument: ir::Instrument,
     locations: Vec<String>,
     decoded: Vec<Result<sampler_kontakt::Decoded, String>>,
-    rate: u32,
+    options: &sampler_kontakt::Options,
 ) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
     for (location, result) in locations.iter().zip(&decoded) {
         if let Err(reason) = result {
@@ -803,18 +852,11 @@ fn assemble(
     }
     let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
     let mut pcm = Vec::with_capacity(kept.len());
+    let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
     for &asset in &kept {
-        let d = decoded[asset].as_ref().unwrap();
-        pcm.push(sampler_core::Pcm::new(
-            d.rate,
-            d.frames.clone().into_boxed_slice(),
-        )?);
+        let d = decoded[asset].take().unwrap().unwrap();
+        pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    let options = sampler_kontakt::Options {
-        rate,
-        scripts: true,
-        ..Default::default()
-    };
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, &options)?)
+    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
 }

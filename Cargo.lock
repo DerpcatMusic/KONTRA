@@ -3694,7 +3694,6 @@ name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "dirs",
- "roxmltree",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",

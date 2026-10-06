@@ -261,15 +261,7 @@ fn bank(path: &Path) {
         let mut samples = 0;
         let result = (|| -> Result<(), String> {
             let (text, member) = bank.program(&program).map_err(|e| e.to_string())?;
-            let document = roxmltree::Document::parse_with_options(
-                &text,
-                roxmltree::ParsingOptions {
-                    allow_dtd: false,
-                    nodes_limit: 200_000,
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| e.to_string())?;
+            let document = sampler_uvi::parse_program_xml(&text).map_err(|e| e.to_string())?;
             for node in document.descendants() {
                 let Some(sample) = node.attribute("SamplePath").filter(|s| !s.is_empty()) else {
                     continue;
