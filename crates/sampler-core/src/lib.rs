@@ -379,6 +379,8 @@ pub struct Runtime {
     expression_changes: Box<[Option<RenderedExpression>]>,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
+    behavior_ready: Vec<behavior::Ready>,
+    dispatching_behavior: bool,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
@@ -423,6 +425,10 @@ impl Runtime {
             return Err(Error::Capacity);
         }
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
+        // One execution frame and at most one release completion per continuation.
+        let ready_capacity = limits.behaviors.checked_mul(2).ok_or(Error::Capacity)?;
+        std::alloc::Layout::array::<behavior::Ready>(ready_capacity)
+            .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
             .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<(i32, NoteId)>(limits.notes).map_err(|_| Error::Capacity)?;
@@ -470,6 +476,8 @@ impl Runtime {
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
+            behavior_ready: Vec::with_capacity(ready_capacity),
+            dispatching_behavior: false,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),

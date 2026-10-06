@@ -222,8 +222,9 @@ impl Runtime {
                     .is_some_and(|input| input.channel_address() == address)
             {
                 let held = !self.selections[i].consumed_switch && (sustained || note.sostenuto);
-                self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
-                if !held && !self.release_times[i].held {
+                let deferred =
+                    self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
+                if !deferred && !held && !self.release_times[i].held {
                     self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff);
                 }
                 released += 1;
@@ -295,7 +296,22 @@ impl Runtime {
         cause: ReleaseCause,
     ) -> Result<(), Error> {
         super::release::validate_velocity(velocity)?;
-        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if !self.release_key(note, cause, velocity) {
+            self.finish_key_release(note, cause);
+        }
+        Ok(())
+    }
+
+    pub(super) fn finish_key_release(&mut self, note: NoteId, cause: ReleaseCause) {
+        if !self.release_times[note.0.index].held {
+            self.run_release(
+                note,
+                super::Trigger::KeyRelease,
+                cause.triggers_key_release(),
+            );
+        }
+        let n = self.notes.get(note.0).unwrap();
         let sustained = n.input.is_some_and(|i| {
             self.channels.slots.iter().any(|s| {
                 s.value
@@ -303,7 +319,6 @@ impl Runtime {
             })
         });
         let held = !self.selections[note.0.index].consumed_switch && (sustained || n.sostenuto);
-        self.release_key(note, cause, velocity);
         if !held && !self.release_times[note.0.index].held {
             self.close_gate(note, cause);
             self.cleanup_closed_notes();
@@ -312,7 +327,6 @@ impl Runtime {
             // Remove later key-up commands before that owner can retire.
             self.cancel_closed_work();
         }
-        Ok(())
     }
 
     pub(super) fn pedal_now(&mut self, id: ChannelId, down: bool, sostenuto: bool) {

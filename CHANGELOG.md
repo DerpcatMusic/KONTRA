@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Dispatch nested native callbacks through bounded, preallocated work storage. Deep
+  release chains preserve callback fuel and wait ordering without growing the audio
+  thread stack; gate completion retains its owner through callback side effects.
+
 - Separate raw host key ownership from scripted note ends and callback faults.
   Late note-offs retain same-key FIFO pairing, source timers preserve host deadlines,
   and MPE member expression follows physical key ownership through script completion.
