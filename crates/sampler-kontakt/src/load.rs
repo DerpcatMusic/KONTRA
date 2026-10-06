@@ -418,13 +418,26 @@ pub fn prepare(
             persisted: behavior
                 .state
                 .iter()
-                .map(|(name, saved)| {
+                .filter_map(|(name, saved)| {
                     let value = match saved {
                         ir::Saved::Int(n) => Value::Int(*n as i32),
                         ir::Saved::Real(r) => Value::Real(*r),
                         ir::Saved::Text(t) => Value::Text(t.clone()),
+                        _ => return None,
                     };
-                    (name.clone(), value)
+                    Some((name.clone(), value))
+                })
+                .collect(),
+            persisted_arrays: behavior
+                .state
+                .iter()
+                .filter_map(|(name, saved)| {
+                    let values = match saved {
+                        ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
+                        ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
+                        _ => return None,
+                    };
+                    Some((name.clone(), values))
                 })
                 .collect(),
             performance_view,

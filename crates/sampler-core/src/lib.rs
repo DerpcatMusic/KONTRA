@@ -118,7 +118,8 @@ mod ops;
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
-    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, real, real_bits,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
+    real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
@@ -622,6 +623,7 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        let initial_controllers = plan.initial_controllers.clone();
         let note_stride = limits.note_cells / limits.notes;
         if plan.note_cells > note_stride {
             return Err(Error::Capacity);
@@ -746,10 +748,17 @@ impl Runtime {
                 .into_boxed_slice(),
             selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
-            performance_state: performance::PerformanceState::new(
-                state_capacity,
-                limits.performances,
-            ),
+            performance_state: {
+                let mut state =
+                    performance::PerformanceState::new(state_capacity, limits.performances);
+                for &(controller, value) in &initial_controllers {
+                    state.states[0].controllers[usize::from(controller)] = value;
+                    for input in state.input_controllers.iter_mut() {
+                        input[usize::from(controller)] = value;
+                    }
+                }
+                state
+            },
         })
     }
 
