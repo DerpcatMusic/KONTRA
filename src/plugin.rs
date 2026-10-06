@@ -290,6 +290,9 @@ pub(crate) struct PartShared {
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
+    /// The loaded part's script interface models; [`Shared::apply_effects`]
+    /// updates them and republishes [`PartView::interfaces`].
+    scripts: Mutex<crate::sound::ScriptUi>,
 }
 
 /// One control's value as last seen (`f64` bits).
@@ -388,6 +391,8 @@ pub struct Shared {
     pub(crate) controls: ArrayQueue<Mix>,
     /// Widget edits for the audio thread: rack slot, control, value.
     control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
+    /// Script effects from the audio thread: rack slot, script instance, effect.
+    effects: ArrayQueue<(usize, usize, sampler_core::Effect)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// One strip's signal for a spectrum on screen.
@@ -498,6 +503,7 @@ impl Default for Shared {
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
             control_edits: ArrayQueue::new(256),
+            effects: ArrayQueue::new(1024),
             meters: Meters::default(),
             scope: Scope::default(),
             blocks: AtomicU64::new(0),
@@ -845,6 +851,25 @@ impl Shared {
         self.control_edits.push((slot, control, value)).is_ok()
     }
 
+    /// Apply the script effects the audio thread queued to their parts'
+    /// interface models, and publish the interfaces that changed.
+    fn apply_effects(&self) {
+        let mut changed = Vec::new();
+        while let Some((slot, instance, effect)) = self.effects.pop() {
+            let Some(part) = self.part(slot) else { continue };
+            if part.scripts.lock().unwrap().apply(instance, &effect) && !changed.contains(&slot) {
+                changed.push(slot);
+            }
+        }
+        for slot in changed {
+            let Some(part) = self.part(slot) else { continue };
+            let interfaces = part.scripts.lock().unwrap().interfaces();
+            if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot) {
+                v.interfaces = interfaces.into();
+            }
+        }
+    }
+
     fn reset_midi(&self) {
         while self.keyboard.pop().is_some() {}
         for owner in &self.key_owners {
@@ -943,6 +968,7 @@ impl BackgroundTask for Load {
     fn run(self, params: &SamplerParams) {
         let shared = &params.shared;
         shared.flush_ready();
+        shared.apply_effects();
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
         load_multi(params);
@@ -1091,6 +1117,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
                 .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
                 .collect();
             v.instrument = loaded.instrument;
+            *atoms.scripts.lock().unwrap() = loaded.scripts;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
@@ -1550,6 +1577,9 @@ impl PluginLogic for Sampler {
                 shared.scope.push(tapped);
             }
             at += len;
+        }
+        for slot in 0..s.core.parts() {
+            s.core.take_effects(slot, &mut |instance, effect| shared.effects.push((slot, instance, *effect)).is_ok());
         }
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
