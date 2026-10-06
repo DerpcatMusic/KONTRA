@@ -79,6 +79,30 @@ impl Runtime {
     }
 }
 
+/// A releasing voice whose output cannot exceed this (about -120 dBFS) for
+/// `QUIET_FRAMES` in a row is ended: it costs CPU and nobody hears it.
+const INAUDIBLE: f32 = 1e-6;
+const QUIET_FRAMES: u32 = 512;
+
+/// Track how long a releasing voice has been inaudible; true once it can end.
+/// The bound is its envelope level times its gain and the gains applied
+/// after it (`gains`: expression, script volume, modulation), for samples up
+/// to full scale. Chain filters could add resonance, so a voice that is
+/// merely quiet is never cut: only one far below the threshold is.
+pub(super) fn inaudible(v: &mut super::Voice, frames: usize, gains: [f32; 2]) -> bool {
+    if !v.envelope.releasing() {
+        v.quiet = 0;
+        return false;
+    }
+    let bound = v.envelope.current().abs() * v.gain.abs() * gains[0].abs().max(gains[1].abs());
+    if bound < INAUDIBLE {
+        v.quiet = v.quiet.saturating_add(frames as u32);
+    } else {
+        v.quiet = 0;
+    }
+    v.quiet >= QUIET_FRAMES
+}
+
 impl Runtime {
     /// Events at the exclusive block end stay pending until the next render (including
     /// an empty block). Overflow is rejected before any output/state mutation.
@@ -379,7 +403,7 @@ impl Runtime {
             if let Some(bus) = v.bus {
                 dsp.buses.fed(bus, produced);
             }
-            done[lane] = chain.done(v);
+            done[lane] = chain.done(v) || inaudible(v, produced, gains[lane]);
         }
         drop(cells);
         for (lane, &i) in voices.iter().enumerate() {
@@ -528,7 +552,11 @@ impl Runtime {
                 ramp_mix(segment, target, ramp.from.gains, ramp.to.gains);
             }
         }
-        let done = done || stop;
+        let applied = points.map_or(gains, |r| {
+            let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+            [gains[0] * m(0), gains[1] * m(1)]
+        });
+        let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
         if let Some(bus) = bus {

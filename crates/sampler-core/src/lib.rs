@@ -299,6 +299,8 @@ struct Voice {
     group: Option<u32>,
     /// Script-layer gains at the end of the last rendered chunk.
     script_gains: Option<[f32; 2]>,
+    /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
+    quiet: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1194,6 +1196,7 @@ impl Runtime {
             started: at == self.now,
             group: None,
             script_gains: None,
+            quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
