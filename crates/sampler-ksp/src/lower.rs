@@ -105,6 +105,8 @@ pub struct Unit<'h> {
     pub slot: u8,
     /// Remaining instruction budget for the whole script.
     pub budget: usize,
+    /// The whole script's instruction limit.
+    pub limit: usize,
     pub services: Vec<Builtin>,
     pub coverage: BTreeMap<(&'static str, Coverage), usize>,
     pub warnings: Vec<(Fault, crate::diag::Kind)>,
@@ -239,7 +241,10 @@ fn reg(r: u16, n: u16) -> Result<u16> {
 impl Gen<'_, '_> {
     fn emit(&mut self, op: I) -> Result<()> {
         if self.u.budget == 0 {
-            return fault(self.span, "instruction budget exceeded");
+            return fault(
+                self.span,
+                format!("instruction budget exceeded: more than {}", self.u.limit),
+            );
         }
         self.u.budget -= 1;
         self.code.push(op);
