@@ -26,6 +26,29 @@ use std::{
     time::Instant,
 };
 
+/// A numeric field of a `/proc/self` file ("VmHWM:", "read_bytes:" ...).
+fn proc_field(file: &str, key: &str) -> u64 {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .find_map(|l| l.strip_prefix(key))
+        .and_then(|v| v.split_whitespace().next()?.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Minor and major page faults so far.
+fn faults() -> (u64, u64) {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    let rest = stat.rsplit_once(')').map_or("", |x| x.1);
+    let f: Vec<u64> = rest.split_whitespace().skip(7).take(3).filter_map(|v| v.parse().ok()).collect();
+    (f.first().copied().unwrap_or(0), f.get(2).copied().unwrap_or(0))
+}
+
+/// Start a fresh measurement window: peak RSS restarts here.
+fn reset_peaks() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
 const HOLD_SECONDS: f64 = 1.0;
 const TAIL_SECONDS: f64 = 5.0;
 const VELOCITY: u8 = 64;
@@ -241,6 +264,14 @@ fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
     None
 }
 
+/// The error type's variant name, taken from its `Debug` form.
+fn kind_of(debug: &str) -> String {
+    debug
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
+}
+
 fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize> {
     let mut map = BTreeMap::new();
     for u in unsupported {
@@ -250,6 +281,7 @@ fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize
 }
 
 struct Sound {
+    perf: Value,
     note: String,
     peak: f32,
     finite: bool,
@@ -276,7 +308,7 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
         behavior_cells: plan.behavior_local_count().saturating_mul(16),
         note_cells: plan.note_cell_count().saturating_mul(64),
     };
-    let mut rt = Runtime::new(plan, limits).map_err(|e| format!("runtime: {e}"))?;
+    let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
     rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
         rt.sample_rate(),
         limits.voices,
@@ -300,7 +332,10 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
     groups[0] = Some(Version::Midi1);
     #[allow(unused_mut)]
     let mut ingress = Ingress::new(0, groups);
-    let mut buffer = [[0.0f32; 2]; 256];
+    let mut buffer = [[0.0f32; 2]; 64];
+    let deadline = buffer.len() as f64 / f64::from(rate);
+    let mut block_times: Vec<f64> = Vec::with_capacity(total / buffer.len() + 1);
+    let mut peak_voices = 0usize;
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
     let switch_words: Vec<[u32; 1]> = if pick.switch.is_some() {
@@ -335,6 +370,7 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
                 packet: off,
             });
         }
+        let t0 = Instant::now();
         ingress
             .render(
                 &mut rt,
@@ -351,6 +387,8 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
                 },
             )
             .map_err(|e| format!("block: {e:?}"))?;
+        block_times.push(t0.elapsed().as_secs_f64());
+        peak_voices = peak_voices.max(rt.voice_count());
         rt.flush_behaviors(|_, _, outcome| {
             if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
                 faults.push(normalize(&format!("{outcome:?}")));
@@ -367,7 +405,26 @@ fn play(loaded: sampler_kontakt::Loaded, pick: Pick) -> Result<Sound, String> {
             }
         }
     }
+    block_times.sort_by(f64::total_cmp);
+    let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
+    let st = rt.stats();
+    let perf = json!({
+        "block_frames": buffer.len(),
+        "deadline_ms": deadline * 1e3,
+        "block_p50_ms": q(0.5) * 1e3,
+        "block_p99_ms": q(0.99) * 1e3,
+        "block_max_ms": q(1.0) * 1e3,
+        "deadline_misses": block_times.iter().filter(|t| **t > deadline).count(),
+        "blocks": block_times.len(),
+        "peak_voices": peak_voices,
+        "stream_underruns": st.stream_underruns,
+        "cold_starts": st.cold_starts,
+        "voice_drops": st.voice_drops,
+        "resident_bytes": rt.resident_bytes(),
+        "stream_cache_bytes": st.stream_cache_bytes,
+    });
     Ok(Sound {
+        perf,
         note,
         peak,
         finite,
@@ -403,9 +460,9 @@ fn scripts(loaded: &sampler_kontakt::Loaded) -> Value {
 }
 
 fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
-    let failed = |reason: String| {
+    let failed = |stage: &str, kind: String, reason: String| {
         (
-            json!({"ok": false, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
+            json!({"ok": false, "stage": stage, "kind": kind, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
             None,
         )
     };
@@ -413,10 +470,10 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
         Item::Kontakt(path) => {
             let ir = match sampler_kontakt::read(path) {
                 Ok(read) => read.instrument,
-                Err(e) => return failed(e.to_string()),
+                Err(e) => return failed("parse", kind_of(&format!("{e:?}")), e.to_string()),
             };
             let Some(pick) = pick_key(&ir) else {
-                return failed("no zone covers any key at any velocity".into());
+                return failed("note-on/selection", "NoZone".into(), "no zone covers any key at any velocity".into());
             };
             let options = sampler_kontakt::Options {
                 keys: pick.key..=pick.key,
@@ -428,21 +485,21 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                     json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
                     Some((loaded, pick)),
                 ),
-                Err(e) => failed(e.to_string()),
+                Err(e) => failed("load", kind_of(&format!("{e:?}")), e.to_string()),
             }
         }
         Item::UviProgram { bank, program } => {
             let virtual_path = bank.join(program);
             let ir = match sampler_uvi::translate_path(&virtual_path) {
                 Ok(t) => t.instrument,
-                Err(e) => return failed(e.to_string()),
+                Err(e) => return failed("translate-to-IR", kind_of(&format!("{e:?}")), e.to_string()),
             };
             let Some(pick) = pick_key(&ir) else {
-                return failed("no zone covers any key at any velocity".into());
+                return failed("note-on/selection", "NoZone".into(), "no zone covers any key at any velocity".into());
             };
             let bank = match sampler_uvi::Bank::open(bank) {
                 Ok(b) => b,
-                Err(e) => return failed(e.to_string()),
+                Err(e) => return failed("container/decrypt", kind_of(&format!("{e:?}")), e.to_string()),
             };
             let options = sampler_kontakt::Options {
                 keys: pick.key..=pick.key,
@@ -453,7 +510,7 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                     json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
                     Some((loaded, pick)),
                 ),
-                Err(e) => failed(e.to_string()),
+                Err(e) => failed("load", kind_of(&format!("{e:?}")), e.to_string()),
             }
         }
         Item::UviLoose(path) => {
@@ -461,7 +518,7 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("ufs"))
             {
-                return failed("bank does not open".into());
+                return failed("container/decrypt", "BankOpen".into(), "bank does not open".into());
             }
             match sampler_uvi::load(path, 48000) {
                 Ok(loaded) => match pick_key(&loaded.instrument) {
@@ -469,25 +526,62 @@ fn load_item(item: &Item) -> (Value, Option<(sampler_kontakt::Loaded, Pick)>) {
                         json!({"ok": true, "key": pick.key, "velocity": pick.velocity, "warning": pick.warning(), "zones": loaded.instrument.zones.len()}),
                         Some((loaded, pick)),
                     ),
-                    None => failed("no zone covers any key at any velocity".into()),
+                    None => failed("note-on/selection", "NoZone".into(), "no zone covers any key at any velocity".into()),
                 },
-                Err(e) => failed(e.to_string()),
+                Err(e) => failed("load", kind_of(&format!("{e:?}")), e.to_string()),
             }
         }
         Item::Multi(path) => match sampler_kontakt::read_multi(path) {
             Ok(multi) if multi.sample_names.is_empty() => {
-                failed("no sample references in multi".into())
+                failed("parse", "EmptyMulti".into(), "no sample references in multi".into())
             }
             Ok(multi) => (
                 json!({"ok": true, "programs": multi.programs.len(), "samples": multi.sample_names.len()}),
                 None,
             ),
-            Err(e) => failed(e.to_string()),
+            Err(e) => failed("parse", kind_of(&format!("{e:?}")), e.to_string()),
         },
     }
 }
 
+/// The pipeline stage a record ended in: the failing stage, or the last one
+/// reached. Stages inside `sampler_kontakt::load` are not separable until its
+/// errors carry them, so those report as `load`.
+fn stage_of(r: &Value) -> &'static str {
+    if r["load"]["ok"] != true {
+        return match r["load"]["stage"].as_str() {
+            Some("parse") => "parse",
+            Some("translate-to-IR") => "translate-to-IR",
+            Some("container/decrypt") => "container/decrypt",
+            Some("note-on/selection") => "note-on/selection",
+            _ => "load",
+        };
+    }
+    if r["kind"] == "kontakt-multi" {
+        return "ok";
+    }
+    if r["scripts"]["compile_failed"].as_u64().unwrap_or(0) > 0 {
+        return "script-compile";
+    }
+    let s = &r["sound"];
+    if let Some(e) = s["error"].as_str() {
+        return if e.starts_with("prepare") { "prepare" } else { "render" };
+    }
+    if s["note"] != "started" || s["sounds"] != true {
+        return "note-on/selection";
+    }
+    if s["finite"] == false || !s["script_faults"].as_array().is_none_or(Vec::is_empty) {
+        return "render";
+    }
+    if s["stuck_voices"].as_u64().unwrap_or(0) > 0 && s["tail_peak_db"].as_f64().is_some_and(|d| d > -60.0) {
+        return "release";
+    }
+    "ok"
+}
+
 fn check(item: &Item) -> Value {
+    reset_peaks();
+    let (io0, (minflt0, majflt0)) = (proc_field("/proc/self/io", "read_bytes:"), faults());
     let start = Instant::now();
     let (load, loaded) = load_item(item);
     let load_ms = start.elapsed().as_millis() as u64;
@@ -511,6 +605,7 @@ fn check(item: &Item) -> Value {
                     }
                 };
                 record["sound"] = json!({
+                    "perf": s.perf,
                     "note": s.note,
                     "peak_db": db(s.peak),
                     "sounds": s.peak > 1e-4,
@@ -524,6 +619,15 @@ fn check(item: &Item) -> Value {
             Err(e) => record["sound"] = json!({"error": normalize(&e)}),
         }
     }
+    record["stage"] = json!(stage_of(&record));
+    record["perf"] = json!({
+        "load_ms": load_ms,
+        "peak_rss_kib": proc_field("/proc/self/status", "VmHWM:"),
+        "disk_read_bytes": proc_field("/proc/self/io", "read_bytes:") - io0,
+        "minor_faults": faults().0 - minflt0,
+        "major_faults": faults().1 - majflt0,
+        "render": record["sound"]["perf"].clone(),
+    });
     record["load_ms"] = json!(load_ms);
     record["ms"] = json!(start.elapsed().as_millis() as u64);
     record
@@ -773,6 +877,73 @@ fn summary(out: &Path, md: &Path) {
     std::fs::write(md, text).expect("write summary");
 }
 
+/// `diff OLD NEW`: what a change fixed, broke, or made slower. Each side is a
+/// `.jsonl` or a directory of shard files. Perf deltas above 25 % and above an
+/// absolute floor (50 ms load, 32 MiB RSS) are listed.
+fn diff(old: &Path, new: &Path) {
+    let index = |p: &Path| -> BTreeMap<String, Value> {
+        all_records(p)
+            .into_iter()
+            .map(|r| (r["id"].as_str().unwrap_or_default().to_string(), r))
+            .collect()
+    };
+    let stage = |r: &Value| match r["stage"].as_str() {
+        Some(s) => s.to_string(),
+        None if r["status"] != "done" => "crash".into(),
+        None => stage_of(r).into(),
+    };
+    let (old, new) = (index(old), index(new));
+    let (mut fixed, mut regressed, mut added, mut moved, mut slow, mut fat) =
+        (vec![], vec![], vec![], vec![], vec![], vec![]);
+    let mut ok = [0usize; 2];
+    for (id, n) in &new {
+        let ns = stage(n);
+        ok[1] += usize::from(ns == "ok");
+        match old.get(id) {
+            None if ns != "ok" => added.push(format!("{id}  [{ns}]")),
+            None => {}
+            Some(o) => {
+                let os = stage(o);
+                match (os == "ok", ns == "ok") {
+                    (false, true) => fixed.push(format!("{id}  [{os} -> ok]")),
+                    (true, false) => regressed.push(format!("{id}  [ok -> {ns}]")),
+                    _ if os != ns => moved.push(format!("{id}  [{os} -> {ns}]")),
+                    _ => {}
+                }
+                let f = |r: &Value, a: &str, b: &str| r["perf"][a].as_f64().or(r[b].as_f64());
+                if let (Some(a), Some(b)) = (f(o, "load_ms", "load_ms"), f(n, "load_ms", "load_ms")) {
+                    if b > a * 1.25 && b - a > 50.0 {
+                        slow.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
+                    }
+                }
+                if let (Some(a), Some(b)) = (
+                    o["perf"]["peak_rss_kib"].as_f64(),
+                    n["perf"]["peak_rss_kib"].as_f64(),
+                ) {
+                    if b > a * 1.25 && b - a > 32768.0 {
+                        fat.push(format!("{id}  rss {:.0} -> {:.0} MiB", a / 1024.0, b / 1024.0));
+                    }
+                }
+            }
+        }
+    }
+    ok[0] = old.iter().filter(|(_, r)| stage(r) == "ok").count();
+    println!("items: {} -> {}; ok: {} -> {}", old.len(), new.len(), ok[0], ok[1]);
+    for (name, list) in [
+        ("fixed", &fixed),
+        ("regressed", &regressed),
+        ("new failure", &added),
+        ("failing stage changed", &moved),
+        ("load time up", &slow),
+        ("peak RSS up", &fat),
+    ] {
+        println!("\n{name}: {}", list.len());
+        for line in list.iter().take(40) {
+            println!("  {line}");
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
@@ -792,8 +963,9 @@ fn main() {
             run(Path::new(out), shard, &roots);
         }
         [cmd, out, md] if cmd == "summary" => summary(Path::new(out), Path::new(md)),
+        [cmd, old, new] if cmd == "diff" => diff(Path::new(old), Path::new(new)),
         _ => eprintln!(
-            "usage: corpus_health run OUT.jsonl [--shard I/N] [ROOT ...] | summary OUT.jsonl SUMMARY.md"
+            "usage: corpus_health run OUT.jsonl [--shard I/N] [ROOT ...] | summary OUT.jsonl SUMMARY.md | diff OLD NEW"
         ),
     }
 }
