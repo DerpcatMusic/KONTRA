@@ -5,6 +5,7 @@
 # Port A (see kontakt.sh), PipeWire, aplaymidi.
 set -euo pipefail
 mid=$1 out=$2 tail=${3:-3}
+"$(dirname "$0")/kontakt.sh" route || { echo "record: routing guard failed, no MIDI sent" >&2; exit 1; }
 pw-record --target kontra_ref -P '{ stream.capture.sink=true }' --rate 48000 --format f32 --channels 2 "$out" &
 rec=$!
 sleep 1
