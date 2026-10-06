@@ -2,8 +2,8 @@
 
 V2-11 is in progress. Resident and paged assets now render through the same native
 source/DSP path. The bounded cache/worker protocol, initial source readiness and
-observable source failure and a seekable WAV decoder are executable. Automatic
-demand scheduling, click-free starvation recovery and distinct offline preparation are
+observable source failure, a seekable WAV decoder and explicit bounded demand
+servicing are executable. Starvation fades/recovery and distinct offline preparation are
 still open; this is not yet a production disk-streaming service.
 
 ## Asset identity
@@ -43,8 +43,11 @@ Clients settle due events before prediction and refresh after pitch/release chan
 A stopped visitor returns `false` immediately to report incomplete demand; queue
 capacity is not reported as successful readiness. Ranges can repeat across output
 frames or voices; the resource service must deduplicate pages and retain their earliest
-required deadline. The configured horizon bounds traversal work; this is not yet a
-measured cache scheduling policy.
+required deadline. Within one snapshot, overlapping interpolation windows resolve only newly entered
+virtual source positions, retaining the first deadline of their shared guards.
+Fractional phase and envelope advancement still follow the exact render recurrence.
+The configured horizon bounds traversal work; this is not yet a measured production
+cache scheduling policy.
 
 The next implementation must provide bounded page/storage admission, owner-stamped
 worker messages, eviction/retirement without audio-thread destruction, exact paged
@@ -160,3 +163,30 @@ including the short last page and EOF. A counted seekable reader verifies openin
 reads no audio and range reads consume only their requested bytes. Logs:
 `artifacts/stream-wave-*`. This is the first concrete worker decoder, not yet a
 multicodec registry or disk-latency/overload acceptance test.
+
+## Live demand servicing
+
+`Runtime::service_streaming(horizon_frames)` polls at most cache-capacity completions,
+starts a residency epoch, protects demand for **all** live sources, then requests pages
+with their first-use deadlines. It keeps the original plan's asset identity, handles
+future admitted starts inside the horizon, and skips resident assets and already
+failed sources. It does not advance musical time, execute callbacks, decode or wait.
+Protecting cached ranges uses the sorted asset/page index rather than scanning every
+cache slot for each range.
+
+`Ok(true)` means all snapshot demand is resident; `Ok(false)` includes pending/failed
+pages, whose status remains inspectable. Explicit queue/cache errors retain already
+accepted requests and report incomplete service. Failed decodes require explicit
+invalidation before retry. The cache remains attached after errors. Missing cold
+onsets still require caller preparation; this service predicts admitted voices only.
+Callers requery after events, pitch/release changes and before a chosen render horizon;
+it does not guess callbacks that may create new sources inside a future block.
+
+Tests refill an eleven-page source through three cache slots, compare exact resident
+output at fractional, unity and 16× rates in both directions, and verify each further
+page is decoded only once. A capacity fixture protects two instruments before any
+replacement and checks both remain playable after rejection. The overlap planner's
+first-use deadlines are compared with exhaustive per-frame/per-tap traversal across
+loop shapes, fractional phases, direction and release. Logs: `artifacts/stream-service-*`.
+These establish bounded ownership and rendering correctness, not a disk deadline SLA
+or competitor performance result.

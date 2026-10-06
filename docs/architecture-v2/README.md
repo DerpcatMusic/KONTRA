@@ -1,7 +1,7 @@
 # KONTRA 2.0 architecture workbench
 
-Status: independent native ownership, scheduling, resident DSP, behavior and MIDI services,
-2026-10-05. Production playback has not been replaced or certified.
+Status: independent native ownership, scheduling, resident/paged DSP, behavior and MIDI services,
+2026-10-06. Production playback has not been replaced or certified.
 
 This work starts on `docs/plan-v2-architecture`, in the isolated T3 worktree
 `t3code-deca12d9`, at source commit
