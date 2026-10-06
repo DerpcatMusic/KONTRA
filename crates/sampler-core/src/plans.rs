@@ -153,7 +153,7 @@ impl PlanControl {
                 }
             };
         let request = self.sequence + 1;
-        let group_count = prepared.group_count;
+        let script = super::script_params::EngineLayers::new(prepared.group_count, &prepared.group_bases);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
         let scripts = prepared.script_initial.clone();
@@ -168,7 +168,7 @@ impl PlanControl {
             controllers,
             projections,
             modulation,
-            script: super::script_params::EngineLayers::new(group_count),
+            script,
         }) {
             Ok(()) => {
                 self.sequence = request;

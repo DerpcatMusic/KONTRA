@@ -19,6 +19,39 @@ pub struct Environment {
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
     pub performance_view: model::PerformanceView,
+    /// Each group's authored volume, pan and tune, in group order: what
+    /// `get_engine_par` reads before the script sets them.
+    pub group_values: Vec<sampler_core::GroupBase>,
+}
+
+/// `get_engine_par`'s starting values from the authored groups, keyed like
+/// `set_engine_par` mirrors them (`[param, group, -1, -1]`, engine units),
+/// for the engine parameters this script names. Inverse of the laws
+/// `set_engine_par` writes with (see `lower::engine_units`).
+fn authored_engine(hir: &Hir, groups: &[sampler_core::GroupBase]) -> HashMap<[i32; 4], i32> {
+    let symbol = |name: &str| {
+        hir.symbols
+            .iter()
+            .position(|s| s.trim_start_matches('$') == name)
+            .map(|i| OPAQUE_BASE + i as i32)
+    };
+    type Law = fn(&sampler_core::GroupBase) -> f64;
+    let laws: [(&str, Law); 3] = [
+        ("ENGINE_PAR_VOLUME", |g| {
+            2f64.powf((g.decibels * 1000.0 + 346_768.234_247_835_1) / 18000.0)
+        }),
+        ("ENGINE_PAR_PAN", |g| g.pan * 500_000.0 + 500_000.0),
+        ("ENGINE_PAR_TUNE", |g| g.semitones * 100_000.0 * 5.0 / 36.0 + 500_000.0),
+    ];
+    let mut engine = HashMap::new();
+    for (name, law) in laws {
+        let Some(param) = symbol(name) else { continue };
+        for (index, group) in groups.iter().enumerate() {
+            let value = law(group).round().clamp(0.0, 1_000_000.0) as i32;
+            engine.insert([param, index as i32, -1, -1], value);
+        }
+    }
+    engine
 }
 
 /// Steps one `on init` may take before evaluation is abandoned.
@@ -152,7 +185,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             controls: vec![0; hir.uis.len()],
             model,
             warnings: Vec::new(),
-            engine: HashMap::new(),
+            engine: authored_engine(hir, &env.group_values),
             properties: HashMap::new(),
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),

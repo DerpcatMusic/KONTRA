@@ -68,7 +68,7 @@ mod gate;
 mod modulation;
 mod script_params;
 mod voice_mod;
-pub use script_params::ParamScope;
+pub use script_params::{EnvelopeStage, GroupBase, ParamScope};
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
@@ -554,7 +554,7 @@ impl Runtime {
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
             modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
-            script: script_params::EngineLayers::new(plan.group_count),
+            script: script_params::EngineLayers::new(plan.group_count, &plan.group_bases),
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
