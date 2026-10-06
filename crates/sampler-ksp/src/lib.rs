@@ -95,9 +95,7 @@ fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sample
     let mut instances = Vec::new();
     let mut controls = Vec::new();
     let mut callbacks = Vec::new();
-    let mut controllers = Vec::new();
-    let on_note = scripts.first().and_then(|s| s.on_note);
-    let on_release = scripts.first().and_then(|s| s.on_release);
+    let mut stages = Vec::new();
     for (index, script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
@@ -105,9 +103,11 @@ fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sample
         let instance =
             ScriptInstanceId(u16::try_from(index).map_err(|_| sampler_core::Error::Capacity)?);
         let base = programs.len();
-        if let Some(program) = script.on_controller {
-            controllers.push(base + program);
-        }
+        stages.push(sampler_core::Stage {
+            note: script.on_note.map(|program| base + program),
+            release: script.on_release.map(|program| base + program),
+            controller: script.on_controller.map(|program| base + program),
+        });
         for control in script.controls {
             if let Some(program) = control.callback {
                 callbacks.push((control.definition.id, base + program));
@@ -122,19 +122,14 @@ fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sample
         );
         instances.push(script.globals);
     }
-    let plan = plan
-        .with_programs(Vec::new(), None)?
+    plan.with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
         // Keep source aliases separate from marked/all-event selectors.
         .with_source_event_limit(0x0fff_ffff)?
         .with_controls(controls)?
-        .with_programs(programs, on_note)?
+        .with_programs(programs, None)?
         .with_control_programs(callbacks)?
-        .with_controller_programs(controllers)?;
-    match on_release {
-        Some(program) => plan.with_release_program(program),
-        None => Ok(plan),
-    }
+        .with_stages(stages)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

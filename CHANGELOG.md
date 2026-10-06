@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Preserve source module positions across callback kinds, including init/UI-only
+  modules. Controller routing crosses empty positions without spending callback
+  capacity and keeps script state ownership independent of routing position.
+
 - Add ordered native controller stages with independent incoming CC projections,
   downstream-only generated writes and reserved continuation capacity. KSP
   controller modules share this path with isolated state and relocated UI callbacks.

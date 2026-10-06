@@ -1,6 +1,5 @@
 use crate::{
     BehaviorId, ChannelAddress, ChannelScope, Error, PerformanceId, PlanId, Prepared, Runtime,
-    WaitLifetime,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -35,17 +34,16 @@ impl Prepared {
 
     /// Ordered controller stages. Generated writes enter the following stage;
     /// only the final projection changes downstream musical state.
-    pub fn with_controller_programs(mut self, programs: Vec<usize>) -> Result<Self, Error> {
-        if programs.iter().any(|&program| {
-            !self
-                .programs
-                .get(program)
-                .is_some_and(|p| !p.requires_note && p.wait_lifetime == WaitLifetime::Callback)
-        }) {
-            return Err(Error::InvalidInput);
+    pub fn with_controller_programs(self, programs: Vec<usize>) -> Result<Self, Error> {
+        let mut stages = self.stages.to_vec();
+        stages.resize(stages.len().max(programs.len()), crate::Stage::default());
+        for stage in &mut stages {
+            stage.controller = None;
         }
-        self.controller_programs = programs.into_boxed_slice();
-        Ok(self)
+        for (stage, program) in stages.iter_mut().zip(programs) {
+            stage.controller = Some(program);
+        }
+        self.with_stages(stages)
     }
 }
 
@@ -89,33 +87,50 @@ impl Runtime {
         plan: PlanId,
         mut event: ControllerEvent,
     ) -> Result<Option<BehaviorId>, Error> {
-        let programs = &self
+        let stages = &self
             .plans
             .get(plan.0)
             .ok_or(Error::StaleHandle)?
             .prepared
-            .controller_programs;
-        if let Some(&program) = programs.get(event.stage) {
-            let needed = programs.len() - event.stage;
+            .stages;
+        let next = stages
+            .iter()
+            .enumerate()
+            .skip(event.stage)
+            .find_map(|(index, stage)| stage.controller.map(|program| (index, program)));
+        if let Some((next, program)) = next {
+            let needed = stages[event.stage..]
+                .iter()
+                .filter(|stage| stage.controller.is_some())
+                .count();
             if self.behaviors.available() < needed {
                 return Err(Error::Capacity);
             }
+            self.validate_plan_context(plan, program, true)?;
             event.reserved = needed - 1;
             self.behaviors.reserve(event.reserved);
-            match self.start_plan_context(plan, program, Some(event)) {
-                Ok(id) => Ok(Some(id)),
-                Err(error) => {
-                    self.behaviors.unreserve(event.reserved);
-                    Err(error)
-                }
-            }
+            self.receive_controller_path(plan, event, next + 1);
+            event.stage = next;
+            Ok(Some(
+                self.start_plan_context(plan, program, Some(event))
+                    .expect("preflighted controller chain admission"),
+            ))
         } else {
+            let end = stages.len();
             self.publish_controller(event.performance, event.scope(), event.number, event.value)?;
-            if event.stage == 0 {
-                self.performance_state.input_controllers[event.performance]
-                    [usize::from(event.number)] = event.value;
-            }
+            self.receive_controller_path(plan, event, end);
             Ok(None)
+        }
+    }
+
+    fn receive_controller_path(&mut self, plan: PlanId, event: ControllerEvent, end: usize) {
+        if event.stage == 0 {
+            self.performance_state.input_controllers[event.performance]
+                [usize::from(event.number)] = event.value;
+        }
+        let state = &mut self.plans.get_mut(plan.0).unwrap().controllers;
+        for stage in event.stage.max(1)..end {
+            state.receive(ControllerEvent { stage, ..event });
         }
     }
 
@@ -223,15 +238,14 @@ impl Runtime {
         if event.pending {
             let owner = self.behaviors.get(id.0).unwrap().owner;
             let plan = self.behavior_plan(owner)?;
-            let next = event.stage + 1;
-            if let Some(&program) = self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .prepared
-                .controller_programs
-                .get(next)
-            {
+            let stages = &self.plans.get(plan.0).unwrap().prepared.stages;
+            let next = stages
+                .iter()
+                .enumerate()
+                .skip(event.stage + 1)
+                .find_map(|(index, stage)| stage.controller.map(|program| (index, program)));
+            let end = stages.len();
+            if let Some((next, program)) = next {
                 let remaining = event
                     .reserved
                     .checked_sub(1)
@@ -240,6 +254,14 @@ impl Runtime {
                 current.pending = false;
                 current.reserved = 0;
                 self.behaviors.unreserve(1);
+                self.receive_controller_path(
+                    plan,
+                    ControllerEvent {
+                        stage: event.stage + 1,
+                        ..event
+                    },
+                    next + 1,
+                );
                 self.start_plan_context(
                     plan,
                     program,
@@ -257,6 +279,14 @@ impl Runtime {
                     event.number,
                     event.value,
                 )?;
+                self.receive_controller_path(
+                    plan,
+                    ControllerEvent {
+                        stage: event.stage + 1,
+                        ..event
+                    },
+                    end,
+                );
                 self.controller_event_mut(id)?.pending = false;
             }
         }
@@ -291,7 +321,7 @@ pub(super) struct ControllerState {
 impl ControllerState {
     pub fn new(prepared: &Prepared, performances: usize) -> Result<Self, Error> {
         let count = prepared
-            .controller_programs
+            .stages
             .len()
             .saturating_sub(1)
             .checked_mul(performances)

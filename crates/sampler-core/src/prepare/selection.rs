@@ -89,7 +89,8 @@ impl Runtime {
             return Ok(note);
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
-        let (on_note, on_release) = (prepared.note_program, prepared.release_program);
+        let first = prepared.stages.first().copied().unwrap_or_default();
+        let (on_note, on_release) = (first.note, first.release);
         if on_note.is_none() && on_release.is_none() {
             return self.select(
                 NoteOrigin::Input(input, expression, index),

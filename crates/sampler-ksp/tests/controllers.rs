@@ -182,6 +182,65 @@ fn source_controller_modules_keep_ordered_cc_views_globals_and_ui_bindings() {
 }
 
 #[test]
+fn modules_without_controller_callbacks_keep_their_positions_and_ui_ownership() {
+    let button = ControlId(19);
+    let prepared = sampler_ksp::bind_controller_chain(
+        vec![
+            compile("on init declare $value := 11 end on").unwrap(),
+            compile("on controller ignore_controller set_controller(2,%CC[1]) end on").unwrap(),
+            compile_bound(
+                "on init declare $value := 22 declare ui_button $button end on
+                on ui_control($button) $value := 77 end on",
+                &[("$button", button)],
+            )
+            .unwrap(),
+            compile(
+                "on init declare $value end on
+                on controller $value := %CC[2] end on",
+            )
+            .unwrap(),
+            compile("on init declare $value := 44 end on").unwrap(),
+        ],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(prepared.stages().len(), 5);
+    assert_eq!(
+        prepared
+            .stages()
+            .iter()
+            .map(|s| s.controller.is_some())
+            .collect::<Vec<_>>(),
+        vec![false, true, false, true, false]
+    );
+    let budget = limits(&prepared);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let generation = rt.active_plan();
+        let domain = rt.performance(1).unwrap();
+        rt.dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
+            .unwrap();
+        rt.invoke_control(
+            generation,
+            None,
+            ControlWrite {
+                id: button,
+                value: ControlValue::Integer(1),
+            },
+        )
+        .unwrap();
+        for (module, value) in [(0, 11), (2, 77), (3, 127), (4, 44)] {
+            assert_eq!(
+                rt.script_cell(generation, ScriptInstanceId(module), 0),
+                Ok(value)
+            );
+        }
+        assert_eq!(rt.controller(domain, 1), Ok(0));
+        assert_eq!(rt.controller(domain, 2), Ok(u32::MAX));
+    });
+}
+
+#[test]
 fn controller_generated_notes_retain_routing_and_assets_without_physical_keys() {
     let source = "on init declare %ids[2] end on
         on controller

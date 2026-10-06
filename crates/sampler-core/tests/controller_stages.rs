@@ -165,6 +165,80 @@ fn consumption_and_generated_ccs_project_only_into_following_stages() {
 }
 
 #[test]
+fn empty_module_positions_preserve_projection_and_only_reserve_actual_callbacks() {
+    let prepared = plan(
+        vec![
+            program(vec![
+                I::SuppressController,
+                I::SetLocal { local: 0, value: 2 },
+                I::ReadControllerValue { local: 1 },
+                I::WriteController {
+                    controller: 0,
+                    value: 1,
+                },
+            ]),
+            program(vec![
+                I::SetLocal { local: 0, value: 1 },
+                I::ReadInputController {
+                    controller: 0,
+                    local: 1,
+                },
+                I::WriteScriptCell { cell: 0, local: 1 },
+                I::ReadControllerValue { local: 1 },
+                I::WriteScriptCell { cell: 1, local: 1 },
+                I::Wait(1),
+                I::ForwardController,
+            ]),
+        ],
+        vec![],
+        2,
+    )
+    .with_stages(vec![
+        Stage::default(),
+        Stage {
+            controller: Some(0),
+            ..Stage::default()
+        },
+        Stage::default(),
+        Stage {
+            controller: Some(1),
+            ..Stage::default()
+        },
+        Stage::default(),
+    ])
+    .unwrap();
+    let budget = limits(&prepared, 2);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(1).unwrap();
+        rt.dispatch_controller(domain, address(), 0xe000, 1, 0x8000_0001)
+            .unwrap();
+        assert_eq!(rt.input_controller(domain, 1), Ok(0x8000_0001));
+        assert_eq!(rt.input_controller(domain, 2), Ok(0));
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0),
+            Ok(0)
+        );
+        assert_eq!(
+            rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
+            Ok(0x8000_0001)
+        );
+        assert_eq!(
+            rt.dispatch_controller(domain, address(), 0xe000, 1, 99),
+            Err(Error::Capacity)
+        );
+        assert_eq!(rt.input_controller(domain, 1), Ok(0x8000_0001));
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        assert_eq!(rt.controller(domain, 1), Ok(0));
+        assert_eq!(rt.controller(domain, 2), Ok(0x8000_0001));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+    });
+}
+
+#[test]
 fn deferred_forwarding_owns_downstream_capacity_and_original_projection_generation() {
     let prepared = plan(
         vec![
