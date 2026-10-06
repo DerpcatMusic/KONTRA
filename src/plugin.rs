@@ -2964,13 +2964,14 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
 
 fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, overflow: bool, cx: &mut ProcessContext, thru: bool, holding: bool, rate: f64) {
     relay_typed_input(e,cx,thru);
-    let Some(ev) = In::from_event(&e.body) else { return };
-    if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::NoteBrightness(..)) {
-        if matches!(ev,In::NoteBrightness(..)) { s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1); }
-        else { s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1); }
-        return;
-    }
-    feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
+    In::from_events(&e.body,|ev| {
+        if overflow && matches!(ev,In::NoteTune(..)|In::NoteGain(..)|In::NotePan(..)|In::NotePressure(..)|In::NoteBrightness(..)) {
+            if matches!(ev,In::NoteBrightness(..)) { s.unsupported_note_brightness = s.unsupported_note_brightness.saturating_add(1); }
+            else { s.unsupported_host_expression = s.unsupported_host_expression.saturating_add(1); }
+            return;
+        }
+        feed_host_input(s,p,ev,e.port,e.sample_offset,holding,rate);
+    });
 }
 
 fn finish_host_notes(s: &mut Dsp, cx: &mut ProcessContext, offset: u32) {
