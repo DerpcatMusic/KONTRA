@@ -375,6 +375,7 @@ impl Runtime {
         let required = attack.plus(release);
         self.reclaim_internal_notes(required);
         self.steal_release_reserves(required);
+        self.steal_voices(required.voices);
         self.check_selection_capacity(required)?;
         Ok(release)
     }
@@ -587,11 +588,13 @@ impl Runtime {
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
+                    held,
                 );
                 let start = prepared
                     .voice_modulation
@@ -635,16 +638,20 @@ impl Runtime {
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
+                self.enforce_voice_limits(plan, group, voice);
+                let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = r.bus;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
+                    held,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),

@@ -142,6 +142,60 @@ impl Runtime {
         Ok(())
     }
 
+    /// Rewrite every expression owner of a live note (held or releasing)
+    /// admitted from `address`, or only from `key` there. Channel-wide gestures
+    /// (plain MIDI bend and pressure) use this; owners shared by several notes
+    /// change once. All-or-nothing like [`Self::set_expressions`] and
+    /// allocation-free. Returns the number of owners changed.
+    pub fn set_input_expressions(
+        &mut self,
+        address: super::ChannelAddress,
+        key: Option<u8>,
+        update: impl Fn(Expression) -> Expression,
+    ) -> Result<usize, Error> {
+        self.apply_due();
+        self.expression_changes.fill(None);
+        let mut pitch_changed = false;
+        let mut changed = 0;
+        for i in 0..self.notes.slots.len() {
+            let Some(note) = &self.notes.slots[i].value else {
+                continue;
+            };
+            if !note.input.is_some_and(|input| {
+                input.channel_address() == address && key.is_none_or(|key| input.key == key)
+            }) {
+                continue;
+            }
+            let id = note.expression;
+            if self.expression_changes[id.0.index].is_some() {
+                continue;
+            }
+            let owner = self.expressions.get(id.0).ok_or(Error::StaleHandle)?;
+            let value = update(owner.value);
+            if !value.valid() {
+                return Err(Error::InvalidInput);
+            }
+            let rendered = self.project_expression(owner.program, value, Some(owner))?;
+            pitch_changed |= rendered.ratio != owner.rendered.ratio;
+            self.expression_changes[id.0.index] = Some(rendered);
+            changed += 1;
+        }
+        if pitch_changed {
+            self.validate_source_pitches(|id| {
+                self.expression_changes[id.0.index].map(|rendered| rendered.ratio)
+            })?;
+        }
+        for index in 0..self.expression_changes.len() {
+            if let Some(rendered) = self.expression_changes[index] {
+                // `update` is pure over the unchanged owner value.
+                let owner = self.expressions.slots[index].value.as_mut().unwrap();
+                owner.value = update(owner.value);
+                owner.rendered = rendered;
+            }
+        }
+        Ok(changed)
+    }
+
     pub(super) fn set_expression_now(
         &mut self,
         id: ExpressionId,
@@ -331,27 +385,33 @@ impl Runtime {
         family.open = false;
         let mut voice = family.first_voice;
         while let Some(index) = voice {
-            let state = self.voices.at_mut(index);
-            voice = state.siblings.next;
-            if frames == 0 || !state.started {
-                self.end_voice(VoiceId(self.voices.id(index.get())));
-            } else if state.chain.is_some() {
-                if state
-                    .tail_remaining
-                    .is_none_or(|remaining| frames < remaining)
-                {
-                    let current = state.dsp_fade.map_or(1., |(total, initial)| {
-                        initial * state.tail_remaining.unwrap() as f32 / total as f32
-                    });
-                    state.tail_remaining = Some(frames);
-                    state.dsp_fade = Some((frames, current));
-                }
-            } else {
-                state.envelope.choke(frames);
-            }
+            voice = self.voices.at_mut(index).siblings.next;
+            self.choke_voice(index, frames);
         }
         self.retire_family(id);
         self.cancel_closed_work();
+    }
+
+    /// Fade one voice from its current level over at most `frames`; zero or an
+    /// unstarted voice ends now. Existing shorter tails are unchanged.
+    pub(super) fn choke_voice(&mut self, index: super::Index, frames: u32) {
+        let state = self.voices.at_mut(index);
+        if frames == 0 || !state.started {
+            self.end_voice(VoiceId(self.voices.id(index.get())));
+        } else if state.chain.is_some() {
+            if state
+                .tail_remaining
+                .is_none_or(|remaining| frames < remaining)
+            {
+                let current = state.dsp_fade.map_or(1., |(total, initial)| {
+                    initial * state.tail_remaining.unwrap() as f32 / total as f32
+                });
+                state.tail_remaining = Some(frames);
+                state.dsp_fade = Some((frames, current));
+            }
+        } else {
+            state.envelope.choke(frames);
+        }
     }
 
     pub(super) fn retire_family(&mut self, id: FamilyId) {
@@ -396,6 +456,7 @@ impl Runtime {
             .unwrap()
             .modulation
             .stop(id.0.index);
+        self.stolen -= usize::from(v.stolen);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;
@@ -437,6 +498,22 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
+            let quiet = !n.input_down && n.pins == 0 && n.work == 0 && n.families == 0;
+            if quiet
+                && n.children == 0
+                && n.gate()
+                && !n.key_down()
+                && self.release_times[id.0.index].held
+            {
+                // Nothing can resume an audible release: close the held gate
+                // without release triggers and retire below.
+                // ponytail: a script that kept this ID to note_off it later
+                // (to fire native release groups) finds it gone; keep such
+                // notes while a script holds the ID if a library needs that.
+                self.close_gate(id, super::ReleaseCause::Silent);
+                self.cleanup_closed_notes();
+                continue;
+            }
             if (n.gate() && !n.retire_when_silent)
                 || n.input_down
                 || n.pins != 0

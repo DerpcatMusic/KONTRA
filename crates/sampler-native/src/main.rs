@@ -153,7 +153,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
     };
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi2);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let events = if replacing {
         [
             (0, [0x4090_3c00, 0xffff_0000]),
@@ -182,7 +182,7 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
-    write_render(rt, output, count, &packets, &ingress, replacement)
+    write_render(rt, output, count, &packets, &mut ingress, replacement)
 }
 
 fn write_render(
@@ -190,7 +190,7 @@ fn write_render(
     output: &Path,
     count: usize,
     packets: &[TimedPacket<'_>],
-    ingress: &Ingress,
+    ingress: &mut Ingress,
     mut replacement: Option<Replacement>,
 ) -> io::Result<()> {
     let rate = rt.sample_rate();
@@ -416,7 +416,7 @@ mod tests {
         .unwrap();
         let mut groups = [None; 16];
         groups[0] = Some(Version::Midi2);
-        let ingress = Ingress::new(0, groups);
+        let mut ingress = Ingress::new(0, groups);
         // A note, four sustain-pedal changes and its release, all in the first block.
         let words = [
             [0x4090_3c00, 0xffff_0000],
@@ -440,7 +440,7 @@ mod tests {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_file(&output);
-        let result = write_render(rt, &output, 48000, &packets, &ingress, None);
+        let result = write_render(rt, &output, 48000, &packets, &mut ingress, None);
         let _ = std::fs::remove_file(&output);
         result.unwrap();
     }

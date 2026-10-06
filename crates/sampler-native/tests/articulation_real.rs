@@ -13,11 +13,16 @@ fn load(driver: ir::Driver) -> Option<sampler_kontakt::Loaded> {
     let path = std::env::split_paths(&root)
         .map(|r| r.join(INSTRUMENT))
         .find(|p| p.is_file())?;
-    let mut kontakt = sampler_kontakt::read(&path).unwrap();
+    Some(load_at(&path, KEY, driver))
+}
+
+/// Load only the zones under `key`, re-driven by `driver` (keys swallowed).
+fn load_at(path: &std::path::Path, key: u8, driver: ir::Driver) -> sampler_kontakt::Loaded {
+    let mut kontakt = sampler_kontakt::read(path).unwrap();
     let mut instrument = kontakt.instrument;
     instrument.switching.driver = driver;
     instrument.switching.keys = ir::SwitchKeys::Swallow;
-    let kept = instrument.retain_zones(|z| z.keys.low <= KEY && z.keys.high >= KEY);
+    let kept = instrument.retain_zones(|z| z.keys.low <= key && z.keys.high >= key);
     let pcm = kept
         .iter()
         .map(|&a| {
@@ -27,10 +32,11 @@ fn load(driver: ir::Driver) -> Option<sampler_kontakt::Loaded> {
         .collect();
     let labels = kept.iter().map(|a| a.to_string()).collect();
     let options = sampler_kontakt::Options {
-        keys: KEY..=KEY,
+        keys: key..=key,
+        library: Some(path.to_owned()),
         ..Default::default()
     };
-    Some(sampler_kontakt::finish(instrument, pcm, labels, &options).unwrap())
+    sampler_kontakt::finish(instrument, pcm, labels, &options).unwrap()
 }
 
 /// Render `words` (one per 64-frame step) through the articulator and ingress.
@@ -53,7 +59,7 @@ fn render(loaded: sampler_kontakt::Loaded, words: &[u32]) -> Vec<[f32; 2]> {
     let mut rt = Runtime::new(plan, limits).unwrap();
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     let mut articulator = Articulator::new(&rt, rt.performance(0).unwrap(), 0).unwrap();
     let mut out = vec![[0.0; 2]; 64 * words.len() + 24000];
     for (i, &word) in words.iter().enumerate() {
@@ -82,19 +88,7 @@ fn afflatus_cc_selects_what_its_keyswitch_selects() {
         .iter()
         .filter(|u| u.feature == "script")
         .collect();
-    if !failed.is_empty() {
-        // The script owns switching; unbound, the plan carries no driver, so
-        // nothing taps keys into a runtime with no script to read them.
-        let cc = load(ir::Driver::Controller).unwrap();
-        assert_eq!(
-            cc.instrument.articulations.len(),
-            11,
-            "the map is still reported"
-        );
-        assert_eq!(cc.plan.switching().driver(), sampler_core::Driver::Keys);
-        eprintln!("switching script not compiled yet, driver withheld: {failed:?}");
-        return;
-    }
+    assert!(failed.is_empty(), "switching script must bind: {failed:?}");
     // Marcato is articulation 2: key 26, or CC 32 value 2.
     let by_key = render(keys, &[0x2090_1a64, 0x2080_1a00, 0x2000_0000 | note]);
     let by_cc = render(
@@ -109,4 +103,130 @@ fn afflatus_cc_selects_what_its_keyswitch_selects() {
     assert!(peak(&by_cc) > 0.01, "audible: {}", peak(&by_cc));
     assert_eq!(by_cc, by_key, "CC 32 = 2 plays what key 26 selects");
     assert_ne!(by_cc, default, "and differs from the default articulation");
+}
+
+fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect(&path, out);
+        } else if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// Every generated switch map under the libraries named by
+/// `KONTRA_ARTICULATION_LIBRARIES` (substrings of library folder names, default
+/// Audio Imperia, Areia and Pacific): its script binds, and each articulation's
+/// CC selects exactly what its key selects. Slow: decodes samples at one key.
+#[test]
+#[ignore]
+fn generated_maps_drive_like_their_keyswitches() {
+    let Some(roots) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let names = std::env::var("KONTRA_ARTICULATION_LIBRARIES")
+        .unwrap_or_else(|_| "Audio Imperia,Areia,Pacific".into());
+    let mut paths = Vec::new();
+    for root in std::env::split_paths(&roots) {
+        for library in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let name = library.file_name().to_string_lossy().into_owned();
+            if names.split(',').any(|n| name.contains(n)) {
+                collect(&library.path(), &mut paths);
+            }
+        }
+    }
+    paths.sort();
+    let (mut maps, mut failures) = (0, Vec::new());
+    for path in &paths {
+        let Ok(read) = sampler_kontakt::read(path) else {
+            continue;
+        };
+        let ir = read.instrument;
+        if ir.articulations.is_empty() {
+            continue;
+        }
+        maps += 1;
+        // The key most zones cover, outside the switch keys.
+        let switch: Vec<u8> = ir
+            .articulations
+            .iter()
+            .flat_map(|a| a.switch_keys.clone())
+            .collect();
+        let key = (0..=127u8)
+            .filter(|k| !switch.contains(k))
+            .max_by_key(|&k| {
+                ir.zones
+                    .iter()
+                    .filter(|z| (z.keys.low..=z.keys.high).contains(&k))
+                    .count()
+            })
+            .unwrap();
+        let keys = load_at(path, key, ir::Driver::Keys);
+        let failed: Vec<_> = keys
+            .instrument
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "script")
+            .map(|u| u.value.clone())
+            .collect();
+        if !failed.is_empty() {
+            failures.push(format!("{}: script {failed:?}", path.display()));
+            continue;
+        }
+        drop(keys);
+        let note = 0x2090_0000 | u32::from(key) << 8 | 100;
+        let off = 0x2080_0000 | u32::from(key) << 8;
+        let (mut same, mut distinct) = (0, 0);
+        let default = render(
+            load_at(path, key, ir::Driver::Controller),
+            &[0x2000_0000, 0x2000_0000, note, off],
+        );
+        for a in &ir.articulations {
+            let (Some(&tap), Some(cc)) = (a.switch_keys.first(), a.alternatives.controller) else {
+                failures.push(format!("{}: {} has no key or CC", path.display(), a.name));
+                continue;
+            };
+            let by_key = render(
+                load_at(path, key, ir::Driver::Keys),
+                &[
+                    0x2090_0064 | u32::from(tap) << 8,
+                    0x2080_0000 | u32::from(tap) << 8,
+                    note,
+                    off,
+                ],
+            );
+            let by_cc = render(
+                load_at(path, key, ir::Driver::Controller),
+                &[
+                    0x20b0_0000 | u32::from(cc.controller) << 8 | u32::from(cc.low),
+                    0x2000_0000,
+                    note,
+                    off,
+                ],
+            );
+            if by_cc != by_key {
+                failures.push(format!(
+                    "{}: {} CC differs from key {tap}",
+                    path.display(),
+                    a.name
+                ));
+            } else if by_cc == default {
+                same += 1;
+            } else {
+                distinct += 1;
+            }
+        }
+        eprintln!(
+            "{} key {key}: {} articulations, {distinct} differ from default, {same} equal it",
+            path.display(),
+            ir.articulations.len()
+        );
+    }
+    eprintln!("{maps} maps, {} failures", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
 }
