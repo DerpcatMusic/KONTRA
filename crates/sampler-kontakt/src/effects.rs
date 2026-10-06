@@ -383,6 +383,38 @@ pub(crate) enum Scope {
     Bus,
 }
 
+/// How one Kontakt filter type (the `kind` stored in a Filter slot) maps to
+/// an IR filter: the response, and the laws taking its normalized cutoff and
+/// resonance (0..=1) to Hz and Q.
+#[allow(dead_code)] // no measured types yet
+struct FilterType {
+    kind: sampler_ir::FilterKind,
+    hertz: fn(f32) -> f64,
+    q: fn(f32) -> f64,
+}
+
+/// The types with measured laws. Filled from reference renderings of Kontakt;
+/// the survey's commonest unlisted types are 3 (1996 slots), 90, 106, 54, 52,
+/// 57 and 55. Unlisted types are reported by number, not guessed.
+const FILTER_TYPES: &[(i32, FilterType)] = &[];
+
+fn filter_type(kind: i32) -> Option<&'static FilterType> {
+    FILTER_TYPES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, t)| t)
+}
+
+/// A Filter slot as an IR filter, or `None` for a type without a table entry.
+fn filter(kind: i32, cutoff: f32, resonance: f32) -> Option<sampler_ir::Processor> {
+    let t = filter_type(kind)?;
+    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
+        kind: t.kind,
+        cutoff: sampler_ir::Frequency::Hertz((t.hertz)(cutoff)),
+        resonance: sampler_ir::Resonance::Q((t.q)(resonance)),
+    }))
+}
+
 /// A rack as serial processors plus the levels its Send Levels slots feed
 /// into the instrument's send slots, and what it leaves out.
 #[derive(Default)]
@@ -450,6 +482,25 @@ pub(crate) fn chain_with(
                 }
                 combined = product(gain, combined);
             }
+            Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
+                ..
+            }) => match filter(*kind, *cutoff, *resonance) {
+                Some(f) => {
+                    filters.push(f);
+                    combined = product(gain, combined);
+                }
+                None => {
+                    notes.push((
+                        "filter type".into(),
+                        format!("{kind} cutoff {cutoff} resonance {resonance}"),
+                        sampler_ir::Reason::NotModeled,
+                    ));
+                    modelled = false;
+                }
+            },
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
