@@ -288,6 +288,12 @@ invalid NKX member signatures. The other 39 archives decode completely.
 The program census counts remain unchanged because it records each program's
 first failure. The audit retained only counts/reasons; its log, temporary
 probe and worktree scratch build were deleted after recording the verdict.
+The 17 invalid headers are consecutive in physical file order, immediately
+after the member with the failing NCW tail. Their directory-entry kind matches
+all 6,050 valid member headers in that archive. The signature failures therefore
+are not explained by a different directory-entry kind. No aligned 1/2/4/8 MiB
+window fits the observed valid/invalid boundaries; a damaged download chunk is
+still a hypothesis, not an established cause.
 
 Installed container coverage is 781 NKI and 54 NKM NIS v1 files, 270 NKX
 archives (56 version 0x110; 214 version 0x111), and 12 NKR archives (two version
