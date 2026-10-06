@@ -424,3 +424,51 @@ fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
     rt.render(&mut main).unwrap();
     assert_eq!(main[0], [1.5, 1.5]);
 }
+
+#[test]
+fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
+    let settings = ReverbSettings {
+        decay_seconds: 0.5,
+        size: 0.75,
+        damping_hz: 6_000.,
+        modulation_seconds: 0.0005,
+        diffusion: 0.375,
+        predelay_seconds: 0.,
+        input_cutoff_hz: 20_000.,
+        low_shelf_db: 0.,
+        width: 1.,
+    };
+    let tail = settings.tail_frames(48000);
+    let prepared = plan(vec![[0.5, 0.5]], 1)
+        .with_buses(
+            vec![Bus {
+                processors: vec![Processor::Reverb(settings)],
+                sends: vec![send(None, 1.)],
+                tail_frames: tail,
+            }],
+            vec![Some(0)],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let mut audio = vec![[0.; 2]; 48_000];
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        for chunk in audio.chunks_mut(100) {
+            rt.render(chunk).unwrap();
+        }
+    });
+    let energy = |a: &[Frame]| a.iter().flatten().map(|x| x * x).sum::<f32>();
+    assert!(audio.iter().flatten().all(|x| x.is_finite()));
+    // The one-frame note is over by frame 1; the tail rings well past it.
+    assert!(energy(&audio[2_000..12_000]) > 1e-6, "no tail");
+    assert!(energy(&audio[40_000..]) < energy(&audio[2_000..12_000]) * 1e-3);
+    // A reverb in a voice chain is refused.
+    assert!(
+        plan(vec![[1.; 2]], 1)
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![Processor::Reverb(settings)], vec![], 0).unwrap()],
+                vec![Some(0)]
+            )
+            .is_err()
+    );
+}
