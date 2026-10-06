@@ -149,9 +149,10 @@ pub fn bind_controller_chain(
     scripts: Vec<Script>,
     plan: Prepared,
 ) -> Result<Prepared, sampler_core::Error> {
-    if scripts.iter().any(|s| {
-        s.routed(EntryKind::Note).is_some() || s.routed(EntryKind::Release).is_some()
-    }) {
+    if scripts
+        .iter()
+        .any(|s| s.routed(EntryKind::Note).is_some() || s.routed(EntryKind::Release).is_some())
+    {
         return Err(sampler_core::Error::InvalidInput);
     }
     bind_modules(scripts, plan)
@@ -287,8 +288,8 @@ pub fn compile_with(
             .remove(&*var.name)
             .unwrap_or_else(|| derived_control_id(environment.slot, &var.name));
         ids[i] = Some(id);
-        let (min, max) = eval::declared_range(ui)
-            .map_or((i32::MIN, i32::MAX), |(a, b)| (a.min(b), a.max(b)));
+        let (min, max) =
+            eval::declared_range(ui).map_or((i32::MIN, i32::MAX), |(a, b)| (a.min(b), a.max(b)));
         let widget = match ui.kind {
             hir::WidgetKind::Knob => Widget::Knob {
                 display_ratio: ui.params.get(2).copied().unwrap_or(1),

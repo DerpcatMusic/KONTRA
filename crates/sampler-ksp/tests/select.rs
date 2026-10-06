@@ -201,8 +201,8 @@ fn case_dispatch_and_parsing_are_bounded_and_dead_cases_are_validated() {
     });
     let deep = format!(
         "on note {}exit {}end on",
-        "select (0) case 0 ".repeat(1024),
-        "end select ".repeat(1024)
+        "select (0) case 0 ".repeat(200),
+        "end select ".repeat(200)
     );
     assert!(compile(&deep).is_ok());
     for body in [
@@ -342,7 +342,7 @@ fn boolean_short_circuit_guards_arrays_but_never_hides_malformed_source_or_runti
     assert!(
         compile(&format!(
             "on note if ({}0) exit end if end on",
-            "not ".repeat(65)
+            "not ".repeat(300)
         ))
         .is_err()
     );

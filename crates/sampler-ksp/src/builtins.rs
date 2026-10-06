@@ -578,10 +578,16 @@ pub fn constant(name: &str) -> Option<i32> {
             .position(|(_, n)| *n == name)
             .map(|i| i as i32);
     }
-    if let Some(n) = name.strip_prefix("$MARK_").and_then(|n| n.parse::<u32>().ok()) {
+    if let Some(n) = name
+        .strip_prefix("$MARK_")
+        .and_then(|n| n.parse::<u32>().ok())
+    {
         return (1..=28).contains(&n).then(|| 1 << (n - 1));
     }
-    if let Some(n) = name.strip_prefix("$EVENT_PAR_").and_then(|n| n.parse::<i32>().ok()) {
+    if let Some(n) = name
+        .strip_prefix("$EVENT_PAR_")
+        .and_then(|n| n.parse::<i32>().ok())
+    {
         return (0..=3).contains(&n).then_some(n);
     }
     None

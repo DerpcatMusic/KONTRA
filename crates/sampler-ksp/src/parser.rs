@@ -243,7 +243,7 @@ impl Parser<'_> {
                 self.pos += 1;
                 let target = Expr {
                     span: start.span,
-                    kind: ExprKind::Var(name, self.index()?),
+                    kind: ExprKind::Var(name, self.index(0)?),
                 };
                 self.need(Punct::Assign)?;
                 StmtKind::Assign(target, self.expr(0, 0)?)
@@ -293,7 +293,7 @@ impl Parser<'_> {
         let Tok::Var(name) = t.tok else {
             return fault(t.span, "expected variable name");
         };
-        let size = self.index()?.map(|e| *e);
+        let size = self.index(0)?.map(|e| *e);
         let params = if self.eat(Punct::LParen) {
             self.args(0)?
         } else {
@@ -302,8 +302,12 @@ impl Parser<'_> {
         let (mut init, mut init_list) = (Vec::new(), false);
         if self.eat(Punct::Assign) {
             if size.is_some() && self.peek().tok == Tok::Punct(Punct::LParen) {
+                let open = self.peek().span;
                 self.pos += 1;
                 init = self.args(0)?;
+                if init.is_empty() {
+                    return fault(open, "empty initializer list");
+                }
                 init_list = true;
             } else {
                 init.push(self.expr(0, 0)?);
@@ -321,11 +325,11 @@ impl Parser<'_> {
         })
     }
 
-    fn index(&mut self) -> Result<Option<Box<Expr>>> {
+    fn index(&mut self, depth: usize) -> Result<Option<Box<Expr>>> {
         if !self.eat(Punct::LBracket) {
             return Ok(None);
         }
-        let e = self.expr(0, 0)?;
+        let e = self.expr(0, depth)?;
         self.need(Punct::RBracket)?;
         Ok(Some(Box::new(e)))
     }
@@ -409,7 +413,7 @@ impl Parser<'_> {
                 kind: ExprKind::Str(s),
             },
             Tok::Var(v) => {
-                let index = self.index()?;
+                let index = self.index(depth + 1)?;
                 let end = self.toks[self.pos - 1].span;
                 Expr {
                     span: t.span.to(end),

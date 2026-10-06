@@ -265,7 +265,11 @@ impl Gen<'_, '_> {
         }
     }
     fn cover(&mut self, builtin: Builtin, coverage: Coverage) {
-        *self.u.coverage.entry((builtin.name(), coverage)).or_default() += 1;
+        *self
+            .u
+            .coverage
+            .entry((builtin.name(), coverage))
+            .or_default() += 1;
     }
     fn ignore(&mut self, builtin: Builtin, why: &str) {
         self.cover(builtin, Coverage::Ignored);
@@ -364,7 +368,8 @@ impl Gen<'_, '_> {
                         misses.push(self.jump_if_zero(1)?);
                     } else {
                         let (low, high) = (case.low.min(case.high), case.low.max(case.high));
-                        for (value, comparison) in [(low, Cmp::LessEqual), (high, Cmp::GreaterEqual)]
+                        for (value, comparison) in
+                            [(low, Cmp::LessEqual), (high, Cmp::GreaterEqual)]
                         {
                             self.set(1, i64::from(value))?;
                             self.emit(I::CompareLocal {
@@ -856,9 +861,33 @@ impl Gen<'_, '_> {
             Some(Arg::SysArray(..)) | None => self.set(dst, 0),
         }
     }
+    /// `$ALL_EVENTS` and `by_marks(...)` select several events; the engine
+    /// addresses one source id, so such calls only warn.
+    fn selects_many(&mut self, builtin: Builtin, args: &[Arg], i: usize) -> bool {
+        let many = matches!(
+            self.expr(args, i),
+            Some(Expr {
+                kind: ExprKind::Builtin(Builtin::ByMarks, _),
+                ..
+            })
+        ) || self.const_int(args, i) == Some(b::ALL_EVENTS);
+        if many {
+            self.ignore(
+                builtin,
+                "on $ALL_EVENTS or by_marks is not supported; no effect",
+            );
+        }
+        many
+    }
     fn is_event_id(&self, args: &[Arg], i: usize) -> bool {
         self.note_context()
-            && matches!(self.expr(args, i), Some(Expr { kind: ExprKind::Sys(SysVar::EventId), .. }))
+            && matches!(
+                self.expr(args, i),
+                Some(Expr {
+                    kind: ExprKind::Sys(SysVar::EventId),
+                    ..
+                })
+            )
     }
     /// UI index a constant id argument names.
     fn ui_index(&self, args: &[Arg], i: usize) -> Option<u32> {
@@ -956,7 +985,11 @@ impl Gen<'_, '_> {
                 let Some(Arg::Place(place)) = args.first() else {
                     return fault(span, "inc/dec requires a variable");
                 };
-                let operation = if builtin == Inc { IB::Add } else { IB::Subtract };
+                let operation = if builtin == Inc {
+                    IB::Add
+                } else {
+                    IB::Subtract
+                };
                 match place {
                     Place::Var(v) => {
                         self.load(*v, dst)?;
@@ -1069,7 +1102,11 @@ impl Gen<'_, '_> {
                 self.arg(args, 0, dst)?;
                 self.emit(I::Unary32 {
                     local: dst,
-                    operation: if builtin == Sgn { IU::Sign } else { IU::SignBit },
+                    operation: if builtin == Sgn {
+                        IU::Sign
+                    } else {
+                        IU::SignBit
+                    },
                 })?;
                 true
             }
@@ -1171,7 +1208,11 @@ impl Gen<'_, '_> {
             }
             MsToTicks | TicksToMs => {
                 // ponytail: fixed 120 BPM (960 ticks per quarter); host tempo if needed.
-                let (mul, div) = if builtin == MsToTicks { (48, 25) } else { (25, 48) };
+                let (mul, div) = if builtin == MsToTicks {
+                    (48, 25)
+                } else {
+                    (25, 48)
+                };
                 self.arg(args, 0, dst)?;
                 for (value, operation) in [(mul, IB::Multiply), (div, IB::Divide)] {
                     self.set(t, value)?;
@@ -1205,6 +1246,11 @@ impl Gen<'_, '_> {
                 true
             }
             PlayNote => return self.play(args, dst),
+            NoteOff | IgnoreEvent | ChangeNote | ChangeVelo
+                if self.selects_many(builtin, args, 0) =>
+            {
+                return Ok(());
+            }
             NoteOff => {
                 self.arg(args, 0, dst)?;
                 let delay = if args.len() > 1 {
@@ -1325,7 +1371,10 @@ impl Gen<'_, '_> {
             }
             FindGroup | GetGroupIdx => {
                 let index = self.const_text(args, 0).and_then(|name| {
-                    self.u.groups.iter().position(|g| g.eq_ignore_ascii_case(&name))
+                    self.u
+                        .groups
+                        .iter()
+                        .position(|g| g.eq_ignore_ascii_case(&name))
                 });
                 self.set(dst, index.map_or(-1, |i| i as i64))?;
                 if index.is_none() {
@@ -1358,7 +1407,9 @@ impl Gen<'_, '_> {
                 return self.set(dst, 0);
             }
             GetUiId => {
-                let id = self.ui_index(args, 0).map_or(0, |ui| b::FIRST_UI_ID + ui as i32);
+                let id = self
+                    .ui_index(args, 0)
+                    .map_or(0, |ui| b::FIRST_UI_ID + ui as i32);
                 self.set(dst, i64::from(id))?;
                 true
             }
@@ -1369,7 +1420,12 @@ impl Gen<'_, '_> {
             PgsSetKeyVal => {
                 self.arg(args, 2, dst)?;
                 let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [Key::Fixed(PGS_TAG), Key::Fixed(hash), Key::Arg(1), Key::Fixed(PGS_TAG)];
+                let key = [
+                    Key::Fixed(PGS_TAG),
+                    Key::Fixed(hash),
+                    Key::Arg(1),
+                    Key::Fixed(PGS_TAG),
+                ];
                 self.store(args, key, dst, true)?;
                 self.effect(builtin, args, dst)?;
                 return Ok(());
@@ -1377,7 +1433,12 @@ impl Gen<'_, '_> {
             PgsGetKeyVal => {
                 self.set(dst, 0)?;
                 let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [Key::Fixed(PGS_TAG), Key::Fixed(hash), Key::Arg(1), Key::Fixed(PGS_TAG)];
+                let key = [
+                    Key::Fixed(PGS_TAG),
+                    Key::Fixed(hash),
+                    Key::Arg(1),
+                    Key::Fixed(PGS_TAG),
+                ];
                 self.store(args, key, dst, false)?;
                 true
             }
@@ -1393,18 +1454,65 @@ impl Gen<'_, '_> {
                 true
             }
             // Instrument, presentation and logging services the engine does not own.
-            ChangeVol | ChangeTune | ChangePan | FadeIn | FadeOut | SetEventPar
-            | SetEventParArr | SetEventMark | DeleteEventMark | SetNoteController | SetRpn
-            | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate | RedirectOutput | StopWait
-            | ResetKspTimer | SetListener | ChangeListenerPar | SetZonePar | PurgeGroup
-            | SetVoiceLimit | LoadIrSample | AttachLevelMeter | SetControlParStr
-            | SetControlParStrArr | SetText | AddTextLine | SetKnobLabel | SetKnobUnit
-            | SetKnobDefval | SetControlHelp | MoveControl | MoveControlPx | HidePart
-            | AddMenuItem | SetMenuItemStr | SetMenuItemVisibility | SetMenuItemValue
-            | SetTableStepsShown | AttachZone | SetUiWfProperty | FsNavigate | SetNksNavName
-            | SetNksNavPar | SetKeyColor | SetKeyName | SetKeyType | SetKeyPressed
-            | SetKeyPressedSupport | SetKeyrange | RemoveKeyrange | Message | LoadArray
-            | SaveArray | LoadArrayStr | SaveArrayStr | PgsSetStrKeyVal | PgsCreateKey
+            ChangeVol
+            | ChangeTune
+            | ChangePan
+            | FadeIn
+            | FadeOut
+            | SetEventPar
+            | SetEventParArr
+            | SetEventMark
+            | DeleteEventMark
+            | SetNoteController
+            | SetRpn
+            | SetNrpn
+            | ResetRlsTrigCounter
+            | WillNeverTerminate
+            | RedirectOutput
+            | StopWait
+            | ResetKspTimer
+            | SetListener
+            | ChangeListenerPar
+            | SetZonePar
+            | PurgeGroup
+            | SetVoiceLimit
+            | LoadIrSample
+            | AttachLevelMeter
+            | SetControlParStr
+            | SetControlParStrArr
+            | SetText
+            | AddTextLine
+            | SetKnobLabel
+            | SetKnobUnit
+            | SetKnobDefval
+            | SetControlHelp
+            | MoveControl
+            | MoveControlPx
+            | HidePart
+            | AddMenuItem
+            | SetMenuItemStr
+            | SetMenuItemVisibility
+            | SetMenuItemValue
+            | SetTableStepsShown
+            | AttachZone
+            | SetUiWfProperty
+            | FsNavigate
+            | SetNksNavName
+            | SetNksNavPar
+            | SetKeyColor
+            | SetKeyName
+            | SetKeyType
+            | SetKeyPressed
+            | SetKeyPressedSupport
+            | SetKeyrange
+            | RemoveKeyrange
+            | Message
+            | LoadArray
+            | SaveArray
+            | LoadArrayStr
+            | SaveArrayStr
+            | PgsSetStrKeyVal
+            | PgsCreateKey
             | PgsCreateStrKey => {
                 self.effect(builtin, args, dst)?;
                 if builtin.sig().ret != b::Ret::Void {
@@ -1420,19 +1528,20 @@ impl Gen<'_, '_> {
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
-                    | ShowLibraryTab | SetSkinOffset | SetUiColor | SetUiHeight
-                    | SetUiHeightPx | SetUiWidthPx | SetScriptTitle | GetFontId => {
-                        "only takes effect in on init"
-                    }
+                    | ShowLibraryTab | SetSkinOffset | SetUiColor | SetUiHeight | SetUiHeightPx
+                    | SetUiWidthPx | SetScriptTitle | GetFontId => "only takes effect in on init",
                     _ => "is not executed at runtime; result 0",
                 };
                 self.ignore(builtin, why);
                 if builtin.sig().ret != b::Ret::Void {
-                    self.set(dst, if builtin.sig().ret == b::Ret::Real {
-                        real_bits(0.0)
-                    } else {
-                        0
-                    })?;
+                    self.set(
+                        dst,
+                        if builtin.sig().ret == b::Ret::Real {
+                            real_bits(0.0)
+                        } else {
+                            0
+                        },
+                    )?;
                 }
                 return Ok(());
             }
@@ -1448,8 +1557,19 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
-    fn event_write(&mut self, note: bool, args: &[Arg], id: usize, value: usize, dst: u16) -> Result<()> {
-        let builtin = if note { Builtin::ChangeNote } else { Builtin::ChangeVelo };
+    fn event_write(
+        &mut self,
+        note: bool,
+        args: &[Arg],
+        id: usize,
+        value: usize,
+        dst: u16,
+    ) -> Result<()> {
+        let builtin = if note {
+            Builtin::ChangeNote
+        } else {
+            Builtin::ChangeVelo
+        };
         let event = if self.is_event_id(args, id) {
             None
         } else {
@@ -1471,7 +1591,10 @@ impl Gen<'_, '_> {
 
     fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
         let Some(Arg::Var(v, _)) = args.first() else {
-            self.ignore(Builtin::Search, "of a runtime-maintained array is not available; -1");
+            self.ignore(
+                Builtin::Search,
+                "of a runtime-maintained array is not available; -1",
+            );
             return self.set(dst, -1);
         };
         let Home::Cells { offset, len } = self.var(*v).home else {
@@ -1556,6 +1679,11 @@ impl Gen<'_, '_> {
             Some(0) => return self.emit(play(DurationValue::Fixed(Duration::UntilSilent))),
             Some(-1) if self.note_context() => {
                 return self.emit(play(DurationValue::Fixed(Duration::Gate)));
+            }
+            Some(-1) => {
+                self.warn("play_note duration -1 needs a note callback; faults at runtime");
+                self.set(frames, -1)?;
+                return self.emit(play(DurationValue::Frames(frames)));
             }
             Some(_) => {
                 self.arg(args, 3, frames)?;
