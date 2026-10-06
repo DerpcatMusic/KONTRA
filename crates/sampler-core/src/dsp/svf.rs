@@ -1,4 +1,5 @@
 use super::control::{ControlRamp, ControlRange, Parameter, PreparedParameter};
+use super::{BLOCK, Planar, flush};
 use crate::Error;
 
 #[derive(Clone, Copy, Debug)]
@@ -72,7 +73,7 @@ impl PreparedFilter {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Coefficients {
     a1: f64,
     a2: f64,
@@ -95,14 +96,17 @@ impl Coefficients {
 }
 
 /// One coefficient window per authored filter, shared across its live voices.
-/// Filled lazily, so unused chains calculate nothing. Common render segmentation
-/// bounds the window to 64 samples without demoting modulation to block rate.
+/// Filled lazily for the frames a block actually renders, so unused chains
+/// calculate nothing. The window is keyed by its absolute start frame; render
+/// segmentation never presents more than [`BLOCK`] frames from one start.
 pub(crate) struct FilterCache {
     filter: PreparedFilter,
     owner: Option<crate::ExpressionId>,
-    start: u64,
-    valid: u64,
-    coefficients: [Coefficients; 64],
+    start: Option<u64>,
+    filled: usize,
+    /// Every filled entry equals the first: the block runs on hoisted values.
+    uniform: bool,
+    coefficients: [Coefficients; BLOCK],
     last_values: Option<[f64; 2]>,
     last: Coefficients,
 }
@@ -111,57 +115,101 @@ impl FilterCache {
         Self {
             filter,
             owner: None,
-            start: 0,
-            valid: 0,
-            coefficients: [Coefficients::default(); 64],
+            start: None,
+            filled: 0,
+            uniform: true,
+            coefficients: [Coefficients::default(); BLOCK],
             last_values: None,
             last: Coefficients::default(),
         }
     }
-    pub fn begin(&mut self, at: u64) {
-        self.start = at;
-        self.valid = 0;
-    }
 
-    #[inline]
-    pub fn process(
+    /// Coefficients for `len` frames from `at`, evaluated per frame at the
+    /// parameter values of that frame. Unchanged values reuse the previous set.
+    fn prepare(
         &mut self,
-        state: &mut [[f64; 2]; 2],
-        input: [f64; 2],
-        parameters: &[ControlRamp],
         at: u64,
+        len: usize,
+        parameters: &[ControlRamp],
         expression: Option<&crate::Expression>,
-    ) -> [f64; 2] {
-        let index = (at - self.start) as usize;
-        let bit = 1_u64 << index;
-        if self.valid & bit == 0 {
+    ) {
+        if self.start != Some(at) {
+            self.start = Some(at);
+            self.filled = 0;
+            self.uniform = true;
+        }
+        while self.filled < len {
+            let frame = at + self.filled as u64;
             let values = [
-                self.filter.cutoff.value(parameters, at, expression),
-                self.filter.q.value(parameters, at, expression),
+                self.filter.cutoff.value(parameters, frame, expression),
+                self.filter.q.value(parameters, frame, expression),
             ];
             if self.last_values != Some(values) {
                 self.last = Coefficients::new(self.filter.rate, values[0], values[1]);
                 self.last_values = Some(values);
             }
-            self.coefficients[index] = self.last;
-            self.valid |= bit;
+            self.uniform &= self.filled == 0 || self.last == self.coefficients[0];
+            self.coefficients[self.filled] = self.last;
+            self.filled += 1;
         }
-        let c = self.coefficients[index];
-        std::array::from_fn(|i| {
-            let v3 = input[i] - state[i][1];
-            let band = c.a1 * state[i][0] + c.a2 * v3;
-            let low = state[i][1] + c.a2 * state[i][0] + c.a3 * v3;
-            state[i] = [2. * band - state[i][0], 2. * low - state[i][1]]
-                .map(|v| if v.is_subnormal() { 0. } else { v });
-            match self.filter.mode {
-                SvfMode::LowPass => low,
-                SvfMode::HighPass => input[i] - c.k * band - low,
-                SvfMode::BandPass => c.k * band,
-                SvfMode::Notch => input[i] - c.k * band,
-                SvfMode::AllPass => input[i] - 2. * c.k * band,
-            }
-        })
     }
+
+    /// Filter `len` planar frames in place. The response's output mix is chosen
+    /// once per block; per frame it is `m0 x + (mk k) band + m2 low`, which is
+    /// exactly the named response for each mode (the factors are 0 and +-1, +-2).
+    #[inline]
+    pub fn process(
+        &mut self,
+        state: &mut [[f64; 2]; 2],
+        block: &mut Planar,
+        len: usize,
+        parameters: &[ControlRamp],
+        at: u64,
+        expression: Option<&crate::Expression>,
+    ) {
+        self.prepare(at, len, parameters, expression);
+        let mix = match self.filter.mode {
+            SvfMode::LowPass => [0., 0., 1.],
+            SvfMode::HighPass => [1., -1., -1.],
+            SvfMode::BandPass => [0., 1., 0.],
+            SvfMode::Notch => [1., -1., 0.],
+            SvfMode::AllPass => [1., -2., 0.],
+        };
+        if self.uniform {
+            let c = self.coefficients[0];
+            run(state, block, len, mix, |_| c);
+        } else {
+            let coefficients = &self.coefficients;
+            run(state, block, len, mix, |i| coefficients[i]);
+        }
+    }
+}
+
+#[inline(always)]
+fn run(
+    state: &mut [[f64; 2]; 2],
+    block: &mut Planar,
+    len: usize,
+    [m0, mk, m2]: [f64; 3],
+    coefficients: impl Fn(usize) -> Coefficients,
+) {
+    let [mut s0, mut s1] = *state;
+    let [left, right] = block;
+    for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
+        let c = coefficients(i);
+        let x = [*l, *r];
+        let y: [f64; 2] = std::array::from_fn(|ch| {
+            let (ic1, ic2) = (s0[ch], s1[ch]);
+            let v3 = x[ch] - ic2;
+            let band = c.a1 * ic1 + c.a2 * v3;
+            let low = ic2 + c.a2 * ic1 + c.a3 * v3;
+            s0[ch] = 2. * band - ic1;
+            s1[ch] = 2. * low - ic2;
+            m0 * x[ch] + (mk * c.k) * band + m2 * low
+        });
+        (*l, *r) = (y[0], y[1]);
+    }
+    *state = [s0, s1].map(|channels| channels.map(flush));
 }
 
 #[derive(Clone, Copy)]
@@ -176,7 +224,6 @@ pub(crate) struct FilterBank {
     shared: Box<[FilterCache]>,
     expressions: Box<[FilterCache]>,
     stride: usize,
-    at: u64,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -196,7 +243,6 @@ impl FilterBank {
         }
         let stride = per_expression.len();
         let count = stride.checked_mul(expressions).ok_or(Error::Capacity)?;
-        std::alloc::Layout::array::<FilterCache>(count).map_err(|_| Error::Capacity)?;
         let mut caches = Vec::new();
         caches
             .try_reserve_exact(count)
@@ -209,17 +255,10 @@ impl FilterBank {
             shared: shared.into_boxed_slice(),
             expressions: caches.into_boxed_slice(),
             stride,
-            at: 0,
         })
     }
     pub fn is_empty(&self) -> bool {
         self.scopes.is_empty()
-    }
-    pub fn begin(&mut self, at: u64) {
-        self.at = at;
-        for filter in &mut self.shared {
-            filter.begin(at);
-        }
     }
 }
 
@@ -233,29 +272,31 @@ impl FilterContext<'_> {
         &mut self,
         index: usize,
         state: &mut [[f64; 2]; 2],
-        input: [f64; 2],
+        block: &mut Planar,
+        len: usize,
         parameters: &[ControlRamp],
         at: u64,
-    ) -> [f64; 2] {
+    ) {
         let cache = match self.bank.scopes[index] {
             Scope::Shared(index) => &mut self.bank.shared[index],
             Scope::Expression(index) => {
                 let (id, _) = self.expression.expect("prepared voice-scoped filter");
                 let cache = &mut self.bank.expressions[id.0.index * self.bank.stride + index];
-                if cache.start != self.bank.at || cache.owner != Some(id) {
-                    cache.begin(self.bank.at);
+                if cache.owner != Some(id) {
                     cache.owner = Some(id);
+                    cache.start = None;
                 }
                 cache
             }
         };
         cache.process(
             state,
-            input,
+            block,
+            len,
             parameters,
             at,
             self.expression.as_ref().map(|(_, value)| value),
-        )
+        );
     }
 }
 
@@ -283,12 +324,17 @@ mod tests {
                 let mut cache = FilterCache::new(filter);
                 let mut state = [[0.; 2]; 2];
                 let mut response = [[0.; 2]; 3];
+                let mut block = [[0.; BLOCK]; 2];
                 for n in 0..4096 {
-                    if n % 64 == 0 {
-                        cache.begin(n);
+                    let at = n as usize % BLOCK;
+                    if at == 0 {
+                        block = [[0.; BLOCK]; 2];
+                        if n == 0 {
+                            block[0][0] = 1.;
+                        }
+                        cache.process(&mut state, &mut block, BLOCK, &[], n, None);
                     }
-                    let output =
-                        cache.process(&mut state, [if n == 0 { 1. } else { 0. }, 0.], &[], n, None);
+                    let output = [block[0][at], block[1][at]];
                     assert_eq!(output[1], 0.);
                     for (response, omega) in response.iter_mut().zip([
                         0.,
