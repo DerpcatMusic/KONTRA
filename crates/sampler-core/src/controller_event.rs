@@ -65,6 +65,7 @@ impl Runtime {
         value: u32,
     ) -> Result<Option<BehaviorId>, Error> {
         let performance = self.performance_index(performance)?;
+        if std::env::var_os("DBG_P").is_some() { eprintln!("DBG dispatch cc{number}={value} at {}", self.now); }
         if number >= 128 || origin.group >= 16 || origin.channel >= 16 || channels == 0 {
             return Err(Error::InvalidInput);
         }
