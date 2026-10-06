@@ -134,6 +134,91 @@ fn afflatus_cc_selects_what_its_keyswitch_selects() {
     assert_ne!(by_cc, default, "and differs from the default articulation");
 }
 
+/// Every non-key driver, through the real script, plays the same audio as the
+/// articulation's own keyswitch: velocity splits, channels, CC 32 and programs.
+#[test]
+fn afflatus_every_driver_plays_what_its_keyswitch_plays() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let Some(path) = std::env::split_paths(&root)
+        .map(|r| r.join(INSTRUMENT))
+        .find(|p| p.is_file())
+    else {
+        return;
+    };
+    let decoded = decoded(&path, KEY);
+    let articulations = decoded.instrument.articulations.clone();
+    let peak = |out: &[[f32; 2]]| out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let mut distinct = std::collections::HashSet::new();
+    for (i, a) in articulations.iter().enumerate() {
+        let tap = u32::from(a.switch_keys[0]);
+        let alt = a.alternatives;
+        let velocity = u32::from(alt.velocities.unwrap().low);
+        let on = |channel: u32, velocity: u32| {
+            0x2090_0000 | channel << 16 | u32::from(KEY) << 8 | velocity
+        };
+        // The reference: this articulation's keyswitch, then the same note.
+        let reference = render(
+            decoded.drive(ir::Driver::Keys),
+            &[
+                0x2090_0064 | tap << 8,
+                0x2080_0000 | tap << 8,
+                on(0, velocity),
+            ],
+        );
+        assert!(peak(&reference) > 1e-4, "{} is silent", a.name);
+        distinct.insert(
+            reference
+                .iter()
+                .map(|f| f[0].to_bits())
+                .fold(0u64, |h, b| h.wrapping_mul(0x100_0000_01b3) ^ u64::from(b)),
+        );
+        let cc = alt.controller.unwrap();
+        for (driver, words) in [
+            (
+                ir::Driver::Velocity,
+                vec![0x2000_0000, 0x2000_0000, on(0, velocity)],
+            ),
+            (
+                ir::Driver::Channel,
+                vec![
+                    0x2000_0000,
+                    0x2000_0000,
+                    on(u32::from(alt.channel.unwrap()), velocity),
+                ],
+            ),
+            (
+                ir::Driver::Controller,
+                vec![
+                    0x20b0_0000 | u32::from(cc.controller) << 8 | u32::from(cc.low),
+                    0x2000_0000,
+                    on(0, velocity),
+                ],
+            ),
+            (
+                ir::Driver::Program,
+                vec![
+                    0x20c0_0000 | u32::from(alt.program.unwrap()) << 8,
+                    0x2000_0000,
+                    on(0, velocity),
+                ],
+            ),
+        ] {
+            assert_eq!(
+                render(decoded.drive(driver), &words),
+                reference,
+                "{driver:?} articulation {i} {}",
+                a.name
+            );
+        }
+    }
+    assert!(
+        distinct.len() > 1,
+        "articulations must differ to prove anything"
+    );
+}
+
 fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let path = entry.path();
