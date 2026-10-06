@@ -189,10 +189,13 @@ fn generated_maps_drive_like_their_keyswitches() {
         let key = (0..=127u8)
             .filter(|k| !switch.contains(k))
             .max_by_key(|&k| {
-                ir.zones
+                let count = ir
+                    .zones
                     .iter()
                     .filter(|z| (z.keys.low..=z.keys.high).contains(&k))
-                    .count()
+                    .count();
+                // Ties go to the key nearest middle C.
+                (count, std::cmp::Reverse(k.abs_diff(60)))
             })
             .unwrap();
         let decoded = decoded(path, key);
@@ -216,6 +219,10 @@ fn generated_maps_drive_like_their_keyswitches() {
             decoded.drive(ir::Driver::Controller),
             &[0x2000_0000, 0x2000_0000, note, off],
         );
+        let peak = |out: &[[f32; 2]]| out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+        if peak(&default) < 1e-4 {
+            failures.push(format!("{}: silent at key {key}", path.display()));
+        }
         for a in &ir.articulations {
             let (Some(&tap), Some(cc)) = (a.switch_keys.first(), a.alternatives.controller) else {
                 failures.push(format!("{}: {} has no key or CC", path.display(), a.name));
