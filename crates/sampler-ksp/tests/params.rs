@@ -1,8 +1,15 @@
 //! Script voice parameters reach the audio: change_vol/pan, fades,
 //! set_engine_par group volume and purge_group.
-use sampler_core::{Envelope, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime};
+use sampler_core::{
+    Envelope, GroupParams, Input, Limits, Pcm, Playback, Prepared, Protocol, Region, Runtime,
+};
 
 fn runtime(source: &str) -> Runtime {
+    authored(source, GroupParams::default())
+}
+
+/// Group 0 authored at `group0`, baked into its region's gain as lowering does.
+fn authored(source: &str, group0: GroupParams) -> Runtime {
     let script = sampler_ksp::compile(
         source,
         48000,
@@ -25,7 +32,11 @@ fn runtime(source: &str) -> Runtime {
             root_key: None,
             velocity_low: 0.,
             velocity_high: 1.,
-            gain: 1.,
+            gain: if sample == 0 {
+                10f32.powf(group0.decibels as f32 / 20.)
+            } else {
+                1.
+            },
             envelope: Envelope::default(),
             playback: Playback::default(),
         })
@@ -35,6 +46,7 @@ fn runtime(source: &str) -> Runtime {
             Prepared::new(48000, pcm.into(), regions, 2)
                 .unwrap()
                 .with_groups(2, vec![Some(0), Some(1)])
+                .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
                 .unwrap(),
         )
         .unwrap();
@@ -141,4 +153,23 @@ fn volume_envelope_attack_applies_to_voices_that_start_after_it() {
     rt.trigger(input(60), 60, 1.).unwrap();
     let level = level(&mut rt)[0];
     assert!((level - 0.5 * 256. / 480.).abs() < 0.01, "{level}");
+}
+
+#[test]
+fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
+    let mut rt = authored(
+        "on note
+           { The authored -6 dB group reads back as 500000. }
+           if (abs(get_engine_par($ENGINE_PAR_VOLUME, 0, -1, -1) - 500000) < 20)
+             { 629960 is 0 dB, not +6 dB on top of the authored value. }
+             set_engine_par($ENGINE_PAR_VOLUME, 629960, 0, -1, -1)
+           end if
+         end on",
+        GroupParams {
+            decibels: -6.0,
+            ..GroupParams::default()
+        },
+    );
+    rt.trigger(input(60), 60, 1.).unwrap();
+    assert!(close(level(&mut rt), [0.5; 2]), "{:?}", level(&mut rt));
 }

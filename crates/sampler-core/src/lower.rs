@@ -4,10 +4,10 @@
 //! approximated silently.
 use crate::{
     Biquad, Bus, BusSend, ControllerCondition, Direction, Envelope, EnvelopeCurve, Error,
-    FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute,
-    ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region, SelectionPolicy,
-    Sequence, SequenceScope, StateVariableFilter, SvfMode, Take, TakePolicy, Trigger,
-    VelocityCurve, VoiceChain,
+    FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
+    ModProgram, ModRoute, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor,
+    Region, SelectionPolicy, Sequence, SequenceScope, StateVariableFilter, SvfMode, Take,
+    TakePolicy, Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -188,6 +188,29 @@ pub fn lower(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    if !instrument.groups.is_empty() {
+        // Group membership and authored values for script group edits
+        // (`purge_group`, `set_engine_par`); selection is unaffected.
+        let count = instrument.groups.len() as u32;
+        let members = instrument
+            .zones
+            .iter()
+            .map(|z| z.group.map(|g| g.0 as u32))
+            .collect();
+        let params = instrument
+            .groups
+            .iter()
+            .map(|g| GroupParams {
+                decibels: 20.0 * g.gain.linear().max(1e-9).log10(),
+                pan: g.pan.position,
+                semitones: g.tune.semitones(),
+            })
+            .collect();
+        plan = plan
+            .with_groups(count, members)
+            .and_then(|p| p.with_group_params(params))
+            .map_err(core(Stage::Regions, "groups"))?;
+    }
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)
