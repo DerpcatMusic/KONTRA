@@ -261,7 +261,7 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
             e.offset = file_offset + header_size;
             e.key_index = u32::from_le_bytes(header[10..14].try_into().unwrap());
             // A key hint can describe encrypted data even with the 22-byte
-            // header (Solo's shared NKR), but plaintext PNGs are verified below.
+            // header (Solo's shared NKR), but plaintext resources are verified below.
             e.encoded = magic == 0x16ccf80a || e.key_index == 0x100;
             let at = if magic == 0x2ae905fa { 14 } else { 19 };
             e.size = u32::from_le_bytes(header[at..at + 4].try_into().unwrap()) as u64;
@@ -269,14 +269,17 @@ fn check<R: Read + Seek>(r: &mut R, e: &mut Entry, length: u64) -> Result<(), Er
                 Some("Truncated NKX member payload")
             } else {
                 // Shared NKR resources also use the 22-byte header and a key
-                // hint for plaintext pictures. Validate the whole PNG before
+                // hint for plaintext pictures. Validate the whole resource before
                 // overriding that hint; an encrypted member still needs its key.
-                if magic == 0x2ae905fa && e.encoded && e.size <= 32 << 20
-                    && &header[22..30] == b"\x89PNG\r\n\x1a\n"
-                {
-                    r.seek(SeekFrom::Start(e.offset))?;
-                    if clear_png(&r.read_bytes(e.size as usize)?) {
-                        e.encoded = false;
+                if magic == 0x2ae905fa && e.encoded && e.size <= 32 << 20 {
+                    let png = &header[22..30] == b"\x89PNG\r\n\x1a\n";
+                    let layout = e.size <= 64 << 10 && e.name.to_ascii_lowercase().ends_with(".txt");
+                    if png || layout {
+                        r.seek(SeekFrom::Start(e.offset))?;
+                        let bytes = r.read_bytes(e.size as usize)?;
+                        if (png && clear_png(&bytes)) || (layout && clear_picture_layout(&bytes)) {
+                            e.encoded = false;
+                        }
                     }
                 }
                 None
@@ -349,4 +352,38 @@ fn clear_png(bytes: &[u8]) -> bool {
         at = end;
     }
     false
+}
+
+/// A bounded picture-layout property list, not arbitrary UTF-8 or a KSP script.
+fn clear_picture_layout(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else { return false };
+    let text = text.trim_start_matches('\u{feff}');
+    if !text.bytes().all(|b| b.is_ascii_graphic() || b" \t\r\n".contains(&b)) {
+        return false;
+    }
+    let (mut fields, mut frames, mut flags) = (HashSet::new(), false, false);
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((key, value)) = line.split_once(':') else { return false };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let boolean = value.eq_ignore_ascii_case("yes") || value.eq_ignore_ascii_case("no");
+        let number = value.parse::<u32>().is_ok();
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphabetic() || b == b' ')
+            || !fields.insert(key.clone()) || fields.len() > 32 || (!boolean && !number)
+        {
+            return false;
+        }
+        match key.as_str() {
+            "number of animations" => {
+                if !number { return false; }
+                frames = true;
+            }
+            "horizontal animation" | "horizontal resizable" | "vertical resizable" | "has alpha channel" => {
+                if !boolean { return false; }
+                flags = true;
+            }
+            _ => {}
+        }
+    }
+    frames && flags
 }
