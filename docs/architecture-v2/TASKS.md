@@ -286,7 +286,8 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
 
 - [ ] **P0; dependencies:** V2-05/08/09/13.
 - Evaluated integer `wait`/`play_note` arguments and onset velocity reads now execute
-  through native bounded services; special durations, offsets, generated handles and
+  through native bounded services; gate-linked and whole-source duration policies
+  now share native ownership/retirement. Offsets, generated handles and
   ordered multi-slot/controller/release forwarding remain open. Original note
   forwarding now commits once on the same identity before KSP wait/exit/completion.
   Current-event pitch/velocity edits use separate admission, script-visible and

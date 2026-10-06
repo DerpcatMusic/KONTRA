@@ -396,10 +396,13 @@ impl Runtime {
 
     // Completed internal notes have no terminal sink. Reclaim them under admission
     // pressure, skipping external owners whose notifications still need acceptance.
-    pub(super) fn reclaim_internal_notes(&mut self, decisions: usize) {
+    pub(super) fn reclaim_internal_notes(&mut self, required: super::ReleaseReserve) {
         if self.notes.available() != 0
             && self.expressions.available() != 0
-            && self.decisions.available() >= decisions
+            && self.decisions.available() >= required.decisions
+            && self.voices.available() >= required.voices
+            && self.families.available() >= required.families
+            && self.available_commands() >= required.commands
         {
             return;
         }
@@ -416,7 +419,7 @@ impl Runtime {
         // Each removal visits its parent once. No recursion, scratch queue or
         // repeated pool scans: O(reserved slots + retired notes).
         while let Some(n) = self.notes.get(id.0).copied() {
-            if n.gate()
+            if (n.gate() && !n.retire_when_silent)
                 || (n.input.is_some() && n.key_down())
                 || n.pins != 0
                 || n.work != 0
@@ -427,6 +430,14 @@ impl Runtime {
             }
             if n.input.is_some_and(|input| !accept(input)) {
                 return false;
+            }
+            if n.retire_when_silent {
+                // Source-owned notes end without inventing a musical release.
+                // Return unused release quotas before removing their owning note.
+                debug_assert!(n.input.is_none());
+                self.run_release_behavior(id, false);
+                self.run_release(id, super::Trigger::KeyRelease, false);
+                self.run_release(id, super::Trigger::GateRelease, false);
             }
             debug_assert!(n.first_child.is_none() && n.first_family.is_none());
             if let Some(parent) = n.parent {

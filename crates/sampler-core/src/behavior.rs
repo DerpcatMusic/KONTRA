@@ -15,6 +15,16 @@ pub enum Duration {
     Frames(u32),
     /// Native bounded duration that also follows the originating gate.
     FramesOrGate(u32),
+    /// Independent gate; retire after voices/tails and all other owned work finish.
+    /// No synthetic note-off or release samples at source completion. Loops may run forever.
+    UntilSilent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DurationValue {
+    Fixed(Duration),
+    /// Positive sample-frame count in an integer register, bounded by u32::MAX.
+    Frames(u16),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,12 +47,12 @@ pub enum Instruction {
         inheritance: Inheritance,
         duration: Duration,
     },
-    /// Generate a timed key-mapped child from integer registers. Key 0..127,
-    /// MIDI 1 velocity 1..127, duration 1..=u32::MAX sample frames.
+    /// Generate a key-mapped child from integer registers. Key 0..127,
+    /// MIDI 1 velocity 1..127; duration policy is explicit.
     PlayMidi {
         key: u16,
         velocity: u16,
-        frames: u16,
+        duration: DurationValue,
         inheritance: Inheritance,
     },
     /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
@@ -213,11 +223,14 @@ impl Program {
             if let Instruction::PlayMidi {
                 key,
                 velocity,
-                frames,
+                duration,
                 ..
             } = *op
             {
-                locals = locals.max(usize::from(key.max(velocity).max(frames)) + 1);
+                locals = locals.max(usize::from(key.max(velocity)) + 1);
+                if let DurationValue::Frames(frames) = duration {
+                    locals = locals.max(usize::from(frames) + 1);
+                }
             }
             if let Instruction::CompareLocal { lhs, rhs, .. }
             | Instruction::Binary32 { lhs, rhs, .. } = *op
@@ -644,14 +657,23 @@ impl Runtime {
             Instruction::PlayMidi {
                 key,
                 velocity,
-                frames,
+                duration,
                 inheritance,
             } => {
                 let key = *self.local_cell_mut(id, key)?;
                 let velocity = *self.local_cell_mut(id, velocity)?;
-                let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
-                    .map_err(|_| Error::InvalidInput)?;
-                if !(0..128).contains(&key) || !(1..128).contains(&velocity) || frames == 0 {
+                let duration = match duration {
+                    DurationValue::Fixed(duration) => duration,
+                    DurationValue::Frames(local) => {
+                        let frames = u32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)?;
+                        if frames == 0 {
+                            return Err(Error::InvalidInput);
+                        }
+                        Duration::Frames(frames)
+                    }
+                };
+                if !(0..128).contains(&key) || !(1..128).contains(&velocity) {
                     return Err(Error::InvalidInput);
                 }
                 self.play_behavior(
@@ -659,7 +681,7 @@ impl Runtime {
                     super::NotePitch::Key(key as u8),
                     velocity as f64 / 127.,
                     inheritance,
-                    Duration::Frames(frames),
+                    duration,
                 )?;
             }
             Instruction::Play {
@@ -705,7 +727,7 @@ impl Runtime {
         duration: Duration,
     ) -> Result<(), Error> {
         let frames = match duration {
-            Duration::Gate => None,
+            Duration::Gate | Duration::UntilSilent => None,
             Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
         };
         let at = frames
@@ -718,8 +740,8 @@ impl Runtime {
         if at.is_some_and(|at| at != self.now) && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
-        let linked = !matches!(duration, Duration::Frames(_));
-        self.reclaim_internal_notes(0);
+        let linked = matches!(duration, Duration::Gate | Duration::FramesOrGate(_));
+        self.reclaim_internal_notes(super::ReleaseReserve::default());
         // Protect the duration command while child selection reserves its
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
@@ -727,6 +749,7 @@ impl Runtime {
         let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
         self.reserved_commands -= command;
         let child = child?;
+        self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
         if let Some(at) = at {
             self.release_at(child, at)?;
         }
