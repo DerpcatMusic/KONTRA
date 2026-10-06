@@ -72,6 +72,8 @@ pub enum SourceFormat {
         version: u16,
     },
     Sfz,
+    /// UVI Falcon / Workstation program XML.
+    Uvi,
 }
 
 // ---------------------------------------------------------------- assets
