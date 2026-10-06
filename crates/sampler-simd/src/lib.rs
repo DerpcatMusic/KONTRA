@@ -33,6 +33,19 @@ pub fn dispatch<R>(kernel: impl FnOnce() -> R) -> R {
     dispatch::run(kernel)
 }
 
+/// Run `wide` (compiled for x86-64-v3) on a CPU with AVX2 and FMA, else
+/// `narrow`. For kernels that fuse multiply-adds on the wide path only:
+/// results differ between the two in the last bits, each is deterministic.
+/// Both take `context`, so they can borrow the same state mutably.
+#[inline(always)]
+pub fn dispatch_fused<C, R>(
+    context: C,
+    narrow: impl FnOnce(C) -> R,
+    wide: impl FnOnce(C) -> R,
+) -> R {
+    dispatch::run_fused(context, narrow, wide)
+}
+
 #[allow(unsafe_code)]
 mod dispatch {
     use super::Level;
@@ -70,6 +83,31 @@ mod dispatch {
         } else {
             kernel()
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    pub(super) fn run_fused<C, R>(
+        context: C,
+        narrow: impl FnOnce(C) -> R,
+        wide: impl FnOnce(C) -> R,
+    ) -> R {
+        if level() == Level::V3 {
+            // SAFETY: as in `run`.
+            unsafe { v3(|| wide(context)) }
+        } else {
+            narrow(context)
+        }
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    #[inline(always)]
+    pub(super) fn run_fused<C, R>(
+        context: C,
+        narrow: impl FnOnce(C) -> R,
+        _wide: impl FnOnce(C) -> R,
+    ) -> R {
+        narrow(context)
     }
 
     #[cfg(not(target_arch = "x86_64"))]
