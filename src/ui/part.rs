@@ -23,10 +23,8 @@ pub struct Face {
 
 impl Face {
     fn new(path: &std::path::Path, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
-        let mut source = pictures::Source::of(path);
-        let mut face = from[shown].clone();
-        source.describe(&mut face);
-        let face = ir_view::resolved(&face);
+        let source = pictures::Source::of(path);
+        let face = ir_view::resolved(&from[shown]);
         let mut out = Self { from, shown, face, source, assets: Default::default(), presentation, values: Default::default() };
         out.sync();
         out
