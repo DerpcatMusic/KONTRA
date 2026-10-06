@@ -1025,3 +1025,94 @@ fn velocity_curves_shape_each_phase_without_changing_selection_or_note_velocity(
         ));
     }
 }
+
+#[test]
+fn deferred_release_owns_layer_reserves_and_replaces_full_timeline_deadlines() {
+    use sampler_core::{Instruction, Outcome, Program};
+    let make = || {
+        prepared(
+            vec![
+                Region {
+                    gain: 0.25,
+                    ..region(0)
+                },
+                Region {
+                    gain: 0.5,
+                    ..region(0)
+                },
+                Region {
+                    gain: 1.,
+                    ..region(0)
+                },
+            ],
+            vec![Trigger::Attack, Trigger::KeyRelease, Trigger::GateRelease],
+            ReleaseOptions::default(),
+            16,
+        )
+        .with_programs(
+            vec![
+                Program::new(vec![Instruction::SuppressRelease])
+                    .unwrap()
+                    .with_wait_lifetime(sampler_core::WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_release_program(0)
+        .unwrap()
+    };
+    for hard in [false, true] {
+        let mut rt = Runtime::new(
+            make(),
+            Limits {
+                commands: 1,
+                behaviors: 2,
+                behavior_fuel: 8,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let a = rt.trigger(input(0), 60, 1.).unwrap();
+            let b = rt.trigger(input(1), 60, 1.).unwrap();
+            assert_eq!(rt.suppress_release(a), Err(Error::InvalidInput));
+            rt.key_up(a, Some(0.5)).unwrap();
+            rt.all_notes_off(input(0).channel_address()).unwrap();
+            assert!(!rt.key_down(a).unwrap() && !rt.key_down(b).unwrap());
+            assert!(rt.note(a).unwrap().2 && rt.note(b).unwrap().2);
+            assert_eq!(
+                rt.release_status(a, Trigger::KeyRelease),
+                Ok(ReleaseStatus::Pending)
+            );
+            rt.replace_release_forward_at(a, 8).unwrap();
+            assert_eq!(rt.replace_release_forward_at(b, 4), Err(Error::Capacity));
+            rt.replace_release_forward_at(a, 5).unwrap();
+            let mut audio = [[0.; 2]; 6];
+            rt.render(&mut audio).unwrap();
+            assert_eq!(audio[..5], [[0.5; 2]; 5]);
+            assert_eq!(audio[5], [1.75; 2]);
+            assert_eq!(rt.release_context(a).unwrap().key.unwrap().at, 0);
+            assert_eq!(rt.release_context(a).unwrap().gate.unwrap().at, 5);
+            assert!(!rt.suppress_release(a).unwrap());
+            assert!(!rt.resume_release(a).unwrap());
+            if hard {
+                rt.replace_release_forward_at(b, 10).unwrap();
+                rt.panic();
+            } else {
+                rt.release(b).unwrap(); // Explicit forced closure returns a held key-release reserve.
+                assert_eq!(
+                    rt.release_status(b, Trigger::KeyRelease),
+                    Ok(ReleaseStatus::Suppressed)
+                );
+                rt.render(&mut [[0.; 2]; 32]).unwrap();
+            }
+            assert_eq!(rt.release_reserve(), ReleaseReserve::default());
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
+    }
+}

@@ -53,6 +53,7 @@ impl Note {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ReleaseTimes {
     pub groups_forwarded: bool,
+    pub held: bool,
     pub admitted_at: u64,
     pub key_at: u64,
     pub gate_at: u64,
@@ -81,12 +82,45 @@ impl Runtime {
                 id,
                 matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
             );
-            self.run_release(
-                id,
-                Trigger::KeyRelease,
-                matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
-            );
+            if !self.release_times[id.0.index].held {
+                self.run_release(
+                    id,
+                    Trigger::KeyRelease,
+                    matches!(cause, ReleaseCause::KeyUp | ReleaseCause::AllNotesOff),
+                );
+            }
         }
+    }
+
+    /// Stop a pending release before its script forwarding boundary. Physical key
+    /// state/velocity stay recorded; pedal release cannot bypass this hold.
+    pub fn suppress_release(&mut self, note: NoteId) -> Result<bool, Error> {
+        self.apply_due();
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if n.key_down() {
+            return Err(Error::InvalidInput);
+        }
+        let state = &mut self.release_times[note.0.index];
+        if !n.gate() || state.groups_forwarded {
+            return Ok(false);
+        }
+        state.held = true;
+        Ok(true)
+    }
+
+    /// Forward a suppressed release once, preserving the original key-up context.
+    /// Release layers use the current group draft; the gate still obeys pedals.
+    pub fn resume_release(&mut self, note: NoteId) -> Result<bool, Error> {
+        self.apply_due();
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if !n.gate() || !self.release_times[note.0.index].held {
+            return Ok(false);
+        }
+        self.release_times[note.0.index].held = false;
+        self.forward_release_groups(note)?;
+        self.run_release(note, Trigger::KeyRelease, true);
+        self.key_up_now(note, None)?;
+        Ok(true)
     }
 
     /// Valid until the logical note retires, including rejected terminal delivery.

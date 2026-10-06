@@ -277,3 +277,15 @@ source-end retirement and failed replacement are explicit no-heap fixtures. Exis
 single-stage child behavior remains; downstream multi-slot release propagation is
 still missing. No vendor execution or improved-performance claim follows from these
 native tests, and no legacy runtime path is added.
+
+
+## Suppressed release ownership
+
+Reviewed NI's `ignore_event` note/release contexts and the general-command delayed
+release example. Traced legacy `src/ksp/runtime.rs:2521–2628,2918–2999` for reached
+slots, release masks, child propagation and release suppression. The new core now
+implements the single-stage deferred-release shape through its existing physical-key,
+gate, group and reservation owners; no legacy VM or timer heap is reused. Exact PCM,
+pedals before/after forwarding, late group edits, full timeline capacity, callback
+fault and panic are executable fixtures. Legacy hard-stop continuation cleanup and
+ordered downstream script propagation remain explicit future conformance work.

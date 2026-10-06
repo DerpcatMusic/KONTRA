@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add release-event suppression and delayed forwarding through the native gate,
+  pedal and release-layer owners. KSP release callbacks can wait and resume their
+  original event without losing key-up context, group snapshots or reserved capacity.
+
 - Isolate polyphonic cells by script instance in the prepared native layout. Programs
   share state only within their instance, retain old layouts across plan replacement,
   and account for the sum of namespace sizes before activation.

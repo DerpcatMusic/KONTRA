@@ -216,7 +216,7 @@ impl Runtime {
             {
                 let held = !self.selections[i].consumed_switch && (sustained || note.sostenuto);
                 self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
-                if !held {
+                if !held && !self.release_times[i].held {
                     self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff);
                 }
                 released += 1;
@@ -288,7 +288,7 @@ impl Runtime {
         });
         let held = !self.selections[note.0.index].consumed_switch && (sustained || n.sostenuto);
         self.release_key(note, ReleaseCause::KeyUp, velocity);
-        if !held {
+        if !held && !self.release_times[note.0.index].held {
             self.close_gate(note, ReleaseCause::KeyUp);
             self.cleanup_closed_notes();
         } else {
@@ -346,7 +346,8 @@ impl Runtime {
             if sostenuto && !down {
                 n.sostenuto = false;
             }
-            if !n.key_down() && sustained & bit == 0 && !n.sostenuto {
+            if !n.key_down() && sustained & bit == 0 && !n.sostenuto && !self.release_times[i].held
+            {
                 self.close_gate(super::NoteId(self.notes.id(i)), ReleaseCause::Pedal);
             }
         }

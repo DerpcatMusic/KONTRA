@@ -953,6 +953,7 @@ impl Runtime {
         let note = self.notes.get_mut(id.0).unwrap();
         if note.gate() {
             self.release_times[id.0.index].gate_at = self.now;
+            self.release_times[id.0.index].held = false;
             note.gate_release = Some(cause);
             // Each live note enters at most once; cleanup drains before notes can
             // retire or slots can be reused. Storage was reserved for every note.
@@ -960,8 +961,9 @@ impl Runtime {
             self.closed_notes.push(id);
             if !cause.musical() {
                 self.run_release_behavior(id, false);
-                self.run_release(id, Trigger::KeyRelease, false);
             }
+            // Forced closure must return any suppressed physical-release quota.
+            self.run_release(id, Trigger::KeyRelease, false);
             self.run_release(id, Trigger::GateRelease, cause.musical());
         }
     }

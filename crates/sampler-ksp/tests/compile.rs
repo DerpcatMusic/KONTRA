@@ -127,7 +127,6 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
 fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let bodies = [
         "",
-        "on release ignore_event($EVENT_ID) end on",
         "on note ignore_event($EVENT_ID) message(1) end on",
         "on note ignore_event($EVENT_ID) wait($x) end on",
         "on note ignore_event($EVENT_ID) wait(2147483648) end on",
