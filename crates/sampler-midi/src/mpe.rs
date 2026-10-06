@@ -108,6 +108,7 @@ pub struct Mpe {
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
+    transpose: f64,
 }
 impl Mpe {
     pub fn new(
@@ -165,6 +166,7 @@ impl Mpe {
             parameters: [Parameter::default(); 16],
             bindings,
             changes,
+            transpose: 0.0,
         })
     }
 
@@ -211,30 +213,12 @@ impl Mpe {
                 key,
                 velocity,
                 attribute,
-            } if attribute.kind == 0 => {
-                if self.bindings.len() == self.limit {
-                    return Err(Error::Capacity.into());
-                }
-                let member = if voice.channel == self.zone.manager() {
-                    Controls::default()
-                } else {
-                    self.controls[usize::from(voice.channel)]
-                };
-                let expression = member.expression(self.controls[usize::from(self.zone.manager())]);
-                let note = runtime.trigger_in(
-                    self.performance,
-                    Input { key, ..input },
-                    NotePitch::Key(key),
-                    velocity.normalized(),
-                    expression,
-                )?;
-                self.bindings.push(Binding {
-                    note,
-                    channel: voice.channel,
-                    member,
-                });
-                Applied::Started(note)
-            }
+            } if attribute.kind == 0 => Applied::Started(self.admit(
+                runtime,
+                voice.channel,
+                Input { key, ..input },
+                velocity.normalized(),
+            )?),
             Message::NoteOff {
                 key,
                 velocity,
@@ -305,6 +289,80 @@ impl Mpe {
         })
     }
 
+    /// Admit a note whose identity another transport owns (a host note ID) as
+    /// if it arrived on `channel` of this zone, so the zone's pedals and gestures
+    /// reach it. `input` must lie in this zone's MIDI 1.0 port and group for
+    /// pedals to hold it; its `external_id` keeps it distinct from wire notes.
+    pub fn trigger(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !self.zone.contains(channel, self.members) {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        Ok(self.admit(runtime, channel, input, velocity)?)
+    }
+
+    /// Offset every note of the zone, held or not, by `semitones` on top of its
+    /// bends (a part's tuning). Commits only if every owner accepts it.
+    pub fn transpose(&mut self, runtime: &mut Runtime, semitones: f64) -> Result<Applied, ApplyError> {
+        if runtime.id() != self.runtime {
+            return Err(Error::StaleHandle.into());
+        }
+        if !semitones.is_finite() {
+            return Err(Error::InvalidInput.into());
+        }
+        runtime.render(&mut [])?;
+        self.bindings
+            .retain(|binding| runtime.note(binding.note).is_ok());
+        let previous = std::mem::replace(&mut self.transpose, semitones);
+        let manager = Some(self.zone.manager());
+        self.project(runtime, self.controls, manager, Control::Pitch(0.0))
+            .inspect_err(|_| self.transpose = previous)
+            .map_err(Into::into)
+    }
+
+    fn admit(
+        &mut self,
+        runtime: &mut Runtime,
+        channel: u8,
+        input: Input,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        if self.bindings.len() == self.limit {
+            return Err(Error::Capacity);
+        }
+        let member = if channel == self.zone.manager() {
+            Controls::default()
+        } else {
+            self.controls[usize::from(channel)]
+        };
+        let mut expression = member.expression(self.controls[usize::from(self.zone.manager())]);
+        expression.pitch_semitones += self.transpose;
+        let note = runtime.trigger_in(
+            self.performance,
+            input,
+            NotePitch::Key(input.key),
+            velocity,
+            expression,
+        )?;
+        self.bindings.push(Binding {
+            note,
+            channel,
+            member,
+        });
+        Ok(note)
+    }
+
     fn manager_scope(&self) -> ChannelScope {
         let width = (1u32 << (self.members + 1)) - 1;
         ChannelScope {
@@ -351,7 +409,8 @@ impl Mpe {
                 } else {
                     binding.member
                 };
-                let combined = member.expression(manager_controls);
+                let mut combined = member.expression(manager_controls);
+                combined.pitch_semitones += self.transpose;
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {

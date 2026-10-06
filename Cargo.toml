@@ -17,7 +17,7 @@ clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
 # The sampler-core (v2) sound core behind the seam in src/sound/v2.rs.
-core-v2 = ["dep:sampler-core", "dep:sampler-ir", "dep:sampler-kontakt"]
+core-v2 = ["dep:sampler-core", "dep:sampler-ir", "dep:sampler-kontakt", "dep:sampler-midi"]
 # Reads a library's own access data to open its encrypted content (src/access.rs).
 library-access = ["dep:aes"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
@@ -27,6 +27,7 @@ shots = ["plugin", "dep:mui"]
 sampler-core = { path = "crates/sampler-core", optional = true }
 sampler-ir = { path = "crates/sampler-ir", optional = true }
 sampler-kontakt = { path = "crates/sampler-kontakt", optional = true }
+sampler-midi = { path = "crates/sampler-midi", optional = true }
 rustc-hash = "=2.1.3"
 anyhow = "1"
 aes = { version = "0.8", optional = true }
