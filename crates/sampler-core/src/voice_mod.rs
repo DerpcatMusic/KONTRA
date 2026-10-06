@@ -1050,6 +1050,8 @@ mod tests {
                 timbre: 0,
                 controllers: &controllers,
                 held: 0,
+                script: Default::default(),
+                bend: 0.0,
             };
             let clock = |now| Clock {
                 rate: 1000.0,
