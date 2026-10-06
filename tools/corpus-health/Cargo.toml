@@ -1,0 +1,24 @@
+[package]
+name = "corpus-health"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+description = "Corpus health scoreboard: loads and plays every installed library instrument"
+
+[dependencies]
+sampler-core = { path = "../../crates/sampler-core" }
+sampler-midi = { path = "../../crates/sampler-midi" }
+sampler-kontakt = { path = "../../crates/sampler-kontakt", default-features = false }
+sampler-ir = { path = "../../crates/sampler-ir" }
+sampler-uvi = { path = "../../crates/sampler-uvi", default-features = false }
+serde_json = "1"
+
+[features]
+default = ["library-access"]
+library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
+
+# Only the counting allocator (src/heap.rs) opts out.
+[lints.rust]
+unsafe_code = "deny"
