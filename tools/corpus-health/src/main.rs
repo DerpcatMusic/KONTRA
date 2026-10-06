@@ -769,8 +769,9 @@ fn check(item: &Item) -> Value {
         "peak_rss_kib": proc_field("/proc/self/status", "VmHWM:"),
         "peak_heap_bytes": heap::peak(),
         "heap_bytes_after_load": heap_after_load,
-        // Timing is evidence only when nothing else was running.
-        "timing_exclusive": std::env::var("KONTRA_CORPUS_EXCLUSIVE").is_ok_and(|v| v == "1"),
+        // Timing is evidence only when the machine was otherwise idle: judge it
+        // by the 1-minute load average at the end of the item.
+        "loadavg1": std::fs::read_to_string("/proc/loadavg").ok().and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok()),
         "disk_read_bytes": proc_field("/proc/self/io", "read_bytes:") - io0,
         "minor_faults": faults().0 - minflt0,
         "major_faults": faults().1 - majflt0,
