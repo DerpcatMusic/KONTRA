@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Execute KSP integer expressions, precedence, parentheses, bitwise operators and scalar inc/dec through explicit signed-32 native instructions. Bound expression depth and register storage; the native audition command now sizes callback registers from the prepared plan.
+
 - Add generation-owned script-instance integer banks and explicit program bindings. KSP globals now share values across note/release/UI waits while polyphonic cells stay per-note; schema validation, replacement, faults, cancellation and deferred destruction preserve ownership.
 
 - Add native delayed/curved envelopes and one-shot AHD with exact duration boundaries, captured release/choke levels and physical-key-independent source completion. Source-clock curve anchoring preserves block partition identity; Kontakt/Falcon curve and clock mappings remain separate required profiles.

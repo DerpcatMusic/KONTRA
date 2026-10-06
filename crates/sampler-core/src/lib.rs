@@ -66,6 +66,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve};
+mod integer;
+pub use integer::{IntegerBinary, IntegerUnary};
 mod script;
 pub use script::ScriptInstanceId;
 mod schedule;

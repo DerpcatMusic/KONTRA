@@ -45,6 +45,16 @@ pub enum Instruction {
         local: u16,
         value: i64,
     },
+    /// Signed-32 operands/results; rejects out-of-range native register inputs.
+    Binary32 {
+        lhs: u16,
+        rhs: u16,
+        operation: super::IntegerBinary,
+    },
+    Unary32 {
+        local: u16,
+        operation: super::IntegerUnary,
+    },
     ReadKey {
         local: u16,
     },
@@ -150,6 +160,7 @@ impl Program {
             }
             if let Instruction::SetLocal { local, .. }
             | Instruction::AddLocal { local, .. }
+            | Instruction::Unary32 { local, .. }
             | Instruction::ReadScriptCell { local, .. }
             | Instruction::WriteScriptCell { local, .. }
             | Instruction::ReadControl { local, .. }
@@ -162,7 +173,9 @@ impl Program {
             {
                 locals = locals.max(usize::from(local) + 1);
             }
-            if let Instruction::CompareLocal { lhs, rhs, .. } = *op {
+            if let Instruction::CompareLocal { lhs, rhs, .. }
+            | Instruction::Binary32 { lhs, rhs, .. } = *op
+            {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
@@ -456,6 +469,22 @@ impl Runtime {
             Instruction::AddLocal { local, value } => {
                 let cell = self.local_cell_mut(id, local)?;
                 *cell = cell.checked_add(value).ok_or(Error::ArithmeticOverflow)?;
+            }
+            Instruction::Binary32 {
+                lhs,
+                rhs,
+                operation,
+            } => {
+                let right = i32::try_from(*self.local_cell_mut(id, rhs)?)
+                    .map_err(|_| Error::ArithmeticOverflow)?;
+                let left = self.local_cell_mut(id, lhs)?;
+                let value = i32::try_from(*left).map_err(|_| Error::ArithmeticOverflow)?;
+                *left = i64::from(operation.apply(value, right));
+            }
+            Instruction::Unary32 { local, operation } => {
+                let cell = self.local_cell_mut(id, local)?;
+                let value = i32::try_from(*cell).map_err(|_| Error::ArithmeticOverflow)?;
+                *cell = i64::from(operation.apply(value));
             }
             Instruction::ReadKey { local } => {
                 let note = owner.note()?;

@@ -6,6 +6,7 @@ use sampler_core::{
     Instruction, Prepared, Program, ScriptInstanceId, Velocity, WaitLifetime,
 };
 use std::collections::BTreeMap;
+mod expression;
 
 pub const PROFILE: &str = "ksp-8.12-note-release-subset-v1";
 
@@ -224,7 +225,14 @@ impl<'a> Parser<'a> {
                 (b'>', false) => Comparison::Greater,
                 _ => Comparison::GreaterEqual,
             })
-        } else if b"(),+-".contains(&byte) {
+        } else if byte == b'.' {
+            let operator = [".and.", ".or.", ".xor.", ".not."]
+                .into_iter()
+                .find(|op| self.source[start..].starts_with(op))
+                .ok_or_else(|| self.error("unsupported dotted operator"))?;
+            self.offset += operator.len();
+            Kind::Word(operator)
+        } else if b"(),+-*/".contains(&byte) {
             self.offset += 1;
             Kind::Symbol(byte)
         } else {
@@ -440,12 +448,16 @@ impl<'a> Parser<'a> {
         let variable = self.variable(name, offset)?;
         self.symbol(b':')?;
         self.scalar(0)?;
+        self.write_variable(variable, 0)
+    }
+
+    fn write_variable(&mut self, variable: Variable, local: u16) -> Result<(), Error> {
         self.emit(match variable {
-            Variable::Global(cell) => Instruction::WriteScriptCell { cell, local: 0 },
-            Variable::Note(cell) => Instruction::WriteNoteCell { cell, local: 0 },
+            Variable::Global(cell) => Instruction::WriteScriptCell { cell, local },
+            Variable::Note(cell) => Instruction::WriteNoteCell { cell, local },
             Variable::Control(index) => Instruction::WriteControl {
                 control: self.controls[index].definition.id,
-                local: 0,
+                local,
             },
         })
     }
@@ -478,27 +490,6 @@ impl<'a> Parser<'a> {
         } as i32)
     }
 
-    fn scalar(&mut self, local: u16) -> Result<(), Error> {
-        let token = self.next()?;
-        let read = match token.kind {
-            Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
-            Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
-            Kind::Word(name) => match self.variable(name, token.offset)? {
-                Variable::Global(cell) => Instruction::ReadScriptCell { local, cell },
-                Variable::Note(cell) => Instruction::ReadNoteCell { local, cell },
-                Variable::Control(index) => Instruction::ReadControl {
-                    local,
-                    control: self.controls[index].definition.id,
-                },
-            },
-            _ => Instruction::SetLocal {
-                local,
-                value: i64::from(self.integer_token(token)?),
-            },
-        };
-        self.emit(read)
-    }
-
     fn callback(&mut self, note: bool) -> Result<Program, Error> {
         if note {
             self.expect(Kind::Word("ignore_event"),
@@ -523,6 +514,7 @@ impl<'a> Parser<'a> {
                     self.emit(Instruction::Wait(self.frames(micros, offset)?))?;
                 }
                 Kind::Word("play_note") => self.play()?,
+                Kind::Word(command @ ("inc" | "dec")) => self.increment(command == "inc")?,
                 Kind::Word("exit") => self.emit(Instruction::End)?,
                 Kind::Word(kind @ ("if" | "while")) => {
                     let start = self.code.len();

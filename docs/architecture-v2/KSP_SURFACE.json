@@ -87,6 +87,26 @@
     "on ui_control": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "abs": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "sgn": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "signbit": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "inc": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "dec": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -140,7 +160,9 @@
               "sgn"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#basic-operators"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#basic-operators",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "integer-number-commands",
@@ -151,7 +173,9 @@
               "dec"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#integer-number-commands"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#integer-number-commands",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "real-number-commands",
@@ -206,7 +230,9 @@
               "sh_right"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#bitwise-operators"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/arithmetic-commands---operators#bitwise-operators",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "random--",

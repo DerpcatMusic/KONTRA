@@ -752,3 +752,89 @@ fn script_writes_survive_callback_fault_cancel_and_slot_reuse_without_resetting_
         assert_eq!(rt.note_count(), 0);
     });
 }
+
+#[test]
+fn signed32_instructions_preserve_declared_arithmetic_and_reject_wide_register_inputs() {
+    use IntegerBinary::*;
+    let values = [i32::MIN, -7, -1, 0, 1, 7, i32::MAX];
+    for operation in [Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor] {
+        for left in values {
+            for right in values {
+                let (a, b) = (i128::from(left), i128::from(right));
+                let expected = match operation {
+                    Add => a + b,
+                    Subtract => a - b,
+                    Multiply => a * b,
+                    Divide if b != 0 => a / b,
+                    Remainder if b != 0 => a % b,
+                    Divide | Remainder => 0,
+                    And => a & b,
+                    Or => a | b,
+                    Xor => a ^ b,
+                } as i32;
+                let program = Program::new(vec![
+                    Instruction::SetLocal {
+                        local: 0,
+                        value: i64::from(left),
+                    },
+                    Instruction::SetLocal {
+                        local: 1,
+                        value: i64::from(right),
+                    },
+                    Instruction::Binary32 {
+                        lhs: 0,
+                        rhs: if left == right { 0 } else { 1 },
+                        operation,
+                    },
+                ])
+                .unwrap()
+                .with_wait_lifetime(WaitLifetime::Callback);
+                let mut rt = Runtime::new(
+                    plan(vec![]).with_programs(vec![program], None).unwrap(),
+                    limits(),
+                )
+                .unwrap();
+                support::without_heap(|| {
+                    let id = rt.start_plan_behavior(rt.active_plan(), 0).unwrap();
+                    assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+                    assert_eq!(
+                        rt.behavior_local(id, 0),
+                        Ok(i64::from(expected)),
+                        "{left} {operation:?} {right}"
+                    );
+                    assert_eq!(rt.behavior_local(id, 1), Ok(i64::from(right)));
+                    rt.flush_behaviors(|_, _, _| true);
+                });
+            }
+        }
+    }
+    for instruction in [
+        Instruction::Unary32 {
+            local: 0,
+            operation: IntegerUnary::Negate,
+        },
+        Instruction::Binary32 {
+            lhs: 0,
+            rhs: 0,
+            operation: Add,
+        },
+    ] {
+        let p = Program::new(vec![
+            Instruction::SetLocal {
+                local: 0,
+                value: i64::MAX,
+            },
+            instruction,
+        ])
+        .unwrap()
+        .with_wait_lifetime(WaitLifetime::Callback);
+        let mut rt =
+            Runtime::new(plan(vec![]).with_programs(vec![p], None).unwrap(), limits()).unwrap();
+        let id = rt.start_plan_behavior(rt.active_plan(), 0).unwrap();
+        assert_eq!(
+            rt.behavior_outcome(id),
+            Ok(Some(Outcome::Fault(Error::ArithmeticOverflow)))
+        );
+        assert_eq!(rt.behavior_local(id, 0), Ok(i64::MAX));
+    }
+}

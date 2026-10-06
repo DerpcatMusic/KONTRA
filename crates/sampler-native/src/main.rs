@@ -127,7 +127,10 @@ fn render(sample: Pcm, output: &Path, mode: Mode) -> io::Result<()> {
         commands: 64,
         behaviors: 2,
         behavior_fuel: 65536,
-        behavior_cells: 4,
+        behavior_cells: plan
+            .behavior_local_count()
+            .checked_mul(2)
+            .ok_or_else(|| io::Error::other("callback register budget overflow"))?,
         note_cells: note_cells
             .checked_mul(32)
             .ok_or_else(|| io::Error::other("note-state budget overflow"))?,

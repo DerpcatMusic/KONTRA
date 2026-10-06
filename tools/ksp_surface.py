@@ -171,6 +171,9 @@ for source in sources:
         section['source'] = BASE + page + ('#' + section['anchor'] if section['anchor'] else '')
         if (page, section['title']) in [
             ('callbacks', 'on note'), ('callbacks', 'on release'), ('callbacks', 'on init'),
+            ('arithmetic-commands---operators', 'Basic Operators'),
+            ('arithmetic-commands---operators', 'Integer Number Commands'),
+            ('arithmetic-commands---operators', 'Bitwise Operators'),
             ('variables', '$ (integer variable)'),
             ('variables', 'polyphonic $ (polyphonic integer)'),
             ('general-commands', 'play_note()'), ('general-commands', 'exit'),
@@ -223,7 +226,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control']
+        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec']
     },
     'chapters': chapters,
 }

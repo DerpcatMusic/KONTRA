@@ -161,3 +161,14 @@ These observations are migration requirements, not new vendor measurements. Nati
 stage curves/delay/AHD are now executable, but vendor clock/parameter interpretation
 and exact fixture migration remain open. Do not call the native curve unit either
 vendor's curve unit or silently substitute audio-rate timing for an authored profile.
+
+## Integer evaluator follow-up
+
+Inspected v1 `src/ksp/parser.rs:144–155`, `src/ksp/vm.rs:681–714` and the authored
+`integer_division_and_modulo_normalize_booleans_without_faulting_or_losing_waited_events`
+fixture at `src/ksp/tests.rs:1246–1361`. The old evaluator explicitly wraps i32
+operations and returns zero on zero division/remainder. The new implementation uses
+Rust's defined wrapping primitives and independent i128 expected results in tests;
+no old VM types or execution path are referenced. The v1 test was inspected, not
+rerun for this change, and its vendor-behavior comments are not new reference evidence.
+Numeric edge fidelity and full KSP expression semantics remain separate parity gates.
