@@ -1317,10 +1317,12 @@ mod tests {
             // Streamed pages arrive from disk threads: give them real time.
             let heard = (0..300).any(|_| {
                 std::thread::sleep(std::time::Duration::from_millis(5));
-                loud(&core.render(128), 0, 128)
+                // Quiet layers are still sound: dynamics start at the softest.
+                let r = core.render(128);
+                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
             });
             if !heard {
-                silent.push(format!("{relative} (missing: {:?}, callbacks {})", loaded.report.missing, loaded.report.decoded.script_callbacks));
+                silent.push(format!("{relative}: {} voices, {:?}, {} callbacks", core.voices().active, core.problems(0), loaded.report.decoded.script_callbacks));
             }
         }
         assert!(silent.is_empty(), "silent with scripts on: {silent:#?}");
