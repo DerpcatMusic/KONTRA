@@ -117,7 +117,7 @@ strict all-target Clippy and both root workspace boundary tests. Evidence is und
 
 ## Shared values and native DSP
 
-Prepared `GainControl` bindings now project scalar values into voice processing.
+Prepared `ControlRange` bindings now project scalar values into voice processing.
 The existing atomic edit path updates both raw values and generation-owned smoothing
 trajectories after validation; failed/revision-conflicting batches change neither.
 Scripts, queued UI operations and full scalar recall all use this path. Stable IDs

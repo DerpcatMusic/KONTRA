@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Route full-resolution note pressure/timbre into native filter parameters, with
+  bounded caches keyed by expression ownership. Preserve MPE released-note snapshots
+  through channel reuse and reject note-dependent parameters on summed buses.
+
 - Add native state-variable filters with sample-clock cutoff/Q automation in voice
   and bus chains. Generalize the existing control mapping, share coefficient work
   per generation and keep audio histories independent across voices and replacement.

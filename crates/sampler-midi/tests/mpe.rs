@@ -836,3 +836,169 @@ fn script_note_off_keeps_fifo_pairing_and_member_expression_until_the_actual_hos
         });
     }
 }
+
+#[test]
+fn mpe_filter_destinations_follow_captured_notes_across_member_channel_reuse() {
+    use sampler_core::{
+        ControlRange, Parameter, Processor, StateVariableFilter, SvfMode, VoiceChain,
+    };
+    let runtime = || {
+        let plan = Prepared::new(
+            48000,
+            vec![
+                Pcm::new(
+                    48000,
+                    (0..512)
+                        .map(|i| [(i as f32 * 0.13).sin(), (i as f32 * 0.07).cos()])
+                        .collect(),
+                )
+                .unwrap(),
+            ],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::new(0, 0, 0, 1., 64).unwrap(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_controls(vec![sampler_core::ControlDefinition {
+            id: sampler_core::ControlId(1),
+            domain: sampler_core::ControlDomain::Toggle,
+            default: sampler_core::ControlValue::Toggle(false),
+        }])
+        .unwrap()
+        .with_voice_chains(
+            vec![
+                VoiceChain::new(
+                    vec![],
+                    vec![Processor::StateVariable(StateVariableFilter {
+                        mode: SvfMode::LowPass,
+                        cutoff_hz: Parameter::Expression {
+                            source: sampler_core::ExpressionSource::Timbre,
+                            low: 500.,
+                            high: 8000.,
+                        },
+                        // A note-owned destination may share another global control with
+                        // a ramp. Both scopes must reach the same filter coefficient grid.
+                        q: Parameter::Control(ControlRange {
+                            control: sampler_core::ControlId(1),
+                            low: 0.5,
+                            high: 3.,
+                            ramp_frames: 24,
+                        }),
+                    })],
+                    32,
+                )
+                .unwrap(),
+            ],
+            vec![Some(0)],
+        )
+        .unwrap();
+        Runtime::new(
+            plan,
+            Limits {
+                notes: 4,
+                channels: 4,
+                performances: 1,
+                families: 4,
+                voices: 4,
+                expressions: 4,
+                decisions: 0,
+                commands: 4,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap()
+    };
+    for block in [1, 7, 64] {
+        let mut actual = runtime();
+        let mut expected = runtime();
+        let mut mpe = Mpe::new(&actual, 7, 3, Zone::Lower, 2, 4).unwrap();
+        support::without_heap(|| {
+            apply(&mut mpe, &mut actual, packet(0xd0, 1, 127, 0)).unwrap();
+            apply(&mut mpe, &mut actual, packet(0xb0, 1, 74, 0)).unwrap();
+            let old = start(&mut mpe, &mut actual, 1, 60);
+            let native_input = |id| sampler_core::Input {
+                protocol: Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(id),
+            };
+            let original = Expression {
+                pressure: u32::MAX,
+                ..Expression::default()
+            };
+            let old_reference = expected
+                .trigger_with_expression(native_input(1), 60, 1., original)
+                .unwrap();
+            let compare = |actual: &mut Runtime, expected: &mut Runtime, count: usize| {
+                let mut a = [[0.; 2]; 96];
+                let mut b = [[0.; 2]; 96];
+                for chunk in a[..count].chunks_mut(block) {
+                    actual.render(chunk).unwrap();
+                }
+                expected.render(&mut b[..count]).unwrap();
+                assert_eq!(a, b);
+            };
+            compare(&mut actual, &mut expected, 16);
+            apply(&mut mpe, &mut actual, packet(0x80, 1, 60, 0)).unwrap();
+            expected.key_up(old_reference, None).unwrap();
+            apply(&mut mpe, &mut actual, packet(0xb0, 1, 74, 127)).unwrap();
+            let new = start(&mut mpe, &mut actual, 1, 60);
+            let new_reference = expected
+                .trigger_with_expression(
+                    native_input(2),
+                    60,
+                    1.,
+                    Expression {
+                        timbre: u32::MAX,
+                        ..original
+                    },
+                )
+                .unwrap();
+            assert_eq!(expression(&actual, old), original);
+            assert_eq!(expression(&actual, new).timbre, u32::MAX);
+            for rt in [&mut actual, &mut expected] {
+                rt.edit_controls(
+                    rt.active_plan(),
+                    None,
+                    &[sampler_core::ControlWrite {
+                        id: sampler_core::ControlId(1),
+                        value: sampler_core::ControlValue::Toggle(true),
+                    }],
+                )
+                .unwrap();
+            }
+            compare(&mut actual, &mut expected, 8);
+            apply(&mut mpe, &mut actual, packet(0xb0, 1, 74, 0)).unwrap();
+            expected
+                .set_expression(expected.expression_id(new_reference).unwrap(), original)
+                .unwrap();
+            compare(&mut actual, &mut expected, 96);
+            actual.panic();
+            expected.panic();
+            actual.flush_ended(|_| true);
+            expected.flush_ended(|_| true);
+            assert_eq!(
+                (
+                    actual.note_count(),
+                    actual.voice_count(),
+                    actual.expression_count()
+                ),
+                (0, 0, 0)
+            );
+        });
+    }
+}

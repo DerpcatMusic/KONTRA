@@ -16,14 +16,7 @@ impl ControlRange {
     }
 
     pub(super) fn target(self, normalized: f64) -> f64 {
-        if normalized == 0. {
-            self.low
-        } else if normalized == 1. {
-            self.high
-        } else {
-            (self.low + (self.high - self.low) * normalized)
-                .clamp(self.low.min(self.high), self.low.max(self.high))
-        }
+        interpolate(self.low, self.high, normalized)
     }
 }
 
@@ -32,6 +25,13 @@ impl ControlRange {
 pub enum Parameter {
     Constant(f64),
     Control(ControlRange),
+    /// Immediate event-rate mapping of the retained note's full-resolution value.
+    /// Valid in voice scope; a summed bus has no single note-expression owner.
+    Expression {
+        source: crate::ExpressionSource,
+        low: f64,
+        high: f64,
+    },
 }
 
 impl Parameter {
@@ -39,6 +39,7 @@ impl Parameter {
         match self {
             Self::Constant(value) => [value; 2],
             Self::Control(binding) => [binding.low, binding.high],
+            Self::Expression { low, high, .. } => [low, high],
         }
     }
 
@@ -46,12 +47,18 @@ impl Parameter {
         match self {
             Self::Constant(value) => value.is_finite(),
             Self::Control(binding) => binding.valid(),
+            Self::Expression { low, high, .. } => {
+                low.is_finite() && high.is_finite() && (high - low).is_finite()
+            }
         }
     }
 
     pub(super) fn compile(self, bindings: &mut Vec<ControlRange>) -> PreparedParameter {
         match self {
             Self::Constant(value) => PreparedParameter::Constant(value),
+            Self::Expression { source, low, high } => {
+                PreparedParameter::Expression { source, low, high }
+            }
             Self::Control(binding) => {
                 let lane = bindings.len();
                 bindings.push(binding);
@@ -65,13 +72,44 @@ impl Parameter {
 pub(super) enum PreparedParameter {
     Constant(f64),
     Control(usize),
+    Expression {
+        source: crate::ExpressionSource,
+        low: f64,
+        high: f64,
+    },
 }
 impl PreparedParameter {
-    pub fn value(self, parameters: &[ControlRamp], at: u64) -> f64 {
+    pub fn requires_expression(self) -> bool {
+        matches!(self, Self::Expression { .. })
+    }
+    pub fn value(
+        self,
+        parameters: &[ControlRamp],
+        at: u64,
+        expression: Option<&crate::Expression>,
+    ) -> f64 {
         match self {
             Self::Constant(value) => value,
             Self::Control(lane) => parameters[lane].value(at),
+            Self::Expression { source, low, high } => {
+                let expression = expression.expect("prepared voice-scoped parameter");
+                let value = match source {
+                    crate::ExpressionSource::Pressure => expression.pressure,
+                    crate::ExpressionSource::Timbre => expression.timbre,
+                };
+                interpolate(low, high, f64::from(value) / f64::from(u32::MAX))
+            }
         }
+    }
+}
+
+fn interpolate(low: f64, high: f64, normalized: f64) -> f64 {
+    if normalized == 0. {
+        low
+    } else if normalized == 1. {
+        high
+    } else {
+        (low + (high - low) * normalized).clamp(low.min(high), low.max(high))
     }
 }
 

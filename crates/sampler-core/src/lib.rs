@@ -480,7 +480,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
-            dsp: dsp::DspState::new(&plan, limits.voices)?,
+            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,

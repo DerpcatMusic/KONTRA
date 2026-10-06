@@ -66,6 +66,12 @@ pub(crate) struct PreparedFilter {
     q: PreparedParameter,
 }
 
+impl PreparedFilter {
+    pub fn requires_expression(self) -> bool {
+        self.cutoff.requires_expression() || self.q.requires_expression()
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Coefficients {
     a1: f64,
@@ -93,6 +99,7 @@ impl Coefficients {
 /// bounds the window to 64 samples without demoting modulation to block rate.
 pub(crate) struct FilterCache {
     filter: PreparedFilter,
+    owner: Option<crate::ExpressionId>,
     start: u64,
     valid: u64,
     coefficients: [Coefficients; 64],
@@ -103,6 +110,7 @@ impl FilterCache {
     pub fn new(filter: PreparedFilter) -> Self {
         Self {
             filter,
+            owner: None,
             start: 0,
             valid: 0,
             coefficients: [Coefficients::default(); 64],
@@ -122,13 +130,14 @@ impl FilterCache {
         input: [f64; 2],
         parameters: &[ControlRamp],
         at: u64,
+        expression: Option<&crate::Expression>,
     ) -> [f64; 2] {
         let index = (at - self.start) as usize;
         let bit = 1_u64 << index;
         if self.valid & bit == 0 {
             let values = [
-                self.filter.cutoff.value(parameters, at),
-                self.filter.q.value(parameters, at),
+                self.filter.cutoff.value(parameters, at, expression),
+                self.filter.q.value(parameters, at, expression),
             ];
             if self.last_values != Some(values) {
                 self.last = Coefficients::new(self.filter.rate, values[0], values[1]);
@@ -152,6 +161,101 @@ impl FilterCache {
                 SvfMode::AllPass => input[i] - 2. * c.k * band,
             }
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Scope {
+    Shared(usize),
+    Expression(usize),
+}
+
+/// Prepared caches, indexed by the actual owner rather than MIDI channel or key.
+pub(crate) struct FilterBank {
+    scopes: Box<[Scope]>,
+    shared: Box<[FilterCache]>,
+    expressions: Box<[FilterCache]>,
+    stride: usize,
+    at: u64,
+}
+impl FilterBank {
+    pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
+        let mut scopes = Vec::with_capacity(filters.len());
+        let mut shared = Vec::new();
+        let mut per_expression = Vec::new();
+        for &filter in filters {
+            scopes.push(if filter.requires_expression() {
+                let index = per_expression.len();
+                per_expression.push(filter);
+                Scope::Expression(index)
+            } else {
+                let index = shared.len();
+                shared.push(FilterCache::new(filter));
+                Scope::Shared(index)
+            });
+        }
+        let stride = per_expression.len();
+        let count = stride.checked_mul(expressions).ok_or(Error::Capacity)?;
+        std::alloc::Layout::array::<FilterCache>(count).map_err(|_| Error::Capacity)?;
+        let mut caches = Vec::new();
+        caches
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Capacity)?;
+        for index in 0..count {
+            caches.push(FilterCache::new(per_expression[index % stride]));
+        }
+        Ok(Self {
+            scopes: scopes.into_boxed_slice(),
+            shared: shared.into_boxed_slice(),
+            expressions: caches.into_boxed_slice(),
+            stride,
+            at: 0,
+        })
+    }
+    pub fn is_empty(&self) -> bool {
+        self.scopes.is_empty()
+    }
+    pub fn begin(&mut self, at: u64) {
+        self.at = at;
+        for filter in &mut self.shared {
+            filter.begin(at);
+        }
+    }
+}
+
+pub(crate) struct FilterContext<'a> {
+    pub bank: &'a mut FilterBank,
+    pub expression: Option<(crate::ExpressionId, crate::Expression)>,
+}
+impl FilterContext<'_> {
+    #[inline]
+    pub fn process(
+        &mut self,
+        index: usize,
+        state: &mut [[f64; 2]; 2],
+        input: [f64; 2],
+        parameters: &[ControlRamp],
+        at: u64,
+    ) -> [f64; 2] {
+        let cache = match self.bank.scopes[index] {
+            Scope::Shared(index) => &mut self.bank.shared[index],
+            Scope::Expression(index) => {
+                let (id, _) = self.expression.expect("prepared voice-scoped filter");
+                let cache = &mut self.bank.expressions[id.0.index * self.bank.stride + index];
+                if cache.start != self.bank.at || cache.owner != Some(id) {
+                    cache.begin(self.bank.at);
+                    cache.owner = Some(id);
+                }
+                cache
+            }
+        };
+        cache.process(
+            state,
+            input,
+            parameters,
+            at,
+            self.expression.as_ref().map(|(_, value)| value),
+        )
     }
 }
 
@@ -184,7 +288,7 @@ mod tests {
                         cache.begin(n);
                     }
                     let output =
-                        cache.process(&mut state, [if n == 0 { 1. } else { 0. }, 0.], &[], n);
+                        cache.process(&mut state, [if n == 0 { 1. } else { 0. }, 0.], &[], n, None);
                     assert_eq!(output[1], 0.);
                     for (response, omega) in response.iter_mut().zip([
                         0.,
