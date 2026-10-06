@@ -56,8 +56,7 @@ use voice::{Context, Envelope, Fade, Scratch, Stream, Voice, balance};
 /// Voice storage per engine. Polyphony limits steal before this is reached;
 /// only a full store forces a hard cut.
 pub const MAX_VOICES: usize = 1024;
-/// Largest block rendered in one pass; longer requests are split.
-pub const MAX_BLOCK: usize = 128;
+pub use crate::sound::MAX_BLOCK;
 /// Groups addressable by [`GroupMask`]: Kontakt's per-instrument ceiling.
 pub const MAX_GROUPS: usize = 4096;
 /// Fade applied to voices stolen by the instrument polyphony limit.

@@ -4,14 +4,10 @@
 use super::{Engine, MAX_BLOCK, voice::balance};
 use crate::fx::OUTS;
 
-/// Initial rack storage for existing sessions; this is not a part-count limit.
-pub const RACK_SLOTS: usize = 16;
-pub const BUSES: usize = 16;
+pub use crate::sound::{BUSES, Block, RACK_SLOTS, TUNE_RANGE};
 /// [`PartControls::aux`] when the part sends nowhere.
 pub const NO_AUX: u8 = u8::MAX;
 
-/// One stereo block: `[left, right]`.
-pub type Block = [[f32; MAX_BLOCK]; 2];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PartControls {
@@ -94,8 +90,6 @@ fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |m, v| m.max(v.abs()))
 }
 
-/// How far a part tunes, in semitones either way.
-pub const TUNE_RANGE: f32 = 36.0;
 
 impl Default for PartControls {
     fn default() -> Self {
