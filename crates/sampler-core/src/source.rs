@@ -285,6 +285,12 @@ impl Cursor {
         self.starvation.is_some()
     }
 
+    /// Start silent, waiting for its stream window (a cold start).
+    pub(super) fn cold(mut self) -> Self {
+        self.starvation = Some(0);
+        self
+    }
+
     /// Faded out and silently waiting for its stream window.
     pub(super) fn waiting(&self) -> bool {
         self.starvation == Some(0)

@@ -456,6 +456,8 @@ pub struct Runtime {
     stream_underruns: u64,
     voice_drops: u64,
     steal_releases: bool,
+    cold_starts: bool,
+    cold_started: u64,
     /// Last and peak `render` nanoseconds, and the last call's frames.
     render_time: [u64; 3],
     families: Arena<Family>,
@@ -588,6 +590,8 @@ impl Runtime {
             stream_underruns: 0,
             voice_drops: 0,
             steal_releases: false,
+            cold_starts: false,
+            cold_started: 0,
             render_time: [0; 3],
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
@@ -1092,7 +1096,7 @@ impl Runtime {
         let cursor = cursor.with_step(step);
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
-        self.check_source_ready(asset, cursor, envelope)?;
+        let cold = self.check_source_ready(asset, cursor, envelope)?;
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
@@ -1124,7 +1128,7 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor,
+            cursor: if cold { cursor.cold() } else { cursor },
             base_step,
             chain: None,
             bus: None,
@@ -1136,6 +1140,7 @@ impl Runtime {
             group: None,
             script_gains: None,
         })?);
+        self.cold_started += u64::from(cold);
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {
