@@ -34,6 +34,7 @@ impl Batch {
 }
 
 /// Run `stages` (cell indices from `first`) over the batch's lanes.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process(
     stages: &[PreparedProcessor],
@@ -145,6 +146,7 @@ fn biquad<const MASK: bool>(
     *z = [z0, z1];
 }
 
+#[inline(always)]
 fn svf(
     s: &mut [Lanes; 2],
     block: &mut LaneBlock,
