@@ -198,8 +198,14 @@ impl Polyphase {
             let mut padded = [[0.0; 2]; MAX_WIDTH];
             let taps = 2 * self.radius + 1;
             padded[..taps].copy_from_slice(&window[..taps]);
-            return self.sample(fraction, &padded[..self.width()]);
+            return self.dot(fraction, &padded[..self.width()]);
         }
+        self.dot(fraction, window)
+    }
+
+    /// [`Self::sample`] for a window of at least `width()` frames.
+    #[inline(always)]
+    pub(super) fn dot(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
         let position = fraction * PHASES as f64;
         let phase = (position as usize).min(PHASES - 1);
         let t = (position - phase as f64) as f32;
