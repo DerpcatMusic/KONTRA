@@ -170,6 +170,17 @@ fn generated_maps_drive_like_their_keyswitches() {
         }
     }
     paths.sort();
+    // `KONTRA_ARTICULATION_SHARD=i/n` takes every n-th instrument from i, so a
+    // crash costs one shard.
+    let shard = std::env::var("KONTRA_ARTICULATION_SHARD")
+        .ok()
+        .and_then(|s| {
+            let (i, n) = s.split_once('/')?;
+            Some((i.parse::<usize>().ok()?, n.parse::<usize>().ok()?))
+        });
+    if let Some((i, n)) = shard {
+        paths = paths.into_iter().skip(i).step_by(n).collect();
+    }
     let (mut maps, mut failures) = (0, Vec::new());
     for path in &paths {
         let Ok(read) = sampler_kontakt::read(path) else {
