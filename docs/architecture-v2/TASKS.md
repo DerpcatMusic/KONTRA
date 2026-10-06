@@ -283,6 +283,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
 ### V2-14 — Implement new KSP frontend and external behavior profiles
 
 - [ ] **P0; dependencies:** V2-05/08/09/13.
+- Evaluated integer `wait`/`play_note` arguments and onset velocity reads now execute
+  through native bounded services; special durations, offsets, generated handles and
+  implicit/ordered event forwarding remain open. See [KSP_FRONTEND.md](KSP_FRONTEND.md).
 - Implement full Kontakt KSP language and service semantics against the new runtime:
   callbacks, builtins, asynchronous work, persistence, UI controls and engine services.
   Pin the target Kontakt/KSP version and inventory the complete reference surface.

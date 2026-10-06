@@ -17,14 +17,14 @@ A note callback must begin with `ignore_event($EVENT_ID)`. Release-only scripts 
 ordinary native attack selection. Init accepts declarations, `make_perfview` and literal scalar initialization, including inline `declare $name := value`.
 Init-only instruments keep native attack selection.
 
-Note/release bodies accept literal `wait(...)` and bare `play_note(...)` calls,
-and assignments from signed 32-bit integer literals, `$EVENT_NOTE`, or another
-declared global/polyphonic/control integer, or `$NOTE_HELD`. Note-owned values start at zero and remain shared
-between the originating note and its release callback, including overlapping waits.
-Generated notes use `$EVENT_NOTE` with optional constant transposition, constant
-velocity 1–127, zero offset and positive constant duration. Brace comments and
-whitespace are accepted. Literal assignment covers -2147483648 through 2147483647;
-wait/play operands retain their explicit nonnegative/positive command ranges.
+Note/release bodies accept `wait` and bare `play_note` calls, assignments, integer
+expressions and the control flow described below. Expressions can read signed
+32-bit literals, `$EVENT_NOTE`, `$EVENT_VELOCITY`, `$NOTE_HELD` and declared
+global/polyphonic/control integers. Note-owned values remain shared between the
+originating note and its release callback, including overlapping waits. Generated
+note key, velocity and duration accept evaluated integer expressions; sample offset
+currently requires literal zero. Supported key/velocity ranges are 0–127 and 1–127,
+with positive microsecond duration. Waits accept nonnegative microseconds.
 
 This subset follows documented command units and distinguishes fixed duration from
 input-linked playback. [Generated notes](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands)
@@ -42,10 +42,11 @@ exposes fixed/scaled velocity and expression inheritance as separate native choi
 
 ## Explicit rejection and limits
 
-The compiler rejects real-valued expressions, dynamic command arguments (including
-`$EVENT_VELOCITY`), arrays, real/string values, select/case, compound Boolean expressions, other
-callbacks, implicit note forwarding, nested comments,
-nonzero sample offsets, input-linked negative duration and whole-source duration zero.
+The compiler rejects real-valued expressions, arrays, real/string values, select/case,
+compound Boolean expressions, other callbacks, implicit note forwarding, nested
+comments and nonzero sample offsets. Evaluated out-of-range command arguments fault
+at execution before publishing a child or timer. Input-linked negative duration and
+whole-source duration zero are still unsupported and fault explicitly.
 Some primitives already exist natively; that alone does not establish their KSP
 semantics. Unknown syntax is never ignored and never sent to the old VM.
 
@@ -277,7 +278,7 @@ The authored fixture combines two same-key note callbacks, a waiting UI callback
 global sharing, per-note memory, release reads and exact independently expected PCM
 across blocks 1/7/64 under allocator instrumentation. Declarations also reject duplicate
 names, malformed/range-invalid initialization and exhausted variable budgets. Full
-init execution, arithmetic, constants, arrays, persistence and Kontakt differential
+init execution, constants, arrays, persistence and Kontakt differential
 fidelity remain required work.
 
 ## Integer expressions
@@ -310,8 +311,8 @@ malformed/deep expressions and variable updates. A heap-audited alternating-note
 sequence computes its branch across waits after physical release and renders exact
 PCM across blocks 1/7/64. The process-level WAV fixture now also computes a nested
 global expression before waiting, then branches after key-up at 44.1/48/96 kHz.
-Dynamic `play_note`/`wait` arguments, shifts, compound Boolean expressions, full init
-execution and other value types remain required; this is not full-language parity.
+Shifts, compound Boolean expressions, full init execution and other value types
+remain required; this is not full-language parity.
 
 Integer-expression validation: all 206 native tests pass in debug, release and Rust
 1.92; strict all-target Clippy and both root boundary tests pass. The source process
@@ -319,3 +320,34 @@ fixture passes with its wider prepared register allocation. Logs use
 `artifacts/integer-expressions-{debug,release,msrv,clippy,boundary,process}.log`.
 The complete inventory still has 25 chapters, 288 sections and 1,605 identifiers;
 24 named interfaces now have partial overrides, with vendor fidelity unverified.
+
+
+## Evaluated musical arguments
+
+`wait(expr)` and `play_note(key_expr, velocity_expr, 0, duration_expr)` now evaluate
+through the same bounded integer IR. Arguments evaluate left to right into separate
+registers; later nested expressions cannot overwrite earlier results. `$EVENT_VELOCITY`
+reads the owner's onset velocity, rounded to the nearest seven-bit value. This read
+never changes the core's high-resolution velocity. Generated KSP keys use plan tuning;
+native `Play` still supports transposition of absolute-pitch parents and full-resolution
+fixed/scaled velocities. The two forms share child admission and release reservation.
+
+`MicrosToFrames` rounds upward using checked integer arithmetic, rejects negative
+input and overflow before overwriting the register, and uses the runtime sample rate.
+`WaitLocal` shares the immediate wait scheduler; zero advances inline and consumes
+fuel. `PlayMidi` validates all evaluated operands before any selection or child
+publication. Constants obey the same runtime checks. Native register widths derive
+from every operand, including dead code; the CLI already allocates the prepared width.
+
+Heap-audited source tests combine two same-key identities with distinct logical pitch,
+velocity and computed delay, release both before wake-up, and independently check
+exact PCM at 44.1/48/96 kHz across blocks 1/7/64. Additional tests cover zero waits,
+invalid key/velocity/duration, conversion overflow, unchanged failed registers and
+complete terminal cleanup. Native error policy and high-resolution quantization still
+need Kontakt differential evidence; source support is partial, not vendor parity.
+
+Evaluated-argument validation: all 209 native tests pass in debug, release and Rust
+1.92; strict all-target Clippy and both root boundary tests pass. Logs are
+`artifacts/dynamic-arguments-{debug,release,msrv,clippy,boundary}.log`. The manual
+inventory remains 25 chapters / 288 sections / 1,605 identifiers, now with 25 named
+partial overrides; vendor fidelity remains unverified.

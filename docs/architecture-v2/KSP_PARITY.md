@@ -13,7 +13,7 @@ feature count or compatibility percentage. Operand rules, enum values, overloads
 callback restrictions and historical aliases still need section-level review.
 
 Every entry defaults to `missing` implementation and `unverified` Kontakt fidelity.
-Twenty-four named interfaces have explicit `partial_native_subset` overrides. A section's
+Twenty-five named interfaces have explicit `partial_native_subset` overrides. A section's
 partial status means some behavior exists; it does not promote all of its symbols.
 Native services, legacy KONTRA tests and successful parsing are not vendor parity.
 

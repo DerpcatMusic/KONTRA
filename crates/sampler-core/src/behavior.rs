@@ -34,6 +34,26 @@ pub enum Instruction {
         inheritance: Inheritance,
         duration: Duration,
     },
+    /// Generate a timed key-mapped child from integer registers. Key 0..127,
+    /// MIDI 1 velocity 1..127, duration 1..=u32::MAX sample frames.
+    PlayMidi {
+        key: u16,
+        velocity: u16,
+        frames: u16,
+        inheritance: Inheritance,
+    },
+    /// Quantize onset velocity to nearest MIDI 1 value, without changing note state.
+    ReadVelocity7 {
+        local: u16,
+    },
+    /// Convert nonnegative microseconds to sample frames, rounding upward.
+    MicrosToFrames {
+        local: u16,
+    },
+    /// Read a nonnegative u32 sample-frame delay from a register.
+    WaitLocal {
+        local: u16,
+    },
     /// Sample-clock wait. Zero advances inline and still consumes instruction fuel.
     Wait(u32),
     End,
@@ -165,6 +185,9 @@ impl Program {
             | Instruction::WriteScriptCell { local, .. }
             | Instruction::ReadControl { local, .. }
             | Instruction::WriteControl { local, .. }
+            | Instruction::ReadVelocity7 { local }
+            | Instruction::MicrosToFrames { local }
+            | Instruction::WaitLocal { local }
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
             | Instruction::ReadNoteCell { local, .. }
@@ -172,6 +195,15 @@ impl Program {
             | Instruction::JumpIfZero { local, .. } = *op
             {
                 locals = locals.max(usize::from(local) + 1);
+            }
+            if let Instruction::PlayMidi {
+                key,
+                velocity,
+                frames,
+                ..
+            } = *op
+            {
+                locals = locals.max(usize::from(key.max(velocity).max(frames)) + 1);
             }
             if let Instruction::CompareLocal { lhs, rhs, .. }
             | Instruction::Binary32 { lhs, rhs, .. } = *op
@@ -193,6 +225,8 @@ impl Program {
             matches!(
                 op,
                 Instruction::Play { .. }
+                    | Instruction::PlayMidi { .. }
+                    | Instruction::ReadVelocity7 { .. }
                     | Instruction::ReadKey { .. }
                     | Instruction::ReadKeyDown { .. }
                     | Instruction::ReadNoteCell { .. }
@@ -486,6 +520,18 @@ impl Runtime {
                 let value = i32::try_from(*cell).map_err(|_| Error::ArithmeticOverflow)?;
                 *cell = i64::from(operation.apply(value));
             }
+            Instruction::ReadVelocity7 { local } => {
+                let note = self.notes.get(owner.note()?.0).ok_or(Error::StaleHandle)?;
+                let value = (note.velocity * 127.).round() as i64;
+                *self.local_cell_mut(id, local)? = value;
+            }
+            Instruction::MicrosToFrames { local } => {
+                let micros = u64::try_from(*self.local_cell_mut(id, local)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let frames = (u128::from(micros) * u128::from(self.rate)).div_ceil(1_000_000);
+                let frames = u32::try_from(frames).map_err(|_| Error::ArithmeticOverflow)?;
+                *self.local_cell_mut(id, local)? = i64::from(frames);
+            }
             Instruction::ReadKey { local } => {
                 let note = owner.note()?;
                 let key = self
@@ -554,17 +600,32 @@ impl Runtime {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 return Ok(true);
             }
-            Instruction::Wait(0) => {}
-            Instruction::Wait(frames) => {
-                let at = self
-                    .now
-                    .checked_add(u64::from(frames))
-                    .ok_or(Error::ClockOverflow)?;
-                if self.available_commands() == 0 {
-                    return Err(Error::Capacity);
+            Instruction::WaitLocal { local } => {
+                let frames = u32::try_from(*self.local_cell_mut(id, local)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                return self.wait_behavior(id, frames);
+            }
+            Instruction::Wait(frames) => return self.wait_behavior(id, frames),
+            Instruction::PlayMidi {
+                key,
+                velocity,
+                frames,
+                inheritance,
+            } => {
+                let key = *self.local_cell_mut(id, key)?;
+                let velocity = *self.local_cell_mut(id, velocity)?;
+                let frames = u32::try_from(*self.local_cell_mut(id, frames)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                if !(0..128).contains(&key) || !(1..128).contains(&velocity) || frames == 0 {
+                    return Err(Error::InvalidInput);
                 }
-                self.queue(at, Action::Resume(id));
-                return Ok(true);
+                self.play_behavior(
+                    owner.note()?,
+                    super::NotePitch::Key(key as u8),
+                    velocity as f64 / 127.,
+                    inheritance,
+                    Duration::Frames(frames),
+                )?;
             }
             Instruction::Play {
                 transpose,
@@ -579,35 +640,62 @@ impl Runtime {
                     Velocity::Scale(scale) => n.velocity * scale,
                     Velocity::Fixed(value) => value,
                 };
-                let frames = match duration {
-                    Duration::Gate => None,
-                    Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
-                };
-                let at = frames
-                    .map(|frames| {
-                        self.now
-                            .checked_add(u64::from(frames))
-                            .ok_or(Error::ClockOverflow)
-                    })
-                    .transpose()?;
-                if at.is_some_and(|at| at != self.now) && self.available_commands() == 0 {
-                    return Err(Error::Capacity);
-                }
-                let linked = !matches!(duration, Duration::Frames(_));
-                self.reclaim_internal_notes(0);
-                // Protect the duration command while child selection reserves its
-                // own later release families and commands. Neither may consume the other.
-                let command = usize::from(at.is_some_and(|at| at != self.now));
-                self.reserved_commands += command;
-                let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
-                self.reserved_commands -= command;
-                let child = child?;
-                if let Some(at) = at {
-                    self.release_at(child, at)?;
-                }
+                self.play_behavior(note, pitch, velocity, inheritance, duration)?;
             }
         }
         Ok(false)
+    }
+
+    fn wait_behavior(&mut self, id: BehaviorId, frames: u32) -> Result<bool, Error> {
+        if frames == 0 {
+            return Ok(false);
+        }
+        let at = self
+            .now
+            .checked_add(u64::from(frames))
+            .ok_or(Error::ClockOverflow)?;
+        if self.available_commands() == 0 {
+            return Err(Error::Capacity);
+        }
+        self.queue(at, Action::Resume(id));
+        Ok(true)
+    }
+
+    fn play_behavior(
+        &mut self,
+        note: NoteId,
+        pitch: super::NotePitch,
+        velocity: f64,
+        inheritance: Inheritance,
+        duration: Duration,
+    ) -> Result<(), Error> {
+        let frames = match duration {
+            Duration::Gate => None,
+            Duration::Frames(frames) | Duration::FramesOrGate(frames) => Some(frames),
+        };
+        let at = frames
+            .map(|frames| {
+                self.now
+                    .checked_add(u64::from(frames))
+                    .ok_or(Error::ClockOverflow)
+            })
+            .transpose()?;
+        if at.is_some_and(|at| at != self.now) && self.available_commands() == 0 {
+            return Err(Error::Capacity);
+        }
+        let linked = !matches!(duration, Duration::Frames(_));
+        self.reclaim_internal_notes(0);
+        // Protect the duration command while child selection reserves its
+        // own later release families and commands. Neither may consume the other.
+        let command = usize::from(at.is_some_and(|at| at != self.now));
+        self.reserved_commands += command;
+        let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
+        self.reserved_commands -= command;
+        let child = child?;
+        if let Some(at) = at {
+            self.release_at(child, at)?;
+        }
+        Ok(())
     }
 
     /// Note-owned integer state survives callback completion and release until the

@@ -94,6 +94,7 @@ impl<'a> Parser<'a> {
 
     fn operand(&mut self, token: Token<'a>, local: u16) -> Result<(), Error> {
         let instruction = match token.kind {
+            Kind::Word("$EVENT_VELOCITY") => Instruction::ReadVelocity7 { local },
             Kind::Word("$EVENT_NOTE") => Instruction::ReadKey { local },
             Kind::Word("$NOTE_HELD") => Instruction::ReadKeyDown { local },
             Kind::Word(name) => match self.variable(name, token.offset)? {

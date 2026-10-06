@@ -1567,3 +1567,113 @@ fn signed_comparisons_cover_extremes_aliasing_and_both_register_bounds() {
         assert!(matches!(Runtime::new(plan, limits()), Err(Error::Capacity)));
     }
 }
+
+#[test]
+fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_heap() {
+    use sampler_core::Inheritance;
+    for (value, operation, expected) in [
+        (
+            -1,
+            Instruction::MicrosToFrames { local: 0 },
+            Error::InvalidInput,
+        ),
+        (
+            i64::MAX,
+            Instruction::MicrosToFrames { local: 0 },
+            Error::ArithmeticOverflow,
+        ),
+        (-1, Instruction::WaitLocal { local: 0 }, Error::InvalidInput),
+        (
+            i64::from(u32::MAX) + 1,
+            Instruction::WaitLocal { local: 0 },
+            Error::InvalidInput,
+        ),
+    ] {
+        let mut rt = runtime(
+            vec![Instruction::SetLocal { local: 0, value }, operation],
+            limits(),
+        );
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            let id = rt.start_behavior(note, 0).unwrap();
+            assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Fault(expected))));
+            assert_eq!(rt.behavior_local(id, 0), Ok(value));
+            assert_eq!((rt.pending_commands(), rt.voice_count()), (0, 0));
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+    for (key, velocity, frames) in [
+        (-1, 127, 1),
+        (128, 127, 1),
+        (60, 0, 1),
+        (60, 128, 1),
+        (60, 127, 0),
+        (60, 127, -1),
+        (60, 127, i64::from(u32::MAX) + 1),
+    ] {
+        let code = vec![
+            Instruction::SetLocal {
+                local: 0,
+                value: key,
+            },
+            Instruction::SetLocal {
+                local: 1,
+                value: velocity,
+            },
+            Instruction::SetLocal {
+                local: 2,
+                value: frames,
+            },
+            Instruction::PlayMidi {
+                key: 0,
+                velocity: 1,
+                frames: 2,
+                inheritance: Inheritance::Independent,
+            },
+        ];
+        let mut rt = runtime(code, limits());
+        support::without_heap(|| {
+            let note = rt.note_on(input(), 60, 1.).unwrap();
+            let id = rt.start_behavior(note, 0).unwrap();
+            assert_eq!(
+                rt.behavior_outcome(id),
+                Ok(Some(Outcome::Fault(Error::InvalidInput)))
+            );
+            assert_eq!(
+                (
+                    rt.pending_commands(),
+                    rt.voice_count(),
+                    rt.family_count(),
+                    rt.note_count()
+                ),
+                (0, 0, 0, 1)
+            );
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+    // Each of the three operands contributes to the prepared register width,
+    // including instructions that are unreachable after End.
+    for (key, velocity, frames) in [(4, 0, 0), (0, 4, 0), (0, 0, 4)] {
+        let program = Program::new(vec![
+            Instruction::End,
+            Instruction::PlayMidi {
+                key,
+                velocity,
+                frames,
+                inheritance: Inheritance::Independent,
+            },
+        ])
+        .unwrap();
+        assert!(program.requires_note());
+        let plan = Prepared::new(48000, vec![], vec![], 0)
+            .unwrap()
+            .with_programs(vec![program], None)
+            .unwrap();
+        assert_eq!(plan.behavior_local_count(), 5);
+        assert!(matches!(Runtime::new(plan, limits()), Err(Error::Capacity)));
+    }
+}

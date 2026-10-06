@@ -226,7 +226,7 @@ result = {
     'default_status': {'implementation': 'missing', 'kontakt_fidelity': 'unverified'},
     'symbol_overrides': {
         name: {'implementation': 'partial_native_subset', 'evidence': 'KSP_FRONTEND.md'}
-        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec']
+        for name in ['on note', 'on release', 'on init', 'play_note', 'wait', 'ignore_event', '$EVENT_ID', '$EVENT_NOTE', '$EVENT_VELOCITY', '$NOTE_HELD', 'exit', 'if', 'while', 'continue', 'ui_knob', 'ui_slider', 'ui_button', 'ui_switch', 'make_perfview', 'on ui_control', 'abs', 'sgn', 'signbit', 'inc', 'dec']
     },
     'chapters': chapters,
 }
