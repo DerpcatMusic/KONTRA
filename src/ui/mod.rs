@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! ┌ top bar: wordmark · activity · meters · master · global actions ───────┐
-//! ├ browser ┆ tabs: rack · mapping · info ─────────────────────────────────┤
+//! ├ browser ┆ tabs: rack · mixer · logs ───────────────────────────────────┤
 //! │         ┆ part header: fold · name ‹ › · routing · S M · vol/pan · ✕  │
 //! │ (resize)┆   performance controls (sections, strips, knobs, faders)    │
 //! │         ┆ part header (folded) ─────────────────────────────────────── │
@@ -19,34 +19,34 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod art;
-pub(crate) mod audit;
 mod browser;
-mod chain;
 mod computer;
 mod cover;
-mod editor;
-mod fitted;
 mod header;
-mod instrument;
 mod keyboard;
 mod logs;
 mod menu;
 mod mixer;
-mod panel;
-mod perf_view;
-pub(crate) use perf_view::font_fallbacks;
+// The v2 views take plain data the core does not produce yet (submix/bus
+// nodes, effect and modulation reports).
+#[allow(dead_code)]
+mod mix_tree;
+mod ir_view;
+#[allow(dead_code)]
+mod load_report;
+mod bridge;
+mod pictures;
+mod part;
 pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod v2_tests;
 mod theme;
-mod vector;
-mod viz;
-mod wave;
 
-pub(crate) use panel::{articulations, sections};
-use crate::import;
+use crate::library;
 use crate::plugin::{Load, Part, PartView, SamplerParams, Selection, View, mix};
 use moose::mui::{Bridge, MuiEditor, mui::prelude::*, mui::prelude::Color};
 use moose::prelude::*;
@@ -96,7 +96,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
-        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready() || fitted::ready())
+        .changed(move || watch.changed(&watch_params, &meters, &computer) || picker.ready() || art.ready())
         .fixed_zoom()
         .user_zoom(move |window| {
             let size = (window.width.round() as u32, window.height.round() as u32);
@@ -143,8 +143,6 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 struct Meters {
     /// Audio thread load, 0..1.
     cpu: AtomicU32,
-    /// Sample data read from disk, MB/s.
-    disk: AtomicU32,
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
@@ -162,19 +160,12 @@ struct Watch {
     /// they are looked at ten times a second, not every tick.
     readouts: u64,
     cpu: f32,
-    disk: f32,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
-    /// When the readouts were last sampled, and the disk counter then.
+    /// When the readouts were last sampled.
     cpu_at: Option<Instant>,
-    disk_read: u64,
-    /// The disk counter to watch: [`crate::audio::DISK_READ`] unless a test
-    /// gives its own.
-    disk_counter: Option<&'static AtomicU64>,
     poll_at: Option<Instant>,
     frame_at: Option<Instant>,
-    /// The audio thread's block count, and when it last moved.
-    blocks: (u64, Option<Instant>),
 }
 
 /// Readouts and the loading line refresh this often at most.
@@ -183,16 +174,11 @@ const ANIMATION_MS: u64 = 33;
 
 impl Watch {
     fn changed(&mut self, p: &SamplerParams, meters: &Meters, computer: &computer::Computer) -> bool {
-        // Completed script views must publish before the redraw fingerprint:
-        // an idle editor otherwise never builds to discover those changes.
-        p.shared.publish_live(true);
         let now = Instant::now();
-        p.shared.watched.store(true, Ordering::Relaxed);
         let due = |at: Option<Instant>, every: u64| {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
-            let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // Mean load since the last look, as Kontakt shows it. The peak
             // block's wall time read 20-80% at idle: one preempted block in
@@ -206,23 +192,8 @@ impl Watch {
                 self.cpu = 0.;
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
-            // Disk throughput since the last look, eased; idle settles on 0.
-            let counter = self.disk_counter.unwrap_or(&crate::audio::DISK_READ);
-            let read = counter.load(Ordering::Relaxed);
-            let rate = if since > 0. {
-                read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
-            } else {
-                0.
-            };
-            self.disk_read = read;
-            self.disk = self.disk * 0.5 + rate * 0.5;
-            if self.disk < 0.05 {
-                self.disk = 0.;
-            }
-            meters.disk.store(self.disk.to_bits(), Ordering::Relaxed);
             let mut h = DefaultHasher::new();
             ((self.cpu * 100.).round() as u32).hash(&mut h);
-            ((self.disk * 10.).round() as u32).hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
@@ -252,14 +223,10 @@ impl Watch {
             let selection = read(&p.selection);
             let pending = view.scanned != p.shared.libraries.wanted()
                 || lock(&p.shared.multi_request).is_some()
-                || lock(&p.shared.snapshot_request).is_some()
                 || (0..view.parts.len().max(selection.parts.len())).any(|n| {
-                    let (path, program, snapshot) = selection
-                        .parts
-                        .get(n)
-                        .map_or(("", 0, ""), |p| (p.path.as_str(), p.program, p.snapshot.as_str()));
+                    let (path, program) = selection.parts.get(n).map_or(("", 0), |p| (p.path.as_str(), p.program));
                     match view.parts.get(n).and_then(|v| v.attempted.as_ref()) {
-                        Some((a, b, c)) => (a.as_str(), *b, c.as_str()) != (path, program, snapshot),
+                        Some((a, b, _)) => (a.as_str(), *b) != (path, program),
                         None => !path.is_empty(),
                     }
                 });
@@ -271,24 +238,6 @@ impl Watch {
         let m = &p.shared.meters;
         let sounding = p.shared.with_parts(|parts| parts.iter().any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]))
             || m.buses.iter().chain([&m.master]).any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
-        // The sound editor's playheads, and the values scripts move under it.
-        // A host that stops calling the audio thread leaves its last voices
-        // behind: once it has been still a while, they are gone.
-        let probe = &p.shared.probe;
-        let blocks = p.shared.blocks.load(Ordering::Relaxed);
-        if blocks != self.blocks.0 {
-            self.blocks = (blocks, Some(now));
-        } else if self.blocks.1.is_some_and(|t| now - t > Duration::from_millis(250)) {
-            self.blocks.1 = None;
-            for tap in &probe.voices {
-                tap.store(0, Ordering::Relaxed);
-            }
-        }
-        let watch = probe.watch.load(Ordering::Relaxed);
-        let sounding = sounding || (watch != 0 && probe.taps().next().is_some());
-        if let Some(values) = probe.read(watch, 1) {
-            values.map(f32::to_bits).hash(&mut h);
-        }
         sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
         let moving = meters.animating.load(Ordering::Relaxed);
@@ -309,26 +258,9 @@ impl Watch {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn watch_live_change(p: &SamplerParams, update: impl FnOnce()) -> bool {
-    let (mut watch, meters, computer) = (Watch::default(), Meters::default(), computer::Computer::default());
-    watch.changed(p, &meters, &computer);
-    update();
-    watch.changed(p, &meters, &computer)
-}
-
-/// A copy of the loader's view for a frame to read, taken quickly: the
-/// script buffers it lends the audio thread (megabytes of persistent
-/// tables, the live interface) and saved JSON stay behind: frames do not
-/// read them, and copying them held the lock the loader waits on.
+/// A copy of the loader's view for a frame to read.
 fn shown(view: &Mutex<View>) -> View {
-    let mut view = lock(view);
-    let lent: Vec<_> = (view.parts.iter_mut()).map(|v| (v.snapshot.take(), v.live.take(), std::mem::take(&mut v.script_state))).collect();
-    let copy = view.clone();
-    for (v, (snapshot, live, saved)) in view.parts.iter_mut().zip(lent) {
-        (v.snapshot, v.live, v.script_state) = (snapshot, live, saved);
-    }
-    copy
+    lock(view).clone()
 }
 
 /// What of the loader's view is on screen, cheaply: pointers of what it
@@ -340,18 +272,8 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, v.bytes, &v.status, v.program, &v.interface_status, &v.runtime_status, &v.wallpaper_status).hash(h);
-        at(&v.load_report).hash(h);
-        if let Some(report) = &v.load_report {
-            (report["status"].as_str(), report["issues"].as_array().map(Vec::len)).hash(h);
-            for key in ["artwork", "preload", "ram_fill", "script_restore"] {
-                (report[key]["status"].as_str(), report[key]["elapsed_ms"].as_f64().map(f64::to_bits)).hash(h);
-            }
-        }
-        (at(&v.instrument), at(&v.interface), at(&v.wallpaper)).hash(h);
-        v.live_revisions.hash(h);
-        for edit in v.edited_values() { edit.hash(h); }
-        (Arc::as_ptr(&v.keys) as usize, Arc::as_ptr(&v.pictures) as usize).hash(h);
+        (v.loading, &v.status, v.program).hash(h);
+        (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
 
@@ -379,9 +301,7 @@ impl Appearance {
 enum Tab {
     Rack,
     Mixer,
-    Mapping,
-    Sound,
-    Info,
+    Report,
     Logs,
 }
 
@@ -419,10 +339,6 @@ struct EditorState {
     last_poll: Instant,
     /// The top bar's readouts, as [`Watch`] last eased them.
     meters: Arc<Meters>,
-    /// Script control being dragged: part, control, unrounded value.
-    held: Option<(usize, usize, f64)>,
-    /// A script value edit's number being typed: part, control, text.
-    typing: Option<(usize, usize, String)>,
     /// The context menu showing.
     menu: Option<menu::Menu>,
     /// The browser's keyboard cursor: a preset path, or a folder's.
@@ -434,10 +350,6 @@ struct EditorState {
     renaming: Option<(usize, String)>,
     /// A bus's name while it is being edited.
     renaming_bus: Option<(usize, String)>,
-    /// An articulation's keyswitch, channel or velocity range being typed.
-    inline: Option<panel::Inline>,
-    /// The velocity split's boundary being dragged.
-    split_drag: Option<usize>,
     /// Buses below this index show a mixer strip even when unused.
     buses_shown: usize,
     /// Each library's color, thumbnail, banner and backdrop, made from its
@@ -456,13 +368,6 @@ struct EditorState {
     bodies: HashMap<usize, f64>,
     /// Each preset's neighbors in its library folder, of which scan and shelf.
     neighbors: (std::sync::Weak<Vec<PathBuf>>, usize, HashMap<String, [Option<String>; 2]>),
-    /// Each part's instrument and the keys it maps, for the keyboard's range strips.
-    ranges: HashMap<usize, (std::sync::Weak<import::Instrument>, [bool; 128])>,
-    /// Each part's performance view as last read.
-    panels: HashMap<usize, panel::Cache>,
-    vector_assets: vector::Assets,
-    /// Pictures the original views asked for, by instrument, read or not.
-    perf_asked: std::collections::HashSet<(PathBuf, String)>,
     started: Instant,
     /// The computer keyboard's octave, velocity and held keys.
     computer: Arc<computer::Computer>,
@@ -473,10 +378,14 @@ struct EditorState {
     modulation: Option<f64>,
     /// The system file dialog, answering on a later frame.
     picker: Arc<picker::Picker>,
-    /// The sound editor's view and curves.
-    editor: editor::State,
     /// The mixer's strip width and meter holds.
     mixer: mixer::State,
+    /// The mixer shows the output tree, else the flat console.
+    flat_mixer: bool,
+    mix_tree: mix_tree::State,
+    report: load_report::State,
+    /// Each part's library interface as drawn, by slot.
+    faces: HashMap<usize, part::Face>,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -563,8 +472,9 @@ impl Cx<'_> {
         library_of(&self.view.shelf, path)
     }
 
-    fn part_view(&self) -> &PartView {
-        &self.view.parts[self.state.selected]
+    /// The name of the instrument loaded in `slot`, once one is.
+    fn instrument_name(&self, slot: usize) -> Option<String> {
+        self.view.parts.get(slot).map(|v| v.active.clone()).filter(|n| !n.is_empty())
     }
 
     /// The selected part when it holds an instrument.
@@ -621,7 +531,7 @@ impl Cx<'_> {
     fn open(&mut self, path: &Path) {
         let text = path.to_string_lossy().into_owned();
         self.remember(&text);
-        if import::is_multi(path) {
+        if library::is_multi(path) {
             self.p.shared.queue_multi(text);
             self.state.notice.clear();
         } else if let Some(slot) = self
@@ -652,18 +562,10 @@ impl Cx<'_> {
         self.show(slot);
     }
 
-    /// Apply to an explicit base, leaving the part intact until validation.
-    fn snapshot(&mut self, slot: usize, path: String) {
-        let accepted = self.selection.parts.get(slot)
-            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
-        if accepted { self.show(slot); }
-        else { self.state.notice = "Select a base NKI instrument before loading a snapshot.".into(); }
-    }
-
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
         self.remember(&path);
-        if import::is_multi(Path::new(&path)) {
+        if library::is_multi(Path::new(&path)) {
             self.p.shared.queue_multi(path);
             return;
         }
@@ -719,16 +621,11 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 
 /// Instrument state belongs to its preset; rack routing and player settings stay.
 fn replace_part(part: &mut Part, path: String) {
-    part.snapshot.clear();
     part.path = path;
     part.program = 0;
-    part.group = u32::MAX;
     part.name.clear();
-    part.edits = Default::default();
-    part.script_state.clear();
-    part.ir_settings.clear();
-    part.engine_state.clear();
-    part.delay_state.clear();
+    // Another instrument has another output tree.
+    part.nodes.clear();
 }
 
 /// A part for `path` on the input and output the settings give new parts.
@@ -780,7 +677,7 @@ fn sanitize(selection: &mut Selection) {
     for part in &mut selection.parts {
         part.channel = part.channel.clamp(-1, 15);
         part.port = part.port.min(3);
-        part.output = part.output.min(crate::engine::BUSES as u8 - 1);
+        part.output = part.output.min(crate::sound::BUSES as u8 - 1);
         part.gain = if part.gain.is_finite() {
             part.gain.clamp(-60., 6.)
         } else {
@@ -791,7 +688,7 @@ fn sanitize(selection: &mut Selection) {
         } else {
             0.
         };
-        let tune = crate::engine::TUNE_RANGE;
+        let tune = crate::sound::TUNE_RANGE;
         part.tune = if part.tune.is_finite() {
             part.tune.clamp(-tune, tune)
         } else {
@@ -815,8 +712,8 @@ fn sanitize(selection: &mut Selection) {
     }
 }
 
-/// Files dragged in from the desktop: `.nki` into the slot under the pointer
-/// or free slots, one `.nkm` replaces the rack. Returns whether they are accepted.
+/// Files dragged in from the desktop: instruments into the slot under the
+/// pointer or free slots, one saved multi replaces the rack. Returns whether they are accepted.
 fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
@@ -847,22 +744,13 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, 
         }
         return true;
     }
-    if paths.len() == 1 && import::is_multi(&paths[0]) {
+    if paths.len() == 1 && library::is_multi(&paths[0]) {
         if dropped {
             p.shared.queue_multi(paths[0].to_string_lossy().into());
         }
         return true;
     }
-    if paths.len() == 1 && paths[0].extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
-        let selection = read(&p.selection);
-        let Some(slot) = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}"))) else { return false; };
-        let part = &selection.parts[slot];
-        if !part.snapshot_base() { return false; }
-        if dropped { p.shared.queue_snapshot(slot, part, paths[0].to_string_lossy().into_owned()); }
-        return true;
-    }
-    let nki = |p: &PathBuf| crate::creator::is_instrument(p);
-    if paths.is_empty() || !paths.iter().all(nki) {
+    if paths.is_empty() || !paths.iter().all(|p| library::is_instrument(p)) {
         return false;
     }
     let mut selection = write(&p.selection);
@@ -922,16 +810,12 @@ fn build(
         root: String::new(),
         last_poll: Instant::now() - Duration::from_secs(1),
         meters,
-        held: None,
-        typing: None,
         menu: None,
         cursor: None,
         browse: Default::default(),
         logs: Default::default(),
         renaming: None,
         renaming_bus: None,
-        inline: None,
-        split_drag: None,
         buses_shown: 1,
         art,
         libraries: Default::default(),
@@ -941,17 +825,16 @@ fn build(
         resizing: None,
         bodies: HashMap::new(),
         neighbors: Default::default(),
-        ranges: HashMap::new(),
-        panels: HashMap::new(),
-        vector_assets: vector::Assets::default(),
-        perf_asked: Default::default(),
         started: Instant::now(),
         computer,
         gliss: None,
         modulation: None,
         picker,
-        editor: Default::default(),
         mixer: Default::default(),
+        flat_mixer: false,
+        mix_tree: Default::default(),
+        report: Default::default(),
+        faces: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -1025,7 +908,6 @@ fn build(
             let mut current = write(&p.selection);
             if *current == before {
                 *current = selection;
-                p.shared.sync_overrides(&current);
                 let _ = p.shared.controls.force_push(mix(&current));
                 p.shared
                     .midi_thru
@@ -1063,18 +945,6 @@ fn picked(cx: &mut Cx) {
         Some(picker::Picked::Revealed(result)) => {
             if let Err(error) = result { cx.state.notice = error; }
         }
-        Some(picker::Picked::ScriptFile { part, epoch, slot, control, result }) => {
-            cx.state.notice = match result {
-                Ok(path) if cx.p.shared.select_control_file(part, epoch, slot, control, &path) => String::new(),
-                Ok(_) => "File selection canceled because the instrument changed or its control queue is full.".into(),
-                Err(error) => error,
-            };
-        }
-        Some(picker::Picked::Snapshot { slot, source, path }) => {
-            if cx.selection.parts.get(slot).is_some_and(|p| p.source() == source) {
-                cx.snapshot(slot, path.to_string_lossy().into_owned());
-            } else { cx.state.notice = "Snapshot selection canceled because the base instrument changed.".into(); }
-        }
         Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
         Some(picker::Picked::Artwork { library, picture }) => {
             if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {
@@ -1082,18 +952,13 @@ fn picked(cx: &mut Cx) {
             }
         }
         Some(picker::Picked::Multi(mut path)) => {
-            if !import::is_saved_multi(&path) {
-                path.as_mut_os_string().push(format!(".{}", import::SAVED_MULTI));
+            if !library::is_multi(&path) {
+                path.as_mut_os_string().push(format!(".{}", library::MULTI));
             }
             if let Err(e) = header::save_multi_as(cx, &path) {
                 cx.state.notice = format!("The multi was not saved: {e:#}");
             }
         }
-        Some(picker::Picked::Created(Ok(path))) => {
-            cx.p.shared.libraries.rescan();
-            cx.state.notice = format!("Library created in {}", path.display());
-        }
-        Some(picker::Picked::Created(Err(e))) => cx.state.notice = format!("No library was created: {e}"),
         None => {}
     }
 }
@@ -1111,12 +976,12 @@ fn shortcuts(ui: &mut Ui, cx: &mut Cx) {
     for k in keys {
         let ctrl = k.mods.ctrl || k.mods.cmd;
         match k.key {
-            Key::Delete if loaded && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() => cx.remove(slot),
+            Key::Delete if loaded && cx.state.renaming.is_none() => cx.remove(slot),
             Key::Char('d' | 'D') if ctrl && loaded => cx.duplicate(slot),
             // The browser shut: Ctrl+F opens it on its filter.
             Key::Char('f' | 'F') if ctrl && !cx.state.browser => (cx.state.browser, cx.state.browse.find) = (true, true),
             Key::Char(' ') if free && loaded && !k.mods.shift => cx.p.shared.audition(None),
-            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && cx.state.inline.is_none() && cx.state.typing.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
+            Key::Escape if cx.state.menu.is_none() && cx.state.renaming.is_none() && !cx.state.browse.typing() => cx.state.selected_none(),
             _ => {}
         }
     }
@@ -1215,15 +1080,13 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
     )
 }
 
-/// View tabs over the rack, or over the selected part's mapping or details.
+/// View tabs over the rack, the mixer or the logs.
 fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
         (Tab::Mixer, "Mixer", "tab-mixer"),
-        (Tab::Mapping, "Mapping", "tab-mapping"),
-        (Tab::Sound, "Sound", "tab-sound"),
-        (Tab::Info, "Info", "tab-info"),
+        (Tab::Report, "Report", "tab-report"),
         (Tab::Logs, "Logs", "tab-logs"),
     ] {
         let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
@@ -1244,33 +1107,15 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     if !cx.state.notice.is_empty() {
         content.push(banner(Role::Warning, cx.state.notice.clone()));
     }
-    let slot = cx.state.selected;
-    // The audio thread reports the edited group only while it is shown.
-    if cx.state.tab != Tab::Sound || cx.part().is_none() {
-        cx.p.shared.probe.watch.store(0, Ordering::Relaxed);
-    }
     // A spectrum shown below names its strip; none shown, none is copied.
     cx.state.scope = 0;
     cx.state.meters.animating.store(false, Ordering::Relaxed);
-    if cx.state.tab == Tab::Rack {
-        content.push(rack::view(ui, cx));
-    } else if cx.state.tab == Tab::Mixer {
-        content.push(mixer::view(ui, cx, bridge));
-    } else if cx.state.tab == Tab::Logs {
-        content.push(logs::view(ui, cx));
-    } else if cx.part().is_none() {
-        content.push(instrument::welcome(cx));
-    } else {
-        // The selected part's header stays on top of its mapping and details.
-        content.push(rack::header(ui, cx, slot));
-        content.push(rule());
-        content.extend(instrument::notices(cx, slot));
-        content.push(match cx.state.tab {
-            Tab::Mapping => instrument::mapping(ui, cx),
-            Tab::Sound => editor::view(ui, cx),
-            _ => instrument::info(ui, cx),
-        });
-    }
+    content.push(match cx.state.tab {
+        Tab::Rack => rack::view(ui, cx),
+        Tab::Mixer => mixer_view(ui, cx, bridge),
+        Tab::Report => report_view(ui, cx),
+        Tab::Logs => logs::view(ui, cx),
+    });
     cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
     if cx.state.analyser.busy() && cx.state.scope != 0 {
         cx.state.meters.animating.store(true, Ordering::Relaxed);
@@ -1282,6 +1127,38 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         .min_h(0)
         .fill(Role::Background)
         .id("center")
+}
+
+/// The mixer tab: the nested output tree, or the flat console.
+fn mixer_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
+    let (tree_hit, tree_el) = latch(ui, "mix-mode-tree", "Tree", "Each instrument's outputs as a tree", !cx.state.flat_mixer);
+    let (flat_hit, flat_el) = latch(ui, "mix-mode-flat", "Console", "Parts and buses side by side", cx.state.flat_mixer);
+    if tree_hit || flat_hit {
+        cx.state.flat_mixer = flat_hit;
+    }
+    let bar = strip(vec![section("Mixer"), segmented(vec![tree_el, flat_el]), spacer()]).pad((INSET, TIGHT)).fill(Role::Surface);
+    let body = if cx.state.flat_mixer {
+        mixer::view(ui, cx, bridge)
+    } else {
+        let mut tree = bridge::tree(cx);
+        let levels = bridge::levels(cx.p, &tree);
+        let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
+        let el = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
+        bridge::apply(cx, &tree);
+        cx.state.meters.animating.store(true, Ordering::Relaxed);
+        el
+    };
+    col![bar, rule(), body].gap(0).flex(1).min_h(0).min_w(0)
+}
+
+/// The selected part's load report.
+fn report_view(ui: &mut Ui, cx: &mut Cx) -> El {
+    if cx.part().is_none() {
+        return caption("Select a loaded instrument to see its report").fill(secondary());
+    }
+    let slot = cx.state.selected;
+    let report = bridge::report(cx, slot);
+    load_report::view(ui, &mut cx.state.report, &report)
 }
 
 impl Cx<'_> {

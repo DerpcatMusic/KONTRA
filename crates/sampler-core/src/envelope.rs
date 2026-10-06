@@ -118,6 +118,30 @@ impl Envelope {
         }
     }
 
+    /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
+    /// the stage's curvature. Script engine parameters; see `script_params`.
+    pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {
+        use crate::EnvelopeStage as S;
+        let recurve = |curve: Curve, frames| Curve::new(EnvelopeCurve(curve.curvature), frames);
+        match stage {
+            S::Attack => {
+                self.attack = value;
+                self.curves[0] = recurve(self.curves[0], value);
+            }
+            S::Hold => self.hold = value,
+            S::Decay => {
+                self.decay = value;
+                self.curves[1] = recurve(self.curves[1], value);
+            }
+            S::Sustain => self.sustain = (value.min(1000) as f32) / 1000.0,
+            S::Release => {
+                self.release = value;
+                self.curves[2] = recurve(self.curves[2], value);
+            }
+        }
+        self
+    }
+
     pub fn with_delay(mut self, frames: u32) -> Self {
         self.delay = frames;
         self
@@ -298,6 +322,26 @@ impl EnvelopeState {
             return Some(1.0);
         }
         None
+    }
+
+    /// Level after `frames` more frames, as if `next` ran that many times.
+    /// Linear stages jump; curved stages still step per frame.
+    // ponytail: curved stages step per frame; jump with Curve::at if modulation envelopes get hot.
+    pub(super) fn advance(&mut self, mut frames: u32) -> f32 {
+        while frames > 0 && !matches!(self.phase, Phase::Sustain | Phase::Done) {
+            if self.curve().curvature != 0.0 {
+                self.next();
+                frames -= 1;
+                continue;
+            }
+            let step = frames.min(self.duration() - self.age);
+            self.age += step;
+            frames -= step;
+            if self.age == self.duration() {
+                self.enter(self.following());
+            }
+        }
+        self.level()
     }
 
     pub(super) fn next(&mut self) -> f32 {

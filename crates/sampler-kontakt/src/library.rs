@@ -84,6 +84,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         },
         assets: HashMap::new(),
         locations: Vec::new(),
+        start_criteria: Vec::new(),
     };
     let groups = GroupList::try_from(
         program
@@ -110,11 +111,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
-                if !script.persistent.is_empty() {
+                let state = saved(&script.persistent);
+                if state.len() < script.persistent.len() {
                     out.unsupported(
                         &location,
-                        "saved persistent values",
-                        script.persistent.len(),
+                        "saved persistent arrays",
+                        script.persistent.len() - state.len(),
                         ir::Reason::NotModeled,
                     );
                 }
@@ -125,7 +127,8 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
                         .unwrap_or(location),
                     language: ir::Language::Ksp,
                     source: text,
-                    state: Vec::new(),
+                    slot: Some(slot.min(usize::from(u8::MAX)) as u8),
+                    state,
                     requires: Vec::new(),
                 });
             }
@@ -204,6 +207,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         };
         out.zone(index, zone, end, group, &params, location.clone());
     }
+    crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
@@ -299,12 +303,19 @@ struct GroupInfo {
     reverse: bool,
     envelope: Option<ir::ModulatorRef>,
     velocity: ir::VelocityResponse,
+    /// Modulation routes every zone of the group carries.
+    routes: Vec<ir::RouteRef>,
 }
 
 struct Translation {
     ir: ir::Instrument,
     assets: HashMap<PathBuf, ir::AssetRef>,
     locations: Vec<PathBuf>,
+    start_criteria: Vec<(
+        String,
+        ir::GroupRef,
+        Vec<ni_file::kontakt::objects::StartCriteriaParams>,
+    )>,
 }
 
 impl Translation {
@@ -348,20 +359,12 @@ impl Translation {
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
-        if !v.start_criteria.items.is_empty() {
-            let modes: Vec<_> = v
-                .start_criteria
-                .items
-                .iter()
-                .map(|c| (c.mode, c.next_criteria, c.cycle_class))
-                .collect();
-            self.unsupported(
-                &at,
-                "group start options (mode, next, cycle class)",
-                format!("{modes:?}"),
-                not_modeled,
-            );
-        }
+        // Start options become articulations or reports in `keyswitch::translate`.
+        self.start_criteria.push((
+            at.clone(),
+            ir::GroupRef(self.ir.groups.len()),
+            v.start_criteria.items.clone(),
+        ));
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
             Ok(source) if source.mode == 9 => {
@@ -392,15 +395,22 @@ impl Translation {
             }
         }
         let mut envelope = None;
+        let mut routes = Vec::new();
         if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                 let params = modulator.params()?;
-                let targets: Vec<_> = params.targets.iter().map(|t| t.param.as_str()).collect();
-                let volume = targets == ["volume"]
-                    && params.targets[0].intensity == 1.0
-                    && !params.targets[0].invert;
-                match params.modulator {
-                    Modulator::Ahdsr(env) if volume && envelope.is_none() => {
+                let at = format!("{at} modulator slot {slot}");
+                // [router UI, bypass, retrigger, unknown]
+                if params.unknown_flags[1] != 0 || params.targets.is_empty() {
+                    continue;
+                }
+                let retrigger = params.unknown_flags[2] != 0;
+                let volume = matches!(params.targets.as_slice(), [t]
+                    if t.param == "volume" && t.intensity == 1.0 && !t.invert
+                        && t.slot.is_none() && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled));
+                let source = match params.modulator {
+                    Modulator::Ahdsr(env) => {
                         if env.unknown_flag != 0 {
                             self.unsupported(
                                 &at,
@@ -408,6 +418,7 @@ impl Translation {
                                 env.unknown_flag,
                                 not_modeled,
                             );
+                            continue;
                         }
                         // Kontakt's stages are exponential (decay and release
                         // fall to 3/43 in their stage time; the attack bends
@@ -420,35 +431,50 @@ impl Translation {
                             not_modeled,
                         );
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
-                        self.ir.modulators.push(ir::Modulator {
-                            scope: ir::Scope::Voice,
-                            source: ir::ModulationSource::Envelope(ir::Envelope {
-                                attack: ms(env.attack_ms),
-                                hold: ms(env.hold_ms),
-                                decay: ms(env.decay_ms),
-                                sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
-                                release: ms(env.release_ms),
-                                ..Default::default()
-                            }),
-                        });
-                        envelope = Some(ir::ModulatorRef(self.ir.modulators.len() - 1));
+                        ir::ModulationSource::Envelope(ir::Envelope {
+                            attack: ms(env.attack_ms),
+                            hold: ms(env.hold_ms),
+                            decay: ms(env.decay_ms),
+                            sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
+                            release: ms(env.release_ms),
+                            ..Default::default()
+                        })
                     }
-                    other => {
-                        let kind = match other {
-                            Modulator::Ahdsr(_) => "internal AHDSR modulation".into(),
-                            Modulator::Flex(_) => "internal flex envelope modulation".into(),
-                            Modulator::Lfo(_) => "internal LFO modulation".into(),
-                            Modulator::Other { chunk_id } => {
-                                format!("internal modulator chunk {chunk_id:#x}")
-                            }
-                        };
+                    Modulator::Lfo(lfo) => match self.lfo(&at, &lfo, retrigger) {
+                        Some(lfo) => ir::ModulationSource::Lfo(lfo),
+                        None => continue,
+                    },
+                    Modulator::Flex(_) => {
                         self.unsupported(
-                            &format!("{at} modulator slot {slot}"),
-                            &kind,
-                            format!("{:?} -> {targets:?}", params.name),
+                            &at,
+                            "flex envelope modulation",
+                            &params.name,
                             not_modeled,
                         );
+                        continue;
                     }
+                    Modulator::Other { chunk_id } => {
+                        self.unsupported(
+                            &at,
+                            "internal modulator chunk",
+                            format!("{chunk_id:#x} {:?}", params.name),
+                            ir::Reason::Unknown,
+                        );
+                        continue;
+                    }
+                };
+                let envelope_source = matches!(source, ir::ModulationSource::Envelope(_));
+                self.ir.modulators.push(ir::Modulator {
+                    scope: ir::Scope::Voice,
+                    source,
+                });
+                let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                if envelope_source && volume && envelope.is_none() {
+                    envelope = Some(modulator);
+                    continue;
+                }
+                for target in &params.targets {
+                    routes.extend(self.route(&at, modulator, envelope_source, target));
                 }
             }
         }
@@ -456,37 +482,70 @@ impl Translation {
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
                 let params = modulation.params()?;
-                let targets: Vec<_> = params
-                    .targets
-                    .iter()
-                    .map(|t| (t.param.as_str(), t.intensity))
-                    .collect();
-                if let (ModSource::Velocity, [("volume", intensity)]) =
-                    (&params.source, targets.as_slice())
+                let at = format!("{at} external modulation slot {slot}");
+                let plain_volume = |t: &ni_file::kontakt::objects::ModTarget| {
+                    t.param == "volume"
+                        && t.slot.is_none()
+                        && !t.invert
+                        && t.lag_ms == 0
+                        && !t.shaper.as_ref().is_some_and(|s| s.enabled)
+                };
+                if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
+                    && plain_volume(t)
+                    && t.intensity == 1.0
                     && velocity == ir::VelocityResponse::None
                 {
-                    // Kontakt's velocity-to-volume law is not decoded; the
-                    // IR's linear response stands in for any nonzero intensity.
-                    if *intensity != 0.0 {
-                        velocity = ir::VelocityResponse::Linear;
-                    }
-                    if *intensity != 0.0 && *intensity != 1.0 {
-                        self.unsupported(
-                            &at,
-                            "velocity to volume intensity",
-                            intensity,
-                            not_modeled,
-                        );
-                    }
+                    // gain × velocity: the attenuate law at full intensity,
+                    // kept on the voice so no per-voice modulation is needed.
+                    velocity = ir::VelocityResponse::Linear;
                     continue;
                 }
-                let at = format!("{at} external modulation slot {slot}");
-                self.unsupported(
-                    &at,
-                    &format!("external modulation from {:?}", params.source),
-                    format!("{:?} -> {targets:?}", params.name),
-                    not_modeled,
-                );
+                let source = match params.source {
+                    ModSource::Velocity => ir::ModulationSource::Velocity,
+                    ModSource::KeyPosition => ir::ModulationSource::Key,
+                    ModSource::MidiCc(cc) if cc < 128 => ir::ModulationSource::Controller(cc),
+                    ModSource::PitchBend => ir::ModulationSource::PitchBend,
+                    ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
+                    ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
+                    ModSource::Constant => ir::ModulationSource::Constant,
+                    ModSource::RandomUnipolar => ir::ModulationSource::Random,
+                    ModSource::Unassigned => continue,
+                    other => {
+                        let reason = match other {
+                            ModSource::RandomBipolar => ir::Reason::UnknownLaw,
+                            _ => not_modeled,
+                        };
+                        let targets: Vec<_> =
+                            params.targets.iter().map(|t| t.param.as_str()).collect();
+                        self.unsupported(
+                            &at,
+                            &format!("external modulation from {other:?}"),
+                            format!("{:?} -> {targets:?}", params.name),
+                            reason,
+                        );
+                        continue;
+                    }
+                };
+                let bipolar = source.bipolar();
+                let bend = source == ir::ModulationSource::PitchBend;
+                self.ir.modulators.push(ir::Modulator {
+                    scope: ir::Scope::Voice,
+                    source,
+                });
+                let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                for target in &params.targets {
+                    // Bend to pitch is the note's native expression bend.
+                    if bend && target.param != "pitch" {
+                        self.unsupported(
+                            &at,
+                            "pitch bend to a non-pitch target",
+                            &target.param,
+                            not_modeled,
+                        );
+                        continue;
+                    }
+                    routes.extend(self.route(&at, modulator, !bipolar, target));
+                }
             }
         }
         if !v.volume.is_finite() || !v.pan.is_finite() || !(v.tune.is_finite() && v.tune > 0.0) {
@@ -512,7 +571,165 @@ impl Translation {
             reverse: v.reverse,
             envelope,
             velocity,
+            routes,
         }))
+    }
+
+    /// One Kontakt modulation target as an IR route, or a report entry.
+    /// Laws (decoded from Kontakt's engine, control rate = rate / 32):
+    /// volume factor 1 − i(1 − u); pitch 12·i semitones; playPos start + i·u
+    /// of the zone's start-modulation range; lag reaches 99% in `lag_ms`.
+    fn route(
+        &mut self,
+        at: &str,
+        source: ir::ModulatorRef,
+        unipolar: bool,
+        target: &ni_file::kontakt::objects::ModTarget,
+    ) -> Option<ir::RouteRef> {
+        let i = f64::from(target.intensity);
+        let report = |this: &mut Self, feature: &str, reason| {
+            this.unsupported(
+                at,
+                feature,
+                format!("{} ({}) intensity {i}", target.param, target.name),
+                reason,
+            );
+            None
+        };
+        if target.slot.is_some() {
+            return report(
+                self,
+                "modulation of a module parameter",
+                ir::Reason::NotModeled,
+            );
+        }
+        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
+        // source maps onto it is not established.
+        if unipolar && target.unknown_flags & 0x02 != 0 {
+            return report(self, "signed modulation target", ir::Reason::UnknownLaw);
+        }
+        let (route_target, depth) = match target.param.as_str() {
+            "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
+            "pitch" => (
+                ir::Target::Pitch,
+                ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * i)),
+            ),
+            "playPos" => (ir::Target::SampleStart, ir::Depth::Normalized(i)),
+            "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
+            _ => return report(self, "modulation target", ir::Reason::NotModeled),
+        };
+        let shape = match target.shaper.as_ref().filter(|s| s.enabled) {
+            None => None,
+            Some(_) if target.invert => {
+                return report(
+                    self,
+                    "inverted shaped modulation (order)",
+                    ir::Reason::UnknownLaw,
+                );
+            }
+            Some(shaper) => {
+                use ni_file::kontakt::objects::ShaperCurve;
+                let points: Vec<(f64, f64)> = match &shaper.curve {
+                    ShaperCurve::Table(table) if table.len() > 1 => {
+                        let last = (table.len() - 1) as f64;
+                        table
+                            .iter()
+                            .enumerate()
+                            .map(|(n, y)| (n as f64 / last, f64::from(*y)))
+                            .collect()
+                    }
+                    ShaperCurve::Breakpoints(points)
+                        if !points.is_empty() && points.iter().all(|p| p.curve == 0.0) =>
+                    {
+                        points
+                            .iter()
+                            .map(|p| (f64::from(p.x), f64::from(p.y)))
+                            .collect()
+                    }
+                    _ => return report(self, "curved modulation shaper", ir::Reason::UnknownLaw),
+                };
+                self.ir.shapes.push(ir::Shape { points });
+                Some(ir::ShapeRef(self.ir.shapes.len() - 1))
+            }
+        };
+        self.ir.routes.push(ir::Route {
+            source,
+            target: route_target,
+            depth,
+            invert: target.invert,
+            shape,
+            smoothing: ir::Time::Milliseconds(f64::from(target.lag_ms)),
+            scale: None,
+        });
+        Some(ir::RouteRef(self.ir.routes.len() - 1))
+    }
+
+    /// Kontakt LFO: waveform ids sine 0, rectangle 1, triangle 2, sawtooth 3,
+    /// random 4, Multi 5. Rate is Hz when the sync note value is −1, else a
+    /// cycle of note value × count beats; initial values are fade-in ms,
+    /// rate/count, pulse width and start phase in cycles.
+    fn lfo(
+        &mut self,
+        at: &str,
+        lfo: &ni_file::kontakt::objects::Lfo,
+        retrigger: bool,
+    ) -> Option<ir::Lfo> {
+        let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
+        let shape = match (lfo.waveform, lfo.trailing_values) {
+            (0, _) => ir::LfoShape::Sine,
+            (1, _) if width == 0.5 => ir::LfoShape::Square,
+            (2, _) => ir::LfoShape::Triangle,
+            // Multi with exactly one wave and normalization on is that wave.
+            (5, Some(weights))
+                if lfo.records[0].flag
+                    && weights.iter().filter(|w| **w != 0.0).count() == 1
+                    && weights[3] == 0.0
+                    && weights[4] == 0.0
+                    && (weights[1] == 0.0 || width == 0.5)
+                    && weights.iter().all(|w| *w >= 0.0) =>
+            {
+                match weights.iter().position(|w| *w != 0.0) {
+                    Some(0) => ir::LfoShape::Sine,
+                    Some(1) => ir::LfoShape::Square,
+                    _ => ir::LfoShape::Triangle,
+                }
+            }
+            (waveform, weights) => {
+                self.unsupported(
+                    at,
+                    "LFO waveform (id, multi weights, pulse width)",
+                    format!("{waveform} {weights:?} {width}"),
+                    ir::Reason::UnknownLaw,
+                );
+                return None;
+            }
+        };
+        let note = f64::from(lfo.records[0].values[0]);
+        let rate = if note == -1.0 {
+            ir::Frequency::Hertz(rate)
+        } else {
+            ir::Frequency::Beats(note * rate)
+        };
+        if !matches!(rate, ir::Frequency::Hertz(r) | ir::Frequency::Beats(r) if r.is_finite() && r > 0.0)
+            || !fade_ms.is_finite()
+            || !phase.is_finite()
+        {
+            self.unsupported(
+                at,
+                "LFO rate",
+                format!("{rate:?}"),
+                ir::Reason::InvalidValue,
+            );
+            return None;
+        }
+        Some(ir::Lfo {
+            shape,
+            rate,
+            delay: ir::Time::ZERO,
+            fade_in: ir::Time::Milliseconds(fade_ms.max(0.0)),
+            phase: phase.rem_euclid(1.0),
+            retrigger,
+        })
     }
 
     fn zone(
@@ -642,8 +859,10 @@ impl Translation {
                 end,
                 reverse: group.reverse,
                 looping,
+                start_range: z.start_mod,
             },
             amplitude: group.envelope,
+            routes: group.routes.clone(),
             ..ir::Zone::new(asset)
         });
     }
@@ -654,6 +873,8 @@ struct RawZone {
     group: usize,
     start: u64,
     end: i32,
+    /// Frames past `start` that full-depth playPos modulation reaches.
+    start_mod: u64,
     velocities: [u8; 2],
     keys: [u8; 2],
     fades: [i16; 4],
@@ -675,7 +896,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let mut z = Cursor::new(so.public_data.as_slice());
     let read = |z: &mut Cursor<&[u8]>| -> std::io::Result<_> {
         // The third field is the sample-start modulation range, used only by playPos modulation.
-        let (start, end, _start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
+        let (start, end, start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
         let mut ranges = [0i16; 9];
         for value in &mut ranges {
             *value = i16le(z)?;
@@ -684,9 +905,10 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         if so.version >= 0x9a {
             z.read_exact(&mut [0; 6])?;
         }
-        Ok((start, end, ranges, gain, pan, tune, i32le(z)?))
+        Ok((start, end, start_mod, ranges, gain, pan, tune, i32le(z)?))
     };
-    let (start, end, ranges, gain, pan, tune, file) = read(&mut z).map_err(|e| e.to_string())?;
+    let (start, end, start_mod, ranges, gain, pan, tune, file) =
+        read(&mut z).map_err(|e| e.to_string())?;
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let midi = |value: i16, what| {
         u8::try_from(value)
@@ -723,6 +945,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         group,
         start: start as u64,
         end,
+        start_mod: start_mod.max(0) as u64,
         velocities: [lv, hv],
         keys: [lk, hk],
         fades: [f0, f1, f2, f3],
@@ -750,4 +973,307 @@ fn i16le(r: &mut impl Read) -> std::io::Result<i16> {
 }
 fn f32le(r: &mut impl Read) -> std::io::Result<f32> {
     Ok(f32::from_bits(u32le(r)?))
+}
+
+#[cfg(test)]
+mod survey {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn survey_modulation() {
+        let root = std::env::var("KONTRA_KONTAKT_LIBRARIES").unwrap();
+        let mut stack = vec![PathBuf::from(root)];
+        let mut files = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        let mut seen = std::collections::BTreeMap::<String, (usize, String)>::new();
+        for f in &files {
+            let Ok(chunks) = chunks(f) else { continue };
+            let Some(program) = chunks.find_first(PROGRAM) else {
+                continue;
+            };
+            let Ok(program) = Program::try_from(program) else {
+                continue;
+            };
+            let Some(gl) = program.0.find_first(GROUP_LIST) else {
+                continue;
+            };
+            let Ok(groups) = GroupList::try_from(gl) else {
+                continue;
+            };
+            for g in &groups.groups {
+                if let Some(chunk) = g.0.find_first(INTERNAL_MODS) {
+                    let Ok(arr) = InternalModArray16::try_from(chunk) else {
+                        continue;
+                    };
+                    let Ok(slots) = arr.slots() else { continue };
+                    for (slot, m) in slots {
+                        let Ok(p) = m.params() else { continue };
+                        let t: Vec<_> = p
+                            .targets
+                            .iter()
+                            .map(|t| {
+                                format!(
+                                    "{}@{:?} i={} inv={} lag={} fl={:#x} sh={}",
+                                    t.param,
+                                    t.slot,
+                                    t.intensity,
+                                    t.invert,
+                                    t.lag_ms,
+                                    t.unknown_flags,
+                                    t.shaper.as_ref().is_some_and(|s| s.enabled)
+                                )
+                            })
+                            .collect();
+                        let src = match &p.modulator {
+                            Modulator::Lfo(l) => format!(
+                                "LFO v{:#x} wf={} init={:?} r0={:?} r1={:?} tf={} tv={:?} add={:?}",
+                                l.version,
+                                l.waveform,
+                                l.initial_values,
+                                l.records[0],
+                                l.records[1],
+                                l.trailing_flag,
+                                l.trailing_values,
+                                l.additional_flag
+                            ),
+                            Modulator::Ahdsr(e) => format!(
+                                "AHDSR a={} h={} d={} s={} r={} c={} f={}",
+                                e.attack_ms,
+                                e.hold_ms,
+                                e.decay_ms,
+                                e.sustain,
+                                e.release_ms,
+                                e.attack_curve,
+                                e.unknown_flag
+                            ),
+                            Modulator::Flex(e) => format!("FLEX {:?} sus={}", e.points, e.sustain),
+                            Modulator::Other { chunk_id } => format!("OTHER {chunk_id:#x}"),
+                        };
+                        let key =
+                            format!("INT {} flags={:?} {src} -> {t:?}", p.name, p.unknown_flags);
+                        let e = seen
+                            .entry(key)
+                            .or_insert((0, format!("{} slot {slot}", f.display())));
+                        e.0 += 1;
+                    }
+                }
+                if let Some(chunk) = g.0.find_first(EXTERNAL_MODS) {
+                    let Ok(arr) = ExternalModArray32::try_from(chunk) else {
+                        continue;
+                    };
+                    let Ok(slots) = arr.slots() else { continue };
+                    for (_slot, m) in slots {
+                        let Ok(p) = m.params() else { continue };
+                        let t: Vec<_> = p
+                            .targets
+                            .iter()
+                            .map(|t| {
+                                format!(
+                                    "{}@{:?} i={} inv={} lag={} fl={:#x} sh={}",
+                                    t.param,
+                                    t.slot,
+                                    t.intensity,
+                                    t.invert,
+                                    t.lag_ms,
+                                    t.unknown_flags,
+                                    t.shaper.as_ref().is_some_and(|s| s.enabled)
+                                )
+                            })
+                            .collect();
+                        let key = format!("EXT {} {:?} -> {t:?}", p.name, p.source);
+                        let e = seen.entry(key).or_insert((0, f.display().to_string()));
+                        e.0 += 1;
+                    }
+                }
+            }
+        }
+        for (k, (n, f)) in &seen {
+            println!("{n:6} {k}\n         e.g. {f}");
+        }
+        println!("{} files", files.len());
+    }
+}
+
+/// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
+/// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
+/// left out.
+fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
+            let value = match name.as_bytes().first()? {
+                b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
+                b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
+                b'@' => ir::Saved::Text(rest.to_owned()),
+                _ => return None,
+            };
+            Some((name.to_owned(), value))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod saved_tests {
+    #[test]
+    fn saved_values_keep_their_types_and_skip_arrays() {
+        let entries = [
+            "$level 17",
+            "~mix 0.5",
+            "@label two words",
+            "%table 1 2 3",
+            "$bad x",
+        ]
+        .map(String::from);
+        let saved = super::saved(&entries);
+        assert_eq!(
+            saved,
+            [
+                ("$level".to_owned(), sampler_ir::Saved::Int(17)),
+                ("~mix".to_owned(), sampler_ir::Saved::Real(0.5)),
+                (
+                    "@label".to_owned(),
+                    sampler_ir::Saved::Text("two words".into())
+                ),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod modulation {
+    use super::*;
+    use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
+
+    fn translation() -> Translation {
+        Translation {
+            ir: ir::Instrument::default(),
+            assets: HashMap::new(),
+            locations: Vec::new(),
+            start_criteria: Vec::new(),
+        }
+    }
+
+    fn target(param: &str, intensity: f32) -> ModTarget {
+        ModTarget {
+            param: param.into(),
+            intensity,
+            lag_ms: 0,
+            name: String::new(),
+            slot: None,
+            invert: false,
+            shaper: None,
+            unknown_i16: -1,
+            unknown_flags: 0x10,
+        }
+    }
+
+    #[test]
+    fn targets_translate_with_kontakt_laws_or_are_reported() {
+        let mut t = translation();
+        let source = ir::ModulatorRef(0);
+        let lagged = ModTarget {
+            lag_ms: 40,
+            invert: true,
+            ..target("pitch", 0.5)
+        };
+        t.route("g", source, true, &lagged).unwrap();
+        assert_eq!(
+            t.ir.routes[0],
+            ir::Route {
+                source,
+                target: ir::Target::Pitch,
+                depth: ir::Depth::Pitch(ir::Pitch::Semitones(6.0)),
+                invert: true,
+                shape: None,
+                smoothing: ir::Time::Milliseconds(40.0),
+                scale: None,
+            }
+        );
+        t.route("g", source, true, &target("volume", 0.25)).unwrap();
+        assert_eq!(t.ir.routes[1].depth, ir::Depth::Normalized(0.25));
+        t.route("g", source, true, &target("playPos", 1.0)).unwrap();
+        assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
+        for unknown in [
+            target("pan", 1.0),
+            target("cutoff", 1.0),
+            ModTarget {
+                unknown_flags: 0x12,
+                ..target("pitch", 1.0)
+            },
+            ModTarget {
+                slot: Some(0),
+                ..target("cutoff", 1.0)
+            },
+        ] {
+            assert!(t.route("g", source, true, &unknown).is_none());
+        }
+        assert_eq!(t.ir.routes.len(), 3);
+        let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
+        assert_eq!(
+            reasons,
+            [
+                ir::Reason::UnknownLaw,
+                ir::Reason::NotModeled,
+                ir::Reason::UnknownLaw,
+                ir::Reason::NotModeled
+            ]
+        );
+    }
+
+    #[test]
+    fn lfos_translate_known_waves_and_report_the_rest() {
+        let lfo = |waveform, weights| Lfo {
+            structured: false,
+            version: 0x72,
+            waveform,
+            initial_values: [10.0, 4.0, 0.5, 0.25],
+            records: [
+                LfoRecord {
+                    flag: true,
+                    values: [-1.0, 0.0, 0.0],
+                },
+                LfoRecord {
+                    flag: false,
+                    values: [0.0; 3],
+                },
+            ],
+            trailing_flag: false,
+            trailing_values: weights,
+            additional_flag: None,
+        };
+        let mut t = translation();
+        let sine = t.lfo("g", &lfo(0, None), true).unwrap();
+        assert_eq!(sine.shape, ir::LfoShape::Sine);
+        assert_eq!(sine.rate, ir::Frequency::Hertz(4.0));
+        assert_eq!(sine.fade_in, ir::Time::Milliseconds(10.0));
+        assert_eq!(sine.phase, 0.25);
+        let multi = t
+            .lfo("g", &lfo(5, Some([0.0, 0.0, 0.7, 0.0, 0.0])), false)
+            .unwrap();
+        assert_eq!(multi.shape, ir::LfoShape::Triangle);
+        assert!(!multi.retrigger);
+        let mut synced = lfo(1, None);
+        synced.records[0].values[0] = 0.25;
+        assert_eq!(
+            t.lfo("g", &synced, true).unwrap().rate,
+            ir::Frequency::Beats(1.0)
+        );
+        assert!(t.lfo("g", &lfo(3, None), true).is_none());
+        assert!(
+            t.lfo("g", &lfo(5, Some([0.5, 0.0, 0.5, 0.0, 0.0])), true)
+                .is_none()
+        );
+        assert_eq!(t.ir.unsupported.len(), 2);
+    }
 }

@@ -7,8 +7,9 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <UVI4>
   <Program Name="Fixture" Gain="0.5">
     <ControlSignalSources>
-      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocitySens="0.5"/>
-      <LFO Name="Vibrato" Rate="5"/>
+      <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocityAmount="1" VelocitySens="0.5" DecayCurve="0.5"/>
+      <LFO Name="Vibrato" Freq="5"/>
+      <StepEnvelope Name="Steps"/>
     </ControlSignalSources>
     <EventProcessors>
       <ScriptProcessor Name="Arp"><script><![CDATA[function onNote(e) playNote(e.note, e.velocity) end]]></script></ScriptProcessor>
@@ -20,9 +21,10 @@ const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <Connections>
               <SignalConnection Source="$Program/Amp Env" Destination="Gain" Ratio="1"/>
               <SignalConnection Source="$Program/Vibrato" Destination="Pitch" Ratio="0.1"/>
+              <SignalConnection Source="$Program/Steps" Destination="Gain" Ratio="0.5"/>
             </Connections>
             <Oscillators>
-              <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Gain="0.8">
+              <SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60" CoarseTune="2" FineTune="-50" Pitch="0.25" Gain="0.8">
                 <PlaybackOptions Start="10" Stop="47000"><Loop Start="1000" End="9000" Type="0"/></PlaybackOptions>
               </SamplePlayer>
               <SamplePlayer Name="Bank" SamplePath="$Bank.ufs/Samples/x.wav"/>
@@ -87,7 +89,7 @@ fn authored_program_translates_loads_and_renders() {
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
     assert_eq!(zone.pitch, ir::KeyTracking::Tracked { root: 60 });
-    assert_eq!(zone.tune, ir::Pitch::Semitones(1.5));
+    assert_eq!(zone.tune, ir::Pitch::Semitones(1.75));
     assert_eq!(zone.gain, ir::Gain::Linear(0.8));
     assert_eq!(zone.velocity, ir::VelocityResponse::Power(2.0));
     assert_eq!((zone.playback.start, zone.playback.end), (10, Some(47000)));
@@ -100,25 +102,39 @@ fn authored_program_translates_loads_and_renders() {
         })
     ));
     assert!(zone.amplitude.is_some());
+    let ir::ModulationSource::Envelope(env) = &ir.modulators[zone.amplitude.unwrap().0].source
+    else {
+        panic!()
+    };
+    let k = 2.0 * ((1.5_f64) / (0.5)).ln();
+    assert_eq!(env.decay_shape, ir::Curve::Exponential(k));
+    assert_eq!(env.attack_shape, ir::Curve::Linear);
     assert_eq!(ir.behaviors.len(), 1);
     assert_eq!(ir.behaviors[0].language, ir::Language::Lua);
     let features: Vec<&str> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
     for expected in [
         "HighKeyFade",
-        "modulation",
-        "sample inside a UFS bank",
-        "module",
+        "modulation source",
+        "sample outside the program's bank",
     ] {
         assert!(
             features.contains(&expected),
             "{expected} missing from {features:?}"
         );
     }
-    assert!(
-        ir.unsupported.iter().any(|u| u.value == "LFO"),
-        "{:?}",
-        ir.unsupported
-    );
+    // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
+    let route = &ir.routes[zone.routes[0].0];
+    assert_eq!(zone.routes.len(), 1);
+    assert_eq!(route.target, ir::Target::Pitch);
+    assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
+    assert!(matches!(
+        ir.modulators[route.source.0].source,
+        ir::ModulationSource::Lfo(ir::Lfo {
+            shape: ir::LfoShape::Sine,
+            rate: ir::Frequency::Hertz(5.0),
+            ..
+        })
+    ));
 
     let loaded = sampler_uvi::load(&program, 48000).unwrap();
     assert!(

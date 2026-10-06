@@ -231,12 +231,9 @@ fn malformed_dynamic_or_overbudget_declarations_fail_before_execution() {
         "on init declare $size := 2 declare %a[$size] end on",
         "on init declare %a[2] := () end on",
         "on init declare %a[2] := (1,2,3) end on",
-        "on init declare %a[2] %a[2] := 1 end on",
         "on init declare %CC[2] end on",
         "on init declare const $x := 2 $x := 3 end on",
         "on init declare const $x := 2 end on on note inc($x) end on",
-        "on init declare %a[2] declare $x := %a[0] end on",
-        "on init declare %a[2] := ($EVENT_NOTE) end on",
         "on init declare %a[2] declare %a[2] end on",
         "on init declare polyphonic %a[2] end on",
         "on init declare $x end on on note $x := num_elements($x) end on",
@@ -248,10 +245,21 @@ fn malformed_dynamic_or_overbudget_declarations_fail_before_execution() {
         };
         assert!(error.offset <= source.len());
     }
+    // v2: `on init` is executable; out-of-bounds writes and event reads there
+    // warn and continue like Kontakt.
+    for (source, warns) in [
+        ("on init declare %a[2] %a[2] := 1 end on", true),
+        ("on init declare %a[2] declare $x := %a[0] end on", false),
+        ("on init declare %a[2] := ($EVENT_NOTE) end on", true),
+    ] {
+        let script = compile(source, 8).unwrap();
+        assert_eq!(!script.warnings().is_empty(), warns, "{source}");
+    }
+    // v2: expression nesting is bounded at 256 levels.
     let nested = format!(
         "on init declare %a[1] declare $x end on on note $x := {}0{} end on",
-        "%a[".repeat(70),
-        "]".repeat(70)
+        "%a[".repeat(300),
+        "]".repeat(300)
     );
     assert!(compile(&nested, 1).is_err());
     assert!(compile("on init declare %a[1] end on", 0).is_err());

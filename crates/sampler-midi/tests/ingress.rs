@@ -108,10 +108,20 @@ fn protocol_scope_and_unsupported_messages_cannot_create_partial_notes() {
     );
     rt.flush_ended(|_| true);
     let ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
-    assert_eq!(
-        apply(&ingress, &mut rt, &[0x4090_3c7f, 0xffff_7800]),
-        Ok(Applied::Unsupported)
-    );
+    // Unknown attribute types are ignored, never a reason to drop the note.
+    for kind in [1, 2, 0x7f] {
+        let Applied::Started(note) =
+            apply(&ingress, &mut rt, &[0x4090_3c00 | kind, 0xffff_7800]).unwrap()
+        else {
+            panic!("note-on with attribute type {kind} was dropped")
+        };
+        assert_eq!(rt.note(note).unwrap().0, 60);
+        assert!(matches!(
+            apply(&ingress, &mut rt, &[0x4080_3c00, 0]).unwrap(),
+            Applied::Released { note: released, .. } if released == note
+        ));
+        rt.flush_ended(|_| true);
+    }
     assert_eq!(
         apply(&ingress, &mut rt, &[0x4060_3c00, 0x8000_0000]),
         Ok(Applied::Unsupported)
@@ -742,6 +752,38 @@ fn explicit_performance_routing_keeps_note_pairing_separate_from_channel_identit
     });
 }
 
+/// MIDI 2.0 (M2-104) min-center-max 7-to-32-bit upscaling, as an oracle.
+fn spec7(value: u32) -> u32 {
+    let shifted = value << 25;
+    if value <= 64 {
+        return shifted;
+    }
+    let mut repeat = (value & 63) << 19;
+    let mut out = shifted;
+    while repeat != 0 {
+        out |= repeat;
+        repeat >>= 6;
+    }
+    out
+}
+
+#[test]
+fn midi1_controllers_upscale_to_exact_center_and_full_scale() {
+    assert_eq!(
+        [0, 1, 64, 126, 127].map(spec7),
+        [0, 0x0200_0000, 0x8000_0000, 0xfdf7_df7d, u32::MAX]
+    );
+    let mut rt = runtime();
+    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    for (value, expected) in [(64, 0x8000_0000), (127, u32::MAX)] {
+        apply(&ingress, &mut rt, &[0x20b0_0100 | value]).unwrap();
+        assert_eq!(
+            rt.controller(rt.performance(0).unwrap(), 1).unwrap(),
+            expected
+        );
+    }
+}
+
 #[test]
 fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_domain() {
     for version in [Version::Midi1, Version::Midi2] {
@@ -767,7 +809,7 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                     Ok(Applied::Controller)
                 );
                 let expected = if version == Version::Midi1 {
-                    (u64::from(value) * u64::from(u32::MAX) / 127) as u32
+                    spec7(value)
                 } else {
                     value
                 };

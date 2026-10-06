@@ -6,11 +6,27 @@ rust-version = "1.92"
 license = "Apache-2.0"
 publish = false
 
+[features]
+default = ["library-access"]
+# Reads the user's own installed bank access (see src/access.rs); without it,
+# only clear programs with loose samples load.
+library-access = ["dep:anyhow", "dep:base64", "dep:crc32fast", "dep:flate2", "dep:serde", "dep:serde_json", "dep:sha2", "dep:libc", "dep:dirs"]
+
 [dependencies]
 sampler-ir = { path = "../sampler-ir" }
 sampler-core = { path = "../sampler-core" }
 sampler-kontakt = { path = "../sampler-kontakt" }
 roxmltree = "=0.21.1"
+symphonia = { version = "0.5", default-features = false, features = ["aiff", "wav", "pcm", "flac"] }
+anyhow = { version = "1", optional = true }
+base64 = { version = "0.22", optional = true }
+crc32fast = { version = "1.5", optional = true }
+flate2 = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha2 = { version = "0.10.9", optional = true }
+libc = { version = "0.2", optional = true }
+dirs = { version = "5", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

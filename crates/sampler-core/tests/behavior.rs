@@ -198,16 +198,6 @@ fn faults_and_fuel_are_observable_and_cannot_leave_partial_owned_work() {
             Outcome::Fault(Error::Capacity),
         ),
         (
-            vec![play(20), Instruction::Wait(0), Instruction::End],
-            Limits {
-                behavior_fuel: 1,
-                behavior_cells: 0,
-                note_cells: 0,
-                ..limits()
-            },
-            Outcome::FuelExhausted,
-        ),
-        (
             vec![Instruction::Play {
                 transpose: 127,
                 velocity: sampler_core::Velocity::Scale(1.),
@@ -566,6 +556,12 @@ fn branching_loops_obey_fuel_and_integer_arithmetic_never_wraps() {
         support::without_heap(|| {
             let note = rt.note_on(input(), 60, 1.).unwrap();
             let id = rt.start_behavior(note, 0).unwrap();
+            if outcome == Outcome::FuelExhausted {
+                // v2: a runaway callback is preempted every block and ends after a second.
+                for _ in 0..12 {
+                    rt.render(&mut [[0.; 2]; 4800]).unwrap();
+                }
+            }
             assert_eq!(rt.behavior_outcome(id), Ok(Some(outcome)));
             assert_eq!(rt.pending_commands(), 0);
             rt.flush_behaviors(|_, _, _| true);
@@ -1706,4 +1702,44 @@ fn evaluated_time_and_note_arguments_validate_before_publishing_work_without_hea
         assert_eq!(plan.behavior_local_count(), 5);
         assert!(matches!(Runtime::new(plan, limits()), Err(Error::Capacity)));
     }
+}
+
+#[test]
+fn callbacks_over_fuel_continue_next_block_in_event_order() {
+    // Ten increments with four instructions of fuel per block: three blocks.
+    let mut code = vec![Instruction::SetLocal { local: 0, value: 0 }];
+    code.extend((0..10).map(|_| Instruction::AddLocal { local: 0, value: 1 }));
+    let mut rt = runtime(
+        code,
+        Limits {
+            behavior_fuel: 4,
+            ..limits()
+        },
+    );
+    support::without_heap(|| {
+        let note = rt.note_on(input(), 60, 1.).unwrap();
+        let first = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(3));
+        // A later callback of the same instrument waits for the preempted one.
+        let second = rt.start_behavior(note, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(second), Ok(None));
+        assert_eq!(rt.behavior_local(second, 0), Ok(0));
+        rt.render(&mut [[0.; 2]; 4]).unwrap();
+        assert_eq!(rt.behavior_local(first, 0), Ok(7));
+        assert_eq!(rt.behavior_local(second, 0), Ok(0));
+        rt.render(&mut [[0.; 2]; 4]).unwrap();
+        assert_eq!(rt.behavior_outcome(first), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(first, 0), Ok(10));
+        assert_eq!(rt.behavior_outcome(second), Ok(None));
+        for _ in 0..3 {
+            rt.render(&mut [[0.; 2]; 4]).unwrap();
+        }
+        assert_eq!(rt.behavior_outcome(second), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(second, 0), Ok(10));
+        assert!(rt.preemptions() >= 4);
+        assert_eq!(rt.longest_preempted_frames(), 4);
+        rt.flush_behaviors(|_, _, _| true);
+        rt.note_off(input(), None).unwrap();
+        rt.flush_ended(|_| true);
+    });
 }

@@ -15,6 +15,10 @@ pub enum Inheritance {
     Independent,
 }
 
+/// Largest note gain an expression carries: CLAP's note gain expression
+/// range (0..=4, linear, +12 dB).
+pub const MAX_EXPRESSION_GAIN: f64 = 4.0;
+
 /// Canonical note expression. Gain, stereo balance and pitch affect resident PCM.
 /// Integer pressure/timbre retain all 32 bits for future modulation routing.
 /// Protocol decoding and member-channel assignment remain adapter responsibilities.
@@ -34,7 +38,8 @@ impl Default for Expression {
             pan: 0.0,
             pitch_semitones: 0.0,
             pressure: 0,
-            timbre: 0,
+            // Centre, so timbre-darkening laws are identity for non-MPE notes.
+            timbre: 0x8000_0000,
         }
     }
 }
@@ -42,7 +47,7 @@ impl Default for Expression {
 impl Expression {
     pub(super) fn valid(self) -> bool {
         self.gain.is_finite()
-            && (0.0..=1.0).contains(&self.gain)
+            && (0.0..=MAX_EXPRESSION_GAIN).contains(&self.gain)
             && self.pan.is_finite()
             && (-1.0..=1.0).contains(&self.pan)
             && self.pitch_semitones.is_finite()
@@ -251,6 +256,9 @@ impl Runtime {
             voice = state.siblings.next;
             state.envelope.release();
             state.cursor.release();
+            let g = self.plans.get_mut(plan.0).unwrap();
+            g.modulation
+                .release(&g.prepared.voice_modulation, index.get());
             let done = state.chain.map_or_else(
                 || state.envelope.done(),
                 |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
@@ -378,6 +386,16 @@ impl Runtime {
         if let Some(next) = v.siblings.next {
             self.voices.at_mut(next).siblings.previous = v.siblings.previous;
         }
+        let plan = self
+            .notes
+            .get(self.families.get(v.family.0).unwrap().note.0)
+            .unwrap()
+            .plan;
+        self.plans
+            .get_mut(plan.0)
+            .unwrap()
+            .modulation
+            .stop(id.0.index);
         self.voices.remove(id.0);
         self.voice_activity[id.0.index / 64] &= !(1 << (id.0.index % 64));
         self.families.get_mut(v.family.0).unwrap().voices -= 1;

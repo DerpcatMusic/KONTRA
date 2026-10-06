@@ -118,7 +118,7 @@ impl PerformanceState {
         let mut states = vec![
             State {
                 articulation: 0,
-                controllers: [0; 128],
+                controllers: RESET_CONTROLLERS,
                 owners: 0
             };
             capacity
@@ -126,7 +126,7 @@ impl PerformanceState {
         .into_boxed_slice();
         states[0].owners = performances;
         Self {
-            input_controllers: vec![[0; 128]; performances].into_boxed_slice(),
+            input_controllers: vec![RESET_CONTROLLERS; performances].into_boxed_slice(),
             states,
             current: vec![0; performances].into_boxed_slice(),
             free: (1..capacity).rev().collect(),
@@ -214,3 +214,12 @@ impl Runtime {
         }
     }
 }
+
+/// Controller values before any are received: MIDI's reset state (RP-015), in
+/// which expression (CC11) is full and everything else is zero. Instruments
+/// that scale volume by CC11 therefore sound until a host sends it.
+const RESET_CONTROLLERS: [u32; 128] = {
+    let mut values = [0; 128];
+    values[11] = u32::MAX;
+    values
+};
