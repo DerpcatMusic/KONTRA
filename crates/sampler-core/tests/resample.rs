@@ -131,6 +131,57 @@ fn rates_and_transposition_follow_analytic_tones_without_heap_or_partition_drift
     }
 }
 
+#[test]
+fn mipmapped_sources_follow_analytic_tones_from_octave_levels() {
+    let frequency = 0.005;
+    let tone = |frequency: f64| -> Box<[[f32; 2]]> {
+        (0..16384)
+            .map(|i| {
+                let angle = 2.0 * PI * frequency * i as f64;
+                [angle.cos() as f32, angle.sin() as f32]
+            })
+            .collect()
+    };
+    for step in [2.5_f64, 3.0, 5.0, 12.0] {
+        for quality in [ResampleQuality::High, ResampleQuality::Realtime] {
+            let render = |pcm: Pcm| {
+                let playback = Playback {
+                    start: 2048,
+                    transpose_semitones: 12.0 * step.log2(),
+                    ..Playback::default()
+                };
+                let mut rt =
+                    realtime(prepare(pcm, 48000, playback).unwrap()).with_resample_quality(quality);
+                let mut audio = [[0.0; 2]; 256];
+                support::without_heap(|| {
+                    rt.trigger(input(), 60, 1.0).unwrap();
+                    // Past the view-start seam, where every window falls back.
+                    rt.render(&mut [[0.0; 2]; 128]).unwrap();
+                    for block in audio.chunks_mut(7) {
+                        rt.render(block).unwrap();
+                    }
+                });
+                audio
+            };
+            let plain = render(Pcm::new(48000, tone(frequency)).unwrap());
+            let mipped = render(Pcm::mipmapped(48000, tone(frequency)).unwrap());
+            assert_ne!(plain, mipped, "octave level read at {step}");
+            let mut worst = 0.0_f64;
+            for (i, frame) in mipped.iter().enumerate() {
+                let phase = 2.0 * PI * frequency * (2048.0 + (128 + i) as f64 * step);
+                worst = worst
+                    .max((f64::from(frame[0]) - phase.cos()).abs())
+                    .max((f64::from(frame[1]) - phase.sin()).abs());
+            }
+            assert!(worst < 1e-4, "{step} {quality:?}: {worst}");
+            // Above the output Nyquist: the octave decimators must reject it.
+            let alias = render(Pcm::mipmapped(48000, tone(0.6 / step)).unwrap());
+            let peak = alias.iter().flatten().fold(0.0_f32, |m, x| m.max(x.abs()));
+            assert!(peak < 3e-3, "{step} {quality:?}: alias {peak}");
+        }
+    }
+}
+
 // Independent direct trigonometric FIR oracle; no coefficient table or runtime
 // cursor logic. The traversal sequences below are authored explicitly.
 fn filtered(position: f64, mut read: impl FnMut(i64) -> f64) -> f32 {
