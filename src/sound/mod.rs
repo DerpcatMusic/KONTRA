@@ -131,6 +131,9 @@ pub struct Loaded<P> {
     /// The part's host-visible controls and their defaults, in id order;
     /// what [`Core::set_control`] accepts and [`Core::control_value`] reads.
     pub controls: Vec<(sampler_ui_ir::ControlId, f64)>,
+    /// The translated instrument the part plays, for the views that show
+    /// its articulations, mapping and sound; `None` for plain audio files.
+    pub instrument: Option<std::sync::Arc<sampler_ir::Instrument>>,
 }
 
 /// Browser-facing facts about a source, read without preparing it.

@@ -679,7 +679,7 @@ fn kontakt(
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new() })
+    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new(), instrument: Some(std::sync::Arc::new(loaded.instrument)) })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -730,7 +730,7 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     report.decoded.zones = 1;
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
-    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new() })
+    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new(), instrument: None })
 }
 
 impl CoreLoader for V2Loader {
@@ -743,7 +743,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: prepared, tree, report, interfaces, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: prepared, tree, report, interfaces, instrument, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -769,7 +769,7 @@ impl CoreLoader for V2Loader {
         }
         let part = Part::new(runtime, tree.clone())?;
         progress(Progress::DONE);
-        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls })
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
