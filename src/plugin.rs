@@ -1,4 +1,4 @@
-use crate::articulate::{self, Articulate, In, Mpe, Route};
+use crate::articulate::{Articulate, In, Mpe, Route};
 use crate::{artwork, library};
 use crate::{
     engine::{
@@ -8292,7 +8292,7 @@ end on"
         assert_eq!(plan.latency_ms, 200.0);
         let mut s = timing::Scheduler::default();
         assert_eq!(
-            s.arrive(articulate::In::NoteOn(0, 60, 100), 0, &plan.parts[0], 48_000.0, &articulate::Router::default()),
+            s.arrive(crate::articulate::In::NoteOn(0, 60, 100), 0, &plan.parts[0], 48_000.0, &crate::articulate::Router::default()),
             None
         );
         assert_eq!(s.next_due(), Some(120 * 48), "the stale 100 ms measurement is ignored; the manual 80 ms offset remains");
@@ -8305,11 +8305,11 @@ end on"
     fn two_articulations_with_different_attacks_land_on_the_grid() {
         let articulate = Articulate {
             source: "arts.nki".into(),
-            mode: articulate::Mode::Channel,
+            mode: crate::articulate::Mode::Channel,
             articulations: ["Short", "Long"]
                 .iter()
                 .enumerate()
-                .map(|(n, name)| articulate::Articulation {
+                .map(|(n, name)| crate::articulate::Articulation {
                     name: (*name).into(),
                     key: Some(24 + n as u8),
                     channel: n as u8,
