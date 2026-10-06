@@ -7,6 +7,7 @@ use sampler_core::{
 };
 use std::collections::BTreeMap;
 mod expression;
+mod functions;
 mod state;
 
 // Opaque source constant; numeric value retained from the recorded v1 reference.
@@ -131,11 +132,21 @@ struct Token<'a> {
     kind: Kind<'a>,
     offset: usize,
 }
+#[derive(Clone, Copy)]
 enum CallbackKind {
     Note,
     Release,
     Control,
     Controller,
+}
+impl CallbackKind {
+    fn accepts(self, program: &Program) -> bool {
+        match self {
+            Self::Note | Self::Release => !program.requires_controller(),
+            Self::Control => !program.requires_note() && !program.requires_performance(),
+            Self::Controller => !program.requires_note(),
+        }
+    }
 }
 
 enum Block {
@@ -168,6 +179,8 @@ struct Parser<'a> {
     limit: usize,
     emitted: usize,
     code: Vec<Instruction>,
+    functions: BTreeMap<&'a str, [Result<Vec<Instruction>, Error>; 4]>,
+    function_instructions: usize,
     variables: BTreeMap<&'a str, Variable>,
     bindings: BTreeMap<&'a str, ControlId>,
     controls: Vec<Control>,
@@ -613,6 +626,13 @@ impl<'a> Parser<'a> {
     }
 
     fn callback(&mut self, kind: CallbackKind) -> Result<Program, Error> {
+        let code = self.body(kind, false)?;
+        Program::new(code)
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map_err(|_| self.error("invalid lowered native program"))
+    }
+
+    fn body(&mut self, kind: CallbackKind, function: bool) -> Result<Vec<Instruction>, Error> {
         let note = matches!(kind, CallbackKind::Note);
         // Each open branch has already emitted budgeted instructions. This
         // control-only patch stack is bounded by code/source limits, not recursion.
@@ -630,6 +650,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error("expected case or end select"));
             }
             match token.kind {
+                Kind::Word("call") => self.call_function(kind)?,
                 Kind::Word(command @ ("change_note" | "change_velo")) if note => {
                     self.symbol(b'(')?;
                     self.expect(
@@ -826,20 +847,19 @@ impl<'a> Parser<'a> {
                         };
                         continue;
                     }
-                    if token.kind != Kind::Word("on") || !branches.is_empty() {
+                    if token.kind != Kind::Word(if function { "function" } else { "on" })
+                        || !branches.is_empty()
+                    {
                         return Err(Error {
                             offset: token.offset,
                             message: "expected matching block end or end on",
                         });
                     }
-                    self.forward(&kind)?;
-                    self.emit(Instruction::End)?;
-                    return Program::new(std::mem::take(&mut self.code))
-                        .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
-                        .map_err(|_| Error {
-                            offset: token.offset,
-                            message: "invalid lowered native program",
-                        });
+                    if !function {
+                        self.forward(&kind)?;
+                        self.emit(Instruction::End)?;
+                    }
+                    return Ok(std::mem::take(&mut self.code));
                 }
                 _ => {
                     return Err(Error {
@@ -1083,6 +1103,8 @@ pub fn compile(
         limit: limits.instructions,
         emitted: 0,
         code: Vec::new(),
+        functions: BTreeMap::new(),
+        function_instructions: 0,
         variables: BTreeMap::new(),
         bindings,
         controls: Vec::new(),
@@ -1114,6 +1136,10 @@ pub fn compile(
                 performance_view: p.performance_view,
             });
         }
+        if token.kind == Kind::Word("function") {
+            p.function()?;
+            continue;
+        }
         if token.kind != Kind::Word("on") {
             return Err(Error {
                 offset: token.offset,
@@ -1140,7 +1166,7 @@ pub fn compile(
                     return Err(p.error("duplicate UI control callback"));
                 }
                 let program = p.callback(CallbackKind::Control)?;
-                if program.requires_note() || program.requires_performance() {
+                if !CallbackKind::Control.accepts(&program) {
                     return Err(Error {
                         offset: token.offset,
                         message: "event-dependent operands are unsupported in UI callbacks",
@@ -1162,14 +1188,13 @@ pub fn compile(
                     });
                 }
                 *binding = Some(programs.len());
-                let program = p.callback(match kind {
+                let context = match kind {
                     "note" => CallbackKind::Note,
                     "release" => CallbackKind::Release,
                     _ => CallbackKind::Controller,
-                })?;
-                if (kind == "controller" && program.requires_note())
-                    || (kind != "controller" && program.requires_controller())
-                {
+                };
+                let program = p.callback(context)?;
+                if !context.accepts(&program) {
                     return Err(p.error("operand requires a different event context"));
                 }
                 programs.push(program);

@@ -150,7 +150,10 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   script-instance arrays, indexed inc/dec and num_elements now share those services.
   Nested select/case, signed hexadecimal literals, combined Boolean conditions and
   short-circuit array guards now lower onto the same native IR. Broader typed arithmetic
-  and language/state/controller work stay open. Native per-note group masks now filter
+  and language/state/controller work stay open. Declared-before-use user functions
+  now expand into bounded native instructions with caller-specific forwarding,
+  shared state and existing waits; nested branch/loop targets relocate at each call.
+  Init calls and broader language contexts remain open. Native per-note group masks now filter
   layer selection, snapshot into children and retain generation ownership. KSP
   allow/disallow and first-yield release-group commits use the same services.
   Stored source IDs now support individual note_off and optional deadline overrides
