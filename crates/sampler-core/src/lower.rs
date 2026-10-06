@@ -4,10 +4,11 @@
 //! approximated silently.
 use crate::{
     Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
+    FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
     ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
-    SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Processor, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
+    StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger,
+    VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -368,7 +369,12 @@ impl Lowering<'_> {
                 .pre_amplitude
                 .iter()
                 .chain(&chain.post_amplitude)
-                .any(|p| matches!(p, ir::Processor::Reverb(_)))
+                .any(|p| {
+                    matches!(
+                        p,
+                        ir::Processor::Reverb(_) | ir::Processor::Convolution { .. }
+                    )
+                })
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
             }
@@ -714,6 +720,11 @@ impl Lowering<'_> {
                 low_shelf_db: r.low_shelf_db,
                 width: r.width,
             }),
+            ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
+                impulse: impulse.0,
+                dry,
+                wet,
+            },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             ir::Processor::Delay { .. } => return Err(unsupported(owner, Feature::Delay)),
         })
@@ -781,6 +792,19 @@ impl Lowering<'_> {
             ir::Output::Master => None,
             ir::Output::Bus(bus) => Some(bus.0),
         };
+        let impulses = self
+            .ir
+            .impulses
+            .iter()
+            .enumerate()
+            .map(|(i, impulse)| {
+                let (left, right) = (
+                    resample(&impulse.left, impulse.rate, self.rate),
+                    resample(&impulse.right, impulse.rate, self.rate),
+                );
+                Impulse::new(left, right).map_err(core(Stage::Buses, format!("impulse {i}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut buses = Vec::with_capacity(self.ir.buses.len());
         for (i, bus) in self.ir.buses.iter().enumerate() {
             let owner = format!("bus {i}");
@@ -813,6 +837,9 @@ impl Lowering<'_> {
                 .map(|p| match p {
                     Processor::Gain(_) | Processor::StereoMatrix(_) => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
+                    Processor::Convolution { impulse, .. } => {
+                        crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32
+                    }
                     _ => (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32,
                 })
                 .max()
@@ -829,7 +856,8 @@ impl Lowering<'_> {
             .iter()
             .map(|z| self.group(z).and_then(|g| target(g.output)))
             .collect();
-        plan.with_buses(buses, bindings)
+        plan.with_impulses(impulses)
+            .with_buses(buses, bindings)
             .map_err(core(Stage::Buses, "buses"))
     }
 
@@ -1067,4 +1095,40 @@ fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
         }
     };
     [[left, 0.0], [0.0, right]]
+}
+
+/// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below
+/// the lower Nyquist. Run at load, never on the audio thread.
+fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to {
+        return x.to_vec();
+    }
+    const HALF: f64 = 16.0;
+    let step = f64::from(from) / f64::from(to);
+    let cutoff = (1.0 / step).min(1.0);
+    let reach = HALF / cutoff;
+    let frames = ((x.len() as f64 / step).ceil() as usize).max(1);
+    (0..frames)
+        .map(|i| {
+            let at = i as f64 * step;
+            let first = ((at - reach).ceil().max(0.0)) as usize;
+            let last = ((at + reach).floor() as usize).min(x.len().saturating_sub(1));
+            let mut sum = 0.0;
+            for (j, v) in x.iter().enumerate().take(last + 1).skip(first) {
+                let d = j as f64 - at;
+                let t = d * cutoff;
+                let sinc = if t == 0.0 {
+                    1.0
+                } else {
+                    (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t)
+                };
+                let w = d / reach;
+                let window = 0.42
+                    + 0.5 * (std::f64::consts::PI * w).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
+                sum += f64::from(*v) * sinc * window * cutoff;
+            }
+            sum as f32
+        })
+        .collect()
 }

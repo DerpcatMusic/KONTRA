@@ -172,6 +172,26 @@ pub(crate) enum Params {
     /// size, damping, modulation, diffusion, predelay, high cut, low shelf,
     /// stereo (`$ENGINE_PAR_RV2_*` order).
     Reverb([f32; 10]),
+    /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
+    Convolution(Box<Convolution>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Convolution {
+    /// Sample-rate decimation factor (1 or negative: none).
+    pub decimation: f32,
+    pub predelay_ms: f32,
+    /// Early and late parts: length ratio, low cut Hz, high cut Hz.
+    pub early: [f32; 3],
+    pub late: [f32; 3],
+    /// Early/late crossover as a fraction of the response.
+    pub xpoint: f32,
+    /// Reverse, auto gain, preserve length, bypass latency compensation,
+    /// volume envelope.
+    pub flags: [bool; 5],
+    pub curve_x: Vec<f32>,
+    pub curve_db: Vec<f32>,
+    pub ir_index: i32,
 }
 
 impl Slot {
@@ -190,6 +210,31 @@ impl Slot {
                     *x = r.f32()?;
                 }
                 Params::Reverb(v)
+            }
+            0x16 => {
+                let decimation = r.f32()?;
+                // The block size, stored as an integer.
+                r.take::<4>()?;
+                let mut v = [0.0; 8];
+                for x in &mut v {
+                    *x = r.f32()?;
+                }
+                let [predelay_ms, e_len, e_lo, e_hi, l_len, l_lo, l_hi, xpoint] = v;
+                let mut flags = [false; 5];
+                for flag in &mut flags {
+                    *flag = r.flag()?;
+                }
+                Params::Convolution(Box::new(Convolution {
+                    decimation,
+                    predelay_ms,
+                    early: [e_len, e_lo, e_hi],
+                    late: [l_len, l_lo, l_hi],
+                    xpoint,
+                    flags,
+                    curve_x: r.list()?,
+                    curve_db: r.list()?,
+                    ir_index: r.i32()?,
+                }))
             }
             0x1a => Params::Inverter {
                 invert: r.flag()?,
@@ -354,10 +399,29 @@ pub(crate) struct Chain {
 /// Linear stereo stages fold into one matrix; EQ bands act alike on both
 /// channels, so they commute with it.
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
+    chain_with(slots, scope, None)
+}
+
+/// A decoded impulse response: its sample rate and frames.
+pub(crate) type Decoded = (u32, Vec<[f32; 2]>);
+
+/// Where convolution slots find their impulse responses: `load` decodes the
+/// response an other-files index names, `store` collects the shaped ones.
+pub(crate) struct Impulses<'a> {
+    pub store: &'a mut Vec<sampler_ir::Impulse>,
+    pub load: &'a mut dyn FnMut(i32) -> Result<Decoded, String>,
+}
+
+/// [`chain`], translating convolutions when `impulses` is given (bus scope).
+pub(crate) fn chain_with(
+    slots: &[Slot],
+    scope: Scope,
+    mut impulses: Option<&mut Impulses>,
+) -> Chain {
     let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
-    let mut flush =
+    let flush =
         |combined: &mut Matrix, filters: &mut Vec<sampler_ir::Processor>, out: &mut Chain| {
             out.processors.append(filters);
             if *combined != IDENTITY {
@@ -392,6 +456,27 @@ pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
                     .push(sampler_ir::Processor::Reverb(reverb(values, &mut notes)));
                 combined = gain;
             }
+            Some(Params::Convolution(c)) if scope == Scope::Bus && impulses.is_some() => {
+                let source = impulses.as_deref_mut().expect("checked above");
+                match convolution(c, source, &mut notes) {
+                    Ok(impulse) => {
+                        flush(&mut combined, &mut filters, &mut out);
+                        out.processors.push(sampler_ir::Processor::Convolution {
+                            impulse,
+                            dry: f64::from(fx.dry_level),
+                            wet,
+                        });
+                    }
+                    Err(why) => {
+                        notes.push((
+                            "impulse response".into(),
+                            why,
+                            sampler_ir::Reason::NotModeled,
+                        ));
+                        modelled = false;
+                    }
+                }
+            }
             Some(p) => match matrix(p, &mut notes) {
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
@@ -414,6 +499,99 @@ pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
     }
     flush(&mut combined, &mut filters, &mut out);
     out
+}
+
+/// The slot's impulse response, shaped as Kontakt's controls ask, in `impulses`.
+/// What it cannot shape is reported in `notes`.
+fn convolution(
+    c: &Convolution,
+    impulses: &mut Impulses,
+    notes: &mut Notes,
+) -> Result<sampler_ir::ImpulseRef, String> {
+    use sampler_ir::Reason::NotModeled;
+    let (rate, frames) = (impulses.load)(c.ir_index)?;
+    if frames.is_empty() || rate == 0 {
+        return Err("the impulse response is empty".into());
+    }
+    let mut channels: [Vec<f32>; 2] = std::array::from_fn(|ch| {
+        let mut x: Vec<f32> = frames.iter().map(|f| f[ch]).collect();
+        if c.flags[0] {
+            x.reverse();
+        }
+        x
+    });
+    if c.early[0] != 1.0 || c.late[0] != 1.0 {
+        notes.push((
+            "IR size".into(),
+            format!("early {} late {}", c.early[0], c.late[0]),
+            NotModeled,
+        ));
+    }
+    if c.early[1..] != c.late[1..] || c.late[1] > 20.0 || c.late[2] < 20_000.0 {
+        notes.push((
+            "IR early/late filtering".into(),
+            format!("early {:?} late {:?} Hz", &c.early[1..], &c.late[1..]),
+            NotModeled,
+        ));
+    }
+    if c.decimation > 1.0 {
+        notes.push((
+            "IR sample-rate decimation".into(),
+            c.decimation.to_string(),
+            NotModeled,
+        ));
+    }
+    if c.flags[4] {
+        let ok = c.curve_x.len() == 8 && c.curve_db.len() == 8;
+        if ok {
+            // Eight knots, sorted in time, interpolated in amplitude.
+            let mut knots: Vec<(f32, f32)> = c
+                .curve_x
+                .iter()
+                .zip(&c.curve_db)
+                .map(|(x, db)| (*x, (db * 0.05 * std::f32::consts::LN_10).exp()))
+                .collect();
+            knots.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let len = channels[0].len();
+            for pair in knots.windows(2) {
+                let at = |x: f32| (len as f32 * x.clamp(0.0, 1.0) + 0.5) as usize;
+                let (start, end) = (at(pair[0].0), at(pair[1].0));
+                for n in start..end.min(len) {
+                    let g = pair[0].1
+                        + (pair[1].1 - pair[0].1) * (n - start) as f32 / (end - start) as f32;
+                    channels.iter_mut().for_each(|ch| ch[n] *= g);
+                }
+            }
+        } else {
+            notes.push((
+                "IR volume envelope".into(),
+                "not eight knots".into(),
+                NotModeled,
+            ));
+        }
+    }
+    let pre = (c.predelay_ms.max(0.0) * 0.001 * rate as f32) as usize;
+    for ch in &mut channels {
+        ch.splice(0..0, std::iter::repeat_n(0.0, pre));
+    }
+    if c.flags[1] {
+        // Auto Gain: the loudest channel's energy to 0.5, at most +6 dB.
+        let energy = channels
+            .iter()
+            .map(|ch| ch.iter().map(|x| x * x).sum::<f32>())
+            .fold(0.0, f32::max);
+        let gain = if energy >= 0.001 {
+            (0.5 / energy).sqrt().min(2.0)
+        } else {
+            1.0
+        };
+        channels.iter_mut().flatten().for_each(|x| *x *= gain);
+    }
+    let [left, right] = channels;
+    impulses
+        .store
+        .push(sampler_ir::Impulse { rate, left, right });
+    Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
 /// Kontakt's normalized Reverb values as physical settings. Laws are v1's
@@ -456,6 +634,7 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
 pub(crate) fn instrument_buses(
     ir: &mut sampler_ir::Instrument,
     racks: &[(String, Vec<Slot>)],
+    load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> Vec<(String, Note)> {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
@@ -468,27 +647,33 @@ pub(crate) fn instrument_buses(
     let mut take = |name: &str, c: &Chain| {
         report.extend(c.notes.iter().map(|n| (name.to_string(), n.clone())));
     };
-    let insert = chain(rack("instrument insert"), Scope::Bus);
+    let mut store = std::mem::take(&mut ir.impulses);
+    let mut source = Impulses {
+        store: &mut store,
+        load,
+    };
+    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source));
     take("instrument insert", &insert);
-    let main = chain(rack("instrument main"), Scope::Bus);
+    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source));
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
     let mut sends = Vec::new();
     for slot in rack("instrument send").iter().filter(|s| !s.bypass) {
-        let c = chain(std::slice::from_ref(slot), Scope::Bus);
+        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source));
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
         if !c.processors.is_empty() && level > 0.0 {
             sends.push((c.processors, f64::from(level)));
         }
     }
+    ir.impulses = store;
     if insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty() {
         return report;
     }
     // Bus order: insert, sends, main.
     let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
     let target = main_bus.map_or(Output::Master, |i| Output::Bus(BusRef(i)));
-    let mut add = |ir: &mut sampler_ir::Instrument, name: String, processors, sends, output| {
+    let add = |ir: &mut sampler_ir::Instrument, name: String, processors, sends, output| {
         let chain = (!Vec::<sampler_ir::Processor>::is_empty(&processors)).then(|| {
             let index = ir.buses.len();
             ir.chains.push(sampler_ir::Chain {
@@ -662,7 +847,7 @@ mod tests {
             ),
             ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
         ];
-        let report = instrument_buses(&mut instrument, &racks);
+        let report = instrument_buses(&mut instrument, &racks, &mut |_| Err("none".into()));
         assert_eq!(instrument.buses.len(), 2, "{report:?}");
         assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         let feed = &instrument.buses[0].sends[0];
@@ -676,7 +861,7 @@ mod tests {
         instrument.validate().unwrap();
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
-        instrument_buses(&mut plain, &[]);
+        instrument_buses(&mut plain, &[], &mut |_| Err("none".into()));
         assert!(plain.buses.is_empty());
     }
 }

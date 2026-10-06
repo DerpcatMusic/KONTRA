@@ -7,6 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+realfft = "3.5"
 rtrb = "=0.4.0"
 sampler-ir = { path = "../sampler-ir" }
 sampler-simd = { path = "../sampler-simd" }

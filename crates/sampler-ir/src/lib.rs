@@ -64,6 +64,8 @@ pub struct Instrument {
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
     pub buses: Vec<Bus>,
+    /// Impulse responses bus convolutions refer to.
+    pub impulses: Vec<Impulse>,
     pub controls: Vec<Control>,
     pub behaviors: Vec<Behavior>,
     /// Source meaning this description does not carry. Lowering never reads it;
@@ -689,6 +691,26 @@ pub enum Processor {
     StereoMatrix([[f64; 2]; 2]),
     /// Algorithmic stereo reverb over a summed signal: bus and master scope.
     Reverb(Reverb),
+    /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
+    /// master scope. Convolution adds no latency.
+    Convolution {
+        impulse: ImpulseRef,
+        dry: f64,
+        wet: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImpulseRef(pub usize);
+
+/// A stereo impulse response, already shaped (reversed, predelayed, enveloped,
+/// gain-scaled) by the importing profile. A mono response repeats in both
+/// channels; the channels have the same length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Impulse {
+    pub rate: u32,
+    pub left: Vec<f32>,
+    pub right: Vec<f32>,
 }
 
 /// Physical reverb settings; an importing profile maps its own controls

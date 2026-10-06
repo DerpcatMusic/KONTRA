@@ -50,13 +50,20 @@ pub(super) struct PreparedBuses {
     cells: usize,
     delay_frames: usize,
     reverbs: Box<[(crate::dsp::ReverbSettings, u32)]>,
+    /// Impulse index, dry and wet gain, by `PreparedProcessor::Convolution` index.
+    convolutions: Box<[(usize, f64, f64)]>,
+    impulses: Box<[std::sync::Arc<crate::dsp::Impulse>]>,
     rate: u32,
     filters: Box<[crate::dsp::svf::PreparedFilter]>,
     pub parameters: Box<[ControlRange]>,
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
 impl PreparedBuses {
-    pub fn new(rate: u32, buses: Vec<Bus>) -> Result<Self, Error> {
+    pub fn new(
+        rate: u32,
+        buses: Vec<Bus>,
+        impulses: &[std::sync::Arc<crate::dsp::Impulse>],
+    ) -> Result<Self, Error> {
         let mut indegree = vec![0usize; buses.len()];
         for bus in &buses {
             for send in &bus.sends {
@@ -94,6 +101,7 @@ impl PreparedBuses {
         let mut delay_frames = 0;
         let mut filters = Vec::new();
         let mut reverbs = Vec::new();
+        let mut convolutions = Vec::new();
         let nodes = buses
             .into_iter()
             .map(|bus| {
@@ -109,6 +117,7 @@ impl PreparedBuses {
                         &mut delay_frames,
                         &mut filters,
                         Some(&mut reverbs),
+                        Some(&mut convolutions),
                     )?,
                     sends: bus.sends.into_boxed_slice(),
                     states: begin..cells,
@@ -116,6 +125,9 @@ impl PreparedBuses {
                 })
             })
             .collect::<Result<Box<[_]>, Error>>()?;
+        if convolutions.iter().any(|(i, ..)| *i >= impulses.len()) {
+            return Err(Error::InvalidInput);
+        }
         if filters.iter().any(|filter| filter.requires_expression()) {
             return Err(Error::InvalidInput);
         }
@@ -131,6 +143,8 @@ impl PreparedBuses {
             cells,
             delay_frames,
             reverbs: reverbs.into_boxed_slice(),
+            convolutions: convolutions.into_boxed_slice(),
+            impulses: impulses.into(),
             rate,
             filters: filters.into_boxed_slice(),
             parameters: parameters.into_boxed_slice(),
@@ -166,6 +180,7 @@ pub(super) struct BusState {
     cells: Box<[ProcessorState]>,
     delay_samples: Box<[[f64; 2]]>,
     reverbs: Box<[crate::dsp::Reverb]>,
+    convolutions: Box<[crate::dsp::Convolution]>,
     pub parameters: Box<[ControlRamp]>,
     filters: crate::dsp::svf::FilterBank,
     pub mix: Box<[BusMix]>,
@@ -184,6 +199,14 @@ impl BusState {
                 .iter()
                 .map(|(settings, _)| crate::dsp::Reverb::new(settings, plan.buses.rate))
                 .collect::<Result<_, _>>()?,
+            convolutions: plan
+                .buses
+                .convolutions
+                .iter()
+                .map(|&(impulse, dry, wet)| {
+                    crate::dsp::Convolution::new(&plan.buses.impulses[impulse], dry, wet)
+                })
+                .collect(),
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
             mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
@@ -214,6 +237,9 @@ impl BusState {
         self.begin();
         self.cells.fill(ProcessorState::default());
         self.reverbs.iter_mut().for_each(crate::dsp::Reverb::clear);
+        self.convolutions
+            .iter_mut()
+            .for_each(crate::dsp::Convolution::clear);
         for buffer in &mut self.buffers {
             buffer.remaining = 0;
         }
@@ -261,6 +287,7 @@ impl BusState {
                         bank: &mut self.filters,
                         expression: None,
                         reverbs: &mut self.reverbs,
+                        convolutions: &mut self.convolutions,
                     },
                 );
                 let finite = !fault
@@ -278,6 +305,9 @@ impl BusState {
                     buffer.samples[..produced].fill([0.; 2]);
                     states.fill(ProcessorState::default());
                     self.reverbs.iter_mut().for_each(crate::dsp::Reverb::clear);
+                    self.convolutions
+                        .iter_mut()
+                        .for_each(crate::dsp::Convolution::clear);
                     faults += 1;
                 }
             }
