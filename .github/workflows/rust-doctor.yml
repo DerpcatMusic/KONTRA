@@ -110,5 +110,5 @@ jobs:
           if-no-files-found: error
       - name: Independent core checks
         run: |
-          cargo clippy --locked -p sampler-core -p sampler-native -p sampler-midi -p sampler-ksp --all-targets -- -D warnings
-          cargo test --locked --release -p sampler-core -p sampler-native -p sampler-midi -p sampler-ksp
+          cargo clippy --locked -p sampler-core -p sampler-native -p sampler-midi -p sampler-ksp -p sampler-kontakt --all-targets -- -D warnings
+          cargo test --locked --release -p sampler-core -p sampler-native -p sampler-midi -p sampler-ksp -p sampler-kontakt

@@ -1,0 +1,312 @@
+//! Borrowed Kontakt source records, independent of playback and the old importer.
+//!
+//! The input is an already expanded Kontakt chunk stream, NOT an NKI/NKM file.
+//! Unknown chunks, versions, private fields and duplicate IDs remain intact.
+//! Decoding a source record does not admit its semantics for native playback.
+#![forbid(unsafe_code)]
+
+mod script;
+pub use script::{Script, Strings};
+
+/// Per-input limits. Nested chunk lists are validated only when explicitly opened;
+/// this API never recursively expands an unknown object's contents.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub bytes: usize,
+    pub records: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorKind {
+    Limit,
+    Truncated,
+    TrailingData,
+    InvalidBoolean,
+    UnsupportedLayout,
+    UnsupportedVersion(u16),
+    IncorrectId { expected: u16, actual: u16 },
+}
+
+/// Byte position in the original expanded payload, never a nested relative offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Error {
+    pub offset: usize,
+    pub kind: ErrorKind,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Kontakt source at byte {}: {:?}", self.offset, self.kind)
+    }
+}
+impl std::error::Error for Error {}
+
+/// A byte slice retaining its location in the source document. All source views
+/// borrow the caller's one immutable buffer; no self-references or audio ownership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bytes<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Bytes<'a> {
+    pub fn data(self) -> &'a [u8] {
+        self.data
+    }
+    pub fn offset(self) -> usize {
+        self.offset
+    }
+    fn error(self, kind: ErrorKind) -> Error {
+        Error {
+            offset: self.offset,
+            kind,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Reader<'a>(Bytes<'a>);
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, count: usize) -> Result<Bytes<'a>, Error> {
+        let (data, rest) = self
+            .0
+            .data
+            .split_at_checked(count)
+            .ok_or_else(|| self.0.error(ErrorKind::Truncated))?;
+        let result = Bytes {
+            data,
+            offset: self.0.offset,
+        };
+        self.0 = Bytes {
+            data: rest,
+            offset: self.0.offset + count,
+        };
+        Ok(result)
+    }
+    fn u8(&mut self) -> Result<u8, Error> {
+        Ok(self.take(1)?.data[0])
+    }
+    fn u16(&mut self) -> Result<u16, Error> {
+        let b = self.take(2)?.data;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+    fn u32(&mut self) -> Result<u32, Error> {
+        let b = self.take(4)?.data;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn boolean(&mut self) -> Result<bool, Error> {
+        let at = self.0;
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(at.error(ErrorKind::InvalidBoolean)),
+        }
+    }
+    fn sized(&mut self) -> Result<Bytes<'a>, Error> {
+        let length = self.u32()? as usize;
+        self.take(length)
+    }
+    fn optional(&mut self) -> Result<Option<Bytes<'a>>, Error> {
+        let length = self.u32()?;
+        if length == u32::MAX {
+            Ok(None)
+        } else {
+            self.take(length as usize).map(Some)
+        }
+    }
+    fn finish(self) -> Result<(), Error> {
+        if self.0.data.is_empty() {
+            Ok(())
+        } else {
+            Err(self.0.error(ErrorKind::TrailingData))
+        }
+    }
+    fn chunk(&mut self) -> Result<Chunk<'a>, Error> {
+        let start = self.0;
+        let id = self.u16()?;
+        let body = self.sized()?;
+        let length = self.0.offset - start.offset;
+        Ok(Chunk {
+            id,
+            body,
+            raw: Bytes {
+                data: &start.data[..length],
+                offset: start.offset,
+            },
+        })
+    }
+    fn structured(&mut self) -> Result<Structured<'a>, Error> {
+        let start = self.0;
+        if !self.boolean()? {
+            // Unstructured records have no internal length; their boundaries depend
+            // on the containing schema. Retain the enclosing raw chunk instead.
+            return Err(start.error(ErrorKind::UnsupportedLayout));
+        }
+        let version = self.u16()?;
+        let private = self.sized()?;
+        let public = self.sized()?;
+        let children = self.sized()?;
+        let length = self.0.offset - start.offset;
+        Ok(Structured {
+            version,
+            private,
+            public,
+            children,
+            raw: Bytes {
+                data: &start.data[..length],
+                offset: start.offset,
+            },
+        })
+    }
+}
+
+/// Validated framing; iteration is allocation-free and preserves original order.
+#[derive(Clone, Copy, Debug)]
+pub struct Chunks<'a>(Bytes<'a>);
+
+impl<'a> Chunks<'a> {
+    pub fn parse(payload: &'a [u8], limits: Limits) -> Result<Self, Error> {
+        Self::at(
+            Bytes {
+                data: payload,
+                offset: 0,
+            },
+            limits,
+        )
+    }
+    fn at(bytes: Bytes<'a>, limits: Limits) -> Result<Self, Error> {
+        if bytes.data.len() > limits.bytes {
+            return Err(bytes.error(ErrorKind::Limit));
+        }
+        let mut reader = Reader(bytes);
+        let mut count = 0;
+        while !reader.0.data.is_empty() {
+            if count == limits.records {
+                return Err(reader.0.error(ErrorKind::Limit));
+            }
+            reader.chunk()?;
+            count += 1;
+        }
+        Ok(Self(bytes))
+    }
+    pub fn raw(self) -> Bytes<'a> {
+        self.0
+    }
+    pub fn iter(self) -> impl Iterator<Item = Chunk<'a>> {
+        let mut reader = Reader(self.0);
+        // Construction validates every record against this same immutable slice.
+        std::iter::from_fn(move || reader.chunk().ok())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Chunk<'a> {
+    pub id: u16,
+    pub body: Bytes<'a>,
+    raw: Bytes<'a>,
+}
+
+impl<'a> Chunk<'a> {
+    pub fn raw(self) -> Bytes<'a> {
+        self.raw
+    }
+    pub fn structured(self) -> Result<Structured<'a>, Error> {
+        let mut reader = Reader(self.body);
+        let object = reader.structured()?;
+        reader.finish()?;
+        Ok(object)
+    }
+    fn expect_id(self, expected: u16) -> Result<(), Error> {
+        if self.id == expected {
+            Ok(())
+        } else {
+            Err(self.raw.error(ErrorKind::IncorrectId {
+                expected,
+                actual: self.id,
+            }))
+        }
+    }
+    /// Group list (0x33) or zone list (0x34), retaining each zone's source group ID.
+    pub fn records(self, limits: Limits) -> Result<Records<'a>, Error> {
+        if !matches!(self.id, 0x33 | 0x34) {
+            return Err(self.raw.error(ErrorKind::UnsupportedLayout));
+        }
+        if self.body.data.len() > limits.bytes {
+            return Err(self.body.error(ErrorKind::Limit));
+        }
+        let mut reader = Reader(self.body);
+        let count = reader.u32()? as usize;
+        let zones = self.id == 0x34;
+        if count > limits.records {
+            return Err(self.body.error(ErrorKind::Limit));
+        }
+        let records = Records {
+            bytes: reader.0,
+            count,
+            zones,
+        };
+        for _ in 0..count {
+            if zones {
+                reader.u32()?;
+            }
+            reader.structured()?;
+        }
+        reader.finish()?;
+        Ok(records)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Structured<'a> {
+    pub version: u16,
+    pub private: Bytes<'a>,
+    pub public: Bytes<'a>,
+    children: Bytes<'a>,
+    raw: Bytes<'a>,
+}
+
+impl<'a> Structured<'a> {
+    pub fn raw(self) -> Bytes<'a> {
+        self.raw
+    }
+    pub fn children(self, limits: Limits) -> Result<Chunks<'a>, Error> {
+        Chunks::at(self.children, limits)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Record<'a> {
+    /// None for a group record, Some(original ID) for a zone record.
+    pub group: Option<u32>,
+    pub object: Structured<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Records<'a> {
+    bytes: Bytes<'a>,
+    count: usize,
+    zones: bool,
+}
+
+impl<'a> Records<'a> {
+    pub fn len(self) -> usize {
+        self.count
+    }
+    pub fn is_empty(self) -> bool {
+        self.count == 0
+    }
+    pub fn iter(self) -> impl Iterator<Item = Record<'a>> {
+        let mut reader = Reader(self.bytes);
+        (0..self.count).map(move |_| {
+            // The complete list was validated before this view was constructed.
+            let group = self
+                .zones
+                .then(|| reader.u32().expect("validated group ID"));
+            Record {
+                group,
+                object: reader.structured().expect("validated structured record"),
+            }
+        })
+    }
+}

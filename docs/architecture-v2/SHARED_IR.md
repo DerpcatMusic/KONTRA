@@ -20,7 +20,9 @@ policies, independently bound script-instance integer banks, `Program`/`Instruct
 and `Prepared`. These are real shared execution
 paths, not a completed universal instrument schema. KSP already lowers to the
 native behavior instruction set. A new source frontend must use those same owners.
-Kontakt-container and UVI source frontends are active required work. SFZ and all
+The [Kontakt source decoder](KONTAKT_SOURCE.md) now retains expanded chunk,
+group/zone and script records in borrowed views without the old importer. Container
+wrappers, semantic lowering and UVI source frontends remain active required work. SFZ and all
 other format implementations are deferred by subsequent explicit user direction
 until full Kontakt/Falcon parity and demonstrated performance superiority. The
 format-neutral architecture remains; no SFZ frontend has been implemented.

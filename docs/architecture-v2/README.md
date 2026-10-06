@@ -19,6 +19,9 @@ compatibility remains a separate, evidence-backed capability.
 
 ## Working documents
 
+The new [Kontakt source boundary](KONTAKT_SOURCE.md) preserves expanded records
+without importing old engine types; container playback admission remains open.
+
 1. [Current architecture and ownership map](CURRENT_STATE.md): inspected source,
    existing safeguards, coupling, and unresolved risks.
 2. [Clean-sheet target architecture and delivery plan](PLAN.md): boundaries, lifecycle
