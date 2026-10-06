@@ -139,6 +139,14 @@ impl Runtime {
             }
         };
         let entry = source_stage.map_or(0, |stage| stage.index() + 1);
+        // As in Kontakt, a note a module's note callback plays skips that note
+        // callback but its release runs the module's release callback too (Una
+        // Corda sustains its own notes there). Notes played by a release
+        // callback do not re-enter it.
+        let release_entry = match source_stage {
+            Some(crate::behavior::NoteStage::Attack(stage)) => stage,
+            _ => entry,
+        };
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let routed =
             source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
@@ -149,7 +157,7 @@ impl Runtime {
             .count();
         let callbacks = usize::from(routed) * callbacks
             + if release_route {
-                prepared.stages[entry..]
+                prepared.stages[release_entry..]
                     .iter()
                     .filter(|s| s.release.is_some())
                     .count()
@@ -249,7 +257,7 @@ impl Runtime {
         );
         self.project_note(note, origin_stage, entry);
         if release_route {
-            self.reserve_release_callbacks(note, entry);
+            self.reserve_release_callbacks(note, release_entry);
         }
         if routed {
             self.begin_note_stages(note, entry);
