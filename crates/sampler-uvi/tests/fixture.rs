@@ -106,7 +106,7 @@ fn authored_program_translates_loads_and_renders() {
     for expected in [
         "HighKeyFade",
         "modulation",
-        "sample inside a UFS bank",
+        "sample outside the program's bank",
         "module",
     ] {
         assert!(

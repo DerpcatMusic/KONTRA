@@ -1,10 +1,27 @@
-//! Clear UVI Falcon / Workstation programs (`.uvip` XML) to the semantic IR.
+//! UVI Falcon / Workstation programs (`.uvip` XML) to the semantic IR.
 //!
 //! Attribute names and units follow the v1 UVI reader on
 //! `codex/uvi-latest-integration` (`src/uvi/program.rs`, `playback.rs`,
-//! `modulation.rs`). Only clear XML and loose samples are read here: programs
-//! and samples inside encrypted UFS banks are out of scope, and every module
-//! this translator does not model is listed in `Instrument::unsupported`.
+//! `modulation.rs`). Clear `.uvip` with loose samples load through [`load`].
+//! With the `library-access` feature, installed UVI banks open through [`Bank`]
+//! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
+//! reader namespaces come from the user's own installed, hash-verified UVI
+//! Workstation and a bank's content state lives only in v1's owner-only private
+//! cache; neither is embedded, logged, printed or returned in an error. Every
+//! module this translator does not model is listed in `Instrument::unsupported`.
+
+#[cfg(feature = "library-access")]
+mod access;
+mod audio;
+#[cfg(feature = "library-access")]
+mod bank;
+#[cfg(feature = "library-access")]
+mod crypto;
+#[cfg(feature = "library-access")]
+mod ufs;
+
+#[cfg(feature = "library-access")]
+pub use bank::Bank;
 
 use roxmltree::{Document, Node, ParsingOptions};
 use sampler_ir as ir;
@@ -113,6 +130,20 @@ pub enum Translate {
 
 /// Translate program XML whose relative sample paths resolve from `folder`.
 pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
+    let (instrument, locations) = translate_with(text, Source::Disk(folder.into()))?;
+    Ok(Uvi {
+        instrument,
+        locations: locations.into_iter().map(PathBuf::from).collect(),
+    })
+}
+
+/// Translate decoded bank program XML; returns each asset's authored
+/// bank-relative sample path, resolved by the loader against `program_path`.
+fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate> {
+    translate_with(text, Source::Bank)
+}
+
+fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: 200_000,
@@ -153,7 +184,7 @@ pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
             source: ir::SourceFormat::Uvi,
             ..Default::default()
         },
-        folder: folder.into(),
+        source,
         assets: HashMap::new(),
         locations: Vec::new(),
         envelopes: HashMap::new(),
@@ -178,10 +209,7 @@ pub fn translate(text: &str, folder: &Path) -> Result<Uvi, Translate> {
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
-    Ok(Uvi {
-        instrument: out.ir,
-        locations: out.locations,
-    })
+    Ok((out.ir, out.locations))
 }
 
 /// `Program/Layer "Name"/Keygroup "Name"/...`, for reports.
@@ -227,11 +255,20 @@ fn midi(node: Node, name: &str, default: u8) -> Result<u8, String> {
     }
 }
 
+/// Where a program's samples live: loose on disk (resolved and existence-checked
+/// against a folder) or inside the open bank (resolved later by the loader).
+enum Source {
+    Disk(PathBuf),
+    Bank,
+}
+
 struct Translation {
     ir: ir::Instrument,
-    folder: PathBuf,
-    assets: HashMap<PathBuf, ir::AssetRef>,
-    locations: Vec<PathBuf>,
+    source: Source,
+    assets: HashMap<String, ir::AssetRef>,
+    /// Per asset, its sample path as resolved for the loader: an absolute disk
+    /// path for loose samples, or the authored bank-relative path for a bank.
+    locations: Vec<String>,
     /// Envelope modulators by their source node, with their velocity law.
     envelopes: HashMap<roxmltree::NodeId, (ir::ModulatorRef, ir::VelocityResponse)>,
     /// Nodes whose meaning was carried into the IR.
@@ -538,31 +575,45 @@ impl Translation {
             Some("ogg") => ir::Encoding::Ogg,
             _ => ir::Encoding::Unknown,
         };
-        if relative.starts_with('$') || relative.contains(".ufs") {
-            self.unsupported(at, "sample inside a UFS bank", sample);
+        if relative.starts_with('$') || relative.contains(".ufs/") {
+            self.unsupported(at, "sample outside the program's bank", sample);
             return None;
         }
-        if encoding != ir::Encoding::Wav {
-            self.unsupported(at, "sample encoding (only WAV is decoded)", sample);
+        if !matches!(
+            encoding,
+            ir::Encoding::Wav | ir::Encoding::Flac | ir::Encoding::Aiff
+        ) {
+            self.unsupported(
+                at,
+                "sample encoding (WAV, FLAC and AIFF are decoded)",
+                sample,
+            );
             return None;
         }
-        let location = self.folder.join(&relative);
-        if let Some(&asset) = self.assets.get(&location) {
+        // A bundle base keeps its trailing separator; otherwise collapse `.`/`..`.
+        let resolved = match &self.source {
+            Source::Bank => relative.clone(),
+            Source::Disk(folder) => {
+                let location = folder.join(&relative);
+                if !location.is_file() {
+                    self.unsupported(at, "missing sample", location.display());
+                    return None;
+                }
+                location.to_string_lossy().into_owned()
+            }
+        };
+        if let Some(&asset) = self.assets.get(&resolved) {
             return Some(asset);
         }
-        if !location.is_file() {
-            self.unsupported(at, "missing sample", location.display());
-            return None;
-        }
         self.ir.assets.push(ir::Asset {
-            location: ir::AssetLocation::Path(location.to_string_lossy().into_owned()),
+            location: ir::AssetLocation::Path(resolved.clone()),
             encoding,
             root_key: None,
             loops: Vec::new(),
         });
-        self.locations.push(location.clone());
+        self.locations.push(resolved.clone());
         let asset = ir::AssetRef(self.ir.assets.len() - 1);
-        self.assets.insert(location, asset);
+        self.assets.insert(resolved, asset);
         Some(asset)
     }
 
@@ -614,31 +665,106 @@ impl Translation {
     }
 }
 
-/// Load a clear program as a plan: translate, decode its WAV samples and lower
-/// it. Lua scripts have no frontend yet and are reported, not run.
+/// Load a clear `.uvip` program (loose WAV/FLAC/AIFF samples) as a plan at
+/// `rate`. For an encrypted bank program use [`load_program`]. Lua scripts have
+/// no frontend yet and are reported in the instrument, not run.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
-    let Uvi {
-        instrument,
-        locations,
-    } = read(path)?;
-    let mut pcm = Vec::with_capacity(locations.len());
-    for location in &locations {
-        let bytes = std::fs::read(location).map_err(|error| Error::Io {
-            path: location.clone(),
-            error,
-        })?;
-        let decoded = sampler_kontakt::decode(&bytes).map_err(|reason| Error::Invalid {
-            path: location.clone(),
-            reason,
-        })?;
-        pcm.push(
-            sampler_core::Pcm::new(decoded.rate, decoded.frames.into_boxed_slice()).map_err(
-                |e| Error::Invalid {
-                    path: location.clone(),
-                    reason: e.to_string(),
-                },
-            )?,
-        );
+    let (instrument, locations) = translate_with(
+        &read_text(path)?,
+        Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
+    )
+    .map_err(|e| describe(path, e))?;
+    let decoded = locations
+        .iter()
+        .map(|location| {
+            std::fs::read(location)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| audio::decode(&[bytes]).map(|(d, _)| d))
+        })
+        .collect();
+    assemble(instrument, locations, decoded, rate)
+}
+
+/// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
+/// is a member path from [`Bank::programs`]. Samples are read from the bank.
+#[cfg(feature = "library-access")]
+pub fn load_program(
+    bank: &Bank,
+    program: &str,
+    rate: u32,
+) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    let (text, program_path) = bank.program(program)?;
+    let (instrument, locations) =
+        translate_bank(&text).map_err(|e| describe(Path::new(program), e))?;
+    let decoded = locations
+        .iter()
+        .map(|authored| {
+            bank.resource(&program_path, authored)
+                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d))
+        })
+        .collect();
+    assemble(instrument, locations, decoded, rate)
+}
+
+fn read_text(path: &Path) -> Result<String, Error> {
+    let io = |error| Error::Io {
+        path: path.into(),
+        error,
+    };
+    if std::fs::metadata(path).map_err(io)?.len() > XML_LIMIT {
+        return Err(Error::Invalid {
+            path: path.into(),
+            reason: "program exceeds 32 MiB".into(),
+        });
     }
-    Ok(sampler_kontakt::prepare(instrument, rate, pcm, true)?)
+    std::fs::read_to_string(path).map_err(io)
+}
+
+fn describe(path: &Path, e: Translate) -> Error {
+    match e {
+        Translate::Xml(error) => Error::Xml {
+            path: path.into(),
+            error,
+        },
+        Translate::Invalid(reason) => Error::Invalid {
+            path: path.into(),
+            reason,
+        },
+    }
+}
+
+/// Drop zones whose sample could not be read (reported), then fit the rest to
+/// their decoded audio and lower. `decoded[i]` belongs to asset `i`.
+fn assemble(
+    mut instrument: ir::Instrument,
+    locations: Vec<String>,
+    decoded: Vec<Result<sampler_kontakt::Decoded, String>>,
+    rate: u32,
+) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    for (location, result) in locations.iter().zip(&decoded) {
+        if let Err(reason) = result {
+            instrument.unsupported.push(ir::Unsupported {
+                location: location.clone(),
+                feature: "unreadable sample, zone dropped".into(),
+                value: reason.clone(),
+                reason: ir::Reason::InvalidValue,
+            });
+        }
+    }
+    let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
+    let mut pcm = Vec::with_capacity(kept.len());
+    for &asset in &kept {
+        let d = decoded[asset].as_ref().unwrap();
+        pcm.push(sampler_core::Pcm::new(
+            d.rate,
+            d.frames.clone().into_boxed_slice(),
+        )?);
+    }
+    let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
+    let options = sampler_kontakt::Options {
+        rate,
+        scripts: true,
+        ..Default::default()
+    };
+    Ok(sampler_kontakt::finish(instrument, pcm, labels, &options)?)
 }
