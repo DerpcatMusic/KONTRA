@@ -989,8 +989,10 @@ fn voice_limit(setup: Setup) {
     // Polyphony (voices less a quarter of headroom) is 1.5 times what two
     // notes use under the pedal: four notes cannot all fit.
     let voices = if two.owned {
-        // Scripted resonance and noise voices already fill a doubled pool.
-        two.peak_voices.max(2)
+        // Each script-played note reserves its release voices up front (24 on
+        // Vista), so a pool below that never admits one; pressure comes
+        // from the four chord notes and their descendants instead.
+        two.peak_voices + 32
     } else {
         2 * two.peak_voices.max(2)
     };
@@ -1121,8 +1123,8 @@ mod una_corda_pure {
 mod vista_3_cellos {
     use super::*;
     // Its legato script tracks held keys through %KEY_DOWN and
-    // search(%KEY_DOWN, 1), which sampler-ksp does not maintain yet (reads 0,
-    // -1): bound, it never plays. Exercise the native release-trigger path.
+    // search(%KEY_DOWN, 1); one note-off clears a key however many presses
+    // stacked, so the script ends its generated notes (checked in Kontakt 8).
     const SETUP: Setup = Setup {
         owned: true,
         ..Setup::new(CELLOS, (48, 55))
