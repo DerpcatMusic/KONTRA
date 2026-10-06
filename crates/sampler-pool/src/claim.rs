@@ -76,6 +76,10 @@ impl<T> Slab<T> {
         let flags = Claims::new(items.len().div_ceil(unit));
         Self { items, flags, unit, idle: AtomicBool::new(false) }
     }
+    /// Take the storage back.
+    pub fn into_items(self) -> Box<[T]> {
+        self.items
+    }
     /// The whole storage; exclusive, so no claim can be live.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.items

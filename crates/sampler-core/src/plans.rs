@@ -77,6 +77,8 @@ pub struct PlanControl {
     notes: usize,
     performances: usize,
     sequence: u64,
+    /// Render lanes of the runtime (see `Runtime::set_threads`).
+    lanes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PlanControl {
@@ -100,7 +102,12 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
-        let dsp = match super::dsp::DspState::new(&prepared, self.voices, self.expressions) {
+        let dsp = match super::dsp::DspState::new(
+            &prepared,
+            self.voices,
+            self.expressions,
+            self.lanes.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
             Ok(dsp) => dsp,
             Err(_) => {
                 return Err(RejectedPlan {
@@ -221,6 +228,7 @@ impl Runtime {
             notes: limits.notes,
             performances: limits.performances,
             sequence: 0,
+            lanes: runtime.lanes.clone(),
         };
         runtime.plan_queues = Some(PlanQueues {
             pending: incoming,

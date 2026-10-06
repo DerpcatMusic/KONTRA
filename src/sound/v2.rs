@@ -574,21 +574,31 @@ fn render_threads() -> Threads {
     }
 }
 
-/// Capacities of a part, sized for its plan's script state.
+/// Memory a part may spend on per-voice state. Voices are sized to this, not
+/// to a fixed polyphony: a note is refused only past thousands of voices, and
+/// that is counted (`RuntimeStats::voice_drops`).
+const VOICE_BUDGET: usize = 256 << 20;
+const MIN_VOICES: usize = 512;
+const MAX_VOICES: usize = 16384;
+
+/// Capacities of a part, sized for its plan's script state and voice cost.
 fn limits(plan: &Prepared) -> Limits {
+    let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
+    // Notes outlive their voices only in release, and each holds a few voices.
+    let notes = (voices / 4).max(NOTES);
     Limits {
-        notes: NOTES,
+        notes,
         channels: 16,
         performances: 1,
-        families: 256,
-        decisions: 256,
-        expressions: 128,
-        voices: 512,
+        families: (voices / 2).max(256),
+        decisions: (voices / 2).max(256),
+        expressions: notes,
+        voices,
         commands: 256,
         behaviors: 16,
         behavior_fuel: 1 << 20,
         behavior_cells: plan.behavior_local_count().saturating_mul(16),
-        note_cells: plan.note_cell_count().saturating_mul(128),
+        note_cells: plan.note_cell_count().saturating_mul(notes),
     }
 }
 

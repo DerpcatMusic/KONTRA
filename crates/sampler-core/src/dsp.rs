@@ -572,7 +572,7 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
     Ok(values.into_boxed_slice())
 }
 
-/// Render lanes: the audio thread and its workers.
+/// Most render lanes: the audio thread and its workers.
 pub(crate) const MAX_LANES: usize = 8;
 
 pub(super) struct DspState {
@@ -587,7 +587,12 @@ pub(super) struct DspState {
     pub buses: crate::bus::BusState,
 }
 impl DspState {
-    pub fn new(plan: &Prepared, voices: usize, expressions: usize) -> Result<Self, Error> {
+    pub fn new(
+        plan: &Prepared,
+        voices: usize,
+        expressions: usize,
+        lanes: usize,
+    ) -> Result<Self, Error> {
         let stride = plan
             .voice_chains
             .iter()
@@ -606,7 +611,7 @@ impl DspState {
             stride,
             cells: Slab::new(allocate(cells)?, stride),
             filters: Slab::new(
-                (0..MAX_LANES)
+                (0..lanes.clamp(1, MAX_LANES))
                     .map(|_| svf::FilterBank::new(&plan.filters, expressions))
                     .collect::<Result<_, _>>()?,
                 1,
@@ -615,6 +620,26 @@ impl DspState {
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
         })
+    }
+    /// Make sure there is a filter cache for each of `lanes` render lanes.
+    /// Control side: allocates.
+    pub fn ensure_lanes(
+        &mut self,
+        plan: &Prepared,
+        expressions: usize,
+        lanes: usize,
+    ) -> Result<(), Error> {
+        let lanes = lanes.clamp(1, MAX_LANES);
+        if self.filters.len() >= lanes {
+            return Ok(());
+        }
+        let empty = Slab::new(Box::new([]), 1);
+        let mut banks = std::mem::replace(&mut self.filters, empty).into_items().into_vec();
+        while banks.len() < lanes {
+            banks.push(svf::FilterBank::new(&plan.filters, expressions)?);
+        }
+        self.filters = Slab::new(banks.into_boxed_slice(), 1);
+        Ok(())
     }
     pub fn reset(&mut self, voice: usize) {
         let stride = self.stride;
