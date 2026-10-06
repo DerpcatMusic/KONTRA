@@ -90,6 +90,10 @@ struct Setup {
     /// audible output is asserted.
     gated: bool,
     port: Port,
+    /// Voices added to the owned voice-limit pool: one script-played note
+    /// reserves its release voices up front (24 on Vista), so a pool below
+    /// that never admits one.
+    pool_pad: usize,
     voices: usize,
     block: usize,
     /// Replace the instrument's own scripts with this KSP.
@@ -104,6 +108,7 @@ impl Setup {
             owned: false,
             gated: false,
             port: Port::Channel,
+            pool_pad: 0,
             voices: 1024,
             block: BLOCK,
             script: None,
@@ -989,10 +994,7 @@ fn voice_limit(setup: Setup) {
     // Polyphony (voices less a quarter of headroom) is 1.5 times what two
     // notes use under the pedal: four notes cannot all fit.
     let voices = if two.owned {
-        // Each script-played note reserves its release voices up front (24 on
-        // Vista), so a pool below that never admits one; pressure comes
-        // from the four chord notes and their descendants instead.
-        two.peak_voices + 32
+        two.peak_voices.max(2) + setup.pool_pad
     } else {
         2 * two.peak_voices.max(2)
     };
@@ -1127,6 +1129,7 @@ mod vista_3_cellos {
     // stacked, so the script ends its generated notes (checked in Kontakt 8).
     const SETUP: Setup = Setup {
         owned: true,
+        pool_pad: 32,
         ..Setup::new(CELLOS, (48, 55))
     };
 
