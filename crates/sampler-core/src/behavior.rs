@@ -39,6 +39,7 @@ pub enum WaitLifetime {
 pub enum Instruction {
     /// Commit/suppress the owner's pending original attack, without another note ID.
     ForwardAttack,
+    ForwardReleaseGroups,
     SuppressAttack,
     /// Generate a mapped child with an explicit release policy.
     Play {
@@ -120,6 +121,16 @@ pub enum Instruction {
         local: u16,
     },
     /// Access the program's own script instance, shared across its callbacks.
+    /// Select a group from a register, or all declared groups with None.
+    /// Pending-only edits become no-ops once the original attack is forwarded.
+    WriteGroup {
+        group: Option<u16>,
+        allowed: bool,
+        pending_only: bool,
+    },
+    ReadGroupCount {
+        local: u16,
+    },
     ReadScriptCell {
         local: u16,
         cell: u32,
@@ -217,6 +228,10 @@ impl Program {
             | Instruction::WriteScriptCell { local, .. }
             | Instruction::ReadControl { local, .. }
             | Instruction::WriteControl { local, .. }
+            | Instruction::ReadGroupCount { local }
+            | Instruction::WriteGroup {
+                group: Some(local), ..
+            }
             | Instruction::ReadVelocity7 { local }
             | Instruction::WriteEventKey { local }
             | Instruction::WriteEventVelocity7 { local }
@@ -280,12 +295,14 @@ impl Program {
             matches!(
                 op,
                 Instruction::ForwardAttack
+                    | Instruction::ForwardReleaseGroups
                     | Instruction::SuppressAttack
                     | Instruction::Play { .. }
                     | Instruction::PlayMidi { .. }
                     | Instruction::ReadVelocity7 { .. }
                     | Instruction::WriteEventKey { .. }
                     | Instruction::WriteEventVelocity7 { .. }
+                    | Instruction::WriteGroup { .. }
                     | Instruction::ReadKey { .. }
                     | Instruction::ReadKeyDown { .. }
                     | Instruction::ReadNoteCell { .. }
@@ -561,8 +578,36 @@ impl Runtime {
             Instruction::ForwardAttack => {
                 self.forward_attack(owner.note()?)?;
             }
+            Instruction::ForwardReleaseGroups => {
+                self.forward_release_groups(owner.note()?)?;
+            }
             Instruction::SuppressAttack => {
                 self.suppress_attack(owner.note()?)?;
+            }
+            Instruction::WriteGroup {
+                group,
+                allowed,
+                pending_only,
+            } => {
+                let note = owner.note()?;
+                // Match pre-forward source edits without changing a running voice.
+                if !pending_only
+                    || self.notes.get(note.0).ok_or(Error::StaleHandle)?.attack
+                        != super::AttackStatus::Forwarded
+                {
+                    let group = group
+                        .map(|local| {
+                            u32::try_from(*self.local_cell_mut(id, local)?)
+                                .map_err(|_| Error::InvalidInput)
+                        })
+                        .transpose()?;
+                    self.set_note_group(note, group, allowed)?;
+                }
+            }
+            Instruction::ReadGroupCount { local } => {
+                let plan = self.behavior_plan(owner)?;
+                let count = self.plans.get(plan.0).unwrap().prepared.group_count;
+                *self.local_cell_mut(id, local)? = i64::from(count);
             }
             Instruction::SetLocal { local, value } => *self.local_cell_mut(id, local)? = value,
             Instruction::AddLocal { local, value } => {

@@ -52,6 +52,7 @@ impl Note {
 /// only key/gate state; payload fields are meaningful only after their transition.
 #[derive(Clone, Copy, Default)]
 pub(super) struct ReleaseTimes {
+    pub groups_forwarded: bool,
     pub admitted_at: u64,
     pub key_at: u64,
     pub gate_at: u64,

@@ -123,6 +123,22 @@
     "num_elements": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "allow_group": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "disallow_group": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "$ALL_GROUPS": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "$NUM_GROUPS": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -2827,7 +2843,9 @@
               "allow_group"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#allow_group--"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#allow_group--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "disallow_group--",
@@ -2837,7 +2855,9 @@
               "disallow_group"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#disallow_group--"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/group-commands#disallow_group--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "get_group_idx--",

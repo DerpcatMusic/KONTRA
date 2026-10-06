@@ -109,7 +109,7 @@ and audio evidence is under ignored `artifacts/architecture-v2/behavior-*`.
 
 ## Still open
 
-Broader language parsing, persistent state, real/array/string values, note-handle
+Broader language parsing, persistent state, real/string values and further array operations, note-handle
 locals, controller callbacks, consumed controller projections, rich engine queries,
 beat/transport waits, async services and compatibility profiles are not implemented.
 Their implementations must use these ownership/time services and extend the
@@ -389,3 +389,37 @@ needs no timer slot. The shared reclamation fast path now checks all requested
 selection quotas, so completed internal notes can return release reservations under
 voice/family/command pressure as well as note/expression/decision pressure. External
 terminal acceptance remains exclusive to the caller's `flush_ended` sink.
+
+
+## Native region-group selection
+
+`Prepared::with_groups` assigns optional dense group IDs to authored regions. IDs
+belong to a prepared generation; empty groups are valid. Ungrouped regions remain
+eligible. This selection axis is independent of articulations, controller conditions,
+variation sequences and DSP chains. It does not flatten source object hierarchies.
+
+Each generation prepares two bitsets per runtime note slot: an editable selection
+and its committed snapshot. Memory is `notes * 2 * ceil(groups / 64) * 8` bytes;
+checked multiplication/allocation occurs during construction/submission, never on
+audio. With no groups there are no bitset cells. Notes retain generation ownership,
+and all group storage returns through the existing off-audio retirement path.
+Input admission enables all groups; child admission snapshots its parent's editable
+selection independently of expression inheritance. Slot reuse resets the masks.
+
+`set_note_group` edits the draft with checked identity/index access. Attack preflight
+filters eligible candidates before committing voices or take state, and successful
+forwarding captures the draft. Mask edits do not remap existing voices. Automatic
+releases retain that committed snapshot unless a source release callback explicitly
+uses `forward_release_groups` at its first forwarding boundary. This operation
+requires physical release and commits only once, including while sustain holds the
+musical gate open. Later draft edits affect future children, not pending release
+selection. `WriteGroup` and `ReadGroupCount` share these services; preparation derives
+register/note requirements even from unreachable instructions.
+
+Release reserves remain conservative across all group choices, so a release callback
+cannot increase demand beyond owned quotas. Pitch/sequence validation likewise
+covers pending release choices. This can reserve more than a particular mask needs;
+compact group-dependent bounds should only replace it with equivalent proof.
+The all-groups operation and child/forward snapshot copies are O(ceil(groups/64));
+there is no hardcoded Kontakt group maximum in the native mask layout. Other vendor
+hierarchies and source event stages still require explicit translators/profiles.

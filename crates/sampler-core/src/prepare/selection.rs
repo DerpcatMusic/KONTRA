@@ -11,6 +11,7 @@ struct Selection {
     address: crate::ChannelAddress,
     trigger: Trigger,
     snapshot: usize,
+    groups: Option<(usize, bool)>,
 }
 
 impl Runtime {
@@ -180,6 +181,10 @@ impl Runtime {
                 address,
                 trigger: Trigger::Attack,
                 snapshot,
+                groups: match origin {
+                    NoteOrigin::Input(..) => None,
+                    NoteOrigin::Child(parent, ..) => Some((parent.0.index, false)),
+                },
             },
             pitch,
         )?;
@@ -219,6 +224,7 @@ impl Runtime {
             address: n.address,
             trigger: Trigger::Attack,
             snapshot,
+            groups: Some((note.0.index, false)),
         };
         let pitch = self.pitch_range(n.expression, true)?;
         let release = self.preflight_attack(selection, pitch)?;
@@ -293,6 +299,11 @@ impl Runtime {
         let n = self.notes.get_mut(note.0).unwrap();
         let (plan, key, velocity, address) = (n.plan, n.pitch.key(), n.velocity, n.address);
         n.attack = crate::AttackStatus::Forwarded;
+        self.plans
+            .get_mut(plan.0)
+            .unwrap()
+            .groups
+            .commit(note.0.index);
         if release.voices != 0 {
             self.reserve_release(release);
             let generation = self.plans.get_mut(plan.0).unwrap();
@@ -343,11 +354,13 @@ impl Runtime {
             address,
             trigger,
             snapshot,
+            groups,
         } = selection;
         let key = note_pitch.key();
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let range = prepared.range(key, trigger);
+        let groups = groups.map(|(index, committed)| generation.groups.view(index, committed));
         let mut required = ReleaseReserve::default();
         let mut from = range.start;
         while from < range.end {
@@ -355,7 +368,7 @@ impl Runtime {
             let state = &self.performance_state.states[snapshot];
             let ranges = prepared.active_ranges(from..until, state.articulation);
             let mut matching = super::Matching::new(ranges);
-            let first = matching.next(prepared, Some(state), Some(velocity));
+            let first = matching.next_in_groups(prepared, state, velocity, groups);
             let choice = prepared.choose(first, address, key, &generation.sequences)?;
             let mut candidate = first;
             let mut count = 0;
@@ -364,7 +377,7 @@ impl Runtime {
                     pitch.apply(prepared.step(c, note_pitch))?;
                     count += 1;
                 }
-                candidate = matching.next(prepared, Some(state), Some(velocity));
+                candidate = matching.next_in_groups(prepared, state, velocity, groups);
             }
             required.voices += count;
             required.families += usize::from(count != 0);
@@ -400,18 +413,21 @@ impl Runtime {
             let state = &self.performance_state.states[snapshot];
             let ranges = prepared.active_ranges(from..until, state.articulation);
             let mut matching = super::Matching::new(ranges);
-            let mut first = matching.next(prepared, Some(state), Some(velocity));
+            let groups = Some(generation.groups.view(note.0.index, true));
+            let mut first = matching.next_in_groups(prepared, state, velocity, groups);
             let choice = prepared
                 .choose(first, address, key, &generation.sequences)
                 .expect("preflighted take decision");
             let decision = choice.map(|c| self.record_take(note, trigger, c.take));
             let mut family = None;
             loop {
-                let prepared = &self.plans.get(plan.0).unwrap().prepared;
+                let generation = self.plans.get(plan.0).unwrap();
+                let prepared = &generation.prepared;
+                let groups = Some(generation.groups.view(note.0.index, true));
                 let state = &self.performance_state.states[snapshot];
                 let Some(candidate) = first
                     .take()
-                    .or_else(|| matching.next(prepared, Some(state), Some(velocity)))
+                    .or_else(|| matching.next_in_groups(prepared, state, velocity, groups))
                 else {
                     break;
                 };
@@ -495,6 +511,7 @@ impl Runtime {
                         address,
                         trigger,
                         snapshot,
+                        groups: Some((note.0.index, true)),
                     },
                     pitch,
                 )

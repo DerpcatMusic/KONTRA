@@ -147,7 +147,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   with bounded expression depth and register requirements. Integer constants, bounded
   script-instance arrays, indexed inc/dec and num_elements now share those services.
   Broader typed arithmetic and
-  language/state/controller work stay open.
+  language/state/controller work stay open. Native per-note group masks now filter
+  layer selection, snapshot into children and retain generation ownership. KSP
+  allow/disallow and first-yield release-group commits use the same services.
 
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and
@@ -295,6 +297,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   now share native ownership/retirement. Offsets, generated handles and
   ordered multi-slot/controller/release forwarding remain open. Original note
   forwarding now commits once on the same identity before KSP wait/exit/completion.
+  Per-note allow/disallow groups now select attacks, generated children and
+  automatic release layers with a once-only release-group commit. Names, purge,
+  affected-group queries and complete source hierarchy/import remain open.
   Current-event pitch/velocity edits use separate admission, script-visible and
   committed audio properties; late edits preserve running/release audio. See [KSP_FRONTEND.md](KSP_FRONTEND.md).
 - Implement full Kontakt KSP language and service semantics against the new runtime:
