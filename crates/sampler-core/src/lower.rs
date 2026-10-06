@@ -555,9 +555,6 @@ impl Lowering<'_> {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
-            if modulator.scope != ir::Scope::Voice {
-                return Err(unsupported(owner, Feature::ModulatorScope(modulator.scope)));
-            }
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -599,10 +596,18 @@ impl Lowering<'_> {
                     return Ok(index);
                 }
                 let m = &self.ir.modulators[modulator.0];
-                if m.scope != ir::Scope::Voice {
+                // One instrument-wide LFO: free-running, or restarted by every voice start.
+                let shared = matches!(
+                    (m.scope, &m.source),
+                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
+                );
+                if m.scope != ir::Scope::Voice && !shared {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
-                let source = self.mod_source(&owner, &m.source, program)?;
+                let mut source = self.mod_source(&owner, &m.source, program)?;
+                if let ModSource::Lfo(lfo) = &mut source {
+                    lfo.shared = shared;
+                }
                 program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
                 Ok(program.sources.len() - 1)
@@ -738,6 +743,7 @@ impl Lowering<'_> {
                 delay: self.frames(lfo.delay),
                 fade: self.frames(lfo.fade_in),
                 retrigger: lfo.retrigger,
+                shared: false,
             }),
             ir::ModulationSource::Controller(cc) => ModSource::Controller(*cc),
             ir::ModulationSource::Velocity => ModSource::Velocity,
