@@ -375,3 +375,23 @@ fn a_scheduled_script_noteoff_can_forward_a_later_suppressed_physical_release() 
         });
     }
 }
+
+/// Kontakt's NO_SYS_SCRIPT_PEDAL bypasses the engine's CC64 sustain: the
+/// script owns the pedal, so key-up closes the gate while the pedal is down.
+#[test]
+fn no_sys_script_pedal_disables_native_sustain() {
+    for (source, owned) in [
+        ("on init SET_CONDITION(NO_SYS_SCRIPT_PEDAL) end on", true),
+        ("on init end on", false),
+    ] {
+        let mut rt = runtime(source);
+        let channel = rt.register_channel(input(60).channel_address()).unwrap();
+        rt.sustain(channel, true).unwrap();
+        let note = rt.trigger(input(60), 60, 1.).unwrap();
+        rt.key_up(note, None).unwrap();
+        assert_eq!(rt.pedals(channel).unwrap(), (true, false));
+        assert_eq!(rt.release_context(note).unwrap().gate.is_some(), owned, "{source}");
+        rt.sustain(channel, false).unwrap();
+        assert!(rt.release_context(note).unwrap().gate.is_some(), "{source}");
+    }
+}
