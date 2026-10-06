@@ -191,7 +191,16 @@ mod tests {
     #[test]
     fn realtime_ladder_keeps_dc_passband_and_bounds_alias_band() {
         let kernel = Kernel::new(ResampleQuality::Realtime);
-        for step in [MIN_STEP, 0.5, 44100.0 / 48000.0, 1.0, 1.5, 2.0, 8.0, MAX_STEP] {
+        for step in [
+            MIN_STEP,
+            0.5,
+            44100.0 / 48000.0,
+            1.0,
+            1.5,
+            2.0,
+            8.0,
+            MAX_STEP,
+        ] {
             for fraction in [0.0, 0.125, 0.5, 0.999] {
                 let dc = kernel.sample(fraction, step, |_| [1.0, -1.0]);
                 assert!((dc[0] - 1.0).abs() < 1e-6 && (dc[1] + 1.0).abs() < 1e-6);
@@ -207,7 +216,10 @@ mod tests {
                 // short sinc keeps 0.3 of the output band within 0.1 dB.
                 let pass = if step <= 1.0 { 0.1 } else { 0.3 / scale };
                 let tolerance = if step <= 1.0 { 0.025 } else { 0.012 };
-                assert!((tone(pass) - 1.0).abs() < tolerance, "step={step} phase={fraction}");
+                assert!(
+                    (tone(pass) - 1.0).abs() < tolerance,
+                    "step={step} phase={fraction}"
+                );
                 if step > 1.0 {
                     // At least 50 dB below the passband at the output Nyquist.
                     assert!(tone(0.5 / scale) < 0.0032, "step={step} phase={fraction}");
