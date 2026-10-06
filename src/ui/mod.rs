@@ -26,7 +26,6 @@ mod header;
 mod keyboard;
 mod logs;
 mod menu;
-mod mixer;
 // The v2 views take plain data the core does not produce yet (submix/bus
 // nodes, effect and modulation reports).
 #[allow(dead_code)]
@@ -36,6 +35,7 @@ mod ir_view;
 mod load_report;
 mod bridge;
 mod pictures;
+mod inside;
 mod part;
 pub(crate) mod picker;
 mod rack;
@@ -348,10 +348,8 @@ struct EditorState {
     logs: logs::State,
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
-    /// A bus's name while it is being edited.
-    renaming_bus: Option<(usize, String)>,
-    /// Buses below this index show a mixer strip even when unused.
-    buses_shown: usize,
+    /// The master spectrum shows under the mixer.
+    spectrum: bool,
     /// Each library's color, thumbnail, banner and backdrop, made from its
     /// artwork off the frame.
     art: Arc<art::Art>,
@@ -379,13 +377,13 @@ struct EditorState {
     /// The system file dialog, answering on a later frame.
     picker: Arc<picker::Picker>,
     /// The mixer's strip width and meter holds.
-    mixer: mixer::State,
     /// The mixer shows the output tree, else the flat console.
-    flat_mixer: bool,
     mix_tree: mix_tree::State,
     report: load_report::State,
     /// Each part's library interface as drawn, by slot.
     faces: HashMap<usize, part::Face>,
+    /// Each part's views beside its interface.
+    inside: HashMap<usize, inside::State>,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -815,8 +813,7 @@ fn build(
         browse: Default::default(),
         logs: Default::default(),
         renaming: None,
-        renaming_bus: None,
-        buses_shown: 1,
+        spectrum: false,
         art,
         libraries: Default::default(),
         rack_y: 0.,
@@ -830,11 +827,10 @@ fn build(
         gliss: None,
         modulation: None,
         picker,
-        mixer: Default::default(),
-        flat_mixer: false,
         mix_tree: Default::default(),
         report: Default::default(),
         faces: Default::default(),
+        inside: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -894,7 +890,7 @@ fn build(
                 .clip()
         });
         let splitter = cx.state.browser.then(|| splitter(ui, &mut cx, browser_w));
-        let main = main_view(ui, &mut cx, bridge);
+        let main = main_view(ui, &mut cx);
         let keys = keyboard::dock(ui, &mut cx);
         let menu = menu::view(ui, &mut cx, window);
         let ghost = ghost(ui, &cx);
@@ -1081,7 +1077,7 @@ fn ghost(ui: &Ui, cx: &Cx) -> Option<El> {
 }
 
 /// View tabs over the rack, the mixer or the logs.
-fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
+fn main_view(ui: &mut Ui, cx: &mut Cx) -> El {
     let mut tabs = Vec::new();
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
@@ -1112,7 +1108,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     cx.state.meters.animating.store(false, Ordering::Relaxed);
     content.push(match cx.state.tab {
         Tab::Rack => rack::view(ui, cx),
-        Tab::Mixer => mixer_view(ui, cx, bridge),
+        Tab::Mixer => mixer_view(ui, cx),
         Tab::Report => report_view(ui, cx),
         Tab::Logs => logs::view(ui, cx),
     });
@@ -1129,26 +1125,30 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         .id("center")
 }
 
-/// The mixer tab: the nested output tree, or the flat console.
-fn mixer_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
-    let (tree_hit, tree_el) = latch(ui, "mix-mode-tree", "Tree", "Each instrument's outputs as a tree", !cx.state.flat_mixer);
-    let (flat_hit, flat_el) = latch(ui, "mix-mode-flat", "Console", "Parts and buses side by side", cx.state.flat_mixer);
-    if tree_hit || flat_hit {
-        cx.state.flat_mixer = flat_hit;
+/// The mixer tab: each instrument's outputs as a tree.
+fn mixer_view(ui: &mut Ui, cx: &mut Cx) -> El {
+    let mode = crate::routing::Outputs::of(cx.selection.outputs).label();
+    let (outputs_hit, outputs) = dropdown(ui, "mix-outputs", mode, "Outputs: routing to the host");
+    if outputs_hit {
+        menu::open_under(ui, cx, menu::Target::Routing, "mix-outputs");
     }
-    let bar = strip(vec![section("Mixer"), segmented(vec![tree_el, flat_el]), spacer()]).pad((INSET, TIGHT)).fill(Role::Surface);
-    let body = if cx.state.flat_mixer {
-        mixer::view(ui, cx, bridge)
-    } else {
-        let mut tree = bridge::tree(cx);
-        let levels = bridge::levels(cx.p, &tree);
-        let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
-        let el = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
-        bridge::apply(cx, &tree);
-        cx.state.meters.animating.store(true, Ordering::Relaxed);
-        el
-    };
-    col![bar, rule(), body].gap(0).flex(1).min_h(0).min_w(0)
+    let (spectrum_hit, spectrum) = latch(ui, "mix-spectrum", "Spectrum", "Everything sent to the host", cx.state.spectrum);
+    if spectrum_hit {
+        cx.state.spectrum = !cx.state.spectrum;
+    }
+    let bar = strip(vec![section("Mixer"), spacer(), spectrum, section("Outputs"), outputs]).pad((INSET, TIGHT)).fill(Role::Surface);
+    let mut tree = bridge::tree(cx);
+    let levels = bridge::levels(cx.p, &tree);
+    let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
+    let body = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
+    bridge::apply(cx, &tree);
+    cx.state.meters.animating.store(true, Ordering::Relaxed);
+    let mut rows = vec![bar, rule(), body];
+    if cx.state.spectrum {
+        let shape = cx.spectrum(crate::plugin::SCOPE_MASTER);
+        rows.push(spectrum::panel(shape, "mix-spectrum-graph").h(TEXT * 10.).flex(0).pad(INSET).shrink(0));
+    }
+    col(rows).gap(0).flex(1).min_h(0).min_w(0)
 }
 
 /// The selected part's load report.

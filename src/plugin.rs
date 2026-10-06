@@ -66,6 +66,11 @@ pub struct Part {
     /// The settings of the instrument's output tree below its root
     /// ([`crate::sound::tree`]), one per node after node 0.
     pub nodes: Vec<NodeMix>,
+    /// MPE: each note on its own member channel with its own bend,
+    /// pressure and timbre (lower zone, manager channel 1).
+    pub mpe: bool,
+    /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
+    pub bend_range: u8,
 }
 
 impl Default for Part {
@@ -88,6 +93,8 @@ impl Default for Part {
             aux_gain: 0.,
             output_manual: false,
             nodes: Vec::new(),
+            mpe: false,
+            bend_range: 0,
         }
     }
 }
@@ -447,6 +454,8 @@ pub(crate) struct PartView {
     /// The instrument's script interfaces, in script order.
     // TODO(v2 UI): drawn by the UI agent's sampler-ui-ir renderer.
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
+    /// The translated instrument: articulations, mapping, sound.
+    pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
 }
@@ -1081,6 +1090,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
                 .iter()
                 .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
                 .collect();
+            v.instrument = loaded.instrument;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);

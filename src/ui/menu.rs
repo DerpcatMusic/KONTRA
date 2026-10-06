@@ -1,7 +1,7 @@
 //! Context menus: one open at a time, floated over everything where it was
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
-use super::{Cx, mixer::{self, Strip}, theme::*};
+use super::{Cx, theme::*};
 use crate::sound::BUSES;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
@@ -25,14 +25,10 @@ pub enum Target {
     App,
     /// A part's MIDI input: its channel and port.
     Midi(usize),
-    /// A part's output bus, its aux send bus; a bus's host port.
+    /// A part's output pair.
     Output(usize),
-    Aux(usize),
-    BusPort(usize),
     /// The mixer's routing: the Outputs mode and the one-click actions.
     Routing,
-    /// A mixer strip.
-    Strip(Strip),
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +81,8 @@ pub enum Command {
     /// A part's MIDI channel (-1 omni), its port (0..4), its output bus.
     Channel(usize, i16),
     Port(usize, u8),
+    Mpe(usize),
+    BendRange(usize, u8),
     Output(usize, u8),
     /// Route a part automatically again.
     AutoOutput(usize),
@@ -98,13 +96,6 @@ pub enum Command {
     Appearance(super::Appearance),
     StickyHeaders,
     ArtworkBlur,
-    /// A part's send bus, -1 for none.
-    Aux(usize, i16),
-    /// A bus's host port, -1 for its own.
-    BusPort(usize, i16),
-    StripRename(Strip),
-    StripReset(Strip),
-    StripRoute(Strip),
 }
 
 enum Item {
@@ -283,21 +274,10 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items.extend((0..4u8).map(|n| {
                 check(format!("Port {}", char::from(b'A' + n)), part.port == n, Command::Port(*slot, n))
             }));
-            items
-        }
-        Target::Strip(strip) => {
-            let strip = *strip;
-            if let Strip::Part(slot) = strip
-                && cx.selection.parts.get(slot).is_none_or(|p| p.path.is_empty())
-            {
-                return Vec::new();
-            }
-            let items = vec![
-                act("Rename…", "", Command::StripRename(strip)),
-                act("Reset", "", Command::StripReset(strip)),
-                Item::Rule,
-                act("Route to…", "", Command::StripRoute(strip)),
-            ];
+            items.extend([Item::Rule, check("MPE", part.mpe, Command::Mpe(*slot)), Item::Rule, Item::Info("Bend range".into())]);
+            items.extend([(0, "As the instrument".to_owned()), (2, "±2".into()), (12, "±12".into()), (24, "±24".into()), (48, "±48 (MPE)".into())].map(
+                |(n, label)| check(label, part.bend_range == n, Command::BendRange(*slot, n)),
+            ));
             items
         }
         Target::Output(slot) => {
@@ -326,27 +306,6 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("All Omni", "", Command::AllOmni),
             ]);
             items
-        }
-        Target::Aux(slot) => {
-            let Some(part) = cx.selection.parts.get(*slot) else {
-                return Vec::new();
-            };
-            let mut items = vec![check("No send", part.aux < 0, Command::Aux(*slot, -1)), Item::Rule];
-            items.extend((0..BUSES).map(|n| {
-                check(bus_item(cx, n), part.aux == n as i16, Command::Aux(*slot, n as i16))
-            }));
-            items
-        }
-        Target::BusPort(n) => {
-            let bus = cx.selection.bus(*n);
-            let port = if bus.port < 0 { *n } else { bus.port as usize };
-            (0..BUSES)
-                .map(|k| {
-                    let label = format!("Host out {}", mixer::port_text(k));
-                    let to = if k == *n { -1 } else { k as i16 };
-                    check(label, port == k, Command::BusPort(*n, to))
-                })
-                .collect()
         }
         Target::App => {
             let mut items = vec![
@@ -585,6 +544,15 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
         Command::Port(slot, port) => cx.selection.parts[slot].port = port,
+        Command::Mpe(slot) => {
+            let part = &mut cx.selection.parts[slot];
+            part.mpe = !part.mpe;
+            // MPE controllers bend ±48 on member channels by default.
+            if part.mpe && part.bend_range == 0 {
+                part.bend_range = 48;
+            }
+        }
+        Command::BendRange(slot, n) => cx.selection.parts[slot].bend_range = n,
         Command::Output(slot, output) => {
             let part = &mut cx.selection.parts[slot];
             (part.output, part.output_manual) = (output, true);
@@ -603,22 +571,6 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::AllOmni => crate::routing::all_omni(&mut cx.selection),
         Command::NameOutputs => crate::routing::name_outputs(&mut cx.selection),
         Command::ResetRouting => crate::routing::reset(&mut cx.selection),
-        Command::Aux(slot, n) => {
-            if let Some(part) = cx.selection.parts.get_mut(slot) {
-                part.aux = n;
-            }
-        }
-        Command::BusPort(n, port) => cx.selection.bus_mut(n).port = port,
-        Command::StripRename(strip) => mixer::start_rename(cx, strip),
-        Command::StripReset(strip) => mixer::reset(cx, strip),
-        Command::StripRoute(strip) => open(
-            ui,
-            cx,
-            match strip {
-                Strip::Part(slot) => Target::Output(slot),
-                Strip::Bus(n) => Target::BusPort(n),
-            },
-        ),
     }
 }
 
