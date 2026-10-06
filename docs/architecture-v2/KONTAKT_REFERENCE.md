@@ -128,3 +128,22 @@ Measured on a noise instrument with an AR LP2/4 group insert and no modulators, 
 | Hz | 8.2 | 18.9 | 66.4 | 538.6 | 603.1 | 4.4k | 15.4k | 35.5k |
 
 Pure exponential: `f = 8.2 * 4329^x` Hz (ln slope 8.35-8.40 per unit x between every pair of points). The stored 0.5135 of ANALOG STRINGS group 9 gives 603 Hz, matching the earlier GUI read, so no modulator offset was involved. (Compare SV LP2: `25 * 800^x`.)
+
+## 9. AHDSR decay and release times (Kontakt, noise sample, engine value v = CC*7874)
+
+Same noise instrument. Times in seconds from note-off (release, sustain 1.0) or from the attack peak (decay, sustain 0, attack 0) for the level to fall by N dB:
+
+| v | kind | -3 | -6 | -10 | -20 | -30 | -40 | -50 |
+|---|---|---|---|---|---|---|---|---|
+| 236,220 | release | 0.009 | 0.012 | 0.014 | 0.019 | 0.022 | 0.025 | 0.026 |
+| 393,700 | release | 0.016 | 0.026 | 0.037 | 0.061 | 0.076 | 0.084 | 0.088 |
+| 551,180 | release | 0.051 | 0.098 | 0.143 | 0.254 | 0.320 | 0.352 | 0.364 |
+| 708,660 | release | 0.174 | 0.374 | 0.599 | 1.093 | 1.387 | 1.529 | 1.580 |
+| 787,400 | release | 0.382 | 0.758 | 1.267 | 2.285 | 2.926 | 3.213 | 3.317 |
+| 236,220 | decay | 0.002 | 0.004 | 0.006 | 0.011 | 0.014 | 0.015 | |
+| 393,700 | decay | 0.009 | 0.018 | 0.030 | 0.054 | 0.068 | 0.074 | |
+| 551,180 | decay | 0.033 | 0.081 | 0.133 | 0.243 | 0.307 | 0.340 | |
+| 708,660 | decay | 0.126 | 0.291 | 0.532 | 1.023 | 1.359 | 1.502 | |
+| 787,400 | decay | 0.195 | 0.587 | 1.117 | 2.146 | 2.860 | 3.172 | |
+
+Decay to sustain 0 and release from sustain 1 have the same shape. Above v ~ 0.39e6 times grow exponentially with v (about x3.8 per +157,480, i.e. ln T slope 8.5 per unit v/1e6; +78,740 doubles it); below that they flatten to millisecond floors. Level versus normalised time u = t / T(-40 dB) for release at v = 708,660: u .1 .74, .2 .55, .3 .45, .4 .33, .5 .22, .6 .16, .7 .11, .8 .07, .9 .03 (amplitude, 1.0 at u = 0); same within a few percent for v 551k-787k. The envelope shape is neither linear nor linear in dB: fast initial fall, long convex tail, ends at 0 at u about 1.2.
