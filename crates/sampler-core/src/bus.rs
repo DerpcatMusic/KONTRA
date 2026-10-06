@@ -162,6 +162,8 @@ pub(super) struct BusState {
     pub parameters: Box<[ControlRamp]>,
     filters: crate::dsp::svf::FilterBank,
     pub mix: Box<[BusMix]>,
+    /// Per bus, its post-mix peak since last taken.
+    pub peaks: Box<[[f32; 2]]>,
 }
 impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
@@ -172,6 +174,7 @@ impl BusState {
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
             mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
+            peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
         })
     }
     pub fn begin(&mut self) {
@@ -276,6 +279,10 @@ impl BusState {
                     frame[0] *= mix.gain[0];
                     frame[1] *= mix.gain[1];
                 }
+            }
+            let peak = &mut self.peaks[index];
+            for frame in &buffer.samples[..produced] {
+                *peak = [peak[0].max(frame[0].abs()), peak[1].max(frame[1].abs())];
             }
             // Copy one bounded block so fan-out never aliases destination state.
             let samples = buffer.samples;
