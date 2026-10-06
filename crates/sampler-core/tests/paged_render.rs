@@ -170,7 +170,7 @@ fn missing_interpolation_guard_rejects_every_layer_before_note_or_voice_publicat
 }
 
 #[test]
-fn a_missing_live_page_fades_once_preserves_pairing_and_cannot_restart_from_a_late_page() {
+fn a_missing_live_page_fades_out_keeps_time_and_fades_back_in_when_the_page_arrives() {
     for block in [1, 7, 64] {
         let asset = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
         let data = vec![[0.75; 2]; PAGE_FRAMES * 2];
@@ -202,12 +202,16 @@ fn a_missing_live_page_fades_once_preserves_pairing_and_cannot_restart_from_a_la
             assert_eq!(rt.stream_underruns(), 1);
             assert!(rt.voice_active(voice));
             assert_eq!(rt.note_count(), 1);
+            // The starved voice keeps requesting the page it is waiting for.
+            let mut wants_page = false;
             assert!(
-                rt.visit_voice_demand(voice, 100, |_| panic!(
-                    "a fading failed source needs no more pages"
-                ))
+                rt.visit_voice_demand(voice, 100, |demand| {
+                    wants_page |= demand.frames.end > PAGE_FRAMES;
+                    true
+                })
                 .unwrap()
             );
+            assert!(wants_page);
             let cache = rt.stream_cache_mut().unwrap();
             cache
                 .invalidate(PageKey {
@@ -223,8 +227,13 @@ fn a_missing_live_page_fades_once_preserves_pairing_and_cannot_restart_from_a_la
                 let expected = 0.75 * (47 - i) as f32 / 48.;
                 assert!(frame.iter().all(|x| (x - expected).abs() < 1e-7));
             }
-            assert_eq!(&output[50..], &[[0.; 2]; 14]);
-            assert!(!rt.voice_active(voice));
+            // The cursor advanced through the fade; the page is now resident, so
+            // playback resumes in time with a one-millisecond fade-in.
+            for (i, frame) in output[50..].iter().enumerate() {
+                let expected = 0.75 * (i + 1) as f32 / 48.;
+                assert!(frame.iter().all(|x| (x - expected).abs() < 1e-7));
+            }
+            assert!(rt.voice_active(voice));
             assert_eq!(rt.stream_underruns(), 1);
             assert_eq!(rt.note_off(input(), None), Ok(note));
         });
@@ -267,9 +276,22 @@ fn a_starved_source_drains_its_declared_dsp_tail_once_across_callback_boundaries
         assert_eq!(rt.stream_underruns(), 1);
         assert_eq!(rt.voice_count(), 1);
         assert!(audio[1..].iter().flatten().any(|x| x.abs() > 0.0001));
-        rt.render(&mut audio).unwrap();
+        // The voice waits silently for the page until its source would have
+        // ended (PAGE_FRAMES + 1 frames), then drains the 130-frame DSP tail.
+        let mut rendered = 64;
+        let end = PAGE_FRAMES + 1 + 130;
+        while rendered + 64 < end {
+            rt.render(&mut audio).unwrap();
+            rendered += 64;
+            assert_eq!(rt.voice_count(), 1);
+            // Only the low-pass ringing of the fade remains while waiting.
+            if rendered > 64 * 4 {
+                assert!(audio.iter().flatten().all(|x| x.abs() < 1e-6));
+            }
+        }
+        rt.render(&mut audio[..end - rendered - 1]).unwrap();
         assert_eq!(rt.voice_count(), 1);
-        rt.render(&mut audio[..51]).unwrap();
+        rt.render(&mut audio[..1]).unwrap();
         assert_eq!(rt.voice_count(), 0);
         assert_eq!(rt.stream_underruns(), 1);
         rt.render(&mut audio).unwrap();
@@ -409,7 +431,8 @@ fn starvation_duration_uses_output_rate_and_missing_onsets_do_not_emit_a_fade() 
             );
             assert_eq!(&output[fade + 1..], &[[0.; 2]; 9]);
             assert_eq!(rt.stream_underruns(), 1);
-            assert_eq!(rt.voice_count(), 0);
+            // Still waiting for page 1, silently.
+            assert_eq!(rt.voice_count(), 1);
             rt.stream_cache_mut()
                 .unwrap()
                 .invalidate(PageKey {
@@ -464,6 +487,7 @@ fn a_missing_filter_guard_fades_from_the_last_complete_resample_without_partial_
         }
         assert!(actual[150..].iter().all(|f| *f == [0.; 2]));
         assert_eq!(rt.stream_underruns(), 1);
-        assert_eq!(rt.voice_count(), 0);
+        // Waiting for the missing page, not ended.
+        assert_eq!(rt.voice_count(), 1);
     });
 }
