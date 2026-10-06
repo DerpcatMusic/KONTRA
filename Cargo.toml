@@ -148,7 +148,7 @@ vello = { path = "vendor/vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ir", "crates/sampler-uvi", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 

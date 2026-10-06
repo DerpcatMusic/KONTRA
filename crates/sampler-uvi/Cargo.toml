@@ -1,5 +1,5 @@
 [package]
-name = "sampler-core"
+name = "sampler-uvi"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
@@ -7,8 +7,10 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-rtrb = "=0.4.0"
 sampler-ir = { path = "../sampler-ir" }
+sampler-core = { path = "../sampler-core" }
+sampler-kontakt = { path = "../sampler-kontakt" }
+roxmltree = "=0.21.1"
 
 [lints.rust]
-unsafe_code = "deny" # The library forbids it; only allocator instrumentation opts out.
+unsafe_code = "forbid"
