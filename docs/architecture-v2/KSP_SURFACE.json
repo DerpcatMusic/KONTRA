@@ -139,6 +139,14 @@
     "$NUM_GROUPS": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
+    },
+    "select": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "in_range": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
     }
   },
   "chapters": [
@@ -1146,7 +1154,9 @@
               "select"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#select---"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-statements#select---",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "while---",

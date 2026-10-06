@@ -114,6 +114,7 @@ impl std::error::Error for Error {}
 enum Kind<'a> {
     Word(&'a str),
     Number(u64),
+    Hex(u32),
     Symbol(u8),
     Comparison(Comparison),
     End,
@@ -130,8 +131,19 @@ enum CallbackKind {
 }
 
 enum Block {
-    If { branch: usize, has_else: bool },
-    While { start: usize, branch: usize },
+    If {
+        branch: usize,
+        has_else: bool,
+    },
+    While {
+        start: usize,
+        branch: usize,
+    },
+    Select {
+        misses: [Option<usize>; 2],
+        exits: Vec<usize>,
+        has_case: bool,
+    },
 }
 #[derive(Clone, Copy)]
 enum Variable {
@@ -218,6 +230,22 @@ impl<'a> Parser<'a> {
                     .ok_or_else(|| self.error("invalid text boundary"))?,
             )
         } else if byte.is_ascii_digit() {
+            let mut end = start;
+            while bytes.get(end).is_some_and(u8::is_ascii_hexdigit) {
+                end += 1;
+            }
+            if matches!(bytes.get(end), Some(b'H' | b'h')) {
+                if byte != b'0' {
+                    return Err(self.error("hexadecimal literals require a leading zero"));
+                }
+                let value = u32::from_str_radix(&self.source[start..end], 16)
+                    .map_err(|_| self.error("hexadecimal literal exceeds 32-bit range"))?;
+                self.offset = end + 1;
+                return Ok(Token {
+                    kind: Kind::Hex(value),
+                    offset: start,
+                });
+            }
             while bytes.get(self.offset).is_some_and(u8::is_ascii_digit) {
                 self.offset += 1;
             }
@@ -276,6 +304,7 @@ impl<'a> Parser<'a> {
         let token = self.next()?;
         match token.kind {
             Kind::Number(value) if value <= i32::MAX as u64 => Ok((value, token.offset)),
+            Kind::Hex(value) if value <= i32::MAX as u32 => Ok((u64::from(value), token.offset)),
             Kind::Number(_) => Err(Error {
                 offset: token.offset,
                 message: "positive literal exceeds KSP signed 32-bit range",
@@ -539,6 +568,14 @@ impl<'a> Parser<'a> {
             Kind::Symbol(sign @ (b'-' | b'+')) => (self.next()?, sign == b'-'),
             _ => (token, false),
         };
+        if let Kind::Hex(value) = token.kind {
+            let value = value as i32;
+            return Ok(if negative {
+                value.wrapping_neg()
+            } else {
+                value
+            });
+        }
         let Kind::Number(value) = token.kind else {
             return Err(Error {
                 offset: token.offset,
@@ -573,6 +610,16 @@ impl<'a> Parser<'a> {
         let mut branches = Vec::new();
         loop {
             let token = self.next()?;
+            if matches!(
+                branches.last(),
+                Some(Block::Select {
+                    has_case: false,
+                    ..
+                })
+            ) && !matches!(token.kind, Kind::Word("case" | "end"))
+            {
+                return Err(self.error("expected case or end select"));
+            }
             match token.kind {
                 Kind::Word(command @ ("change_note" | "change_velo")) if note => {
                     self.symbol(b'(')?;
@@ -619,20 +666,7 @@ impl<'a> Parser<'a> {
                     let start = self.code.len();
                     self.symbol(b'(')?;
                     self.scalar(0)?;
-                    let token = self.next()?;
-                    let Kind::Comparison(comparison) = token.kind else {
-                        return Err(Error {
-                            offset: token.offset,
-                            message: "expected scalar comparison",
-                        });
-                    };
-                    self.scalar(1)?;
                     self.symbol(b')')?;
-                    self.emit(Instruction::CompareLocal {
-                        lhs: 0,
-                        rhs: 1,
-                        comparison,
-                    })?;
                     let branch = self.code.len();
                     self.emit(Instruction::JumpIfZero {
                         local: 0,
@@ -646,6 +680,38 @@ impl<'a> Parser<'a> {
                     } else {
                         Block::While { start, branch }
                     });
+                }
+                Kind::Word("select") => {
+                    self.symbol(b'(')?;
+                    self.scalar(0)?;
+                    self.symbol(b')')?;
+                    branches.push(Block::Select {
+                        misses: [None; 2],
+                        exits: Vec::new(),
+                        has_case: false,
+                    });
+                }
+                Kind::Word("case") => {
+                    let Some(Block::Select {
+                        misses,
+                        exits,
+                        has_case,
+                    }) = branches.last_mut()
+                    else {
+                        return Err(self.error("case without matching select"));
+                    };
+                    if *has_case {
+                        exits.push(self.code.len());
+                        self.emit(Instruction::Jump { target: 0 })?;
+                    }
+                    for branch in misses.iter().flatten() {
+                        self.code[*branch] = Instruction::JumpIfZero {
+                            local: 1,
+                            target: self.code.len(),
+                        };
+                    }
+                    *misses = self.case()?;
+                    *has_case = true;
                 }
                 Kind::Word("continue") => {
                     let start = branches
@@ -679,6 +745,19 @@ impl<'a> Parser<'a> {
                 }
                 Kind::Word("end") => {
                     let token = self.next()?;
+                    if token.kind == Kind::Word("select") {
+                        let Some(Block::Select { misses, exits, .. }) = branches.pop() else {
+                            return Err(self.error("end select without matching select"));
+                        };
+                        let target = self.code.len();
+                        for branch in misses.into_iter().flatten() {
+                            self.code[branch] = Instruction::JumpIfZero { local: 1, target };
+                        }
+                        for branch in exits {
+                            self.code[branch] = Instruction::Jump { target };
+                        }
+                        continue;
+                    }
                     if token.kind == Kind::Word("if") {
                         let Some(Block::If { branch, has_else }) = branches.pop() else {
                             return Err(self.error("end if without if"));
@@ -705,7 +784,7 @@ impl<'a> Parser<'a> {
                     if token.kind != Kind::Word("on") || !branches.is_empty() {
                         return Err(Error {
                             offset: token.offset,
-                            message: "expected matching end if, end while or end on",
+                            message: "expected matching block end or end on",
                         });
                     }
                     self.forward(&kind)?;
@@ -725,6 +804,50 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    fn case(&mut self) -> Result<[Option<usize>; 2], Error> {
+        let low = self.constant()?;
+        let checkpoint = self.offset;
+        let high = if self.next()?.kind == Kind::Word("to") {
+            self.constant()?
+        } else {
+            self.offset = checkpoint;
+            low
+        };
+        // Register 0 is the selector. Only mismatch dispatch reaches another
+        // case; matching bodies jump directly to the select's end, even after waits.
+        let mut misses = [None; 2];
+        let bounds = if low == high {
+            [(low, Comparison::Equal), (high, Comparison::Equal)]
+        } else {
+            [
+                (low.min(high), Comparison::LessEqual),
+                (low.max(high), Comparison::GreaterEqual),
+            ]
+        };
+        for (slot, (value, comparison)) in
+            misses
+                .iter_mut()
+                .zip(bounds)
+                .take(if low == high { 1 } else { 2 })
+        {
+            self.emit(Instruction::SetLocal {
+                local: 1,
+                value: i64::from(value),
+            })?;
+            self.emit(Instruction::CompareLocal {
+                lhs: 1,
+                rhs: 0,
+                comparison,
+            })?;
+            *slot = Some(self.code.len());
+            self.emit(Instruction::JumpIfZero {
+                local: 1,
+                target: 0,
+            })?;
+        }
+        Ok(misses)
     }
 
     fn group(&mut self, allowed: bool, pending_only: bool) -> Result<(), Error> {

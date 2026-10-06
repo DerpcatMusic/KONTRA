@@ -146,8 +146,9 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   expressions and scalar inc/dec now execute through explicit native instructions
   with bounded expression depth and register requirements. Integer constants, bounded
   script-instance arrays, indexed inc/dec and num_elements now share those services.
-  Broader typed arithmetic and
-  language/state/controller work stay open. Native per-note group masks now filter
+  Nested select/case, signed hexadecimal literals, combined Boolean conditions and
+  short-circuit array guards now lower onto the same native IR. Broader typed arithmetic
+  and language/state/controller work stay open. Native per-note group masks now filter
   layer selection, snapshot into children and retain generation ownership. KSP
   allow/disallow and first-yield release-group commits use the same services.
 
