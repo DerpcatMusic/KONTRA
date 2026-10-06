@@ -50,6 +50,8 @@ pub struct Interface {
     pub styles: Vec<TextStyle>,
     /// The instrument's icon in the host's rack header (KSP `$INST_ICON_ID`).
     pub icon: Option<AssetRef>,
+    /// The source hides the instrument icon (KSP `$INST_ICON_ID` `HIDE`).
+    pub icon_hidden: bool,
     pub unsupported: Vec<Unsupported>,
 }
 
@@ -245,13 +247,21 @@ pub enum Kind {
     Label,
     /// `arrows`: step buttons beside the value (KSP `SHOW_ARROWS`).
     ValueEdit { range: Range, display: Display, arrows: bool },
-    /// `cells`: initial values, one per column (may be shorter than `columns`).
-    Table { columns: u32, range: Range, bipolar: bool, cells: Vec<i32> },
-    Xy { cursors: u32 },
+    /// `cells`: initial values, one per column (may be shorter than `columns`);
+    /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
+    Table { columns: u32, range: Range, bipolar: bool, cells: Vec<i32>, steps_shown: Option<u32> },
+    /// `sensitivity`: per-axis drag sensitivity in source units (KSP
+    /// `MOUSE_BEHAVIOUR_X`/`_Y`); `mouse_mode`: the source's pointer mode,
+    /// verbatim (KSP `MOUSE_MODE`), until its meanings are verified.
+    Xy { cursors: u32, sensitivity: [Option<u32>; 2], mouse_mode: Option<i32> },
     Waveform,
-    Wavetable,
+    /// `view_mode`: the source's display mode, verbatim (KSP `WT_VIS_MODE`);
+    /// `parallax`: 3D depth offset in pixels (KSP `PARALLAX_X`/`_Y`).
+    Wavetable { view_mode: Option<i32>, parallax: [i32; 2] },
     LevelMeter { orientation: Orientation },
-    FileSelector,
+    /// `base_path`: the folder it opens at (KSP `BASEPATH`); `files`: what it lists;
+    /// `column_width`: list column width in pixels.
+    FileSelector { base_path: Option<String>, files: Files, column_width: Option<u32> },
     TextEdit,
     /// A static picture (Lua `Image`); KSP pictures on labels are [`Kind::Label`].
     Image,
@@ -289,6 +299,17 @@ impl Default for Display {
     fn default() -> Self {
         Self { ratio: 1.0, unit: String::new() }
     }
+}
+
+/// Which files a file selector lists (KSP `FILE_TYPE`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Files {
+    #[default]
+    Any,
+    Audio,
+    Midi,
+    /// Saved arrays / script data (KSP `$NI_FILE_TYPE_ARRAY`).
+    Data,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -377,13 +398,20 @@ pub struct ImageMeta {
     /// Direction the frames are stacked in.
     pub axis: Orientation,
     pub alpha: bool,
-    /// Nine-slice margins when the source stretches the image.
-    pub stretch: Option<Margins>,
+    /// One frame's pixel size, from the image file's header. A control
+    /// showing the image takes this size along each axis it does not
+    /// stretch, whatever size the source gave it (Kontakt's rule).
+    pub size: Option<Size>,
+    /// Stretches to the control across, down (Kontakt's sidecar
+    /// "Horizontal"/"Vertical Resizable").
+    pub stretch: [bool; 2],
+    /// Nine-slice fixed edges along the axes it stretches.
+    pub margins: Margins,
 }
 
 impl Default for ImageMeta {
     fn default() -> Self {
-        Self { frames: 1, axis: Orientation::Vertical, alpha: true, stretch: None }
+        Self { frames: 1, axis: Orientation::Vertical, alpha: true, size: None, stretch: [false; 2], margins: Margins::default() }
     }
 }
 
