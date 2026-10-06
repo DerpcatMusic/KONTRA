@@ -395,12 +395,31 @@ impl In {
     #[cfg(feature = "plugin")]
     pub fn from_events(body: &EventBody, mut each: impl FnMut(Self)) {
         let (channel, select, bank, index, value) = match *body {
-            EventBody::RegisteredController { channel, bank, index, value, .. } => (channel, [101, 100], bank, index, value),
-            EventBody::AssignableController { channel, bank, index, value, .. } => (channel, [99, 98], bank, index, value),
+            EventBody::RegisteredController {
+                channel,
+                bank,
+                index,
+                value,
+                ..
+            } => (channel, [101, 100], bank, index, value),
+            EventBody::AssignableController {
+                channel,
+                bank,
+                index,
+                value,
+                ..
+            } => (channel, [99, 98], bank, index, value),
             _ => return Self::from_event(body).into_iter().for_each(each),
         };
-        let data = [(select[0], bank & 127), (select[1], index & 127), (6, (value >> 25) as u8), (38, (value >> 18) as u8 & 127)];
-        for (cc, v) in data { each(Self::Cc(channel & 15, cc, v)); }
+        let data = [
+            (select[0], bank & 127),
+            (select[1], index & 127),
+            (6, (value >> 25) as u8),
+            (38, (value >> 18) as u8 & 127),
+        ];
+        for (cc, v) in data {
+            each(Self::Cc(channel & 15, cc, v));
+        }
     }
 
     fn channel(self) -> u8 {
