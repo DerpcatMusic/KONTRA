@@ -15,6 +15,9 @@ pub struct Options {
     pub keys: RangeInclusive<u8>,
     /// Compile and bind the instrument's KSP; when off, scripts are reported.
     pub scripts: bool,
+    /// Native per-note pressure/timbre routing added to every zone; `None`
+    /// leaves expression to authored modulation (pitch bend stays native).
+    pub mpe: Option<sampler_core::lower::MpeDefaults>,
 }
 
 impl Default for Options {
@@ -23,6 +26,7 @@ impl Default for Options {
             rate: 48000,
             keys: 0..=127,
             scripts: true,
+            mpe: Some(Default::default()),
         }
     }
 }
@@ -130,7 +134,7 @@ pub fn finish(
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
         .collect();
-    prepare(instrument, options.rate, pcm, options.scripts)
+    prepare(instrument, pcm, options)
 }
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
@@ -191,6 +195,9 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
         playback.end = Some(frames);
     }
     let end = end.min(frames);
+    playback.start_range = playback
+        .start_range
+        .min(end.saturating_sub(playback.start + 1));
     if playback.start >= end {
         report.push((
             "empty played range, zone dropped",
@@ -231,14 +238,15 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
 }
 
 /// Lower a translated instrument whose asset audio is `pcm`, binding its
-/// scripts when `scripts` is set and every one of them compiles. Scripts
+/// scripts when `options.scripts` is set and every one of them compiles. Scripts
 /// interact through shared state, so a partial set is never bound.
 pub fn prepare(
     mut instrument: ir::Instrument,
-    rate: u32,
     pcm: Vec<Pcm>,
-    scripts: bool,
+    options: &Options,
 ) -> Result<Loaded, LoadError> {
+    let (rate, scripts) = (options.rate, options.scripts);
+    let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits {
         source_bytes: 4 << 20,
         instructions: 1 << 20,
@@ -266,7 +274,7 @@ pub fn prepare(
         }
     }
     let lowered = if failed.is_empty() {
-        sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| {
+        sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
             sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
                 module: "KSP".into(),
                 message: e.to_string(),
@@ -275,7 +283,10 @@ pub fn prepare(
     } else {
         instrument.unsupported.append(&mut failed);
         let behaviors = std::mem::take(&mut instrument.behaviors);
-        let lowered = sampler_core::lower::lower(&instrument, rate, pcm, |_, plan| Ok(plan));
+        let lowered =
+            sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
+                Ok(plan)
+            });
         instrument.behaviors = behaviors;
         lowered
     };
