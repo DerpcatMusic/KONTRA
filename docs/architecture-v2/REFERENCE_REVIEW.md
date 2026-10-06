@@ -198,3 +198,16 @@ pre-wait note mutation and its post-wait zone-ID example. New native/source test
 execute independently with high-resolution velocity, live expression, capacity,
 release reserve and old-generation ownership checks. Multi-slot/release/controller
 forwarding remains required, and no legacy runtime path is called.
+
+
+## Note edits across the first wait
+
+Re-read the pinned Kontakt 8.12 `change_note`/`change_velo` documentation: pre-wait
+changes affect the attack; later changes still update the event variables. Inspected
+legacy `src/ksp/calls.rs:577–592` and `src/ksp/vm.rs:1250–1268` at the previously
+recorded source pin. Legacy calls clamp values and skip edits after `at_engine`,
+while system-variable reads use the stored event fields. The new core deliberately
+separates admission, script-visible and committed values instead of preserving that
+legacy discrepancy. Native range validation is explicit and needs vendor probes.
+`forwarding.rs` and KSP `arguments.rs` check this distinction with independent PCM
+expectations and heap guards. No fresh Kontakt/Falcon execution comparison was run.

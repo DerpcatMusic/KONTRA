@@ -56,6 +56,8 @@ use modulation::RenderedExpression;
 pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
+mod note_event;
+pub use note_event::NoteProperties;
 mod plans;
 mod prepare;
 mod release;
@@ -360,6 +362,7 @@ pub struct Runtime {
     control_queues: Option<control::ControlQueues>,
     notes: Arena<Note>,
     release_times: Box<[release::ReleaseTimes]>,
+    note_events: Box<[note_event::NoteEvent]>,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -417,6 +420,8 @@ impl Runtime {
         std::alloc::Layout::array::<i64>(cells).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<release::ReleaseTimes>(limits.notes)
             .map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<note_event::NoteEvent>(limits.notes)
+            .map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<performance::NoteSelection>(limits.notes)
             .map_err(|_| Error::Capacity)?;
         let state_capacity =
@@ -469,6 +474,8 @@ impl Runtime {
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
+            note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
+                .into_boxed_slice(),
             selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
             performance_state: performance::PerformanceState::new(
@@ -714,6 +721,7 @@ impl Runtime {
             admitted_at: self.now,
             ..release::ReleaseTimes::default()
         };
+        self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
         if let Some(parent) = parent {
             let index = Index::new(id.index);
             if let Some(next) = next_sibling {

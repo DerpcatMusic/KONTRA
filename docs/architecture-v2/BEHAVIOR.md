@@ -345,3 +345,23 @@ existing callback fault cleanup and retained outcome. Native programs do not gai
 implicit forwarding: their translator places these instructions at its own semantic
 commit boundaries. The KSP frontend now does so before waits/exit/completion, while
 ordinary suppression-only native programs retain their explicit behavior.
+
+
+## Admission, event view and committed sound
+
+`initial_note_properties(note)` preserves the full-resolution pitch/velocity at
+admission; generated notes have their own initial properties. `note_event(note)`
+returns the script-visible view. `edit_note_event` validates the entire replacement
+before changing that view, independently of physical input and expression ownership.
+`ForwardAttack` preflights the view, then commits pitch/velocity exactly once to the
+existing note. `note`/`note_pitch` expose those committed properties (admission values
+until forwarding). Late or suppressed edits remain visible to scripts without
+retargeting existing voices or release mappings. Invalid preflight leaves the view
+available for a corrected retry and leaves committed values/reservations unchanged.
+
+`ReadKey` and `ReadVelocity7` read the current event view; `WriteEventKey` and
+`WriteEventVelocity7` replace its key/velocity from checked integer registers. Their
+native domains are 0–127 and 1–127 respectively. These instructions require a note
+and contribute register bounds even in unreachable code. The cold view/admission
+bank is allocated once, reset by shared admission and protected by note-generation
+checks; no script edit allocates, locks, or creates a replacement musical identity.

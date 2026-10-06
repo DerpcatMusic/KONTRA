@@ -498,6 +498,21 @@ impl<'a> Parser<'a> {
         loop {
             let token = self.next()?;
             match token.kind {
+                Kind::Word(command @ ("change_note" | "change_velo")) if note => {
+                    self.symbol(b'(')?;
+                    self.expect(
+                        Kind::Word("$EVENT_ID"),
+                        "only edits of the originating event are supported",
+                    )?;
+                    self.symbol(b',')?;
+                    self.scalar(0)?;
+                    self.symbol(b')')?;
+                    self.emit(if command == "change_note" {
+                        Instruction::WriteEventKey { local: 0 }
+                    } else {
+                        Instruction::WriteEventVelocity7 { local: 0 }
+                    })?;
+                }
                 Kind::Word("ignore_event") if note => {
                     self.symbol(b'(')?;
                     self.expect(

@@ -36,6 +36,14 @@
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
     },
+    "change_note": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
+    "change_velo": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "$EVENT_ID": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
@@ -2472,7 +2480,9 @@
               "change_note"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_note--"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_note--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "change_pan--",
@@ -2502,7 +2512,9 @@
               "change_velo"
             ]
           },
-          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_velo--"
+          "source": "https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands#change_velo--",
+          "implementation": "partial_native_subset",
+          "evidence": "KSP_FRONTEND.md"
         },
         {
           "anchor": "change_vol--",

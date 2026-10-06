@@ -45,8 +45,16 @@ pub enum Instruction {
         frames: u16,
         inheritance: Inheritance,
     },
-    /// Quantize onset velocity to nearest MIDI 1 value, without changing note state.
+    /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
     ReadVelocity7 {
+        local: u16,
+    },
+    /// Replace script-visible pitch with a tuning-table key in 0..127.
+    WriteEventKey {
+        local: u16,
+    },
+    /// Replace script-visible velocity with a MIDI 1 value in 1..127.
+    WriteEventVelocity7 {
         local: u16,
     },
     /// Convert nonnegative microseconds to sample frames, rounding upward.
@@ -78,6 +86,7 @@ pub enum Instruction {
         local: u16,
         operation: super::IntegerUnary,
     },
+    /// Read the script-visible region-selection key.
     ReadKey {
         local: u16,
     },
@@ -189,6 +198,8 @@ impl Program {
             | Instruction::ReadControl { local, .. }
             | Instruction::WriteControl { local, .. }
             | Instruction::ReadVelocity7 { local }
+            | Instruction::WriteEventKey { local }
+            | Instruction::WriteEventVelocity7 { local }
             | Instruction::MicrosToFrames { local }
             | Instruction::WaitLocal { local }
             | Instruction::ReadKey { local }
@@ -232,6 +243,8 @@ impl Program {
                     | Instruction::Play { .. }
                     | Instruction::PlayMidi { .. }
                     | Instruction::ReadVelocity7 { .. }
+                    | Instruction::WriteEventKey { .. }
+                    | Instruction::WriteEventVelocity7 { .. }
                     | Instruction::ReadKey { .. }
                     | Instruction::ReadKeyDown { .. }
                     | Instruction::ReadNoteCell { .. }
@@ -532,7 +545,7 @@ impl Runtime {
                 *cell = i64::from(operation.apply(value));
             }
             Instruction::ReadVelocity7 { local } => {
-                let note = self.notes.get(owner.note()?.0).ok_or(Error::StaleHandle)?;
+                let note = self.note_event(owner.note()?)?;
                 let value = (note.velocity * 127.).round() as i64;
                 *self.local_cell_mut(id, local)? = value;
             }
@@ -544,14 +557,25 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(frames);
             }
             Instruction::ReadKey { local } => {
-                let note = owner.note()?;
-                let key = self
-                    .notes
-                    .get(note.0)
-                    .ok_or(Error::StaleHandle)?
-                    .pitch
-                    .key();
+                let key = self.note_event(owner.note()?)?.pitch.key();
                 *self.local_cell_mut(id, local)? = i64::from(key);
+            }
+            Instruction::WriteEventKey { local } | Instruction::WriteEventVelocity7 { local } => {
+                let note = owner.note()?;
+                let mut event = self.note_event(note)?;
+                let value = *self.local_cell_mut(id, local)?;
+                if matches!(op, Instruction::WriteEventKey { .. }) {
+                    if !(0..=127).contains(&value) {
+                        return Err(Error::InvalidInput);
+                    }
+                    event.pitch = super::NotePitch::Key(value as u8);
+                } else {
+                    if !(1..=127).contains(&value) {
+                        return Err(Error::InvalidInput);
+                    }
+                    event.velocity = value as f64 / 127.;
+                }
+                self.edit_note_event(note, event)?;
             }
             Instruction::ReadNoteCell { local, cell } => {
                 *self.local_cell_mut(id, local)? = self.note_cell(owner.note()?, cell)?;

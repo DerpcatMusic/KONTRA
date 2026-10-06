@@ -211,16 +211,20 @@ impl Runtime {
             return Err(Error::ClosedNote);
         }
         let snapshot = self.selections[note.0.index].snapshot;
+        let event = self.note_events[note.0.index].current;
         let selection = Selection {
             plan: n.plan,
-            note_pitch: n.pitch,
-            velocity: n.velocity,
+            note_pitch: event.pitch,
+            velocity: event.velocity,
             address: n.address,
             trigger: Trigger::Attack,
             snapshot,
         };
         let pitch = self.pitch_range(n.expression, true)?;
         let release = self.preflight_attack(selection, pitch)?;
+        let n = self.notes.get_mut(note.0).unwrap();
+        n.pitch = event.pitch;
+        n.velocity = event.velocity;
         self.commit_attack(note, release, snapshot);
         Ok(true)
     }
