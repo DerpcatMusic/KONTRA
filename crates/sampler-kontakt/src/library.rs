@@ -887,8 +887,12 @@ impl Translation {
                 low: z.velocities[0].max(1),
                 high: z.velocities[1].max(1),
             },
+            // Kontakt's system pedal script holds the note-off under sustain,
+            // so release-trigger groups fire when the note actually releases:
+            // at pedal-up for a sustained key (at key-up with
+            // NO_SYS_SCRIPT_PEDAL, which sampler-ksp maps to script sustain).
             trigger: if group.release {
-                ir::Trigger::KeyRelease
+                ir::Trigger::GateRelease
             } else {
                 ir::Trigger::Attack
             },
