@@ -549,11 +549,13 @@ impl Runtime {
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     &state.controllers,
+                    held,
                 );
                 let start = prepared
                     .voice_modulation
@@ -601,12 +603,14 @@ impl Runtime {
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
+                let held = self.held_frames(note);
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
                     self.expressions.get(n.expression.0).unwrap().value,
                     controllers,
+                    held,
                 );
                 let clock = crate::voice_mod::Clock {
                     rate: f64::from(self.rate),

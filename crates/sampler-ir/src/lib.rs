@@ -494,6 +494,10 @@ pub enum ModulationSource {
     Random,
     /// Always 1.
     Constant,
+    /// Kontakt's release-trigger counter: the share of `T` left when the key
+    /// was released, `clamp((T − held) / T, 0, 1)`, where `held` runs from
+    /// note-on to key-up (to now while the key is down).
+    ReleaseCounter(Time),
 }
 
 impl ModulationSource {
