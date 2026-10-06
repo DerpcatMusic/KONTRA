@@ -89,6 +89,19 @@ impl Bank {
             .collect()
     }
 
+    /// Every Lua member of the bank, for a script's `require`.
+    pub fn scripts(&self) -> crate::script::Scripts {
+        let mut scripts = crate::script::Scripts::default();
+        for path in self.members() {
+            if path.to_ascii_lowercase().ends_with(".lua")
+                && let Ok(bytes) = self.file(&path)
+            {
+                scripts.insert(&path, String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        scripts
+    }
+
     /// The bytes of the member at bank-root `path` (a script, say).
     pub fn file(&self, path: &str) -> Result<Vec<u8>, String> {
         let read = || self.read(resolve(&self.directory, path)?);
