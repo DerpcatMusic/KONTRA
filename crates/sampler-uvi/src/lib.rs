@@ -393,6 +393,23 @@ impl Translation {
         }
         self.scope_connections(program)?;
         let scripted = !self.ir.behaviors.is_empty();
+        // Program-level aux effects become buses (their own effects are
+        // reported as modules); layers reach them through BusRouters.
+        let mut auxes: Vec<(String, ir::BusRef)> = Vec::new();
+        for aux in program
+            .children()
+            .filter(|n| n.has_tag_name("Auxs"))
+            .flat_map(|a| a.children().filter(|c| c.has_tag_name("AuxEffect")))
+        {
+            let name = aux.attribute("Name").unwrap_or_default().to_owned();
+            self.ir.buses.push(ir::Bus {
+                name: name.clone(),
+                chain: None,
+                sends: Vec::new(),
+                output: ir::Output::Master,
+            });
+            auxes.push((name, ir::BusRef(self.ir.buses.len() - 1)));
+        }
         for (ordinal, layer) in program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -403,7 +420,7 @@ impl Translation {
             }
             self.scope_connections(layer)?;
             let pan = number(layer, "Pan", 0.0)?;
-            let base = ir::Group {
+            let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
                 gain: ir::Gain::Linear(gain * number(layer, "Gain", 1.0)?),
                 pan: ir::Pan {
@@ -412,8 +429,47 @@ impl Translation {
                 },
                 ..Default::default()
             };
-            self.split = scripted.then(|| (ordinal + 1, base.clone()));
-            self.ir.groups.push(base);
+            // A closed fader with a pre-fader send: the sound is the send's.
+            // (The IR has one output per group: the first such send is used.)
+            if number(layer, "Gain", 1.0)? == 0.0 {
+                let send = layer
+                    .children()
+                    .filter(|n| n.has_tag_name("BusRouters"))
+                    .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+                    .filter(|r| number(*r, "PreFader", 0.0).is_ok_and(|p| p != 0.0))
+                    .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+                    .find_map(|r| {
+                        let to = r.attribute("Destination")?.rsplit('/').next()?;
+                        let bus = auxes.iter().find(|(n, _)| n == to)?.1;
+                        Some((bus, number(r, "Gain", 1.0).ok()?))
+                    });
+                if let Some((bus, send_gain)) = send.filter(|s| s.1 > 0.0) {
+                    base.gain = ir::Gain::Linear(gain * send_gain);
+                    base.output = ir::Output::Bus(bus);
+                    self.unsupported(
+                        &path(layer),
+                        "closed layer fader: its pre-fader send is played as the layer output",
+                        send_gain,
+                    );
+                }
+            }
+            // Oscillators get groups of their own only where a keygroup stacks
+            // several; otherwise the layer's group is oscillator 1.
+            let stacked = layer
+                .descendants()
+                .filter(|n| n.has_tag_name("Keygroup"))
+                .any(|k| k.descendants().filter(|n| n.has_tag_name("SamplePlayer")).count() > 1);
+            self.split = (scripted && stacked).then(|| (ordinal + 1, base.clone()));
+            if self.split.is_none() {
+                self.ir.groups.push(base);
+            }
+            if scripted && !stacked {
+                self.osc_groups.push(OscGroup {
+                    layer: ordinal as u32 + 1,
+                    osc: 1,
+                    group: self.ir.groups.len() as u32 - 1,
+                });
+            }
             if pan != 0.0 {
                 self.unsupported(
                     &path(layer),
@@ -421,7 +477,9 @@ impl Translation {
                     pan,
                 );
             }
-            let group = ir::GroupRef(self.ir.groups.len() - 1);
+            // (Split layers have no group of their own: every zone takes an
+            // oscillator group, see `oscillator_group`.)
+            let group = ir::GroupRef(self.ir.groups.len().saturating_sub(1));
             // A script's playNote can trigger one oscillator of a keygroup
             // (oscIndex); scripts do not run, so every oscillator plays.
             let stacked = layer
@@ -878,6 +936,10 @@ pub fn load_program_scripted(
             .unsupported
             .retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
     }
+    // The scripts run; what they use that is not modeled is listed below.
+    instrument
+        .unsupported
+        .retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
     for finding in host.findings() {
         instrument.unsupported.push(ir::Unsupported {
             location: "script".into(),
