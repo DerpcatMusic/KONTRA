@@ -494,6 +494,32 @@ impl Ufs {
         Ok(directory)
     }
 
+    /// Where a member's bytes are and the key they are stored under, for
+    /// reading it in pieces. Same checks and access rules as [`Self::read_member`].
+    pub(crate) fn locate(
+        &self,
+        member: &Member,
+        metadata_key: u64,
+        content_key: Option<u64>,
+    ) -> Result<(u64, u64, Option<u64>)> {
+        ensure!(
+            member
+                .offset
+                .checked_add(member.size)
+                .is_some_and(|end| end <= self.header.physical_size),
+            "UFS member range exceeds physical container"
+        );
+        let key = match member.mode {
+            0 => None,
+            1 => Some(metadata_key),
+            2 => Some(
+                content_key.context("UFS mode 2 member requires a caller-supplied content key")?,
+            ),
+            mode => bail!("Unsupported UFS member encryption mode {mode}"),
+        };
+        Ok((member.offset, member.size, key))
+    }
+
     /// Never derives or guesses content access data; encrypted mode 2 needs a supplied key.
     pub fn read_member(
         &self,

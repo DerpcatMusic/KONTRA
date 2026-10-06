@@ -21,14 +21,14 @@ mod stream;
 pub use access::library_key;
 pub use library::{Kontakt, read};
 pub use load::{
-    Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_streamed, prepare,
+    Loaded, Options, Progress, finish, load, load_cancelable, load_read, load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use stream::{SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
+pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]
