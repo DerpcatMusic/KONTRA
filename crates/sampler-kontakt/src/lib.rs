@@ -5,9 +5,11 @@
 //! Decoding a source record does not admit its semantics for native playback.
 #![forbid(unsafe_code)]
 
+mod mapping;
 pub mod nis;
 mod nks;
 mod script;
+pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
 pub use script::{Script, Strings};
 
@@ -108,6 +110,15 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
         ]))
+    }
+    fn i16(&mut self) -> Result<i16, Error> {
+        Ok(self.u16()? as i16)
+    }
+    fn i32(&mut self) -> Result<i32, Error> {
+        Ok(self.u32()? as i32)
+    }
+    fn f32(&mut self) -> Result<f32, Error> {
+        Ok(f32::from_bits(self.u32()?))
     }
     fn record64(&mut self, minimum: usize) -> Result<Bytes<'a>, Error> {
         let start = self.0;
