@@ -90,6 +90,7 @@ fn render(
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn una_corda_pure_renders_from_its_encrypted_monolith() {
     let Some((ir, peak)) = render("Una Corda Library/Instruments/Una Corda Pure.nki", 60..=60)
     else {
@@ -114,6 +115,7 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
 }
 
 #[test]
+#[cfg(feature = "library-access")]
 fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
     let Some((ir, peak)) = render(
         "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
