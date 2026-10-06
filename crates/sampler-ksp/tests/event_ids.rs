@@ -231,15 +231,17 @@ fn event_expressions_remain_bounded_and_short_circuit_does_not_generate_skipped_
     });
     for source in [
         "on init declare const $ID := $EVENT_ID end on",
-        "on init declare $ID := play_note(60,127,0,0) end on",
         "on note if (1 or play_note(60,127,$missing,0)) exit end if end on",
     ] {
         assert!(compile(source).is_err());
     }
+    // v2: event operations in `on init` warn and do nothing.
+    let script = compile("on init declare $ID := play_note(60,127,0,0) end on").unwrap();
+    assert!(!script.warnings().is_empty());
     let nested = format!(
         "on note {}0{} end on",
-        "play_note(60,127,0,".repeat(65),
-        ")".repeat(65)
+        "play_note(60,127,0,".repeat(300),
+        ")".repeat(300)
     );
     assert!(compile(&nested).is_err());
 }
@@ -338,13 +340,14 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
-    for invalid in [
+    assert!(compile("on note note_off(1,0,1) end on").is_err());
+    // v2: init-time and multi-event note_off compile with a warning, no effect.
+    for warned in [
         "on init note_off(1) end on",
-        "on note note_off(1,0,1) end on",
         "on note note_off($ALL_EVENTS) end on",
         "on note note_off(by_marks(1)) end on",
     ] {
-        assert!(compile(invalid).is_err());
+        assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
     }
     let mut rt = runtime("on note note_off($EVENT_ID,-1) end on");
     let original = rt.trigger(input(60), 60, 1.).unwrap();

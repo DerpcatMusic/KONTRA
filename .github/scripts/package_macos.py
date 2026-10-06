@@ -14,17 +14,17 @@ import subprocess
 
 TARGETS = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}
 FORMATS = ("clap", "vst3", "standalone")
-BINARIES = {"clap": "KONTRA.clap/Contents/MacOS/KONTRA", "vst3": "KONTRA.vst3/Contents/MacOS/KONTRA", "standalone": "KONTRA.app/Contents/MacOS/KONTRA"}
+BINARIES = {"clap": "KONTRA2.clap/Contents/MacOS/KONTRA2", "vst3": "KONTRA2.vst3/Contents/MacOS/KONTRA2", "standalone": "KONTRA2.app/Contents/MacOS/KONTRA2"}
 MANIFESTS = {"clap": "clap-build-info.json", "vst3": "vst3-build-info.json", "standalone": "build-info.json"}
-BUNDLES = {"clap": "Library/Audio/Plug-Ins/CLAP/KONTRA.clap", "vst3": "Library/Audio/Plug-Ins/VST3/KONTRA.vst3", "standalone": "Applications/KONTRA.app"}
+BUNDLES = {"clap": "Library/Audio/Plug-Ins/CLAP/KONTRA2.clap", "vst3": "Library/Audio/Plug-Ins/VST3/KONTRA2.vst3", "standalone": "Applications/KONTRA2.app"}
 REQUIRED = ("LICENSE", "NOTICE", "THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md")
 
 
 def app_info(version):
     """Declare existing foreign plugin formats as packages, without FinderInfo."""
     types = {"clap": "org.cleveraudio.clap", "vst3": "com.steinberg.vst3"}
-    return dict(CFBundleExecutable="KONTRA", CFBundleIdentifier="audio.matari.kontra.standalone",
-                CFBundleName="KONTRA", CFBundleDisplayName="KONTRA", CFBundlePackageType="APPL",
+    return dict(CFBundleExecutable="KONTRA2", CFBundleIdentifier="audio.matari.kontra2.standalone",
+                CFBundleName="KONTRA 2", CFBundleDisplayName="KONTRA 2", CFBundlePackageType="APPL",
                 CFBundleVersion=version.split("-", 1)[0], CFBundleShortVersionString=version.split("-", 1)[0],
                 KONTRAVersion=version, NSHighResolutionCapable=True,
                 UTImportedTypeDeclarations=[dict(UTTypeIdentifier=id, UTTypeConformsTo=["com.apple.package", "com.apple.bundle"],
@@ -80,16 +80,16 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
             actual = subprocess.check_output([lipo, "-archs", str(binary)], text=True).split()
             require(actual == [arch], f"{arch}/{fmt}: expected one {arch} slice, found {actual}")
             if fmt == "standalone":
-                require(plistlib.loads(files["KONTRA.app/Contents/Info.plist"]) == app_info(version), f"{arch}: invalid application package declarations")
+                require(plistlib.loads(files["KONTRA2.app/Contents/Info.plist"]) == app_info(version), f"{arch}: invalid application package declarations")
             else:
-                plist = plistlib.loads(files[f"KONTRA.{fmt}/Contents/Info.plist"])
-                require(plist.get("CFBundleExecutable") == "KONTRA" and plist.get("CFBundleIdentifier")
+                plist = plistlib.loads(files[f"KONTRA2.{fmt}/Contents/Info.plist"])
+                require(plist.get("CFBundleExecutable") == "KONTRA2" and plist.get("CFBundleIdentifier")
                         and plist.get("CFBundlePackageType") == "BNDL", f"{arch}/{fmt}: invalid bundle identity/type")
                 require(plist.get("KONTRAVersion") == version
                         and plist.get("CFBundleVersion") == plist.get("CFBundleShortVersionString") == version.split("-", 1)[0],
                         f"{arch}/{fmt}: bundle version mismatch")
         # Signatures and prior distribution containers are not payload resources.
-        inventories[arch] = {n: data for n, data in files.items() if n not in set(BINARIES.values()) | set(MANIFESTS.values()) | {"KONTRA.dmg", "notarization.json"}}
+        inventories[arch] = {n: data for n, data in files.items() if n not in set(BINARIES.values()) | set(MANIFESTS.values()) | {"KONTRA2.dmg", "notarization.json"}}
     require(inventories["arm64"] == inventories["x86_64"], "Architecture stages have different resources or bundle metadata")
     for fmt in FORMATS:
         a, b = (dict(manifests[arch][fmt]) for arch in TARGETS)
@@ -104,11 +104,11 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
     for fmt, destination in BUNDLES.items():
         bundle = payload / destination
         if fmt != "standalone":
-            shutil.copytree(x86_64 / f"KONTRA.{fmt}", bundle, ignore=shutil.ignore_patterns("_CodeSignature"))
+            shutil.copytree(x86_64 / f"KONTRA2.{fmt}", bundle, ignore=shutil.ignore_patterns("_CodeSignature"))
         else:
             (bundle / "Contents/MacOS").mkdir(parents=True)
             (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(app_info(version)))
-        binary = bundle / "Contents/MacOS/KONTRA"
+        binary = bundle / "Contents/MacOS/KONTRA2"
         subprocess.run([lipo, "-create", str(arm64 / BINARIES[fmt]), str(x86_64 / BINARIES[fmt]), "-output", str(binary)], check=True)
         require(set(subprocess.check_output([lipo, "-archs", str(binary)], text=True).split()) == set(TARGETS), f"{fmt}: universal composition failed")
         binary.chmod(0o755)
@@ -118,7 +118,7 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
     resources = payload / BUNDLES["standalone"] / "Contents/Resources/KONTRA"
     resources.mkdir(parents=True)
     for name, data in inventories["arm64"].items():
-        if name.startswith(("KONTRA.clap/", "KONTRA.vst3/", "KONTRA.app/")):
+        if name.startswith(("KONTRA2.clap/", "KONTRA2.vst3/", "KONTRA2.app/")):
             continue
         destination = resources / name
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,7 @@ def compose(arm64, x86_64, stage, revision, version, lipo="lipo"):
             shutil.copyfile(sources[arch] / MANIFESTS[fmt], destination)
     # Signing-keychain setup may set umask 077; installed resources must still
     # be readable by every plugin host and app user.
-    executables = {payload / destination / "Contents/MacOS/KONTRA" for destination in BUNDLES.values()}
+    executables = {payload / destination / "Contents/MacOS/KONTRA2" for destination in BUNDLES.values()}
     for path in [payload, *payload.rglob("*")]:
         path.chmod(0o755 if path.is_dir() or path in executables else 0o644)
     return identity

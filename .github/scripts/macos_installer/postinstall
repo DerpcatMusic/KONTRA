@@ -8,5 +8,5 @@ case "$user" in root|loginwindow|_mbsetupuser) echo 'Package types register when
 uid=$(/usr/bin/id -u "$user")
 /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$user" \
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
-  -f /Applications/KONTRA.app
+  -f /Applications/KONTRA2.app
 echo "Registered KONTRA package types for active user UID $uid."

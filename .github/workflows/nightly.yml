@@ -112,7 +112,7 @@ jobs:
         run: |
           stage="KONTRA-nightly-${{ matrix.name }}"
           mkdir "$stage"
-          cp -R "target/bundles/${{ matrix.target }}/KONTRA.clap" "target/bundles/${{ matrix.target }}/KONTRA.vst3" "$stage/"
+          cp -R "target/bundles/${{ matrix.target }}/KONTRA2.clap" "target/bundles/${{ matrix.target }}/KONTRA2.vst3" "$stage/"
           exe=kontakto-standalone; [ "$RUNNER_OS" = Windows ] && exe=kontakto-standalone.exe
           cp "target/${{ matrix.target }}/release/$exe" "$stage/"
           cp LICENSE NOTICE THIRD_PARTY.md "$stage/"
@@ -124,14 +124,14 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > "$stage/SOURCE_COMMIT.txt"
           "$stage/$exe" --build-info > "$stage/build-info.json"
           if [ "$RUNNER_OS" = macOS ]; then
-            mkdir -p "$stage/KONTRA.app/Contents/MacOS"
-            mv "$stage/$exe" "$stage/KONTRA.app/Contents/MacOS/KONTRA"
+            mkdir -p "$stage/KONTRA2.app/Contents/MacOS"
+            mv "$stage/$exe" "$stage/KONTRA2.app/Contents/MacOS/KONTRA2"
             python3 - "$stage" <<'PYAPP'
           import json, pathlib, plistlib, sys
           sys.path.insert(0, '.github/scripts')
           from package_macos import app_info
           stage = pathlib.Path(sys.argv[1])
-          (stage / 'KONTRA.app/Contents/Info.plist').write_bytes(plistlib.dumps(app_info(json.loads((stage / 'build-info.json').read_text())['version'])))
+          (stage / 'KONTRA2.app/Contents/Info.plist').write_bytes(plistlib.dumps(app_info(json.loads((stage / 'build-info.json').read_text())['version'])))
           PYAPP
           fi
           echo "STAGE=$stage" >> "$GITHUB_ENV"
@@ -141,7 +141,7 @@ jobs:
           python3 - <<'PYPLIST'
           import os, pathlib, plistlib, tomllib
           version = tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"]
-          for bundle in ("KONTRA.clap", "KONTRA.vst3"):
+          for bundle in ("KONTRA2.clap", "KONTRA2.vst3"):
               path = pathlib.Path(os.environ["STAGE"]) / bundle / "Contents/Info.plist"
               info = plistlib.loads(path.read_bytes())
               info.update(CFBundleShortVersionString=version.split("-", 1)[0], CFBundleVersion=version.split("-", 1)[0], KONTRAVersion=version)
@@ -175,8 +175,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           ditto -x -k "$STAGE.zip" extracted-plugins
-          xcrun swift .github/scripts/check_macos_bundles.swift --register "extracted-plugins/$STAGE/KONTRA.app" \
-            "extracted-plugins/$STAGE/KONTRA.clap" "extracted-plugins/$STAGE/KONTRA.vst3"
+          xcrun swift .github/scripts/check_macos_bundles.swift --register "extracted-plugins/$STAGE/KONTRA2.app" \
+            "extracted-plugins/$STAGE/KONTRA2.clap" "extracted-plugins/$STAGE/KONTRA2.vst3"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.STAGE }}
@@ -236,28 +236,28 @@ jobs:
           find expanded-installer -name PackageInfo -exec cat {} \;
           sudo installer -pkg "$package" -target /
           # Prove a deliberately newer installed version cannot suppress rollback.
-          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3 /Applications/KONTRA.app; do
+          for bundle in /Library/Audio/Plug-Ins/CLAP/KONTRA2.clap /Library/Audio/Plug-Ins/VST3/KONTRA2.vst3 /Applications/KONTRA2.app; do
             sudo /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion 999999' "$bundle/Contents/Info.plist"
           done
           sudo installer -pkg "$package" -target /
           python3 - <<'PYINSTALL'
           import hashlib, pathlib, subprocess
           payload = pathlib.Path('universal-stage/payload')
-          for relative in ('Library/Audio/Plug-Ins/CLAP/KONTRA.clap',
-                           'Library/Audio/Plug-Ins/VST3/KONTRA.vst3', 'Applications/KONTRA.app'):
+          for relative in ('Library/Audio/Plug-Ins/CLAP/KONTRA2.clap',
+                           'Library/Audio/Plug-Ins/VST3/KONTRA2.vst3', 'Applications/KONTRA2.app'):
               expected, installed = payload / relative, pathlib.Path('/') / relative
               def inventory(root):
                   return {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in root.rglob('*') if p.is_file()}
               assert inventory(expected) == inventory(installed), f'Installed payload differs: {relative}'
-              subprocess.run(['lipo', str(installed / 'Contents/MacOS/KONTRA'),
+              subprocess.run(['lipo', str(installed / 'Contents/MacOS/KONTRA2'),
                               '-verify_arch', 'arm64', 'x86_64'], check=True)
               subprocess.run(['codesign', '--verify', '--deep', '--strict', '--all-architectures',
                               str(installed)], check=True)
               print(f'Installed and rollback-verified: /{relative}')
           PYINSTALL
-          xcrun swift .github/scripts/check_macos_bundles.swift --register /Applications/KONTRA.app \
-            /Library/Audio/Plug-Ins/CLAP/KONTRA.clap /Library/Audio/Plug-Ins/VST3/KONTRA.vst3
+          xcrun swift .github/scripts/check_macos_bundles.swift --register /Applications/KONTRA2.app \
+            /Library/Audio/Plug-Ins/CLAP/KONTRA2.clap /Library/Audio/Plug-Ins/VST3/KONTRA2.vst3
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: KONTRA-nightly-macos-universal
