@@ -261,7 +261,7 @@ fn ir_view_real_instrument_memory() {
 fn editor_with_a_real_instrument() {
     use crate::sound::{report::LoadReport, tree::MixTree};
     let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_UI_IR_PATCH").expect("KONTRA_UI_IR_PATCH"));
-    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=0, scripts: true, library: Some(patch.clone()) };
+    let options = sampler_kontakt::Options { rate: 48000, keys: 0..=127, scripts: true, library: Some(patch.clone()) };
     let loaded = sampler_kontakt::load(&patch, &options, |_| {}).unwrap();
     let p = Arc::new(crate::plugin::SamplerParams::new());
     p.selection.write().unwrap().parts.push(crate::plugin::Part { path: patch.to_string_lossy().into_owned(), ..Default::default() });
@@ -275,6 +275,7 @@ fn editor_with_a_real_instrument() {
         part.report = Some(Arc::new(LoadReport::of(&loaded.instrument, &patch, loaded.plan.sample_count())));
         part.tree = Some(Arc::new(MixTree::instrument(&loaded.instrument.name)));
         part.interfaces = loaded.interfaces.into();
+        part.instrument = Some(Arc::new(loaded.instrument));
     }
     let stem = patch.file_stem().unwrap().to_string_lossy().replace(' ', "_");
     let mut h = Harness::new(&p, 1180., 780.);
@@ -290,6 +291,14 @@ fn editor_with_a_real_instrument() {
     } else {
         shot(&h, "rack");
     }
+    for view in ["Articulations", "Mapping", "Sound", "Info"] {
+        let id = format!("view-0-{view}");
+        if h.ui.scene().unwrap().surface(&id).is_some() {
+            h.press(&id);
+            h.idle(4);
+            shot(&h, &view.to_lowercase());
+        }
+    }
     h.press("tab-mixer");
     shot(&h, "mixer");
     h.press("tab-report");
@@ -299,4 +308,58 @@ fn editor_with_a_real_instrument() {
 fn kind_name(k: &ir::Kind) -> String {
     let s = format!("{k:?}");
     s.chars().take(60).collect()
+}
+
+/// A part with keyswitched articulations: the list switches by tapping a
+/// row's key, follows the keys as they are played, and marks them on the
+/// keyboard. Shoots `artifacts/v2-ui/app/synthetic-{articulations,mapping}.png`.
+#[test]
+fn articulations_switch_by_their_keys() {
+    use sampler_ir as sir;
+    use std::sync::atomic::Ordering;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
+        inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0 });
+        for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
+            let mut z = sir::Zone::new(sir::AssetRef(0));
+            z.group = Some(sir::GroupRef(n));
+            z.keys = sir::KeyRange { low: 36 + v as u8 * 3, high: 84 - n as u8 * 4 };
+            z.velocities = sir::VelocityRange { low: lo, high: hi };
+            inst.zones.push(z);
+        }
+    }
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Strings.nki".into(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        v.parts[0].active = "Strings".into();
+        v.parts[0].instrument = Some(Arc::new(inst));
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(4);
+    h.press("view-0-Articulations");
+    h.idle(2);
+    let lit = |h: &Harness, n: usize| h.ui.scene().unwrap().surface(&format!("art-0-{n}")).is_some();
+    assert!(lit(&h, 4), "every articulation has a row");
+    while p.shared.keyboard.pop().is_some() {}
+    h.press("art-0-2");
+    h.idle(2);
+    let sent: Vec<String> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(slot, play)| format!("{slot} {play:?}")).collect();
+    assert_eq!(sent, ["0 Note(26, 1)", "0 Note(26, 0)"], "a row taps its key and lets it go");
+    p.shared.heard[27].store(90, Ordering::Relaxed);
+    h.idle(2);
+    p.shared.heard[27].store(0, Ordering::Relaxed);
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-articulations.png");
+    h.press("remap-0-Channel");
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-articulations-channel.png");
+    h.press("view-0-Mapping");
+    h.press("map-group-0-1");
+    h.idle(2);
+    shoot(&h.ui, 1180, 780, "app/synthetic-mapping.png");
 }

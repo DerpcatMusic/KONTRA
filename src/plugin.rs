@@ -66,6 +66,11 @@ pub struct Part {
     /// The settings of the instrument's output tree below its root
     /// ([`crate::sound::tree`]), one per node after node 0.
     pub nodes: Vec<NodeMix>,
+    /// MPE: each note on its own member channel with its own bend,
+    /// pressure and timbre (lower zone, manager channel 1).
+    pub mpe: bool,
+    /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
+    pub bend_range: u8,
 }
 
 impl Default for Part {
@@ -88,6 +93,8 @@ impl Default for Part {
             aux_gain: 0.,
             output_manual: false,
             nodes: Vec::new(),
+            mpe: false,
+            bend_range: 0,
         }
     }
 }

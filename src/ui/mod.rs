@@ -35,6 +35,7 @@ mod ir_view;
 mod load_report;
 mod bridge;
 mod pictures;
+mod inside;
 mod part;
 pub(crate) mod picker;
 mod rack;
@@ -381,6 +382,8 @@ struct EditorState {
     report: load_report::State,
     /// Each part's library interface as drawn, by slot.
     faces: HashMap<usize, part::Face>,
+    /// Each part's views beside its interface.
+    inside: HashMap<usize, inside::State>,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -827,6 +830,7 @@ fn build(
         mix_tree: Default::default(),
         report: Default::default(),
         faces: Default::default(),
+        inside: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
