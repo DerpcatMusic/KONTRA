@@ -60,6 +60,13 @@ impl Prepared {
         self.script_sustain = script;
         self
     }
+
+    /// Release-trigger families never fire on note release; behaviors that
+    /// own release samples play them (Kontakt's `NO_SYS_SCRIPT_RLS_TRIG`).
+    pub fn with_script_release_triggers(mut self, script: bool) -> Self {
+        self.script_release_triggers = script;
+        self
+    }
 }
 
 impl Runtime {
