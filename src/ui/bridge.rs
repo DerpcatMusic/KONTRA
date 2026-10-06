@@ -84,7 +84,13 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
     let d = &l.decoded;
     let loaded = |area, summary: String| lr::Loaded { area, summary };
     r.loaded.push(loaded(lr::Area::Mapping, format!("{} · {} zones · {} groups", d.format, d.zones, d.groups)));
-    r.loaded.push(loaded(lr::Area::Samples, format!("{} samples", d.samples)));
+    let part = cx.p.shared.part(slot);
+    let held = part.as_ref().map_or(0, |p| p.resident_bytes.load(std::sync::atomic::Ordering::Relaxed));
+    let samples = match d.full_bytes {
+        0 => format!("{} samples", d.samples),
+        full => format!("{} samples · {} in memory of {}", d.samples, size(held), size(full)),
+    };
+    r.loaded.push(loaded(lr::Area::Samples, samples));
     if d.scripts > 0 {
         r.loaded.push(loaded(lr::Area::Scripts, format!("{} scripts · {} controls", d.scripts, d.controls)));
     }
@@ -93,7 +99,7 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         r.loaded.push(loaded(lr::Area::Interface, format!("{} views · {widgets} controls", v.interfaces.len())));
     }
     r.missing.extend(l.missing.iter().map(missing));
-    let p = cx.p.shared.part(slot).map(|s| s.problems()).unwrap_or(l.runtime);
+    let p = part.map(|s| s.problems()).unwrap_or(l.runtime);
     let counts = [
         (p.script_overruns, lr::Runtime::ScriptBudget { overruns: p.script_overruns }),
         (p.capacity_drops, lr::Runtime::VoicesDropped { count: p.capacity_drops }),
@@ -105,6 +111,15 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
     ];
     r.runtime.extend(counts.into_iter().filter(|(n, _)| *n > 0).map(|(_, r)| r));
     r
+}
+
+/// `bytes` as "12 KB", "3.4 MB" or "2.1 GB".
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1 << 20 => format!("{} KB", b.div_ceil(1 << 10)),
+        b if b < 1 << 30 => format!("{:.1} MB", b as f64 / f64::from(1 << 20)),
+        b => format!("{:.1} GB", b as f64 / f64::from(1 << 30)),
+    }
 }
 
 /// A translator entry as a report row, recognizing the script ones

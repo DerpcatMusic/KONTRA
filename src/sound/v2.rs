@@ -10,15 +10,19 @@
 //! output (its parent or a DAW pair). Loading: Kontakt instruments through
 //! `sampler-kontakt` (cancelable, every group a mixer node), WAV files as one region.
 //!
+//! Kontakt samples stream: start data stays resident and the rest is read
+//! from disk ahead of each voice.
+//!
 //! Not yet: member-channel MPE (every channel plays the zone's manager channel),
-//! per-note controllers and program changes (counted), streaming, a sample-rate
-//! change without reloading.
+//! per-note controllers and program changes (counted), a sample-rate change
+//! without reloading.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use sampler_core::{
-    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime, Stealing,
+    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, Playback, Prepared, Protocol,
+    Region, Runtime, Stealing, StreamCache,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Mpe, Packets, Zone};
@@ -28,7 +32,7 @@ use super::mix::{Mix, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, MAX_BLOCK, Progress,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
 };
 
@@ -56,6 +60,10 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    /// Frames ahead of the clock that streamed voices read, if any stream.
+    horizon: Option<u32>,
+    /// Kept alive while the part plays; dropped with it, off the audio thread.
+    _stream: Option<Arc<Stream>>,
 }
 
 impl Part {
@@ -73,6 +81,8 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            horizon: None,
+            _stream: None,
         })
     }
 
@@ -378,6 +388,10 @@ impl Core for V2Core {
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
             }
+            if let Some(horizon) = part.horizon {
+                // Pending pages play silent and count as underruns.
+                let _ = part.runtime.service_streaming(horizon);
+            }
             let out = &mut self.scratch[..n];
             let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
             if part.runtime.render_split(out, &mut outs).is_err() {
@@ -539,6 +553,10 @@ impl Core for V2Core {
         }
     }
 
+    fn clock(&self, part: usize) -> u64 {
+        self.parts.get(part).and_then(Option::as_ref).map_or(0, |p| p.runtime.now())
+    }
+
     fn latency(&self) -> u32 {
         0
     }
@@ -680,11 +698,14 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
     tree
 }
 
+/// A plan and, when its samples stream, the runtime's page cache.
+type Plan = (Prepared, Option<StreamCache>);
+
 fn kontakt(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
     canceled: &(dyn Fn() -> bool + Sync),
-) -> Result<Loaded<Prepared>, CoreError> {
+) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: sampler_kontakt::LoadError| match e {
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load(e.to_string()),
@@ -704,13 +725,27 @@ fn kontakt(
             sampler_kontakt::Progress::Lowering => 950,
         }))
     };
-    let loaded = sampler_kontakt::load_read(source, &options, progress, canceled).map_err(load)?;
+    if canceled() {
+        return Err(CoreError::Canceled);
+    }
+    let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
+    let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
+    report.decoded.full_bytes = stream.full_bytes;
     // Loading adds what it found unplayable (samples, keys) and scripts that failed.
     report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
     report.decoded.zones = loaded.instrument.zones.len();
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
-    Ok(Loaded { part: loaded.plan, tree, report, interfaces: loaded.interfaces, controls: Vec::new(), instrument: Some(std::sync::Arc::new(loaded.instrument)), scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources } })
+    Ok(Loaded {
+        part: (loaded.plan, Some(cache)),
+        tree,
+        report,
+        interfaces: loaded.interfaces,
+        controls: Vec::new(),
+        instrument: Some(Arc::new(loaded.instrument)),
+        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
+    })
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
@@ -736,7 +771,7 @@ fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
+fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
     let rate = request.sample_rate as u32;
     let (source_rate, frames) = read_wav(&request.path)?;
@@ -761,7 +796,16 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Prepared>, CoreError> {
     report.decoded.zones = 1;
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
-    Ok(Loaded { part: plan, tree: MixTree::instrument(&name), report, interfaces: Vec::new(), controls: Vec::new(), instrument: None, scripts: ScriptUi::default() })
+    Ok(Loaded {
+        part: (plan, None),
+        tree: MixTree::instrument(&name),
+        report,
+        interfaces: Vec::new(),
+        controls: Vec::new(),
+        instrument: None,
+        scripts: ScriptUi::default(),
+        stream: None,
+    })
 }
 
 impl CoreLoader for V2Loader {
@@ -774,7 +818,7 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: prepared, tree, mut report, interfaces, instrument, scripts, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: (prepared, cache), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
         } else if is_wav(&request.path) {
             wav(request)?
@@ -793,6 +837,10 @@ impl CoreLoader for V2Loader {
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
         let mut runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let streams = cache.is_some();
+        if let Some(cache) = cache {
+            runtime = runtime.with_stream_cache(cache);
+        }
         // Full polyphony steals (released, then quietest) rather than refusing notes.
         runtime.set_voice_stealing(Some(Stealing::for_limits(runtime.sample_rate(), voices))).map_err(core)?;
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
@@ -802,9 +850,14 @@ impl CoreLoader for V2Loader {
                 runtime.bus_count()
             )));
         }
-        let part = Part::new(runtime, tree.clone())?;
+        let mut part = Part::new(runtime, tree.clone())?;
+        if streams && let Some(stream) = &stream {
+            // Heads bound only starts; running voices request a page ahead.
+            part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
+            part._stream = Some(stream.clone());
+        }
         progress(Progress::DONE);
-        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument, scripts })
+        Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument, scripts, stream })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
@@ -1151,5 +1204,21 @@ mod tests {
         core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
         let heard = (0..40).any(|_| loud(&core.render(128), 0, 128));
         assert!(heard, "no output; missing: {:?}", loaded.report.missing);
+
+        // Samples stream: only start data is resident, and an idle budget drops it.
+        let stream = loaded.stream.expect("Kontakt samples stream");
+        let (held, full) = (stream.resident_bytes(), loaded.report.decoded.full_bytes);
+        assert!(held > 0 && held < full, "{held} of {full} bytes resident");
+        core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 60, id: -1, clap: true }));
+        (0..400).for_each(|_| _ = core.render(128));
+        assert!(stream.trim(0, core.clock(0)) > 0, "idle start data is dropped");
+        assert!(stream.resident_bytes() < held);
+        // A purged sample's first start is refused and reloads it; later starts play.
+        let again = (2..200).any(|id| {
+            core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id, clap: true }));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            (0..4).any(|_| loud(&core.render(128), 0, 128))
+        });
+        assert!(again, "the purged sample reloads");
     }
 }

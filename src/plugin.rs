@@ -175,7 +175,14 @@ pub struct Selection {
     pub buses: Vec<Bus>,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
+    /// Megabytes of sample start data the rack keeps in memory; past it,
+    /// samples idle for [`IDLE_SECONDS`] read from disk again when played.
+    /// 0 keeps everything.
+    pub memory_budget_mb: u32,
 }
+
+/// Seconds a streamed sample goes unplayed before the memory budget may drop it.
+pub const IDLE_SECONDS: f64 = 30.0;
 
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -293,6 +300,13 @@ pub(crate) struct PartShared {
     /// The loaded part's script interface models; [`Shared::apply_effects`]
     /// updates them and republishes [`PartView::interfaces`].
     scripts: Mutex<crate::sound::ScriptUi>,
+    /// The loaded part's streamed samples, if they stream.
+    stream: Mutex<Option<Arc<crate::sound::Stream>>>,
+    /// The part's clock in frames, as the audio thread last saw it.
+    clock: AtomicU64,
+    /// Bytes of samples the part holds in memory, and would hold fully decoded.
+    pub(crate) resident_bytes: AtomicU64,
+    pub(crate) full_bytes: AtomicU64,
 }
 
 /// One control's value as last seen (`f64` bits).
@@ -877,6 +891,22 @@ impl Shared {
         }
     }
 
+    /// Fit streamed start data in `budget_mb`, shared evenly by the parts that
+    /// stream, dropping what has idled longest; refresh what each holds.
+    fn trim_streams(&self, budget_mb: u32) {
+        let idle = (IDLE_SECONDS * self.rate()) as u64;
+        let parts = self.parts.lock().unwrap().clone();
+        let streams: Vec<_> =
+            parts.iter().filter_map(|p| Some((p, p.stream.lock().unwrap().clone()?))).collect();
+        let share = u64::from(budget_mb) * (1 << 20) / streams.len().max(1) as u64;
+        for (part, stream) in streams {
+            if budget_mb > 0 {
+                stream.trim(share, part.clock.load(Ordering::Relaxed).saturating_sub(idle));
+            }
+            part.resident_bytes.store(stream.resident_bytes(), Ordering::Relaxed);
+        }
+    }
+
     fn reset_midi(&self) {
         while self.keyboard.pop().is_some() {}
         for owner in &self.key_owners {
@@ -976,6 +1006,7 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.flush_ready();
         shared.apply_effects();
+        shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
         load_multi(params);
@@ -1077,6 +1108,9 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     atoms.load_progress.store(0, Ordering::Relaxed);
     let generation = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
     if part.path.is_empty() {
+        *atoms.stream.lock().unwrap() = None;
+        atoms.resident_bytes.store(0, Ordering::Relaxed);
+        atoms.full_bytes.store(0, Ordering::Relaxed);
         shared.view.lock().unwrap().parts[slot].status.clear();
         shared.publish_part((slot, generation, None));
         return true;
@@ -1107,6 +1141,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             trace.detail("groups", d.groups);
             trace.detail("samples", d.samples);
             trace.detail("scripts", d.scripts);
+            let full = d.full_bytes;
             let missing = loaded.report.missing.len();
             v.status = format!("{} · {} zones · {} groups", d.format, d.zones, d.groups);
             if missing > 0 {
@@ -1126,6 +1161,10 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.instrument = loaded.instrument;
             v.keys = loaded.scripts.keys();
             *atoms.scripts.lock().unwrap() = loaded.scripts;
+            let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
+            atoms.resident_bytes.store(held.unwrap_or(full), Ordering::Relaxed);
+            atoms.full_bytes.store(full, Ordering::Relaxed);
+            *atoms.stream.lock().unwrap() = loaded.stream;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
@@ -1445,6 +1484,7 @@ impl PluginLogic for Sampler {
             for slot in 0..s.core.parts() {
                 let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
                 atoms.store_problems(s.core.problems(slot));
+                atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
             }
             s.until_poll = (rate * 0.1) as usize;

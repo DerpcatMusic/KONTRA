@@ -96,6 +96,8 @@ pub enum Command {
     Appearance(super::Appearance),
     StickyHeaders,
     ArtworkBlur,
+    /// [`crate::plugin::Selection::memory_budget_mb`].
+    MemoryBudget(u32),
 }
 
 enum Item {
@@ -337,7 +339,12 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 Item::Rule,
                 check("Artwork blur", !cx.selection.sharp_artwork, Command::ArtworkBlur),
                 check("Sticky headers", !cx.selection.sticky_off, Command::StickyHeaders),
+                Item::Rule,
+                Item::Info("Sample memory".into()),
             ]);
+            for (mb, label) in [(0, "Keep all"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")] {
+                items.push(check(label, cx.selection.memory_budget_mb == mb, Command::MemoryBudget(mb)));
+            }
             items
         }
     }
@@ -540,6 +547,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
         Command::StickyHeaders => cx.selection.sticky_off ^= true,
+        Command::MemoryBudget(mb) => cx.selection.memory_budget_mb = mb,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),
         Command::Channel(slot, channel) => cx.selection.parts[slot].channel = channel,
