@@ -34,8 +34,8 @@ impl View {
     }
 }
 
-/// What selects an articulation, as `Part::driver` stores it (in this order);
-/// the core reloads the part to apply it.
+/// What selects an articulation, as `Switching::to_bits` stores it (bits 1..4, in
+/// this order); the core remaps the playing part live.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Driver {
     #[default]
@@ -183,8 +183,10 @@ pub fn active(cx: &mut Cx, slot: usize) -> Option<usize> {
 fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -> El {
     let arts = &inst.articulations;
     let active = active(cx, slot);
-    let stored = cx.selection.parts.get(slot).map_or(0, |p| p.driver);
-    let mut driver = Driver::ALL.get(usize::from(stored)).copied().unwrap_or_default();
+    let inherited = inst.switching.to_bits();
+    let stored = cx.selection.parts.get(slot).map_or(0, |p| p.switching);
+    let bits = if stored & 0x80 != 0 { stored & 0x7f } else { inherited };
+    let mut driver = Driver::ALL.get(usize::from(bits >> 1 & 7)).copied().unwrap_or_default();
     let tabs = Driver::ALL
         .into_iter()
         .map(|d| {
@@ -197,7 +199,11 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
         })
         .collect();
     if let Some(part) = cx.selection.parts.get_mut(slot) {
-        part.driver = Driver::ALL.iter().position(|&d| d == driver).unwrap_or(0) as u8;
+        let now = Driver::ALL.iter().position(|&d| d == driver).unwrap_or(0) as u8;
+        // Owner and key policy stay; only the driver is remapped.
+        if now != bits >> 1 & 7 {
+            part.switching = 0x80 | bits & !0b1110 | now << 1;
+        }
     }
     let head = row![section("Articulations"), caption(format!("{}", arts.len())).fill(secondary()), spacer(), caption("Remap all to").fill(secondary()).lines(1), segmented(tabs)]
         .gap(SPACE)
