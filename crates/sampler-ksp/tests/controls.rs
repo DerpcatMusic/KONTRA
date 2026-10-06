@@ -163,10 +163,12 @@ fn source_controls_drive_audio_without_a_ui_and_keep_polyphonic_memory_separate(
 
 #[test]
 fn source_controls_reject_ambiguous_identity_and_invalid_declarations() {
+    // v2: unbound controls get derived identities.
+    for bindings in [&[][..], &BINDINGS[..3]] {
+        assert!(compile(SOURCE, 48000, limits(), bindings).is_ok());
+    }
     for bindings in [
-        &[][..],
-        &BINDINGS[..3],
-        &[("$enabled", ENABLED), ("$enabled", LEVEL)],
+        &[("$enabled", ENABLED), ("$enabled", LEVEL)][..],
         &[("$enabled", ENABLED), ("$level", ENABLED)],
     ] {
         assert!(compile(SOURCE, 48000, limits(), bindings).is_err());
@@ -174,13 +176,21 @@ fn source_controls_reject_ambiguous_identity_and_invalid_declarations() {
     let mut unused = BINDINGS.to_vec();
     unused.push(("$missing", ControlId(999)));
     assert!(compile(SOURCE, 48000, limits(), &unused).is_err());
+    // v2: reversed ranges normalize, literals wrap, and out-of-range initial
+    // values clamp with a warning.
+    for (declaration, warns) in [
+        ("declare ui_knob $level(100,-100,1)", false),
+        ("declare ui_knob $level(0,100,0)", false),
+        ("declare ui_slider $level(-2147483649,0)", false),
+        ("declare ui_slider $level(0,2147483648)", false),
+        ("declare ui_button $level $level := 2", true),
+        ("declare ui_switch $level $level := -1", true),
+    ] {
+        let text = format!("on init {declaration} end on on release end on");
+        let script = compile(&text, 48000, limits(), &[("$level", LEVEL)]).unwrap();
+        assert_eq!(!script.warnings().is_empty(), warns, "{declaration}");
+    }
     for declaration in [
-        "declare ui_knob $level(100,-100,1)",
-        "declare ui_knob $level(0,100,0)",
-        "declare ui_slider $level(-2147483649,0)",
-        "declare ui_slider $level(0,2147483648)",
-        "declare ui_button $level $level := 2",
-        "declare ui_switch $level $level := -1",
         "declare ui_slider $level(0,100) $level := $other",
         "declare ui_slider $level(0,100) declare ui_slider $level(0,100)",
     ] {
@@ -359,13 +369,17 @@ fn ui_handlers_wait_and_control_note_playback_without_fabricated_notes() {
         rt.flush_ended(|_| true);
         assert_eq!(rt.note_count(), 0);
     });
-    for invalid in [
+    let invalid = "on init declare ui_button $button end on on ui_control($missing) end on";
+    assert!(compile(invalid, 48000, limits(), &[("$button", BUTTON)]).is_err());
+    // v2: note-only operands in UI callbacks read 0 / write nothing, and a later
+    // duplicate ui_control replaces the earlier one (Kontakt), all with warnings.
+    for warned in [
         "on init declare ui_button $button end on on ui_control($button) $button := $NOTE_HELD end on",
         "on init declare ui_button $button declare polyphonic $p end on on ui_control($button) $p := 1 end on",
         "on init declare ui_button $button end on on ui_control($button) end on on ui_control($button) end on",
-        "on init declare ui_button $button end on on ui_control($missing) end on",
     ] {
-        assert!(compile(invalid, 48000, limits(), &[("$button", BUTTON)]).is_err());
+        let script = compile(warned, 48000, limits(), &[("$button", BUTTON)]).unwrap();
+        assert!(!script.warnings().is_empty(), "{warned}");
     }
 }
 
@@ -481,14 +495,20 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
             );
         });
     }
+    // v2: literals wrap, `on init` is executable, event reads there warn.
+    for (source, warns) in [
+        ("on init declare $a := 2147483648 end on", false),
+        ("on init declare $a := -2147483649 end on", false),
+        ("on init declare $a := $EVENT_NOTE end on", true),
+        ("on init declare $a declare $b $a := $b end on", false),
+    ] {
+        let script = compile(source, 48000, limits(), &[]).unwrap();
+        assert_eq!(!script.warnings().is_empty(), warns, "{source}");
+    }
     for source in [
-        "on init declare $a := 2147483648 end on",
-        "on init declare $a := -2147483649 end on",
         "on init declare $a declare polyphonic $a end on",
         "on init declare $a declare ui_button $a end on",
-        "on init declare $a := $EVENT_NOTE end on",
         "on init declare $a := end on",
-        "on init declare $a declare $b $a := $b end on",
     ] {
         assert!(compile(source, 48000, limits(), &[]).is_err(), "{source}");
     }

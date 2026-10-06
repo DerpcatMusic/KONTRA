@@ -56,7 +56,7 @@ pub use stream::{
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
-pub use bus::{Bus, BusSend};
+pub use bus::{Bus, BusMix, BusSend};
 pub use resample::ResampleQuality;
 mod dsp;
 pub use dsp::{
@@ -68,8 +68,10 @@ use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
 mod gate;
 mod modulation;
+mod script_params;
 mod steal;
 mod voice_mod;
+pub use script_params::{EnvelopeStage, GroupParams, ParamScope};
 pub use steal::Stealing;
 pub use voice_mod::{
     Breakpoint, Breakpoints, Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModScale, ModSource,
@@ -98,13 +100,18 @@ pub use prepare::{AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, V
 mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
+mod ops;
 mod script;
+pub use ops::{
+    CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, real, real_bits,
+};
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
 mod variation;
 use gate::Channel;
 pub use gate::{ChannelAddress, ChannelId, ChannelScope};
-pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance};
+pub use ownership::{Expression, ExpressionId, FamilyId, Inheritance, MAX_EXPRESSION_GAIN};
 use ownership::{ExpressionOwner, Family};
 pub use schedule::Event;
 use schedule::{Action, Scheduled};
@@ -203,10 +210,20 @@ pub struct Limits {
     pub decisions: usize,
     pub commands: usize,
     pub behaviors: usize,
+    /// Instructions a callback runs per block before it is preempted and
+    /// continued at the next block (see [`Limits::DEFAULT_BEHAVIOR_FUEL`]).
     pub behavior_fuel: usize,
     pub behavior_cells: usize,
     /// Total note-owned integer cells, divided evenly across logical note slots.
     pub note_cells: usize,
+}
+
+impl Limits {
+    /// About 115 us of script work per callback per block on a desktop CPU,
+    /// under a tenth of the 64-frame deadline at 48 kHz. Measured over 52
+    /// library scripts: all but two finish every callback within it; the
+    /// other two need up to five blocks.
+    pub const DEFAULT_BEHAVIOR_FUEL: usize = 10_000;
 }
 
 #[derive(Clone, Copy)]
@@ -275,6 +292,10 @@ struct Voice {
     born: u64,
     /// Fading out after being stolen; no longer counts against polyphony.
     stolen: bool,
+    /// The region's group, for script group layers.
+    group: Option<u32>,
+    /// Script-layer gains at the end of the last rendered chunk.
+    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -448,12 +469,21 @@ pub struct Runtime {
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
     behavior_ready: Vec<behavior::Ready>,
+    /// Callbacks preempted on fuel, and callbacks queued behind them to keep
+    /// their script's event order; resumed at the next block, oldest first.
+    yielded: std::collections::VecDeque<BehaviorId>,
+    preemptions: u64,
+    longest_preempted: u64,
     dispatching_behavior: bool,
     behavior_fuel: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
     note_stride: usize,
     note_values: Box<[i64]>,
+    note_params: Box<[script_params::NoteParams]>,
+    /// Set once a script writes a voice parameter; voices then render in chunks.
+    // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
+    script_params: bool,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -462,6 +492,7 @@ pub struct Runtime {
     now: u64,
     order: u64,
     nonfinite_frames: u64,
+    ops: ops::OpState,
 }
 
 impl Runtime {
@@ -537,6 +568,7 @@ impl Runtime {
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
             modulation: voice_mod::VoiceModState::new(&plan.voice_modulation, limits.voices)?,
+            script: script_params::EngineLayers::new(&plan),
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
@@ -568,6 +600,9 @@ impl Runtime {
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
             behavior_ready: Vec::with_capacity(ready_capacity),
+            yielded: std::collections::VecDeque::with_capacity(limits.behaviors),
+            preemptions: 0,
+            longest_preempted: 0,
             dispatching_behavior: false,
             behavior_fuel: limits.behavior_fuel,
             behavior_stride,
@@ -578,9 +613,13 @@ impl Runtime {
             now: 0,
             order: 0,
             nonfinite_frames: 0,
+            ops: ops::OpState::default(),
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
+            note_params: vec![script_params::NoteParams::default(); limits.notes]
+                .into_boxed_slice(),
+            script_params: false,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -596,6 +635,14 @@ impl Runtime {
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }
+    /// Times a callback ran out of per-block fuel and continued next block.
+    pub fn preemptions(&self) -> u64 {
+        self.preemptions
+    }
+    /// Longest time, in frames, a preempted callback has spanned so far.
+    pub fn longest_preempted_frames(&self) -> u64 {
+        self.longest_preempted
+    }
     pub fn now(&self) -> u64 {
         self.now
     }
@@ -610,6 +657,42 @@ impl Runtime {
     }
 
     /// Frames silenced because finite source values overflowed during summation.
+    /// Buses of the active plan.
+    pub fn bus_count(&self) -> usize {
+        self.plans
+            .get(self.active_plan.0)
+            .map_or(0, |g| g.prepared.buses.len())
+    }
+
+    /// Each bus of the active plan's peak level since the last call, after
+    /// its mix gain; taking them resets them.
+    pub fn take_bus_peaks(&mut self, mut each: impl FnMut(usize, [f32; 2])) {
+        if let Some(g) = self.plans.get_mut(self.active_plan.0) {
+            for (bus, peak) in g.dsp.buses.peaks.iter_mut().enumerate() {
+                each(bus, std::mem::take(peak));
+            }
+        }
+    }
+
+    /// Mix `bus` of the active plan from the next rendered frame on. Older
+    /// generations still sounding keep their own mix.
+    pub fn set_bus_mix(&mut self, bus: usize, mix: BusMix) -> Result<(), Error> {
+        if !mix.gain.iter().all(|g| g.is_finite()) {
+            return Err(Error::InvalidInput);
+        }
+        let generation = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
+        *generation
+            .dsp
+            .buses
+            .mix
+            .get_mut(bus)
+            .ok_or(Error::InvalidInput)? = mix;
+        Ok(())
+    }
+
     pub fn nonfinite_frames(&self) -> u64 {
         self.nonfinite_frames
     }
@@ -849,6 +932,7 @@ impl Runtime {
             ..release::ReleaseTimes::default()
         };
         self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
+        self.note_params[id.index] = script_params::NoteParams::default();
         self.plans.get_mut(plan.0).unwrap().projections.admit(
             id.index,
             0,
@@ -1038,6 +1122,8 @@ impl Runtime {
             started: at == self.now,
             born: self.voice_order,
             stolen: false,
+            group: None,
+            script_gains: None,
         })?);
         self.voice_order += 1;
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);

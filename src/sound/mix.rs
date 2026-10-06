@@ -1,7 +1,7 @@
 //! Plain mixer settings and meters shared by the shell and every core.
 
+use super::tree::NodeMix;
 use super::{BUSES, RACK_SLOTS};
-use crate::fx::OUTS;
 
 /// [`PartControls::aux`] when the part sends nowhere.
 pub const NO_AUX: u8 = u8::MAX;
@@ -9,7 +9,9 @@ pub const NO_AUX: u8 = u8::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PartControls {
+    /// Host MIDI/note input port.
     pub port: u8,
+    /// The DAW pair (output bus) the instrument plays to.
     pub output: u8,
     /// MIDI channel, or −1 for omni.
     pub channel: i16,
@@ -23,9 +25,6 @@ pub struct PartControls {
     pub aux: u8,
     /// Linear gain of that send.
     pub aux_gain: f32,
-    /// Per output channel the instrument plays to past its own output (a
-    /// mic mixer's "Out 2"), the bus it goes to; [`NO_AUX`] joins `output`.
-    pub outs: [u8; OUTS],
 }
 
 /// An output bus's fader: what it does to everything routed to it.
@@ -59,6 +58,8 @@ impl BusControls {
 pub struct Mix {
     pub parts: Vec<PartControls>,
     pub buses: [BusControls; BUSES],
+    /// Per part, its tree's nodes after the root ([`super::tree`]).
+    pub nodes: Vec<Vec<NodeMix>>,
 }
 
 impl Default for Mix {
@@ -66,6 +67,7 @@ impl Default for Mix {
         Self {
             parts: vec![PartControls::default(); RACK_SLOTS],
             buses: std::array::from_fn(|n| BusControls::on(n as u8)),
+            nodes: vec![Vec::new(); RACK_SLOTS],
         }
     }
 }
@@ -97,8 +99,22 @@ impl Default for PartControls {
             solo: false,
             aux: NO_AUX,
             aux_gain: 0.0,
-            outs: [NO_AUX; OUTS],
         }
     }
 }
 
+
+/// Left/right gains of a linear `gain` at balance `pan` (−1..=1); silence
+/// for non-finite input.
+pub fn balance(gain: f32, pan: f32) -> [f32; 2] {
+    if !gain.is_finite() || !pan.is_finite() {
+        return [0.0; 2];
+    }
+    let pan = pan.clamp(-1.0, 1.0);
+    [gain * (1.0 - pan.max(0.0)), gain * (1.0 + pan.min(0.0))]
+}
+
+/// Linear gain of a fader at `db`, within −60..=+6 dB; unity if not finite.
+pub fn db_gain(db: f32) -> f32 {
+    if db.is_finite() { 10f32.powf(db.clamp(-60.0, 6.0) / 20.0) } else { 1.0 }
+}
