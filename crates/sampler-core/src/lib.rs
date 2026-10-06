@@ -55,6 +55,7 @@ mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusSend};
+pub use resample::ResampleQuality;
 mod dsp;
 pub use dsp::{
     Biquad, ControlRange, Delay, FilterKind, Parameter, Processor, StateVariableFilter, SvfMode,
@@ -419,7 +420,7 @@ pub struct Runtime {
     channels: Arena<Channel>,
     voices: Arena<Voice>,
     voice_activity: Box<[u64]>,
-    kernel: &'static resample::Kernel,
+    kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     families: Arena<Family>,
@@ -446,6 +447,17 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Select rate-conversion quality: Realtime (the default) for live playback,
+    /// High for offline renders and reference comparisons. Control side; takes
+    /// effect at the next rendered frame and keeps every voice's source phase.
+    pub fn set_resample_quality(&mut self, quality: ResampleQuality) {
+        self.kernel = resample::Kernel::new(quality);
+    }
+    pub fn with_resample_quality(mut self, quality: ResampleQuality) -> Self {
+        self.set_resample_quality(quality);
+        self
+    }
+
     pub fn id(&self) -> RuntimeId {
         RuntimeId(self.notes.runtime)
     }
@@ -523,7 +535,7 @@ impl Runtime {
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
-            kernel: resample::Kernel::shared(),
+            kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
             families: Arena::new(id, limits.families),

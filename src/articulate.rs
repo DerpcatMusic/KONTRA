@@ -329,29 +329,7 @@ impl Route {
     }
 }
 
-/// What reaches a part.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum In {
-    /// Exact owner, velocity and initial tuning in semitones.
-    HostOn(crate::engine::HostNote, u8, f32),
-    HostOff(crate::engine::HostPattern),
-    HostChoke(crate::engine::HostPattern),
-    HostExpression(crate::engine::HostPattern, crate::engine::HostExpression),
-    NoteOn(u8, u8, u8),
-    NoteOff(u8, u8),
-    Cc(u8, u8, u8),
-    /// 0..=16383, centre 8192.
-    Bend(u8, u16),
-    Pressure(u8, u8),
-    PolyAt(u8, u8, u8),
-    /// Host note expressions, by channel and key: semitones, pressure
-    /// (0..=127), linear gain, pan (−1..=1), brightness (0..=127).
-    NoteTune(u8, u8, f32),
-    NotePressure(u8, u8, u8),
-    NoteGain(u8, u8, f32),
-    NotePan(u8, u8, f32),
-    NoteBrightness(u8, u8, u8),
-}
+pub use crate::sound::event::In;
 
 impl In {
     /// A host event as a part takes it. Per-note MIDI 2.0 bodies (CLAP note
