@@ -74,11 +74,13 @@ pub enum ModSource {
     /// The note's script value for "from script" modulator `id`
     /// ([`crate::Instruction::WriteModValue`]), `clamp(v / 1e6, -1, 1)`.
     Script(u16),
+    /// The note's raw pitch bend ([`crate::Expression::bend`]), -1..=1.
+    PitchBend,
 }
 
 impl ModSource {
     fn bipolar(&self) -> bool {
-        matches!(self, Self::Lfo(_))
+        matches!(self, Self::Lfo(_) | Self::PitchBend)
     }
 }
 
@@ -188,6 +190,7 @@ enum Prepared {
     Constant,
     ReleaseCounter(u32),
     Script(u16),
+    PitchBend,
 }
 
 struct Program {
@@ -273,6 +276,7 @@ impl VoiceModulation {
                         }
                         ModSource::ReleaseCounter { frames } => Prepared::ReleaseCounter(frames),
                         ModSource::Script(id) => Prepared::Script(id),
+                        ModSource::PitchBend => Prepared::PitchBend,
                     })
                 })
                 .collect::<Result<Box<[_]>, Error>>()?;
@@ -389,6 +393,7 @@ impl Prepared {
             Self::Timbre => f64::from(inputs.timbre) * FULL_SCALE,
             Self::Random => uniform(hash(seed, index as u64, u64::MAX)),
             Self::Constant => 1.0,
+            Self::PitchBend => inputs.bend,
             Self::Script(id) => (f64::from(inputs.script.get(id)) / 1_000_000.0).clamp(-1.0, 1.0),
             Self::ReleaseCounter(frames) => {
                 (1.0 - inputs.held as f64 / f64::from(frames)).clamp(0.0, 1.0)
@@ -505,6 +510,8 @@ pub(crate) struct Inputs<'a> {
     /// Frames from the note's admission to its key release (or now).
     pub held: u64,
     pub script: crate::script_params::ModValues,
+    /// The note's raw pitch bend, -1..=1.
+    pub bend: f64,
 }
 
 impl<'a> Inputs<'a> {
@@ -523,6 +530,7 @@ impl<'a> Inputs<'a> {
             controllers,
             held,
             script,
+            bend: expression.bend,
         }
     }
 }

@@ -669,24 +669,16 @@ impl Translation {
                         continue;
                     }
                 };
+                // Bend is bipolar: shapers read (bend + 1) / 2 (Pacific's PB
+                // shapers sit at 0.81 at rest and 1 at full bend). Bend to
+                // pitch stays the note's native expression bend in lowering.
                 let bipolar = source.bipolar();
-                let bend = source == ir::ModulationSource::PitchBend;
                 self.ir.modulators.push(ir::Modulator {
                     scope: ir::Scope::Voice,
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
                 for target in &params.targets {
-                    // Bend to pitch is the note's native expression bend.
-                    if bend && target.param != "pitch" {
-                        self.unsupported(
-                            &at,
-                            "pitch bend to a non-pitch target",
-                            &target.param,
-                            not_modeled,
-                        );
-                        continue;
-                    }
                     routes.extend(self.route(&at, modulator, !bipolar, target));
                 }
             }
