@@ -1595,7 +1595,7 @@ fn screenshot() {
         ("sound-effects", true, &["tab-sound", "edit-lower-Effects"]),
         // A value double-clicked into a field.
         ("sound-typing", true, &["tab-sound"]),
-        ("mixer-wide", true, &["tab-mixer", "mix-wide"]),
+        ("mixer-wide", true, &["tab-mixer", "mix-mode-flat", "mix-wide"]),
         // Auto-align on: the settings and a part's timing.
         ("timing", true, &["app-menu"]),
         ("timing-part", true, &["more-0"]),
@@ -2402,6 +2402,7 @@ fn mixer_routing_edits() {
     let part = |p: &SamplerParams, n: usize| p.selection.read().unwrap().parts[n].clone();
     let mut h = Harness::new(&p, 1180., 760.);
     h.press("tab-mixer");
+    h.press("mix-mode-flat");
     let shows = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
     assert!(shows(&h, "strip-0") && shows(&h, "strip-1") && shows(&h, "master-strip"));
     assert!(shows(&h, "bus-0") && !shows(&h, "bus-2"), "only buses in use");
@@ -2471,6 +2472,7 @@ fn mixer_meters_paint_without_a_rebuild() {
     let (width, height) = (1180u16, 760u16);
     let mut h = Harness::new(&p, f64::from(width), f64::from(height));
     h.press("tab-mixer");
+    h.press("mix-mode-flat");
     let root = (h.build)(&mut h.ui, &mut h.bridge);
     h.ui.frame(root.clone(), Some(h.size), Input::default(), 0.).unwrap();
     let quiet = pixels(&h.ui, width, height);
