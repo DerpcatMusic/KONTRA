@@ -71,6 +71,9 @@ pub struct Part {
     pub mpe: bool,
     /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
     pub bend_range: u8,
+    /// What selects articulations ([`crate::sound::driver`]): 0 keyswitches,
+    /// 1 velocity, 2 channel, 3 CC 32, 4 program change.
+    pub driver: u8,
 }
 
 impl Default for Part {
@@ -95,6 +98,7 @@ impl Default for Part {
             nodes: Vec::new(),
             mpe: false,
             bend_range: 0,
+            driver: 0,
         }
     }
 }
@@ -302,6 +306,9 @@ pub(crate) struct PartShared {
     scripts: Mutex<crate::sound::ScriptUi>,
     /// The loaded part's streamed samples, if they stream.
     stream: Mutex<Option<Arc<crate::sound::Stream>>>,
+    /// The articulation playing, by index, as the audio thread last saw it;
+    /// `u32::MAX` when unknown (none, or a script holds it).
+    pub(crate) articulation: AtomicU32,
     /// The part's clock in frames, as the audio thread last saw it.
     clock: AtomicU64,
     /// Bytes of samples the part holds in memory, and would hold fully decoded.
@@ -461,7 +468,7 @@ pub struct Shared {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64)>,
+    pub(crate) attempted: Option<(String, u32, u64, u8, bool)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -1092,7 +1099,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     let atoms = shared.part(slot).unwrap();
     let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits());
+    let target = (part.path.clone(), part.program, rate.to_bits(), part.driver, part.mpe);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1127,7 +1134,13 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
-    let request = LoadRequest { path: part.path.clone().into(), program: part.program, sample_rate: rate };
+    let request = LoadRequest {
+        path: part.path.clone().into(),
+        program: part.program,
+        sample_rate: rate,
+        driver: crate::sound::driver(part.driver),
+        mpe: part.mpe,
+    };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
     let result = V2Loader.prepare(&request, &mut progress, &canceled);
     let mut view = shared.view.lock().unwrap();
@@ -1487,6 +1500,8 @@ impl PluginLogic for Sampler {
                 let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
                 atoms.store_problems(s.core.problems(slot));
                 atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
+                let playing = s.core.articulation(slot).map_or(u32::MAX, |a| a as u32);
+                atoms.articulation.store(playing, Ordering::Relaxed);
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
             }
             s.until_poll = (rate * 0.1) as usize;

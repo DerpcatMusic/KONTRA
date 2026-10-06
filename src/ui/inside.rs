@@ -34,8 +34,8 @@ impl View {
     }
 }
 
-/// What selects an articulation. Mirrors `sampler_ir::Driver` on the
-/// expression branch; the core applies it once `Part` carries it.
+/// What selects an articulation, as `Part::driver` stores it (in this order);
+/// the core reloads the part to apply it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Driver {
     #[default]
@@ -65,7 +65,6 @@ impl Driver {
 pub struct State {
     /// `None` until picked: the interface when there is one, else Info.
     pub view: Option<View>,
-    pub driver: Driver,
     /// The articulation playing, following switch keys as they are played.
     pub active: Option<usize>,
     /// The group the mapping picks out.
@@ -168,6 +167,11 @@ fn played(cx: &Cx, arts: &[ir::Articulation]) -> Option<usize> {
 pub fn active(cx: &mut Cx, slot: usize) -> Option<usize> {
     let inst = cx.view.parts.get(slot)?.instrument.clone()?;
     let arts = &inst.articulations;
+    // The runtime's own, when it holds the articulation; else follow the keys.
+    let held = cx.p.shared.part(slot).map(|p| p.articulation.load(std::sync::atomic::Ordering::Relaxed));
+    if let Some(n) = held.map(|n| n as usize).filter(|&n| n < arts.len()) {
+        return Some(n);
+    }
     let now = played(cx, arts);
     let st = cx.state.inside.entry(slot).or_default();
     if now.is_some() {
@@ -179,8 +183,8 @@ pub fn active(cx: &mut Cx, slot: usize) -> Option<usize> {
 fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -> El {
     let arts = &inst.articulations;
     let active = active(cx, slot);
-    let st = cx.state.inside.entry(slot).or_default();
-    let mut driver = st.driver;
+    let stored = cx.selection.parts.get(slot).map_or(0, |p| p.driver);
+    let mut driver = Driver::ALL.get(usize::from(stored)).copied().unwrap_or_default();
     let tabs = Driver::ALL
         .into_iter()
         .map(|d| {
@@ -192,7 +196,9 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
             if fits { el } else { el.opacity(0.4) }
         })
         .collect();
-    cx.state.inside.entry(slot).or_default().driver = driver;
+    if let Some(part) = cx.selection.parts.get_mut(slot) {
+        part.driver = Driver::ALL.iter().position(|&d| d == driver).unwrap_or(0) as u8;
+    }
     let head = row![section("Articulations"), caption(format!("{}", arts.len())).fill(secondary()), spacer(), caption("Remap all to").fill(secondary()).lines(1), segmented(tabs)]
         .gap(SPACE)
         .align(Align::Center)
