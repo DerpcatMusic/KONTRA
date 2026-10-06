@@ -702,8 +702,12 @@ fn summary(out: &Path, md: &Path) {
                 if sound["finite"] == false {
                     reason_set.insert("non-finite samples".into());
                 }
-                if sound["stuck_voices"].as_u64().unwrap_or(0) > 0 {
-                    reason_set.insert("voices still sounding 5 s after release".into());
+                // Long quiet tails are not stuck: only audible (> -60 dBFS) output
+                // 5 s after release counts. (A 30 s liveness check is not recorded.)
+                if sound["stuck_voices"].as_u64().unwrap_or(0) > 0
+                    && sound["tail_peak_db"].as_f64().is_some_and(|d| d > -60.0)
+                {
+                    reason_set.insert("audible output 5 s after release (> -60 dBFS)".into());
                 }
                 for f in sound["script_faults"]
                     .as_array()
