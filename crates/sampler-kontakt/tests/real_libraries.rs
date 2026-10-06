@@ -149,7 +149,11 @@ fn vista_cellos_render_from_loose_ncw_samples() {
         .filter(|a| a.encoding == sampler_ir::Encoding::Ncw)
         .count();
     assert_eq!(ncw, ir.assets.len());
-    assert!(peak > 0.01, "audible: peak {peak}");
+    // Kontakt 8 plays this note at -45.0 dBFS peak (KONTAKT_REFERENCE.md,
+    // dynamics at their default); vista is quiet by design. The measured
+    // offset of this render is under +5 dB, so hold it to within 6 dB.
+    let db = 20.0 * f64::from(peak).log10();
+    assert!((db + 45.0).abs() < 6.0, "{db:.1} dBFS peak against Kontakt's -45.0");
 }
 
 /// The first instrument of every installed library translates, or
