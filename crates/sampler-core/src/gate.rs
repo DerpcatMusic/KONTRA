@@ -213,7 +213,7 @@ impl Runtime {
         });
         let mut released = 0;
         for i in 0..self.notes.slots.len() {
-            let Some(note) = &mut self.notes.slots[i].value else {
+            let Some(note) = self.notes.slots[i].value else {
                 continue;
             };
             if note.input_down
@@ -221,6 +221,7 @@ impl Runtime {
                     .input
                     .is_some_and(|input| input.channel_address() == address)
             {
+                let sustained = sustained && !self.script_sustain(note.plan);
                 let held = !self.selections[i].consumed_switch && (sustained || note.sostenuto);
                 let deferred =
                     self.release_key(NoteId(self.notes.id(i)), ReleaseCause::AllNotesOff, None);
@@ -318,6 +319,7 @@ impl Runtime {
         }
         let n = self.notes.get(note.0).unwrap();
         let sustained = self.follows_pedals(note.0.index)
+            && !self.script_sustain(n.plan)
             && self
                 .channels
                 .slots
@@ -363,6 +365,10 @@ impl Runtime {
         })
     }
 
+    fn script_sustain(&self, plan: super::PlanId) -> bool {
+        self.plans.get(plan.0).unwrap().prepared.script_sustain
+    }
+
     fn update_pedal_notes(
         &mut self,
         scope: ChannelScope,
@@ -375,11 +381,13 @@ impl Runtime {
             if !self.follows_pedals(i) {
                 continue;
             }
+            let script_sustain = self.script_sustain(self.notes.slots[i].value.unwrap().plan);
             let n = self.notes.slots[i].value.as_mut().unwrap();
             if !scope.contains(n.address) {
                 continue;
             }
             let bit = 1 << n.address.channel;
+            let sustained = if script_sustain { 0 } else { sustained };
             // Host notes retain physical capture semantics; generated notes have
             // a channel and logical key but never acquire an external input.
             let capture = if n.input.is_some() {

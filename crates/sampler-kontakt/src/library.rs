@@ -85,7 +85,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         assets: HashMap::new(),
         locations: Vec::new(),
         start_criteria: Vec::new(),
+        voice_groups: Vec::new(),
     };
+    if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
+        out.voice_groups(&chunk.data)
+            .map_err(|e| decode("voice groups", e))?;
+    }
     let groups = GroupList::try_from(
         program
             .0
@@ -316,9 +321,110 @@ struct Translation {
         ir::GroupRef,
         Vec<ni_file::kontakt::objects::StartCriteriaParams>,
     )>,
+    /// Kontakt voice group index -> `ir.voice_limits` index.
+    voice_groups: Vec<Option<usize>>,
+}
+
+const VOICE_GROUPS: u16 = 0x32;
+
+/// One `BVoiceLimit` (version 0x60): name, kill mode (Any, Oldest, Newest,
+/// Highest, Lowest), prefer released, max voices, fade ms, exclusion group.
+fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error> {
+    fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], ni_file::Error> {
+        let (head, rest) = data
+            .split_first_chunk::<N>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice limit".into()))?;
+        *data = rest;
+        Ok(*head)
+    }
+    let header = take::<3>(data)?;
+    if header != [0, 0x60, 0] {
+        return Err(ni_file::Error::Generic(format!(
+            "voice limit header {header:02x?}"
+        )));
+    }
+    let chars = u32::from_le_bytes(take(data)?) as usize;
+    if data.len() < chars * 2 {
+        return Err(ni_file::Error::Generic("truncated voice limit name".into()));
+    }
+    *data = &data[chars * 2..];
+    let kill = match i16::from_le_bytes(take(data)?) {
+        0 => ir::Kill::Any,
+        1 => ir::Kill::Oldest,
+        2 => ir::Kill::Newest,
+        3 => ir::Kill::Highest,
+        4 => ir::Kill::Lowest,
+        other => return Err(ni_file::Error::Generic(format!("voice kill mode {other}"))),
+    };
+    let prefer_released = take::<1>(data)?[0] != 0;
+    let voices = i32::from_le_bytes(take(data)?).max(1) as u32;
+    let fade = i32::from_le_bytes(take(data)?).max(0);
+    let exclusion = i32::from_le_bytes(take(data)?);
+    Ok((
+        ir::VoiceLimit {
+            voices,
+            kill,
+            prefer_released,
+            fade: ir::Time::Milliseconds(f64::from(fade)),
+        },
+        exclusion,
+    ))
+}
+
+/// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
+/// from Kontakt's engine in v1, `src/engine/ahdsr.rs`, control rate rate/32):
+/// decay and release fall geometrically to 3/43 of `1.075` above a `0.075`
+/// floor, which is exactly k = ln(3/43); the attack runs a geometric segment
+/// with base b = e^((1 − |c|)·ln 500000 − ln 20000) for authored curve c in
+/// −1..1: k = ln(b / (1 + b)) for c > 0 (fast start), ln((1 + b) / b) else.
+fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
+    let c = f64::from(curve.clamp(-1.0, 1.0));
+    // The engine rounds the base to f32 before its power.
+    let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+    let attack = if c > 0.0 {
+        (b / (1.0 + b)).ln()
+    } else {
+        ((1.0 + b) / b).ln()
+    };
+    (
+        ir::Curve::Exponential(attack),
+        ir::Curve::Exponential((3.0f64 / 43.0).ln()),
+    )
 }
 
 impl Translation {
+    /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
+    /// defined voice groups, then one voice limit per defined group.
+    fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
+        let (instrument, _) = voice_limit(&mut data)?;
+        self.ir.voice_limit = Some(instrument);
+        let (defined, mut data) = data
+            .split_first_chunk::<16>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice groups".into()))?;
+        self.voice_groups = vec![None; 128];
+        for g in 0..128 {
+            if defined[g / 8] & (1 << (g % 8)) != 0 {
+                let (limit, exclusion) = voice_limit(&mut data)?;
+                if exclusion >= 0 {
+                    self.unsupported(
+                        &format!("voice group {g}"),
+                        "voice group exclusion group",
+                        exclusion,
+                        ir::Reason::NotModeled,
+                    );
+                }
+                self.ir.voice_limits.push(limit);
+                self.voice_groups[g] = Some(self.ir.voice_limits.len() - 1);
+            }
+        }
+        if !data.is_empty() {
+            return Err(ni_file::Error::Generic(format!(
+                "{} bytes after the voice groups",
+                data.len()
+            )));
+        }
+        Ok(())
+    }
     fn unsupported(
         &mut self,
         location: &str,
@@ -342,20 +448,19 @@ impl Translation {
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
-        if v.release_trigger && v.rls_trig_counter != 0 {
-            self.unsupported(
-                &at,
-                "release trigger counter decay",
-                v.rls_trig_counter,
-                not_modeled,
-            );
-        }
         if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
-        if v.voice_group_index >= 0 {
-            self.unsupported(&at, "voice group", v.voice_group_index, not_modeled);
-        }
+        // 1-based (0 = none): Una Corda's groups use 1 and 2 with voice
+        // groups 0 and 1 defined, Afflatus 2 Horns KS 1..=8 with 0..=7.
+        let voice_group = usize::try_from(v.voice_group_index - 1).ok();
+        let voice_limit = voice_group.and_then(|g| {
+            let limit = self.voice_groups.get(g).copied().flatten();
+            if limit.is_none() {
+                self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
+            }
+            limit
+        });
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
@@ -395,6 +500,7 @@ impl Translation {
             }
         }
         let mut envelope = None;
+        let mut flex_release = None;
         let mut routes = Vec::new();
         if let Some(chunk) = group.0.find_first(INTERNAL_MODS) {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
@@ -411,32 +517,19 @@ impl Translation {
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
                     Modulator::Ahdsr(env) => {
-                        if env.unknown_flag != 0 {
-                            self.unsupported(
-                                &at,
-                                "AHD-only envelope mode",
-                                env.unknown_flag,
-                                not_modeled,
-                            );
-                            continue;
-                        }
-                        // Kontakt's stages are exponential (decay and release
-                        // fall to 3/43 in their stage time; the attack bends
-                        // with its curve). The IR states the authored times;
-                        // the stage law is reported, not guessed.
-                        self.unsupported(
-                            &at,
-                            "AHDSR stage law",
-                            format!("attack curve {}", env.attack_curve),
-                            not_modeled,
-                        );
                         let ms = |ms: f32| ir::Time::Milliseconds(f64::from(ms.max(0.0)));
+                        let (attack_shape, fall) = ahdsr_curves(env.attack_curve);
                         ir::ModulationSource::Envelope(ir::Envelope {
                             attack: ms(env.attack_ms),
                             hold: ms(env.hold_ms),
                             decay: ms(env.decay_ms),
                             sustain: f64::from(env.sustain.clamp(0.0, 1.0)),
                             release: ms(env.release_ms),
+                            attack_shape,
+                            decay_shape: fall,
+                            release_shape: fall,
+                            // The AHD-only switch (v1: `ahd_only = flag != 0`).
+                            one_shot: env.unknown_flag != 0,
                             ..Default::default()
                         })
                     }
@@ -444,14 +537,42 @@ impl Translation {
                         Some(lfo) => ir::ModulationSource::Lfo(lfo),
                         None => continue,
                     },
-                    Modulator::Flex(_) => {
-                        self.unsupported(
-                            &at,
-                            "flex envelope modulation",
-                            &params.name,
-                            not_modeled,
-                        );
-                        continue;
+                    Modulator::Flex(flex) => {
+                        // Point times are deltas from the previous point and
+                        // levels linear gain (audits/MODULATION.md, medium).
+                        // The curve parameter's law is not established: 0.5
+                        // is linear, other values play linear and are reported.
+                        if flex.points.iter().any(|p| p.curve != 0.5) {
+                            self.unsupported(
+                                &at,
+                                "flex envelope segment curve (linear used)",
+                                &params.name,
+                                ir::Reason::UnknownLaw,
+                            );
+                        }
+                        let sustain = flex.sustain as usize;
+                        if volume {
+                            // Held until the release segments end.
+                            let after: f32 = flex
+                                .points
+                                .iter()
+                                .skip(sustain + 1)
+                                .map(|p| p.time_ms.max(0.0))
+                                .sum();
+                            flex_release = Some(flex_release.unwrap_or(0.0f32).max(after));
+                        }
+                        ir::ModulationSource::Breakpoints(ir::Breakpoints {
+                            points: flex
+                                .points
+                                .iter()
+                                .map(|p| ir::Breakpoint {
+                                    time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
+                                    level: f64::from(p.level.clamp(0.0, 1.0)),
+                                    shape: ir::Curve::Linear,
+                                })
+                                .collect(),
+                            sustain: Some(sustain),
+                        })
                     }
                     Modulator::Other { chunk_id } => {
                         self.unsupported(
@@ -477,6 +598,19 @@ impl Translation {
                     routes.extend(self.route(&at, modulator, envelope_source, target));
                 }
             }
+        }
+        if let (None, Some(release_ms)) = (envelope, flex_release) {
+            // A flex volume envelope without an AHDSR plays against a gate
+            // that holds through the flex release, then ends the voice.
+            self.ir.modulators.push(ir::Modulator {
+                scope: ir::Scope::Voice,
+                source: ir::ModulationSource::Envelope(ir::Envelope {
+                    release: ir::Time::Milliseconds(f64::from(release_ms)),
+                    release_shape: ir::Curve::Step,
+                    ..Default::default()
+                }),
+            });
+            envelope = Some(ir::ModulatorRef(self.ir.modulators.len() - 1));
         }
         let mut velocity = ir::VelocityResponse::None;
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
@@ -508,6 +642,13 @@ impl Translation {
                     ModSource::MonoAftertouch => ir::ModulationSource::ChannelPressure,
                     ModSource::PolyAftertouch => ir::ModulationSource::PolyPressure,
                     ModSource::Constant => ir::ModulationSource::Constant,
+                    // Kontakt manual (Source module, T): counts down from T ms
+                    // at note-on and holds its value at note-off.
+                    ModSource::ReleaseTriggerCounter if v.rls_trig_counter > 0 => {
+                        ir::ModulationSource::ReleaseCounter(ir::Time::Milliseconds(f64::from(
+                            v.rls_trig_counter,
+                        )))
+                    }
                     ModSource::RandomUnipolar => ir::ModulationSource::Random,
                     ModSource::Unassigned => continue,
                     other => {
@@ -561,6 +702,7 @@ impl Translation {
                 law: ir::PanLaw::Balance,
             },
             tune: ir::Pitch::Ratio(f64::from(v.tune)),
+            voice_limit,
             ..Default::default()
         });
         Ok(Some(GroupInfo {
@@ -618,15 +760,14 @@ impl Translation {
             "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
-        let shape = match target.shaper.as_ref().filter(|s| s.enabled) {
+        // The invert flag does not act through an enabled shaper: Vista Full
+        // Strings stores identical shaped crossfade copies (mic `cl`/`dc`,
+        // `BALANCE_COMP`) that differ only in the flag and must play alike,
+        // and no inversion order makes both play the same.
+        let shaper = target.shaper.as_ref().filter(|s| s.enabled);
+        let invert = target.invert && shaper.is_none();
+        let shape = match shaper {
             None => None,
-            Some(_) if target.invert => {
-                return report(
-                    self,
-                    "inverted shaped modulation (order)",
-                    ir::Reason::UnknownLaw,
-                );
-            }
             Some(shaper) => {
                 use ni_file::kontakt::objects::ShaperCurve;
                 let points: Vec<(f64, f64)> = match &shaper.curve {
@@ -638,15 +779,22 @@ impl Translation {
                             .map(|(n, y)| (n as f64 / last, f64::from(*y)))
                             .collect()
                     }
-                    ShaperCurve::Breakpoints(points)
-                        if !points.is_empty() && points.iter().all(|p| p.curve == 0.0) =>
-                    {
+                    ShaperCurve::Breakpoints(points) if !points.is_empty() => {
+                        if points.iter().any(|p| p.curve != 0.0) {
+                            // Segment curvature (-1..1) has no known law.
+                            self.unsupported(
+                                at,
+                                "curved modulation shaper segment (linear used)",
+                                &target.param,
+                                ir::Reason::UnknownLaw,
+                            );
+                        }
                         points
                             .iter()
                             .map(|p| (f64::from(p.x), f64::from(p.y)))
                             .collect()
                     }
-                    _ => return report(self, "curved modulation shaper", ir::Reason::UnknownLaw),
+                    _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
                 };
                 self.ir.shapes.push(ir::Shape { points });
                 Some(ir::ShapeRef(self.ir.shapes.len() - 1))
@@ -656,7 +804,7 @@ impl Translation {
             source,
             target: route_target,
             depth,
-            invert: target.invert,
+            invert,
             shape,
             smoothing: ir::Time::Milliseconds(f64::from(target.lag_ms)),
             scale: None,
@@ -837,8 +985,12 @@ impl Translation {
                 low: z.velocities[0].max(1),
                 high: z.velocities[1].max(1),
             },
+            // Kontakt's system pedal script holds the note-off under sustain,
+            // so release-trigger groups fire when the note actually releases:
+            // at pedal-up for a sustained key (at key-up with
+            // NO_SYS_SCRIPT_PEDAL, which sampler-ksp maps to script sustain).
             trigger: if group.release {
-                ir::Trigger::KeyRelease
+                ir::Trigger::GateRelease
             } else {
                 ir::Trigger::Attack
             },
@@ -1155,12 +1307,36 @@ mod modulation {
     use super::*;
     use ni_file::kontakt::objects::{Lfo, LfoRecord, ModTarget};
 
+    #[test]
+    fn ahdsr_stage_laws_are_native_exponential_curves() {
+        let curve = |k: ir::Curve, t: f64| match k {
+            ir::Curve::Exponential(k) => (k * t).exp_m1() / k.exp_m1(),
+            ir::Curve::Linear | ir::Curve::Step => t,
+        };
+        let (attack, fall) = ahdsr_curves(0.5);
+        // Decay: 1.075·(3/43)^t − 0.075 falls from 1 to 0.
+        for t in [0.25, 0.5, 0.9] {
+            let kontakt = 1.075 * (3.0f64 / 43.0).powf(t) - 0.075;
+            assert!((1.0 - curve(fall, t) - kontakt).abs() < 2e-3, "{t}");
+        }
+        // Positive curve: geometric from 1 + b down to b, read as start − state.
+        let b = f64::from(((0.5 * 500_000f64.ln() - 20_000f64.ln()).exp()) as f32);
+        for t in [0.1, 0.5] {
+            let kontakt = (1.0 + b) * (1.0 - (b / (1.0 + b)).powf(t));
+            assert!((curve(attack, t) - kontakt).abs() < 1e-9, "{t}");
+        }
+        // Negative curves start slowly.
+        let (attack, _) = ahdsr_curves(-0.5);
+        assert!(curve(attack, 0.5) < 0.5);
+    }
+
     fn translation() -> Translation {
         Translation {
             ir: ir::Instrument::default(),
             assets: HashMap::new(),
             locations: Vec::new(),
             start_criteria: Vec::new(),
+            voice_groups: Vec::new(),
         }
     }
 
