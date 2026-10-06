@@ -15,7 +15,7 @@ range without skipping or duplicating the endpoints.
 Loops use half-open ranges and two explicit native policies:
 
 - `Continuous`: repeat through the release tail until the envelope ends or an
-  explicit stop/panic cuts the voice.
+  explicit stop/panic cuts the voice, subject to the optional finite pass count.
 - `UntilRelease`: stop wrapping when the effective note gate closes and continue
   in the initial direction toward the selected source end. Ping-pong playback
   completes its return leg before taking that outward exit. Sustain/sostenuto
@@ -108,11 +108,44 @@ release; independent unrolled PCM at rates from 1/256 through 16 source frames p
 output frame; fractional released interpolation against an analytic sinc reference;
 long loops with contiguous windows; muted/restored phase and envelope continuity;
 integer guard identity beyond 2^54 traversal frames; malformed period rejection;
-and allocation/free checks on execution and terminal retirement. Crossfades, finite
-loop counts and streaming remain open; exact loops do not imply click-free material.
+and allocation/free checks on execution and terminal retirement. Crossfades and
+streaming remain open; exact loops do not imply click-free material.
 
 Final validation: all 181 tests across the four native crates pass in debug,
 release and Rust 1.92, along with strict all-target Clippy and both root boundary
 tests. Logs use `artifacts/ping-pong-fast-{debug,release,msrv,clippy,boundary}.log`.
 The [paired render measurements](RENDER_WORKLOADS.md#ping-pong-source-topology-2026-10-06)
 record the initial regression, correction and remaining workload-dependent costs.
+
+## Finite pass counts
+
+`Loop.passes: Option<NonZeroU32>` adds a finite limit to either topology and either
+initial direction. `None` is unbounded. `Some(1)` includes the initial traversal of
+the loop and then exits directly into the source tail. Each additional wrap pass
+adds the loop length; each additional ping-pong pass adds a reflected round trip
+between outward exits. A one-frame loop adds one source frame per additional pass.
+Frontends translate their own repeat/count conventions explicitly into this native
+meaning; this is not a claim that all vendor count fields have identical units.
+
+Preparation computes the final traversal exit once and rejects count multiplication
+or total-traversal overflow. Rendering reuses the existing integer exit boundary;
+there is no per-block repetition counter, extra event or asset expansion. Fractional
+filter guards see the exact same finite traversal and zero outside its final tail.
+Until-release can shorten the count at the next outward boundary but cannot extend
+the finite limit or restart an already exited loop. The source envelope still owns
+its independent release duration.
+
+Finite loop sources may now be used for natural-EOF key/gate release layers without
+an explicit duration command. Unbounded release loops still require a duration.
+Source EOF retires its family/voice while the original physical key identity remains
+until proper release and terminal delivery.
+
+Tests cover literal forward/reverse paths and single-pass behavior, unrolled finite
+reference assets through EOF at fractional and multi-turn rates, both shapes and
+one-frame loops, independent source views, several block partitions, early/exact/late
+release boundary selection, overflow rejection and natural release-layer completion
+with zero command slots. Execution and retirement are allocation/deallocation checked.
+
+Validation: all 194 native tests pass in debug, release and Rust 1.92; strict
+all-target Clippy and both root boundary tests pass. Logs are retained under
+`artifacts/counted-loops-{debug,release,msrv,clippy,boundary}.log`.

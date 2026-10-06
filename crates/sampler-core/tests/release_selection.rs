@@ -334,6 +334,7 @@ fn key_velocity_unknown_and_zero_are_distinct_and_synthetic_key_uses_fallback() 
 fn looped_release_owns_its_duration_and_works_at_empty_and_exclusive_end_boundaries() {
     let mut r = region(0);
     r.playback.loop_range = Some(Loop {
+        passes: None,
         start: 0,
         end: 1,
         shape: sampler_core::LoopShape::Wrap,
@@ -847,6 +848,7 @@ fn compiled_reserves_match_an_independent_grid_reference_across_varied_layers() 
 fn manual_family_release_and_choke_cancel_owned_timers_without_releasing_siblings() {
     let mut r = region(0);
     r.playback.loop_range = Some(Loop {
+        passes: None,
         start: 0,
         end: 1,
         shape: sampler_core::LoopShape::Wrap,
@@ -894,6 +896,48 @@ fn manual_family_release_and_choke_cancel_owned_timers_without_releasing_sibling
             assert!(rt.note(a).unwrap().2); // family closure cannot consume the held gate
             rt.panic();
             rt.flush_ended(|_| true);
+        });
+    }
+}
+
+#[test]
+fn counted_release_sources_need_no_duration_command_and_retire_at_natural_eof() {
+    for shape in [
+        sampler_core::LoopShape::Wrap,
+        sampler_core::LoopShape::PingPong,
+    ] {
+        let mut r = region(0);
+        r.playback.loop_range = Some(Loop {
+            start: 0,
+            end: 1,
+            mode: LoopMode::Continuous,
+            shape,
+            passes: std::num::NonZeroU32::new(3),
+        });
+        let p = prepared(
+            vec![r],
+            vec![Trigger::GateRelease],
+            ReleaseOptions::default(),
+            1,
+        );
+        let mut rt = Runtime::new(
+            p,
+            Limits {
+                commands: 0,
+                ..limits()
+            },
+        )
+        .unwrap();
+        support::without_heap(|| {
+            let note = rt.trigger(input(0), 60, 1.).unwrap();
+            rt.key_up(note, None).unwrap();
+            assert_eq!(rt.pending_commands(), 0);
+            let mut output = [[0.; 2]; 5];
+            rt.render(&mut output).unwrap();
+            assert_eq!(output, [[1.; 2], [1.; 2], [1.; 2], [0.; 2], [0.; 2]]);
+            assert_eq!((rt.voice_count(), rt.family_count()), (0, 0));
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
         });
     }
 }

@@ -402,7 +402,7 @@ impl Prepared {
         for (region, trigger) in self.regions.iter_mut().zip(triggers) {
             if let Some(index) = trigger.release_index()
                 && self.release_options[index].duration.is_none()
-                && region.cursor.looping()
+                && region.cursor.unbounded_loop()
             {
                 return Err(Error::InvalidInput);
             }

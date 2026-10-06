@@ -342,6 +342,7 @@ fn shared_pcm_keeps_its_buffer_across_plan_adoption_and_control_side_retirement(
                 envelope: Envelope::default(),
                 playback: Playback {
                     loop_range: Some(sampler_core::Loop {
+                        passes: None,
                         start: 0,
                         end: 4,
                         shape: sampler_core::LoopShape::Wrap,

@@ -156,6 +156,7 @@ fn fractional_loop_release_preserves_traversal_guards_and_source_end() {
                             end: Some(8),
                             direction,
                             loop_range: Some(Loop {
+                                passes: None,
                                 start: 4,
                                 end: 6,
                                 shape: sampler_core::LoopShape::Wrap,
@@ -1031,6 +1032,7 @@ fn muted_sources_match_audible_phase_envelopes_and_loop_exits_when_restored() {
                                         end: Some(256),
                                         direction,
                                         loop_range: Some(Loop {
+                                            passes: None,
                                             start: 16,
                                             end: 24,
                                             mode,
@@ -1167,6 +1169,7 @@ fn ping_pong_matches_independently_unrolled_pcm_at_fractional_and_multi_turn_rat
                                 direction,
                                 transpose_semitones: transpose,
                                 loop_range: Some(Loop {
+                                    passes: None,
                                     start,
                                     end,
                                     mode: LoopMode::Continuous,
@@ -1247,6 +1250,7 @@ fn fractional_ping_pong_release_keeps_past_guards_and_changes_only_the_future_ex
                             end: Some(8),
                             direction,
                             loop_range: Some(Loop {
+                                passes: None,
                                 start: 3,
                                 end: 6,
                                 mode: LoopMode::UntilRelease,
@@ -1300,6 +1304,106 @@ fn fractional_ping_pong_release_keeps_past_guards_and_changes_only_the_future_ex
                         actual[0]
                     );
                     assert_eq!(actual[0], actual[1]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn counted_loop_interpolation_matches_finite_unrolled_assets_through_final_eof() {
+    use sampler_core::LoopShape;
+    let source: Vec<_> = (0..10)
+        .map(|i| [(i * 7 % 11) as f32 / 20., -(i * 3 % 7) as f32 / 16.])
+        .collect();
+    for direction in [Direction::Forward, Direction::Reverse] {
+        for shape in [LoopShape::Wrap, LoopShape::PingPong] {
+            for (start, end) in [(2, 6), (3, 4)] {
+                for count in [1, 2, 5] {
+                    let mut unrolled: Vec<_> = match direction {
+                        Direction::Forward => source[1..end].to_vec(),
+                        Direction::Reverse => source[start..9].iter().rev().copied().collect(),
+                    };
+                    for _ in 1..count {
+                        if end - start == 1 {
+                            unrolled.push(source[start]);
+                        } else {
+                            match (direction, shape) {
+                                (Direction::Forward, LoopShape::Wrap) => {
+                                    unrolled.extend_from_slice(&source[start..end])
+                                }
+                                (Direction::Reverse, LoopShape::Wrap) => {
+                                    unrolled.extend(source[start..end].iter().rev().copied())
+                                }
+                                (Direction::Forward, LoopShape::PingPong) => {
+                                    unrolled.extend(source[start..end - 1].iter().rev().copied());
+                                    unrolled.extend_from_slice(&source[start + 1..end]);
+                                }
+                                (Direction::Reverse, LoopShape::PingPong) => {
+                                    unrolled.extend_from_slice(&source[start + 1..end]);
+                                    unrolled.extend(source[start..end - 1].iter().rev().copied());
+                                }
+                            }
+                        }
+                    }
+                    match direction {
+                        Direction::Forward => unrolled.extend_from_slice(&source[end..9]),
+                        Direction::Reverse => {
+                            unrolled.extend(source[1..start].iter().rev().copied())
+                        }
+                    }
+                    for rate in [12000, 48000, 156000, 768000] {
+                        for block in [1, 7, 64] {
+                            let mut actual = runtime(
+                                prepare(
+                                    Pcm::new(rate, source.clone().into_boxed_slice()).unwrap(),
+                                    48000,
+                                    Playback {
+                                        start: 1,
+                                        end: Some(9),
+                                        direction,
+                                        transpose_semitones: 0.,
+                                        loop_range: Some(Loop {
+                                            start,
+                                            end,
+                                            mode: LoopMode::Continuous,
+                                            shape,
+                                            passes: std::num::NonZeroU32::new(count),
+                                        }),
+                                    },
+                                )
+                                .unwrap(),
+                            );
+                            let mut reference = runtime(
+                                prepare(
+                                    Pcm::new(rate, unrolled.clone().into_boxed_slice()).unwrap(),
+                                    48000,
+                                    Playback::default(),
+                                )
+                                .unwrap(),
+                            );
+                            let (mut output, mut expected) = ([[0.; 2]; 256], [[0.; 2]; 256]);
+                            support::without_heap(|| {
+                                let a = actual.trigger(input(), 60, 1.).unwrap();
+                                let b = reference.trigger(input(), 60, 1.).unwrap();
+                                for (a, b) in
+                                    output.chunks_mut(block).zip(expected.chunks_mut(block))
+                                {
+                                    actual.render(a).unwrap();
+                                    reference.render(b).unwrap();
+                                }
+                                assert_eq!((actual.voice_count(), reference.voice_count()), (0, 0));
+                                actual.key_up(a, None).unwrap();
+                                reference.key_up(b, None).unwrap();
+                                actual.flush_ended(|_| true);
+                                reference.flush_ended(|_| true);
+                            });
+                            assert_eq!(
+                                output, expected,
+                                "{direction:?} {shape:?} {start}..{end} passes {count} rate {rate} block {block}"
+                            );
+                        }
+                    }
                 }
             }
         }

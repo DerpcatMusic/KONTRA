@@ -40,6 +40,7 @@ fn prepare(
             playback: Playback {
                 transpose_semitones: transpose,
                 loop_range: Some(Loop {
+                    passes: None,
                     start: 0,
                     end: 4096,
                     shape: sampler_core::LoopShape::Wrap,

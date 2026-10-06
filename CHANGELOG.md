@@ -10,6 +10,8 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Compile finite wrap/ping-pong pass counts into shared source traversal boundaries. Release can shorten but never restart or extend the limit; counted release layers can finish naturally without a duration command. Independent finite PCM references cover interpolation through the final tail and EOF.
+
 - Execute KSP scalar UI handlers through native plan-owned callbacks, sharing the bounded scheduler without fabricated notes. Control interaction admission is atomic with callback capacity; waits, generation replacement, fault isolation and outcome backpressure retain explicit ownership.
 
 - Add typed headless controls with stable identity, transactional edits/recall, coherent snapshots and bounded acknowledged UI transfers. KSP scalar knob/slider/button/switch declarations and callback access now use native generation-owned state without a window; UI rendering and the complete interaction callback family remain open.

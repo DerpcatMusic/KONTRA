@@ -201,7 +201,9 @@ unimplemented cases. Source inspection alone is not passing conformance evidence
   wrap/ping-pong topology, fractional reflected guards and outward release exits.
   Independent unrolled PCM, analytic released interpolation, muted phase and
   heap-checked retirement cover both initial directions and short/high-rate loops.
-  Crossfades, finite loop counts, filters/effects and broader graph services remain open.
+  Finite pass counts now share traversal/guard/tail boundaries and allow natural-EOF
+  release loops without duration commands. Crossfades, filters/effects and broader
+  graph services remain open.
 
 - [ ] **P1; dependencies:** V2-04/07/08.
 - New playback/resampling/loop/envelope/filter/modulation execution; declare units,
