@@ -66,6 +66,10 @@ expression owner is allocated for release playback. Unused quota returns immedia
 including missing-take or ineligible selections. Attack EOF, a pedal hold and prepared
 replacement do not erase reservations. `release_reserve()` reports outstanding quotas,
 separately from live resource counts.
+`set_release_stealing(true)` relaxes this for dense instruments: an attack that only
+outstanding reservations keep from fitting suppresses the pending release phases of
+the oldest notes (returning their quotas) instead of failing `Capacity`, and only when
+those reservations could cover the shortfall. It is off by default.
 
 Pitch changes validate both active sources and pending release candidates. Known onset
 velocity excludes unreachable velocity layers. Unknown physical release velocity checks
