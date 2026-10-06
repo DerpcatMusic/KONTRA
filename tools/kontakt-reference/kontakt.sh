@@ -2,10 +2,11 @@
 # Kontakt 8 standalone under Wine on a private Xvfb, audio to a null sink,
 # MIDI from ALSA "Midi Through". Does not touch the Wine prefix or yabridge;
 # Kontakt's own prefs (Portapotty/UserData/Settings.cfg) hold the audio device.
-# Usage: kontakt.sh start INSTRUMENT.nki | setup | stop
+# Usage: kontakt.sh start INSTRUMENT.nki | setup | route | stop
 # One-time: in Kontakt Options > Audio pick device "kontra_ref" (WASAPI shared,
 # 48000 Hz); back up Settings.cfg first. GUI coordinates assume the 1600x1000 desktop.
 set -euo pipefail
+RES="${KONTAKT_RES:-1600x1000}"  # GUI click coordinates in setup assume 1600x1000
 export DISPLAY=:77 WINEDLLOVERRIDES="d3d11,d3d10core,dxgi,d3d9=b"  # wined3d: DXVK crashes on Xvfb
 K="${KONTAKT_EXE:-/home/derpcat/.wine/drive_c/Program Files/Common Files/VST3/Portapotty/Kontakt 8/x64/Kontakt 8.exe}"
 W="${KONTRA_REFERENCE_DIR:-/home/derpcat/.cache/kontra-reference}"
@@ -14,17 +15,18 @@ click() { xdotool mousemove "$1" "$2"; sleep 0.4; xdotool click 1; sleep "${3:-1
 
 case ${1:-} in
 start)
-  pgrep -x Xvfb -a | grep -q ':77' || { setsid nohup Xvfb :77 -screen 0 1600x1000x24 >/dev/null 2>&1 & sleep 1; }
+  pgrep -x Xvfb -a | grep -q ':77' || { setsid nohup Xvfb :77 -screen 0 ${RES}x24 >/dev/null 2>&1 & sleep 1; }
   pactl list short sinks | grep -q kontra_ref || pactl load-module module-null-sink sink_name=kontra_ref \
     sink_properties=device.description=kontra_ref format=float32le rate=48000 channels=2 >/dev/null
   # explorer /desktop: mouse input only works inside a Wine virtual desktop.
-  setsid nohup wine explorer /desktop=k8,1600x1000 "$K" "$(winepath -w "$2")" >"$W/log/kontakt.log" 2>&1 </dev/null &
+  setsid nohup wine explorer /desktop=k8,$RES "$K" "$(winepath -w "$2")" >"$W/log/kontakt.log" 2>&1 </dev/null &
   sleep 15
   for _ in $(seq 150); do   # wait until the loading Progress dialog is gone
     xdotool search --name '^Progress$' >/dev/null 2>&1 || break; sleep 2
   done
   sleep 5
-  "$0" setup; sleep 3; "$0" setup
+  # KONTAKT_NOAUDIO=1: read the GUI only (larger desktop); no audio device setup, never send MIDI
+  [ -n "${KONTAKT_NOAUDIO:-}" ] || { "$0" setup; sleep 3; "$0" setup; "$0" route || { "$0" stop; exit 1; }; }
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
@@ -38,6 +40,21 @@ setup)  # GUI-script the audio device and MIDI port once the instrument has load
   click 1178 781            # Close
   import -window root "$W/log/ready.png"
   ;;
+route)  # routing guard: Kontakt's output ports must be linked ONLY to kontra_ref (never the user's default sink)
+  src=$(pw-link -o | grep -E '^Native Instruments Kontakt:output_(FL|FR)$' || true)
+  [ -n "$src" ] || { echo "route: Kontakt has no output ports yet" >&2; exit 1; }
+  for _ in 1 2 3; do
+    while IFS= read -r port; do ch=${port##*_}
+      pw-link -l | awk -v P="$port" '$0==P{f=1;next} /^[^ |]/{f=0} f&&/\|->/{sub(/^ *\|-> /,"");print}' |
+        while IFS= read -r dst; do [ "$dst" = "kontra_ref:playback_$ch" ] || pw-link -d "$port" "$dst"; done
+      pw-link "$port" "kontra_ref:playback_$ch" 2>/dev/null || true
+    done <<<"$src"
+    bad=$(pw-link -l | awk '/^Native Instruments Kontakt:output_/{f=1;next} /^[^ |]/{f=0} f&&/\|->/' | grep -vc 'kontra_ref:playback_' || true)
+    ok=$(pw-link -l | awk '/^Native Instruments Kontakt:output_/{f=1;next} /^[^ |]/{f=0} f&&/\|->/' | grep -c 'kontra_ref:playback_' || true)
+    [ "$bad" = 0 ] && [ "$ok" -ge 2 ] && { echo "route: ok (Kontakt -> kontra_ref only)"; exit 0; }
+    sleep 1
+  done
+  echo "route: FAILED, Kontakt is not isolated on kontra_ref" >&2; exit 1 ;;
 stop)
   click 20 57 || true; click 42 123 || true   # File > Exit
   sleep 3
