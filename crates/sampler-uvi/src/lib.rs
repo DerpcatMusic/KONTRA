@@ -776,6 +776,20 @@ impl Translation {
 /// program in a UFS bank. [`load_program`] selects a specific bank member.
 /// Protected programs use the installed reader behind `library-access`.
 pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    assemble_translated(translate_path(path)?, rate)
+}
+
+/// A translated program whose samples are not decoded yet.
+pub struct Translated {
+    pub instrument: ir::Instrument,
+    pub locations: Vec<String>,
+    /// The bank and program path the samples come from; loose files have none.
+    bank: Option<(Bank, String)>,
+}
+
+/// Translate what [`load`] accepts without decoding samples, so a host can
+/// shape the instrument (mixer buses) before [`assemble_translated`].
+pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Error>> {
     if let Some(bank_path) = path
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
@@ -796,20 +810,38 @@ pub fn load(path: &Path, rate: u32) -> Result<sampler_kontakt::Loaded, Box<dyn s
         } else {
             member
         };
-        return load_program(&bank, &member, rate);
+        let (text, program_path) = bank.program(&member)?;
+        let (instrument, locations) =
+            translate_bank(&text).map_err(|e| describe(Path::new(&member), e))?;
+        return Ok(Translated { instrument, locations, bank: Some((bank, program_path)) });
     }
     let (instrument, locations) = translate_with(
         &read_text(path)?,
         Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
     )
     .map_err(|e| describe(path, e))?;
-    let decoded = locations
+    Ok(Translated { instrument, locations, bank: None })
+}
+
+/// Decode a [`translate_path`] result's samples and lower it.
+pub fn assemble_translated(
+    t: Translated,
+    rate: u32,
+) -> Result<sampler_kontakt::Loaded, Box<dyn std::error::Error>> {
+    let decoded = t
+        .locations
         .iter()
-        .map(|location| decode_sample(Path::new(location)).map_err(|e| e.to_string()))
+        .map(|location| match &t.bank {
+            Some((bank, program_path)) => bank
+                .resource(program_path, location)
+                .map_err(|e| e.to_string())
+                .and_then(|parts| audio::decode(&parts).map(|(d, _)| d)),
+            None => decode_sample(Path::new(location)).map_err(|e| e.to_string()),
+        })
         .collect();
     assemble(
-        instrument,
-        locations,
+        t.instrument,
+        t.locations,
         decoded,
         &sampler_kontakt::Options {
             rate,
