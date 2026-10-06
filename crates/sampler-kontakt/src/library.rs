@@ -642,6 +642,7 @@ impl Translation {
                 end,
                 reverse: group.reverse,
                 looping,
+                start_range: z.start_mod,
             },
             amplitude: group.envelope,
             ..ir::Zone::new(asset)
@@ -654,6 +655,8 @@ struct RawZone {
     group: usize,
     start: u64,
     end: i32,
+    /// Frames past `start` that full-depth playPos modulation reaches.
+    start_mod: u64,
     velocities: [u8; 2],
     keys: [u8; 2],
     fades: [i16; 4],
@@ -675,7 +678,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let mut z = Cursor::new(so.public_data.as_slice());
     let read = |z: &mut Cursor<&[u8]>| -> std::io::Result<_> {
         // The third field is the sample-start modulation range, used only by playPos modulation.
-        let (start, end, _start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
+        let (start, end, start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
         let mut ranges = [0i16; 9];
         for value in &mut ranges {
             *value = i16le(z)?;
@@ -684,9 +687,10 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         if so.version >= 0x9a {
             z.read_exact(&mut [0; 6])?;
         }
-        Ok((start, end, ranges, gain, pan, tune, i32le(z)?))
+        Ok((start, end, start_mod, ranges, gain, pan, tune, i32le(z)?))
     };
-    let (start, end, ranges, gain, pan, tune, file) = read(&mut z).map_err(|e| e.to_string())?;
+    let (start, end, start_mod, ranges, gain, pan, tune, file) =
+        read(&mut z).map_err(|e| e.to_string())?;
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let midi = |value: i16, what| {
         u8::try_from(value)
@@ -723,6 +727,7 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         group,
         start: start as u64,
         end,
+        start_mod: start_mod.max(0) as u64,
         velocities: [lv, hv],
         keys: [lk, hk],
         fades: [f0, f1, f2, f3],
@@ -764,41 +769,109 @@ mod survey {
         while let Some(dir) = stack.pop() {
             for e in std::fs::read_dir(&dir).unwrap().flatten() {
                 let p = e.path();
-                if p.is_dir() { stack.push(p) } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) { files.push(p) }
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+                    files.push(p)
+                }
             }
         }
         files.sort();
         let mut seen = std::collections::BTreeMap::<String, (usize, String)>::new();
         for f in &files {
             let Ok(chunks) = chunks(f) else { continue };
-            let Some(program) = chunks.find_first(PROGRAM) else { continue };
-            let Ok(program) = Program::try_from(program) else { continue };
-            let Some(gl) = program.0.find_first(GROUP_LIST) else { continue };
-            let Ok(groups) = GroupList::try_from(gl) else { continue };
+            let Some(program) = chunks.find_first(PROGRAM) else {
+                continue;
+            };
+            let Ok(program) = Program::try_from(program) else {
+                continue;
+            };
+            let Some(gl) = program.0.find_first(GROUP_LIST) else {
+                continue;
+            };
+            let Ok(groups) = GroupList::try_from(gl) else {
+                continue;
+            };
             for g in &groups.groups {
                 if let Some(chunk) = g.0.find_first(INTERNAL_MODS) {
-                    let Ok(arr) = InternalModArray16::try_from(chunk) else { continue };
+                    let Ok(arr) = InternalModArray16::try_from(chunk) else {
+                        continue;
+                    };
                     let Ok(slots) = arr.slots() else { continue };
                     for (slot, m) in slots {
                         let Ok(p) = m.params() else { continue };
-                        let t: Vec<_> = p.targets.iter().map(|t| format!("{}@{:?} i={} inv={} lag={} fl={:#x} sh={}", t.param, t.slot, t.intensity, t.invert, t.lag_ms, t.unknown_flags, t.shaper.as_ref().is_some_and(|s| s.enabled))).collect();
+                        let t: Vec<_> = p
+                            .targets
+                            .iter()
+                            .map(|t| {
+                                format!(
+                                    "{}@{:?} i={} inv={} lag={} fl={:#x} sh={}",
+                                    t.param,
+                                    t.slot,
+                                    t.intensity,
+                                    t.invert,
+                                    t.lag_ms,
+                                    t.unknown_flags,
+                                    t.shaper.as_ref().is_some_and(|s| s.enabled)
+                                )
+                            })
+                            .collect();
                         let src = match &p.modulator {
-                            Modulator::Lfo(l) => format!("LFO v{:#x} wf={} init={:?} r0={:?} r1={:?} tf={} tv={:?} add={:?}", l.version, l.waveform, l.initial_values, l.records[0], l.records[1], l.trailing_flag, l.trailing_values, l.additional_flag),
-                            Modulator::Ahdsr(e) => format!("AHDSR a={} h={} d={} s={} r={} c={} f={}", e.attack_ms, e.hold_ms, e.decay_ms, e.sustain, e.release_ms, e.attack_curve, e.unknown_flag),
+                            Modulator::Lfo(l) => format!(
+                                "LFO v{:#x} wf={} init={:?} r0={:?} r1={:?} tf={} tv={:?} add={:?}",
+                                l.version,
+                                l.waveform,
+                                l.initial_values,
+                                l.records[0],
+                                l.records[1],
+                                l.trailing_flag,
+                                l.trailing_values,
+                                l.additional_flag
+                            ),
+                            Modulator::Ahdsr(e) => format!(
+                                "AHDSR a={} h={} d={} s={} r={} c={} f={}",
+                                e.attack_ms,
+                                e.hold_ms,
+                                e.decay_ms,
+                                e.sustain,
+                                e.release_ms,
+                                e.attack_curve,
+                                e.unknown_flag
+                            ),
                             Modulator::Flex(e) => format!("FLEX {:?} sus={}", e.points, e.sustain),
                             Modulator::Other { chunk_id } => format!("OTHER {chunk_id:#x}"),
                         };
-                        let key = format!("INT {} flags={:?} {src} -> {t:?}", p.name, p.unknown_flags);
-                        let e = seen.entry(key).or_insert((0, format!("{} slot {slot}", f.display())));
+                        let key =
+                            format!("INT {} flags={:?} {src} -> {t:?}", p.name, p.unknown_flags);
+                        let e = seen
+                            .entry(key)
+                            .or_insert((0, format!("{} slot {slot}", f.display())));
                         e.0 += 1;
                     }
                 }
                 if let Some(chunk) = g.0.find_first(EXTERNAL_MODS) {
-                    let Ok(arr) = ExternalModArray32::try_from(chunk) else { continue };
+                    let Ok(arr) = ExternalModArray32::try_from(chunk) else {
+                        continue;
+                    };
                     let Ok(slots) = arr.slots() else { continue };
                     for (_slot, m) in slots {
                         let Ok(p) = m.params() else { continue };
-                        let t: Vec<_> = p.targets.iter().map(|t| format!("{}@{:?} i={} inv={} lag={} fl={:#x} sh={}", t.param, t.slot, t.intensity, t.invert, t.lag_ms, t.unknown_flags, t.shaper.as_ref().is_some_and(|s| s.enabled))).collect();
+                        let t: Vec<_> = p
+                            .targets
+                            .iter()
+                            .map(|t| {
+                                format!(
+                                    "{}@{:?} i={} inv={} lag={} fl={:#x} sh={}",
+                                    t.param,
+                                    t.slot,
+                                    t.intensity,
+                                    t.invert,
+                                    t.lag_ms,
+                                    t.unknown_flags,
+                                    t.shaper.as_ref().is_some_and(|s| s.enabled)
+                                )
+                            })
+                            .collect();
                         let key = format!("EXT {} {:?} -> {t:?}", p.name, p.source);
                         let e = seen.entry(key).or_insert((0, f.display().to_string()));
                         e.0 += 1;
@@ -806,7 +879,9 @@ mod survey {
                 }
             }
         }
-        for (k, (n, f)) in &seen { println!("{n:6} {k}\n         e.g. {f}"); }
+        for (k, (n, f)) in &seen {
+            println!("{n:6} {k}\n         e.g. {f}");
+        }
         println!("{} files", files.len());
     }
 }
