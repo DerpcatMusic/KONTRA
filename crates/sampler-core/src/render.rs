@@ -116,8 +116,12 @@ impl Runtime {
             },
             at,
         };
-        let (produced, done, faults, underrun) = if let Some(pcm) = asset.resident_frames() {
-            render_source(v, pcm, segment, chain, states, context, &self.kernel)
+        let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
+            let pcm = super::source::Resident {
+                frames,
+                levels: asset.levels(),
+            };
+            render_source(v, &pcm, segment, chain, states, context, &self.kernel)
         } else {
             let source = super::source::PagedFrames {
                 cache: self
