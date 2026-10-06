@@ -52,6 +52,14 @@ impl Prepared {
         self.source_event_limit = maximum;
         Ok(self)
     }
+
+    /// The sustain pedal (CC64) holds no gates; its value still reaches
+    /// controllers and behaviors, which implement sustain themselves
+    /// (Kontakt's `NO_SYS_SCRIPT_PEDAL`). Sostenuto is unaffected.
+    pub fn with_script_sustain(mut self, script: bool) -> Self {
+        self.script_sustain = script;
+        self
+    }
 }
 
 impl Runtime {
