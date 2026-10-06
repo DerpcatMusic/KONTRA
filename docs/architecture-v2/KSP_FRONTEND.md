@@ -838,3 +838,29 @@ absence of host terminals. All rendering/cleanup paths are heap guarded.
 
 Validation: 305 native release/Rust 1.92 tests, strict all-target Clippy and both
 root boundary tests pass (`artifacts/controller-notes-*`).
+
+
+## Stored event targets for pitch and velocity edits
+
+`change_note` and `change_velo` now accept evaluated individual event IDs in the
+note callback. Their native instructions select either the current callback note
+or a source ID in the callback's retained generation. Current-event calls keep
+their prior register/instruction footprint; stored IDs use the existing bounded
+source-ID index. Values are checked before any mutation. Unknown/retired IDs are
+no-ops and never resolve to a reused slot or another generation.
+
+Edits still affect the script-visible event projection. Pending attack forwarding
+commits it once; edits to an already running target leave its PCM mapping and
+physical key identity unchanged. This follows the distinction in the
+[NI event command reference](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands);
+Kontakt execution comparisons remain required. Source callback restrictions remain
+explicit, and the commands do not accept `$ALL_EVENTS`/marked groups. Native
+plan-owned services can edit a stored projection without fabricating a note owner.
+
+Fixtures cover array/expression targets, two simultaneous events, retained initial
+properties, unchanged running audio, physical key-up, retired-ID slot reuse,
+original/new-plan isolation, invalid-value atomicity and unreachable register
+budgets. Runtime paths remain heap guarded.
+
+Validation: 307 native release/Rust 1.92 tests and strict all-target Clippy pass
+(`artifacts/event-target-edits-*`).

@@ -352,7 +352,10 @@ fn script_note_end_and_callback_fault_preserve_anonymous_fifo_and_external_key_o
                     local: 0,
                     value: 128,
                 },
-                Instruction::WriteEventKey { local: 0 },
+                Instruction::WriteEventKey {
+                    event: None,
+                    local: 0,
+                },
             ]
         } else {
             vec![

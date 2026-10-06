@@ -76,6 +76,78 @@ fn input(key: u8) -> Input {
         external_id: Some(i32::from(key)),
     }
 }
+
+#[test]
+fn stored_pitch_and_velocity_targets_keep_audio_pairing_and_reused_slots_isolated() {
+    let source = "on init declare %ids[1] end on
+        on note
+            if (%ids[0] = 0)
+                %ids[0] := $EVENT_ID
+            else
+                change_note(%ids[0] + 0,62)
+                change_velo(%ids[0],64)
+            end if
+        end on";
+    for retired in [false, true] {
+        let mut rt = runtime(source);
+        support::without_heap(|| {
+            let first = rt.trigger(input(60), 60, 1.).unwrap();
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            if retired {
+                rt.note_off(input(60), None).unwrap();
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            }
+            let second = rt.trigger(input(61), 61, 1.).unwrap();
+            assert_eq!(
+                rt.note_event(second).unwrap(),
+                NoteProperties {
+                    pitch: NotePitch::Key(61),
+                    velocity: 1.
+                }
+            );
+            if !retired {
+                assert_eq!(
+                    rt.note_event(first).unwrap(),
+                    NoteProperties {
+                        pitch: NotePitch::Key(62),
+                        velocity: 64. / 127.
+                    }
+                );
+                assert_eq!(
+                    rt.initial_note_properties(first).unwrap(),
+                    NoteProperties {
+                        pitch: NotePitch::Key(60),
+                        velocity: 1.
+                    }
+                );
+                assert!(rt.input_held(first).unwrap());
+            }
+            let mut audio = [[0.; 2]; 8];
+            rt.render(&mut audio).unwrap();
+            // The stored edit updates source-visible properties of an already
+            // running event. Neither old audio nor the new event is remapped.
+            assert_eq!(audio, [[if retired { 1. } else { 2. }; 2]; 8]);
+            if !retired {
+                assert_eq!(rt.note_off(input(60), None), Ok(first));
+            }
+            assert_eq!(rt.note_off(input(61), None), Ok(second));
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(
+                (rt.note_count(), rt.voice_count(), rt.expression_count()),
+                (0, 0, 0)
+            );
+        });
+    }
+}
+
 #[test]
 fn generated_ids_in_arrays_and_expressions_keep_each_original_release_owner() {
     let source = "on init declare %ids[8] declare $duration := 0 declare polyphonic $slot end on
