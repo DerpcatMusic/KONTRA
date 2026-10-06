@@ -4,6 +4,7 @@
 //! callback to bounded sampler-core programs. Not a Kontakt fidelity claim:
 //! services the engine does not own are queued as effects, and every ignored or
 //! approximated call is reported in `Script::warnings` and `Script::coverage`.
+use model::Value;
 use sampler_core::{
     ControlCallback, ControlDefinition, ControlDomain, ControlId, ControlValue, Prepared, Program,
     ScriptInstanceId, ScriptResources,
@@ -172,6 +173,64 @@ impl Script {
         &self.symbols
     }
     /// Install the complete script on a prepared instrument of the compiled rate.
+    /// Apply a `set_control_par*` request this script's callbacks emitted
+    /// (an [`sampler_core::Effect`] whose `instance` is this script's) to its
+    /// model, so [`Script::ui`] shows runtime UI changes such as pages,
+    /// pictures and hidden panels. Returns whether the effect was one.
+    pub fn apply_ui_effect(&mut self, effect: &sampler_core::Effect) -> bool {
+        let Some(&service) = self.services.get(usize::from(effect.service)) else {
+            return false;
+        };
+        let args = &effect.args[..usize::from(effect.count)];
+        let arg = |i: usize| args.get(i).map(|&v| v as i32);
+        let (Some(id), Some(par)) = (arg(0), arg(1)) else {
+            return false;
+        };
+        let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
+        let (value, index) = match service {
+            "set_control_par" => (arg(2).map(Value::Int), None),
+            "set_control_par_real" => (
+                args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
+                None,
+            ),
+            "set_control_par_str" => (text().map(Value::Text), None),
+            "set_control_par_arr" => (arg(2).map(Value::Int), arg(3)),
+            "set_control_par_str_arr" => (text().map(Value::Text), arg(2)),
+            _ => return false,
+        };
+        let (Some(value), Some(name)) = (value, eval::symbol_in(&self.symbols, par)) else {
+            return false;
+        };
+        let interface = &mut self.model.interface;
+        if let Some(w) = interface.widgets.iter_mut().find(|w| w.ui_id == id) {
+            match index {
+                Some(i) => {
+                    w.indexed_properties
+                        .entry(name)
+                        .or_default()
+                        .insert(i, value);
+                }
+                None => {
+                    if name == "$CONTROL_PAR_VALUE"
+                        && let (Value::Int(v), model::WidgetValue::Int(_)) = (&value, &w.value)
+                    {
+                        w.value = model::WidgetValue::Int(*v);
+                    }
+                    w.properties.insert(name, value);
+                }
+            }
+        } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
+            interface
+                .instrument
+                .entry(id)
+                .or_default()
+                .insert(name, value);
+        } else {
+            return false;
+        }
+        true
+    }
+
     pub fn bind(self, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
         bind_modules(vec![self], plan)
     }
