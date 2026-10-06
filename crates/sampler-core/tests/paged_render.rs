@@ -555,7 +555,7 @@ fn a_resident_head_starts_cold_voices_and_streams_the_rest() {
     let data: Vec<Frame> = (0..PAGE_FRAMES * 2 + 100)
         .map(|i| [i as f32 / 1e4, -(i as f32) / 1e4])
         .collect();
-    let asset = Pcm::headed(48000, data.len(), data[..PAGE_FRAMES].into()).unwrap();
+    let asset = Pcm::headed(48000, data.len(), &data[..PAGE_FRAMES]).unwrap();
     assert_eq!(asset.resident_bytes(), PAGE_FRAMES * 8);
     let (cache, mut worker) = StreamCache::new(2).unwrap();
     let mut rt =
@@ -588,9 +588,42 @@ fn a_resident_head_starts_cold_voices_and_streams_the_rest() {
     assert_eq!(output, reference);
     // A purged head refuses starts and marks the asset for reloading.
     rt.note_off(input(), None).unwrap();
-    assert_eq!(asset.set_head(Box::default()).unwrap().len(), PAGE_FRAMES);
+    assert_eq!(asset.set_ranges(vec![]).unwrap().len(), 1);
     assert!(!asset.take_cold());
     assert_eq!(rt.trigger(input(), 60, 1.), Err(Error::NotReady));
     assert!(asset.take_cold() && !asset.take_cold());
     assert!(asset.last_played() > 0);
+}
+
+#[test]
+fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 3];
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let range = data[PAGE_FRAMES..PAGE_FRAMES + 300].into();
+    asset.set_ranges(vec![(PAGE_FRAMES, range)]).unwrap();
+    assert!(
+        asset
+            .set_ranges(vec![(PAGE_FRAMES * 3, [[0.; 2]].into())])
+            .is_err()
+    );
+    assert!(
+        asset
+            .set_ranges(vec![(0, [[0.; 2]; 2].into()), (1, [[0.; 2]].into())])
+            .is_err()
+    );
+    let at = |start| {
+        let playback = Playback {
+            start,
+            ..Playback::default()
+        };
+        let cache = StreamCache::new(2).unwrap().0;
+        runtime(vec![asset.clone()], vec![region(0, playback)]).with_stream_cache(cache)
+    };
+    let mut inside = at(PAGE_FRAMES + 100);
+    let mut output = [[0.; 2]; 64];
+    inside.trigger(input(), 60, 1.).unwrap();
+    inside.render(&mut output).unwrap();
+    assert!(output[10..].iter().all(|f| f[0] > 0.));
+    assert_eq!(inside.stream_underruns(), 0);
+    assert_eq!(at(100).trigger(input(), 60, 1.), Err(Error::NotReady));
 }

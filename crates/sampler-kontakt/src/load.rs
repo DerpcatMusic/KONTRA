@@ -82,11 +82,12 @@ pub fn load(
             })?,
         );
     }
-    finish(instrument, &locations, &kept, pcm, options, progress)
+    finish(instrument, &locations, &kept, pcm, options, progress).map(|(loaded, _)| loaded)
 }
 
-/// Load the Kontakt instrument at `path` streamed: only heads (sized from
-/// read latency measured on up to 32 samples) and a page pool are resident.
+/// Load the Kontakt instrument at `path` streamed: only the pages where zones
+/// start (sized from read latency measured on up to 32 samples) and a page
+/// pool are resident.
 pub fn load_streamed(
     path: &Path,
     options: &Options,
@@ -109,16 +110,10 @@ pub fn load_streamed(
         let location = &locations[asset];
         sources.push((samples.source(location)?, location.as_path()));
     }
-    let heads = crate::stream::Streamer::heads(sources, options.rate, policy, 32)?;
-    let loaded = finish(
-        instrument,
-        &locations,
-        &kept,
-        heads.assets.clone(),
-        options,
-        progress,
-    )?;
-    crate::Streamed::new(loaded, heads)
+    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
+    let pcm = opened.assets.clone();
+    let (loaded, kept) = finish(instrument, &locations, &kept, pcm, options, progress)?;
+    crate::Streamed::new(loaded, opened, kept)
 }
 
 /// Fit zones to their audio and lower the instrument with `pcm`, one asset
@@ -130,7 +125,7 @@ fn finish(
     pcm: Vec<Pcm>,
     options: &Options,
     mut progress: impl FnMut(Progress),
-) -> Result<Loaded, LoadError> {
+) -> Result<(Loaded, Vec<Pcm>), LoadError> {
     progress(Progress::Lowering);
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
@@ -162,8 +157,12 @@ fn finish(
         .enumerate()
         .filter(|(i, _)| used.binary_search(i).is_ok())
         .map(|(_, p)| p)
-        .collect();
-    prepare(instrument, options.rate, pcm, options.scripts)
+        .collect::<Vec<_>>();
+    let kept = pcm.clone();
+    Ok((
+        prepare(instrument, options.rate, pcm, options.scripts)?,
+        kept,
+    ))
 }
 
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to

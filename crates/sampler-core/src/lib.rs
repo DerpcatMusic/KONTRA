@@ -87,7 +87,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, Pcm, Prepared, Region, Tuning, VelocityCurve, service_mipmaps,
+    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve,
+    service_mipmaps,
 };
 mod integer;
 pub mod lower;

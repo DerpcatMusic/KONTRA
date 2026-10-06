@@ -29,13 +29,41 @@ struct PcmData {
     // render that read this asset.
     wanted: AtomicU8,
     used: AtomicU64,
-    // A streamed asset's resident first frames, whole pages; empty when purged.
-    head: Mutex<Box<[Frame]>>,
-    // A start was refused because the head was missing.
+    // A streamed asset's resident ranges (where voices start); empty when purged.
+    head: Mutex<Ranges>,
+    // A start was refused because its pages were not resident.
     cold: AtomicBool,
     length: usize,
 }
 type LevelData = Box<[Box<[Frame]>]>;
+/// Resident ranges of a streamed asset: (first frame, frames), ascending and
+/// disjoint.
+pub type Ranges = Box<[(usize, Box<[Frame]>)]>;
+
+/// Calls `f` with each part of `range` outside `ranges`, in order, until it
+/// returns false; returns whether every call returned true.
+pub(crate) fn uncovered(
+    ranges: &[(usize, Box<[Frame]>)],
+    range: std::ops::Range<usize>,
+    mut f: impl FnMut(std::ops::Range<usize>) -> bool,
+) -> bool {
+    let mut at = range.start;
+    let mut i = ranges.partition_point(|(start, frames)| start + frames.len() <= at);
+    while at < range.end {
+        match ranges.get(i) {
+            Some((start, frames)) if *start <= at => at = start + frames.len(),
+            next => {
+                let end = next.map_or(range.end, |(start, _)| (*start).min(range.end));
+                if !f(at..end) {
+                    return false;
+                }
+                at = end;
+            }
+        }
+        i += usize::from(ranges.get(i).is_some_and(|(s, f)| s + f.len() <= at));
+    }
+    true
+}
 type Levels = Mutex<LevelData>;
 /// Control-side lock that survives an audio-thread panic.
 fn lock<T>(data: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -73,28 +101,37 @@ impl Pcm {
         Self::create(rate, frames, None)
     }
     /// `streamed` with its first frames resident, so starts need no page.
-    pub fn headed(rate: u32, frames: usize, head: Box<[Frame]>) -> Result<Self, Error> {
+    pub fn headed(rate: u32, frames: usize, head: &[Frame]) -> Result<Self, Error> {
         let pcm = Self::streamed(rate, frames)?;
-        pcm.set_head(head)?;
+        pcm.set_ranges(vec![(0, head.into())])?;
         Ok(pcm)
     }
-    /// Control side: replace a streamed asset's head (frames from 0, whole
-    /// pages unless it is the whole asset); empty purges it. Returns the old
-    /// head to drop here, off audio. A start that finds no head fails
-    /// `NotReady` and marks the asset cold (`take_cold`).
-    pub fn set_head(&self, head: Box<[Frame]>) -> Result<Box<[Frame]>, Error> {
-        let whole = head.len() == self.0.length || head.len().is_multiple_of(crate::PAGE_FRAMES);
-        if self.0.frames.is_some()
-            || head.len() > self.0.length
-            || !whole
-            || head.iter().flatten().any(|x| !x.is_finite())
-        {
+    /// Control side: replace a streamed asset's resident frame ranges,
+    /// typically the first frames of each zone start, so starts need no cache
+    /// page; empty purges them. Ranges ascend, disjoint and non-empty. Returns
+    /// the old ranges to drop here, off audio. A start that finds its frames
+    /// missing fails `NotReady` and marks the asset cold (`take_cold`).
+    pub fn set_ranges(&self, ranges: Vec<(usize, Box<[Frame]>)>) -> Result<Ranges, Error> {
+        let valid = self.0.frames.is_none()
+            && ranges.windows(2).all(|w| w[0].0 + w[0].1.len() <= w[1].0)
+            && ranges.iter().all(|(start, frames)| {
+                !frames.is_empty()
+                    && start
+                        .checked_add(frames.len())
+                        .is_some_and(|end| end <= self.0.length)
+                    && frames.iter().flatten().all(|x| x.is_finite())
+            });
+        if !valid {
             return Err(Error::InvalidInput);
         }
-        Ok(std::mem::replace(&mut *lock(&self.0.head), head))
+        Ok(std::mem::replace(
+            &mut *lock(&self.0.head),
+            ranges.into_boxed_slice(),
+        ))
     }
+    /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        lock(&self.0.head).len()
+        lock(&self.0.head).iter().map(|(_, f)| f.len()).sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -105,8 +142,8 @@ impl Pcm {
     pub fn last_played(&self) -> u64 {
         self.0.used.load(Relaxed)
     }
-    /// Audio side: the head unless the control side is swapping it.
-    pub(crate) fn try_head(&self) -> Option<MutexGuard<'_, Box<[Frame]>>> {
+    /// Audio side: the resident ranges unless the control side is swapping them.
+    pub(crate) fn try_head(&self) -> Option<MutexGuard<'_, Ranges>> {
         self.0.head.try_lock().ok()
     }
     pub(crate) fn mark_cold(&self) {
