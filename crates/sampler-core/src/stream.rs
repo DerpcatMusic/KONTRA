@@ -123,6 +123,11 @@ pub struct StreamCache {
     epoch: u64,
     serial: u64,
     store: u64,
+    /// Decoder threads to unpark after a service pushed requests.
+    wake: Vec<std::thread::Thread>,
+    pushed: bool,
+    /// Where the eviction sweep resumes.
+    hand: usize,
 }
 /// One coordinator serializes page requests/results around any worker executors.
 /// Jobs own buffers and can move to workers; this endpoint remains a single writer.
@@ -178,6 +183,9 @@ impl StreamCache {
                 epoch: 1,
                 serial: 0,
                 store,
+                wake: Vec::new(),
+                pushed: false,
+                hand: 0,
             },
             StreamWorker {
                 requests: incoming,
@@ -189,6 +197,20 @@ impl StreamCache {
                 store,
             },
         ))
+    }
+    /// Control side: threads serving this cache's worker, unparked (heap
+    /// free) after each service that queued requests, so they can park
+    /// instead of polling.
+    pub fn set_wake(&mut self, threads: Vec<std::thread::Thread>) {
+        self.wake = threads;
+    }
+    /// Unpark the decoder threads if requests were queued since the last call.
+    fn wake(&mut self) {
+        if std::mem::take(&mut self.pushed) {
+            for thread in &self.wake {
+                thread.unpark();
+            }
+        }
     }
     pub fn begin_epoch(&mut self) -> Result<(), StreamError> {
         self.epoch = self
@@ -263,6 +285,7 @@ impl StreamCache {
                 self.requests
                     .push(request)
                     .map_err(|_| StreamError::Capacity)?;
+                self.pushed = true;
                 entry.request = request;
             }
             return Ok(entry.status());
@@ -273,22 +296,16 @@ impl StreamCache {
         if self.requests.is_full() {
             return Err(StreamError::Capacity);
         }
-        let slot = self
-            .entries
-            .iter()
-            .position(Option::is_none)
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, entry)| {
-                        entry
-                            .as_ref()
-                            .filter(|e| e.used != self.epoch)
-                            .map(|e| (i, e.used))
-                    })
-                    .min_by_key(|(_, used)| *used)
-                    .map(|(i, _)| i)
+        // Clock sweep: the next free slot or page this epoch has not
+        // protected. ponytail: not strict LRU (a page idle one epoch goes as
+        // soon as one idle for many); amortized O(1) instead of a full scan.
+        let count = self.entries.len();
+        let slot = (0..count)
+            .map(|i| (self.hand + i) % count)
+            .find(|&i| {
+                self.entries[i]
+                    .as_ref()
+                    .is_none_or(|e| e.used != self.epoch)
             })
             .ok_or(StreamError::Capacity)?;
         if self.recycled.is_full()
@@ -314,7 +331,9 @@ impl StreamCache {
         self.requests
             .push(request)
             .expect("reserved request capacity");
+        self.pushed = true;
         self.serial = serial;
+        self.hand = (slot + 1) % count;
         if let Some(old) = self.entries[slot].take() {
             let index = self
                 .index
@@ -517,6 +536,13 @@ impl crate::Runtime {
     /// or failed pages (inspect page status and explicitly invalidate failures).
     /// A queue/cache error leaves accepted requests intact and reports incomplete
     /// service. Requery after events. Cold onsets require control-side preloading.
+    /// Start sources whose first frames are not resident (say, purged start
+    /// ranges) silent, fading in once their pages arrive, instead of refusing
+    /// them `NotReady`. They still mark the asset cold for reload.
+    pub fn set_cold_starts(&mut self, on: bool) {
+        self.cold_starts = on;
+    }
+
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
         self.now
             .checked_add(u64::from(frames))
@@ -525,6 +551,7 @@ impl crate::Runtime {
         // Temporarily detach only the audio-owned cache to borrow the immutable
         // voice/plan snapshot. The visitor cannot execute callbacks or mutate it.
         let result = self.service_cache(&mut cache, frames);
+        cache.wake();
         self.stream_cache = Some(cache);
         result
     }
@@ -638,14 +665,17 @@ impl crate::Runtime {
         Ok(ready)
     }
 
+    /// Whether a source can start: `Ok(true)` for a cold start (its first
+    /// window is not resident, and `set_cold_starts` allows starting it
+    /// silent until its pages arrive).
     pub(crate) fn check_source_ready(
         &self,
         asset: &Pcm,
         cursor: crate::source::Cursor,
         envelope: crate::Envelope,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         if asset.resident_frames().is_some() {
-            return Ok(());
+            return Ok(false);
         }
         let cache = self.stream_cache.as_ref().ok_or(Error::NotReady)?;
         let head = asset.try_head();
@@ -661,9 +691,12 @@ impl crate::Runtime {
             })
         });
         if ready {
-            Ok(())
+            return Ok(false);
+        }
+        asset.mark_cold();
+        if self.cold_starts {
+            Ok(true)
         } else {
-            asset.mark_cold();
             Err(Error::NotReady)
         }
     }

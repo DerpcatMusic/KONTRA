@@ -32,7 +32,7 @@ struct Bytes {
 }
 
 /// Bytes per file read.
-const BUFFER: usize = 64 << 10;
+const BUFFER: usize = 16 << 10;
 
 impl Bytes {
     fn open(source: &Source) -> io::Result<Self> {
@@ -349,9 +349,10 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 /// page cache.
 pub struct Streamer {
     sources: Arc<HashMap<AssetId, Source>>,
-    ranges: HashMap<AssetId, Vec<Range<usize>>>,
+    ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+    reloader: Option<JoinHandle<()>>,
 }
 
 impl Streamer {
@@ -443,9 +444,10 @@ impl Streamer {
         let worker = Arc::new(Mutex::new(worker));
         let mut streamer = Self {
             sources,
-            ranges: table,
+            ranges: Arc::new(table),
             stop,
             threads: Vec::new(),
+            reloader: None,
         };
         for _ in 0..decoders.max(1) {
             let thread = std::thread::Builder::new()
@@ -457,6 +459,22 @@ impl Streamer {
                 })?;
             streamer.threads.push(thread);
         }
+        // Restore purged start ranges a start found missing, off the audio
+        // and control threads.
+        let reloader = std::thread::Builder::new()
+            .name("sampler-reload".into())
+            .spawn({
+                let assets: Arc<[Pcm]> = assets.into();
+                let (sources, ranges) = (streamer.sources.clone(), streamer.ranges.clone());
+                let stop = streamer.stop.clone();
+                move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = reload(&assets, &sources, &ranges);
+                        std::thread::park_timeout(Duration::from_millis(50));
+                    }
+                }
+            })?;
+        streamer.reloader = Some(reloader);
         Ok((streamer, bytes))
     }
 
@@ -492,35 +510,45 @@ impl Streamer {
 
     /// Read start ranges again for assets whose start found them purged.
     /// Returns how many were reloaded.
+    /// A background thread already does this every 50 ms.
     pub fn reload(&self, assets: &[Pcm]) -> io::Result<usize> {
-        let mut count = 0;
-        for pcm in assets {
-            if pcm.resident_frames().is_some() || !pcm.take_cold() {
-                continue;
-            }
-            let id = pcm.asset_id();
-            let (Some(source), Some(ranges)) = (self.sources.get(&id), self.ranges.get(&id)) else {
-                continue;
-            };
-            load_ranges(pcm, &mut SampleReader::open(source)?, ranges)?;
-            count += 1;
-        }
-        Ok(count)
+        reload(assets, &self.sources, &self.ranges)
     }
+}
+
+fn reload(
+    assets: &[Pcm],
+    sources: &HashMap<AssetId, Source>,
+    ranges: &HashMap<AssetId, Vec<Range<usize>>>,
+) -> io::Result<usize> {
+    let mut count = 0;
+    for pcm in assets {
+        if pcm.resident_frames().is_some() || !pcm.take_cold() {
+            continue;
+        }
+        let id = pcm.asset_id();
+        let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
+            continue;
+        };
+        load_ranges(pcm, &mut SampleReader::open(source)?, ranges)?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 impl Drop for Streamer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        for thread in self.threads.drain(..) {
+        for thread in self.threads.drain(..).chain(self.reloader.take()) {
+            thread.thread().unpark();
             let _ = thread.join();
         }
     }
 }
 
 /// Open readers kept per decode thread between pages of the same assets
-/// (each holds a 64 KiB read buffer).
-const OPEN_READERS: usize = 32;
+/// (each holds a 16 KiB read buffer).
+const OPEN_READERS: usize = 16;
 
 fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop: &AtomicBool) {
     let worker = || {
@@ -534,8 +562,9 @@ fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Source>, stop
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
         let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
-            // ponytail: polling; a wake from the audio side if 0.5 ms matters.
-            std::thread::sleep(Duration::from_micros(500));
+            // The runtime unparks decoders after queuing requests; the
+            // timeout only bounds a missed wake and notices `stop`.
+            std::thread::park_timeout(Duration::from_millis(20));
             continue;
         };
         tick += 1;
@@ -610,13 +639,20 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
-        let (cache, worker) =
+        let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
         let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
         let (streamer, bytes) = Streamer::start(sources, &kept, ranges, worker, policy.decoders)
             .map_err(|e| invalid(e.to_string()))?;
         report.head_bytes = bytes;
+        cache.set_wake(
+            streamer
+                .threads
+                .iter()
+                .map(|t| t.thread().clone())
+                .collect(),
+        );
         drop(assets);
         Ok(Self {
             loaded,
