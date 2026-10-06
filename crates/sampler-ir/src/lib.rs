@@ -387,6 +387,35 @@ pub struct Switching {
     pub keys: SwitchKeys,
 }
 
+impl Switching {
+    /// One byte for a saved part: owner, driver and key policy. A remap
+    /// survives reload exactly through `from_bits(to_bits())`.
+    pub fn to_bits(self) -> u8 {
+        self.owner as u8 | (self.driver as u8) << 1 | (self.keys as u8) << 4
+    }
+
+    /// `None` for a byte `to_bits` never produces.
+    pub fn from_bits(bits: u8) -> Option<Self> {
+        Some(Self {
+            owner: [SwitchOwner::Native, SwitchOwner::Behavior]
+                .get(usize::from(bits & 1))
+                .copied()?,
+            driver: [
+                Driver::Keys,
+                Driver::Velocity,
+                Driver::Channel,
+                Driver::Controller,
+                Driver::Program,
+            ]
+            .get(usize::from(bits >> 1 & 7))
+            .copied()?,
+            keys: [SwitchKeys::Keep, SwitchKeys::Play, SwitchKeys::Swallow]
+                .get(usize::from(bits >> 4))
+                .copied()?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SwitchOwner {
     /// The runtime holds the articulation; zones name the one they belong to.
