@@ -3717,8 +3717,10 @@ dependencies = [
 name = "sampler-core"
 version = "0.1.0"
 dependencies = [
+ "realfft",
  "rtrb",
  "sampler-ir",
+ "sampler-simd",
 ]
 
 [[package]]
@@ -3758,12 +3760,19 @@ dependencies = [
 name = "sampler-native"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",
+ "sampler-uvi",
+ "serde_json",
 ]
+
+[[package]]
+name = "sampler-simd"
+version = "0.1.0"
 
 [[package]]
 name = "sampler-ui-ir"
@@ -3784,7 +3793,6 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
- "serde",
  "serde_json",
  "sha2",
  "symphonia",

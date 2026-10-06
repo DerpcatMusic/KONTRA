@@ -313,7 +313,7 @@ fn config_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    Some(dirs::config_dir()?.join("kontra"))
+    Some(dirs::config_dir()?.join("kontra2"))
 }
 
 /// The app's data folder: chosen artwork, and multis saved with no library
@@ -322,7 +322,7 @@ pub fn data_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("data"));
     }
-    Some(dirs::data_dir()?.join("kontra"))
+    Some(dirs::data_dir()?.join("kontra2"))
 }
 
 /// One library found.
@@ -629,12 +629,12 @@ pub fn is_multi(path: &Path) -> bool {
 
 /// What plays as one rack part: a Kontakt instrument or a sample.
 pub fn is_instrument(path: &Path) -> bool {
-    path.extension().is_some_and(|x| ["nki", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
+    path.extension().is_some_and(|x| ["nki", "nkm", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// What the browser lists and the rack opens: Kontakt instruments and saved racks.
 pub fn is_preset(path: &Path) -> bool {
-    is_multi(path) || path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nki"))
+    is_multi(path) || path.extension().is_some_and(|x| ["nki", "nkm"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// Presets in a library folder, its sample folders left unread.

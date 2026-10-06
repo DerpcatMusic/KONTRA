@@ -7,6 +7,8 @@ pub enum NcwError {
     InvalidFileSignature,
     /// A block does not start with the NCW block magic number.
     InvalidBlockSignature,
+    /// A channel header inside a decoded block has an invalid signature.
+    InvalidBlockSignatureAt { block: usize, channel: usize },
     /// A header field is inconsistent with the rest of the file.
     InvalidHeader(&'static str),
     /// A block header requests an unsupported bit width.
@@ -32,6 +34,7 @@ impl Display for NcwError {
         match self {
             Self::InvalidFileSignature => write!(f, "invalid NCW file signature"),
             Self::InvalidBlockSignature => write!(f, "invalid NCW block signature"),
+            Self::InvalidBlockSignatureAt { block, channel } => write!(f, "invalid NCW block signature at block {block}, channel {channel}"),
             Self::InvalidHeader(what) => write!(f, "invalid NCW header: {what}"),
             Self::UnsupportedBitDepth(bits) => write!(f, "unsupported block bit depth: {bits}"),
             Self::TruncatedData { expected, actual } => write!(

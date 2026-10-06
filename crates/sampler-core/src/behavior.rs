@@ -233,6 +233,19 @@ pub enum Instruction {
         local: u16,
         relative: bool,
     },
+    /// Set the "from script" modulator value (locals: source event ID,
+    /// modulator id, value) that [`super::ModSource::Script`] reads.
+    WriteModValue {
+        event: u16,
+        id: u16,
+        local: u16,
+    },
+    /// Read it back into `local` (0 when unset).
+    ReadModValue {
+        event: u16,
+        id: u16,
+        local: u16,
+    },
     /// Read a script layer's own value, in `WriteParam` units.
     ReadParam {
         scope: super::ParamScope,
@@ -254,6 +267,21 @@ pub enum Instruction {
         frames: u16,
         out: bool,
         stop: bool,
+    },
+    /// Start plan-owned program `program` in this callback's plan and
+    /// performance context; it runs before this callback continues. Full
+    /// callback capacity skips the start.
+    StartProgram {
+        program: u32,
+    },
+    /// Start every program `Prepared::with_signal_programs` binds to `signal`.
+    Signal {
+        signal: u16,
+    },
+    /// 1 when an input key equal to `local`'s value is held on a note of
+    /// this callback's plan, else 0 (KSP `%KEY_DOWN`).
+    ReadKeyHeld {
+        local: u16,
     },
 }
 
@@ -304,6 +332,17 @@ impl Program {
         }
         self.texts = texts.iter().map(|t| super::ops::Text::new(t)).collect();
         Ok(self)
+    }
+
+    /// Offset `StartProgram` targets by `base`, for a program table that
+    /// concatenates several modules.
+    pub fn with_program_base(mut self, base: usize) -> Self {
+        for op in self.code.iter_mut() {
+            if let Instruction::StartProgram { program } = op {
+                *program = program.saturating_add(base as u32);
+            }
+        }
+        self
     }
 
     pub fn with_script_instance(mut self, instance: super::ScriptInstanceId) -> Self {
@@ -393,6 +432,7 @@ impl Program {
             | Instruction::WaitLocal { local }
             | Instruction::ReadKey { local }
             | Instruction::ReadKeyDown { local }
+            | Instruction::ReadKeyHeld { local }
             | Instruction::ReadNoteCell { local, .. }
             | Instruction::WriteNoteCell { local, .. }
             | Instruction::JumpIfZero { local, .. } = *op
@@ -462,6 +502,11 @@ impl Program {
                     return Err(Error::InvalidInput);
                 }
                 locals = locals.max(usize::from(index.max(local)) + 1);
+            }
+            if let Instruction::WriteModValue { event, id, local }
+            | Instruction::ReadModValue { event, id, local } = *op
+            {
+                locals = locals.max(usize::from(event.max(id).max(local)) + 1);
             }
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
@@ -650,7 +695,8 @@ pub(super) enum Ready {
 impl Runtime {
     /// Run against an existing logical note. A caller can suppress default playback
     /// by admitting with note_on instead of trigger. Completion owns a private pin
-    /// until flush_behaviors accepts it, including synchronous completion/failure.
+    /// until flush_behaviors accepts it, including synchronous completion/failure,
+    /// except that admission may reclaim a finished one (see behavior_room).
     pub fn start_behavior(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
         self.apply_due();
         self.start_behavior_now(note, program)
@@ -685,7 +731,13 @@ impl Runtime {
         if !n.gate() && plan.programs[program].wait_lifetime == WaitLifetime::Gate {
             return Err(Error::ClosedNote);
         }
-        let work = n.work.checked_add(1).ok_or(Error::Capacity)?;
+        n.work.checked_add(1).ok_or(Error::Capacity)?;
+        if !self.behavior_room(1) {
+            return Err(Error::Capacity);
+        }
+        let n = self.notes.get_mut(note.0).unwrap();
+        let work = n.work + 1;
+        let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             context: PlanContext::Bare,
@@ -714,7 +766,7 @@ impl Runtime {
     }
 
     pub(super) fn validate_plan_context(
-        &self,
+        &mut self,
         plan: super::PlanId,
         program: usize,
         context: PlanContext,
@@ -732,7 +784,10 @@ impl Runtime {
         {
             return Err(Error::InvalidInput);
         }
-        if self.behaviors.available() == 0 || generation.callbacks == usize::MAX {
+        if generation.callbacks == usize::MAX {
+            return Err(Error::Capacity);
+        }
+        if !self.behavior_room(1) {
             return Err(Error::Capacity);
         }
         Ok(())
@@ -854,6 +909,47 @@ impl Runtime {
         }
     }
 
+    /// Finished work has nothing to report, so admission takes its slot rather
+    /// than fail: a chord through chained scripts never waits on the host's
+    /// flush. Finished outcomes stay observable while there is room; faults and
+    /// cancellations always wait for flush_behaviors. Allocation-free; the scan
+    /// runs only when the arena is short.
+    pub(super) fn behavior_room(&mut self, needed: usize) -> bool {
+        let available = self.behaviors.available();
+        if available >= needed {
+            return true;
+        }
+        // A refused admission reclaims nothing.
+        let finished = self
+            .behaviors
+            .slots
+            .iter()
+            .filter(|s| {
+                s.value
+                    .is_some_and(|c| c.outcome == Some(Outcome::Finished))
+            })
+            .count();
+        if available + finished < needed {
+            return false;
+        }
+        let mut i = 0;
+        while self.behaviors.available() < needed && i < self.behaviors.slots.len() {
+            if let Some(c) = self.behaviors.slots[i].value
+                && c.outcome == Some(Outcome::Finished)
+            {
+                let id = BehaviorId(self.behaviors.id(i));
+                self.release_controller_reserve(id);
+                self.behaviors.remove(id.0);
+                match c.owner {
+                    BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
+                    BehaviorOwner::Plan(plan) => self.plans.get_mut(plan.0).unwrap().callbacks -= 1,
+                }
+            }
+            i += 1;
+        }
+        self.behaviors.available() >= needed
+    }
+
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         self.queue_behavior(id);
         self.drain_behavior();
@@ -903,7 +999,11 @@ impl Runtime {
                     continue;
                 }
             };
-            let c = *self.behaviors.get(id.0).unwrap();
+            // A finished callback retires at once; a stale entry is skipped.
+            let Some(c) = self.behaviors.get(id.0).copied() else {
+                self.behavior_ready.pop();
+                continue;
+            };
             if c.outcome.is_some() {
                 self.release_controller_reserve(id);
                 self.behavior_ready.pop();
@@ -1103,6 +1203,12 @@ impl Runtime {
                 }
             }
             Instruction::SuppressRelease => {
+                // A release the script itself asked for (note_off) cannot be
+                // ignored: nothing would ever resume it.
+                let note = owner.note()?;
+                if self.note_events[note.0.index].script_stop {
+                    return Ok(false);
+                }
                 if let Some(NoteStage::Release(stage)) =
                     self.behaviors.get(id.0).unwrap().note_stage
                 {
@@ -1333,6 +1439,27 @@ impl Runtime {
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_param(plan, scope, index, target, value, relative)?;
             }
+            Instruction::WriteModValue {
+                event,
+                id: slot,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let slot = *self.local_cell_mut(id, slot)?;
+                let value = *self.local_cell_mut(id, local)?;
+                self.write_mod_value(plan, event, slot, value)?;
+            }
+            Instruction::ReadModValue {
+                event,
+                id: slot,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let slot = *self.local_cell_mut(id, slot)?;
+                *self.local_cell_mut(id, local)? = self.read_mod_value(plan, event, slot)?;
+            }
             Instruction::ReadParam {
                 scope,
                 index,
@@ -1352,6 +1479,34 @@ impl Runtime {
                 let group = *self.local_cell_mut(id, group)?;
                 let value = *self.local_cell_mut(id, local)?;
                 self.write_envelope(plan, group, stage, value)?;
+            }
+            Instruction::ReadKeyHeld { local } => {
+                let plan = self.behavior_plan(owner)?;
+                let key = *self.local_cell_mut(id, local)?;
+                // ponytail: scans every note slot; a per-key count if notes grow large.
+                let held = self
+                    .notes
+                    .slots
+                    .iter()
+                    .filter_map(|s| s.value.as_ref())
+                    .any(|n| {
+                        n.plan == plan
+                            && n.key_down()
+                            && n.input.is_some_and(|i| i64::from(i.key) == key)
+                    });
+                *self.local_cell_mut(id, local)? = i64::from(held);
+            }
+            Instruction::Signal { signal } => {
+                let plan = self.behavior_plan(owner)?;
+                self.signal_programs(id, plan, signal)?;
+            }
+            Instruction::StartProgram { program } => {
+                let plan = self.behavior_plan(owner)?;
+                let context = self.behaviors.get(id.0).unwrap().context;
+                match self.start_plan_context(plan, program as usize, context) {
+                    Ok(_) | Err(Error::Capacity) => {}
+                    Err(error) => return Err(error),
+                }
             }
             Instruction::FadeEvent {
                 event,

@@ -37,7 +37,32 @@ fn source(i: usize) -> Frame {
     }
 }
 fn plan(rate: u32, filter: StateVariableFilter, shared: bool) -> Result<Prepared, Error> {
-    let plan = Prepared::new(
+    let plan = base(rate)?;
+    if shared {
+        plan.with_buses(
+            vec![Bus {
+                processors: vec![Processor::StateVariable(filter)],
+                sends: vec![BusSend {
+                    bus: None,
+                    gain: 1.,
+                }],
+                tail_frames: 40,
+            }],
+            vec![Some(0)],
+        )
+    } else {
+        plan.with_voice_chains(
+            vec![VoiceChain::new(
+                vec![],
+                vec![Processor::StateVariable(filter)],
+                40,
+            )?],
+            vec![Some(0)],
+        )
+    }
+}
+fn base(rate: u32) -> Result<Prepared, Error> {
+    Prepared::new(
         rate,
         vec![Pcm::new(rate, (0..160).map(source).collect())?],
         vec![Region {
@@ -64,29 +89,7 @@ fn plan(rate: u32, filter: StateVariableFilter, shared: bool) -> Result<Prepared
             domain: ControlDomain::Real { min: 0., max: 1. },
             default: ControlValue::Real(0.),
         },
-    ])?;
-    if shared {
-        plan.with_buses(
-            vec![Bus {
-                processors: vec![Processor::StateVariable(filter)],
-                sends: vec![BusSend {
-                    bus: None,
-                    gain: 1.,
-                }],
-                tail_frames: 40,
-            }],
-            vec![Some(0)],
-        )
-    } else {
-        plan.with_voice_chains(
-            vec![VoiceChain::new(
-                vec![],
-                vec![Processor::StateVariable(filter)],
-                40,
-            )?],
-            vec![Some(0)],
-        )
-    }
+    ])
 }
 fn filter(mode: SvfMode) -> StateVariableFilter {
     StateVariableFilter {
@@ -535,4 +538,79 @@ fn static_filter_boundaries_rates_and_invalid_control_ranges_are_explicit() {
             .with_controls(vec![])
             .is_err()
     );
+}
+
+// Voices sharing a chain render in lanes; each must match rendering alone,
+// bit for bit, across batch boundaries, staggered starts and ended voices.
+#[test]
+fn batched_voices_match_voices_rendered_alone() {
+    const VOICES: usize = 11;
+    let chain = || {
+        VoiceChain::new(
+            vec![
+                Processor::StereoMatrix([[0.9, 0.2], [-0.1, 1.1]]),
+                Processor::Biquad(Biquad::new(48000, FilterKind::LowPass, 7000., 0.8).unwrap()),
+                Processor::StateVariable(filter(SvfMode::LowPass)),
+            ],
+            vec![
+                Processor::Gain(0.7),
+                Processor::StateVariable(filter(SvfMode::BandPass)),
+            ],
+            40,
+        )
+        .unwrap()
+    };
+    let limits = Limits {
+        notes: VOICES,
+        families: VOICES,
+        voices: VOICES,
+        expressions: VOICES,
+        ..limits()
+    };
+    let render = |voices: std::ops::Range<usize>| {
+        let plan = base(48000)
+            .unwrap()
+            .with_voice_chains(vec![chain()], vec![Some(0)])
+            .unwrap();
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        let generation = rt.active_plan();
+        rt.schedule_event(
+            20,
+            Event::Control(
+                generation,
+                ControlWrite {
+                    id: CUTOFF,
+                    value: ControlValue::Real(1.),
+                },
+            ),
+        )
+        .unwrap();
+        let mut out = [[0.; 2]; 300];
+        let mut at = 0;
+        for (k, chunk) in [5, 64, 1, 64, 30, 64, 64, 8].into_iter().enumerate() {
+            for v in voices.clone() {
+                if v % 4 == k {
+                    rt.trigger(input(v as i32), 60, 0.2 + v as f64 * 0.07)
+                        .unwrap();
+                }
+                if v % 3 == 0 && k == 4 {
+                    rt.note_off(input(v as i32), None).unwrap();
+                }
+            }
+            rt.render(&mut out[at..at + chunk]).unwrap();
+            at += chunk;
+        }
+        out
+    };
+    let together = render(0..VOICES);
+    let mut alone = [[0.; 2]; 300];
+    // Sum in slot order, which is trigger order here.
+    let mut order: Vec<_> = (0..VOICES).collect();
+    order.sort_by_key(|v| v % 4);
+    for v in order {
+        for (a, b) in alone.iter_mut().zip(render(v..v + 1)) {
+            *a = [a[0] + b[0], a[1] + b[1]];
+        }
+    }
+    assert_eq!(together, alone);
 }

@@ -38,6 +38,24 @@ pub struct Record {
     pub tag: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Protection {
+    Clear,
+    Metadata,
+    Content,
+    Unknown(u8),
+}
+impl From<u8> for Protection {
+    fn from(mode: u8) -> Self {
+        match mode {
+            0 => Self::Clear,
+            1 => Self::Metadata,
+            2 => Self::Content,
+            n => Self::Unknown(n),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Member {
     pub record_offset: u64,
@@ -46,7 +64,7 @@ pub struct Member {
     pub path: Option<String>,
     pub size: u64,
     pub offset: u64,
-    pub mode: u8,
+    pub mode: Protection,
     pub footer: Vec<u8>,
 }
 
@@ -319,7 +337,7 @@ impl Ufs {
                         path: None,
                         size: u64_le(&bytes[260..268]),
                         offset: u64_le(&bytes[268..276]),
-                        mode: bytes[276],
+                        mode: bytes[276].into(),
                         footer: bytes[277..].to_vec(),
                     };
                     if member
@@ -332,10 +350,10 @@ impl Ufs {
                             record.offset
                         ));
                     }
-                    if member.mode > 2 {
+                    if let Protection::Unknown(mode) = member.mode {
                         directory.warnings.push(format!(
                             "Member record {} uses unsupported mode {}",
-                            record.offset, member.mode
+                            record.offset, mode
                         ));
                     }
                     directory.files.push(member);
@@ -513,12 +531,12 @@ impl Ufs {
             "UFS member range exceeds physical container"
         );
         let key = match member.mode {
-            0 => None,
-            1 => Some(metadata_key),
-            2 => Some(
+            Protection::Clear => None,
+            Protection::Metadata => Some(metadata_key),
+            Protection::Content => Some(
                 content_key.context("UFS mode 2 member requires a caller-supplied content key")?,
             ),
-            mode => bail!("Unsupported UFS member encryption mode {mode}"),
+            Protection::Unknown(mode) => bail!("Unsupported UFS member encryption mode {mode}"),
         };
         let mut file = self.open_snapshot()?;
         let size = usize::try_from(member.size).context("UFS member does not fit address space")?;
@@ -545,16 +563,14 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
         }
-        let fixture = Fixture(
-            std::env::temp_dir().join(format!(
+        let fixture = Fixture(std::env::temp_dir().join(format!(
                 "uvi-reopened-bank-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
-            )),
-        );
+            )));
         std::fs::create_dir(&fixture.0).unwrap();
         let path = fixture.0.join("bank.ufs");
         let replacement = fixture.0.join("replacement.ufs");
@@ -575,7 +591,7 @@ mod tests {
             parent: None,
             offset: HEADER_SIZE + 8,
             size: 4,
-            mode: 0,
+            mode: Protection::Clear,
             footer: Vec::new(),
         };
         assert_eq!(ufs.read_member(&member, 0, None).unwrap(), b"AAAA");
@@ -660,7 +676,7 @@ mod tests {
         member.offset = u64::MAX;
         assert!(ufs.read_member(&member, key, None).is_err());
         member.offset = 328;
-        member.mode = 2;
+        member.mode = Protection::Content;
         assert!(ufs.read_member(&member, key, None).is_err());
         assert!(ufs.decode_directory(b"wrong namespace").is_err());
         std::fs::remove_file(path).unwrap();

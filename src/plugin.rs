@@ -66,6 +66,14 @@ pub struct Part {
     /// The settings of the instrument's output tree below its root
     /// ([`crate::sound::tree`]), one per node after node 0.
     pub nodes: Vec<NodeMix>,
+    /// MPE: each note on its own member channel with its own bend,
+    /// pressure and timbre (lower zone, manager channel 1).
+    pub mpe: bool,
+    /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
+    pub bend_range: u8,
+    /// How articulations are selected, as `sampler_ir::Switching::to_bits`
+    /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
+    pub switching: u8,
 }
 
 impl Default for Part {
@@ -88,6 +96,9 @@ impl Default for Part {
             aux_gain: 0.,
             output_manual: false,
             nodes: Vec::new(),
+            mpe: false,
+            bend_range: 0,
+            switching: 0,
         }
     }
 }
@@ -168,7 +179,14 @@ pub struct Selection {
     pub buses: Vec<Bus>,
     /// How parts are routed to buses and host ports ([`routing::Outputs`]).
     pub outputs: u8,
+    /// Megabytes of sample start data the rack keeps in memory; past it,
+    /// samples idle for [`IDLE_SECONDS`] read from disk again when played.
+    /// 0 keeps everything.
+    pub memory_budget_mb: u32,
 }
+
+/// Seconds a streamed sample goes unplayed before the memory budget may drop it.
+pub const IDLE_SECONDS: f64 = 30.0;
 
 impl Selection {
     /// Output bus `n`, default when never set.
@@ -277,12 +295,25 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 6],
+    problems: [AtomicU64; 7],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
+    /// The loaded part's script interface models; [`Shared::apply_effects`]
+    /// updates them and republishes [`PartView::interfaces`].
+    scripts: Mutex<crate::sound::ScriptUi>,
+    /// The loaded part's streamed samples, if they stream.
+    stream: Mutex<Option<Arc<crate::sound::Stream>>>,
+    /// The articulation playing, by index, as the audio thread last saw it;
+    /// `u32::MAX` when unknown (none, or a script holds it).
+    pub(crate) articulation: AtomicU32,
+    /// The part's clock in frames, as the audio thread last saw it.
+    clock: AtomicU64,
+    /// Bytes of samples the part holds in memory, and would hold fully decoded.
+    pub(crate) resident_bytes: AtomicU64,
+    pub(crate) full_bytes: AtomicU64,
 }
 
 /// One control's value as last seen (`f64` bits).
@@ -327,7 +358,7 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [a, b, c, d, e, f] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
+        let [a, b, c, d, e, f, g] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
             underruns: b,
@@ -335,12 +366,13 @@ impl PartShared {
             script_overruns: d,
             narrowed_input: e,
             ignored_input: f,
+            stolen_voices: g,
         }
     }
 
     fn store_problems(&self, p: RuntimeProblems) {
         let values =
-            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input];
+            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
         }
@@ -381,6 +413,8 @@ pub struct Shared {
     pub(crate) controls: ArrayQueue<Mix>,
     /// Widget edits for the audio thread: rack slot, control, value.
     control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
+    /// Script effects from the audio thread: rack slot, script instance, effect.
+    effects: ArrayQueue<(usize, usize, sampler_core::Effect)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// One strip's signal for a spectrum on screen.
@@ -434,7 +468,7 @@ pub struct Shared {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64)>,
+    pub(crate) attempted: Option<(String, u32, u64, bool)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -447,6 +481,10 @@ pub(crate) struct PartView {
     /// The instrument's script interfaces, in script order.
     // TODO(v2 UI): drawn by the UI agent's sampler-ui-ir renderer.
     pub(crate) interfaces: Arc<[sampler_ui_ir::Interface]>,
+    /// The translated instrument: articulations, mapping, sound.
+    pub(crate) instrument: Option<Arc<sampler_ir::Instrument>>,
+    /// The keys as the scripts colour and name them (128, or none).
+    pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
 }
@@ -489,6 +527,7 @@ impl Default for Shared {
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
             control_edits: ArrayQueue::new(256),
+            effects: ArrayQueue::new(1024),
             meters: Meters::default(),
             scope: Scope::default(),
             blocks: AtomicU64::new(0),
@@ -665,6 +704,9 @@ pub(crate) fn rack_controls(selection: &Selection) -> Vec<PartControls> {
                     solo: p.solo,
                     aux: if (0..BUSES as i16).contains(&p.aux) { p.aux as u8 } else { NO_AUX },
                     aux_gain: db_gain(p.aux_gain),
+                    mpe: p.mpe,
+                    bend_range: p.bend_range.min(96),
+                    switching: p.switching,
                 })
                 .unwrap_or_default()
         })
@@ -836,6 +878,45 @@ impl Shared {
         self.control_edits.push((slot, control, value)).is_ok()
     }
 
+    /// Apply the script effects the audio thread queued to their parts'
+    /// interface models, and publish the interfaces that changed.
+    fn apply_effects(&self) {
+        let mut changed = Vec::new();
+        while let Some((slot, instance, effect)) = self.effects.pop() {
+            let Some(part) = self.part(slot) else { continue };
+            if part.scripts.lock().unwrap().apply(instance, &effect) && !changed.contains(&slot) {
+                changed.push(slot);
+            }
+        }
+        for slot in changed {
+            let Some(part) = self.part(slot) else { continue };
+            let (interfaces, keys) = {
+                let mut scripts = part.scripts.lock().unwrap();
+                (scripts.interfaces(), scripts.keys())
+            };
+            if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot) {
+                v.interfaces = interfaces.into();
+                v.keys = keys;
+            }
+        }
+    }
+
+    /// Fit streamed start data in `budget_mb`, shared evenly by the parts that
+    /// stream, dropping what has idled longest; refresh what each holds.
+    fn trim_streams(&self, budget_mb: u32) {
+        let idle = (IDLE_SECONDS * self.rate()) as u64;
+        let parts = self.parts.lock().unwrap().clone();
+        let streams: Vec<_> =
+            parts.iter().filter_map(|p| Some((p, p.stream.lock().unwrap().clone()?))).collect();
+        let share = u64::from(budget_mb) * (1 << 20) / streams.len().max(1) as u64;
+        for (part, stream) in streams {
+            if budget_mb > 0 {
+                stream.trim(share, part.clock.load(Ordering::Relaxed).saturating_sub(idle));
+            }
+            part.resident_bytes.store(stream.resident_bytes(), Ordering::Relaxed);
+        }
+    }
+
     fn reset_midi(&self) {
         while self.keyboard.pop().is_some() {}
         for owner in &self.key_owners {
@@ -934,6 +1015,8 @@ impl BackgroundTask for Load {
     fn run(self, params: &SamplerParams) {
         let shared = &params.shared;
         shared.flush_ready();
+        shared.apply_effects();
+        shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
         load_multi(params);
@@ -1017,7 +1100,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     let atoms = shared.part(slot).unwrap();
     let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits());
+    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1035,6 +1118,9 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     atoms.load_progress.store(0, Ordering::Relaxed);
     let generation = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
     if part.path.is_empty() {
+        *atoms.stream.lock().unwrap() = None;
+        atoms.resident_bytes.store(0, Ordering::Relaxed);
+        atoms.full_bytes.store(0, Ordering::Relaxed);
         shared.view.lock().unwrap().parts[slot].status.clear();
         shared.publish_part((slot, generation, None));
         return true;
@@ -1049,7 +1135,12 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
-    let request = LoadRequest { path: part.path.clone().into(), program: part.program, sample_rate: rate };
+    let request = LoadRequest {
+        path: part.path.clone().into(),
+        program: part.program,
+        sample_rate: rate,
+        mpe: part.mpe,
+    };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
     let result = V2Loader.prepare(&request, &mut progress, &canceled);
     let mut view = shared.view.lock().unwrap();
@@ -1065,6 +1156,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             trace.detail("groups", d.groups);
             trace.detail("samples", d.samples);
             trace.detail("scripts", d.scripts);
+            let full = d.full_bytes;
             let missing = loaded.report.missing.len();
             v.status = format!("{} · {} zones · {} groups", d.format, d.zones, d.groups);
             if missing > 0 {
@@ -1081,6 +1173,13 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
                 .iter()
                 .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
                 .collect();
+            v.instrument = loaded.instrument;
+            v.keys = loaded.scripts.keys();
+            *atoms.scripts.lock().unwrap() = loaded.scripts;
+            let held = loaded.stream.as_ref().map(|s| s.resident_bytes());
+            atoms.resident_bytes.store(held.unwrap_or(full), Ordering::Relaxed);
+            atoms.full_bytes.store(full, Ordering::Relaxed);
+            *atoms.stream.lock().unwrap() = loaded.stream;
             v.trace = Some(trace.finish(if missing > 0 { "partial" } else { "loaded" }));
             atoms.load_progress.store(u32::from(Progress::DONE.0), Ordering::Relaxed);
             drop(view);
@@ -1400,6 +1499,9 @@ impl PluginLogic for Sampler {
             for slot in 0..s.core.parts() {
                 let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
                 atoms.store_problems(s.core.problems(slot));
+                atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
+                let playing = s.core.articulation(slot).map_or(u32::MAX, |a| a as u32);
+                atoms.articulation.store(playing, Ordering::Relaxed);
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
             }
             s.until_poll = (rate * 0.1) as usize;
@@ -1540,6 +1642,9 @@ impl PluginLogic for Sampler {
                 shared.scope.push(tapped);
             }
             at += len;
+        }
+        for slot in 0..s.core.parts() {
+            s.core.take_effects(slot, &mut |instance, effect| shared.effects.push((slot, instance, *effect)).is_ok());
         }
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));

@@ -95,6 +95,7 @@ impl Archive {
 fn invalid(message: &str) -> Error {
     Error::Generic(message.into())
 }
+#[allow(clippy::too_many_arguments)] // The recursive directory walk shares its bounded index.
 fn directory<R: ReadBytesExt>(
     r: &mut R,
     offset: u64,
@@ -146,14 +147,14 @@ fn directory<R: ReadBytesExt>(
         let size = r.read_u16_le()? as u64;
         let reference = r.read_u32_le()?;
         let kind = r.read_u16_le()?;
-        if size < 8 || size % 2 != 0 || start + size > length {
+        if size < 8 || !size.is_multiple_of(2) || start + size > length {
             return Err(invalid(&format!("Invalid NKX directory entry {entry}/{count} length {size} at {start:#x} ({prefix}), available {}, file length {length}", length.saturating_sub(start))));
         }
         // Bounded by the check above; `read_bytes` would seek and drop the read buffer.
         let mut bytes = vec![0; (size - 8) as usize];
         r.read_exact(&mut bytes)?;
         let words: Vec<_> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|b| u16::from_le_bytes([b[0], b[1]]))
             .take_while(|c| *c != 0)
             .collect();

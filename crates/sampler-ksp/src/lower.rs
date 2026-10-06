@@ -12,7 +12,7 @@ use sampler_core::{
     ParamScope, Program, RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime,
     real_bits,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 /// Event context a program runs in; decides which event operands exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,22 @@ const AMP_ENVELOPE: &str = "ENV_AHDSR";
 /// Store key tags separating UI properties and PGS values from engine keys.
 pub const PROPERTY_TAG: i32 = i32::MIN;
 pub const PGS_TAG: i32 = i32::MIN + 1;
+/// `Instruction::Signal` of a PGS write; `on pgs_changed` is bound to it.
+pub const PGS_SIGNAL: u16 = 0;
+
+/// The shared-store key of PGS key `args[0]` at `index`.
+fn pgs_key(g: &Gen, args: &[Arg], index: Key) -> [Key; 4] {
+    let hash = name_hash(&g.const_text(args, 0).unwrap_or_default());
+    [
+        Key::Fixed(PGS_TAG),
+        Key::Fixed(hash),
+        index,
+        Key::Fixed(PGS_TAG),
+    ]
+}
+
+/// `[LISTENER_TAG, signal, 0, LISTENER_TAG]`: a listener's `set_listener` value.
+pub const LISTENER_TAG: i32 = i32::MIN + 2;
 
 /// Host value slot for a system variable; see `Runtime::set_host_value`.
 pub fn host_slot(sys: SysVar) -> Option<u8> {
@@ -101,7 +117,6 @@ pub struct Unit<'h> {
     /// Host control per UI index.
     pub controls: &'h [Option<ControlId>],
     pub groups: &'h [String],
-    pub pgs: &'h BTreeSet<String>,
     pub slot: u8,
     /// Remaining instruction budget for the whole script.
     pub budget: usize,
@@ -121,6 +136,7 @@ impl<'h> Unit<'h> {
         span: Span,
         context: Context,
         kind: CallbackKind,
+        signal: Option<i32>,
     ) -> Result<Program> {
         let ui_id = match kind {
             CallbackKind::UiControl(var) => self.hir.vars[var.0 as usize]
@@ -140,6 +156,7 @@ impl<'h> Unit<'h> {
             loops: Vec::new(),
             span,
             tdepth: 0,
+            signal,
         };
         g.block(body)?;
         g.forward()?;
@@ -171,6 +188,69 @@ impl<'h> Unit<'h> {
                 span,
                 builtin: None,
                 message: format!("invalid lowered program: {e:?}"),
+            })
+    }
+
+    /// A timer listener's driver: every period, start `body` (the listener
+    /// program for `signal`); a zero period polls every 10 ms until set.
+    // ponytail: $NI_SIGNAL_TIMER_BEAT assumes 120 BPM, like wait_ticks.
+    pub fn listener_driver(&mut self, signal: i32, body: usize, span: Span) -> Result<Program> {
+        let mut g = Gen {
+            u: self,
+            ctx: Context::Plan,
+            callback_type: b::cb::LISTENER,
+            ui_id: None,
+            code: Vec::new(),
+            texts: Vec::new(),
+            calls: Vec::new(),
+            starts: HashMap::new(),
+            loops: Vec::new(),
+            span,
+            tdepth: 0,
+            signal: Some(signal),
+        };
+        let (period, t) = (0, 1);
+        let top = g.here();
+        for (i, v) in [LISTENER_TAG, signal, 0, LISTENER_TAG]
+            .into_iter()
+            .enumerate()
+        {
+            g.set(2 + i as u16, i64::from(v))?;
+        }
+        g.emit(I::Op(Op::Store {
+            key: 2,
+            local: period,
+            write: false,
+        }))?;
+        g.clamp(period, 0, i32::MAX)?;
+        let idle = g.jump_if_zero(period)?;
+        let period = if signal == b::signal::TIMER_BEAT {
+            // Signals per quarter note to microseconds.
+            g.set(t, 500_000)?;
+            g.emit(I::Binary32 {
+                lhs: t,
+                rhs: period,
+                operation: IB::Divide,
+            })?;
+            t
+        } else {
+            period
+        };
+        g.emit(I::MicrosToFrames { local: period })?;
+        g.emit(I::WaitLocal { local: period })?;
+        g.emit(I::StartProgram {
+            program: body as u32,
+        })?;
+        g.emit(I::Jump { target: top })?;
+        g.land(idle);
+        g.emit(I::Wait(480))?;
+        g.emit(I::Jump { target: top })?;
+        Program::new(g.code)
+            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map_err(|e| Fault {
+                span,
+                builtin: None,
+                message: format!("invalid listener driver: {e:?}"),
             })
     }
 
@@ -215,6 +295,8 @@ struct Gen<'u, 'h> {
     loops: Vec<usize>,
     span: Span,
     tdepth: u32,
+    /// The timer signal a listener body program serves.
+    signal: Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -728,6 +810,10 @@ impl Gen<'_, '_> {
                 local: dst,
                 value: i64::from(self.ui_id.unwrap_or(0)),
             },
+            SysVar::SignalType if self.signal.is_some() => I::SetLocal {
+                local: dst,
+                value: i64::from(self.signal.unwrap()),
+            },
             SysVar::CurrentScriptSlot => I::SetLocal {
                 local: dst,
                 value: i64::from(self.u.slot),
@@ -747,16 +833,46 @@ impl Gen<'_, '_> {
     }
 
     fn sys_elem(&mut self, array: SysArray, index: &Expr, dst: u16) -> Result<()> {
-        if array == SysArray::Cc {
-            self.value(index, dst)?;
-            self.emit(I::ReadInputController {
-                controller: dst,
-                local: dst,
-            })?;
-            return self.emit(I::ControllerToMidi7 { local: dst });
+        if !self.sys_readable(array) {
+            self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
+            return self.set(dst, 0);
         }
-        self.warn(format!("{array:?} is not maintained at runtime; reads 0"));
-        self.set(dst, 0)
+        self.value(index, dst)?;
+        self.sys_read(array, dst)
+    }
+
+    fn sys_readable(&self, array: SysArray) -> bool {
+        match array {
+            SysArray::Cc | SysArray::KeyDown => true,
+            SysArray::CcTouched => self.ctx == Context::Controller,
+            _ => false,
+        }
+    }
+
+    /// Replace the index in `reg` by the element; uses `reg + 1` as scratch.
+    fn sys_read(&mut self, array: SysArray, at: u16) -> Result<()> {
+        match array {
+            SysArray::Cc => {
+                self.emit(I::ReadInputController {
+                    controller: at,
+                    local: at,
+                })?;
+                self.emit(I::ControllerToMidi7 { local: at })
+            }
+            SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
+            // Kontakt marks the controllers that changed for this callback:
+            // here, the one that triggered it.
+            SysArray::CcTouched => {
+                let number = reg(at, 1)?;
+                self.emit(I::ReadControllerNumber { local: number })?;
+                self.emit(I::CompareLocal {
+                    lhs: at,
+                    rhs: number,
+                    comparison: Cmp::Equal,
+                })
+            }
+            _ => self.set(at, 0),
+        }
     }
 
     // Text.
@@ -969,6 +1085,18 @@ impl Gen<'_, '_> {
 
     /// Keyed store access: key registers dst+1..=dst+4, value in dst.
     fn store(&mut self, args: &[Arg], key: [Key; 4], dst: u16, write: bool) -> Result<()> {
+        self.store_in(args, key, dst, write, false)
+    }
+
+    /// `store`, on the plan's shared store with `shared` (PGS).
+    fn store_in(
+        &mut self,
+        args: &[Arg],
+        key: [Key; 4],
+        dst: u16,
+        write: bool,
+        shared: bool,
+    ) -> Result<()> {
         for (i, k) in key.into_iter().enumerate() {
             let r = reg(dst, 1 + i as u16)?;
             match k {
@@ -976,10 +1104,19 @@ impl Gen<'_, '_> {
                 Key::Fixed(v) => self.set(r, i64::from(v))?,
             }
         }
-        self.emit(I::Op(Op::Store {
-            key: reg(dst, 1)?,
-            local: dst,
-            write,
+        let key = reg(dst, 1)?;
+        self.emit(I::Op(if shared {
+            Op::SharedStore {
+                key,
+                local: dst,
+                write,
+            }
+        } else {
+            Op::Store {
+                key,
+                local: dst,
+                write,
+            }
         }))
     }
 
@@ -1263,6 +1400,8 @@ impl Gen<'_, '_> {
                 true
             }
             Search => return self.search(args, dst),
+            Sort => return self.sort(args, dst),
+            ArrayEqual => return self.array_equal(args, dst),
             ByMarks => {
                 self.arg(args, 0, dst)?;
                 self.set(t, i64::from(b::MARKS_FLAG))?;
@@ -1433,6 +1572,31 @@ impl Gen<'_, '_> {
                 self.write_param(ParamScope::Note, target, dst, args, Some(2))?;
                 true
             }
+            // "From script" modulator values (Kontakt 6.6+), per source event.
+            SetEventParArr | GetEventParArr
+                if self.const_int(args, 1) == Some(b::event_par::MOD_VALUE_ID)
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                let id = reg(dst, 2)?;
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventParArr {
+                    self.arg(args, 2, t)?;
+                    self.arg(args, 3, id)?;
+                    self.emit(I::WriteModValue {
+                        event: dst,
+                        id,
+                        local: t,
+                    })?;
+                } else {
+                    self.arg(args, 2, id)?;
+                    self.emit(I::ReadModValue {
+                        event: dst,
+                        id,
+                        local: dst,
+                    })?;
+                }
+                true
+            }
             SetEventPar | GetEventPar
                 if self.event_param(args).is_some() && !self.selects_many(builtin, args, 0) =>
             {
@@ -1558,6 +1722,18 @@ impl Gen<'_, '_> {
                 self.effect(builtin, args, dst)?;
                 return self.set(dst, 0);
             }
+            SetListener | ChangeListenerPar => {
+                // The timer driver reads the period from the store.
+                self.arg(args, 1, dst)?;
+                let key = [
+                    Key::Fixed(LISTENER_TAG),
+                    Key::Arg(0),
+                    Key::Fixed(0),
+                    Key::Fixed(LISTENER_TAG),
+                ];
+                self.store(args, key, dst, true)?;
+                true
+            }
             GetUiId => {
                 let id = self
                     .ui_index(args, 0)
@@ -1570,35 +1746,32 @@ impl Gen<'_, '_> {
             }
             GetControlPar | GetControlParArr => return self.get_control_par(builtin, args, dst),
             PgsSetKeyVal => {
+                // Shared by every script slot; on pgs_changed runs in each.
                 self.arg(args, 2, dst)?;
-                let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [
-                    Key::Fixed(PGS_TAG),
-                    Key::Fixed(hash),
-                    Key::Arg(1),
-                    Key::Fixed(PGS_TAG),
-                ];
-                self.store(args, key, dst, true)?;
-                self.effect(builtin, args, dst)?;
-                return Ok(());
+                self.store_in(args, pgs_key(self, args, Key::Arg(1)), dst, true, true)?;
+                if self.callback_type != b::cb::PGS_CHANGED {
+                    // ponytail: a pgs_changed that sets keys does not re-signal,
+                    // which would recurse synchronously.
+                    self.emit(I::Signal { signal: PGS_SIGNAL })?;
+                }
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
             }
             PgsGetKeyVal => {
                 self.set(dst, 0)?;
-                let hash = name_hash(&self.const_text(args, 0).unwrap_or_default());
-                let key = [
-                    Key::Fixed(PGS_TAG),
-                    Key::Fixed(hash),
-                    Key::Arg(1),
-                    Key::Fixed(PGS_TAG),
-                ];
-                self.store(args, key, dst, false)?;
+                self.store_in(args, pgs_key(self, args, Key::Arg(1)), dst, false, true)?;
                 true
             }
             PgsKeyExists => {
-                let exists = self
-                    .const_text(args, 0)
-                    .is_some_and(|k| self.u.pgs.contains(&k));
-                self.set(dst, i64::from(exists))?;
+                // A created key has a value at index 0.
+                self.set(dst, i64::from(i32::MIN))?;
+                self.store_in(args, pgs_key(self, args, Key::Fixed(0)), dst, false, true)?;
+                self.set(t, i64::from(i32::MIN))?;
+                self.emit(I::CompareLocal {
+                    lhs: dst,
+                    rhs: t,
+                    comparison: Cmp::NotEqual,
+                })?;
                 true
             }
             WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
@@ -1623,8 +1796,6 @@ impl Gen<'_, '_> {
             | RedirectOutput
             | StopWait
             | ResetKspTimer
-            | SetListener
-            | ChangeListenerPar
             | SetZonePar
             | SetVoiceLimit
             | LoadIrSample
@@ -1961,25 +2132,32 @@ impl Gen<'_, '_> {
     }
 
     fn search(&mut self, args: &[Arg], dst: u16) -> Result<()> {
-        let Some(Arg::Var(v, _)) = args.first() else {
-            self.ignore(
-                Builtin::Search,
-                "of a runtime-maintained array is not available; -1",
-            );
-            return self.set(dst, -1);
+        let (array, len) = match args.first() {
+            Some(Arg::Var(v, _)) => {
+                let Home::Cells { offset, len } = self.var(*v).home else {
+                    self.ignore(Builtin::Search, "of a text array is not available; -1");
+                    return self.set(dst, -1);
+                };
+                (Ok(ScriptArray { offset, len }), len)
+            }
+            Some(Arg::SysArray(sys)) if self.sys_readable(*sys) => (Err(*sys), sys.len()),
+            _ => {
+                self.ignore(
+                    Builtin::Search,
+                    "of this runtime-maintained array is not available; -1",
+                );
+                return self.set(dst, -1);
+            }
         };
-        let Home::Cells { offset, len } = self.var(*v).home else {
-            self.ignore(Builtin::Search, "of a text array is not available; -1");
-            return self.set(dst, -1);
-        };
-        let array = ScriptArray { offset, len };
         let (value, end, t) = (reg(dst, 1)?, reg(dst, 2)?, reg(dst, 3)?);
-        self.arg(args, 1, value)?;
+        // Ascending registers: evaluation uses those above its target.
         if args.len() > 2 {
             self.arg(args, 2, dst)?;
+            self.arg(args, 1, value)?;
             self.arg(args, 3, end)?;
         } else {
             self.set(dst, 0)?;
+            self.arg(args, 1, value)?;
             self.set(end, i64::from(len) - 1)?;
         }
         let start = self.here();
@@ -1995,11 +2173,23 @@ impl Gen<'_, '_> {
             comparison: Cmp::LessEqual,
         })?;
         let missing = self.jump_if_zero(t)?;
-        self.emit(I::ReadScriptArray {
-            array,
-            index: dst,
-            local: t,
-        })?;
+        match array {
+            Ok(array) => self.emit(I::ReadScriptArray {
+                array,
+                index: dst,
+                local: t,
+            })?,
+            Err(sys) => {
+                // t (and t + 1 as scratch) are above dst, value and end.
+                self.set(t, 0)?;
+                self.emit(I::Binary32 {
+                    lhs: t,
+                    rhs: dst,
+                    operation: IB::Add,
+                })?;
+                self.sys_read(sys, t)?;
+            }
+        }
         self.emit(I::CompareLocal {
             lhs: t,
             rhs: value,
@@ -2020,6 +2210,216 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn cells(&self, args: &[Arg], i: usize) -> Option<ScriptArray> {
+        let Some(Arg::Var(v, _)) = args.get(i) else {
+            return None;
+        };
+        match self.var(*v).home {
+            Home::Cells { offset, len } => Some(ScriptArray { offset, len }),
+            _ => None,
+        }
+    }
+
+    /// `sort(array, direction[, from, to])`: in place, descending when
+    /// `direction` is non-zero.
+    // ponytail: insertion sort, O(n²) callback fuel on large unsorted arrays.
+    fn sort(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let Some(array) = self.cells(args, 0) else {
+            self.ignore(Builtin::Sort, "of a text or runtime array is not available");
+            return Ok(());
+        };
+        // Arguments in ascending registers: evaluation uses those above.
+        let [end, desc, i, key, j, x, t] = [1, 2, 3, 4, 5, 6, 7].map(|n| dst + n);
+        reg(dst, 8)?;
+        if args.len() > 3 {
+            self.arg(args, 2, dst)?;
+            self.arg(args, 3, end)?;
+        } else {
+            self.set(dst, 0)?;
+            self.set(end, i64::from(array.len) - 1)?;
+        }
+        self.arg(args, 1, desc)?;
+        for local in [dst, end] {
+            for (bound, operation) in [
+                (0, IntegerExtra::Max),
+                (array.len as i64 - 1, IntegerExtra::Min),
+            ] {
+                self.set(t, bound)?;
+                self.emit(I::Op(Op::Integer {
+                    lhs: local,
+                    rhs: t,
+                    operation,
+                }))?;
+            }
+        }
+        // i = from + 1
+        self.set(i, 1)?;
+        self.emit(I::Binary32 {
+            lhs: i,
+            rhs: dst,
+            operation: IB::Add,
+        })?;
+        let outer = self.here();
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: i,
+            operation: IB::Add,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: end,
+            comparison: Cmp::LessEqual,
+        })?;
+        let done = self.jump_if_zero(t)?;
+        self.emit(I::ReadScriptArray {
+            array,
+            index: i,
+            local: key,
+        })?;
+        self.set(j, -1)?;
+        self.emit(I::Binary32 {
+            lhs: j,
+            rhs: i,
+            operation: IB::Add,
+        })?;
+        let inner = self.here();
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: dst,
+            comparison: Cmp::GreaterEqual,
+        })?;
+        let place = self.jump_if_zero(t)?;
+        self.emit(I::ReadScriptArray {
+            array,
+            index: j,
+            local: x,
+        })?;
+        // Shift while a[j] is out of order against key.
+        self.set(t, 0)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: x,
+            operation: IB::Add,
+        })?;
+        let ascending = self.jump_if_zero(desc)?;
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: key,
+            comparison: Cmp::Less,
+        })?;
+        let compared = self.jump()?;
+        self.land(ascending);
+        self.emit(I::CompareLocal {
+            lhs: t,
+            rhs: key,
+            comparison: Cmp::Greater,
+        })?;
+        self.land(compared);
+        let place2 = self.jump_if_zero(t)?;
+        self.set(t, 1)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::WriteScriptArray {
+            array,
+            index: t,
+            local: x,
+        })?;
+        self.emit(I::AddLocal {
+            local: j,
+            value: -1,
+        })?;
+        self.emit(I::Jump { target: inner })?;
+        self.land(place);
+        self.land(place2);
+        self.set(t, 1)?;
+        self.emit(I::Binary32 {
+            lhs: t,
+            rhs: j,
+            operation: IB::Add,
+        })?;
+        self.emit(I::WriteScriptArray {
+            array,
+            index: t,
+            local: key,
+        })?;
+        self.emit(I::AddLocal { local: i, value: 1 })?;
+        self.emit(I::Jump { target: outer })?;
+        self.land(done);
+        self.cover(Builtin::Sort, Coverage::Native);
+        Ok(())
+    }
+
+    /// `array_equal(a, b)`: same length and cells.
+    fn array_equal(&mut self, args: &[Arg], dst: u16) -> Result<()> {
+        let (Some(a), Some(b)) = (self.cells(args, 0), self.cells(args, 1)) else {
+            self.ignore(Builtin::ArrayEqual, "of text arrays is not available; 0");
+            return self.set(dst, 0);
+        };
+        self.cover(Builtin::ArrayEqual, Coverage::Native);
+        if a.len != b.len {
+            return self.set(dst, 0);
+        }
+        let [i, x, y] = [1, 2, 3].map(|n| dst + n);
+        reg(dst, 3)?;
+        self.set(i, i64::from(a.len))?;
+        let top = self.here();
+        self.set(dst, 1)?;
+        let done = self.jump_if_zero(i)?;
+        self.emit(I::AddLocal {
+            local: i,
+            value: -1,
+        })?;
+        self.emit(I::ReadScriptArray {
+            array: a,
+            index: i,
+            local: x,
+        })?;
+        self.emit(I::ReadScriptArray {
+            array: b,
+            index: i,
+            local: y,
+        })?;
+        self.emit(I::CompareLocal {
+            lhs: x,
+            rhs: y,
+            comparison: Cmp::Equal,
+        })?;
+        self.set(dst, 0)?;
+        let differ = self.jump_if_zero(x)?;
+        self.emit(I::Jump { target: top })?;
+        self.land(done);
+        self.land(differ);
+        Ok(())
+    }
+
+    /// 1 in `at` when `lo <= value <= hi`.
+    fn in_range(&mut self, value: u16, lo: i32, hi: i32, at: u16) -> Result<()> {
+        self.set(at, 0)?;
+        self.emit(I::Binary32 {
+            lhs: at,
+            rhs: value,
+            operation: IB::Add,
+        })?;
+        self.clamp(at, lo, hi)?;
+        self.emit(I::CompareLocal {
+            lhs: at,
+            rhs: value,
+            comparison: Cmp::Equal,
+        })
+    }
+
+    /// Kontakt ignores a `play_note` outside the MIDI ranges and returns -1;
+    /// scripts pass an unset key of -1 routinely.
     fn play(&mut self, args: &[Arg], dst: u16) -> Result<()> {
         let (velocity, offset) = (reg(dst, 1)?, reg(dst, 2)?);
         self.arg(args, 0, dst)?;
@@ -2030,6 +2430,49 @@ impl Gen<'_, '_> {
             self.arg(args, 2, offset)?;
             Some(offset)
         };
+        let frames = if offset_micros.is_some() {
+            reg(offset, 1)?
+        } else {
+            offset
+        };
+        // Constants and the event's own key/velocity are in range already.
+        let in_range = |this: &Self, i: usize, lo: i32, sys: SysVar| {
+            this.const_int(args, i)
+                .is_some_and(|k| (lo..128).contains(&k))
+                || (this.note_context()
+                    && matches!(
+                        this.expr(args, i),
+                        Some(Expr { kind: ExprKind::Sys(s), .. }) if *s == sys
+                    ))
+        };
+        if in_range(self, 0, 0, SysVar::EventNote) && in_range(self, 1, 1, SysVar::EventVelocity) {
+            return self.play_checked(args, dst, velocity, offset_micros);
+        }
+        let (key_ok, velocity_ok) = (reg(frames, 2)?, reg(frames, 3)?);
+        self.in_range(dst, 0, 127, key_ok)?;
+        self.in_range(velocity, 1, 127, velocity_ok)?;
+        self.emit(I::Binary32 {
+            lhs: key_ok,
+            rhs: velocity_ok,
+            operation: IB::Multiply,
+        })?;
+        let bad = self.jump_if_zero(key_ok)?;
+        self.play_checked(args, dst, velocity, offset_micros)?;
+        let end = self.jump()?;
+        self.land(bad);
+        self.set(dst, -1)?;
+        self.land(end);
+        Ok(())
+    }
+
+    fn play_checked(
+        &mut self,
+        args: &[Arg],
+        dst: u16,
+        velocity: u16,
+        offset_micros: Option<u16>,
+    ) -> Result<()> {
+        let offset = reg(dst, 2)?;
         let frames = if offset_micros.is_some() {
             reg(offset, 1)?
         } else {

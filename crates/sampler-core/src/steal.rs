@@ -47,6 +47,18 @@ impl Prepared {
     }
 }
 
+impl Prepared {
+    /// Groups where a new voice cuts the other notes' voices of the same key
+    /// in that group (monophonic release triggers).
+    pub fn with_monophonic_release(mut self, groups: Vec<bool>) -> Result<Self, Error> {
+        if groups.len() != self.group_count as usize {
+            return Err(Error::InvalidInput);
+        }
+        self.monophonic_release = groups.into_boxed_slice();
+        Ok(self)
+    }
+}
+
 /// Polyphony is `Limits::voices − headroom`. A stolen voice fades over `fade`
 /// frames in one of the `headroom` slots; when more voices are stolen at once
 /// than there is headroom, the oldest stolen voices end without a fade.
@@ -87,6 +99,11 @@ impl Runtime {
         self.stolen
     }
 
+    /// Voices stolen since the runtime started.
+    pub fn steals(&self) -> u64 {
+        self.steals
+    }
+
     /// Make room for `required` new voices within polyphony. Victims, in
     /// order: released voices, oldest first; then the quietest sounding voice.
     pub(crate) fn steal_voices(&mut self, required: usize) {
@@ -100,6 +117,7 @@ impl Runtime {
             };
             self.voices.at_mut(victim).stolen = true;
             self.stolen += 1;
+            self.steals += 1;
             self.choke_voice(victim, stealing.fade);
         }
         while self.voices.available() < required {
@@ -113,6 +131,7 @@ impl Runtime {
     /// After `new` (of `plan`, in `group`) started: fade out voices past the
     /// instrument's and the group's voice limits.
     pub(crate) fn enforce_voice_limits(&mut self, plan: PlanId, group: Option<u32>, new: VoiceId) {
+        self.cut_monophonic_release(plan, group, new);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         if prepared.voice_limit.is_none() && prepared.voice_limits.is_empty() {
             return;
@@ -181,6 +200,42 @@ impl Runtime {
                 self.stolen += 1;
                 self.choke_voice(index, limit.fade);
             }
+        }
+    }
+
+    /// A monophonic release group's new voice fades out earlier notes' voices
+    /// of the same key in that group. KONTAKT_Manual.pdf p.205 (Group Editor, Release
+    /// Trigger "Monophonic"): repeating a note "will cut off any previous
+    /// release samples that are still sounding". The cut is a 10 ms fade (the
+    /// manual gives none; Kontakt's voice-group default).
+    fn cut_monophonic_release(&mut self, plan: PlanId, group: Option<u32>, new: VoiceId) {
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let Some(g) = group.filter(|&g| prepared.monophonic_release.get(g as usize) == Some(&true))
+        else {
+            return;
+        };
+        let fade = prepared.rate / 100;
+        let note_of = |v: &crate::Voice| self.families.get(v.family.0).map(|f| f.note);
+        let Some(new_note) = self.voices.get(new.0).and_then(note_of) else {
+            return;
+        };
+        let key = self.notes.get(new_note.0).map(|n| n.pitch.key());
+        let mut cut = [None; 8];
+        let mut n = 0;
+        for (i, v) in self.slots_where(|v| !v.stolen && v.group == Some(g)) {
+            let Some(note) = note_of(v) else { continue };
+            if note != new_note
+                && self.notes.get(note.0).map(|n| n.pitch.key()) == key
+                && n < cut.len()
+            {
+                cut[n] = Some(i);
+                n += 1;
+            }
+        }
+        for i in cut.into_iter().flatten() {
+            self.voices.at_mut(i).stolen = true;
+            self.stolen += 1;
+            self.choke_voice(i, fade);
         }
     }
 
