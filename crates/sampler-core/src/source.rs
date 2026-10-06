@@ -1195,22 +1195,32 @@ impl ReadFrames for [Frame] {
         self.get(range)
     }
 }
-/// Cache pages after any resident head.
+/// The asset's resident pages, then cache pages.
 pub(super) struct PagedFrames<'a> {
     pub cache: &'a crate::StreamCache,
     pub asset: crate::AssetId,
-    pub head: &'a [Frame],
+    pub head: &'a [(usize, Box<[Frame]>)],
+}
+impl PagedFrames<'_> {
+    /// The resident range holding frame `index`, and its first frame.
+    fn range(&self, index: usize) -> Option<(usize, &[Frame])> {
+        let i = self.head.partition_point(|(start, _)| *start <= index);
+        let (start, frames) = self.head.get(i.checked_sub(1)?)?;
+        (index - start < frames.len()).then_some((*start, &**frames))
+    }
 }
 impl ReadFrames for PagedFrames<'_> {
     fn frame(&self, index: usize) -> Option<Frame> {
-        self.head
-            .get(index)
-            .copied()
-            .or_else(|| self.cache.frame(self.asset, index))
+        match self.range(index) {
+            Some((start, frames)) => Some(frames[index - start]),
+            None => self.cache.frame(self.asset, index),
+        }
     }
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
-        if range.end <= self.head.len() {
-            return self.head.get(range);
+        if !range.is_empty()
+            && let Some((start, frames)) = self.range(range.start)
+        {
+            return frames.get(range.start - start..range.end - start);
         }
         self.cache.span(self.asset, range)
     }
