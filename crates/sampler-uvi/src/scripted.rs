@@ -24,7 +24,8 @@ pub trait Script {
     fn note_off(&mut self, id: u64, key: u8);
     fn advance(&mut self, ms: f64);
     fn next_due(&mut self) -> Option<f64>;
-    fn take_commands(&mut self) -> Vec<Command>;
+    /// Append the commands issued since the last call to `out`.
+    fn drain(&mut self, out: &mut Vec<Command>);
     /// The audio clock at the start of a block, in milliseconds.
     fn tick(&mut self, _now_ms: f64) {}
 }
@@ -48,8 +49,8 @@ impl Script for ScriptHost {
     fn next_due(&mut self) -> Option<f64> {
         ScriptHost::next_due(self)
     }
-    fn take_commands(&mut self) -> Vec<Command> {
-        ScriptHost::take_commands(self)
+    fn drain(&mut self, out: &mut Vec<Command>) {
+        out.extend(ScriptHost::take_commands(self));
     }
 }
 
@@ -96,7 +97,14 @@ pub struct Driver<S: Script> {
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
+    /// Commands being applied, and ids of notes found ended: kept so the
+    /// audio thread allocates nothing once warm.
+    inbox: Vec<Command>,
+    ended: Vec<u64>,
 }
+
+/// Notes and values the driver tracks at once; beyond it, plays are dropped.
+const TRACKED: usize = 1024;
 
 impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
@@ -105,14 +113,16 @@ impl<S: Script> Driver<S> {
             host,
             groups,
             rate: f64::from(rate),
-            notes: HashMap::new(),
-            held: HashMap::new(),
+            notes: HashMap::with_capacity(TRACKED),
+            held: HashMap::with_capacity(128),
             next: 1,
-            unmodeled: Vec::new(),
-            global: HashMap::new(),
-            voice_values: HashMap::new(),
-            glides: Vec::new(),
+            unmodeled: Vec::with_capacity(32),
+            global: HashMap::with_capacity(32),
+            voice_values: HashMap::with_capacity(TRACKED * 2),
+            glides: Vec::with_capacity(64),
             glide_at: 0,
+            inbox: Vec::with_capacity(256),
+            ended: Vec::with_capacity(TRACKED),
         }
     }
 
@@ -200,7 +210,24 @@ impl<S: Script> Driver<S> {
     }
 
     fn apply(&mut self, rt: &mut Runtime, closing: bool) -> Result<(), Error> {
-        for command in self.host.take_commands() {
+        let mut inbox = std::mem::take(&mut self.inbox);
+        self.host.drain(&mut inbox);
+        let result = self.apply_all(rt, closing, &mut inbox);
+        inbox.clear();
+        self.inbox = inbox;
+        result
+    }
+
+    fn apply_all(
+        &mut self,
+        rt: &mut Runtime,
+        closing: bool,
+        inbox: &mut Vec<Command>,
+    ) -> Result<(), Error> {
+        if !inbox.is_empty() && self.notes.len() >= TRACKED / 2 {
+            self.prune(rt);
+        }
+        for command in inbox.drain(..) {
             match command {
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
@@ -218,6 +245,13 @@ impl<S: Script> Driver<S> {
             }
         }
         Ok(())
+    }
+
+    /// Forget notes the runtime no longer holds.
+    fn prune(&mut self, rt: &Runtime) {
+        self.notes.retain(|_, note| rt.note(*note).is_ok());
+        let notes = &self.notes;
+        self.voice_values.retain(|(v, _), _| notes.contains_key(v));
     }
 
     fn modulate(
@@ -255,12 +289,17 @@ impl<S: Script> Driver<S> {
 
     fn step_glides(&mut self, rt: &mut Runtime) {
         let now = self.now_ms(rt);
-        let glides = std::mem::take(&mut self.glides);
-        for g in glides {
+        let mut i = 0;
+        while i < self.glides.len() {
+            let g = &self.glides[i];
+            let (id, voice) = (g.id, g.voice);
             let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
-            let _ = self.set_value(rt, g.id, g.voice, g.from + (g.to - g.from) * t);
+            let value = g.from + (g.to - g.from) * t;
+            let _ = self.set_value(rt, id, voice, value);
             if t < 1.0 {
-                self.glides.push(g);
+                i += 1;
+            } else {
+                self.glides.swap_remove(i);
             }
         }
         self.glide_at = rt.now() + self.frames(GLIDE_STEP_MS).max(1);
@@ -274,26 +313,29 @@ impl<S: Script> Driver<S> {
         voice: Option<u64>,
         value: f64,
     ) -> Result<(), Error> {
-        let targets: Vec<u64> = match voice {
+        self.ended.clear();
+        match voice {
             Some(v) => {
                 self.voice_values.insert((v, id), value);
-                vec![v]
+                if let Some(note) = self.notes.get(&v).copied() {
+                    match rt.set_note_script_value(note, id, value) {
+                        Err(Error::StaleHandle) => self.ended.push(v),
+                        other => other?,
+                    }
+                }
             }
             None => {
                 self.global.insert(id, value);
-                self.notes.keys().copied().collect()
-            }
-        };
-        for v in targets {
-            let Some(note) = self.notes.get(&v).copied() else {
-                continue;
-            };
-            match rt.set_note_script_value(note, id, value) {
-                Err(Error::StaleHandle) => {
-                    self.notes.remove(&v);
+                for (v, note) in &self.notes {
+                    match rt.set_note_script_value(*note, id, value) {
+                        Err(Error::StaleHandle) => self.ended.push(*v),
+                        other => other?,
+                    }
                 }
-                other => other?,
             }
+        }
+        for v in self.ended.drain(..) {
+            self.notes.remove(&v);
         }
         Ok(())
     }
@@ -308,6 +350,9 @@ impl<S: Script> Driver<S> {
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
+        if self.notes.len() >= TRACKED {
+            return Ok(());
+        }
         let velocity = f64::from(play.velocity) / 127.0;
         let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
@@ -343,8 +388,8 @@ impl<S: Script> Driver<S> {
             let id = rt.expression_id(note)?;
             rt.set_expression(id, expression)?;
         }
-        for (id, value) in self.global.clone() {
-            rt.set_note_script_value(note, id, value)?;
+        for (id, value) in &self.global {
+            rt.set_note_script_value(note, *id, *value)?;
         }
         rt.forward_attack(note)?;
         let now = self.now_ms(rt);
@@ -363,15 +408,12 @@ impl<S: Script> Driver<S> {
             return Ok(());
         }
         rt.set_note_group(note, None, false)?;
-        let wanted: Vec<u32> = self
-            .groups
-            .iter()
-            .filter(|g| play.layers.is_empty() || play.layers.contains(&g.layer))
-            .filter(|g| play.osc.is_none_or(|o| o == g.osc))
-            .map(|g| g.group)
-            .collect();
-        for group in wanted {
-            rt.set_note_group(note, Some(group), true)?;
+        for g in &self.groups {
+            if (play.layers.is_empty() || play.layers.contains(g.layer))
+                && play.osc.is_none_or(|o| o == g.osc)
+            {
+                rt.set_note_group(note, Some(g.group), true)?;
+            }
         }
         Ok(())
     }

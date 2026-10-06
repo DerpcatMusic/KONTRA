@@ -1729,6 +1729,47 @@ mod tests {
     }
 
     #[test]
+    fn real_uvi_lua_program_plays_without_audio_thread_allocation() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.to_string_lossy().contains(".ufs") && p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| (), &|| false).unwrap();
+        assert!(
+            !loaded.report.missing.iter().any(|m| m.value.contains("no frontend")),
+            "the Lua script runs: {:?}",
+            loaded.report.missing
+        );
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
+        // The script runs on its own thread: its note arrives within a few blocks.
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard, "the scripted program is silent");
+        // Warm: the first notes sized the driver's tables. Now play more
+        // scripted notes and release them; the audio thread allocates nothing.
+        core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 36, id: -1, clap: true }));
+        (0..50).for_each(|_| _ = core.render(128));
+        let allocations = crate::plugin::tests::allocations(|| {
+            for (id, key) in [(2, 40), (3, 43), (4, 36)] {
+                core.event(0, on(HostNote { port: 0, channel: 0, key, id, clap: true }));
+                for _ in 0..60 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    _ = core.render(128);
+                }
+                core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(key), id: -1, clap: true }));
+            }
+        });
+        assert_eq!(allocations, 0, "the audio thread allocated or freed memory");
+    }
+
+    #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
         let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
