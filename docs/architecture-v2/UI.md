@@ -261,18 +261,14 @@ Known limits of Vector:
 - Controls hidden by fully transparent pictures (invisible hit areas) become visible.
 - Menus cycle on click instead of opening a list. **[next]**
 
-## Open questions for the user
+## Decisions
 
-1. **Baked-label buttons in Vector.** Options:
-   - keep those few bitmaps (small RAM cost);
-   - draw the control's name or tooltip as text;
-   - or accept blank buttons.
-   The current build draws blank buttons.
-2. Should **Vector** be the default for libraries over some RAM threshold, or always
-   start in Original?
-3. Should the flat **Console** mixer stay, or should the tree be the only mixer?
-4. **Mic gain ownership.** Should a node's fader be ours (in the tree), or follow the
-   library script's own mic faders when it has them? Both at once double-apply.
+1. **Baked-label buttons in Vector** keep their small bitmaps, so nothing renders blank.
+2. **Default presentation** is Vector when the interface renders without fallbacks,
+   else Original; one click switches either way.
+3. **The tree is the only mixer**; the flat Console is removed.
+4. **Script-owned mic faders**: the tree strip drives the script's own control (the
+   node binds to its `ControlId`), so gain is never applied twice. Needs Core gap 1.
 
 ## Core gaps (plain-data shapes the UI needs)
 
