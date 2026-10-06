@@ -28,11 +28,19 @@ mod logs;
 mod menu;
 mod mixer;
 mod part;
+#[allow(dead_code, reason = "kinds and helpers the v2 core does not produce yet")]
+mod mix_tree;
+mod ir_view;
+#[allow(dead_code, reason = "kinds the v2 core does not report yet")]
+mod load_report;
+mod v2_bridge;
 pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod v2_tests;
 mod theme;
 
 use crate::library;
@@ -290,6 +298,7 @@ impl Appearance {
 enum Tab {
     Rack,
     Mixer,
+    Report,
     Logs,
 }
 
@@ -368,6 +377,12 @@ struct EditorState {
     picker: Arc<picker::Picker>,
     /// The mixer's strip width and meter holds.
     mixer: mixer::State,
+    /// The mixer shows the output tree, else the flat console.
+    flat_mixer: bool,
+    mix_tree: mix_tree::State,
+    /// Each part's script interface as drawn.
+    faces: std::collections::HashMap<usize, part::Face>,
+    report: load_report::State,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -813,6 +828,10 @@ fn build(
         modulation: None,
         picker,
         mixer: Default::default(),
+        flat_mixer: false,
+        mix_tree: Default::default(),
+        faces: Default::default(),
+        report: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -1064,6 +1083,7 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     for (tab, label, id) in [
         (Tab::Rack, "Rack", "tab-rack"),
         (Tab::Mixer, "Mixer", "tab-mixer"),
+        (Tab::Report, "Report", "tab-report"),
         (Tab::Logs, "Logs", "tab-logs"),
     ] {
         let (hit, el) = theme::tab(ui, id, label, cx.state.tab == tab);
@@ -1089,7 +1109,14 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
     cx.state.meters.animating.store(false, Ordering::Relaxed);
     content.push(match cx.state.tab {
         Tab::Rack => rack::view(ui, cx),
-        Tab::Mixer => mixer::view(ui, cx, bridge),
+        Tab::Mixer => mixer_view(ui, cx, bridge),
+        Tab::Report => match cx.part().map(|_| cx.state.selected) {
+            Some(slot) => {
+                let report = v2_bridge::report(cx, slot);
+                load_report::view(ui, &mut cx.state.report, &report)
+            }
+            None => part::welcome(cx),
+        },
         Tab::Logs => logs::view(ui, cx),
     });
     cx.p.shared.scope.source.store(cx.state.scope, Ordering::Relaxed);
@@ -1103,6 +1130,28 @@ fn main_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El
         .min_h(0)
         .fill(Role::Background)
         .id("center")
+}
+
+/// The mixer tab: the nested output tree, or the flat console.
+fn mixer_view(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
+    let (tree_hit, tree_el) = latch(ui, "mix-mode-tree", "Tree", "Each instrument's outputs as a tree", !cx.state.flat_mixer);
+    let (flat_hit, flat_el) = latch(ui, "mix-mode-flat", "Console", "Parts and buses side by side", cx.state.flat_mixer);
+    if tree_hit || flat_hit {
+        cx.state.flat_mixer = flat_hit;
+    }
+    let bar = strip(vec![section("Mixer"), segmented(vec![tree_el, flat_el]), spacer()]).pad((INSET, TIGHT)).fill(Role::Surface);
+    let body = if cx.state.flat_mixer {
+        mixer::view(ui, cx, bridge)
+    } else {
+        let mut tree = v2_bridge::tree(cx);
+        let levels = v2_bridge::levels(cx.p, &tree);
+        let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
+        let el = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
+        v2_bridge::apply(cx, &tree);
+        cx.state.meters.animating.store(true, Ordering::Relaxed);
+        el
+    };
+    col![bar, rule(), body].gap(0).flex(1).min_h(0).min_w(0)
 }
 
 impl Cx<'_> {

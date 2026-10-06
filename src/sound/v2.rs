@@ -665,10 +665,30 @@ fn kontakt(
 
 /// The layout of the picture at `asset` (library-relative, `.png`) from the
 /// `.txt` beside it, in the nearest folder above `instrument` that has it.
+/// Its frame size comes from the image's PNG header.
 fn picture_meta(instrument: &Path, asset: &str) -> Option<sampler_ui_ir::ImageMeta> {
-    let txt = Path::new(asset).with_extension("txt");
-    let text = instrument.ancestors().skip(1).find_map(|dir| std::fs::read_to_string(dir.join(&txt)).ok())?;
-    Some(sampler_ksp::ui::picture_meta(&text))
+    let txt = crate::artwork::locate(instrument, &Path::new(asset).with_extension("txt").to_string_lossy());
+    let png = crate::artwork::locate(instrument, asset);
+    if txt.is_none() && png.is_none() {
+        return None;
+    }
+    let mut meta = txt
+        .and_then(|t| std::fs::read_to_string(t).ok())
+        .map_or_else(Default::default, |t| sampler_ksp::ui::picture_meta(&t));
+    let header = png.and_then(|p| {
+        let mut head = [0u8; 24];
+        std::io::Read::read_exact(&mut std::fs::File::open(p).ok()?, &mut head).ok()?;
+        let be = |at: usize| u32::from_be_bytes(head[at..at + 4].try_into().unwrap());
+        (head[..8] == *b"\x89PNG\r\n\x1a\n").then(|| (be(16), be(20)))
+    });
+    if let Some((width, height)) = header {
+        let n = meta.frames.max(1);
+        meta.size = Some(match meta.axis {
+            sampler_ui_ir::Orientation::Horizontal => sampler_ui_ir::Size { width: width / n, height },
+            _ => sampler_ui_ir::Size { width, height: height / n },
+        });
+    }
+    Some(meta)
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {

@@ -1,11 +1,43 @@
 //! What the rack shows of a part below its header: why it is silent or
 //! incomplete, and what its load decoded and could not translate.
 //!
-//! TODO(v2 UI): the part's script interface (`sampler-ui-ir`) goes here once
-//! the v2 UI draws it; until then a part shows its load report.
+//! A part with a script interface shows it ([`super::ir_view`]).
 
-use super::{Cx, theme::*};
+use super::{Cx, ir_view, theme::*};
 use moose::mui::mui::prelude::*;
+use sampler_ui_ir::{Interface, PageRef, Presentation};
+use std::sync::Arc;
+
+/// A part's interface as drawn: resolved once per load, its pictures and
+/// the values its controls show.
+pub struct Face {
+    source: Arc<[Interface]>,
+    face: Interface,
+    assets: ir_view::Assets,
+    // TODO(v2): control edits reach the script once the core takes them.
+    values: ir_view::Values,
+}
+
+/// `slot`'s script interface (the one with the most widgets), if it has one.
+pub fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let source = cx.view.parts.get(slot)?.interfaces.clone();
+    let shown = source.iter().max_by_key(|u| u.widgets.len()).filter(|u| !u.widgets.is_empty())?;
+    let path = std::path::PathBuf::from(&cx.selection.parts.get(slot)?.path);
+    let face = cx.state.faces.entry(slot).or_insert_with(|| Face {
+        source: Arc::from(Vec::new()),
+        face: Interface::default(),
+        assets: Default::default(),
+        values: Default::default(),
+    });
+    if !Arc::ptr_eq(&face.source, &source) {
+        face.face = ir_view::resolved(shown);
+        face.assets = Default::default();
+        face.values.clear();
+        face.source = source.clone();
+    }
+    face.assets.sync(&face.face, Presentation::Bitmap, |a| crate::artwork::asset(&path, a));
+    Some(ir_view::view(ui, &face.face, PageRef(0), &face.assets, Presentation::Bitmap, 1., &mut face.values))
+}
 
 /// Lines of the missing list a part shows before "+N more".
 const MISSING: usize = 6;
