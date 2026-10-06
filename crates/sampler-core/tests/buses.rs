@@ -424,3 +424,141 @@ fn bus_mix_scales_a_bus_and_redirects_only_its_own_output() {
     rt.render(&mut main).unwrap();
     assert_eq!(main[0], [1.5, 1.5]);
 }
+
+#[test]
+fn a_bus_reverb_rings_after_the_note_and_ends_with_its_tail_without_heap_use() {
+    let settings = ReverbSettings {
+        decay_seconds: 0.5,
+        size: 0.75,
+        damping_hz: 6_000.,
+        modulation_seconds: 0.0005,
+        diffusion: 0.375,
+        predelay_seconds: 0.,
+        input_cutoff_hz: 20_000.,
+        low_shelf_db: 0.,
+        width: 1.,
+    };
+    let tail = settings.tail_frames(48000);
+    let prepared = plan(vec![[0.5, 0.5]], 1)
+        .with_buses(
+            vec![Bus {
+                processors: vec![Processor::Reverb(settings)],
+                sends: vec![send(None, 1.)],
+                tail_frames: tail,
+            }],
+            vec![Some(0)],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let mut audio = vec![[0.; 2]; 48_000];
+    support::without_heap(|| {
+        rt.trigger(input(1), 60, 1.).unwrap();
+        for chunk in audio.chunks_mut(100) {
+            rt.render(chunk).unwrap();
+        }
+    });
+    let energy = |a: &[Frame]| a.iter().flatten().map(|x| x * x).sum::<f32>();
+    assert!(audio.iter().flatten().all(|x| x.is_finite()));
+    // The one-frame note is over by frame 1; the tail rings well past it.
+    assert!(energy(&audio[2_000..12_000]) > 1e-6, "no tail");
+    assert!(energy(&audio[40_000..]) < energy(&audio[2_000..12_000]) * 1e-3);
+    // A reverb in a voice chain is refused.
+    assert!(
+        plan(vec![[1.; 2]], 1)
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![Processor::Reverb(settings)], vec![], 0).unwrap()],
+                vec![Some(0)]
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap_use() {
+    let mut h = vec![0.; 6_000];
+    h[3] = 0.5;
+    h[70] = -0.25;
+    h[5_000] = 0.125;
+    let impulse = Impulse::new(h.clone(), h.clone()).unwrap();
+    let tail = 6_000 + 3 * 8_192;
+    let render = |buses: Option<Vec<Bus>>| {
+        let mut prepared = plan(vec![[0.5, 0.5]], 1);
+        if let Some(buses) = buses {
+            prepared = prepared
+                .with_impulses(vec![impulse.clone()])
+                .with_buses(buses, vec![Some(0)])
+                .unwrap();
+        }
+        let mut rt = Runtime::new(prepared, limits()).unwrap();
+        let mut audio = vec![[0.; 2]; 12_000];
+        support::without_heap(|| {
+            rt.trigger(input(1), 60, 1.).unwrap();
+            for chunk in audio.chunks_mut(100) {
+                rt.render(chunk).unwrap();
+            }
+        });
+        audio
+    };
+    let dry = render(None);
+    let wet = render(Some(vec![Bus {
+        processors: vec![Processor::Convolution {
+            impulse: 0,
+            dry: 0.5,
+            wet: 2.,
+        }],
+        sends: vec![send(None, 1.)],
+        tail_frames: tail as u32,
+    }]));
+    for channel in 0..2 {
+        for n in 0..wet.len() {
+            let mut expected = 0.5 * dry[n][channel];
+            for (k, h) in h.iter().enumerate().filter(|(_, h)| **h != 0.) {
+                if let Some(x) = n.checked_sub(k).map(|i| dry[i][channel]) {
+                    expected += 2. * h * x;
+                }
+            }
+            assert!(
+                (wet[n][channel] - expected).abs() < 1e-5,
+                "frame {n}: {} against {expected}",
+                wet[n][channel]
+            );
+        }
+    }
+    assert!(wet[5_000][0].abs() > 0.01, "the late reflection is missing");
+    // A convolution in a voice chain, or one with a missing impulse, is refused.
+    assert!(
+        plan(vec![[1.; 2]], 1)
+            .with_voice_chains(
+                vec![
+                    VoiceChain::new(
+                        vec![Processor::Convolution {
+                            impulse: 0,
+                            dry: 0.,
+                            wet: 1.
+                        }],
+                        vec![],
+                        0
+                    )
+                    .unwrap()
+                ],
+                vec![Some(0)]
+            )
+            .is_err()
+    );
+    assert!(
+        plan(vec![[1.; 2]], 1)
+            .with_buses(
+                vec![Bus {
+                    processors: vec![Processor::Convolution {
+                        impulse: 0,
+                        dry: 0.,
+                        wet: 1.
+                    }],
+                    sends: vec![send(None, 1.)],
+                    tail_frames: 0,
+                }],
+                vec![Some(0)]
+            )
+            .is_err()
+    );
+}
