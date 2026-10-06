@@ -14,12 +14,19 @@ fn ksp_interface_maps_to_validated_ui_ir() {
         set_control_par_str(get_ui_id($Cut), $CONTROL_PAR_PICTURE, "knob")
         set_control_par(get_ui_id($Cut), $CONTROL_PAR_HIDE, $HIDE_PART_TITLE)
         set_control_par(get_ui_id($Cut), $CONTROL_PAR_MOUSE_BEHAVIOUR, -500)
+        set_control_par(get_ui_id($Cut), $CONTROL_PAR_BAR_COLOR, 0FF0000H)
+        set_control_par(get_ui_id($Cut), $CONTROL_PAR_ALLOW_AUTOMATION, 0)
+        set_control_par(get_ui_id($Cut), $CONTROL_PAR_PICTURE_STATE, 3)
+        set_control_par_str($INST_ICON_ID, $CONTROL_PAR_PICTURE, "icon")
         declare ui_label $L(1, 1)
         set_text($L, "hi")
         set_control_par_str(get_ui_id($L), $CONTROL_PAR_PICTURE, "knob")
         declare ui_table %T[8](2, 2, -64)
+        set_control_par_arr(get_ui_id(%T), $CONTROL_PAR_VALUE, 7, 2)
         declare ui_level_meter $M
         attach_level_meter(get_ui_id($M), -1, -1, 1, 2)
+        declare ui_button $B
+        move_control($B, 2, 3)
         end on"#;
     let limits = sampler_ksp::Limits {
         source_bytes: 4096,
@@ -44,7 +51,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
         ui.assets[ui.pages[0].background.image.unwrap().0].path,
         "Resources/pictures/wall.png"
     );
-    let [panel, knob, label, table, meter] = &ui.widgets[..] else {
+    let [panel, knob, label, table, meter, button] = &ui.widgets[..] else {
         panic!("{:?}", ui.widgets);
     };
     assert_eq!((panel.kind.clone(), panel.rect.x), (Kind::Panel, 10));
@@ -87,10 +94,25 @@ fn ksp_interface_maps_to_validated_ui_ir() {
             channel: 1
         }
     );
-    assert_eq!(knob.rect, Rect::new(0, 0, 92, 52));
-    assert!(
-        ui.unsupported
-            .iter()
-            .any(|u| u.feature == "$CONTROL_PAR_MOUSE_BEHAVIOUR" && u.value == "-500")
+    assert_eq!((knob.rect, knob.auto_size), (Rect::new(0, 0, 0, 0), true));
+    assert_eq!(
+        knob.drag,
+        Some(sampler_ui_ir::Drag {
+            axis: sampler_ui_ir::Orientation::Horizontal,
+            sensitivity: 500
+        })
     );
+    assert_eq!(knob.colors.bar, Some(sampler_ui_ir::Rgba::rgb(0xFF0000)));
+    assert!(!knob.automation.allowed);
+    assert_eq!(knob.images[0].frame, Some(3));
+    assert!(ui.icon.is_some());
+    let Kind::Table { cells, .. } = &table.kind else {
+        panic!()
+    };
+    assert_eq!(cells[2], 7);
+    assert_eq!(
+        button.placement,
+        sampler_ui_ir::Placement::Grid { column: 2, row: 3 }
+    );
+    assert!(ui.unsupported.is_empty(), "{:?}", ui.unsupported);
 }
