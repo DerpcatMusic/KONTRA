@@ -118,6 +118,11 @@ impl Envelope {
         }
     }
 
+    /// Ends by itself, whatever the gate and the source do.
+    pub(super) fn finite(&self) -> bool {
+        self.one_shot && self.hold != u32::MAX
+    }
+
     pub fn with_delay(mut self, frames: u32) -> Self {
         self.delay = frames;
         self
