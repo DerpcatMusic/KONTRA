@@ -1,5 +1,6 @@
 //! Prepared voice-local processing. No vendor objects or mutable shared filter state.
 use crate::{Envelope, EnvelopeState, Error, Frame, Prepared, Voice};
+use sampler_pool::Slab;
 
 /// Native RBJ biquad responses. Band-pass has unity peak gain.
 #[derive(Clone, Copy, Debug)]
@@ -571,13 +572,18 @@ pub(super) fn allocate<T: Default>(count: usize) -> Result<Box<[T]>, Error> {
     Ok(values.into_boxed_slice())
 }
 
+/// Render lanes: the audio thread and its workers.
+pub(crate) const MAX_LANES: usize = 8;
+
 pub(super) struct DspState {
     pub stride: usize,
-    pub cells: Box<[ProcessorState]>,
+    /// One `stride` of chain state per voice slot; claimed per voice.
+    pub cells: Slab<ProcessorState>,
     pub parameters: Box<[ControlRamp]>,
-    pub delay_stride: usize,
-    pub delay_samples: Box<[[f64; 2]]>,
-    pub filters: svf::FilterBank,
+    pub delay_samples: Slab<[f64; 2]>,
+    /// Filter coefficient caches, one per render lane. Lane 0 is the audio
+    /// thread's (and the whole of single-threaded rendering).
+    pub filters: Slab<svf::FilterBank>,
     pub buses: crate::bus::BusState,
 }
 impl DspState {
@@ -598,16 +604,22 @@ impl DspState {
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
         Ok(Self {
             stride,
-            cells: allocate(cells)?,
-            delay_stride,
-            filters: svf::FilterBank::new(&plan.filters, expressions)?,
-            delay_samples: allocate(delay_count)?,
+            cells: Slab::new(allocate(cells)?, stride),
+            filters: Slab::new(
+                (0..MAX_LANES)
+                    .map(|_| svf::FilterBank::new(&plan.filters, expressions))
+                    .collect::<Result<_, _>>()?,
+                1,
+            ),
+            delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
         })
     }
     pub fn reset(&mut self, voice: usize) {
-        self.cells[voice * self.stride..(voice + 1) * self.stride].fill(ProcessorState::default());
+        let stride = self.stride;
+        self.cells.as_mut_slice()[voice * stride..(voice + 1) * stride]
+            .fill(ProcessorState::default());
     }
 }
 
