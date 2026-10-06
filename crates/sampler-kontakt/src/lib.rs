@@ -20,7 +20,7 @@ pub use library::{Kontakt, read};
 pub use load::{Loaded, Options, Progress, load, prepare};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
-pub use samples::{Decoded, Samples};
+pub use samples::{Decoded, Samples, decode};
 pub use script::{Script, Strings};
 
 /// Without the `library-access` feature, encrypted content is refused.
