@@ -36,9 +36,9 @@ impl Threads {
     }
 }
 
-/// Runs below this count render on the audio thread: waking workers costs
-/// more than it saves.
-const MIN_RUNS: usize = 4;
+/// Voices per thread below which a block renders on the audio thread alone:
+/// at about 1.5 us a voice, waking workers costs more than it saves.
+const MIN_VOICES_PER_THREAD: usize = 32;
 
 #[derive(Clone, Copy, Default)]
 struct Outcome {
@@ -112,7 +112,8 @@ impl Runtime {
         }
         let mut par = self.parallel.take().expect("checked");
         let eligible = self.plan_runs(&mut par.runs, frames);
-        if !eligible || par.runs.len() < MIN_RUNS {
+        let voices: usize = par.runs.iter().map(|r| r.count).sum();
+        if !eligible || voices < MIN_VOICES_PER_THREAD * par.threads {
             self.parallel = Some(par);
             return false;
         }
