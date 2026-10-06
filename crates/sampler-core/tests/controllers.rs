@@ -1,7 +1,7 @@
 use sampler_core::{
-    ChannelScope, ControllerCondition, Envelope, Error, Event, Expression, Inheritance, Input,
-    Limits, NotePitch, Pcm, Playback, Prepared, Protocol, Region, ReleaseOptions, Runtime,
-    SelectionPolicy, Sequence, SequenceScope, Take, TakePolicy, Trigger,
+    ChannelAddress, ChannelScope, ControllerCondition, Envelope, Error, Event, Expression,
+    Inheritance, Input, Limits, NotePitch, Pcm, Playback, Prepared, Protocol, Region,
+    ReleaseOptions, Runtime, SelectionPolicy, Sequence, SequenceScope, Take, TakePolicy, Trigger,
 };
 mod support;
 
@@ -810,6 +810,9 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
                     I::ReadControllerNumber { local: 0 },
                     I::ReadControllerValue { local: 1 },
                     I::Wait(4),
+                    I::ReadControllerPort { local: 3 },
+                    I::ReadControllerGroup { local: 4 },
+                    I::ReadControllerChannel { local: 5 },
                     I::ReadInputController {
                         controller: 0,
                         local: 2,
@@ -828,7 +831,7 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
         plan,
         Limits {
             behaviors: 2,
-            behavior_cells: 6,
+            behavior_cells: 12,
             behavior_fuel: 8,
             ..limits()
         },
@@ -838,27 +841,33 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
     .unwrap();
     let old = rt.active_plan();
     let domain = rt.performance(1).unwrap();
-    let scope = ChannelScope {
+    let origin = ChannelAddress {
         protocol: Protocol::Midi2,
         port: 2,
         group: 3,
-        channels: 4,
+        channel: 2,
     };
     let mut callbacks = None;
+    let other = ChannelAddress {
+        port: 9,
+        group: 7,
+        channel: 15,
+        ..origin
+    };
     support::without_heap(|| {
         assert_eq!(rt.start_plan_behavior(old, 0), Err(Error::InvalidInput));
         let a = rt
-            .dispatch_controller(domain, scope, 1, 0x12345678)
+            .dispatch_controller(domain, origin, 1 << origin.channel, 1, 0x12345678)
             .unwrap()
             .unwrap();
         let b = rt
-            .dispatch_controller(domain, scope, 1, 0x12345679)
+            .dispatch_controller(domain, other, 1 << other.channel, 1, 0x12345679)
             .unwrap()
             .unwrap();
         assert_eq!(rt.controller(domain, 1), Ok(0));
         assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
         assert_eq!(
-            rt.dispatch_controller(domain, scope, 1, 99),
+            rt.dispatch_controller(domain, origin, 1 << origin.channel, 1, 99),
             Err(Error::Capacity)
         );
         assert_eq!(rt.input_controller(domain, 1), Ok(0x12345679));
@@ -871,7 +880,7 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
     support::without_heap(|| {
         rt.poll_plan_update().unwrap();
         assert_eq!(
-            rt.dispatch_controller(domain, scope, 1, 0x87654321),
+            rt.dispatch_controller(domain, origin, 1 << origin.channel, 1, 0x87654321),
             Ok(None)
         );
         rt.render(&mut [[0.; 2]; 4]).unwrap();
@@ -879,10 +888,13 @@ fn controller_callbacks_capture_events_but_read_latest_inputs_and_retain_origina
         rt.render(&mut []).unwrap();
         assert_eq!(rt.controller(domain, 1), Ok(0x12345679));
         assert_eq!(rt.controller(rt.performance(0).unwrap(), 1), Ok(0));
-        for (id, value) in [(a, 0x12345678), (b, 0x12345679)] {
+        for (id, value, address) in [(a, 0x12345678, origin), (b, 0x12345679, other)] {
             assert_eq!(rt.behavior_local(id, 0), Ok(1));
             assert_eq!(rt.behavior_local(id, 1), Ok(value));
             assert_eq!(rt.behavior_local(id, 2), Ok(0x87654321));
+            assert_eq!(rt.behavior_local(id, 3), Ok(i64::from(address.port)));
+            assert_eq!(rt.behavior_local(id, 4), Ok(i64::from(address.group)));
+            assert_eq!(rt.behavior_local(id, 5), Ok(i64::from(address.channel)));
             assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
         }
         rt.flush_behaviors(|_, owner, _| {
@@ -950,14 +962,14 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
         .unwrap();
         support::without_heap(|| {
             let domain = rt.performance(0).unwrap();
-            let scope = ChannelScope {
+            let origin = ChannelAddress {
                 protocol: Protocol::Midi1,
                 port: 0,
                 group: 0,
-                channels: 1,
+                channel: 0,
             };
             let id = rt
-                .dispatch_controller(domain, scope, 64, u32::MAX)
+                .dispatch_controller(domain, origin, 1 << origin.channel, 64, u32::MAX)
                 .unwrap()
                 .unwrap();
             if expected == Outcome::Cancelled {
@@ -974,32 +986,40 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
     let mut rt = runtime();
     support::without_heap(|| {
         let domain = rt.performance(0).unwrap();
-        let scope = ChannelScope {
+        let origin = ChannelAddress {
             protocol: Protocol::Midi1,
             port: 0,
             group: 0,
-            channels: 1,
+            channel: 0,
         };
         assert_eq!(
-            rt.dispatch_controller(domain, scope, 64, u32::MAX),
+            rt.dispatch_controller(domain, origin, 1 << origin.channel, 64, u32::MAX),
             Err(Error::Capacity)
         );
         assert_eq!(rt.input_controller(domain, 64), Ok(0));
         assert_eq!(
-            rt.dispatch_controller(domain, scope, 128, 0),
+            rt.dispatch_controller(domain, origin, 1 << origin.channel, 128, 0),
             Err(Error::InvalidInput)
         );
         assert_eq!(
-            rt.dispatch_controller(
-                domain,
-                ChannelScope {
-                    channels: 0,
-                    ..scope
-                },
-                1,
-                0
-            ),
+            rt.dispatch_controller(domain, origin, 0, 1, 0),
             Err(Error::InvalidInput)
         );
+        for invalid in [
+            ChannelAddress {
+                group: 16,
+                ..origin
+            },
+            ChannelAddress {
+                channel: 16,
+                ..origin
+            },
+        ] {
+            assert_eq!(
+                rt.dispatch_controller(domain, invalid, 1, 1, u32::MAX),
+                Err(Error::InvalidInput)
+            );
+        }
+        assert_eq!(rt.input_controller(domain, 1), Ok(0));
     });
 }

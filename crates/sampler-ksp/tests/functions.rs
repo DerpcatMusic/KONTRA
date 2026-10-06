@@ -92,18 +92,8 @@ fn shared_function_waits_inherit_each_callback_and_return_without_an_extra_forwa
             assert_eq!(rt.voice_count(), 1, "wait in a function forwards its note");
             rt.key_up(note, None).unwrap();
             let domain = rt.performance(0).unwrap();
-            rt.dispatch_controller(
-                domain,
-                ChannelScope {
-                    protocol: Protocol::Native,
-                    port: 0,
-                    group: 0,
-                    channels: 1,
-                },
-                1,
-                0x12345678,
-            )
-            .unwrap();
+            rt.dispatch_controller(domain, input(60).channel_address(), 1, 1, 0x12345678)
+                .unwrap();
             rt.invoke_control(
                 rt.active_plan(),
                 None,

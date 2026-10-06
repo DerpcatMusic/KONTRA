@@ -4,7 +4,12 @@ use sampler_midi::{Applied, Ingress, Mpe, Packets, Version, Zone};
 mod support;
 
 fn runtime(remap: bool) -> Runtime {
-    let mut code = vec![I::SuppressController];
+    let mut code = vec![
+        I::SuppressController,
+        I::ReadControllerPort { local: 2 },
+        I::ReadControllerGroup { local: 3 },
+        I::ReadControllerChannel { local: 4 },
+    ];
     if remap {
         code.extend([
             I::SetLocal {
@@ -43,12 +48,30 @@ fn runtime(remap: bool) -> Runtime {
             decisions: 0,
             commands: 0,
             behaviors: 2,
-            behavior_cells: 4,
+            behavior_cells: 10,
             behavior_fuel: 8,
             note_cells: 0,
         },
     )
     .unwrap()
+}
+
+fn assert_origin(rt: &mut Runtime, expected: [i64; 3]) {
+    let mut callback = None;
+    rt.flush_behaviors(|id, _, outcome| {
+        assert_eq!(outcome, Outcome::Finished);
+        callback = Some(id);
+        false
+    });
+    let id = callback.unwrap();
+    for (index, value) in expected.into_iter().enumerate() {
+        assert_eq!(rt.behavior_local(id, index as u16 + 2), Ok(value));
+    }
+    rt.flush_behaviors(|flushed, _, outcome| {
+        assert_eq!(flushed, id);
+        assert_eq!(outcome, Outcome::Finished);
+        true
+    });
 }
 
 #[test]
@@ -88,6 +111,7 @@ fn midi1_and_midi2_dispatch_before_pedals_or_downstream_controller_projection() 
                         Packets::new(&down[..len]).next().unwrap().unwrap(),
                     )
                     .unwrap();
+                assert_origin(&mut rt, [2, 2, 3]);
                 rt.key_up(note, None).unwrap();
                 assert_eq!(rt.note(note).unwrap().2, remap);
                 assert_eq!(rt.controller(domain, number as u8), Ok(0));
@@ -114,6 +138,7 @@ fn midi1_and_midi2_dispatch_before_pedals_or_downstream_controller_projection() 
                     )
                     .unwrap();
                 assert!(!rt.note(note).unwrap().2);
+                assert_origin(&mut rt, [2, 2, 3]);
                 rt.flush_behaviors(|_, _, outcome| {
                     assert_eq!(outcome, Outcome::Finished);
                     true
@@ -144,6 +169,7 @@ fn an_mpe_manager_remap_to_sustain_retains_the_entire_zone_scope() {
             let down = [0x23b0_017f | (manager << 16)];
             mpe.apply(&mut rt, Packets::new(&down).next().unwrap().unwrap())
                 .unwrap();
+            assert_origin(&mut rt, [2, 3, i64::from(manager)]);
             rt.key_up(note, None).unwrap();
             assert!(rt.note(note).unwrap().2);
             assert_eq!(rt.controller(domain, 1), Ok(0));
@@ -152,6 +178,7 @@ fn an_mpe_manager_remap_to_sustain_retains_the_entire_zone_scope() {
             mpe.apply(&mut rt, Packets::new(&up).next().unwrap().unwrap())
                 .unwrap();
             assert!(!rt.note(note).unwrap().2);
+            assert_origin(&mut rt, [2, 3, i64::from(manager)]);
             rt.flush_behaviors(|_, _, outcome| {
                 assert_eq!(outcome, Outcome::Finished);
                 true

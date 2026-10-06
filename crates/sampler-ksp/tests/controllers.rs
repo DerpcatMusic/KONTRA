@@ -59,12 +59,12 @@ fn runtime(source: &str) -> Runtime {
     )
     .unwrap()
 }
-fn scope() -> ChannelScope {
-    ChannelScope {
+fn origin() -> ChannelAddress {
+    ChannelAddress {
         protocol: Protocol::Midi1,
         port: 1,
         group: 2,
-        channels: 1 << 3,
+        channel: 3,
     }
 }
 
@@ -87,11 +87,11 @@ fn source_controllers_consume_remap_and_forward_before_wait_without_reentering()
     support::without_heap(|| {
         let domain = rt.performance(1).unwrap();
         let a = rt
-            .dispatch_controller(domain, scope(), 1, u32::MAX)
+            .dispatch_controller(domain, origin(), 1 << 3, 1, u32::MAX)
             .unwrap()
             .unwrap();
         let b = rt
-            .dispatch_controller(domain, scope(), 11, 0x80000001)
+            .dispatch_controller(domain, origin(), 1 << 3, 11, 0x80000001)
             .unwrap()
             .unwrap();
         assert_eq!(rt.controller(domain, 1), Ok(0));
@@ -133,7 +133,7 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
         support::without_heap(|| {
             let domain = rt.performance(0).unwrap();
             let input = Input {
-                protocol: scope().protocol,
+                protocol: origin().protocol,
                 port: 1,
                 group: 2,
                 channel: 3,
@@ -142,8 +142,14 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
             };
             let n = rt.trigger(input, 60, 1.).unwrap();
             let remap = source.contains("set_controller");
-            rt.dispatch_controller(domain, scope(), if remap { 1 } else { 64 }, u32::MAX)
-                .unwrap();
+            rt.dispatch_controller(
+                domain,
+                origin(),
+                1 << 3,
+                if remap { 1 } else { 64 },
+                u32::MAX,
+            )
+            .unwrap();
             rt.key_up(n, None).unwrap();
             assert_eq!(rt.note(n).unwrap().2, remap);
             rt.flush_behaviors(|_, _, outcome| {
@@ -151,7 +157,8 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
                 true
             });
             if remap {
-                rt.dispatch_controller(domain, scope(), 1, 0).unwrap();
+                rt.dispatch_controller(domain, origin(), 1 << 3, 1, 0)
+                    .unwrap();
                 assert!(!rt.note(n).unwrap().2);
                 rt.flush_behaviors(|_, _, outcome| {
                     assert_eq!(outcome, Outcome::Finished);
@@ -190,18 +197,20 @@ fn note_and_release_controller_operations_retain_the_original_domain_across_wait
         support::without_heap(|| {
             for (index, value) in [(0, 63), (1, 127)] {
                 let domain = rt.performance(index).unwrap();
-                let scoped = ChannelScope {
-                    channels: 1 << (index + 3),
-                    ..scope()
+                let address = ChannelAddress {
+                    channel: index as u8 + 3,
+                    ..origin()
                 };
                 rt.dispatch_controller(
                     domain,
-                    scoped,
+                    address,
+                    1 << address.channel,
                     1,
                     (value * u64::from(u32::MAX) / 127) as u32,
                 )
                 .unwrap();
-                rt.dispatch_controller(domain, scoped, 2, u32::MAX).unwrap();
+                rt.dispatch_controller(domain, address, 1 << address.channel, 2, u32::MAX)
+                    .unwrap();
                 let note = rt
                     .trigger_in(
                         domain,
@@ -219,7 +228,8 @@ fn note_and_release_controller_operations_retain_the_original_domain_across_wait
                     )
                     .unwrap();
                 rt.key_up(note, None).unwrap();
-                rt.dispatch_controller(domain, scoped, 1, 0).unwrap();
+                rt.dispatch_controller(domain, address, 1 << address.channel, 1, 0)
+                    .unwrap();
             }
             let mut audio = [[0.; 2]; 13];
             for part in audio.chunks_mut(block) {

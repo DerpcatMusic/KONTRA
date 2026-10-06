@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Preserve exact controller input addresses separately from downstream channel
+  masks. Native callbacks can read their original port/group/channel across waits
+  and plan replacement, including full-zone MPE manager remaps.
+
 - Retain Kontakt group/zone mapping units and sparse loop slot identities in the
   native source reader, including disabled, counted, tuned and alternating loops.
   Inspection reports source values without silently substituting playback defaults.

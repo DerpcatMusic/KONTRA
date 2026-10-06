@@ -271,7 +271,8 @@ impl Mpe {
                     let scope = self.manager_scope();
                     runtime.dispatch_controller(
                         self.performance,
-                        scope,
+                        input.channel_address(),
+                        scope.channels,
                         index,
                         Value::Bits7(value).full_scale(),
                     )?;
@@ -293,7 +294,8 @@ impl Mpe {
             {
                 runtime.dispatch_controller(
                     self.performance,
-                    self.manager_scope(),
+                    input.channel_address(),
+                    self.manager_scope().channels,
                     index,
                     value.full_scale(),
                 )?;
