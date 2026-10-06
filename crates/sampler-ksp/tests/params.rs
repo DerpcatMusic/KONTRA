@@ -269,6 +269,7 @@ fn runtime_ui_requests_update_the_model() {
          on listener
            set_control_par(get_ui_id($offline), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)
            set_control_par_str(get_ui_id($offline), $CONTROL_PAR_PICTURE, \"online\")
+           set_key_color(60, $KEY_COLOR_CYAN)
          end on";
     let mut model = compile(source);
     let mut rt = runtime(source);
@@ -284,7 +285,8 @@ fn runtime_ui_requests_update_the_model() {
     });
     assert_eq!(view.ui(&|_| None).unwrap(), model.ui(&|_| None).unwrap());
     let w = &model.model().interface.widgets[0];
-    assert_eq!(applied, 2);
+    assert_eq!(applied, 3);
+    assert_eq!(view.model().interface.keys[60].color, Some(8));
     assert_eq!(w.int("$CONTROL_PAR_HIDE"), Some(16));
     assert_eq!(
         w.properties.get("$CONTROL_PAR_PICTURE"),
