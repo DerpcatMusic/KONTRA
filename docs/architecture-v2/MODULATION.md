@@ -197,7 +197,9 @@ curvature or flex-curve law); measured on Kontakt 8 by the reference harness
   for `L <= v <= L + F`, the fade-out mirrors it `(H - v + 1)/(F + 1)`; key and
   velocity alike, multiplied. Not equal-power. `ir::Fades`,
   `Prepared::with_zone_fades`. The mapping field order (low velocity, high
-  velocity, low key, high key) is taken from the v1 importer, unverified.
+  velocity, low key, high key) is from the v1 importer; the velocity pair is
+  confirmed on the installed libraries (a 1..40 zone fades out, upper zones fade
+  in), no installed library uses the key pair.
 
 ## Monophonic release note
 
