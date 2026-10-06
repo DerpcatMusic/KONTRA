@@ -212,3 +212,109 @@ fn a_canceled_load_stops_before_decoding() {
     assert!(matches!(result, Err(sampler_kontakt::LoadError::Canceled)));
     assert_eq!(decoded, 0);
 }
+
+/// Every installed instrument with authored modulation loads, lowers and
+/// renders; prints per-feature report counts. Slow: run with --ignored.
+#[test]
+#[ignore]
+fn survey_modulated_instruments_lower_and_render() {
+    let mut instruments = Vec::new();
+    for root in roots() {
+        collect(&root, &mut instruments);
+    }
+    instruments.sort();
+    let (mut loaded, mut routed, mut failed) = (0, 0, 0);
+    let mut features = std::collections::BTreeMap::<String, usize>::new();
+    for path in &instruments {
+        let Ok(kontakt) = sampler_kontakt::read(path) else {
+            continue;
+        };
+        for u in &kontakt.instrument.unsupported {
+            if u.feature.contains("modulat")
+                || u.feature.contains("LFO")
+                || u.feature.contains("envelope")
+            {
+                *features
+                    .entry(format!("{:?} {}", u.reason, u.feature))
+                    .or_default() += 1;
+            }
+        }
+        if kontakt.instrument.routes.is_empty() {
+            continue;
+        }
+        routed += 1;
+        let options = sampler_kontakt::Options {
+            keys: 60..=60,
+            scripts: false,
+            ..Default::default()
+        };
+        match sampler_kontakt::load(path, &options, |_| {}) {
+            Ok(loaded_plan) => {
+                loaded += 1;
+                let mut rt = match Runtime::new(loaded_plan.plan, limits()) {
+                    Ok(rt) => rt,
+                    Err(error) => {
+                        println!("RUNTIME {}: {error:?}", path.display());
+                        continue;
+                    }
+                };
+                if let Err(error) = rt.trigger(input(60), 60, 0.8) {
+                    println!("TRIGGER {}: {error:?}", path.display());
+                    continue;
+                }
+                let mut out = vec![[0.0; 2]; 9600];
+                rt.render(&mut out).unwrap();
+                let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+                assert!(peak.is_finite());
+                println!(
+                    "ok {peak:.3} {} routes {}",
+                    path.display(),
+                    loaded_plan.instrument.routes.len()
+                );
+            }
+            Err(error) => {
+                failed += 1;
+                println!("FAIL {}: {error}", path.display());
+            }
+        }
+    }
+    for (feature, count) in &features {
+        println!("{count:6} {feature}");
+    }
+    println!("{routed} instruments with routes: {loaded} loaded, {failed} failed");
+}
+
+/// Afflatus' multi-articulation patch switches in KSP: `on note` reads keys
+/// `%KS_keys[$KS_Base]` onward into `$articulation`. The generated map taps
+/// those keys, and its alternatives follow key order.
+#[test]
+fn afflatus_keyswitch_script_yields_an_articulation_map() {
+    let Some(path) =
+        find("Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki")
+    else {
+        return;
+    };
+    let ir = sampler_kontakt::read(&path).unwrap().instrument;
+    for a in &ir.articulations {
+        eprintln!(
+            "{:>20} keys {:?} default {} -> {:?}",
+            a.name, a.switch_keys, a.default, a.alternatives
+        );
+    }
+    assert_eq!(ir.switching.owner, sampler_ir::SwitchOwner::Behavior);
+    let names: Vec<_> = ir.articulations.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names.len(), 11);
+    assert_eq!(&names[..3], ["Sustain + Legato", "Flutter", "Marcato"]);
+    let keys: Vec<_> = ir.articulations.iter().map(|a| a.switch_keys[0]).collect();
+    assert_eq!(keys, (24..=34).collect::<Vec<_>>());
+    assert!(ir.articulations[0].default);
+    let marcato = ir.articulations[2].alternatives;
+    assert_eq!(
+        marcato.controller.map(|c| (c.controller, c.low)),
+        Some((32, 2))
+    );
+    assert_eq!((marcato.channel, marcato.program), (Some(2), Some(2)));
+    let mut driven = ir.clone();
+    driven.switching.driver = sampler_ir::Driver::Velocity;
+    assert_eq!(driven.validate(), Ok(()));
+}

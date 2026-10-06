@@ -75,9 +75,9 @@ fn render(rt: &mut Runtime, frames: usize, block: usize) -> Vec<Frame> {
 fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     // A 64-frame linear attack read through Kontakt's attenuate law at depth 1.
     let attack = Envelope::new(64, 0, 0, 1., 0).unwrap();
-    // Control points fall on chunk ends, so partitions aligned to the attack
-    // knee reproduce it exactly.
-    for block in [1, 16, 64, 100] {
+    // Control points sit on the runtime's 64-frame grid, so any host block
+    // partition reproduces the knee exactly.
+    for block in [1, 7, 16, 61, 64, 100] {
         let mut rt = Runtime::new(
             modulated(
                 plan(256, Envelope::default()),
@@ -251,4 +251,178 @@ fn rejects_out_of_range_programs() {
         })],
         vec![]
     )));
+}
+
+/// CPU cost per voice of modulation. Run in release with --ignored --nocapture.
+#[test]
+#[ignore]
+fn measure_modulation_cost_per_voice() {
+    const VOICES: usize = 64;
+    const FRAMES: usize = 48000 * 4;
+    let looped = |program: Option<ModProgram>, chain: bool| {
+        let pcm: Box<[Frame]> = (0..48000)
+            .map(|k| [((k as f32) * 0.031).sin() * 0.1; 2])
+            .collect();
+        let regions = (0..VOICES as u8)
+            .map(|key| Region {
+                sample: 0,
+                key_low: key,
+                key_high: key,
+                root_key: Some(60),
+                velocity_low: 0.,
+                velocity_high: 1.,
+                gain: 1.,
+                envelope: Envelope::default(),
+                playback: Playback {
+                    loop_range: Some(Loop {
+                        start: 0,
+                        end: 48000,
+                        mode: LoopMode::Continuous,
+                        shape: LoopShape::Wrap,
+                        passes: None,
+                    }),
+                    ..Playback::default()
+                },
+            })
+            .collect();
+        let mut plan =
+            Prepared::new(48000, vec![Pcm::new(48000, pcm).unwrap()], regions, 1024).unwrap();
+        if chain {
+            plan = plan
+                .with_voice_chains(
+                    vec![
+                        VoiceChain::new(
+                            vec![],
+                            vec![Processor::StateVariable(StateVariableFilter {
+                                mode: SvfMode::LowPass,
+                                cutoff_hz: Parameter::Constant(4000.),
+                                q: Parameter::Constant(0.7),
+                            })],
+                            0,
+                        )
+                        .unwrap(),
+                    ],
+                    vec![Some(0); VOICES],
+                )
+                .unwrap();
+        }
+        if let Some(program) = program {
+            plan = plan
+                .with_voice_modulation(vec![program], vec![Some(0); VOICES], vec![0; VOICES])
+                .unwrap();
+        }
+        let mut rt = Runtime::new(
+            plan,
+            Limits {
+                notes: VOICES,
+                voices: VOICES,
+                families: VOICES,
+                expressions: VOICES,
+                commands: VOICES,
+                ..limits()
+            },
+        )
+        .unwrap();
+        for key in 0..VOICES as u8 {
+            let mut id = input(i32::from(key));
+            id.key = key;
+            rt.trigger_with_expression(
+                id,
+                key,
+                1.,
+                Expression {
+                    timbre: 0x4000_0000,
+                    ..Expression::default()
+                },
+            )
+            .unwrap();
+        }
+        let mut out = vec![[0.; 2]; 256];
+        let begin = std::time::Instant::now();
+        for _ in 0..FRAMES / 256 {
+            rt.render(&mut out).unwrap();
+        }
+        begin.elapsed().as_secs_f64() * 1e9 / (FRAMES * VOICES) as f64
+    };
+    let lfo = |shape, hz| {
+        ModSource::Lfo(Lfo {
+            shape,
+            rate: LfoRate::Hertz(hz),
+            phase: 0.,
+            delay: 0,
+            fade: 0,
+            retrigger: true,
+        })
+    };
+    let mpe = || ModProgram {
+        sources: vec![ModSource::Pressure, ModSource::Timbre],
+        routes: vec![
+            ModRoute::new(0, ModTarget::Decibels, 6.),
+            ModRoute {
+                shape: Some(0),
+                ..ModRoute::new(1, ModTarget::Tone, 60.)
+            },
+        ],
+        shapes: vec![vec![(0., -1.), (0.5, 0.), (1., 0.)]],
+    };
+    let full = ModProgram {
+        sources: vec![
+            lfo(LfoShape::Sine, 5.),
+            ModSource::Envelope(Envelope::new(4800, 0, 9600, 0.5, 4800).unwrap()),
+            lfo(LfoShape::Triangle, 0.3),
+        ],
+        routes: vec![
+            ModRoute::new(0, ModTarget::Pitch, 0.3),
+            ModRoute::new(1, ModTarget::Attenuate, 1.),
+            ModRoute::new(2, ModTarget::Cutoff, 24.),
+            ModRoute::new(0, ModTarget::Pan, 0.2),
+        ],
+        shapes: vec![],
+    };
+    let base = looped(None, false);
+    let rest_mpe = {
+        let mut p = mpe();
+        p.routes.truncate(1);
+        p.sources.truncate(1);
+        p.shapes.clear();
+        looped(Some(p), false)
+    };
+    let tone = looped(Some(mpe()), false);
+    let chain = looped(None, true);
+    let chain_full = looped(Some(full), true);
+    println!(
+        "ns per voice-frame: plain {base:.2}, +pressure route {rest_mpe:.2}, +closed tone {tone:.2}"
+    );
+    println!(
+        "ns per voice-frame: svf chain {chain:.2}, +lfo pitch/pan, env gain, lfo cutoff {chain_full:.2}"
+    );
+}
+
+#[test]
+fn a_second_source_scales_route_depth() {
+    // Constant +6 dB, depth scaled by velocity (0.5) through a shape doubling it
+    // past 0.25: multiplier 0.5 + (0.5 - 0.25) = 0.75 => +4.5 dB.
+    let program = ModProgram {
+        sources: vec![ModSource::Constant, ModSource::Velocity],
+        routes: vec![ModRoute {
+            scale: Some(ModScale {
+                source: 1,
+                shape: Some(0),
+            }),
+            ..ModRoute::new(0, ModTarget::Decibels, 6.)
+        }],
+        shapes: vec![vec![(0., 0.), (0.25, 0.25), (1., 1.75)]],
+    };
+    let mut rt = Runtime::new(
+        modulated(plan(64, Envelope::default()), program, 0),
+        limits(),
+    )
+    .unwrap();
+    rt.trigger(input(1), 60, 0.5).unwrap();
+    let audio = render(&mut rt, 8, 8);
+    let expected = 0.5 * 10f32.powf(4.5 / 20.);
+    assert!(
+        audio.iter().all(|f| (f[1] - expected).abs() < 1e-5),
+        "{audio:?}"
+    );
 }

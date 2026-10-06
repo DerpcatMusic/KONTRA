@@ -59,20 +59,27 @@ impl Runtime {
             self.render_voices(output, self.now);
             return;
         }
-        for (chunk, output) in output.chunks_mut(super::dsp::BLOCK).enumerate() {
-            let at = self.now + (chunk * super::dsp::BLOCK) as u64;
+        // Chunks end on the absolute BLOCK grid, where voice modulation
+        // evaluates, so host block sizes do not move control points.
+        let mut at = self.now;
+        let mut rest = output;
+        while !rest.is_empty() {
+            let len = (super::voice_mod::CELL - at % super::voice_mod::CELL) as usize;
+            let (output, tail) = rest.split_at_mut(len.min(rest.len()));
+            rest = tail;
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 g.dsp.buses.begin();
             }
             self.render_voices(output, at);
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
-                let start = offset + chunk * super::dsp::BLOCK;
+                let start = offset + (at - self.now) as usize;
                 let faults = g
                     .dsp
                     .buses
                     .render(&g.prepared.buses, output, outs, start, at);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
             }
+            at += output.len() as u64;
         }
     }
 
@@ -129,20 +136,17 @@ impl Runtime {
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
                 tempo: self.tempo,
-                now: at + segment.len() as u64,
+                now: at,
             };
-            let (from, to) = plan.modulation.advance(
-                &plan.prepared.voice_modulation,
-                i,
-                &inputs,
-                clock,
-                segment.len() as u32,
-            );
+            let ramp = plan
+                .modulation
+                .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
+            let (from, to) = (ramp.from, ramp.to);
             plan.dsp.filters.modulation = [
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
             ];
-            (from, to)
+            ramp
         });
         // Script layers (render_segment chunks once a script writes one).
         let mut stop = false;
@@ -159,21 +163,28 @@ impl Runtime {
             let from = v.script_gains.unwrap_or_else(|| layer.gains(fade(at)));
             v.script_gains = Some(to);
             stop = params.fade.is_some_and(|f| f.stop && f.done(end));
-            let (mut a, mut b) = points.unwrap_or_default();
-            for (o, g) in [(&mut a, from), (&mut b, to)] {
+            // ponytail: script gains are taken at the segment's ends, not the
+            // modulation ramp's grid points; align them if a fade ever steps.
+            let mut ramp = points.unwrap_or(super::voice_mod::Ramp {
+                from: Default::default(),
+                to: Default::default(),
+                begin: at,
+                end,
+            });
+            for (o, g) in [(&mut ramp.from, from), (&mut ramp.to, to)] {
                 o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
                 o.pitch += layer.semitones();
             }
-            Some((a, b))
+            Some(ramp)
         } else {
             points
         };
         v.cursor = v.cursor.with_step(match points {
             None => v.base_step * expression.rendered.ratio,
-            Some((from, to)) => {
-                (v.base_step * expression.rendered.ratio * ((from.pitch + to.pitch) / 24.0).exp2())
-                    .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP)
-            }
+            Some(ramp) => (v.base_step
+                * expression.rendered.ratio
+                * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
+            .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
         });
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
@@ -218,13 +229,13 @@ impl Runtime {
             };
             render_source(v, &source, segment, chain, states, context, &self.kernel)
         };
-        if let (Some((from, to)), Some(target)) = (points, mixed) {
+        if let (Some(ramp), Some(target)) = (points, mixed) {
             plan.dsp.filters.modulation = [1.0; 2];
             if modulated {
                 plan.modulation
-                    .mix(i, segment, target, from, to, f64::from(self.rate));
+                    .mix(i, segment, target, ramp, at, f64::from(self.rate));
             } else {
-                ramp_mix(segment, target, from.gains, to.gains);
+                ramp_mix(segment, target, ramp.from.gains, ramp.to.gains);
             }
         }
         let done = done || stop;

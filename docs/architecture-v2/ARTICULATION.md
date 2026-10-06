@@ -250,3 +250,32 @@ This does not claim full Kontakt articulation/KSP behavior or vendor equivalence
 The user completion target remains the entire core, production UI integration,
 upgraded sample section and full Kontakt KSP parity; these native tests are
 intermediate evidence, not that completion gate.
+
+## Articulation drivers (keyswitch migration)
+
+`ir::Instrument::switching` selects how articulations are chosen:
+`owner` (`Native`: zones are tagged and the runtime holds the articulation;
+`Behavior`: a script reads the switch keys itself), `driver` (`Keys`,
+`Velocity`, `Channel`, `Controller`, `Program`) and `keys` (`Keep`, `Play`,
+`Swallow`) for what played switch keys do under another driver. Each
+`ir::Articulation` carries `alternatives` (velocity range, channel, CC range,
+program); `Instrument::assign_alternatives(cc)` fills them in switch-key order
+(CC values 0.., channels 0..15, programs 0.., equal velocity splits).
+Validation rejects overlapping driver values, missing values for the active
+driver, freed (`Play`) keys or zone tags under behavior ownership, and
+behavior-owned articulations with no key to tap.
+
+Lowering resolves this to `sampler_core::Switching` on the plan (selectors of
+`Switch::Articulation(id)` or `Switch::Tap(key)`), and omits native keyswitches
+when keys are freed or a behavior owns them. `sampler_midi::Articulator` is a
+raw-event stage that runs before `Ingress`/`Mpe`: it sets the native
+articulation exactly where a native keyswitch would, or taps the switch key
+through ordinary note admission so the owning script sees a normal note-on/off.
+The note that carried a velocity/channel selection is forwarded unchanged.
+
+`sampler_kontakt::keyswitch` builds the map from start-on-key group criteria
+and from `on note` patterns (`in_range($EVENT_NOTE, LOW, HIGH)` with
+`$var := $EVENT_NOTE - LOW`; `$EVENT_NOTE = KEY` and `select`/`case` branches
+that select groups silently), evaluating keys from top-level `on init`
+assignments plus saved persistent values. Unresolved keys, single toggle keys,
+hint-only scripts and further switch sets are reported as `Unsupported`.
