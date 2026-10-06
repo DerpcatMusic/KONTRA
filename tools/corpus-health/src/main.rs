@@ -344,7 +344,23 @@ fn selection_summary(records: Vec<sampler_core::SelectionRecord>) -> Value {
     json!({"records": records.len(), "suppressed": suppressed, "key_unmapped": unmapped, "verdicts": counts, "first": first})
 }
 
-fn play(subject: Subject, pick: Pick, diagnose: bool) -> Result<Sound, String> {
+/// Controllers a player would have up: mod wheel, expression and CC2 high,
+/// plus every plain controller the instrument's modulators read. (Controllers
+/// scripts read directly are not listed in the IR, so they are not covered.)
+fn musical_ccs(ir: &sampler_ir::Instrument) -> Vec<(u8, u8)> {
+    let mut ccs = vec![(1, 100), (2, 100), (11, 127)];
+    for m in &ir.modulators {
+        if let sampler_ir::ModulationSource::Controller(n) = m.source {
+            let plain = n < 120 && ![0, 6, 32, 38, 64, 65, 66, 67, 68, 69, 98, 99, 100, 101].contains(&n);
+            if plain && !ccs.iter().any(|c| c.0 == n) {
+                ccs.push((n, 100));
+            }
+        }
+    }
+    ccs
+}
+
+fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
     let (plan_rate, behavior_locals, note_cells) = match &subject {
         Subject::Plan(l) => (
             l.plan.sample_rate(),
@@ -407,12 +423,16 @@ fn play(subject: Subject, pick: Pick, diagnose: bool) -> Result<Sound, String> {
     let (mut peak_voices, mut audio_allocs) = (0usize, 0usize);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
-    let switch_words: Vec<[u32; 1]> = if pick.switch.is_some() {
-        vec![[0x2090_0000 | sw | 64], [0x2080_0000 | sw]]
-    } else {
-        vec![]
-    };
-    let note_index = if pick.switch.is_some() { 2 } else { 0 };
+    // Controllers first, then the switch key taps, then the note.
+    let mut switch_words: Vec<[u32; 1]> = ccs
+        .iter()
+        .map(|&(cc, v)| [0x20B0_0000 | u32::from(cc) << 8 | u32::from(v)])
+        .collect();
+    if pick.switch.is_some() {
+        switch_words.push([0x2090_0000 | sw | 64]);
+        switch_words.push([0x2080_0000 | sw]);
+    }
+    let note_index = switch_words.len();
     let mut note = String::from("not sent");
     let mut faults = Vec::new();
     for begin in (0..total).step_by(buffer.len()) {
@@ -694,6 +714,9 @@ fn stage_of(r: &Value) -> &'static str {
     if let Some(e) = s["error"].as_str() {
         return if e.starts_with("prepare") { "prepare" } else { "render" };
     }
+    if s["sounds"] != true && r["musical"]["sounds"] == true {
+        return "needs-controller";
+    }
     if s["note"] != "started" || s["sounds"] != true {
         return "note-on/selection";
     }
@@ -723,14 +746,15 @@ fn check(item: &Item) -> Value {
         record["scripts"] = scripts(&loaded);
         record["unsupported"] = json!(categories(&loaded.instrument().unsupported));
         record["unsupported_total"] = json!(loaded.instrument().unsupported.len());
+        let ccs = musical_ccs(loaded.instrument());
         let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
-        let first = play(loaded, pick, false);
+        let first = play(loaded, pick, false, &[]);
         let first = match first {
             Ok(mut s) if silent(&s) && item.kind() == "kontakt" => {
                 // Selection records allocate, so they only run on a second pass
                 // over an item that was silent.
                 if let (_, Some((again, pick))) = load_item(item) {
-                    if let Ok(d) = play(again, pick, true) {
+                    if let Ok(d) = play(again, pick, true, &[]) {
                         s.selection = d.selection;
                     }
                 }
@@ -738,6 +762,34 @@ fn check(item: &Item) -> Value {
             }
             other => other,
         };
+        // The same note again with the controllers up; if only that sounds, find
+        // the controller it needs.
+        if let Ok(d) = &first {
+            if item.kind() == "kontakt" {
+                let again = |ccs: &[(u8, u8)]| match load_item(item) {
+                    (_, Some((subject, pick))) => play(subject, pick, false, ccs).ok(),
+                    _ => None,
+                };
+                if let Some(m) = again(&ccs) {
+                    let mut musical = json!({
+                        "ccs": ccs.iter().map(|c| json!([c.0, c.1])).collect::<Vec<_>>(),
+                        "peak_db": if m.peak > 0.0 { json!(20.0 * f64::from(m.peak).log10()) } else { Value::Null },
+                        "sounds": m.peak > 1e-4,
+                        "note": m.note,
+                    });
+                    if silent(d) && m.peak > 1e-4 {
+                        let alone = ccs.iter().find(|c| {
+                            again(&[**c]).is_some_and(|x| x.peak > 1e-4)
+                        });
+                        musical["needs_cc"] = match alone {
+                            Some(c) => json!([c.0]),
+                            None => json!(ccs.iter().map(|c| c.0).collect::<Vec<_>>()),
+                        };
+                    }
+                    record["musical"] = musical;
+                }
+            }
+        }
         match first {
             Ok(s) => {
                 let db = |p: f32| {
@@ -949,6 +1001,16 @@ fn summary(out: &Path, md: &Path) {
                     if let Some(db) = sound["peak_db"].as_f64() {
                         peak_db.push(db);
                     }
+                } else if r["musical"]["sounds"] == true {
+                    // Sounds once the controllers are up: not real silence.
+                    row[2] += 1;
+                    let needs: Vec<String> = r["musical"]["needs_cc"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|c| format!("CC{c}"))
+                        .collect();
+                    reason_set.insert(format!("needs controller: {}", needs.join(",")));
                 } else {
                     reason_set.insert("silent at a covered key".into());
                 }
