@@ -17,7 +17,7 @@ mod script;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use library::{Kontakt, read};
-pub use load::{Loaded, Options, Progress, finish, load, prepare};
+pub use load::{Loaded, Options, Progress, finish, load, load_cancelable, prepare};
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use nks::Nks42;
 pub use samples::{Decoded, Samples, decode};
@@ -55,6 +55,8 @@ pub enum LoadError {
     },
     /// The translated instrument could not be lowered to a playable plan.
     Lower(sampler_core::lower::LowerError),
+    /// The caller canceled the load.
+    Canceled,
 }
 
 impl LoadError {
@@ -87,6 +89,7 @@ impl std::fmt::Display for LoadError {
             }
             Self::Invalid { path, reason } => write!(f, "{}: {reason}", path.display()),
             Self::Lower(error) => write!(f, "lowering: {error}"),
+            Self::Canceled => f.write_str("load canceled"),
         }
     }
 }
