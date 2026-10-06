@@ -53,8 +53,9 @@ fn main() {
         report.head_frames,
     );
     println!(
-        "resident: heads {:.1} MB + page pool {:.1} MB ({} pages); full decode would be {:.1} MB; RSS {}",
+        "resident: heads {:.1} MB packed ({:.1} MB as f32 stereo) + page pool {:.1} MB ({} pages); full decode would be {:.1} MB; RSS {}",
         mb(report.head_bytes as u64),
+        mb(streamed.assets.iter().map(|p| p.head_frames() as u64 * 8).sum::<u64>()),
         mb(report.pool_bytes as u64),
         report.pool_pages,
         mb(report.full_bytes),
