@@ -750,18 +750,41 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             sends: bus.sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect(),
         });
     }
+    // Microphone positions: a source bus the groups already play through, else
+    // a bus made for the position; groups play through their mic.
+    let mut mic_of = vec![None; instrument.groups.len()];
+    for (name, groups) in super::mics::infer(instrument) {
+        let existing = match instrument.groups[groups[0]].output {
+            ir::Output::Bus(b) if instrument.buses[b.0].name == name => Some(b.0 + 1),
+            _ => None,
+        };
+        let at = existing.unwrap_or_else(|| {
+            let output = instrument.groups[groups[0]].output;
+            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output });
+            tree.nodes.push(MixNode { name, kind: NodeKind::Mic, parent: Some(node(output)), inserts: Vec::new(), sends: Vec::new() });
+            instrument.buses.len()
+        });
+        tree.nodes[at].kind = NodeKind::Mic;
+        for g in groups {
+            mic_of[g] = Some(at);
+        }
+    }
     for index in 0..instrument.groups.len() {
         let group = &instrument.groups[index];
         let name = if group.name.is_empty() { format!("Group {}", index + 1) } else { group.name.clone() };
+        let output = match mic_of[index] {
+            Some(at) => ir::Output::Bus(ir::BusRef(at - 1)),
+            None => group.output,
+        };
         tree.nodes.push(MixNode {
             name: name.clone(),
             kind: NodeKind::Group,
-            parent: Some(node(group.output)),
+            parent: Some(node(output)),
             inserts: insert_names(instrument, group.chain),
             sends: Vec::new(),
         });
         let bus = ir::BusRef(instrument.buses.len());
-        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output: group.output });
+        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output });
         instrument.groups[index].output = ir::Output::Bus(bus);
     }
     tree
