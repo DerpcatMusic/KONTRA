@@ -11,7 +11,7 @@ struct Selection {
     address: crate::ChannelAddress,
     trigger: Trigger,
     snapshot: usize,
-    groups: Option<(usize, bool)>,
+    groups: Option<(usize, usize, bool)>,
 }
 
 impl Runtime {
@@ -90,20 +90,27 @@ impl Runtime {
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
         let first = prepared.stages.first().copied().unwrap_or_default();
-        let (on_note, on_release) = (first.note, first.release);
-        if on_note.is_none() && on_release.is_none() {
+        let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
+        let on_release = first.release;
+        if !on_note && on_release.is_none() {
             return self.select(
                 NoteOrigin::Input(input, expression, index),
                 pitch,
                 velocity,
                 0,
+                None,
             );
         }
-        let callbacks = usize::from(on_note.is_some()) + usize::from(on_release.is_some());
+        let callbacks = prepared
+            .stages
+            .iter()
+            .filter(|stage| stage.note.is_some())
+            .count()
+            + usize::from(on_release.is_some());
         if self.behaviors.available() < callbacks {
             return Err(Error::Capacity);
         }
-        let note = if on_note.is_some() {
+        let note = if on_note {
             self.note_on_pitched_in(performance, input, pitch, velocity, expression)?
         } else {
             self.select(
@@ -111,15 +118,15 @@ impl Runtime {
                 pitch,
                 velocity,
                 0,
+                None,
             )?
         };
         if on_release.is_some() {
             self.behaviors.reserve(1);
             self.release_times[note.0.index].release_behavior = true;
         }
-        if let Some(program) = on_note {
-            self.start_behavior(note, program)
-                .expect("preflighted native behavior admission");
+        if on_note {
+            self.begin_note_stages(note, 0);
         }
         Ok(note)
     }
@@ -130,6 +137,7 @@ impl Runtime {
         note_pitch: NotePitch,
         velocity: f64,
         offset_micros: u32,
+        source_stage: Option<usize>,
     ) -> Result<NoteId, Error> {
         self.apply_due();
         if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
@@ -142,6 +150,17 @@ impl Runtime {
                 self.notes.get(parent.0).ok_or(Error::StaleHandle)?.plan
             }
         };
+        let entry = source_stage.map_or(0, |stage| stage + 1);
+        let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let routed =
+            source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
+        let callbacks = prepared.stages[entry..]
+            .iter()
+            .filter(|s| s.note.is_some())
+            .count();
+        if routed && self.behaviors.available() < callbacks {
+            return Err(Error::Capacity);
+        }
         let pitch = match origin {
             NoteOrigin::Input(_, expression, _) => crate::pitch::PitchRange::constant(
                 self.project_expression(self.modulation_plan(plan), expression, None)?
@@ -169,21 +188,27 @@ impl Runtime {
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
         let snapshot = self.performance_state.current[performance];
-        let release = self.preflight_attack(
-            Selection {
-                plan,
-                note_pitch,
-                velocity,
-                address,
-                trigger: Trigger::Attack,
-                snapshot,
-                groups: match origin {
-                    NoteOrigin::Input(..) | NoteOrigin::Generated(..) => None,
-                    NoteOrigin::Child(parent, ..) => Some((parent.0.index, false)),
+        let release = if routed {
+            ReleaseReserve::default()
+        } else {
+            self.preflight_attack(
+                Selection {
+                    plan,
+                    note_pitch,
+                    velocity,
+                    address,
+                    trigger: Trigger::Attack,
+                    snapshot,
+                    groups: match origin {
+                        NoteOrigin::Input(..) | NoteOrigin::Generated(..) => None,
+                        NoteOrigin::Child(parent, ..) => {
+                            Some((parent.0.index, source_stage.unwrap_or(0), false))
+                        }
+                    },
                 },
-            },
-            pitch,
-        )?;
+                pitch,
+            )?
+        };
         let note = match origin {
             NoteOrigin::Input(input, expression, performance) => self.note_on_pitched_in(
                 self.performance(performance).unwrap(),
@@ -197,14 +222,62 @@ impl Runtime {
                 self.child_pitched(parent, note_pitch, velocity, linked, inheritance)?
             }
         };
-        self.note_events[note.0.index].source_offset_micros = offset_micros;
-        self.commit_attack(note, release, snapshot);
+        let event = &mut self.note_events[note.0.index];
+        event.source_offset_micros = offset_micros;
+        let origin_stage = source_stage.unwrap_or(0);
+        event.entry = origin_stage;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        generation.projections.admit(
+            note.0.index,
+            origin_stage,
+            crate::NoteProperties {
+                pitch: note_pitch,
+                velocity,
+            },
+        );
+        generation.groups.inherit(
+            note.0.index,
+            origin_stage,
+            match origin {
+                NoteOrigin::Child(parent, ..) => Some((parent.0.index, source_stage.unwrap_or(0))),
+                _ => None,
+            },
+        );
+        self.project_note(note, origin_stage, entry);
+        if routed {
+            self.begin_note_stages(note, entry);
+        } else {
+            self.commit_attack(note, release, snapshot, entry);
+            let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+            self.project_note(note, entry, end);
+            self.plans
+                .get_mut(plan.0)
+                .unwrap()
+                .projections
+                .get_mut(note.0.index, end)?
+                .forwarded = true;
+        }
         Ok(note)
     }
 
     /// Commit a pending mapped attack exactly once on its existing logical note.
     /// Uses the original plan and captured onset selection, never a substitute child.
     pub fn forward_attack(&mut self, note: NoteId) -> Result<bool, Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.forward_attack_at(note, self.note_events[note.0.index].entry)
+    }
+
+    /// Continue a reached module exactly once. Final native selection is atomic.
+    pub fn forward_attack_at(&mut self, note: NoteId, stage: usize) -> Result<bool, Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if self.note_events[note.0.index].routed {
+            self.forward_note_stage(note, stage)
+        } else {
+            self.commit_note_attack(note, stage)
+        }
+    }
+
+    pub(crate) fn commit_note_attack(&mut self, note: NoteId, stage: usize) -> Result<bool, Error> {
         self.apply_due();
         let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         if n.attack != crate::AttackStatus::Pending {
@@ -214,7 +287,9 @@ impl Runtime {
             return Err(Error::ClosedNote);
         }
         let snapshot = self.selections[note.0.index].snapshot;
-        let event = self.note_events[note.0.index].current;
+        let event = self
+            .note_event_at(note, stage)?
+            .ok_or(Error::InvalidInput)?;
         let selection = Selection {
             plan: n.plan,
             note_pitch: event.pitch,
@@ -222,14 +297,14 @@ impl Runtime {
             address: n.address,
             trigger: Trigger::Attack,
             snapshot,
-            groups: Some((note.0.index, false)),
+            groups: Some((note.0.index, stage, false)),
         };
         let pitch = self.pitch_range(n.expression, true)?;
         let release = self.preflight_attack(selection, pitch)?;
         let n = self.notes.get_mut(note.0).unwrap();
         n.pitch = event.pitch;
         n.velocity = event.velocity;
-        self.commit_attack(note, release, snapshot);
+        self.commit_attack(note, release, snapshot, stage);
         Ok(true)
     }
 
@@ -242,6 +317,7 @@ impl Runtime {
             return Ok(false);
         }
         n.attack = crate::AttackStatus::Suppressed;
+        self.release_note_callbacks(note);
         Ok(true)
     }
 
@@ -293,7 +369,13 @@ impl Runtime {
         Ok(release)
     }
 
-    fn commit_attack(&mut self, note: NoteId, release: ReleaseReserve, snapshot: usize) {
+    fn commit_attack(
+        &mut self,
+        note: NoteId,
+        release: ReleaseReserve,
+        snapshot: usize,
+        stage: usize,
+    ) {
         let n = self.notes.get_mut(note.0).unwrap();
         let (plan, key, velocity, address) = (n.plan, n.pitch.key(), n.velocity, n.address);
         n.attack = crate::AttackStatus::Forwarded;
@@ -301,7 +383,7 @@ impl Runtime {
             .get_mut(plan.0)
             .unwrap()
             .groups
-            .commit(note.0.index);
+            .commit_at(note.0.index, stage);
         if release.voices != 0 {
             self.reserve_release(release);
             let generation = self.plans.get_mut(plan.0).unwrap();
@@ -358,7 +440,13 @@ impl Runtime {
         let generation = self.plans.get(plan.0).unwrap();
         let prepared = &generation.prepared;
         let range = prepared.range(key, trigger);
-        let groups = groups.map(|(index, committed)| generation.groups.view(index, committed));
+        let groups = groups.map(|(index, stage, committed)| {
+            if committed {
+                generation.groups.view(index, true)
+            } else {
+                generation.groups.view_at(index, stage)
+            }
+        });
         let mut required = ReleaseReserve::default();
         let mut from = range.start;
         while from < range.end {
@@ -517,7 +605,7 @@ impl Runtime {
                         address,
                         trigger,
                         snapshot,
-                        groups: Some((note.0.index, true)),
+                        groups: Some((note.0.index, 0, true)),
                     },
                     pitch,
                 )

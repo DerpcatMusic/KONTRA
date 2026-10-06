@@ -22,17 +22,19 @@ impl Prepared {
 
 pub(super) struct GroupState {
     words: usize,
-    // Each slot has an editable view and the snapshot committed with its attack.
+    stages: usize,
+    // Each module has an editable view; the final audio selection has one snapshot.
     cells: Box<[u64]>,
 }
 
 impl GroupState {
-    pub fn new(count: u32, notes: usize) -> Result<Self, Error> {
+    pub fn new(count: u32, notes: usize, stages: usize) -> Result<Self, Error> {
         let words = usize::try_from(count)
             .map_err(|_| Error::Capacity)?
             .div_ceil(64);
+        let stages = stages.checked_add(1).ok_or(Error::Capacity)?;
         let len = words
-            .checked_mul(2)
+            .checked_mul(stages.checked_add(1).ok_or(Error::Capacity)?)
             .and_then(|n| n.checked_mul(notes))
             .ok_or(Error::Capacity)?;
         let mut cells = Vec::new();
@@ -40,24 +42,24 @@ impl GroupState {
         cells.resize(len, u64::MAX);
         Ok(Self {
             words,
+            stages,
             cells: cells.into_boxed_slice(),
         })
     }
 
-    fn range(&self, note: usize, committed: bool) -> std::ops::Range<usize> {
-        let start = (note * 2 + usize::from(committed)) * self.words;
+    fn range(&self, note: usize, stage: usize) -> std::ops::Range<usize> {
+        let start = (note * (self.stages + 1) + stage) * self.words;
         start..start + self.words
     }
 
     pub fn view(&self, note: usize, committed: bool) -> &[u64] {
-        &self.cells[self.range(note, committed)]
+        &self.cells[self.range(note, if committed { self.stages } else { 0 })]
     }
 
     pub fn admit(&mut self, note: usize, parent: Option<usize>) {
-        let draft = self.range(note, false);
+        let draft = self.range(note, 0);
         if let Some(parent) = parent {
-            self.cells
-                .copy_within(self.range(parent, false), draft.start);
+            self.cells.copy_within(self.range(parent, 0), draft.start);
         } else {
             self.cells[draft].fill(u64::MAX);
         }
@@ -65,12 +67,37 @@ impl GroupState {
     }
 
     pub fn commit(&mut self, note: usize) {
-        self.cells
-            .copy_within(self.range(note, false), self.range(note, true).start);
+        self.commit_at(note, 0);
     }
 
-    fn edit(&mut self, note: usize, group: Option<u32>, allowed: bool) {
-        let range = self.range(note, false);
+    pub fn view_at(&self, note: usize, stage: usize) -> &[u64] {
+        &self.cells[self.range(note, stage)]
+    }
+
+    pub fn inherit(&mut self, note: usize, entry: usize, parent: Option<(usize, usize)>) {
+        let target = self.range(note, entry);
+        if let Some((parent, stage)) = parent {
+            self.cells
+                .copy_within(self.range(parent, stage), target.start);
+        } else {
+            self.cells[target].fill(u64::MAX);
+        }
+    }
+
+    pub fn forward(&mut self, note: usize, from: usize, through: usize) {
+        for stage in from + 1..=through {
+            self.cells
+                .copy_within(self.range(note, from), self.range(note, stage).start);
+        }
+    }
+
+    pub fn commit_at(&mut self, note: usize, stage: usize) {
+        self.cells
+            .copy_within(self.range(note, stage), self.range(note, self.stages).start);
+    }
+
+    fn edit(&mut self, note: usize, stage: usize, group: Option<u32>, allowed: bool) {
+        let range = self.range(note, stage);
         let cells = &mut self.cells[range];
         if let Some(group) = group {
             let bit = 1 << (group % 64);
@@ -100,7 +127,7 @@ impl Runtime {
             .get_mut(n.plan.0)
             .unwrap()
             .groups
-            .commit(note.0.index);
+            .commit_at(note.0.index, self.note_events[note.0.index].entry);
         self.release_times[note.0.index].groups_forwarded = true;
         Ok(true)
     }
@@ -114,23 +141,60 @@ impl Runtime {
         group: Option<u32>,
         allowed: bool,
     ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.set_note_group_at(note, self.note_events[note.0.index].entry, group, allowed)
+    }
+
+    pub fn set_note_group_at(
+        &mut self,
+        note: NoteId,
+        stage: usize,
+        group: Option<u32>,
+        allowed: bool,
+    ) -> Result<(), Error> {
         self.apply_due();
         let plan = self.notes.get(note.0).ok_or(Error::StaleHandle)?.plan;
         let generation = self.plans.get_mut(plan.0).unwrap();
+        if generation
+            .projections
+            .get(note.0.index, stage)?
+            .properties
+            .is_none()
+        {
+            return Err(Error::InvalidInput);
+        }
         if group.is_some_and(|group| group >= generation.prepared.group_count) {
             return Err(Error::InvalidInput);
         }
-        generation.groups.edit(note.0.index, group, allowed);
+        generation.groups.edit(note.0.index, stage, group, allowed);
         Ok(())
     }
 
     pub fn note_group_allowed(&self, note: NoteId, group: u32) -> Result<bool, Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.note_group_allowed_at(note, self.note_events[note.0.index].entry, group)
+    }
+
+    pub fn note_group_allowed_at(
+        &self,
+        note: NoteId,
+        stage: usize,
+        group: u32,
+    ) -> Result<bool, Error> {
         let plan = self.notes.get(note.0).ok_or(Error::StaleHandle)?.plan;
         let generation = self.plans.get(plan.0).unwrap();
         if group >= generation.prepared.group_count {
             return Err(Error::InvalidInput);
         }
-        let mask = generation.groups.view(note.0.index, false);
+        if generation
+            .projections
+            .get(note.0.index, stage)?
+            .properties
+            .is_none()
+        {
+            return Err(Error::InvalidInput);
+        }
+        let mask = generation.groups.view_at(note.0.index, stage);
         Ok(mask[group as usize / 64] & (1 << (group % 64)) != 0)
     }
 }

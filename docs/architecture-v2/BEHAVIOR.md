@@ -638,11 +638,9 @@ on a 128 KiB thread stack with heap guards. Construction occurs off audio on the
 ordinary worker stack. Tests also cover failed admission, exact projections, waits
 across plan adoption, reclamation/backpressure and all cancellation paths.
 
-This closes the controller-only routing slice, not ordered note/release execution.
-The latter still needs reached-stage note projections, per-stage logical key and
-group state, generated-note downstream entry, release continuation reservations
-and stage-specific source-ID observation. Controller-generated notes still select
-native regions directly. No multi-slot Kontakt playback claim is made.
+The controller slice is followed by ordered note routing below. Ordered release
+execution, per-stage logical key state and full vendor event semantics remain open.
+No full multi-slot Kontakt playback claim is made.
 
 Validation: 312 native release/Rust 1.92 tests, strict all-target Clippy and both
 root boundary tests pass (`artifacts/controller-stages-*`). A strengthened native
@@ -657,12 +655,52 @@ compressing the route. Controller admission counts actual callbacks for capacity
 while incoming CC projections update every crossed module boundary. Empty leading,
 intermediate and trailing positions do not consume callback slots.
 
-Downstream note/release bindings still fail explicitly. Full routing must carry
-the creating module boundary across event kinds, copy projections only on
-forwarding, and reserve release callbacks only for reached note stages.
+Downstream release bindings still fail explicitly. Full release routing must
+reserve callbacks only for reached note stages and retain module-specific logical
+release state.
 Concatenating programs or sharing one mutable event/group projection across
 suspended source slots would violate these requirements.
 
 Module-position validation: 315 native release tests and strict all-target Clippy
 pass (`artifacts/module-stages-*`). Fixtures cover sparse callback routes, exact
 CC projection, failed-admission atomicity, context validation and UI ownership.
+
+
+## Ordered note stages
+
+The same `Stage` table now routes native and source-compiled note callbacks.
+Prepared generations own bounded pitch/velocity projections and group drafts for
+all note slots and module positions, plus the final native boundary. No source
+module shares a mutable projection with a later module. Forwarding copies into
+crossed positions exactly once; edits after a wait remain local. Final selection
+still uses the native atomic layer/voice preflight. The public default event view
+is the input/creating module; explicit stage queries distinguish unreached events
+from reached copies. Invalid stage edits fail before mutation.
+
+Admission reserves all remaining note callbacks before publishing a note. Physical
+key identity remains on the original logical owner; plan adoption cannot redirect
+its waiting route. Suppression and gate closure return unused note reservations.
+A native program that ends without forwarding leaves its pending route owned by
+the note until explicit forwarding, suppression or closure. Completed callback
+records keep their existing acknowledgement lifetime.
+
+Generated notes from routed note, release or controller callbacks start after the
+creating module. Their creating-module properties remain available to stored-ID
+edits, while downstream callbacks receive independent copies. Generated children
+inherit the creating module's group draft. CC reads use the callback's module
+projection; CC writes from note callbacks enter the following controller stage.
+These paths use the existing bounded dispatcher and native source/voice ownership.
+
+`sampler_ksp::bind_modules` exposes ordered note/controller modules with isolated
+globals/polyphonic ranges and relocated controls. Release callbacks beyond module
+zero remain rejected: reached-stage release admission, release forwarding/holds
+and projected logical key state are the next implementation work. UI callback
+performance/module routing and complete Kontakt/Falcon semantics are not complete.
+
+Validation: 321 native release/Rust 1.92 tests, strict all-target Clippy and both
+root boundary tests pass (`artifacts/note-stages-*`). New heap-guarded fixtures cover
+source-level transposition/group isolation across waits, downstream generated
+notes, creator-only late stored-ID edits, cross-kind CC/note routing, retained plan
+generations, capacity atomicity and cleanup. A 4,096-note-stage chain runs on a
+128 KiB thread stack. These are native correctness checks, not vendor audio or
+performance comparisons.

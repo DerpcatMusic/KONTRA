@@ -152,7 +152,7 @@ source semantics and checksum/authentication validation are still required.
   now execute ordinary KSP globals across note/release/UI callbacks and retain old
   generations independently from new initial values. Polyphonic ranges now isolate
   those instances on each note, with preparation-time offsets and summed capacity;
-  ordered multi-script event execution remains open. Signed-32 arithmetic, bitwise
+  ordered note/controller routing is implemented below; release routing remains open. Signed-32 arithmetic, bitwise
   expressions and scalar inc/dec now execute through explicit native instructions
   with bounded expression depth and register requirements. Integer constants, bounded
   script-instance arrays, indexed inc/dec and num_elements now share those services.
@@ -177,11 +177,12 @@ source semantics and checksum/authentication validation are still required.
   raw CC banks from downstream selection state. KSP CC consumption/remapping and
   ordinary MIDI/MPE manager ingress share the same full-resolution/pedal services.
   Note/release CC reads and writes now reuse the retained note performance/channel
-  context across waits; UI CC context, virtual controllers and ordered stage banks
-  remain open. Controller-only stages now retain independent incoming CC projections
+  context across waits; UI CC context and virtual controllers remain open. Controller-only stages now retain independent incoming CC projections
   and downstream continuation reservations; KSP controller modules combine through
-  the same runtime with isolated state and relocated UI callbacks. Note/release
-  stage execution remains open. Controller callbacks now generate parentless notes in their retained
+  the same runtime with isolated state and relocated UI callbacks. Note stages now
+  copy per-module properties/groups and reserve downstream callbacks. Generated
+  notes/CCs enter the following module, retaining creator views and old plans.
+  Reached-stage release routing and logical key projection remain open. Controller callbacks now generate parentless notes in their retained
   plan/domain, including source offsets and stored-ID stops; no fake host input is used.
   Marked/all-event targets, broader mutation/status services and ordered script slots
   remain open; individual-ID fixtures are not full vendor-command parity.

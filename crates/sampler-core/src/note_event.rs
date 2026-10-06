@@ -10,7 +10,9 @@ pub struct NoteProperties {
 #[derive(Clone, Copy)]
 pub(super) struct NoteEvent {
     pub initial: NoteProperties,
-    pub current: NoteProperties,
+    pub pending_callbacks: usize,
+    pub entry: usize,
+    pub routed: bool,
     /// The generated event was admitted with a positive/fixed duration policy.
     pub fixed_duration: bool,
     pub source_offset_micros: u32,
@@ -22,7 +24,9 @@ impl NoteEvent {
         let initial = NoteProperties { pitch, velocity };
         Self {
             initial,
-            current: initial,
+            pending_callbacks: 0,
+            entry: 0,
+            routed: false,
             fixed_duration: false,
             source_offset_micros: 0,
             source_id: None,
@@ -118,23 +122,113 @@ impl Runtime {
         Ok(self.note_events[note.0.index].initial)
     }
 
-    /// Current script-visible properties; late edits do not change committed audio.
+    /// Properties in the input/creating module; late edits do not change committed audio.
     pub fn note_event(&self, note: NoteId) -> Result<NoteProperties, Error> {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
-        Ok(self.note_events[note.0.index].current)
+        self.note_event_at(note, self.note_events[note.0.index].entry)?
+            .ok_or(Error::InvalidInput)
     }
 
     /// Edit the event view atomically. A pending attack consumes this view when
     /// forwarded. Already committed voices/releases and physical pairing stay intact.
     pub fn edit_note_event(&mut self, note: NoteId, value: NoteProperties) -> Result<(), Error> {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.edit_note_event_at(note, self.note_events[note.0.index].entry, value)
+    }
+
+    /// Read one reached module projection; None means this event never entered it.
+    /// The index equal to the prepared stage count is the final native boundary.
+    pub fn note_event_at(
+        &self,
+        note: NoteId,
+        stage: usize,
+    ) -> Result<Option<NoteProperties>, Error> {
+        let plan = self.notes.get(note.0).ok_or(Error::StaleHandle)?.plan;
+        Ok(self
+            .plans
+            .get(plan.0)
+            .unwrap()
+            .projections
+            .get(note.0.index, stage)?
+            .properties)
+    }
+
+    /// Edit only a reached module view. Forwarded downstream copies stay unchanged.
+    pub fn edit_note_event_at(
+        &mut self,
+        note: NoteId,
+        stage: usize,
+        value: NoteProperties,
+    ) -> Result<(), Error> {
+        let plan = self.notes.get(note.0).ok_or(Error::StaleHandle)?.plan;
         if !value.pitch.valid()
             || !value.velocity.is_finite()
             || !(0.0..=1.0).contains(&value.velocity)
         {
             return Err(Error::InvalidInput);
         }
-        self.note_events[note.0.index].current = value;
+        let cell = self
+            .plans
+            .get_mut(plan.0)
+            .unwrap()
+            .projections
+            .get_mut(note.0.index, stage)?;
+        if cell.properties.is_none() {
+            return Err(Error::InvalidInput);
+        }
+        cell.properties = Some(value);
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Projection {
+    pub properties: Option<NoteProperties>,
+    pub forwarded: bool,
+}
+
+pub(super) struct NoteProjections {
+    stages: usize,
+    cells: Box<[Projection]>,
+}
+
+impl NoteProjections {
+    pub fn new(stages: usize, notes: usize) -> Result<Self, Error> {
+        let stages = stages.checked_add(1).ok_or(Error::Capacity)?;
+        let count = stages.checked_mul(notes).ok_or(Error::Capacity)?;
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Capacity)?;
+        cells.resize(count, Projection::default());
+        Ok(Self {
+            stages,
+            cells: cells.into_boxed_slice(),
+        })
+    }
+    pub fn get(&self, note: usize, stage: usize) -> Result<&Projection, Error> {
+        if stage >= self.stages {
+            return Err(Error::InvalidInput);
+        }
+        Ok(&self.cells[note * self.stages + stage])
+    }
+    pub fn get_mut(&mut self, note: usize, stage: usize) -> Result<&mut Projection, Error> {
+        if stage >= self.stages {
+            return Err(Error::InvalidInput);
+        }
+        Ok(&mut self.cells[note * self.stages + stage])
+    }
+    pub fn admit(&mut self, note: usize, entry: usize, properties: NoteProperties) {
+        let start = note * self.stages;
+        self.cells[start..start + self.stages].fill(Projection::default());
+        self.cells[start + entry].properties = Some(properties);
+    }
+    pub fn forward(&mut self, note: usize, from: usize, through: usize) {
+        let properties = self.get(note, from).unwrap().properties;
+        for stage in from..=through {
+            let cell = self.get_mut(note, stage).unwrap();
+            cell.properties = properties;
+            cell.forwarded = stage != through;
+        }
     }
 }

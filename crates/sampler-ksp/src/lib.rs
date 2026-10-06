@@ -90,7 +90,10 @@ pub fn bind_controller_chain(
     bind_modules(scripts, plan)
 }
 
-fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
+/// Bind source modules in order through the shared native routing table.
+/// Note/controller routes are ordered; release callbacks beyond module zero
+/// remain explicitly rejected while staged release routing is implemented.
+pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sampler_core::Error> {
     let mut programs = Vec::new();
     let mut instances = Vec::new();
     let mut controls = Vec::new();
