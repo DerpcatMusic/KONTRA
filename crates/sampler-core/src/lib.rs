@@ -466,6 +466,8 @@ pub struct Runtime {
     voice_activity: Box<[u64]>,
     stealing: Option<steal::Stealing>,
     stolen: usize,
+    /// Voices stolen since the runtime started.
+    steals: u64,
     voice_order: u64,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
@@ -605,6 +607,7 @@ impl Runtime {
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
             stealing: None,
             stolen: 0,
+            steals: 0,
             voice_order: 0,
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
