@@ -709,6 +709,7 @@ impl Runtime {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address, owner) = (n.plan, n.pitch, n.address, n.expression);
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
+        let musical = musical && !prepared.script_release_triggers;
         let reserve = prepared.release_reserves[note_pitch.key() as usize][index];
         let velocity = prepared
             .release_velocity(

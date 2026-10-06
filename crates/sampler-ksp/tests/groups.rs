@@ -405,3 +405,24 @@ fn no_sys_script_pedal_disables_native_sustain() {
         assert!(rt.release_context(note).unwrap().gate.is_some(), "{source}");
     }
 }
+
+/// NO_SYS_SCRIPT_RLS_TRIG: the script owns release samples, so the native
+/// release-trigger groups do not fire when the note releases.
+#[test]
+fn no_sys_script_rls_trig_silences_native_release_groups() {
+    for (source, owned) in [
+        ("on init SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG) end on", true),
+        ("on init end on", false),
+    ] {
+        let mut rt = runtime(source);
+        let note = rt.trigger(input(60), 60, 1.).unwrap();
+        let mut audio = [[0.; 2]; 4];
+        rt.render(&mut audio).unwrap();
+        rt.key_up(note, None).unwrap();
+        let fired = rt
+            .note_families(note)
+            .unwrap()
+            .any(|f| rt.family_trigger(f).unwrap() != Trigger::Attack);
+        assert_eq!(fired, !owned, "{source}");
+    }
+}

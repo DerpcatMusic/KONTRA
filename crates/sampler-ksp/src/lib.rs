@@ -123,6 +123,9 @@ pub struct Script {
     /// `SET_CONDITION(NO_SYS_SCRIPT_PEDAL)`: the script, not the engine,
     /// sustains notes on CC64.
     owns_sustain: bool,
+    /// `SET_CONDITION(NO_SYS_SCRIPT_RLS_TRIG)`: the script plays release
+    /// samples, so native release-trigger groups stay silent.
+    owns_release_triggers: bool,
 }
 
 impl Script {
@@ -333,6 +336,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut signals = Vec::new();
     let mut shared = Vec::new();
     let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
+    let owns_release_triggers = scripts.iter().any(|s| s.owns_release_triggers);
     for (index, script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
@@ -383,6 +387,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     }
     let capacity = shared.len() + 4096;
     plan.with_script_sustain(owns_sustain)
+        .with_script_release_triggers(owns_release_triggers)
         .with_programs(Vec::new(), None)?
         .with_script_instances(instances)?
         // Keep source aliases separate from marked/all-event selectors.
@@ -678,6 +683,7 @@ pub fn compile_with(
         symbols: hir.symbols.iter().map(|s| s.to_string()).collect(),
         slot: environment.slot,
         owns_sustain: conditions.contains("NO_SYS_SCRIPT_PEDAL"),
+        owns_release_triggers: conditions.contains("NO_SYS_SCRIPT_RLS_TRIG"),
         usage: Limits {
             source_bytes: source.len(),
             instructions: limits.instructions - unit.budget,
