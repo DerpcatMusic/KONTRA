@@ -17,10 +17,11 @@
 //! own strip.
 //!
 //! Output is per node: up to its parent (the default below the top) or straight
-//! to a host stereo pair. [`Tree::assign_outputs`] gives every instrument its
-//! own pair unless the user chose one.
+//! to a host stereo pair. Automatic routing ([`crate::routing`]) gives every
+//! instrument its own pair unless the user chose one.
 
 use super::theme::*;
+pub use crate::sound::tree::{NodeKind as Kind, NodeOutput as Output};
 use moose::mui::mui::prelude::*;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,8 +44,6 @@ pub struct Node {
     pub output_set: bool,
     /// Insert effect names, in order.
     pub inserts: Vec<String>,
-    /// Whether the core lets this node's level, pan, mute and solo change.
-    pub adjustable: bool,
 }
 
 impl Node {
@@ -61,44 +60,17 @@ impl Node {
             output: Output::Parent,
             output_set: false,
             inserts: Vec::new(),
-            adjustable: true,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// A rack part.
-    Instrument,
-    /// The instrument's own mix of its sources.
-    Submix,
-    /// A microphone position.
-    Mic,
-    /// A source group or articulation bus.
-    Group,
-    /// Any other source bus.
-    Bus,
-}
-
-impl Kind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Instrument => "Instrument",
-            Self::Submix => "Submix",
-            Self::Mic => "Mic",
-            Self::Group => "Group",
-            Self::Bus => "Bus",
-        }
+fn label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Instrument => "Instrument",
+        Kind::Group => "Group",
+        Kind::Mic => "Mic",
+        Kind::Bus => "Bus",
     }
-}
-
-/// Where a node's signal goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Output {
-    /// Into its parent; an instrument's parent is the main pair.
-    Parent,
-    /// Host stereo pair `n` (0 is 1/2).
-    Host(u8),
 }
 
 /// The whole mixer: nodes in pre-order, every parent before its children.
@@ -118,28 +90,6 @@ impl Tree {
             (n, d) = (p, d + 1);
         }
         d
-    }
-
-    /// Gives each instrument the user has not routed its own host pair, in
-    /// rack order, skipping pairs the user took; the rest share 1/2 once the
-    /// host's `pairs` run out. Nodes below follow their parent unless set.
-    pub fn assign_outputs(&mut self, pairs: u8) {
-        let taken: HashSet<u8> = self
-            .nodes
-            .iter()
-            .filter(|n| n.output_set)
-            .filter_map(|n| match n.output {
-                Output::Host(p) => Some(p),
-                Output::Parent => None,
-            })
-            .collect();
-        let mut free = (0..pairs).filter(|p| !taken.contains(p));
-        for n in self.nodes.iter_mut().filter(|n| !n.output_set) {
-            n.output = match n.parent {
-                Some(_) => Output::Parent,
-                None => Output::Host(free.next().unwrap_or(0)),
-            };
-        }
     }
 }
 
@@ -269,7 +219,7 @@ fn strip(
     let header = col![
         row(head).gap(2).align(Align::Start).min_w(0),
         caption(match node.inserts.len() {
-            0 => node.kind.label().to_owned(),
+            0 => label(node.kind).to_owned(),
             i => format!("{i} insert{}", if i == 1 { "" } else { "s" }),
         })
         .text_size(SMALL)
@@ -288,12 +238,7 @@ fn strip(
         level(ui, tree, n, levels)
     };
     let node = &mut tree.nodes[n];
-    let adjustable = node.adjustable;
-    let (mut solo, mut mute) = (node.solo, node.mute);
-    let switches = solo_mute(ui, &format!("mt-{key}"), &mut solo, &mut mute);
-    if adjustable {
-        (node.solo, node.mute) = (solo, mute);
-    }
+    let switches = solo_mute(ui, &format!("mt-{key}"), &mut node.solo, &mut node.mute);
 
     let mut rows = vec![block(Len::Pct(100.), 2).fill(colour).shrink(0)];
     let body = col![header, middle, row![switches].justify(Justify::Center).shrink(0), out]
@@ -323,10 +268,7 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
     let travel = ui.scene().and_then(|s| s.surface(&id)).map_or(TRAVEL, |s| s.frame.size.height).max(CONTROL);
     let mut db = f64::from(node.gain_db);
     let held = drive(ui, &id, &mut db, &DB, travel, true, 0.);
-    if node.adjustable {
-        node.pan = pan as f32;
-        node.gain_db = db as f32;
-    }
+    (node.pan, node.gain_db) = (pan as f32, db as f32);
     let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
     let unit = |db: f64| ((db - DB.start()) / (DB.end() - DB.start())).clamp(0., 1.);
     let fader = fader_face(unit(f64::from(node.gain_db)), 0., Some(unit(0.)), true, lift, ui.focus_visible(&id))
@@ -355,7 +297,7 @@ fn level(ui: &mut Ui, tree: &mut Tree, n: usize, levels: &Levels) -> El {
 fn output_text(o: Output) -> String {
     match o {
         Output::Parent => "Up".into(),
-        Output::Host(p) => super::mixer::port_text(usize::from(p)),
+        Output::Pair(p) => super::mixer::port_text(usize::from(p)),
     }
 }
 
@@ -364,7 +306,7 @@ fn output_button(ui: &mut Ui, tree: &Tree, state: &mut State, n: usize, colour: 
     let to = output_text(node.output);
     let name = match node.output {
         Output::Parent => "Output: into its parent".to_owned(),
-        Output::Host(_) => format!("Output: host pair {to}{}", if node.output_set { "" } else { ", automatic" }),
+        Output::Pair(_) => format!("Output: host pair {to}{}", if node.output_set { "" } else { ", automatic" }),
     };
     let (hit, el) = route(ui, format!("mt-out-{}", node.id), Icon::AudioOut, &to, "15/16", &name);
     if hit {
@@ -372,7 +314,7 @@ fn output_button(ui: &mut Ui, tree: &Tree, state: &mut State, n: usize, colour: 
     }
     let chip = block(TIGHT, STRIP).fill(match node.output {
         Output::Parent => Fill::from(colour.with_alpha(0.4)),
-        Output::Host(_) => Fill::from(colour),
+        Output::Pair(_) => Fill::from(colour),
     });
     row![chip.shrink(0), el.flex(1).min_w(0)].gap(0).align(Align::Center).shrink(0)
 }
@@ -384,7 +326,7 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
     if tree.nodes[n].parent.is_some() {
         choices.push((Some(Output::Parent), "Into parent".into()));
     }
-    choices.extend((0..pairs).map(|p| (Some(Output::Host(p)), format!("Host {}", super::mixer::port_text(usize::from(p))))));
+    choices.extend((0..pairs).map(|p| (Some(Output::Pair(p)), format!("Host {}", super::mixer::port_text(usize::from(p))))));
     if tree.nodes[n].parent.is_none() {
         choices.push((None, "Automatic".into()));
     }
@@ -410,38 +352,28 @@ fn output_list(ui: &mut Ui, tree: &mut Tree, state: &mut State, n: usize, pairs:
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// Two instruments; the first has a submix with two mics and a group.
+    /// Two instruments; the first has a mic bus with two mics and a group.
     pub(crate) fn sample() -> Tree {
         let mut nodes = vec![
             Node::new(1, "Cellos", Kind::Instrument, None),
-            Node::new(2, "Mics", Kind::Submix, Some(0)),
-            Node::new(3, "Close", Kind::Mic, Some(1)),
-            Node::new(4, "Room", Kind::Mic, Some(1)),
+            Node::new(2, "Mics", Kind::Bus, Some(0)),
+            Node::new(3, "Close", Kind::Bus, Some(1)),
+            Node::new(4, "Room", Kind::Bus, Some(1)),
             Node::new(5, "Legato", Kind::Group, Some(0)),
             Node::new(6, "Harp", Kind::Instrument, None),
         ];
-        nodes[3].output = Output::Host(4);
-        nodes[3].output_set = true;
+        (nodes[0].output, nodes[5].output) = (Output::Pair(0), Output::Pair(1));
+        (nodes[3].output, nodes[3].output_set) = (Output::Pair(4), true);
         Tree { nodes }
     }
 
     #[test]
-    fn instruments_get_their_own_pairs() {
-        let mut t = sample();
-        t.nodes[5].output = Output::Host(0);
-        t.nodes[5].output_set = true;
-        t.assign_outputs(8);
-        assert_eq!(t.nodes[0].output, Output::Host(1), "pair 1/2 is taken by Harp");
-        assert_eq!(t.nodes[2].output, Output::Parent);
-        assert_eq!(t.nodes[3].output, Output::Host(4), "a user's choice stays");
+    fn tree_shape() {
+        let t = sample();
         assert_eq!(t.depth(3), 2);
         assert_eq!(t.children(0).collect::<Vec<_>>(), [1, 4]);
-        // Out of pairs: the rest share 1/2.
-        let mut t = sample();
-        t.assign_outputs(1);
-        assert_eq!((t.nodes[0].output, t.nodes[5].output), (Output::Host(0), Output::Host(0)));
     }
 }
