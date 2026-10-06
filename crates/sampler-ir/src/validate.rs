@@ -303,6 +303,15 @@ impl Instrument {
             check.scope(modulator.scope)?;
             match &modulator.source {
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Breakpoints(b) => {
+                    for point in &b.points {
+                        check.time(point.time, "breakpoint time")?;
+                        check.within(point.level, 0.0..=1.0, "breakpoint level")?;
+                    }
+                    if b.sustain.is_some_and(|s| s >= b.points.len()) {
+                        check.within(f64::NAN, 0.0..=0.0, "sustain point")?;
+                    }
+                }
                 ModulationSource::Lfo(lfo) => {
                     let rate = match lfo.rate {
                         crate::Frequency::Hertz(hz) => hz,
