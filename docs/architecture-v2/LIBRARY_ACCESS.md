@@ -40,6 +40,15 @@ This admits the installed Augmented Orchestra programs with more than
 200,000 nodes. Explicit `$Bank.ufs/` resources resolve within their named bank.
 XML bounds: `f24c85c6`; resource paths: `2b9a8b3d`; memory-only access: `2a6ba617`.
 Protected and clear XML share the parser and byte bounds: `9309bf5a`.
+Missing lossless audio references can resolve to a unique member with the same
+directory and sample stem; exact paths take priority and ambiguity is rejected
+(`c5b0bf8a`). This handles the installed WAV reference backed by a FLAC member.
+
+Full installed UVI census on 2026-10-06: 26/26 banks and 660/660 programs open.
+Programs decoding every referenced sample improved from 40/660 to 660/660;
+banks with every program decoding improved from 25/26 to 26/26. All 620 XML
+admission failures and the subsequently exposed audio-format reference failure
+are resolved. The census stores status only, without program or sample bytes.
 
 ## Verification on the shared machine
 
