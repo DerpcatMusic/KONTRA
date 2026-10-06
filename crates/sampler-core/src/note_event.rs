@@ -11,6 +11,8 @@ pub struct NoteProperties {
 pub(super) struct NoteEvent {
     pub initial: NoteProperties,
     pub pending_callbacks: usize,
+    pub pending_releases: usize,
+    pub release_start: usize,
     pub entry: usize,
     pub routed: bool,
     /// The generated event was admitted with a positive/fixed duration policy.
@@ -25,6 +27,8 @@ impl NoteEvent {
         Self {
             initial,
             pending_callbacks: 0,
+            pending_releases: 0,
+            release_start: 0,
             entry: 0,
             routed: false,
             fixed_duration: false,
@@ -181,10 +185,21 @@ impl Runtime {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ReleaseStage {
+    #[default]
+    Unreached,
+    Pending,
+    Suppressed,
+    Forwarded,
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct Projection {
     pub properties: Option<NoteProperties>,
     pub forwarded: bool,
+    pub release: ReleaseStage,
+    pub release_reserved: bool,
 }
 
 pub(super) struct NoteProjections {

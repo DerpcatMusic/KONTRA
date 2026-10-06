@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Route release callbacks across reached modules with reserved capacity, local
+  held state and independent group drafts. Generated duration deadlines now use
+  native note-off routing; explicit IR forwarding replaces VM completion frames.
+
 - Separate release callback group drafts from waiting note callback views;
   release-generated children inherit the release selection without overwriting
   the original note module state.

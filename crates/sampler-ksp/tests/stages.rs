@@ -267,3 +267,96 @@ fn release_group_edits_and_generated_children_do_not_overwrite_a_waiting_note_vi
         });
     });
 }
+
+#[test]
+fn release_modules_hold_independently_and_note_held_tracks_the_incoming_stage() {
+    let plan = plan(&[
+        "on init declare $released end on
+        on note change_note($EVENT_ID,61) end on
+        on release
+            ignore_event($EVENT_ID)
+            wait(125)
+            note_off($EVENT_ID)
+            $released := 1
+        end on",
+        "on init declare $held declare $seen declare $released end on
+        on note
+            change_note($EVENT_ID,62)
+            wait(63)
+            $held := $NOTE_HELD
+        end on
+        on release
+            $seen := $EVENT_NOTE
+            $released := $NOTE_HELD
+            ignore_event($EVENT_ID)
+            disallow_group($ALL_GROUPS) allow_group(1)
+            wait(125)
+            play_note(64,127,0,1000)
+            note_off($EVENT_ID)
+        end on",
+        "on init declare $releases end on on release inc($releases) end on",
+    ]);
+    let budget = limits(&plan, 6);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        let generation = rt.active_plan();
+        rt.note_off(input(1), None).unwrap();
+        assert!(!rt.key_down(note).unwrap());
+        rt.render(&mut [[0.; 2]; 5]).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(1));
+        assert!(rt.release_context(note).unwrap().gate.is_none());
+        rt.render(&mut [[0.; 2]; 2]).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(62));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 2), Ok(0));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(2), 0), Ok(0));
+        assert!(rt.release_context(note).unwrap().gate.is_none());
+        let mut audio = [[0.; 2]; 6];
+        rt.render(&mut audio).unwrap();
+        assert_eq!(audio[0], [0.375; 2]);
+        assert_eq!(audio[5], [0.25; 2]);
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(2), 0), Ok(1));
+        assert!(rt.release_context(note).unwrap().gate.is_some());
+        assert!(rt.note_group_allowed_at(note, 1, 0).unwrap());
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+    });
+}
+
+#[test]
+fn consumed_notes_release_only_reached_modules_and_generated_notes_skip_the_creator() {
+    let plan = plan(&[
+        "on init declare $releases end on
+        on note ignore_event($EVENT_ID) play_note(64,127,0,125) end on
+        on release inc($releases) end on",
+        "on init declare $notes declare $releases end on
+        on note inc($notes) end on
+        on release inc($releases) end on",
+    ]);
+    let budget = limits(&plan, 4);
+    let mut rt = Runtime::new(plan, budget).unwrap();
+    support::without_heap(|| {
+        let parent = rt.trigger(input(1), 60, 1.).unwrap();
+        let generation = rt.active_plan();
+        assert_eq!(rt.note_event_at(parent, 1), Ok(None));
+        rt.note_off(input(1), None).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(0));
+        rt.render(&mut [[0.; 2]; 7]).unwrap();
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(0), 0), Ok(1));
+        assert_eq!(rt.script_cell(generation, ScriptInstanceId(1), 1), Ok(1));
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(
+            (rt.note_count(), rt.voice_count(), rt.pending_commands()),
+            (0, 0, 0)
+        );
+    });
+}

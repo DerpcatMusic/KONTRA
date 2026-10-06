@@ -89,10 +89,8 @@ impl Runtime {
             return Ok(note);
         }
         let prepared = &self.plans.get(self.active_plan.0).unwrap().prepared;
-        let first = prepared.stages.first().copied().unwrap_or_default();
         let on_note = prepared.stages.iter().any(|stage| stage.note.is_some());
-        let on_release = first.release;
-        if !on_note && on_release.is_none() {
+        if !on_note {
             return self.select(
                 NoteOrigin::Input(input, expression, index),
                 pitch,
@@ -106,28 +104,17 @@ impl Runtime {
             .iter()
             .filter(|stage| stage.note.is_some())
             .count()
-            + usize::from(on_release.is_some());
+            + prepared
+                .stages
+                .iter()
+                .filter(|stage| stage.release.is_some())
+                .count();
         if self.behaviors.available() < callbacks {
             return Err(Error::Capacity);
         }
-        let note = if on_note {
-            self.note_on_pitched_in(performance, input, pitch, velocity, expression)?
-        } else {
-            self.select(
-                NoteOrigin::Input(input, expression, index),
-                pitch,
-                velocity,
-                0,
-                None,
-            )?
-        };
-        if on_release.is_some() {
-            self.behaviors.reserve(1);
-            self.release_times[note.0.index].release_behavior = true;
-        }
-        if on_note {
-            self.begin_note_stages(note, 0);
-        }
+        let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+        self.reserve_release_callbacks(note, 0);
+        self.begin_note_stages(note, 0);
         Ok(note)
     }
 
@@ -154,11 +141,21 @@ impl Runtime {
         let prepared = &self.plans.get(plan.0).unwrap().prepared;
         let routed =
             source_stage.is_some() && prepared.stages[entry..].iter().any(|s| s.note.is_some());
+        let release_route = source_stage.is_some() || matches!(origin, NoteOrigin::Input(..));
         let callbacks = prepared.stages[entry..]
             .iter()
             .filter(|s| s.note.is_some())
             .count();
-        if routed && self.behaviors.available() < callbacks {
+        let callbacks = usize::from(routed) * callbacks
+            + if release_route {
+                prepared.stages[entry..]
+                    .iter()
+                    .filter(|s| s.release.is_some())
+                    .count()
+            } else {
+                0
+            };
+        if self.behaviors.available() < callbacks {
             return Err(Error::Capacity);
         }
         let pitch = match origin {
@@ -249,6 +246,9 @@ impl Runtime {
             },
         );
         self.project_note(note, origin_stage, entry);
+        if release_route {
+            self.reserve_release_callbacks(note, entry);
+        }
         if routed {
             self.begin_note_stages(note, entry);
         } else {
@@ -323,6 +323,7 @@ impl Runtime {
         }
         n.attack = crate::AttackStatus::Suppressed;
         self.release_note_callbacks(note);
+        self.trim_release_callbacks(note, false);
         Ok(true)
     }
 

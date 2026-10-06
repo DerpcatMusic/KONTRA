@@ -1247,6 +1247,7 @@ fn release_callbacks_reserve_capacity_and_share_state_across_waits_and_pedals() 
                         Instruction::ReadNoteCell { local: 0, cell: 0 },
                         Instruction::AddLocal { local: 0, value: 1 },
                         Instruction::WriteNoteCell { cell: 0, local: 0 },
+                        Instruction::ForwardReleaseGroups,
                         Instruction::Wait(2),
                         Instruction::AddLocal { local: 0, value: 1 },
                         Instruction::WriteNoteCell { cell: 0, local: 0 },
@@ -1414,6 +1415,7 @@ fn release_callbacks_keep_the_original_plan_after_source_eof_and_do_not_reenter_
                         inheritance: sampler_core::Inheritance::Independent,
                         duration: sampler_core::Duration::Frames(2),
                     },
+                    Instruction::ForwardReleaseGroups,
                 ])
                 .unwrap()
                 .with_wait_lifetime(sampler_core::WaitLifetime::Callback),

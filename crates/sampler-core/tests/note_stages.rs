@@ -187,3 +187,153 @@ fn long_note_routes_use_the_existing_bounded_dispatch_stack() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn held_release_routes_keep_and_return_their_remaining_callback_capacity() {
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![I::SuppressRelease, I::Wait(20)])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+                Program::new(vec![I::ForwardReleaseGroups])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+                Program::new(vec![])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_stages(vec![
+            Stage {
+                release: Some(0),
+                ..Stage::default()
+            },
+            Stage::default(),
+            Stage {
+                release: Some(1),
+                ..Stage::default()
+            },
+        ])
+        .unwrap();
+    let budget = limits(&prepared, 2);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        assert_eq!(rt.trigger(input(2), 60, 1.), Err(Error::Capacity));
+        assert_eq!(rt.note_count(), 1);
+        rt.note_off(input(1), None).unwrap();
+        assert!(rt.release_context(note).unwrap().gate.is_none());
+        assert_eq!(
+            rt.start_plan_behavior(rt.active_plan(), 2),
+            Err(Error::Capacity)
+        );
+        rt.panic();
+        assert_eq!(rt.pending_commands(), 0);
+        rt.start_plan_behavior(rt.active_plan(), 2).unwrap();
+        rt.flush_behaviors(|_, _, outcome| {
+            assert!(matches!(outcome, Outcome::Cancelled | Outcome::Finished));
+            true
+        });
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+        // Every unstarted release slot was returned before acknowledgement.
+        rt.trigger(input(2), 60, 1.).unwrap();
+    });
+}
+
+#[test]
+fn long_release_routes_complete_without_recursive_calls_or_extra_vm_frames() {
+    const COUNT: usize = 4096;
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![I::ForwardReleaseGroups])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_stages(vec![
+            Stage {
+                release: Some(0),
+                ..Stage::default()
+            };
+            COUNT
+        ])
+        .unwrap();
+    let budget = limits(&prepared, COUNT);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(move || {
+            support::without_heap(|| {
+                let note = rt.trigger(input(1), 60, 1.).unwrap();
+                rt.note_off(input(1), None).unwrap();
+                assert!(rt.release_context(note).unwrap().gate.is_some());
+                let mut completed = 0;
+                rt.flush_behaviors(|_, _, outcome| {
+                    assert_eq!(outcome, Outcome::Finished);
+                    completed += 1;
+                    true
+                });
+                assert_eq!(completed, COUNT);
+                rt.flush_ended(|_| true);
+                assert_eq!(rt.note_count(), 0);
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn native_release_completion_does_not_implicitly_forward_a_frontend_event() {
+    let prepared = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(
+            vec![
+                Program::new(vec![])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+                Program::new(vec![I::ForwardReleaseGroups])
+                    .unwrap()
+                    .with_wait_lifetime(WaitLifetime::Callback),
+            ],
+            None,
+        )
+        .unwrap()
+        .with_stages(vec![
+            Stage {
+                release: Some(0),
+                ..Stage::default()
+            },
+            Stage {
+                release: Some(1),
+                ..Stage::default()
+            },
+        ])
+        .unwrap();
+    let budget = limits(&prepared, 2);
+    let mut rt = Runtime::new(prepared, budget).unwrap();
+    support::without_heap(|| {
+        let note = rt.trigger(input(1), 60, 1.).unwrap();
+        rt.note_off(input(1), None).unwrap();
+        assert!(rt.release_context(note).unwrap().gate.is_none());
+        assert!(rt.forward_release_groups(note).unwrap());
+        assert!(rt.release_context(note).unwrap().gate.is_some());
+        assert!(!rt.forward_release_groups(note).unwrap());
+        let mut completed = 0;
+        rt.flush_behaviors(|_, _, outcome| {
+            assert_eq!(outcome, Outcome::Finished);
+            completed += 1;
+            true
+        });
+        assert_eq!(completed, 2);
+    });
+}

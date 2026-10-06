@@ -527,9 +527,9 @@ pub(super) struct Continuation {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Ready {
-    Resume(BehaviorId, usize),
-    FinishKeyUp(NoteId, super::ReleaseCause),
+pub(super) struct Ready {
+    id: BehaviorId,
+    fuel: usize,
 }
 
 impl Runtime {
@@ -670,29 +670,6 @@ impl Runtime {
         }
     }
 
-    pub(super) fn run_release_behavior(&mut self, note: NoteId, musical: bool) {
-        // Consume before execution: faults can re-enter release cleanup, and must
-        // neither start another callback nor relinquish the reservation twice.
-        if !std::mem::take(&mut self.release_times[note.0.index].release_behavior) {
-            return;
-        }
-        self.behaviors.unreserve(1);
-        if musical {
-            let plan = self.notes.get(note.0).unwrap().plan;
-            let program = self.plans.get(plan.0).unwrap().prepared.stages[0]
-                .release
-                .unwrap();
-            self.plans
-                .get_mut(plan.0)
-                .unwrap()
-                .groups
-                .begin_release(note.0.index, 0);
-            self.release_times[note.0.index].release_stage = Some(0);
-            self.start_note_context(note, program, Some(NoteStage::Release(0)))
-                .expect("owned release continuation reservation");
-        }
-    }
-
     pub fn behavior_outcome(&self, id: BehaviorId) -> Result<Option<Outcome>, Error> {
         Ok(self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.outcome)
     }
@@ -756,7 +733,10 @@ impl Runtime {
     }
 
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
-        self.push_behavior_work(Ready::Resume(id, self.behavior_fuel));
+        self.push_behavior_work(Ready {
+            id,
+            fuel: self.behavior_fuel,
+        });
         if self.dispatching_behavior {
             return;
         }
@@ -765,16 +745,7 @@ impl Runtime {
         // Each suspended caller retains its own remaining fuel, never a Rust frame.
         while let Some(ready) = self.behavior_ready.last().copied() {
             let index = self.behavior_ready.len() - 1;
-            let (id, fuel) = match ready {
-                Ready::Resume(id, fuel) => (id, fuel),
-                Ready::FinishKeyUp(note, cause) => {
-                    self.behavior_ready.pop();
-                    self.release_times[note.0.index].finishing = false;
-                    self.finish_key_release(note, cause);
-                    self.notes.get_mut(note.0).unwrap().work -= 1;
-                    continue;
-                }
-            };
+            let Ready { id, fuel } = ready;
             let c = *self.behaviors.get(id.0).unwrap();
             if c.outcome.is_some() {
                 self.release_controller_reserve(id);
@@ -789,7 +760,7 @@ impl Runtime {
             let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 self.release_controller_reserve(id);
-                self.behavior_ready.pop();
+                self.behavior_ready.remove(index);
                 continue;
             };
             if fuel == 0 {
@@ -797,7 +768,7 @@ impl Runtime {
                 self.behavior_ready.remove(index);
                 continue;
             }
-            self.behavior_ready[index] = Ready::Resume(id, fuel - 1);
+            self.behavior_ready[index] = Ready { id, fuel: fuel - 1 };
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             match self.behavior_step(id, c.owner, op) {
                 Ok(true) => {
@@ -895,7 +866,13 @@ impl Runtime {
                 }
             }
             Instruction::ForwardReleaseGroups => {
-                self.forward_release_groups(owner.note()?)?;
+                if let Some(NoteStage::Release(stage)) =
+                    self.behaviors.get(id.0).unwrap().note_stage
+                {
+                    self.forward_release_stage(owner.note()?, stage)?;
+                } else {
+                    self.forward_release_groups(owner.note()?)?;
+                }
             }
             Instruction::SuppressAttack => {
                 let note = owner.note()?;
@@ -914,7 +891,13 @@ impl Runtime {
                 }
             }
             Instruction::SuppressRelease => {
-                self.suppress_release(owner.note()?)?;
+                if let Some(NoteStage::Release(stage)) =
+                    self.behaviors.get(id.0).unwrap().note_stage
+                {
+                    self.suppress_release_stage(owner.note()?, stage)?;
+                } else {
+                    self.suppress_release(owner.note()?)?;
+                }
             }
             Instruction::WriteGroup {
                 group,
@@ -1066,7 +1049,19 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = self.note_values[index];
             }
             Instruction::ReadKeyDown { local } => {
-                *self.local_cell_mut(id, local)? = i64::from(self.key_down(owner.note()?)?);
+                let note = owner.note()?;
+                let down = if let Some(stage) = self.behaviors.get(id.0).unwrap().note_stage {
+                    self.plans
+                        .get(self.notes.get(note.0).unwrap().plan.0)
+                        .unwrap()
+                        .projections
+                        .get(note.0.index, stage.index())?
+                        .release
+                        == super::note_event::ReleaseStage::Unreached
+                } else {
+                    self.key_down(note)?
+                };
+                *self.local_cell_mut(id, local)? = i64::from(down);
             }
             Instruction::CompareLocal {
                 lhs,
@@ -1267,7 +1262,7 @@ impl Runtime {
         self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
         if let Some(at) = at {
-            self.release_at(child, at)?;
+            self.schedule_event(at, super::Event::ScriptKeyUp(child))?;
         }
         Ok(child)
     }
