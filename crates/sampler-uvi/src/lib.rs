@@ -18,6 +18,7 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod modulation;
+pub mod script;
 #[cfg(feature = "library-access")]
 mod ufs;
 
