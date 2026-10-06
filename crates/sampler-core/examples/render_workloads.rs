@@ -13,9 +13,10 @@ fn prepare(
     voices: usize,
     reserved: usize,
     shaped: bool,
-    transpose: f64,
+    processing: (f64, usize),
     muted: bool,
 ) -> Runtime {
+    let (transpose, filters) = processing;
     let notes = voices / LAYERS;
     let samples = (0..LAYERS)
         .map(|layer| {
@@ -50,8 +51,26 @@ fn prepare(
             },
         })
         .collect();
+    let mut prepared = Prepared::new(rate, samples, regions, LAYERS).unwrap();
+    if filters != 0 {
+        let filter = sampler_core::VoiceProcessor::Biquad(
+            sampler_core::Biquad::new(
+                rate,
+                sampler_core::FilterKind::LowPass,
+                f64::from(rate) / 4.,
+                0.5,
+            )
+            .unwrap(),
+        );
+        prepared = prepared
+            .with_voice_chains(
+                vec![sampler_core::VoiceChain::new(vec![filter; filters], vec![], 128).unwrap()],
+                vec![Some(0); LAYERS],
+            )
+            .unwrap();
+    }
     let mut rt = Runtime::new(
-        Prepared::new(rate, samples, regions, LAYERS).unwrap(),
+        prepared,
         Limits {
             notes,
             channels: 0,
@@ -97,10 +116,10 @@ fn measure(
     voices: usize,
     reserved: usize,
     shaped: bool,
-    transpose: f64,
+    processing: (f64, usize),
     muted: bool,
 ) {
-    let mut rt = prepare(rate, voices, reserved, shaped, transpose, muted);
+    let mut rt = prepare(rate, voices, reserved, shaped, processing, muted);
     let mut audio = vec![[0.; 2]; block];
     for _ in 0..64 {
         rt.render(&mut audio).unwrap();
@@ -128,9 +147,10 @@ fn measure(
     let p99 = times[(TRIALS - 1) * 99 / 100] as f64 / 1000.;
     let maximum = times[TRIALS - 1] as f64 / 1000.;
     let deadline = block as f64 * 1_000_000. / f64::from(rate);
+    let filters = processing.1;
     let envelope = if shaped { "sustain" } else { "unity" };
     println!(
-        "{muted},{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
+        "{filters},{muted},{envelope},{rate},{block},{LAYERS},{},{voices},{reserved},{median:.3},{p99:.3},{maximum:.3},{:.2},{:.3}",
         voices / LAYERS,
         p99 / deadline * 100.,
         median * 1000. / (voices * block) as f64
@@ -151,12 +171,23 @@ fn main() {
         std::env::consts::OS
     );
     println!(
-        "muted,envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
+        "filters,muted,envelope,rate,block,layers,notes,voices,reserved_voices,median_us,p99_us,max_us,p99_deadline_percent,median_ns_per_voice_frame"
     );
     let mut args: Vec<_> = std::env::args().skip(1).collect();
     let muted = args.last().is_some_and(|arg| arg == "--muted");
     if muted {
         args.pop();
+    }
+    if args.first().is_some_and(|arg| arg == "--filters") {
+        assert_eq!(args.len(), 2, "expected --filters COUNT [--muted]");
+        let filters: usize = args[1].parse().expect("integer stage count");
+        assert!((1..=16).contains(&filters));
+        for block in [64, 256] {
+            for voices in [64, 256, 1024] {
+                measure(48000, block, voices, voices, false, (0., filters), muted);
+            }
+        }
+        return;
     }
     if !args.is_empty() {
         assert!(
@@ -168,7 +199,7 @@ fn main() {
         eprintln!("transposition: {transpose} semitones");
         for block in [64, 256] {
             for voices in [4, 16, 64] {
-                measure(48000, block, voices, voices, false, transpose, muted);
+                measure(48000, block, voices, voices, false, (transpose, 0), muted);
             }
         }
         return;
@@ -177,7 +208,7 @@ fn main() {
         for rate in [48000, 96000] {
             for block in [64, 256] {
                 for (voices, reserved) in [(64, 64), (256, 256), (1024, 1024), (64, 4096)] {
-                    measure(rate, block, voices, reserved, shaped, 0.0, muted);
+                    measure(rate, block, voices, reserved, shaped, (0.0, 0), muted);
                 }
             }
         }

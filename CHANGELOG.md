@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add native per-voice gain/biquad chains with explicit pre/post-envelope order,
+  independent stereo state, control-prepared generation banks and bounded DSP tails.
+  Musical release preserves post-envelope tails; finite choke bounds the whole chain.
+  Vendor DSP profiles, automation and broader bus/effect graphs remain incomplete.
+
 - Execute KSP integer expressions in note key, velocity, duration and wait arguments
   through native register services, preserving bounded child ownership and scheduler
   reservations. Add explicit seven-bit onset reads without narrowing core note state.

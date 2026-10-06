@@ -102,6 +102,7 @@ struct PreparedRegion {
     velocity_high: f64,
     gain: f32,
     velocity_curve: VelocityCurve,
+    chain: Option<usize>,
     envelope: Envelope,
     cursor: super::source::Cursor,
     root_key: Option<u8>,
@@ -121,6 +122,7 @@ struct Candidate {
 pub struct Prepared {
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
+    pub(super) voice_chains: Box<[super::VoiceChain]>,
     regions: Box<[PreparedRegion]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
@@ -226,6 +228,7 @@ impl Prepared {
                 velocity_high: r.velocity_high,
                 gain: r.gain,
                 velocity_curve: VelocityCurve::Linear,
+                chain: None,
                 envelope: r.envelope,
                 cursor,
                 root_key: r.root_key,
@@ -261,6 +264,7 @@ impl Prepared {
         Ok(Self {
             rate,
             pcm: pcm.into_boxed_slice(),
+            voice_chains: Box::new([]),
             regions: prepared_regions.into_boxed_slice(),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
@@ -782,5 +786,30 @@ impl Prepared {
         state
             .choose(take.sequence, &self.sequences[take.sequence], address, key)
             .map(Some)
+    }
+}
+
+impl Prepared {
+    /// Bind shared immutable processor chains in authored region order. Runtime
+    /// state remains per voice, per channel and per retained generation.
+    pub fn with_voice_chains(
+        mut self,
+        chains: Vec<super::VoiceChain>,
+        bindings: Vec<Option<usize>>,
+    ) -> Result<Self, Error> {
+        if bindings.len() != self.regions.len()
+            || bindings
+                .iter()
+                .flatten()
+                .any(|index| *index >= chains.len())
+            || chains.iter().any(|chain| !chain.valid_for(self.rate))
+        {
+            return Err(Error::InvalidInput);
+        }
+        for (region, chain) in self.regions.iter_mut().zip(bindings) {
+            region.chain = chain;
+        }
+        self.voice_chains = chains.into_boxed_slice();
+        Ok(self)
     }
 }

@@ -80,12 +80,15 @@ compatibility remains a separate, evidence-backed capability.
 23. [Full Kontakt 8.12 KSP completion map](KSP_PARITY.md): manual surface inventory,
     native service dependencies and explicit implementation/reference gaps.
 
+24. [Native voice DSP chains](VOICE_DSP.md): gain/biquad processors, pre/post-envelope
+    order, independent state, retained tails and bounded whole-chain choke.
+
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
   effective gates, retained key/gate release context, direct ownership release traversal,
   bounded scheduling/behaviors,
-  resident selection, AHDSR and scheduled family chokes,
+  resident selection, curved DAHDSR/AHD, voice-local gain/biquad chains and scheduled family chokes,
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
   pressure/timbre modulation to gain, balance and pitch.
@@ -101,7 +104,7 @@ compatibility remains a separate, evidence-backed capability.
 - MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress, MIDI 2 absolute pitch attributes; separate fixed-zone
   MPE pitch/pressure/CC74, whole-semitone RPN sensitivity and zone pedals. Full MIDI
   2 expression, MPE zone configuration/modes and raw scripting interception remain open.
-- Product work remains substantial: broader modulation rates/scopes, filters/effects, streaming,
+- Product work remains substantial: broader modulation rates/scopes, automated/vendor filter profiles and effects, streaming,
   richer selection/behavior/imports, host integration, persistence and UI. The
   production plugin/UI still uses the old core. There is no new-core DAW build yet.
   Completion explicitly requires full Kontakt KSP parity, complete new-core UI wiring

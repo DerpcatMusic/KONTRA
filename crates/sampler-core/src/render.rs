@@ -70,10 +70,21 @@ impl Runtime {
         v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
-        let pcm = self.plans.get(n.plan.0).unwrap().prepared.pcm[v.sample].frames();
-        v.cursor
-            .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
-        if v.cursor.done() || v.envelope.done() {
+        let plan = self.plans.get_mut(n.plan.0).unwrap();
+        let pcm = plan.prepared.pcm[v.sample].frames();
+        let done = if let Some(index) = v.chain {
+            let chain = &plan.prepared.voice_chains[index];
+            let begin = i * plan.dsp.stride;
+            let states = &mut plan.dsp.cells[begin..begin + chain.stages()];
+            let faults = chain.render(v, pcm, segment, states, gains, self.kernel);
+            self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
+            chain.done(v)
+        } else {
+            v.cursor
+                .render(pcm, segment, &mut v.envelope, v.gain, gains, self.kernel);
+            v.cursor.done() || v.envelope.done()
+        };
+        if done {
             self.end_voice(VoiceId(self.voices.id(i)));
         }
     }
