@@ -465,12 +465,28 @@ impl Streamer {
     /// (runtime clock). Returns the bytes freed. Their next start fails
     /// `NotReady` and marks them for `reload`.
     pub fn purge(&self, assets: &[Pcm], before: u64) -> usize {
+        self.trim(assets, 0, before)
+    }
+
+    /// Purge start ranges, least recently played first, until those of
+    /// `assets` take at most `budget` bytes; only assets not played since
+    /// `before` are purged. Returns the bytes freed.
+    pub fn trim(&self, assets: &[Pcm], budget: usize, before: u64) -> usize {
+        let bytes = |pcm: &Pcm| pcm.head_frames() * size_of::<Frame>();
+        let mut held: usize = assets.iter().map(bytes).sum();
+        let mut idle: Vec<&Pcm> = assets
+            .iter()
+            .filter(|pcm| pcm.head_frames() > 0 && pcm.last_played() < before)
+            .collect();
+        idle.sort_unstable_by_key(|pcm| pcm.last_played());
         let mut freed = 0;
-        for pcm in assets {
-            if pcm.resident_frames().is_none() && pcm.last_played() < before {
-                let old = pcm.set_ranges(Vec::new()).expect("no ranges are valid");
-                freed += old.iter().map(|(_, f)| f.len()).sum::<usize>() * size_of::<Frame>();
+        for pcm in idle {
+            if held <= budget {
+                break;
             }
+            let old = pcm.set_ranges(Vec::new()).expect("no ranges are valid");
+            let n = old.iter().map(|(_, f)| f.len()).sum::<usize>() * size_of::<Frame>();
+            (held, freed) = (held - n, freed + n);
         }
         freed
     }
@@ -616,6 +632,24 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trimming_purges_idle_heads_until_within_budget() {
+        let head = [[0.5f32; 2]; 1000];
+        let assets: Vec<Pcm> = (0..3)
+            .map(|_| Pcm::headed(48000, 8000, &head).unwrap())
+            .collect();
+        let (_, worker) = StreamCache::new(1).unwrap();
+        let (streamer, _) =
+            Streamer::start(HashMap::new(), &assets, vec![vec![]; 3], worker, 1).unwrap();
+        let size = 1000 * size_of::<Frame>();
+        // Nothing has played since 0: nothing is idle before it.
+        assert_eq!(streamer.trim(&assets, 0, 0), 0);
+        assert_eq!(streamer.trim(&assets, size * 3 / 2, 1), 2 * size);
+        let left: usize = assets.iter().map(Pcm::head_frames).sum();
+        assert_eq!(left, 1000);
+        assert_eq!(streamer.purge(&assets, 1), size);
+    }
 
     #[test]
     fn random_access_reads_match_a_full_decode() {
