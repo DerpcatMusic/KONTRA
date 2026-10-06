@@ -1220,11 +1220,21 @@ impl Eval<'_> {
                 self.request(builtin, args)?;
                 V::I(0)
             }
+            SetController => {
+                let (controller, value) = (self.int(args, 0)?, self.int(args, 1)?);
+                if let (Ok(controller), Ok(value)) = (u8::try_from(controller), u8::try_from(value))
+                {
+                    let set = &mut self.st.model.controllers;
+                    set.retain(|&(c, _)| c != controller);
+                    set.push((controller, value));
+                }
+                V::I(0)
+            }
             PlayNote | NoteOff | IgnoreEvent | ChangeVol | ChangeTune | ChangePan | ChangeVelo
             | ChangeNote | FadeIn | FadeOut | SetEventPar | SetEventParArr | AllowGroup
             | DisallowGroup | SetEventMark | DeleteEventMark | GetEventIds | IgnoreController
-            | SetController | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter
-            | WillNeverTerminate | RedirectOutput | Wait | WaitTicks | WaitAsync | StopWait => {
+            | SetNoteController | SetRpn | SetNrpn | ResetRlsTrigCounter | WillNeverTerminate
+            | RedirectOutput | Wait | WaitTicks | WaitAsync | StopWait => {
                 self.warn(span, format!("{} has no effect in on init", builtin.name()));
                 V::I(0)
             }
