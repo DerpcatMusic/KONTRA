@@ -455,8 +455,9 @@ impl Runtime {
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
             dsp: dsp::VoiceDspState::new(&plan, limits.voices)?,
-            groups: groups::GroupState::new(plan.group_count, limits.notes)?,
+            groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
+            projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
             prepared: Box::new(plan),
             notes: 0,
             callbacks: 0,
@@ -759,6 +760,11 @@ impl Runtime {
             ..release::ReleaseTimes::default()
         };
         self.note_events[id.index] = note_event::NoteEvent::new(pitch, velocity);
+        self.plans.get_mut(plan.0).unwrap().projections.admit(
+            id.index,
+            0,
+            NoteProperties { pitch, velocity },
+        );
         self.plans
             .get_mut(plan.0)
             .unwrap()
@@ -990,6 +996,7 @@ impl Runtime {
             if !cause.musical() {
                 self.run_release_behavior(id, false);
             }
+            self.release_note_callbacks(id);
             // Forced closure must return any suppressed physical-release quota.
             self.run_release(id, Trigger::KeyRelease, false);
             self.run_release(id, Trigger::GateRelease, cause.musical());

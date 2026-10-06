@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Route native/KSP note modules with independent event and group projections,
+  reserved callbacks and downstream generated notes/controllers. Waiting callbacks
+  keep their module view and original plan; ordered release routing remains open.
+
 - Preserve source module positions across callback kinds, including init/UI-only
   modules. Controller routing crosses empty positions without spending callback
   capacity and keeps script state ownership independent of routing position.

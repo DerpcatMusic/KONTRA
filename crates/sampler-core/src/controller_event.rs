@@ -150,18 +150,16 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-        if let Some(event) = callback.controller
-            && event.stage != 0
-        {
-            let plan = self.behavior_plan(callback.owner)?;
-            return Ok(self
-                .plans
-                .get(plan.0)
-                .unwrap()
-                .controllers
-                .bank(event.stage, event.performance)[usize::from(number)]);
-        }
+        let stage = self.behavior_stage(id)?;
         let (performance, _) = self.behavior_performance(id)?;
+        if stage != 0 {
+            let plan = self.behavior_plan(callback.owner)?;
+            let generation = self.plans.get(plan.0).unwrap();
+            if stage == generation.prepared.stages.len() {
+                return self.controller(self.performance(performance)?, number);
+            }
+            return Ok(generation.controllers.bank(stage, performance)[usize::from(number)]);
+        }
         Ok(self.performance_state.input_controllers[performance][usize::from(number)])
     }
 
@@ -182,6 +180,23 @@ impl Runtime {
             event.pending = true;
             event.reserved = 0;
             self.admit_controller(self.behavior_plan(callback.owner)?, event)?;
+            Ok(())
+        } else if let Some(stage) = callback.note_stage {
+            let note = callback.owner.note()?;
+            let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+            self.admit_controller(
+                n.plan,
+                ControllerEvent {
+                    performance: self.selections[note.0.index].performance,
+                    origin: n.address,
+                    channels: 1 << n.address.channel,
+                    number,
+                    value,
+                    stage: stage + 1,
+                    pending: true,
+                    reserved: 0,
+                },
+            )?;
             Ok(())
         } else {
             let (performance, scope) = self.behavior_performance(id)?;

@@ -490,7 +490,7 @@ pub enum BehaviorOwner {
     Plan(super::PlanId),
 }
 impl BehaviorOwner {
-    fn note(self) -> Result<NoteId, Error> {
+    pub(super) fn note(self) -> Result<NoteId, Error> {
         match self {
             Self::Note(note) => Ok(note),
             Self::Plan(_) => Err(Error::InvalidInput),
@@ -504,6 +504,7 @@ pub(super) struct Continuation {
     pub pc: usize,
     pub outcome: Option<Outcome>,
     pub controller: Option<super::controller_event::ControllerEvent>,
+    pub note_stage: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -522,6 +523,15 @@ impl Runtime {
     }
 
     fn start_behavior_now(&mut self, note: NoteId, program: usize) -> Result<BehaviorId, Error> {
+        self.start_note_context(note, program, None)
+    }
+
+    pub(super) fn start_note_context(
+        &mut self,
+        note: NoteId,
+        program: usize,
+        note_stage: Option<usize>,
+    ) -> Result<BehaviorId, Error> {
         let n = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
         let plan = &self.plans.get(n.plan.0).unwrap().prepared;
         if program >= plan.programs.len() || plan.programs[program].requires_controller {
@@ -534,6 +544,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Note(note),
             controller: None,
+            note_stage,
             program,
             pc: 0,
             outcome: None,
@@ -607,6 +618,7 @@ impl Runtime {
         let id = BehaviorId(self.behaviors.insert(Continuation {
             owner: BehaviorOwner::Plan(plan),
             controller,
+            note_stage: None,
             program,
             pc: 0,
             outcome: None,
@@ -616,6 +628,16 @@ impl Runtime {
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
         self.resume_behavior(id);
         Ok(id)
+    }
+
+    pub(super) fn behavior_stage(&self, id: BehaviorId) -> Result<usize, Error> {
+        let c = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(c.note_stage
+            .or(c.controller.map(|e| e.stage))
+            .unwrap_or_else(|| match c.owner {
+                BehaviorOwner::Note(note) => self.note_events[note.0.index].entry,
+                BehaviorOwner::Plan(_) => 0,
+            }))
     }
 
     pub(super) fn behavior_plan(&self, owner: BehaviorOwner) -> Result<super::PlanId, Error> {
@@ -640,7 +662,7 @@ impl Runtime {
             let program = self.plans.get(plan.0).unwrap().prepared.stages[0]
                 .release
                 .unwrap();
-            self.start_behavior_now(note, program)
+            self.start_note_context(note, program, Some(0))
                 .expect("owned release continuation reservation");
         }
     }
@@ -839,13 +861,31 @@ impl Runtime {
                 *cell = (*cell * i64::from(u32::MAX)) / 127;
             }
             Instruction::ForwardAttack => {
-                self.forward_attack(owner.note()?)?;
+                let note = owner.note()?;
+                if let Some(stage) = self.behaviors.get(id.0).unwrap().note_stage {
+                    self.forward_note_stage(note, stage)?;
+                } else {
+                    self.forward_attack(note)?;
+                }
             }
             Instruction::ForwardReleaseGroups => {
                 self.forward_release_groups(owner.note()?)?;
             }
             Instruction::SuppressAttack => {
-                self.suppress_attack(owner.note()?)?;
+                let note = owner.note()?;
+                let stage = self.behaviors.get(id.0).unwrap().note_stage;
+                if stage.is_none_or(|stage| {
+                    !self
+                        .plans
+                        .get(self.notes.get(note.0).unwrap().plan.0)
+                        .unwrap()
+                        .projections
+                        .get(note.0.index, stage)
+                        .unwrap()
+                        .forwarded
+                }) {
+                    self.suppress_attack(note)?;
+                }
             }
             Instruction::SuppressRelease => {
                 self.suppress_release(owner.note()?)?;
@@ -857,17 +897,25 @@ impl Runtime {
             } => {
                 let note = owner.note()?;
                 // Match pre-forward source edits without changing a running voice.
-                if !pending_only
-                    || self.notes.get(note.0).ok_or(Error::StaleHandle)?.attack
-                        != super::AttackStatus::Forwarded
-                {
+                let forwarded = if let Some(stage) = self.behaviors.get(id.0).unwrap().note_stage {
+                    self.plans
+                        .get(self.notes.get(note.0).unwrap().plan.0)
+                        .unwrap()
+                        .projections
+                        .get(note.0.index, stage)?
+                        .forwarded
+                } else {
+                    self.notes.get(note.0).ok_or(Error::StaleHandle)?.attack
+                        == super::AttackStatus::Forwarded
+                };
+                if !pending_only || !forwarded {
                     let group = group
                         .map(|local| {
                             u32::try_from(*self.local_cell_mut(id, local)?)
                                 .map_err(|_| Error::InvalidInput)
                         })
                         .transpose()?;
-                    self.set_note_group(note, group, allowed)?;
+                    self.set_note_group_at(note, self.behavior_stage(id)?, group, allowed)?;
                 }
             }
             Instruction::ReadGroupCount { local } => {
@@ -925,7 +973,9 @@ impl Runtime {
                 }
             }
             Instruction::ReadVelocity7 { local } => {
-                let note = self.note_event(owner.note()?)?;
+                let note = self
+                    .note_event_at(owner.note()?, self.behavior_stage(id)?)?
+                    .ok_or(Error::InvalidInput)?;
                 let value = (note.velocity * 127.).round() as i64;
                 *self.local_cell_mut(id, local)? = value;
             }
@@ -937,7 +987,11 @@ impl Runtime {
                 *self.local_cell_mut(id, local)? = i64::from(frames);
             }
             Instruction::ReadKey { local } => {
-                let key = self.note_event(owner.note()?)?.pitch.key();
+                let key = self
+                    .note_event_at(owner.note()?, self.behavior_stage(id)?)?
+                    .ok_or(Error::InvalidInput)?
+                    .pitch
+                    .key();
                 *self.local_cell_mut(id, local)? = i64::from(key);
             }
             Instruction::WriteEventKey {
@@ -966,13 +1020,16 @@ impl Runtime {
                         note
                     }
                 };
-                let mut event = self.note_event(note)?;
+                let stage = self.behavior_stage(id)?;
+                let Some(mut event) = self.note_event_at(note, stage)? else {
+                    return Ok(false);
+                };
                 if key {
                     event.pitch = super::NotePitch::Key(value as u8);
                 } else {
                     event.velocity = value as f64 / 127.;
                 }
-                self.edit_note_event(note, event)?;
+                self.edit_note_event_at(note, stage, event)?;
             }
             Instruction::ReadNoteCell { local, cell } => {
                 let index = self.behavior_note_cell_index(id, cell)?;
@@ -1102,7 +1159,9 @@ impl Runtime {
                 duration,
             } => {
                 let note = owner.note()?;
-                let n = self.notes.get(note.0).unwrap();
+                let n = self
+                    .note_event_at(note, self.behavior_stage(id)?)?
+                    .ok_or(Error::InvalidInput)?;
                 let pitch = n.pitch.transpose(transpose)?;
                 let velocity = match velocity {
                     Velocity::Scale(scale) => n.velocity * scale,
@@ -1154,6 +1213,7 @@ impl Runtime {
         }
         let linked = matches!(duration, Duration::Gate | Duration::FramesOrGate(_));
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let source_stage = callback.note_stage.or(callback.controller.map(|e| e.stage));
         let origin = match callback.owner {
             BehaviorOwner::Note(note) => super::NoteOrigin::Child(note, linked, inheritance),
             BehaviorOwner::Plan(plan) => {
@@ -1169,7 +1229,7 @@ impl Runtime {
         // own later release families and commands. Neither may consume the other.
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
-        let child = self.select(origin, pitch, velocity, offset_micros);
+        let child = self.select(origin, pitch, velocity, offset_micros, source_stage);
         self.reserved_commands -= command;
         let child = child?;
         self.note_events[child.0.index].fixed_duration = frames.is_some();

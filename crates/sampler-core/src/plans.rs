@@ -38,6 +38,7 @@ pub struct PlanTransfer {
     dsp: super::dsp::VoiceDspState,
     groups: super::groups::GroupState,
     controllers: super::controller_event::ControllerState,
+    projections: super::note_event::NoteProjections,
 }
 
 pub(super) struct Generation {
@@ -51,6 +52,7 @@ pub(super) struct Generation {
     pub dsp: super::dsp::VoiceDspState,
     pub groups: super::groups::GroupState,
     pub controllers: super::controller_event::ControllerState,
+    pub projections: super::note_event::NoteProjections,
 }
 
 pub(super) struct PlanQueues {
@@ -102,7 +104,11 @@ impl PlanControl {
                 });
             }
         };
-        let groups = match super::groups::GroupState::new(prepared.group_count, self.notes) {
+        let groups = match super::groups::GroupState::new(
+            prepared.group_count,
+            self.notes,
+            prepared.stages.len(),
+        ) {
             Ok(groups) => groups,
             Err(_) => {
                 return Err(RejectedPlan {
@@ -113,6 +119,16 @@ impl PlanControl {
         };
         let controllers =
             match super::controller_event::ControllerState::new(&prepared, self.performances) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Err(RejectedPlan {
+                        reason: PlanError::Capacity,
+                        prepared,
+                    });
+                }
+            };
+        let projections =
+            match super::note_event::NoteProjections::new(prepared.stages.len(), self.notes) {
                 Ok(state) => state,
                 Err(_) => {
                     return Err(RejectedPlan {
@@ -134,6 +150,7 @@ impl PlanControl {
             dsp,
             groups,
             controllers,
+            projections,
         }) {
             Ok(()) => {
                 self.sequence = request;
@@ -242,6 +259,7 @@ impl Runtime {
                 dsp: generation.dsp,
                 groups: generation.groups,
                 controllers: generation.controllers,
+                projections: generation.projections,
             }) {
                 Ok(()) => count += 1,
                 Err(PushError::Full(plan)) => {
@@ -256,6 +274,7 @@ impl Runtime {
                             dsp: plan.dsp,
                             groups: plan.groups,
                             controllers: plan.controllers,
+                            projections: plan.projections,
                             notes: 0,
                             callbacks: 0,
                         },
@@ -299,6 +318,7 @@ impl Runtime {
                     dsp: plan.dsp,
                     groups: plan.groups,
                     controllers: plan.controllers,
+                    projections: plan.projections,
                     notes: 0,
                     callbacks: 0,
                 })

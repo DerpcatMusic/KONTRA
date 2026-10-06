@@ -11,11 +11,11 @@ pub struct Stage {
 }
 
 impl Prepared {
-    /// Install exact module positions. Downstream note/release routing is still
-    /// under implementation, so those bindings currently fail outside stage zero.
+    /// Install exact module positions. Downstream release routing is still under
+    /// implementation, so release bindings currently fail outside stage zero.
     pub fn with_stages(mut self, stages: Vec<Stage>) -> Result<Self, Error> {
         for (index, stage) in stages.iter().enumerate() {
-            if index != 0 && (stage.note.is_some() || stage.release.is_some()) {
+            if index != 0 && stage.release.is_some() {
                 return Err(Error::InvalidInput);
             }
             if stage
@@ -41,6 +41,94 @@ impl Prepared {
 
     pub fn stages(&self) -> &[Stage] {
         &self.stages
+    }
+}
+
+impl crate::Runtime {
+    pub(super) fn release_note_callbacks(&mut self, note: crate::NoteId) {
+        let count = std::mem::take(&mut self.note_events[note.0.index].pending_callbacks);
+        self.behaviors.unreserve(count);
+    }
+
+    pub(super) fn begin_note_stages(&mut self, note: crate::NoteId, entry: usize) {
+        let plan = self.notes.get(note.0).unwrap().plan;
+        let stages = &self.plans.get(plan.0).unwrap().prepared.stages;
+        let count = stages[entry..]
+            .iter()
+            .filter(|stage| stage.note.is_some())
+            .count();
+        let (next, program) = stages
+            .iter()
+            .enumerate()
+            .skip(entry)
+            .find_map(|(i, s)| s.note.map(|p| (i, p)))
+            .unwrap();
+        self.behaviors.reserve(count);
+        self.note_events[note.0.index].pending_callbacks = count;
+        self.note_events[note.0.index].routed = true;
+        self.project_note(note, entry, next);
+        self.start_note_stage(note, next, program);
+    }
+
+    pub(super) fn project_note(&mut self, note: crate::NoteId, from: usize, through: usize) {
+        let plan = self.notes.get(note.0).unwrap().plan;
+        let generation = self.plans.get_mut(plan.0).unwrap();
+        generation.projections.forward(note.0.index, from, through);
+        generation.groups.forward(note.0.index, from, through);
+    }
+
+    fn start_note_stage(&mut self, note: crate::NoteId, stage: usize, program: usize) {
+        self.note_events[note.0.index].pending_callbacks -= 1;
+        self.behaviors.unreserve(1);
+        self.start_note_context(note, program, Some(stage))
+            .expect("reserved note stage callback");
+    }
+
+    pub(super) fn forward_note_stage(
+        &mut self,
+        note: crate::NoteId,
+        stage: usize,
+    ) -> Result<bool, Error> {
+        let n = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let plan = n.plan;
+        let generation = self.plans.get(plan.0).unwrap();
+        if generation
+            .projections
+            .get(note.0.index, stage)?
+            .properties
+            .is_none()
+        {
+            return Err(Error::InvalidInput);
+        }
+        if generation.projections.get(note.0.index, stage)?.forwarded
+            || n.attack != crate::AttackStatus::Pending
+        {
+            return Ok(false);
+        }
+        if !n.gate() || !n.key_down() {
+            return Err(Error::ClosedNote);
+        }
+        let stages = &generation.prepared.stages;
+        let next = stages
+            .iter()
+            .enumerate()
+            .skip(stage + 1)
+            .find_map(|(i, s)| s.note.map(|p| (i, p)));
+        let end = stages.len();
+        if let Some((next, program)) = next {
+            self.project_note(note, stage, next);
+            self.start_note_stage(note, next, program);
+        } else {
+            self.commit_note_attack(note, stage)?;
+            self.project_note(note, stage, end);
+            self.plans
+                .get_mut(plan.0)
+                .unwrap()
+                .projections
+                .get_mut(note.0.index, end)?
+                .forwarded = true;
+        }
+        Ok(true)
     }
 }
 
@@ -111,22 +199,15 @@ mod tests {
                 Err(Error::InvalidInput)
             ));
         }
-        // Downstream note/release execution must not silently use stage zero's
-        // projection until the routed note service is implemented.
-        for stage in [
-            Stage {
-                note: Some(0),
-                ..Stage::default()
-            },
-            Stage {
-                release: Some(1),
-                ..Stage::default()
-            },
-        ] {
-            assert!(matches!(
-                prepared().with_stages(vec![Stage::default(), stage]),
-                Err(Error::InvalidInput)
-            ));
-        }
+        assert!(matches!(
+            prepared().with_stages(vec![
+                Stage::default(),
+                Stage {
+                    release: Some(1),
+                    ..Stage::default()
+                }
+            ]),
+            Err(Error::InvalidInput)
+        ));
     }
 }
