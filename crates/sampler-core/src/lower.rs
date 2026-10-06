@@ -692,6 +692,7 @@ impl Lowering<'_> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
+            ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             ir::Processor::Delay { .. } => return Err(unsupported(owner, Feature::Delay)),
         })
