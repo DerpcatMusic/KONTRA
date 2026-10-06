@@ -112,10 +112,24 @@ impl Fade {
     }
 }
 
+/// A group amplitude envelope stage a script sets (KSP `set_engine_par`
+/// `$ENGINE_PAR_ATTACK`, ...). Applies to voices that start afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvelopeStage {
+    Attack,
+    Hold,
+    Decay,
+    /// Level as a 0..=1000 gain factor.
+    Sustain,
+    Release,
+}
+
 /// Per-plan-generation group and instrument layers.
 pub(crate) struct EngineLayers {
     pub instrument: Layer,
     pub groups: Box<[Layer]>,
+    /// Per group, script envelope stages indexed like `EnvelopeStage`.
+    envelopes: Box<[[Option<u32>; 5]]>,
 }
 
 impl EngineLayers {
@@ -123,7 +137,27 @@ impl EngineLayers {
         Self {
             instrument: Layer::default(),
             groups: vec![Layer::default(); groups as usize].into_boxed_slice(),
+            envelopes: vec![[None; 5]; groups as usize].into_boxed_slice(),
         }
+    }
+
+    /// `envelope` with the group's script stages applied.
+    pub fn envelope(&self, group: Option<u32>, mut envelope: crate::Envelope) -> crate::Envelope {
+        let stages = [
+            EnvelopeStage::Attack,
+            EnvelopeStage::Hold,
+            EnvelopeStage::Decay,
+            EnvelopeStage::Sustain,
+            EnvelopeStage::Release,
+        ];
+        if let Some(set) = group.and_then(|g| self.envelopes.get(g as usize)) {
+            for (stage, value) in stages.into_iter().zip(set) {
+                if let Some(value) = *value {
+                    envelope = envelope.with_stage(stage, value);
+                }
+            }
+        }
+        envelope
     }
 
     pub fn layer(&self, group: Option<u32>) -> Layer {
@@ -194,6 +228,25 @@ impl Runtime {
         Ok(self
             .param_layer(plan, scope, index)?
             .map_or(0, |layer| layer.read(target)))
+    }
+
+    /// Set a group's envelope stage; out-of-range groups are no-ops.
+    pub(crate) fn write_envelope(
+        &mut self,
+        plan: crate::PlanId,
+        group: i64,
+        stage: EnvelopeStage,
+        value: i64,
+    ) -> Result<(), Error> {
+        let value = u32::try_from(value).map_err(|_| Error::InvalidInput)?;
+        let layers = &mut self.plans.get_mut(plan.0).unwrap().script;
+        if let Some(set) = usize::try_from(group)
+            .ok()
+            .and_then(|g| layers.envelopes.get_mut(g))
+        {
+            set[stage as usize] = Some(value);
+        }
+        Ok(())
     }
 
     /// Fade a source event in from silence or out from its current level.

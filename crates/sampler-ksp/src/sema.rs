@@ -375,13 +375,33 @@ impl<'a> Sema<'a, '_> {
         Ok(id)
     }
 
+    fn add_cells(&self, n: usize, span: Span) -> Result<usize> {
+        let total = self.array_cells.saturating_add(n);
+        if total > self.budget.array_cells {
+            return fault(
+                span,
+                format!(
+                    "array cell budget exceeded: {total} cells declared so far, limit {}",
+                    self.budget.array_cells
+                ),
+            );
+        }
+        Ok(total)
+    }
+
     fn push_var(&mut self, span: Span, var: Var) -> Result<VarId> {
         let folded = var.name.to_ascii_lowercase();
         if self.folded.contains_key(&folded) {
             return fault(span, "duplicate variable declaration");
         }
         if self.hir.vars.len() >= self.budget.variables {
-            return fault(span, "variable budget exceeded");
+            return fault(
+                span,
+                format!(
+                    "variable budget exceeded: more than {} declarations",
+                    self.budget.variables
+                ),
+            );
         }
         let id = VarId(self.hir.vars.len() as u32);
         self.hir.vars.push(var);
@@ -421,15 +441,7 @@ impl<'a> Sema<'a, '_> {
         let home = match len {
             _ if c.kind.has_control() => Home::Control(self.hir.uis.len() as u32),
             Some(len) => {
-                self.array_cells = self
-                    .array_cells
-                    .checked_add(len as usize)
-                    .filter(|n| *n <= self.budget.array_cells)
-                    .ok_or(crate::diag::Fault {
-                        span,
-                        builtin: None,
-                        message: "array cell budget exceeded".into(),
-                    })?;
+                self.array_cells = self.add_cells(len as usize, span)?;
                 Home::Cells {
                     offset: self.cells(len, false, span)?,
                     len,
@@ -540,15 +552,7 @@ impl<'a> Sema<'a, '_> {
                 if !(1..=MAX_ARRAY as i32).contains(&n) {
                     return fault(size.span, "array size must be between 1 and 1000000");
                 }
-                self.array_cells = self
-                    .array_cells
-                    .checked_add(n as usize)
-                    .filter(|n| *n <= self.budget.array_cells)
-                    .ok_or(crate::diag::Fault {
-                        span: size.span,
-                        builtin: None,
-                        message: "array cell budget exceeded".into(),
-                    })?;
+                self.array_cells = self.add_cells(n as usize, size.span)?;
                 Some(n as u32)
             }
             Some(size) => return fault(size.span, "only array variables take a size"),

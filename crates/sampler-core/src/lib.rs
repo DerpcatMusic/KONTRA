@@ -68,7 +68,7 @@ mod gate;
 mod modulation;
 mod script_params;
 mod voice_mod;
-pub use script_params::ParamScope;
+pub use script_params::{EnvelopeStage, ParamScope};
 pub use voice_mod::{Lfo, LfoRate, LfoShape, ModProgram, ModRoute, ModSource, ModTarget};
 mod ownership;
 use modulation::RenderedExpression;
