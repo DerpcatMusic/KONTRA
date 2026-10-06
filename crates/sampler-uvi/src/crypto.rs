@@ -10,6 +10,15 @@ pub const PROGRAM_LIMIT: usize = 16 << 20;
 pub(crate) const PROGRAM_XML_LIMIT: usize = 32 << 20;
 pub(crate) const PROGRAM_NODE_LIMIT: u32 = 250_000;
 
+#[derive(Debug)]
+pub(crate) struct NeedsProgramNamespace;
+impl std::fmt::Display for NeedsProgramNamespace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PasswordV2 requires a local reader program namespace")
+    }
+}
+impl std::error::Error for NeedsProgramNamespace {}
+
 fn mix(value: u64) -> u64 {
     let value = value.wrapping_mul(MIX);
     (value ^ (value >> 47)).wrapping_mul(MIX)
@@ -315,10 +324,9 @@ pub fn decode_program(text: &str, namespace: &[u8]) -> Result<String> {
     let Some(encoded_password) = program.attribute("PasswordV2") else {
         return Ok(text.to_owned());
     };
-    ensure!(
-        !namespace.is_empty(),
-        "PasswordV2 requires a local reader program namespace"
-    );
+    if namespace.is_empty() {
+        return Err(NeedsProgramNamespace.into());
+    }
     let mut password = decode_base64(encoded_password, 4096)?;
     transform(&mut password, key_from_string(namespace), 0);
     let end = password

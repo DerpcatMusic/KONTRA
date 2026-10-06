@@ -39,7 +39,7 @@ fn runtime() -> Runtime {
     )
     .unwrap()
 }
-fn apply(ingress: &Ingress, rt: &mut Runtime, words: &[u32]) -> Result<Applied, ApplyError> {
+fn apply(ingress: &mut Ingress, rt: &mut Runtime, words: &[u32]) -> Result<Applied, ApplyError> {
     ingress.apply(rt, Packets::new(words).next().unwrap().unwrap())
 }
 
@@ -48,21 +48,22 @@ fn native_ump_notes_pedals_and_terminal_identity_do_no_heap_work() {
     let mut rt = runtime();
     let mut groups = [None; 16];
     groups[3] = Some(Version::Midi2);
-    let ingress = Ingress::new(7, groups);
+    let mut ingress = Ingress::new(7, groups);
     support::without_heap(|| {
-        let Applied::Started(note) = apply(&ingress, &mut rt, &[0x439a_3c00, 0x8001_ffff]).unwrap()
+        let Applied::Started(note) =
+            apply(&mut ingress, &mut rt, &[0x439a_3c00, 0x8001_ffff]).unwrap()
         else {
             panic!()
         };
         assert_eq!(rt.note(note).unwrap().1, 32769.0 / 65535.0);
-        apply(&ingress, &mut rt, &[0x43ba_4000, 0x8000_0000]).unwrap();
-        let off = apply(&ingress, &mut rt, &[0x438a_3cfe, 0x1234_5678]).unwrap();
+        apply(&mut ingress, &mut rt, &[0x43ba_4000, 0x8000_0000]).unwrap();
+        let off = apply(&mut ingress, &mut rt, &[0x438a_3cfe, 0x1234_5678]).unwrap();
         assert!(matches!(off, Applied::Released { note: n, .. } if n == note));
         let mut audio = [[0.; 2]; 2];
         rt.render(&mut audio).unwrap();
         assert!(audio[0][0] > 0.5);
         rt.flush_ended(|_| panic!("sustain retains the note"));
-        apply(&ingress, &mut rt, &[0x43ba_4000, 0x7fff_ffff]).unwrap();
+        apply(&mut ingress, &mut rt, &[0x43ba_4000, 0x7fff_ffff]).unwrap();
         rt.render(&mut audio).unwrap();
         assert_eq!(audio, [[0.; 2]; 2]);
         let mut ends = 0;
@@ -76,7 +77,8 @@ fn native_ump_notes_pedals_and_terminal_identity_do_no_heap_work() {
             true
         });
         assert_eq!(ends, 1);
-        let Applied::Started(zero) = apply(&ingress, &mut rt, &[0x439a_3c00, 0]).unwrap() else {
+        let Applied::Started(zero) = apply(&mut ingress, &mut rt, &[0x439a_3c00, 0]).unwrap()
+        else {
             panic!()
         };
         assert_eq!(rt.note(zero).unwrap(), (60, 0.0, true));
@@ -90,40 +92,40 @@ fn protocol_scope_and_unsupported_messages_cannot_create_partial_notes() {
     let mut rt = runtime();
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     assert_eq!(
-        apply(&ingress, &mut rt, &[0x4190_3c00, u32::MAX]),
+        apply(&mut ingress, &mut rt, &[0x4190_3c00, u32::MAX]),
         Err(ApplyError::DisabledGroup)
     );
     assert_eq!(
-        apply(&ingress, &mut rt, &[0x4090_3c00, u32::MAX]),
+        apply(&mut ingress, &mut rt, &[0x4090_3c00, u32::MAX]),
         Err(ApplyError::ProtocolMismatch)
     );
     assert_eq!(rt.note_count(), 0);
-    let Applied::Started(n) = apply(&ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
+    let Applied::Started(n) = apply(&mut ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
         panic!()
     };
     assert!(
-        matches!(apply(&ingress, &mut rt, &[0x2090_3c00]).unwrap(), Applied::Released { note, velocity: None, .. } if note == n)
+        matches!(apply(&mut ingress, &mut rt, &[0x2090_3c00]).unwrap(), Applied::Released { note, velocity: None, .. } if note == n)
     );
     rt.flush_ended(|_| true);
-    let ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
     // Unknown attribute types are ignored, never a reason to drop the note.
     for kind in [1, 2, 0x7f] {
         let Applied::Started(note) =
-            apply(&ingress, &mut rt, &[0x4090_3c00 | kind, 0xffff_7800]).unwrap()
+            apply(&mut ingress, &mut rt, &[0x4090_3c00 | kind, 0xffff_7800]).unwrap()
         else {
             panic!("note-on with attribute type {kind} was dropped")
         };
         assert_eq!(rt.note(note).unwrap().0, 60);
         assert!(matches!(
-            apply(&ingress, &mut rt, &[0x4080_3c00, 0]).unwrap(),
+            apply(&mut ingress, &mut rt, &[0x4080_3c00, 0]).unwrap(),
             Applied::Released { note: released, .. } if released == note
         ));
         rt.flush_ended(|_| true);
     }
     assert_eq!(
-        apply(&ingress, &mut rt, &[0x4060_3c00, 0x8000_0000]),
+        apply(&mut ingress, &mut rt, &[0x4060_3c00, 0x8000_0000]),
         Ok(Applied::Unsupported)
     );
     assert_eq!(rt.note_count(), 0);
@@ -183,7 +185,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
         )
         .unwrap()
     };
-    let ingress = Ingress::new(7, [Some(Version::Midi2); 16]);
+    let mut ingress = Ingress::new(7, [Some(Version::Midi2); 16]);
     for partition in [1, 7, 64, 256] {
         let mut rt = make_runtime(60, 12.0);
         let mut previous = [[0.0; 2]; 256];
@@ -191,7 +193,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
             for fraction in [128u32, 129] {
                 let pitch = 60.0 + f64::from(fraction) / 512.0;
                 let Applied::Started(note) = apply(
-                    &ingress,
+                    &mut ingress,
                     &mut rt,
                     &[0x439a_0003, 0xffff_0000 | (60 << 9) | fraction],
                 )
@@ -215,7 +217,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
                 }
                 previous = audio;
                 assert!(
-                    matches!(apply(&ingress, &mut rt, &[0x438a_00fe, 0x1234_5678]).unwrap(), Applied::Released { note: n, .. } if n == note)
+                    matches!(apply(&mut ingress, &mut rt, &[0x438a_00fe, 0x1234_5678]).unwrap(), Applied::Released { note: n, .. } if n == note)
                 );
                 rt.flush_ended(|input| {
                     assert_eq!(
@@ -228,7 +230,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
             }
             // A one-note attribute must not replace the plan's tuning for later notes.
             let Applied::Started(note) =
-                apply(&ingress, &mut rt, &[0x439a_3c00, 0xffff_0000]).unwrap()
+                apply(&mut ingress, &mut rt, &[0x439a_3c00, 0xffff_0000]).unwrap()
             else {
                 panic!()
             };
@@ -247,7 +249,7 @@ fn midi2_pitch_attribute_overrides_tuning_without_changing_physical_pairing() {
     support::without_heap(|| {
         // Default tuning is valid, but absolute pitch bypasses it and exceeds step 16.
         assert_eq!(
-            apply(&ingress, &mut rt, &[0x439a_0003, 0xffff_7800]),
+            apply(&mut ingress, &mut rt, &[0x439a_0003, 0xffff_7800]),
             Err(ApplyError::Core(Error::InvalidInput))
         );
         assert_eq!(
@@ -283,7 +285,7 @@ fn block_timing_order_and_rejections_are_partition_invariant_without_heap() {
     });
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi2);
-    let ingress = Ingress::new(0, groups);
+    let mut ingress = Ingress::new(0, groups);
     for block in 1..=32 {
         let mut rt = runtime();
         let mut output = [[0.; 2]; 32];
@@ -373,7 +375,7 @@ fn full_note_pool_does_not_skip_later_release_in_the_block() {
     }; 6];
     events[5].packet = Packets::new(&off).next().unwrap().unwrap();
     let mut rt = runtime();
-    let ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi2); 16]);
     let mut audio = [[0.; 2]; 4];
     support::without_heap(|| {
         ingress
@@ -423,7 +425,7 @@ fn all_notes_off_respects_pedals_and_channel_scope_at_exact_offsets() {
             });
             let mut groups = [None; 16];
             groups[3] = Some(version);
-            let ingress = Ingress::new(4, groups);
+            let mut ingress = Ingress::new(4, groups);
             for block in 1..=16 {
                 let mut rt = runtime();
                 let mut output = [[0.; 2]; 16];
@@ -497,7 +499,7 @@ fn all_notes_off_needs_no_spare_capacity_and_preserves_other_input_domains() {
     let mut rt = runtime();
     let mut groups = [None; 16];
     groups[3] = Some(Version::Midi2);
-    let ingress = Ingress::new(4, groups);
+    let mut ingress = Ingress::new(4, groups);
     let input = Input {
         protocol: Protocol::Midi2,
         port: 4,
@@ -534,7 +536,7 @@ fn all_notes_off_needs_no_spare_capacity_and_preserves_other_input_domains() {
             .unwrap();
         assert_eq!(rt.pending_commands(), 2);
         assert_eq!(
-            apply(&ingress, &mut rt, &[0x43b2_7b00, 1]),
+            apply(&mut ingress, &mut rt, &[0x43b2_7b00, 1]),
             Ok(Applied::Unsupported)
         );
         assert_eq!(
@@ -546,11 +548,11 @@ fn all_notes_off_needs_no_spare_capacity_and_preserves_other_input_domains() {
         );
         assert_eq!(rt.key_down(notes[0]), Ok(true));
         assert_eq!(
-            apply(&ingress, &mut rt, &[0x43b2_7b00, 0]),
+            apply(&mut ingress, &mut rt, &[0x43b2_7b00, 0]),
             Ok(Applied::AllNotesOff { released: 1 })
         );
         assert_eq!(
-            apply(&ingress, &mut rt, &[0x43b2_7b00, 0]),
+            apply(&mut ingress, &mut rt, &[0x43b2_7b00, 0]),
             Ok(Applied::AllNotesOff { released: 0 })
         );
         assert_eq!(rt.key_down(notes[0]), Ok(false));
@@ -598,18 +600,21 @@ fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() 
         };
         let mut groups = [None; 16];
         groups[0] = Some(version);
-        let ingress = Ingress::new(0, groups);
+        let mut ingress = Ingress::new(0, groups);
         let mut rt = runtime();
         support::without_heap(|| {
-            let Applied::Started(old) = apply(&ingress, &mut rt, &on).unwrap() else {
+            let Applied::Started(old) = apply(&mut ingress, &mut rt, &on).unwrap() else {
                 panic!()
             };
-            apply(&ingress, &mut rt, &pedal_on).unwrap();
+            apply(&mut ingress, &mut rt, &pedal_on).unwrap();
             rt.render(&mut [[0.; 2]; 2]).unwrap();
-            assert_eq!(apply(&ingress, &mut rt, &invalid), Ok(Applied::Unsupported));
+            assert_eq!(
+                apply(&mut ingress, &mut rt, &invalid),
+                Ok(Applied::Unsupported)
+            );
             assert_eq!(rt.voice_count(), 1);
             assert_eq!(
-                apply(&ingress, &mut rt, &silence),
+                apply(&mut ingress, &mut rt, &silence),
                 Ok(Applied::AllSoundOff { stopped: 1 })
             );
             rt.flush_ended(|_| panic!("physical input must survive hard silence"));
@@ -617,11 +622,11 @@ fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() 
             assert_eq!(rt.voice_count(), 0);
             // A key-up can still be scheduled for a silent, physically held input.
             rt.schedule_event(20, Event::KeyUp(old, None)).unwrap();
-            let Applied::Started(new) = apply(&ingress, &mut rt, &on).unwrap() else {
+            let Applied::Started(new) = apply(&mut ingress, &mut rt, &on).unwrap() else {
                 panic!()
             };
             assert!(
-                matches!(apply(&ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == old)
+                matches!(apply(&mut ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == old)
             );
             assert_eq!(rt.key_down(new), Ok(true));
             assert_eq!(
@@ -639,13 +644,13 @@ fn all_sound_off_keeps_fifo_pairing_and_late_key_cleanup_without_resurrection() 
             rt.render(&mut audio).unwrap();
             assert_eq!(audio, [[1.; 2]; 24]);
             assert!(
-                matches!(apply(&ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == new)
+                matches!(apply(&mut ingress, &mut rt, &off), Ok(Applied::Released { note, .. }) if note == new)
             );
             assert!(
                 rt.note(new).unwrap().2,
                 "pedal state remains active for new notes"
             );
-            apply(&ingress, &mut rt, &pedal_off).unwrap();
+            apply(&mut ingress, &mut rt, &pedal_off).unwrap();
             rt.flush_ended(|_| {
                 ends += 1;
                 true
@@ -660,7 +665,7 @@ fn release_velocity_precision_and_missing_values_reach_retained_core_context() {
     let mut groups = [None; 16];
     groups[0] = Some(Version::Midi1);
     groups[1] = Some(Version::Midi2);
-    let ingress = Ingress::new(9, groups);
+    let mut ingress = Ingress::new(9, groups);
     for (on, words, off, velocity) in [
         ([0x2090_3c7f, 0], 1, [0x2080_3c01, 0], Some(1. / 127.)),
         ([0x2090_3c7f, 0], 1, [0x2080_3c00, 0], Some(0.)),
@@ -687,12 +692,12 @@ fn release_velocity_precision_and_missing_values_reach_retained_core_context() {
     ] {
         let mut rt = runtime();
         support::without_heap(|| {
-            let Applied::Started(note) = apply(&ingress, &mut rt, &on[..words]).unwrap() else {
+            let Applied::Started(note) = apply(&mut ingress, &mut rt, &on[..words]).unwrap() else {
                 panic!()
             };
             rt.render(&mut [[0.; 2]; 3]).unwrap();
             let Applied::Released { note: released, .. } =
-                apply(&ingress, &mut rt, &off[..words]).unwrap()
+                apply(&mut ingress, &mut rt, &off[..words]).unwrap()
             else {
                 panic!()
             };
@@ -724,7 +729,7 @@ fn release_velocity_precision_and_missing_values_reach_retained_core_context() {
 #[test]
 fn explicit_performance_routing_keeps_note_pairing_separate_from_channel_identity() {
     let mut rt = runtime();
-    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
     support::without_heap(|| {
         let domain = rt.performance(1).unwrap();
         rt.set_articulation(domain, 123456).unwrap();
@@ -774,9 +779,9 @@ fn midi1_controllers_upscale_to_exact_center_and_full_scale() {
         [0, 0x0200_0000, 0x8000_0000, 0xfdf7_df7d, u32::MAX]
     );
     let mut rt = runtime();
-    let ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
     for (value, expected) in [(64, 0x8000_0000), (127, u32::MAX)] {
-        apply(&ingress, &mut rt, &[0x20b0_0100 | value]).unwrap();
+        apply(&mut ingress, &mut rt, &[0x20b0_0100 | value]).unwrap();
         assert_eq!(
             rt.controller(rt.performance(0).unwrap(), 1).unwrap(),
             expected
@@ -788,7 +793,7 @@ fn midi1_controllers_upscale_to_exact_center_and_full_scale() {
 fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_domain() {
     for version in [Version::Midi1, Version::Midi2] {
         let mut rt = runtime();
-        let ingress = Ingress::new(0, [Some(version); 16]);
+        let mut ingress = Ingress::new(0, [Some(version); 16]);
         support::without_heap(|| {
             let domain = rt.performance(1).unwrap();
             let values = if version == Version::Midi1 {
@@ -834,7 +839,7 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
             };
             rt.set_controller(domain, 1, 0).unwrap();
             assert_eq!(rt.note_controller(note, 1).unwrap(), u32::MAX);
-            // A channel-mode message is not an ordinary selection controller.
+            // Reset All Controllers resets the routed domain only.
             let reset = if version == Version::Midi1 {
                 [0x20b0_7900, 0]
             } else {
@@ -846,10 +851,42 @@ fn controller_ingress_preserves_full_resolution_and_only_updates_the_routed_doma
                     domain,
                     Packets::new(&reset[..len]).next().unwrap().unwrap()
                 ),
-                Ok(Applied::Unsupported)
+                Ok(Applied::ResetControllers)
             );
+            assert_eq!(rt.controller(domain, 11).unwrap(), u32::MAX);
+            assert_eq!(rt.controller(rt.performance(0).unwrap(), 11).unwrap(), u32::MAX);
             rt.panic();
             rt.flush_ended(|_| true);
         });
     }
+}
+
+/// CC121 per RP-015: pedals up (releasing sustained notes), modulation 0,
+/// expression full; volume and pan keep their values.
+#[test]
+fn reset_all_controllers_follows_rp015() {
+    let mut rt = runtime();
+    let mut ingress = Ingress::new(0, [Some(Version::Midi1); 16]);
+    let p = rt.performance(0).unwrap();
+    for (cc, value) in [(64, 127), (66, 127), (1, 100), (11, 20), (7, 90), (10, 30)] {
+        apply(&mut ingress, &mut rt, &[0x20b0_0000 | cc << 8 | value]).unwrap();
+    }
+    let Applied::Started(note) = apply(&mut ingress, &mut rt, &[0x2090_3c7f]).unwrap() else {
+        panic!()
+    };
+    apply(&mut ingress, &mut rt, &[0x2080_3c00]).unwrap();
+    assert!(rt.release_context(note).unwrap().gate.is_none(), "sustained");
+    let (volume, pan) = (rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap());
+    assert_eq!(
+        apply(&mut ingress, &mut rt, &[0x20b0_7900]),
+        Ok(Applied::ResetControllers)
+    );
+    assert!(rt.release_context(note).unwrap().gate.is_some(), "pedal released");
+    for cc in [1, 64, 65, 66, 67] {
+        assert_eq!(rt.controller(p, cc).unwrap(), 0, "CC{cc}");
+    }
+    assert_eq!(rt.controller(p, 11).unwrap(), u32::MAX);
+    assert_eq!((rt.controller(p, 7).unwrap(), rt.controller(p, 10).unwrap()), (volume, pan));
+    // A non-zero value is not a channel mode message.
+    assert_eq!(apply(&mut ingress, &mut rt, &[0x20b0_7901]), Ok(Applied::Unsupported));
 }

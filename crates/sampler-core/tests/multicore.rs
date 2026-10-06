@@ -65,6 +65,7 @@ fn runtime(threads: usize, modulated: bool) -> Runtime {
                     delay: 0,
                     fade: 0,
                     retrigger: true,
+                    shared: false,
                 }),
             ],
             routes: vec![
@@ -74,6 +75,7 @@ fn runtime(threads: usize, modulated: bool) -> Runtime {
                 ModRoute::new(1, ModTarget::Pan, 0.5),
             ],
             shapes: vec![],
+            breakpoints: vec![],
         };
         plan.with_voice_modulation(vec![program], vec![Some(0); LAYERS], vec![0; LAYERS]).unwrap()
     } else {

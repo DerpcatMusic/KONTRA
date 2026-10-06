@@ -189,7 +189,7 @@ pub trait ReadBytesExt: Read + Seek {
 
         String::from_utf8(bytes)
             .map_err(|e| ReadBytesError::Generic(format!("Error converting bytes to UTF8: {e}")))
-            .map(|s| Some(s))
+            .map(Some)
     }
 
     fn read_sized_utf8(&mut self) -> Result<String, ReadBytesError> {
@@ -212,7 +212,7 @@ pub trait ReadBytesExt: Read + Seek {
         let buf = self.read_bytes(size_field as usize * 2)?;
 
         let bytes: Vec<u16> = buf
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 

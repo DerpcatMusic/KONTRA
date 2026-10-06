@@ -349,6 +349,7 @@ fn expression_inheritance_is_explicit_and_channel_reuse_is_isolated() {
     let root = rt.note_on(input(None), 60, 1.0).unwrap();
     let e = rt.expression_id(root).unwrap();
     let first = Expression {
+        bend: 0.0,
         gain: 0.5,
         pan: -0.5,
         pressure: 0x8000_0001,

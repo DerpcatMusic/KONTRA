@@ -200,6 +200,13 @@ pub enum Op {
         local: u16,
         write: bool,
     },
+    /// [`Op::Store`] on the plan's store shared by every script instance
+    /// (KSP `pgs_set_key_val`); see `Prepared::with_shared_store`.
+    SharedStore {
+        key: u16,
+        local: u16,
+        write: bool,
+    },
     /// Integer control selected by a dense index into the instance's control
     /// table. Missing entries are no-ops; writes clamp to the control's domain.
     ControlAt {
@@ -254,7 +261,7 @@ impl Op {
             Self::CompareText {
                 lhs, rhs, local, ..
             } => reg(lhs).max(reg(rhs)).max(usize::from(*local) + 1),
-            Self::Store { key, local, .. } => {
+            Self::Store { key, local, .. } | Self::SharedStore { key, local, .. } => {
                 (usize::from(*key) + STORE_KEY).max(usize::from(*local) + 1)
             }
             Self::ControlAt { index, local, .. } => usize::from(*index.max(local)) + 1,
@@ -373,7 +380,10 @@ impl Clone for Store {
     }
 }
 impl Store {
-    fn new(mut entries: Vec<([i32; STORE_KEY], i64)>, capacity: usize) -> Result<Self, Error> {
+    pub(crate) fn new(
+        mut entries: Vec<([i32; STORE_KEY], i64)>,
+        capacity: usize,
+    ) -> Result<Self, Error> {
         entries.sort_by_key(|e| e.0);
         entries.dedup_by_key(|e| e.0);
         let capacity = capacity.max(entries.len());
@@ -729,6 +739,24 @@ impl Runtime {
                     let value = self.reg(id, local)?;
                     self.behavior_bank(id)?.store.set(k, value);
                 } else if let Some(value) = self.behavior_bank(id)?.store.get(k) {
+                    self.set_reg(id, local, value)?;
+                }
+            }
+            Op::SharedStore { key, local, write } => {
+                let mut k = [0; STORE_KEY];
+                for (i, slot) in k.iter_mut().enumerate() {
+                    *slot = i32_of(self.reg(id, key + i as u16)?)?;
+                }
+                let plan = self.behavior_plan(owner)?;
+                if write {
+                    let value = self.reg(id, local)?;
+                    self.plans
+                        .get_mut(plan.0)
+                        .unwrap()
+                        .script
+                        .shared
+                        .set(k, value);
+                } else if let Some(value) = self.plans.get(plan.0).unwrap().script.shared.get(k) {
                     self.set_reg(id, local, value)?;
                 }
             }

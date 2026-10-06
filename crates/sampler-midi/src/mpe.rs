@@ -33,6 +33,8 @@ struct Binding {
 #[derive(Clone, Copy)]
 struct Controls {
     pitch: f64,
+    /// Raw bend position, -1..=1.
+    bend: f64,
     pressure: u32,
     timbre: Value,
 }
@@ -41,6 +43,7 @@ impl Default for Controls {
     fn default() -> Self {
         Self {
             pitch: 0.0,
+            bend: 0.0,
             pressure: 0,
             timbre: Value::Bits7(64),
         }
@@ -60,6 +63,7 @@ impl Controls {
         };
         Expression {
             pitch_semitones: self.pitch + manager.pitch,
+            bend: (self.bend + manager.bend).clamp(-1.0, 1.0),
             pressure: self.pressure.max(manager.pressure),
             timbre,
             ..Expression::default()
@@ -67,7 +71,7 @@ impl Controls {
     }
     fn with(mut self, control: Control) -> Self {
         match control {
-            Control::Pitch(value) => self.pitch = value,
+            Control::Pitch(value, bend) => (self.pitch, self.bend) = (value, bend),
             Control::Pressure(value) => self.pressure = value,
             Control::Timbre(value) => self.timbre = value,
         }
@@ -76,7 +80,8 @@ impl Controls {
 }
 #[derive(Clone, Copy)]
 enum Control {
-    Pitch(f64),
+    /// Semitones and the raw bend position.
+    Pitch(f64, f64),
     Pressure(u32),
     Timbre(Value),
 }
@@ -116,6 +121,7 @@ pub struct Mpe {
     controls: [Controls; 16],
     bends: [Value; 16],
     ranges: [u8; 2],
+    bend_override: Option<u8>,
     parameters: [Parameter; 16],
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
@@ -174,11 +180,19 @@ impl Mpe {
             controls: [Controls::default(); 16],
             bends: [Value::Bits14(8192); 16],
             ranges: [2, 48],
+            bend_override: None,
             parameters: [Parameter::default(); 16],
             bindings,
             changes,
             transpose: 0.0,
         })
+    }
+
+    /// Fix the bend range of every channel in whole semitones, whatever RPN 0
+    /// says; `None` returns to RPN 0. Held bends keep their pitch until the
+    /// next bend message.
+    pub fn set_bend_range(&mut self, semitones: Option<u8>) {
+        self.bend_override = semitones.filter(|&r| r <= 96);
     }
 
     /// Whole-semitone manager and shared member bend sensitivities.
@@ -247,18 +261,23 @@ impl Mpe {
                 attribute,
             },
             Message::PitchBend(value @ (Value::Bits14(_) | Value::Bits32(_))) => {
-                let range = self.ranges[usize::from(voice.channel != self.zone.manager())];
+                let range = self
+                    .bend_override
+                    .unwrap_or(self.ranges[usize::from(voice.channel != self.zone.manager())]);
                 let applied = self.control(
                     runtime,
                     voice.channel,
-                    Control::Pitch(pitch(value, f64::from(range))),
+                    Control::Pitch(pitch(value, f64::from(range)), pitch(value, 1.0)),
                 )?;
                 self.bends[usize::from(voice.channel)] = value;
                 applied
             }
-            Message::ChannelPressure(value @ (Value::Bits7(_) | Value::Bits32(_))) => {
-                self.control(runtime, voice.channel, Control::Pressure(value.full_scale()))?
-            }
+            Message::ChannelPressure(value @ (Value::Bits7(_) | Value::Bits32(_))) => self
+                .control(
+                    runtime,
+                    voice.channel,
+                    Control::Pressure(value.full_scale()),
+                )?,
             // MIDI 2.0 Registered Controller 0:0, pitch bend sensitivity
             // (semitones in the top 7 bits).
             Message::ChannelControl {
@@ -337,7 +356,11 @@ impl Mpe {
 
     /// Offset every note of the zone, held or not, by `semitones` on top of its
     /// bends (a part's tuning). Commits only if every owner accepts it.
-    pub fn transpose(&mut self, runtime: &mut Runtime, semitones: f64) -> Result<Applied, ApplyError> {
+    pub fn transpose(
+        &mut self,
+        runtime: &mut Runtime,
+        semitones: f64,
+    ) -> Result<Applied, ApplyError> {
         if runtime.id() != self.runtime {
             return Err(Error::StaleHandle.into());
         }
@@ -349,7 +372,7 @@ impl Mpe {
             .retain(|binding| runtime.note(binding.note).is_ok());
         let previous = std::mem::replace(&mut self.transpose, semitones);
         let manager = Some(self.zone.manager());
-        self.project(runtime, self.controls, manager, Control::Pitch(0.0))
+        self.project(runtime, self.controls, manager, Control::Pitch(0.0, 0.0))
             .inspect_err(|_| self.transpose = previous)
             .map_err(Into::into)
     }
@@ -437,7 +460,10 @@ impl Mpe {
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {
-                    Control::Pitch(_) => expression.pitch_semitones = combined.pitch_semitones,
+                    Control::Pitch(..) => {
+                        expression.pitch_semitones = combined.pitch_semitones;
+                        expression.bend = combined.bend;
+                    }
                     Control::Pressure(_) => expression.pressure = combined.pressure,
                     Control::Timbre(_) => expression.timbre = combined.timbre,
                 }
@@ -495,6 +521,10 @@ impl Mpe {
             return Err(Error::InvalidInput);
         }
         let manager = channel == self.zone.manager();
+        if self.bend_override.is_some() {
+            self.ranges[usize::from(!manager)] = value;
+            return Ok(Applied::Configuration);
+        }
         let mut controls = self.controls;
         for (index, control) in controls.iter_mut().enumerate() {
             let channel = index as u8;
@@ -510,7 +540,7 @@ impl Mpe {
             runtime,
             controls,
             manager.then_some(channel),
-            Control::Pitch(0.0),
+            Control::Pitch(0.0, 0.0),
         )?;
         self.ranges[usize::from(!manager)] = value;
         Ok(applied)

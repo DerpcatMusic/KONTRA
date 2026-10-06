@@ -3,13 +3,23 @@
 use sampler_core::{Input, Limits, Protocol, Runtime};
 use sampler_ir as ir;
 
+#[test]
+fn large_falcon_program_xml_is_bounded_without_rejecting_installed_node_counts() {
+    let xml = format!("<Program>{}</Program>", "<Properties/>".repeat(210_000));
+    assert!(sampler_uvi::parse_program_xml(&xml).is_ok());
+    let excessive = format!("<Program>{}</Program>", "<p/>".repeat(1_000_000));
+    assert!(sampler_uvi::parse_program_xml(&excessive).is_err());
+    assert!(sampler_uvi::parse_program_xml(&" ".repeat((32 << 20) + 1)).is_err());
+    assert!(sampler_uvi::parse_program_xml("<!DOCTYPE Program><Program/>").is_err());
+}
+
 const PROGRAM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <UVI4>
   <Program Name="Fixture" Gain="0.5">
     <ControlSignalSources>
       <DAHDSR Name="Amp Env" AttackTime="0.01" DecayTime="0.2" SustainLevel="0.5" ReleaseTime="0.3" VelocityAmount="1" VelocitySens="0.5" DecayCurve="0.5"/>
       <LFO Name="Vibrato" Freq="5"/>
-      <StepEnvelope Name="Steps"/>
+      <AHD Name="Steps"/>
     </ControlSignalSources>
     <EventProcessors>
       <ScriptProcessor Name="Arp"><script><![CDATA[function onNote(e) playNote(e.note, e.velocity) end]]></script></ScriptProcessor>
@@ -84,7 +94,7 @@ fn authored_program_translates_loads_and_renders() {
     );
     assert_eq!(
         (ir.groups.len(), ir.zones.len(), ir.assets.len()),
-        (1, 1, 1)
+        (2, 1, 1), // the script may pick one of the keygroup's two oscillators
     );
     let zone = &ir.zones[0];
     assert_eq!((zone.keys.low, zone.keys.high), (48, 72));
@@ -116,6 +126,7 @@ fn authored_program_translates_loads_and_renders() {
         "HighKeyFade",
         "modulation source",
         "sample outside the program's bank",
+        "keygroup oscillators all play (the script may pick one per note)",
     ] {
         assert!(
             features.contains(&expected),

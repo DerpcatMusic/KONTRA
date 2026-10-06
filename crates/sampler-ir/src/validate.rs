@@ -18,6 +18,8 @@ pub enum Reference {
     Control(usize),
     Route(usize),
     Shape(usize),
+    VoiceLimit(usize),
+    Impulse(usize),
     Processor { chain: usize, index: usize },
 }
 
@@ -96,6 +98,8 @@ impl Check<'_> {
             Reference::Control(i) => i < ir.controls.len(),
             Reference::Route(i) => i < ir.routes.len(),
             Reference::Shape(i) => i < ir.shapes.len(),
+            Reference::VoiceLimit(i) => i < ir.voice_limits.len(),
+            Reference::Impulse(i) => i < ir.impulses.len(),
             Reference::Processor { chain, index } => ir
                 .chains
                 .get(chain)
@@ -199,6 +203,31 @@ impl Check<'_> {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::Reverb(r) => {
+                    for (v, field) in [
+                        (r.decay_seconds, "reverb decay"),
+                        (r.size, "reverb size"),
+                        (r.damping_hz, "reverb damping"),
+                        (r.modulation_seconds, "reverb modulation"),
+                        (r.diffusion, "reverb diffusion"),
+                        (r.predelay_seconds, "reverb predelay"),
+                        (r.input_cutoff_hz, "reverb input cutoff"),
+                        (r.low_shelf_db, "reverb low shelf"),
+                        (r.width, "reverb width"),
+                    ] {
+                        self.finite(v, field)?;
+                    }
+                }
+                Processor::Convolution { impulse, dry, wet } => {
+                    self.exists(Reference::Impulse(impulse.0))?;
+                    self.finite(dry, "convolution dry")?;
+                    self.finite(wet, "convolution wet")?;
+                }
+                Processor::StereoMatrix(matrix) => {
+                    for x in matrix.as_flattened() {
+                        self.finite(*x, "stereo matrix")?;
+                    }
+                }
                 Processor::Filter(filter) => {
                     if let crate::Frequency::Hertz(hz) = filter.cutoff {
                         self.within(hz, f64::MIN_POSITIVE..=f64::MAX, "cutoff")?;
@@ -227,6 +256,23 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
+        for (i, impulse) in self.impulses.iter().enumerate() {
+            check.owner = format!("impulse {i}");
+            check.within(f64::from(impulse.rate), 1.0..=f64::from(u32::MAX), "rate")?;
+            check.within(
+                impulse.left.len() as f64,
+                1.0..=f64::from(1u32 << 24),
+                "frames",
+            )?;
+            check.within(
+                impulse.right.len() as f64,
+                impulse.left.len() as f64..=impulse.left.len() as f64,
+                "right frames",
+            )?;
+            for x in impulse.left.iter().chain(&impulse.right) {
+                check.finite(f64::from(*x), "sample")?;
+            }
+        }
         for (i, group) in self.groups.iter().enumerate() {
             check.owner = format!("group {i}");
             check.gain(group.gain, "gain")?;
@@ -236,6 +282,19 @@ impl Instrument {
                 check.exists(Reference::Chain(chain.0))?;
             }
             check.output(group.output)?;
+            if let Some(limit) = group.voice_limit {
+                check.exists(Reference::VoiceLimit(limit))?;
+            }
+        }
+        for (i, limit) in self
+            .voice_limit
+            .iter()
+            .chain(&self.voice_limits)
+            .enumerate()
+        {
+            check.owner = format!("voice limit {i}");
+            check.within(f64::from(limit.voices), 1.0..=f64::from(u32::MAX), "voices")?;
+            check.time(limit.fade, "fade")?;
         }
         for (i, zone) in self.zones.iter().enumerate() {
             check.owner = format!("zone {i}");
@@ -303,6 +362,15 @@ impl Instrument {
             check.scope(modulator.scope)?;
             match &modulator.source {
                 ModulationSource::Envelope(envelope) => check.envelope(envelope)?,
+                ModulationSource::Breakpoints(b) => {
+                    for point in &b.points {
+                        check.time(point.time, "breakpoint time")?;
+                        check.within(point.level, 0.0..=1.0, "breakpoint level")?;
+                    }
+                    if b.sustain.is_some_and(|s| s >= b.points.len()) {
+                        check.within(f64::NAN, 0.0..=0.0, "sustain point")?;
+                    }
+                }
                 ModulationSource::Lfo(lfo) => {
                     let rate = match lfo.rate {
                         crate::Frequency::Hertz(hz) => hz,

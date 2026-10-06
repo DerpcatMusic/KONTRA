@@ -3,11 +3,13 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
-    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, SelectionPolicy, Selector, Sequence, SequenceScope, StateVariableFilter,
-    SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControllerCondition, Direction, Driver,
+    Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
+    LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
+    Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
+    Selector, Sequence, SequenceScope,
+    StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger,
+    VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -52,10 +54,10 @@ pub enum Feature {
     TempoSync,
     VendorResonance,
     Delay,
+    /// A reverb in a voice or group chain; it is a bus processor.
+    VoiceReverb,
     PreChainSend,
     Controls,
-    /// Pitch bend routed anywhere but pitch (where it is native expression).
-    PitchBendSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -189,6 +191,22 @@ pub fn lower(
     lower_with(instrument, rate, pcm, &Options::default(), bind_behaviors)
 }
 
+/// The keyswitch map and driver table `switching` gives `instrument`'s
+/// articulations, for [`crate::Runtime::set_switching`]: a remap changes how
+/// articulations are selected without lowering or loading the plan again.
+pub fn switching(
+    instrument: &ir::Instrument,
+    switching: ir::Switching,
+) -> Result<(Vec<Keyswitch>, Switching), LowerError> {
+    Lowering {
+        ir: instrument,
+        rate: 1,
+        pcm: &[],
+        mpe: None,
+    }
+    .switching(switching)
+}
+
 /// Lower `instrument` for output at `rate`. `pcm[i]` is the decoded audio of
 /// `instrument.assets[i]`. `bind_behaviors` receives every behavior module and
 /// the plan built so far; it compiles them with its language frontend (for
@@ -263,6 +281,27 @@ pub fn lower_with(
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
+    if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
+        let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
+            voices: l.voices,
+            kill: match l.kill {
+                ir::Kill::Any => crate::Kill::Any,
+                ir::Kill::Oldest => crate::Kill::Oldest,
+                ir::Kill::Newest => crate::Kill::Newest,
+                ir::Kill::Highest => crate::Kill::Highest,
+                ir::Kill::Lowest => crate::Kill::Lowest,
+            },
+            prefer_released: l.prefer_released,
+            fade: lowering.frames(l.fade),
+        };
+        plan = plan
+            .with_voice_limits(
+                instrument.voice_limit.as_ref().map(limit),
+                instrument.voice_limits.iter().map(limit).collect(),
+                instrument.groups.iter().map(|g| g.voice_limit).collect(),
+            )
+            .map_err(core(Stage::Regions, "voice limits"))?;
+    }
     if !chains.is_empty() {
         plan = plan
             .with_voice_chains(chains, chain_of)
@@ -292,6 +331,25 @@ pub fn lower_with(
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
     plan = lowering.controllers(plan)?;
+    // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
+    // plain MIDI default range; without one, the MIDI default of 2 semitones.
+    if let Some(range) = instrument
+        .routes
+        .iter()
+        .filter(|r| {
+            r.target == ir::Target::Pitch
+                && instrument.modulators[r.source.0].source == ir::ModulationSource::PitchBend
+        })
+        .filter_map(|r| match r.depth {
+            ir::Depth::Pitch(p) => Some(p.semitones().abs()),
+            _ => None,
+        })
+        .reduce(f64::max)
+    {
+        plan = plan
+            .with_bend_range(range)
+            .map_err(core(Stage::Modulation, "pitch-bend range"))?;
+    }
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -362,11 +420,24 @@ impl Lowering<'_> {
             if chain.scope != ir::Scope::Voice {
                 return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
             }
+            if chain
+                .pre_amplitude
+                .iter()
+                .chain(&chain.post_amplitude)
+                .any(|p| {
+                    matches!(
+                        p,
+                        ir::Processor::Reverb(_) | ir::Processor::Convolution { .. }
+                    )
+                })
+            {
+                return Err(unsupported(owner, Feature::VoiceReverb));
+            }
             for p in &chain.pre_amplitude {
-                pre.push(self.processor(&owner, *p)?);
+                pre.extend(self.processors(&owner, *p)?);
             }
             for p in &chain.post_amplitude {
-                post.push(self.processor(&owner, *p)?);
+                post.extend(self.processors(&owner, *p)?);
             }
         }
         let chain = if pre.is_empty() && post.is_empty() {
@@ -444,10 +515,17 @@ impl Lowering<'_> {
             ir::Curve::Exponential(k) => {
                 EnvelopeCurve::exponential(k).map_err(core(Stage::Envelope, owner))
             }
+            ir::Curve::Step => Ok(EnvelopeCurve::step()),
         };
         let envelope = if one_shot {
             // Plays to the end of the audio whatever the gate does.
             Envelope::one_shot(self.frames(e.attack), u32::MAX, 0)
+        } else if e.one_shot {
+            Envelope::one_shot(
+                self.frames(e.attack),
+                self.frames(e.hold),
+                self.frames(e.decay),
+            )
         } else {
             Envelope::new(
                 self.frames(e.attack),
@@ -509,9 +587,6 @@ impl Lowering<'_> {
             let route = &self.ir.routes[route_ref.0];
             let owner = format!("{owner} route {}", route_ref.0);
             let modulator = &self.ir.modulators[route.source.0];
-            if modulator.scope != ir::Scope::Voice {
-                return Err(unsupported(owner, Feature::ModulatorScope(modulator.scope)));
-            }
             let target = match (route.target, route.depth) {
                 // Pitch bend to pitch is the note's native expression bend.
                 (ir::Target::Pitch, _) if modulator.source == ir::ModulationSource::PitchBend => {
@@ -553,10 +628,19 @@ impl Lowering<'_> {
                     return Ok(index);
                 }
                 let m = &self.ir.modulators[modulator.0];
-                if m.scope != ir::Scope::Voice {
+                // One instrument-wide LFO: free-running, or restarted by every voice start.
+                let shared = matches!(
+                    (m.scope, &m.source),
+                    (ir::Scope::Master, ir::ModulationSource::Lfo(_))
+                );
+                if m.scope != ir::Scope::Voice && !shared {
                     return Err(unsupported(owner.clone(), Feature::ModulatorScope(m.scope)));
                 }
-                program.sources.push(self.mod_source(&owner, &m.source)?);
+                let mut source = self.mod_source(&owner, &m.source, program)?;
+                if let ModSource::Lfo(lfo) = &mut source {
+                    lfo.shared = shared;
+                }
+                program.sources.push(source);
                 sources.insert(modulator, program.sources.len() - 1);
                 Ok(program.sources.len() - 1)
             };
@@ -649,9 +733,30 @@ impl Lowering<'_> {
         &self,
         owner: &str,
         source: &ir::ModulationSource,
+        program: &mut ModProgram,
     ) -> Result<ModSource, LowerError> {
         Ok(match source {
             ir::ModulationSource::Envelope(e) => ModSource::Envelope(self.adsr(owner, e, false)?),
+            ir::ModulationSource::Breakpoints(b) => {
+                let mut points = Vec::with_capacity(b.points.len());
+                for p in &b.points {
+                    points.push(Breakpoint {
+                        frames: self.frames(p.time),
+                        level: p.level as f32,
+                        curve: match p.shape {
+                            ir::Curve::Linear => EnvelopeCurve::default(),
+                            ir::Curve::Step => EnvelopeCurve::step(),
+                            ir::Curve::Exponential(k) => EnvelopeCurve::exponential(k)
+                                .map_err(core(Stage::Envelope, owner))?,
+                        },
+                    });
+                }
+                program.breakpoints.push(Breakpoints {
+                    points,
+                    sustain: b.sustain,
+                });
+                ModSource::Breakpoints(program.breakpoints.len() - 1)
+            }
             ir::ModulationSource::Lfo(lfo) => ModSource::Lfo(Lfo {
                 shape: match lfo.shape {
                     ir::LfoShape::Sine => LfoShape::Sine,
@@ -670,6 +775,7 @@ impl Lowering<'_> {
                 delay: self.frames(lfo.delay),
                 fade: self.frames(lfo.fade_in),
                 retrigger: lfo.retrigger,
+                shared: false,
             }),
             ir::ModulationSource::Controller(cc) => ModSource::Controller(*cc),
             ir::ModulationSource::Velocity => ModSource::Velocity,
@@ -682,16 +788,56 @@ impl Lowering<'_> {
             ir::ModulationSource::Timbre => ModSource::Timbre,
             ir::ModulationSource::Random => ModSource::Random,
             ir::ModulationSource::Constant => ModSource::Constant,
-            ir::ModulationSource::PitchBend => {
-                return Err(unsupported(owner, Feature::PitchBendSource));
-            }
+            ir::ModulationSource::Script(id) => ModSource::Script(*id),
+            ir::ModulationSource::ReleaseCounter(t) => ModSource::ReleaseCounter {
+                frames: self.frames(*t).max(1),
+            },
+            // Bend to pitch never gets here (native expression bend).
+            ir::ModulationSource::PitchBend => ModSource::PitchBend,
         })
+    }
+
+    /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
+    fn processors(&self, owner: &str, processor: ir::Processor) -> Result<Vec<Processor>, LowerError> {
+        let two = |kind| ir::Processor::Filter(match processor {
+            ir::Processor::Filter(f) => ir::Filter { kind, ..f },
+            _ => unreachable!(),
+        });
+        let kind = match processor {
+            ir::Processor::Filter(f) => f.kind,
+            _ => return Ok(vec![self.processor(owner, processor)?]),
+        };
+        let half = match kind {
+            ir::FilterKind::LowPass { poles: 4 } => ir::FilterKind::LowPass { poles: 2 },
+            ir::FilterKind::HighPass { poles: 4 } => ir::FilterKind::HighPass { poles: 2 },
+            ir::FilterKind::BandPass { poles: 4 } => ir::FilterKind::BandPass { poles: 2 },
+            ir::FilterKind::Notch { poles: 4 } => ir::FilterKind::Notch { poles: 2 },
+            _ => return Ok(vec![self.processor(owner, processor)?]),
+        };
+        Ok(vec![self.processor(owner, two(half))?, self.processor(owner, two(half))?])
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
             ir::Processor::Pan(pan) => Processor::StereoMatrix(stereo(pan)),
+            ir::Processor::StereoMatrix(matrix) => Processor::StereoMatrix(matrix),
+            ir::Processor::Reverb(r) => Processor::Reverb(ReverbSettings {
+                decay_seconds: r.decay_seconds,
+                size: r.size,
+                damping_hz: r.damping_hz,
+                modulation_seconds: r.modulation_seconds,
+                diffusion: r.diffusion,
+                predelay_seconds: r.predelay_seconds,
+                input_cutoff_hz: r.input_cutoff_hz,
+                low_shelf_db: r.low_shelf_db,
+                width: r.width,
+            }),
+            ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
+                impulse: impulse.0,
+                dry,
+                wet,
+            },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
             ir::Processor::Delay { .. } => return Err(unsupported(owner, Feature::Delay)),
         })
@@ -759,6 +905,19 @@ impl Lowering<'_> {
             ir::Output::Master => None,
             ir::Output::Bus(bus) => Some(bus.0),
         };
+        let impulses = self
+            .ir
+            .impulses
+            .iter()
+            .enumerate()
+            .map(|(i, impulse)| {
+                let (left, right) = (
+                    resample(&impulse.left, impulse.rate, self.rate),
+                    resample(&impulse.right, impulse.rate, self.rate),
+                );
+                Impulse::new(left, right).map_err(core(Stage::Buses, format!("impulse {i}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut buses = Vec::with_capacity(self.ir.buses.len());
         for (i, bus) in self.ir.buses.iter().enumerate() {
             let owner = format!("bus {i}");
@@ -769,7 +928,7 @@ impl Lowering<'_> {
                     return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
                 }
                 for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-                    processors.push(self.processor(&owner, *p)?);
+                    processors.extend(self.processors(&owner, *p)?);
                 }
             }
             let mut sends = vec![BusSend {
@@ -785,11 +944,19 @@ impl Lowering<'_> {
                     gain: send.gain.linear(),
                 });
             }
-            let tail_frames = if processors.is_empty() {
-                0
-            } else {
-                (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32
-            };
+            // Linear stages without memory leave no tail; a reverb rings for its own.
+            let tail_frames = processors
+                .iter()
+                .map(|p| match p {
+                    Processor::Gain(_) | Processor::StereoMatrix(_) => 0,
+                    Processor::Reverb(r) => r.tail_frames(self.rate),
+                    Processor::Convolution { impulse, .. } => {
+                        crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32
+                    }
+                    _ => (BUS_TAIL_SECONDS * f64::from(self.rate)) as u32,
+                })
+                .max()
+                .unwrap_or(0);
             buses.push(Bus {
                 processors,
                 sends,
@@ -802,7 +969,8 @@ impl Lowering<'_> {
             .iter()
             .map(|z| self.group(z).and_then(|g| target(g.output)))
             .collect();
-        plan.with_buses(buses, bindings)
+        plan.with_impulses(impulses)
+            .with_buses(buses, bindings)
             .map_err(core(Stage::Buses, "buses"))
     }
 
@@ -913,19 +1081,19 @@ impl Lowering<'_> {
             .map_err(core(Stage::Releases, "release zones"))
     }
 
-    fn articulations(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+    /// The native keyswitch map and driver table for `switching`, numbering
+    /// articulations as the plan does.
+    pub(crate) fn switching(
+        &self,
+        switching: ir::Switching,
+    ) -> Result<(Vec<Keyswitch>, Switching), LowerError> {
         let articulations = &self.ir.articulations;
-        if articulations.is_empty() {
-            return Ok(plan);
-        }
-        // The runtime starts in articulation 0: give that number to the default.
         let default = articulations.iter().position(|a| a.default).unwrap_or(0);
         let id = |index: usize| match index {
             i if i == default => 0,
             i if i < default => i as u32 + 1,
             i => i as u32,
         };
-        let switching = self.ir.switching;
         let behavior = switching.owner == ir::SwitchOwner::Behavior;
         // A behavior reads its own switch keys; freed keys play notes.
         let native_keys = !behavior
@@ -940,12 +1108,6 @@ impl Lowering<'_> {
                     articulation: id(i),
                 })
             })
-            .collect();
-        let tags = self
-            .ir
-            .zones
-            .iter()
-            .map(|z| z.articulation.map(|a| id(a.0)))
             .collect();
         let selectors = articulations
             .iter()
@@ -993,6 +1155,28 @@ impl Lowering<'_> {
             selectors,
         )
         .map_err(core(Stage::Articulations, "articulation drivers"))?;
+        Ok((switches, switching))
+    }
+
+    fn articulations(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        let articulations = &self.ir.articulations;
+        if articulations.is_empty() {
+            return Ok(plan);
+        }
+        // The runtime starts in articulation 0: give that number to the default.
+        let default = articulations.iter().position(|a| a.default).unwrap_or(0);
+        let id = |index: usize| match index {
+            i if i == default => 0,
+            i if i < default => i as u32 + 1,
+            i => i as u32,
+        };
+        let (switches, switching) = self.switching(self.ir.switching)?;
+        let tags = self
+            .ir
+            .zones
+            .iter()
+            .map(|z| z.articulation.map(|a| id(a.0)))
+            .collect();
         plan.with_articulations(
             tags,
             switches,
@@ -1040,4 +1224,40 @@ fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
         }
     };
     [[left, 0.0], [0.0, right]]
+}
+
+/// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below
+/// the lower Nyquist. Run at load, never on the audio thread.
+fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+    if from == to {
+        return x.to_vec();
+    }
+    const HALF: f64 = 16.0;
+    let step = f64::from(from) / f64::from(to);
+    let cutoff = (1.0 / step).min(1.0);
+    let reach = HALF / cutoff;
+    let frames = ((x.len() as f64 / step).ceil() as usize).max(1);
+    (0..frames)
+        .map(|i| {
+            let at = i as f64 * step;
+            let first = ((at - reach).ceil().max(0.0)) as usize;
+            let last = ((at + reach).floor() as usize).min(x.len().saturating_sub(1));
+            let mut sum = 0.0;
+            for (j, v) in x.iter().enumerate().take(last + 1).skip(first) {
+                let d = j as f64 - at;
+                let t = d * cutoff;
+                let sinc = if t == 0.0 {
+                    1.0
+                } else {
+                    (std::f64::consts::PI * t).sin() / (std::f64::consts::PI * t)
+                };
+                let w = d / reach;
+                let window = 0.42
+                    + 0.5 * (std::f64::consts::PI * w).cos()
+                    + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
+                sum += f64::from(*v) * sinc * window * cutoff;
+            }
+            sum as f32
+        })
+        .collect()
 }

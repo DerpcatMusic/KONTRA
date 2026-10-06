@@ -152,6 +152,7 @@ impl Runtime {
             .checked_add(output.len() as u64)
             .ok_or(Error::ClockOverflow)?;
         output.fill([0.0; 2]);
+        self.start_plan_programs();
         self.apply_growth();
         self.resume_yielded();
         self.apply_due();
@@ -448,6 +449,8 @@ impl Runtime {
                 n,
                 expression.value,
                 &self.performance_state.current(performance).controllers,
+                self.release_times[f.note.0.index].held(n.key_down(), at),
+                self.note_params[f.note.0.index].mods,
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -475,17 +478,18 @@ impl Runtime {
                     .fade
                     .map_or(1.0, |f: super::script_params::Fade| f.at(t))
             };
-            let to = layer.gains(fade(end));
-            let from = v.script_gains.unwrap_or_else(|| layer.gains(fade(at)));
-            v.script_gains = Some(to);
-            stop = params.fade.is_some_and(|f| f.stop && f.done(end));
-            // ponytail: script gains are taken at the segment's ends, not the
-            // modulation ramp's grid points; align them if a fade ever steps.
+            // Gains sit on the absolute control grid, like voice modulation, so
+            // host block sizes and event splits cannot move them.
+            let begin = at - at % super::voice_mod::CELL;
+            let grid_end = begin + super::voice_mod::CELL;
+            let from = layer.gains(fade(begin));
+            let to = layer.gains(fade(grid_end));
+            stop = end == grid_end && params.fade.is_some_and(|f| f.stop && f.done(grid_end));
             let mut ramp = points.unwrap_or(super::voice_mod::Ramp {
                 from: Default::default(),
                 to: Default::default(),
-                begin: at,
-                end,
+                begin,
+                end: grid_end,
             });
             for (o, g) in [(&mut ramp.from, from), (&mut ramp.to, to)] {
                 o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
@@ -551,6 +555,8 @@ impl Runtime {
             filters: super::dsp::svf::FilterContext {
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
+                reverbs: &mut [],
+                convolutions: &mut [],
             },
             at,
         };
@@ -583,7 +589,7 @@ impl Runtime {
                 plan.modulation
                     .mix(i, segment, target, ramp, at, f64::from(self.rate));
             } else {
-                ramp_mix(segment, target, ramp.from.gains, ramp.to.gains);
+                ramp_mix(segment, target, ramp, at);
             }
         }
         let applied = points.map_or(gains, |r| {
@@ -603,11 +609,13 @@ impl Runtime {
 }
 
 /// Mix `chunk` into `output`, ramping per-channel gains from `from` to `to`.
-pub(super) fn ramp_mix(chunk: &[Frame], output: &mut [Frame], from: [f32; 2], to: [f32; 2]) {
-    let len = chunk.len() as f32;
+pub(super) fn ramp_mix(chunk: &[Frame], output: &mut [Frame], ramp: super::voice_mod::Ramp, now: u64) {
+    let (from, to) = (ramp.from.gains, ramp.to.gains);
+    let len = ramp.end.saturating_sub(ramp.begin).max(1) as f32;
     let step = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
+    let offset = now.saturating_sub(ramp.begin) as f32;
     for (i, (out, frame)) in output.iter_mut().zip(chunk).enumerate() {
-        let at = (i + 1) as f32;
+        let at = offset + (i + 1) as f32;
         out[0] += frame[0] * (from[0] + step[0] * at);
         out[1] += frame[1] * (from[1] + step[1] * at);
     }

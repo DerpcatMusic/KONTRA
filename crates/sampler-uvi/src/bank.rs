@@ -1,17 +1,16 @@
-//! Programs and samples inside an installed UFS bank, ported from v1
-//! (`src/uvi/library.rs`, `src/library/uvi.rs`). The reader namespaces come
-//! from the user's installed official UVI Workstation (`access::reader_path`,
-//! hash-verified); a bank's content state is prepared or reloaded only through
-//! v1's owner-only store. Neither value is logged, printed or put in an error:
-//! every failure crosses this boundary as `access::failure_reason`.
+//! Programs and samples inside an installed UFS bank. Reader namespaces come
+//! from the user's hash-verified official UVI Workstation. Recovered content
+//! access and decoded bytes live only in this process; nothing is persisted.
 
 use crate::{
+    AccessError,
     access::{self, ReaderNamespaces},
     crypto,
-    ufs::{Directory, Member, Ufs},
+    ufs::{Directory, Member, Protection, Ufs},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -22,46 +21,70 @@ pub struct Bank {
     directory: Directory,
     content_key: Option<u64>,
     program_namespace: Vec<u8>,
+    /// Duplicate paths remain ambiguous, as in v1's ResourceIndex.
+    paths: HashMap<String, Option<usize>>,
 }
 
 /// `uvi_reader` from the player's settings, as v1's catalog passes it.
-fn configured_reader() -> Option<PathBuf> {
+pub(crate) fn configured_reader() -> Option<PathBuf> {
     let settings = std::fs::read(dirs::config_dir()?.join("kontra/settings.json")).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&settings).ok()?;
     value.get("uvi_reader")?.as_str().map(PathBuf::from)
 }
 
-/// v1's private store: `KONTRA_UVI_AUTHORITY_DIR`, else `<config>/kontra/uvi-access`.
-fn store_dir() -> Result<PathBuf> {
-    std::env::var_os("KONTRA_UVI_AUTHORITY_DIR")
-        .map(PathBuf::from)
-        .or_else(|| dirs::config_dir().map(|c| c.join("kontra/uvi-access")))
-        .context("The private UVI access store is unavailable")
+/// Clear and ZIP-wrapped programs need no installed reader; protected ones do.
+pub(crate) fn program_text(bytes: &[u8]) -> Result<String, AccessError> {
+    let program_error = |e| AccessError::Program(access::failure_reason(&e));
+    match crypto::decode_program_bytes(bytes, &[]) {
+        Ok(text) => Ok(text),
+        Err(error) if error.is::<crypto::NeedsProgramNamespace>() => {
+            let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
+            let reader =
+                access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+            let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
+            crypto::decode_program_bytes(bytes, &namespaces.program).map_err(program_error)
+        }
+        Err(error) => Err(program_error(error)),
+    }
 }
 
 impl Bank {
     /// Open and decode the directory of the bank at `path`.
-    pub fn open(path: &Path) -> Result<Self, String> {
-        Self::open_inner(path).map_err(|e| access::failure_reason(&e))
-    }
-
-    fn open_inner(path: &Path) -> Result<Self> {
-        let reader = access::reader_path(configured_reader().as_deref())?;
-        let namespaces = ReaderNamespaces::open(&reader)?;
-        let ufs = Ufs::open(path)?;
-        let directory = ufs.decode_directory(&namespaces.metadata)?;
+    pub fn open(path: &Path) -> Result<Self, AccessError> {
+        let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
+        let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
+        let content_error = |e| AccessError::Content(access::failure_reason(&e));
+        let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+        let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
+        let ufs = Ufs::open(path).map_err(bank_error)?;
+        let directory = ufs
+            .decode_directory(&namespaces.metadata)
+            .map_err(bank_error)?;
         // Only banks with encrypted members need a content state prepared.
-        let content_key = if directory.files.iter().any(|m| m.mode == 2) {
-            let store = store_dir()?;
-            access::ensure_content_state(path, &ufs, &directory, &store)?.map(|state| state.key)
+        let content_key = if directory
+            .files
+            .iter()
+            .any(|m| m.mode == Protection::Content)
+        {
+            Some(access::recover_content_key(path, &ufs, &directory).map_err(content_error)?)
         } else {
             None
         };
+        let mut paths = HashMap::with_capacity(directory.files.len());
+        for (index, member) in directory.files.iter().enumerate() {
+            if let Some(path) = &member.path {
+                paths
+                    .entry(path.clone())
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(index));
+            }
+        }
         Ok(Self {
             ufs: Arc::new(ufs),
             directory,
             content_key,
             program_namespace: namespaces.program,
+            paths,
         })
     }
 
@@ -83,14 +106,42 @@ impl Bank {
             .read_member(member, self.directory.metadata_key, self.content_key)
     }
 
+    /// Every member path in the bank, in directory order.
+    pub fn members(&self) -> Vec<String> {
+        self.directory
+            .files
+            .iter()
+            .filter_map(|m| m.path.clone())
+            .collect()
+    }
+
+    /// Every Lua member of the bank, for a script's `require`.
+    pub fn scripts(&self) -> crate::script::Scripts {
+        let mut scripts = crate::script::Scripts::default();
+        for path in self.members() {
+            if path.to_ascii_lowercase().ends_with(".lua")
+                && let Ok(bytes) = self.file(&path)
+            {
+                scripts.insert(&path, String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        scripts
+    }
+
+    /// The bytes of the member at bank-root `path` (a script, say).
+    pub fn file(&self, path: &str) -> Result<Vec<u8>, String> {
+        let read = || self.read(resolve(&self.directory, path)?);
+        read().map_err(|e| access::failure_reason(&e))
+    }
+
     /// Decode the program at member `name` to its clear XML and its path.
-    pub fn program(&self, name: &str) -> Result<(String, String), String> {
+    pub fn program(&self, name: &str) -> Result<(String, String), AccessError> {
         self.program_inner(name)
-            .map_err(|e| access::failure_reason(&e))
+            .map_err(|e| AccessError::Program(access::failure_reason(&e)))
     }
 
     fn program_inner(&self, name: &str) -> Result<(String, String)> {
-        let member = resolve(&self.directory, name)?;
+        let member = self.resolve(name)?;
         ensure!(
             member.size <= crypto::PROGRAM_XML_LIMIT as u64,
             "UVI program exceeds 32 MiB"
@@ -106,9 +157,20 @@ impl Bank {
 
     /// Decode a bank-local audio resource relative to `program_path`. A starred
     /// filename is a bundle of mono channels. Returns raw encoded file bytes.
-    pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, String> {
+    pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, AccessError> {
         self.resource_inner(program_path, path)
-            .map_err(|e| access::failure_reason(&e))
+            .map_err(|e| AccessError::Resource(access::failure_reason(&e)))
+    }
+
+    /// Decode a resource or mono-channel bundle without translating the program.
+    pub fn decode_resource(
+        &self,
+        program_path: &str,
+        path: &str,
+    ) -> Result<sampler_kontakt::Decoded, AccessError> {
+        crate::audio::decode(&self.resource(program_path, path)?)
+            .map(|(audio, _)| audio)
+            .map_err(AccessError::Audio)
     }
 
     /// A bank-local audio resource for streaming: read in pieces and decrypted
@@ -127,7 +189,9 @@ impl Bank {
         program_path: &str,
         path: &str,
     ) -> Result<std::sync::Arc<dyn sampler_kontakt::AssetSource>> {
-        let parts = resources(&self.directory, program_path, path)?
+        let path = path.replace('\\', "/");
+        let (program_path, path) = resource_base(program_path, &path, &self.ufs.header.bank_name)?;
+        let parts = resources(program_path, path, |path| self.resolve(path))?
             .into_iter()
             .map(|member| {
                 let (offset, size, key) = self.ufs.locate(
@@ -142,11 +206,39 @@ impl Bank {
     }
 
     fn resource_inner(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>> {
-        resources(&self.directory, program_path, path)?
+        let path = path.replace('\\', "/");
+        let (program_path, path) = resource_base(program_path, &path, &self.ufs.header.bank_name)?;
+        resources(program_path, path, |path| self.resolve(path))?
             .iter()
             .map(|member| self.read(member))
             .collect()
     }
+
+    fn resolve(&self, path: &str) -> Result<&Member> {
+        let path = normalize(path)?;
+        if let Some(index) = self.paths.get(&path) {
+            return index
+                .map(|i| &self.directory.files[i])
+                .context("Ambiguous UVI member path");
+        }
+        resolve(&self.directory, &path)
+    }
+}
+
+/// Falcon's `$Bank.ufs/` volume is rooted in this bank, not the preset folder.
+/// Never satisfy a resource explicitly bound to a different bank.
+fn resource_base<'a>(program: &'a str, path: &'a str, bank: &str) -> Result<(&'a str, &'a str)> {
+    let Some(volume) = path.strip_prefix('$') else {
+        return Ok((program, path));
+    };
+    let (volume, relative) = volume
+        .split_once('/')
+        .context("UVI bank volume has no resource path")?;
+    ensure!(
+        volume.eq_ignore_ascii_case(bank) || volume.eq_ignore_ascii_case(&format!("{bank}.ufs")),
+        "UVI resource belongs to a different bank"
+    );
+    Ok(("", relative))
 }
 
 fn normalize(path: &str) -> Result<String> {
@@ -192,21 +284,25 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     Ok(named[0])
 }
 
-fn resource<'a>(directory: &'a Directory, program_path: &str, path: &str) -> Result<&'a Member> {
+fn resource<'a>(
+    program_path: &str,
+    path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
+) -> Result<&'a Member> {
     let base = program_path.rsplit_once('/').map_or("", |(base, _)| base);
     let path = if path.starts_with('/') {
         normalize(path)?
     } else {
         normalize(&format!("{base}/{path}"))?
     };
-    resolve(directory, &path)
+    resolve(&path)
 }
 
 /// A starred filename is an ordered list of synchronized mono channels.
 fn resources<'a>(
-    directory: &'a Directory,
     program_path: &str,
     path: &str,
+    resolve: impl Fn(&str) -> Result<&'a Member>,
 ) -> Result<Vec<&'a Member>> {
     if let Some((base, names)) = path.split_once('*') {
         ensure!(
@@ -225,10 +321,32 @@ fn resources<'a>(
                     !name.is_empty() && !name.contains(['/', '\\']),
                     "Invalid UVI channel bundle member"
                 );
-                resource(directory, program_path, &format!("{base}{name}"))
+                resource(program_path, &format!("{base}{name}"), &resolve)
             })
             .collect()
     } else {
-        Ok(vec![resource(directory, program_path, path)?])
+        Ok(vec![resource(program_path, path, resolve)?])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_bank_volumes_are_rooted_and_cannot_cross_banks() {
+        let (program, path) = resource_base(
+            "Presets/Category/p.uvip",
+            "$Authored.ufs/Scripts/./../IRs/space.aif",
+            "Authored",
+        )
+        .unwrap();
+        assert_eq!(program, "");
+        assert_eq!(normalize(path).unwrap(), "IRs/space.aif");
+        assert!(resource_base("Presets/p.uvip", "$Other.ufs/IRs/space.aif", "Authored").is_err());
+        assert!(resource_base("Presets/p.uvip", "$Authored.ufs", "Authored").is_err());
+        let (_, path) =
+            resource_base("Presets/p.uvip", "$Authored.ufs/../escape.aif", "Authored").unwrap();
+        assert!(normalize(path).is_err());
     }
 }

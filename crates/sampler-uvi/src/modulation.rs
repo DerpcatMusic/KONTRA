@@ -75,9 +75,27 @@ enum Signal {
         /// A second live source multiplying the value (an LFO's modulated
         /// `Depth`): its modulator and `w` → factor points.
         scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        /// Source smoothing as a route lag: seconds to 99% of a step.
+        smoothing: f64,
+        /// A second modulator summed into the value (MultiLFO noise), with its
+        /// own `w` → value curve.
+        extra: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        /// The program- or layer-level source this reads, reported (and made
+        /// instrument-wide) once a route uses it.
+        shared: Option<Shared>,
     },
     /// A constant UVI value.
     Fixed { value: f64, bipolar: bool },
+}
+
+/// A shared UVI source instance; see [`Translation::share`].
+struct Shared {
+    node: roxmltree::NodeId,
+    location: String,
+    feature: String,
+    /// Becomes the IR's instrument-wide retriggered LFO.
+    master: bool,
+    modulators: Vec<ir::ModulatorRef>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -154,17 +172,14 @@ fn describe(connections: &[Node]) -> String {
         .join(", ")
 }
 
-/// Linear interpolation of ascending `(x, y)` points.
-fn interpolate(points: &[(f64, f64)], x: f64) -> f64 {
-    let i = points
-        .windows(2)
-        .position(|p| x <= p[1].0)
-        .unwrap_or(points.len() - 2);
-    let ((x0, y0), (x1, y1)) = (points[i], points[i + 1]);
-    if x1 == x0 {
-        y1
-    } else {
-        y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+/// Whether a source lag becomes an exact route lag: a free-running source's
+/// lag is shared and already settled when a voice starts, and a per-voice lag
+/// starts at the source's first value where UVI's starts at 0.
+fn smoothable(retrigger: bool, starts_at_zero: bool) -> Result<(), &'static str> {
+    match (retrigger, starts_at_zero) {
+        (false, _) => Err("shared lag of a free-running source"),
+        (true, false) => Err("lag from a nonzero start"),
+        (true, true) => Ok(()),
     }
 }
 
@@ -233,7 +248,13 @@ impl Translation {
                     curve,
                     bipolar,
                     scale: None,
+                    smoothing: 0.0,
+                    extra: None,
+                    shared,
                 }) if scale.is_none() => {
+                    if let Some(shared) = shared {
+                        self.share(shared);
+                    }
                     let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
                     let factor = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
                     let points = match self.live_points(nested, &curve, bipolar, factor)? {
@@ -244,7 +265,7 @@ impl Translation {
                 }
                 Ok(Signal::Live { .. }) => {
                     return Ok(Err(gap(
-                        "ratio modulated by several live sources",
+                        "ratio modulated by several, smoothed or summed live sources",
                         describe(&[nested]),
                         NotModeled,
                     )));
@@ -296,7 +317,29 @@ impl Translation {
                 curve,
                 bipolar,
                 scale: depth,
+                smoothing,
+                extra,
+                shared,
             } => {
+                let mapped = !connection
+                    .attribute("Mapper")
+                    .unwrap_or_default()
+                    .is_empty();
+                // A lag or a sum passes unchanged only through linear stages.
+                if (smoothing > 0.0 || extra.is_some()) && mapped {
+                    return Ok(Err(gap(
+                        "smoothed or summed source through a mapper",
+                        "",
+                        NotModeled,
+                    )));
+                }
+                if extra.is_some() && law == Law::Factor {
+                    return Ok(Err(gap(
+                        "summed waveforms into gain (not a product of routes)",
+                        "",
+                        NotModeled,
+                    )));
+                }
                 let scale = match (scale, depth) {
                     (Some(_), Some(_)) => {
                         return Ok(Err(gap(
@@ -310,7 +353,7 @@ impl Translation {
                     // linear in the source: adding, no mapper, no `1 − s`.
                     (None, Some(_))
                         if law == Law::Factor
-                            || !connection.attribute("Mapper").unwrap_or_default().is_empty()
+                            || mapped
                             || (!bipolar && number(connection, "Inverted", 0.0)? != 0.0) =>
                     {
                         return Ok(Err(gap(
@@ -330,16 +373,6 @@ impl Translation {
                         NotModeled,
                     )));
                 }
-                let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
-                let points = match self.live_points(connection, &curve, bipolar, |m| match law {
-                    Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
-                    Law::Factor => 1.0 - Mapper::position(m, bipolar),
-                    Law::Add(_) if ir_bipolar => (m + 1.0) * 0.5,
-                    Law::Add(_) => m,
-                })? {
-                    Ok(points) => points,
-                    Err(gap) => return Ok(Err(gap)),
-                };
                 let (target, depth) = match law {
                     Law::Factor => (ir::Target::Amplitude, ir::Depth::Normalized(ratio.abs())),
                     Law::Add(ir::Target::Pitch) => (
@@ -348,8 +381,25 @@ impl Translation {
                     ),
                     Law::Add(target) => (target, ir::Depth::Normalized(ratio)),
                 };
-                let route = self.route(modulator, target, depth, points, scale);
-                out.routes.push(route);
+                for (modulator, curve) in std::iter::once((modulator, curve)).chain(extra) {
+                    let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
+                    let points =
+                        match self.live_points(connection, &curve, bipolar, |m| match law {
+                            Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
+                            Law::Factor => 1.0 - Mapper::position(m, bipolar),
+                            Law::Add(_) if ir_bipolar => (m + 1.0) * 0.5,
+                            Law::Add(_) => m,
+                        })? {
+                            Ok(points) => points,
+                            Err(gap) => return Ok(Err(gap)),
+                        };
+                    let route =
+                        self.route(modulator, target, depth, points, scale.clone(), smoothing);
+                    out.routes.push(route);
+                }
+                if let Some(shared) = shared {
+                    self.share(shared);
+                }
             }
         }
         Ok(Ok(()))
@@ -374,35 +424,38 @@ impl Translation {
             (true, true) => -s,
             (true, false) => 1.0 - s,
         };
-        // Breakpoints: the source curve's, plus where the mapper's
-        // table knots fall inside each of its segments.
-        let mut inputs: Vec<f64> = curve.iter().map(|p| p.0).collect();
-        if let Some(mapper) = &mapper {
-            for pair in curve.windows(2) {
-                let (w0, w1) = (pair[0].0, pair[1].0);
-                let p0 = Mapper::position(invert(pair[0].1), bipolar);
-                let p1 = Mapper::position(invert(pair[1].1), bipolar);
-                if p0 == p1 {
-                    continue;
-                }
-                for knot in mapper.knots() {
-                    let t = (knot - p0) / (p1 - p0);
-                    if t > 0.0 && t < 1.0 {
-                        inputs.push(w0 + t * (w1 - w0));
+        // Breakpoints: the source curve's (a repeated input is a jump, kept
+        // as both sides), plus where the mapper's table knots fall inside
+        // each of its segments.
+        let mut points: Vec<(f64, f64)> = Vec::new();
+        let mut push = |w: f64, s: f64| {
+            let s = invert(s);
+            let m = mapper.as_ref().map_or(s, |m| m.apply(s, bipolar));
+            let point = (w, f(m));
+            if points.last() != Some(&point) {
+                points.push(point);
+            }
+        };
+        for pair in curve.windows(2) {
+            let ((w0, s0), (w1, s1)) = (pair[0], pair[1]);
+            push(w0, s0);
+            if let Some(mapper) = mapper.as_ref().filter(|_| w1 > w0) {
+                let p0 = Mapper::position(invert(s0), bipolar);
+                let p1 = Mapper::position(invert(s1), bipolar);
+                if p0 != p1 {
+                    let mut ts: Vec<f64> = mapper
+                        .knots()
+                        .map(|knot| (knot - p0) / (p1 - p0))
+                        .filter(|t| *t > 0.0 && *t < 1.0)
+                        .collect();
+                    ts.sort_by(f64::total_cmp);
+                    for t in ts {
+                        push(w0 + t * (w1 - w0), s0 + t * (s1 - s0));
                     }
                 }
             }
+            push(w1, s1);
         }
-        inputs.sort_by(f64::total_cmp);
-        inputs.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
-        let points: Vec<(f64, f64)> = inputs
-            .into_iter()
-            .map(|w| {
-                let s = invert(interpolate(curve, w));
-                let m = mapper.as_ref().map_or(s, |m| m.apply(s, bipolar));
-                (w, f(m))
-            })
-            .collect();
         Ok(Ok(points))
     }
 
@@ -433,9 +486,11 @@ impl Translation {
         depth: ir::Depth,
         points: Vec<(f64, f64)>,
         scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        smoothing: f64,
     ) -> ir::RouteRef {
         let near = |f: &dyn Fn(f64) -> f64| points.iter().all(|&(w, y)| (y - f(w)).abs() < 1e-9);
         let mut route = ir::Route::new(source, target, depth);
+        route.smoothing = ir::Time::Seconds(smoothing);
         if near(&|w| 1.0 - w) && !near(&|w| w) {
             route.invert = true;
         } else if !near(&|w| w) {
@@ -490,6 +545,9 @@ impl Translation {
                 curve,
                 bipolar: polar,
                 scale: None,
+                smoothing: 0.0,
+                extra: None,
+                shared: None,
             }))
         };
         // Key followers: exact at every MIDI key.
@@ -567,11 +625,13 @@ impl Translation {
             }));
         }
         let inputs = live_inputs(node)?;
-        let only_depth = kind == "LFO"
-            && inputs
-                .iter()
-                .all(|c| c.attribute("Destination") == Some("Depth"));
-        if !inputs.is_empty() && !only_depth {
+        let modulable = |c: &Node| {
+            matches!(
+                (kind, c.attribute("Destination")),
+                ("LFO" | "MultiLFO", Some("Depth")) | ("LFO", Some("Freq"))
+            )
+        };
+        if !inputs.iter().all(modulable) {
             return Ok(Err(gap(
                 "modulated modulation source",
                 format!("{kind} {}", describe(&inputs)),
@@ -581,8 +641,40 @@ impl Translation {
         // A modulated LFO `Depth` takes the factor law (v1-measured, as
         // `Ratio`): Depth × (1 − max(r, 0) + r·u). A constant input folds into
         // Depth; one live input becomes the route's depth scale.
-        let (mut factor, mut scale) = (1.0, None);
+        //
+        // A modulated LFO `Freq` adds 20·r·s Hz (v1, measured on unsynced
+        // LFOs); the IR has no rate input, so only constant sources fold.
+        let (mut factor, mut scale, mut hertz) = (1.0, None, 0.0);
         for nested in inputs {
+            if nested.attribute("Destination") == Some("Freq") {
+                if number(node, "SyncToHost", 0.0)? != 0.0 {
+                    let what = describe(&[nested]);
+                    return Ok(Err(gap(
+                        "synchronized LFO Freq modulation",
+                        what,
+                        UnknownLaw,
+                    )));
+                }
+                match self.signal(node, nested)? {
+                    Err(gap) => return Ok(Err(gap)),
+                    Ok(Signal::Fixed { value, bipolar }) => {
+                        match self.stage(nested, value, bipolar)? {
+                            Ok(value) => hertz += 20.0 * number(nested, "Ratio", 1.0)? * value,
+                            Err(gap) => return Ok(Err(gap)),
+                        }
+                    }
+                    Ok(Signal::Live { .. }) => {
+                        let retrigger = number(node, "Retrigger", 1.0)?;
+                        let what = format!("{}, Retrigger {retrigger}", describe(&[nested]));
+                        return Ok(Err(gap(
+                            "LFO rate modulated by a live source",
+                            what,
+                            NotModeled,
+                        )));
+                    }
+                }
+                continue;
+            }
             let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
             match self.signal(node, nested)? {
                 Err(gap) => return Ok(Err(gap)),
@@ -591,7 +683,13 @@ impl Translation {
                     curve,
                     bipolar,
                     scale: None,
+                    smoothing: 0.0,
+                    extra: None,
+                    shared,
                 }) if scale.is_none() => {
+                    if let Some(shared) = shared {
+                        self.share(shared);
+                    }
                     let f = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
                     match self.live_points(nested, &curve, bipolar, f)? {
                         Ok(points) => scale = Some((modulator, points)),
@@ -600,7 +698,7 @@ impl Translation {
                 }
                 Ok(Signal::Live { .. }) => {
                     return Ok(Err(gap(
-                        "LFO depth modulated by several live sources",
+                        "LFO depth modulated by several, smoothed or summed live sources",
                         describe(&[nested]),
                         NotModeled,
                     )));
@@ -646,17 +744,88 @@ impl Translation {
                         NotModeled,
                     )));
                 }
+                let shared = self.shared(node, Vec::new());
                 let polar = number(node, "Bipolar", 0.0)? != 0.0;
                 Ok(Ok(Signal::Live {
                     modulator,
                     curve: if polar { bipolar } else { identity },
                     bipolar: polar,
                     scale: None,
+                    smoothing: 0.0,
+                    extra: None,
+                    shared,
                 }))
             }
-            "LFO" => self.lfo(node, factor, scale),
+            "LFO" | "MultiLFO" | "StepEnvelope" => {
+                let signal = match kind {
+                    "LFO" => self.lfo(node, factor, scale, hertz)?,
+                    "MultiLFO" => self.multi_lfo(node, factor, scale)?,
+                    _ => self.steps(node)?,
+                };
+                let mut signal = signal;
+                if let Ok(Signal::Live {
+                    modulator,
+                    extra,
+                    shared,
+                    ..
+                }) = &mut signal
+                {
+                    let mut modulators = vec![*modulator];
+                    modulators.extend(extra.as_ref().map(|e| e.0));
+                    *shared = self.shared(node, modulators);
+                }
+                Ok(signal)
+            }
             _ => Ok(Err(gap("modulation source", kind, NotModeled))),
         }
+    }
+
+    /// UVI runs a program- or layer-level source once, for every note it
+    /// serves. A program-level retriggered LFO becomes the IR's instrument-wide
+    /// LFO restarted by every voice start; how UVI's shared instance treats
+    /// overlapping notes is inferred, not measured, so it is reported. A
+    /// layer-level one (restarted by its layer's notes only) and shared
+    /// envelopes stay per voice, reported as approximated. Free-running LFOs
+    /// are already one shared cycle.
+    fn shared(&self, node: Node, modulators: Vec<ir::ModulatorRef>) -> Option<Shared> {
+        let scope = node.parent_element()?.parent_element()?.tag_name().name();
+        let retriggered = modulators.iter().any(|m| {
+            matches!(&self.ir.modulators[m.0].source, ir::ModulationSource::Lfo(l) if l.retrigger)
+        });
+        let lfo = !modulators.is_empty();
+        if !matches!(scope, "Program" | "Layer")
+            || (lfo && !retriggered)
+            || self.shared_sources.contains(&node.id())
+        {
+            return None;
+        }
+        Some(Shared {
+            node: node.id(),
+            location: path(node),
+            feature: format!("{scope}-level {}", node.tag_name().name()),
+            master: scope == "Program" && lfo,
+            modulators,
+        })
+    }
+
+    fn share(&mut self, shared: Shared) {
+        if !self.shared_sources.insert(shared.node) {
+            return;
+        }
+        let value = if shared.master {
+            for m in &shared.modulators {
+                self.ir.modulators[m.0].scope = ir::Scope::Master;
+            }
+            "one instance restarted by every note-on (overlapping notes: inferred, not measured)"
+        } else {
+            "one shared instance in UVI, approximated per voice"
+        };
+        self.ir.unsupported.push(ir::Unsupported {
+            location: shared.location,
+            feature: shared.feature,
+            value: value.into(),
+            reason: ir::Reason::UnknownLaw,
+        });
     }
 
     fn lfo(
@@ -664,6 +833,7 @@ impl Translation {
         node: Node,
         factor: f64,
         scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+        hertz: f64,
     ) -> Result<Result<Signal, Gap>, String> {
         use ir::Reason::{NotModeled, UnknownLaw};
         let retrigger = match number(node, "Retrigger", 1.0)? {
@@ -685,10 +855,22 @@ impl Translation {
                 return Ok(Err(gap("LFO waveform", what, UnknownLaw)));
             }
         };
+        let phase = number(node, "Phase", 0.0)?.rem_euclid(1.0);
+        // Measured (v1): a one-pole keeping (1/3)^(1/(Smooth·rate)) per
+        // sample, so τ = Smooth/ln 3 and 99% of a step after Smooth·ln 100/ln 3.
         let smooth = number(node, "Smooth", 0.0)?;
-        if smooth >= NEGLIGIBLE_SMOOTH {
-            return Ok(Err(gap("LFO Smooth", smooth.to_string(), NotModeled)));
-        }
+        let starts_at_zero = shape != ir::LfoShape::Square && (phase == 0.0 || phase == 0.5);
+        let smoothing = if smooth < NEGLIGIBLE_SMOOTH {
+            0.0
+        } else if let Err(why) = smoothable(retrigger, starts_at_zero) {
+            return Ok(Err(gap(
+                "LFO Smooth",
+                format!("{smooth}: {why}"),
+                NotModeled,
+            )));
+        } else {
+            smooth * 100f64.ln() / 3f64.ln()
+        };
         let polar = number(node, "Bipolar", 1.0)? != 0.0;
         let delay = number(node, "DelayTime", 0.0)?.max(0.0);
         let rise = number(node, "RiseTime", 0.0)?.max(0.0);
@@ -698,7 +880,7 @@ impl Translation {
             let what = format!("Bipolar {polar}, Retrigger {retrigger}");
             return Ok(Err(gap("LFO delay or rise", what, NotModeled)));
         }
-        let freq = number(node, "Freq", 0.5)?;
+        let freq = (number(node, "Freq", 0.5)? + hertz).clamp(0.0, 20.0);
         let rate = if number(node, "SyncToHost", 0.0)? != 0.0 {
             // Synchronized Freq is the cycle length in beats: tempo/60/Freq Hz.
             ir::Frequency::Beats(freq)
@@ -718,7 +900,7 @@ impl Translation {
             rate,
             delay: ir::Time::Seconds(delay),
             fade_in: ir::Time::Seconds(rise),
-            phase: number(node, "Phase", 0.0)?.rem_euclid(1.0),
+            phase,
             retrigger,
         };
         let modulator = self.modulator(
@@ -735,6 +917,220 @@ impl Translation {
             },
             bipolar: polar,
             scale,
+            smoothing,
+            extra: None,
+            shared: None,
+        }))
+    }
+
+    /// A `MultiLFO`. Measured (v1, `UVI_MULTILFO_ENDPOINT_EVIDENCE.md`) only for
+    /// SineDepth 1 with NoiseDepth n ≥ 0, normalized and bipolar:
+    /// Depth·(sin 2π(phase) + n·noise)/(1 + n), the noise a uniform −1..1 value
+    /// drawn for each half cycle (an IR sample-and-hold at twice the rate),
+    /// Smooth an Euler one-pole of time constant Smooth per 32-frame point.
+    /// Other waveform mixes, normalization and polarity are unmeasured.
+    fn multi_lfo(
+        &mut self,
+        node: Node,
+        factor: f64,
+        scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+    ) -> Result<Result<Signal, Gap>, String> {
+        use ir::Reason::{InvalidValue, NotModeled, UnknownLaw};
+        let weights: Vec<f64> = ["SineDepth", "TriangleDepth", "SawDepth", "SquareDepth"]
+            .into_iter()
+            .map(|k| number(node, k, 0.0))
+            .collect::<Result<_, _>>()?;
+        let noise = number(node, "NoiseDepth", 0.0)?;
+        let settings = [
+            ("NormalizeOutput", 1.0),
+            ("Bipolar", 1.0),
+            ("Invert", 0.0),
+            ("RiseTime", 0.0),
+            ("ManualTrigger", 0.0),
+        ];
+        let mut unmeasured = Vec::new();
+        if weights != [1.0, 0.0, 0.0, 0.0] || !(0.0..=1.0).contains(&noise) {
+            unmeasured.push(format!("waveforms {weights:?} + noise {noise}"));
+        }
+        for (name, measured) in settings {
+            let value = number(node, name, measured)?;
+            if value != measured {
+                unmeasured.push(format!("{name} {value}"));
+            }
+        }
+        if !unmeasured.is_empty() {
+            return Ok(Err(gap("MultiLFO", unmeasured.join(", "), UnknownLaw)));
+        }
+        let retrigger = match number(node, "Retrigger", 1.0)? {
+            1.0 => true,
+            0.0 => false,
+            mode => return Ok(Err(gap("MultiLFO Retrigger", mode.to_string(), NotModeled))),
+        };
+        let phase = number(node, "Phase", 0.0)?.rem_euclid(1.0);
+        let smooth = number(node, "Smooth", 0.0)?;
+        // ponytail: the measured lag is Euler-stepped per 32 frames and starts
+        // from 0; the IR lag is its continuous limit (τ = Smooth, within 5% for
+        // every authored Smooth ≥ 0.0077 s at 48 kHz) and starts at the noise's
+        // first value. Exact discretization needs a per-route lag law.
+        let smoothing = if smooth <= 0.0 {
+            0.0
+        } else if let Err(why) = smoothable(retrigger, phase == 0.0 || phase == 0.5) {
+            return Ok(Err(gap(
+                "MultiLFO Smooth",
+                format!("{smooth}: {why}"),
+                NotModeled,
+            )));
+        } else {
+            smooth * 100f64.ln()
+        };
+        let freq = number(node, "Freq", 0.5)?;
+        if !(freq > 0.0 && freq <= 20.0) {
+            return Ok(Err(gap("MultiLFO Freq", freq.to_string(), InvalidValue)));
+        }
+        let synced = number(node, "SyncToHost", 0.0)? != 0.0;
+        // Synchronized Freq is the cycle length in beats, as for `LFO`.
+        let rate = |cycles: f64| {
+            if synced {
+                ir::Frequency::Beats(freq / cycles)
+            } else {
+                ir::Frequency::Hertz(freq * cycles)
+            }
+        };
+        let lfo = |shape, rate, phase| {
+            ir::ModulationSource::Lfo(ir::Lfo {
+                shape,
+                rate,
+                delay: ir::Time::ZERO,
+                fade_in: ir::Time::ZERO,
+                phase,
+                retrigger,
+            })
+        };
+        let id = node.id();
+        let sine = self.modulator(
+            format!("node {id:?}"),
+            lfo(ir::LfoShape::Sine, rate(1.0), phase),
+        );
+        let depth = number(node, "Depth", 1.0)?.clamp(0.0, 1.0) * factor / (1.0 + noise);
+        let extra = (noise > 0.0).then(|| {
+            let held = lfo(
+                ir::LfoShape::SampleAndHold,
+                rate(2.0),
+                (2.0 * phase).fract(),
+            );
+            let modulator = self.modulator(format!("node {id:?} noise"), held);
+            (modulator, vec![(0.0, -depth * noise), (1.0, depth * noise)])
+        });
+        Ok(Ok(Signal::Live {
+            modulator: sine,
+            curve: vec![(0.0, -depth), (1.0, depth)],
+            bipolar: true,
+            scale,
+            smoothing,
+            extra,
+            shared: None,
+        }))
+    }
+
+    /// A `StepEnvelope`: `NumSteps` `Levels`, each held for one step of
+    /// `Freq` beats when synchronized (v1-measured: step ⌊beat/Freq⌋ mod
+    /// NumSteps, free-running on the host beat) or 1/`Freq` s otherwise
+    /// (Falcon manual: steps per second), cycling. An IR rising saw spans one
+    /// cycle; the staircase is the route shape. Measured unipolar, held,
+    /// unsmoothed and at Depth 1 only.
+    fn steps(&mut self, node: Node) -> Result<Result<Signal, Gap>, String> {
+        use ir::Reason::{InvalidValue, NotModeled, UnknownLaw};
+        let mut unmeasured = Vec::new();
+        for (name, measured) in [
+            ("Bipolar", 0.0),
+            ("InterpolationMode", 0.0),
+            ("Smooth", 0.0),
+            ("Depth", 1.0),
+        ] {
+            let value = number(node, name, measured)?;
+            if value != measured {
+                unmeasured.push(format!("{name} {value}"));
+            }
+        }
+        if !unmeasured.is_empty() {
+            return Ok(Err(gap("StepEnvelope", unmeasured.join(", "), UnknownLaw)));
+        }
+        if number(node, "ManualTrigger", 0.0)? != 0.0 {
+            return Ok(Err(gap("StepEnvelope ManualTrigger", "", NotModeled)));
+        }
+        // Trigger modes are the LFO's (manual): 0 free, 1 per note, 2 legato.
+        let retrigger = match number(node, "Retrigger", 0.0)? {
+            0.0 => false,
+            1.0 => true,
+            mode => {
+                return Ok(Err(gap(
+                    "StepEnvelope Retrigger",
+                    mode.to_string(),
+                    NotModeled,
+                )));
+            }
+        };
+        let count = number(node, "NumSteps", 16.0)?;
+        let levels: Option<Vec<f64>> = node
+            .attribute("Levels")
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(|v| {
+                v.replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+            })
+            .collect();
+        let freq = number(node, "Freq", 1.0)?;
+        let levels = match levels {
+            Some(levels)
+                if (1.0..=128.0).contains(&count)
+                    && count.fract() == 0.0
+                    && levels.len() >= count as usize
+                    && freq > 0.0 =>
+            {
+                levels
+            }
+            _ => {
+                return Ok(Err(gap(
+                    "StepEnvelope steps, levels or Freq",
+                    "",
+                    InvalidValue,
+                )));
+            }
+        };
+        let n = count as usize;
+        let rate = if number(node, "SyncToHost", 0.0)? != 0.0 {
+            ir::Frequency::Beats(freq * count)
+        } else {
+            ir::Frequency::Hertz(freq / count)
+        };
+        let saw = ir::Lfo {
+            shape: ir::LfoShape::SawUp,
+            rate,
+            delay: ir::Time::ZERO,
+            fade_in: ir::Time::ZERO,
+            phase: 0.0,
+            retrigger,
+        };
+        let modulator = self.modulator(
+            format!("node {:?}", node.id()),
+            ir::ModulationSource::Lfo(saw),
+        );
+        let curve = levels[..n]
+            .iter()
+            .enumerate()
+            .flat_map(|(k, &level)| [(k as f64 / count, level), ((k + 1) as f64 / count, level)])
+            .collect();
+        Ok(Ok(Signal::Live {
+            modulator,
+            curve,
+            bipolar: false,
+            scale: None,
+            smoothing: 0.0,
+            extra: None,
+            shared: None,
         }))
     }
 
@@ -991,7 +1387,7 @@ mod tests {
     #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
-            r#"<StepEnvelope Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
+            r#"<AHD Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
                <SignalConnection Source="@PitchBend" Destination="Gain" Ratio="1"/>"#,
@@ -1013,16 +1409,158 @@ mod tests {
                     "pitch bend outside pitch (bend is native note expression)",
                     ir::Reason::NotModeled
                 ),
+                ("Program-level LFO", ir::Reason::UnknownLaw),
             ]
         );
-        assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: StepEnvelope");
+        assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: AHD");
         assert_eq!(ir.zones[0].routes.len(), 1);
         // LFO pitch depth × (1 − key position): a modulator × modulator product.
         let route = &ir.routes[ir.zones[0].routes[0].0];
         let scale = route.scale.expect("ratio by key is a route scale");
-        assert_eq!(ir.modulators[scale.source.0].source, ir::ModulationSource::Key);
+        assert_eq!(
+            ir.modulators[scale.source.0].source,
+            ir::ModulationSource::Key
+        );
         let points = &ir.shapes[scale.shape.unwrap().0].points;
         assert_eq!(points.first(), Some(&(0.0, 1.0)));
         assert_eq!(points.last(), Some(&(1.0, 0.0)));
+    }
+
+    fn routes(ir: &ir::Instrument) -> Vec<&ir::Route> {
+        ir.zones[0].routes.iter().map(|r| &ir.routes[r.0]).collect()
+    }
+
+    fn lfo(ir: &ir::Instrument, route: &ir::Route) -> ir::Lfo {
+        match &ir.modulators[route.source.0].source {
+            ir::ModulationSource::Lfo(lfo) => *lfo,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn multi_lfo_sine_and_noise_are_two_smoothed_routes() {
+        let ir = translate(
+            r#"<MultiLFO Name="M" SineDepth="1" NoiseDepth="0.5" Depth="0.6" Freq="4" Phase="0.5" Smooth="0.1"/>"#,
+            r#"<SignalConnection Source="$Program/M" Destination="Pitch" Ratio="2"/>"#,
+            "",
+        );
+        let routes = routes(&ir);
+        assert_eq!(routes.len(), 2, "{:?}", ir.unsupported);
+        // Depth 0.6/(1 + 0.5) = 0.4 of sine, 0.2 of noise, as IR shapes over w.
+        for (route, shape, hertz, phase, points) in [
+            (
+                routes[0],
+                ir::LfoShape::Sine,
+                4.0,
+                0.5,
+                [(0.0, 0.3), (1.0, 0.7)],
+            ),
+            (
+                routes[1],
+                ir::LfoShape::SampleAndHold,
+                8.0,
+                0.0,
+                [(0.0, 0.4), (1.0, 0.6)],
+            ),
+        ] {
+            let lfo = lfo(&ir, route);
+            assert_eq!(
+                (lfo.shape, lfo.rate, lfo.phase),
+                (shape, ir::Frequency::Hertz(hertz), phase)
+            );
+            assert!(lfo.retrigger);
+            assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(2.0)));
+            let got = shape_points(&ir, route);
+            assert!(
+                got.iter()
+                    .zip(points)
+                    .all(|(a, b)| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12),
+                "{got:?}"
+            );
+            assert!((route.smoothing.seconds() - 0.1 * 100f64.ln()).abs() < 1e-12);
+        }
+        // A sum cannot pass the gain law, nor can unmeasured waveform mixes.
+        let ir = translate(
+            r#"<MultiLFO Name="M" SineDepth="1" NoiseDepth="0.5"/><MultiLFO Name="T" TriangleDepth="1"/>"#,
+            r#"<SignalConnection Source="$Program/M" Destination="Gain" Ratio="1"/>
+               <SignalConnection Source="$Program/T" Destination="Pan" Ratio="1"/>"#,
+            "",
+        );
+        assert!(ir.zones[0].routes.is_empty());
+        let reasons: Vec<_> = ir.unsupported.iter().map(|u| u.reason).collect();
+        assert_eq!(reasons, [ir::Reason::NotModeled, ir::Reason::UnknownLaw]);
+    }
+
+    fn shape_points(ir: &ir::Instrument, route: &ir::Route) -> Vec<(f64, f64)> {
+        route
+            .shape
+            .map_or_else(Vec::new, |s| ir.shapes[s.0].points.clone())
+    }
+
+    #[test]
+    fn step_envelope_is_a_free_saw_through_a_staircase() {
+        let ir = translate(
+            r#"<StepEnvelope Name="S" SyncToHost="1" Freq="0.25" NumSteps="4" Levels="0,25 1 0 0,5 0,9"/>
+               <StepEnvelope Name="B" Bipolar="1" Levels="0"/>"#,
+            r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
+               <SignalConnection Source="$Program/B" Destination="Gain" Ratio="1"/>"#,
+            "",
+        );
+        let (route, _) = only_route(&ir);
+        let lfo = lfo(&ir, route);
+        assert_eq!(
+            (lfo.shape, lfo.rate, lfo.retrigger),
+            (ir::LfoShape::SawUp, ir::Frequency::Beats(1.0), false)
+        );
+        assert_eq!(
+            (route.target, route.depth),
+            (ir::Target::Amplitude, ir::Depth::Normalized(1.0))
+        );
+        assert_eq!(
+            shape_points(&ir, route),
+            [
+                (0.0, 0.25),
+                (0.25, 0.25),
+                (0.25, 1.0),
+                (0.5, 1.0),
+                (0.5, 0.0),
+                (0.75, 0.0),
+                (0.75, 0.5),
+                (1.0, 0.5)
+            ]
+        );
+        assert_eq!(ir.unsupported.len(), 1);
+        assert_eq!(
+            (ir.unsupported[0].feature.as_str(), ir.unsupported[0].reason),
+            ("StepEnvelope", ir::Reason::UnknownLaw)
+        );
+    }
+
+    #[test]
+    fn lfo_freq_folds_constants_and_smooth_becomes_a_lag() {
+        let ir = translate(
+            r#"<ConstantModulation Name="M" Value="0.5"/>
+               <LFO Name="V" Freq="1" Smooth="0.1"><Connections>
+                 <SignalConnection Source="$Program/M" Destination="Freq" Ratio="0.1"/>
+               </Connections></LFO>
+               <LFO Name="W"><Connections>
+                 <SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.1"/>
+               </Connections></LFO>"#,
+            r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="1"/>
+               <SignalConnection Source="$Program/W" Destination="Pitch" Ratio="1"/>"#,
+            "",
+        );
+        let (route, _) = only_route(&ir);
+        // 1 Hz + 20 × 0.1 × 0.5.
+        assert_eq!(lfo(&ir, route).rate, ir::Frequency::Hertz(2.0));
+        assert!((route.smoothing.seconds() - 0.1 * 100f64.ln() / 3f64.ln()).abs() < 1e-12);
+        let features: Vec<_> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
+        assert_eq!(
+            features,
+            ["Program-level LFO", "LFO rate modulated by a live source"]
+        );
+        // A program-level retriggered LFO is one instance restarted by every note.
+        assert_eq!(ir.modulators[route.source.0].scope, ir::Scope::Master);
+        assert!(ir.unsupported[0].value.contains("inferred, not measured"));
     }
 }
