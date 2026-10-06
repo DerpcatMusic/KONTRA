@@ -18,7 +18,7 @@ use std::path::Path;
 
 use sampler_core::{
     BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime,
+    Region, Runtime, Stealing,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Mpe, Packets, Zone};
@@ -529,7 +529,14 @@ impl Core for V2Core {
 
     fn problems(&self, part: usize) -> RuntimeProblems {
         let Some(Some(p)) = self.parts.get(part) else { return RuntimeProblems::default() };
-        RuntimeProblems { nonfinite: p.runtime.nonfinite_frames(), ..p.problems }
+        let stats = p.runtime.stats();
+        RuntimeProblems {
+            nonfinite: stats.nonfinite_frames,
+            underruns: stats.stream_underruns,
+            capacity_drops: p.problems.capacity_drops + stats.voice_drops,
+            stolen_voices: p.runtime.steals(),
+            ..p.problems
+        }
     }
 
     fn latency(&self) -> u32 {
@@ -784,7 +791,10 @@ impl CoreLoader for V2Loader {
             .collect();
         let limits = limits(&prepared);
         report.decoded.script_callbacks = limits.behaviors;
-        let runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let voices = limits.voices;
+        let mut runtime = Runtime::new(prepared, limits).map_err(core)?;
+        // Full polyphony steals (released, then quietest) rather than refusing notes.
+        runtime.set_voice_stealing(Some(Stealing::for_limits(runtime.sample_rate(), voices))).map_err(core)?;
         if runtime.bus_count() + 1 != tree.nodes.len() && tree.nodes.len() > 1 {
             return Err(CoreError::Invalid(format!(
                 "{} mixer nodes for {} runtime buses",
@@ -855,6 +865,8 @@ mod tests {
         assert_eq!(done, Some(Progress::DONE));
         assert_eq!(loaded.tree.nodes.len(), 1);
         assert_eq!(loaded.report.decoded.format, "WAV");
+        let part = loaded.part.as_ref().unwrap();
+        assert!(part.runtime.voice_stealing().is_some(), "full polyphony steals");
 
         let mut core = V2Core::with_parts(2, 48000.0);
         assert!(core.install(0, loaded.part).0.is_none());

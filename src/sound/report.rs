@@ -83,6 +83,9 @@ pub struct RuntimeProblems {
     /// program changes): counted, never silently dropped.
     pub narrowed_input: u64,
     pub ignored_input: u64,
+    /// Voices faded out to make room at full polyphony.
+    #[serde(default)]
+    pub stolen_voices: u64,
 }
 
 /// A part's load report.
