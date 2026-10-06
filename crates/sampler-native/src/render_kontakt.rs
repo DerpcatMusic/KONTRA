@@ -3,7 +3,7 @@
 
 use crate::wave;
 use sampler_core::{Limits, Outcome, Runtime};
-use sampler_midi::{Applied, Ingress, Packets, TimedPacket, Version};
+use sampler_midi::{Ingress, Packets, TimedPacket, Version};
 use std::{
     fs::OpenOptions,
     io::{self, BufWriter, Write},
@@ -163,7 +163,7 @@ pub fn run(instrument: &Path, output: &Path, messages: &[Message], scripts: bool
         }
     })
     .map_err(|e| io::Error::other(e.to_string()))?;
-    render(loaded, output, notes)
+    render(loaded, output, messages)
 }
 
 pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, messages: &[Message]) -> io::Result<()> {

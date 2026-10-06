@@ -13,7 +13,7 @@ pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Res
     };
     let loaded = sampler_uvi::load_program_with_options(&bank, program, &options)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    render_kontakt::render(loaded, output, notes)
+    render_kontakt::render(loaded, output, &render_kontakt::note_messages(notes))
 }
 
 #[cfg(not(feature = "library-access"))]
