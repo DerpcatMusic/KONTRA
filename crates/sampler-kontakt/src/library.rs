@@ -85,7 +85,12 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         assets: HashMap::new(),
         locations: Vec::new(),
         start_criteria: Vec::new(),
+        voice_groups: Vec::new(),
     };
+    if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
+        out.voice_groups(&chunk.data)
+            .map_err(|e| decode("voice groups", e))?;
+    }
     let groups = GroupList::try_from(
         program
             .0
@@ -316,6 +321,54 @@ struct Translation {
         ir::GroupRef,
         Vec<ni_file::kontakt::objects::StartCriteriaParams>,
     )>,
+    /// Kontakt voice group index -> `ir.voice_limits` index.
+    voice_groups: Vec<Option<usize>>,
+}
+
+const VOICE_GROUPS: u16 = 0x32;
+
+/// One `BVoiceLimit` (version 0x60): name, kill mode (Any, Oldest, Newest,
+/// Highest, Lowest), prefer released, max voices, fade ms, exclusion group.
+fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error> {
+    fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], ni_file::Error> {
+        let (head, rest) = data
+            .split_first_chunk::<N>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice limit".into()))?;
+        *data = rest;
+        Ok(*head)
+    }
+    let header = take::<3>(data)?;
+    if header != [0, 0x60, 0] {
+        return Err(ni_file::Error::Generic(format!(
+            "voice limit header {header:02x?}"
+        )));
+    }
+    let chars = u32::from_le_bytes(take(data)?) as usize;
+    if data.len() < chars * 2 {
+        return Err(ni_file::Error::Generic("truncated voice limit name".into()));
+    }
+    *data = &data[chars * 2..];
+    let kill = match i16::from_le_bytes(take(data)?) {
+        0 => ir::Kill::Any,
+        1 => ir::Kill::Oldest,
+        2 => ir::Kill::Newest,
+        3 => ir::Kill::Highest,
+        4 => ir::Kill::Lowest,
+        other => return Err(ni_file::Error::Generic(format!("voice kill mode {other}"))),
+    };
+    let prefer_released = take::<1>(data)?[0] != 0;
+    let voices = i32::from_le_bytes(take(data)?).max(1) as u32;
+    let fade = i32::from_le_bytes(take(data)?).max(0);
+    let exclusion = i32::from_le_bytes(take(data)?);
+    Ok((
+        ir::VoiceLimit {
+            voices,
+            kill,
+            prefer_released,
+            fade: ir::Time::Milliseconds(f64::from(fade)),
+        },
+        exclusion,
+    ))
 }
 
 /// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
@@ -340,6 +393,38 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
+    /// defined voice groups, then one voice limit per defined group.
+    fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
+        let (instrument, _) = voice_limit(&mut data)?;
+        self.ir.voice_limit = Some(instrument);
+        let (defined, mut data) = data
+            .split_first_chunk::<16>()
+            .ok_or_else(|| ni_file::Error::Generic("truncated voice groups".into()))?;
+        self.voice_groups = vec![None; 128];
+        for g in 0..128 {
+            if defined[g / 8] & (1 << (g % 8)) != 0 {
+                let (limit, exclusion) = voice_limit(&mut data)?;
+                if exclusion >= 0 {
+                    self.unsupported(
+                        &format!("voice group {g}"),
+                        "voice group exclusion group",
+                        exclusion,
+                        ir::Reason::NotModeled,
+                    );
+                }
+                self.ir.voice_limits.push(limit);
+                self.voice_groups[g] = Some(self.ir.voice_limits.len() - 1);
+            }
+        }
+        if !data.is_empty() {
+            return Err(ni_file::Error::Generic(format!(
+                "{} bytes after the voice groups",
+                data.len()
+            )));
+        }
+        Ok(())
+    }
     fn unsupported(
         &mut self,
         location: &str,
@@ -366,9 +451,13 @@ impl Translation {
         if v.release_trigger && v.release_trigger_note_monophonic {
             self.unsupported(&at, "monophonic release trigger", true, not_modeled);
         }
-        if v.voice_group_index >= 0 {
-            self.unsupported(&at, "voice group", v.voice_group_index, not_modeled);
-        }
+        let voice_limit = usize::try_from(v.voice_group_index).ok().and_then(|g| {
+            let limit = self.voice_groups.get(g).copied().flatten();
+            if limit.is_none() {
+                self.unsupported(&at, "undefined voice group", g, ir::Reason::InvalidValue);
+            }
+            limit
+        });
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
@@ -610,6 +699,7 @@ impl Translation {
                 law: ir::PanLaw::Balance,
             },
             tune: ir::Pitch::Ratio(f64::from(v.tune)),
+            voice_limit,
             ..Default::default()
         });
         Ok(Some(GroupInfo {
@@ -1239,6 +1329,7 @@ mod modulation {
             assets: HashMap::new(),
             locations: Vec::new(),
             start_criteria: Vec::new(),
+            voice_groups: Vec::new(),
         }
     }
 
