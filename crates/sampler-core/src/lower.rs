@@ -289,7 +289,7 @@ impl Lowering<'_> {
             Some(VoiceChain::new(pre, post, 0).map_err(core(Stage::VoiceChains, owner.clone()))?)
         };
         let loop_range = |range: ir::LoopRange, mode| {
-            let crossfade = (range.crossfade.seconds() * asset_rate).round() as usize;
+            let crossfade = range.crossfade.frames(asset_rate) as usize;
             Loop {
                 start: range.start as usize,
                 end: range.end as usize,

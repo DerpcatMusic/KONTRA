@@ -1,5 +1,6 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod kontakt;
+mod render_kontakt;
 mod wave;
 use sampler_core::{
     Instruction, Limits, Outcome, Pcm, PlanControl, Prepared, Program, Region, Runtime,
@@ -349,9 +350,19 @@ fn run() -> io::Result<()> {
             Path::new(source),
             Path::new(output),
         ),
+        [command, instrument, output, rest @ ..]
+            if command == "render-kontakt" && rest.len() <= 2 =>
+        {
+            let scripts = !rest.iter().any(|a| a == "--no-scripts");
+            let sequence = rest.iter().find(|a| *a != "--no-scripts");
+            let sequence = sequence.map_or(Some(render_kontakt::DEFAULT_SEQUENCE), |s| s.to_str());
+            let notes = render_kontakt::parse(sequence.unwrap_or(""))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            render_kontakt::run(Path::new(instrument), Path::new(output), &notes, scripts)
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
+            "usage: sampler-native render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }

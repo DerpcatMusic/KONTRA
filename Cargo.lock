@@ -3658,7 +3658,11 @@ version = "0.1.0"
 name = "sampler-kontakt"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "ncw",
+ "ni-file",
  "sampler-core",
+ "sampler-ir",
  "sampler-ksp",
 ]
 
@@ -3681,6 +3685,7 @@ name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "sampler-core",
+ "sampler-ir",
  "sampler-kontakt",
  "sampler-ksp",
  "sampler-midi",

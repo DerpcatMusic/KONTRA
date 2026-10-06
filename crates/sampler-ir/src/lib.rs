@@ -11,7 +11,7 @@
 pub mod units;
 mod validate;
 
-pub use units::{Frequency, Gain, Pan, PanLaw, Pitch, Resonance, SourceFrames, Time};
+pub use units::{Frequency, Gain, Pan, PanLaw, Pitch, Resonance, SourceFrames, Span, Time};
 pub use validate::{Reference, ValidationError};
 
 macro_rules! reference {
@@ -143,6 +143,35 @@ pub struct Zone {
     pub chain: Option<ChainRef>,
     /// Voice-scope amplitude envelope; `None` is a gate (instant on/off).
     pub amplitude: Option<ModulatorRef>,
+}
+
+impl Instrument {
+    /// Keep only the zones `keep` accepts and the assets they use, renumbering
+    /// assets in their original order. Returns the original index of each
+    /// remaining asset, so a caller can load just those.
+    pub fn retain_zones(&mut self, mut keep: impl FnMut(&Zone) -> bool) -> Vec<usize> {
+        self.zones.retain(|zone| keep(zone));
+        let mut used = vec![false; self.assets.len()];
+        for zone in &self.zones {
+            if let Some(used) = used.get_mut(zone.asset.0) {
+                *used = true;
+            }
+        }
+        let kept: Vec<usize> = (0..self.assets.len()).filter(|&i| used[i]).collect();
+        let mut renumbered = vec![0; self.assets.len()];
+        for (new, &old) in kept.iter().enumerate() {
+            renumbered[old] = new;
+        }
+        let mut index = 0;
+        self.assets.retain(|_| {
+            index += 1;
+            used[index - 1]
+        });
+        for zone in &mut self.zones {
+            zone.asset = AssetRef(renumbered.get(zone.asset.0).copied().unwrap_or(zone.asset.0));
+        }
+        kept
+    }
 }
 
 impl Zone {
@@ -308,7 +337,7 @@ pub struct LoopRange {
     pub start: SourceFrames,
     /// Exclusive end.
     pub end: SourceFrames,
-    pub crossfade: Time,
+    pub crossfade: Span,
     pub alternating: bool,
 }
 
