@@ -1,4 +1,5 @@
-//! Host input as every core implementation receives it.
+//! Host input as the core receives it: exact host notes with per-note
+//! expression, and every channel message as a Universal MIDI Packet.
 //!
 //! Plain `Copy` data: converting a host event allocates nothing, so the audio
 //! thread can pass these straight to [`Core::event`](super::Core::event).
@@ -26,37 +27,54 @@ pub struct HostPattern {
 
 impl HostPattern {
     pub fn matches(self, note: HostNote) -> bool {
-        self.clap == note.clap && (self.port == -1 || self.port == i32::from(note.port))
+        self.clap == note.clap
+            && (self.port == -1 || self.port == i32::from(note.port))
             && (self.channel == -1 || self.channel == i32::from(note.channel))
             && (self.key == -1 || self.key == i32::from(note.key))
             && (self.id == -1 || self.id == note.id)
     }
 }
 
+/// A per-note expression (CLAP note expression, MPE dimension).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum HostExpression { Gain(f32), Tune(f32), Pan(f32) }
-
-/// What reaches a part.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum In {
-    /// Exact owner, velocity and initial tuning in semitones.
-    HostOn(HostNote, u8, f32),
-    HostOff(HostPattern),
-    HostChoke(HostPattern),
-    HostExpression(HostPattern, HostExpression),
-    NoteOn(u8, u8, u8),
-    NoteOff(u8, u8),
-    Cc(u8, u8, u8),
-    /// 0..=16383, centre 8192.
-    Bend(u8, u16),
-    Pressure(u8, u8),
-    PolyAt(u8, u8, u8),
-    /// Host note expressions, by channel and key: semitones, pressure
-    /// (0..=127), linear gain, pan (−1..=1), brightness (0..=127).
-    NoteTune(u8, u8, f32),
-    NotePressure(u8, u8, u8),
-    NoteGain(u8, u8, f32),
-    NotePan(u8, u8, f32),
-    NoteBrightness(u8, u8, u8),
+pub enum NoteExpression {
+    /// Semitones from the note's key.
+    Tune(f64),
+    /// Linear, 0..=1.
+    Gain(f64),
+    /// −1..=1.
+    Pan(f64),
+    /// 0..=1.
+    Pressure(f64),
+    /// 0..=1.
+    Brightness(f64),
 }
 
+/// What reaches the core.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Event {
+    /// An exact host note: velocity 0..=1, initial tuning in semitones.
+    NoteOn { note: HostNote, velocity: f64, tune: f64 },
+    NoteOff(HostPattern),
+    Choke(HostPattern),
+    Expression(HostPattern, NoteExpression),
+    /// A MIDI 1.0 (message type 2, one word used) or MIDI 2.0 (type 4)
+    /// channel voice packet, its group the host port's.
+    Ump([u32; 2]),
+}
+
+impl Event {
+    /// A MIDI 1.0 channel voice message as a packet.
+    pub fn midi1(status: u8, data1: u8, data2: u8) -> Self {
+        Self::Ump([0x2000_0000 | u32::from(status) << 16 | u32::from(data1 & 127) << 8 | u32::from(data2 & 127), 0])
+    }
+
+    /// The MIDI channel this event is addressed to; None for host-wide patterns.
+    pub fn channel(&self) -> Option<u8> {
+        match self {
+            Self::NoteOn { note, .. } => Some(note.channel),
+            Self::NoteOff(p) | Self::Choke(p) | Self::Expression(p, _) => u8::try_from(p.channel).ok(),
+            Self::Ump([word, _]) => Some((word >> 16) as u8 & 15),
+        }
+    }
+}

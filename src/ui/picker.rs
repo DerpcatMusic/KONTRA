@@ -16,29 +16,21 @@ pub(crate) use linux::Runtime;
 pub enum Ask {
     /// Open a validated native folder/file path without a blocking UI call.
     Reveal(PathBuf),
-    ScriptFile { part: usize, epoch: u64, slot: usize, control: usize, from: PathBuf, file_type: i32 },
-    Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
     /// A library folder (`single`), or a folder of libraries, from `from`.
     Folder { from: PathBuf, single: bool },
     /// Where to save a multi, starting in `from` with `name` filled in.
     Multi { from: PathBuf, name: String },
     /// A picture to show as the cover of the library in `library`.
     Artwork { library: PathBuf },
-    /// A folder of samples to make a library of, in `out`.
-    Samples { out: PathBuf },
 }
 
 /// What came back.
 pub enum Picked {
     DialogError(String),
     Revealed(Result<(), String>),
-    ScriptFile { part: usize, epoch: u64, slot: usize, control: usize, result: Result<String, String> },
-    Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
     Folder(PathBuf, bool),
     Multi(PathBuf),
     Artwork { library: PathBuf, picture: PathBuf },
-    /// A library made from samples: where, or why not.
-    Created(Result<PathBuf, String>),
 }
 
 #[derive(Default)]
@@ -150,29 +142,6 @@ impl Picker {
 fn show(ask: Ask) -> Option<Picked> {
     match ask {
         Ask::Reveal(path) => Some(Picked::Revealed(super::menu::reveal(&path))),
-        Ask::ScriptFile { part, epoch, slot, control, from, file_type } => {
-            let extensions: &[&str] = match file_type {
-                0 => &["mid", "midi"],
-                1 => &["wav", "aif", "aiff", "ncw"],
-                2 => &["nka"],
-                _ => return Some(Picked::ScriptFile { part, epoch, slot, control, result: Err("Unsupported file selector type".into()) }),
-            };
-            let result = match from.canonicalize() {
-                Ok(base) if base.is_dir() => {
-                    let path = rfd::FileDialog::new().set_title("Select an instrument file")
-                        .set_directory(&base).add_filter("Instrument files", extensions).pick_file()?;
-                    selected_file(&base, &path, extensions)
-                }
-                _ => Err("File selector base directory is unavailable".into()),
-            };
-            Some(Picked::ScriptFile { part, epoch, slot, control, result })
-        }
-        Ask::Snapshot { slot, source, from } => rfd::FileDialog::new()
-            .set_title("Load a snapshot for this instrument")
-            .set_directory(from)
-            .add_filter("Kontakt snapshot", &["nksn"])
-            .pick_file()
-            .map(|path| Picked::Snapshot { slot, source, path }),
         Ask::Folder { from, single } => rfd::FileDialog::new()
             .set_title(if single { "A Kontakt library folder" } else { "A folder of Kontakt libraries" })
             .set_directory(from)
@@ -184,38 +153,17 @@ fn show(ask: Ask) -> Option<Picked> {
             .add_filter("Pictures", &["png", "jpg", "jpeg"])
             .pick_file()
             .map(|picture| Picked::Artwork { library, picture }),
-        Ask::Samples { out } => {
-            let source = rfd::FileDialog::new().set_title("A folder of WAV or AIFF samples").pick_folder()?;
-            // Made here, on the dialog's thread: it reads every sample, which takes a while.
-            let options = crate::creator::Options { source, name: String::new(), vendor: String::new(), out, kontra: true, kontakt: true };
-            Some(Picked::Created(match crate::creator::create(&options, &|_| {}) {
-                Ok(created) => Ok(created.kontra.unwrap_or_default()),
-                Err(e) => Err(format!("{e:#}")),
-            }))
-        }
         Ask::Multi { from, name } => {
             let _ = std::fs::create_dir_all(&from);
             rfd::FileDialog::new()
                 .set_title("Save the rack as a multi")
                 .set_directory(from)
-                .set_file_name(format!("{name}.{}", crate::import::SAVED_MULTI))
-                .add_filter("KONTRA multi", &[crate::import::SAVED_MULTI])
+                .set_file_name(format!("{name}.{}", crate::library::MULTI))
+                .add_filter("KONTRA 2 multi", &[crate::library::MULTI])
                 .save_file()
                 .map(Picked::Multi)
         }
     }
-}
-
-/// Runs only on the picker worker, so symlink and case handling never blocks audio.
-fn selected_file(base: &PathBuf, path: &PathBuf, extensions: &[&str]) -> Result<String, String> {
-    let path = path.canonicalize().map_err(|e| e.to_string())?;
-    if !path.starts_with(base) || !path.is_file() { return Err("Select a file inside the authored base directory".into()) }
-    if !path.extension().is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x))) {
-        return Err("Selected file does not match the authored file type".into());
-    }
-    let text = path.to_str().ok_or("File path is not valid UTF-8")?.replace('\\', "/");
-    if text.len() > 1280 || text.chars().count() > 320 { return Err("File path exceeds KSP's 320-character string limit".into()) }
-    Ok(text)
 }
 
 #[cfg(test)]
@@ -238,25 +186,5 @@ mod tests {
         let Some(Picked::Revealed(Err(error))) = picker.take() else { panic!("missing-path result was not delivered") };
         assert!(error.contains(&missing.display().to_string()));
         drop(picker);
-    }
-
-    #[test]
-    fn authored_file_type_and_base_directory_are_enforced() {
-        let dir = std::env::temp_dir().join(format!("kontra-picker-{}",std::process::id()));
-        std::fs::create_dir_all(dir.join("base")).unwrap();
-        let base = dir.join("base").canonicalize().unwrap();
-        let inside = base.join("Valid.NKA");
-        std::fs::write(&inside,b"%preset\n42\n").unwrap();
-        let outside = dir.join("outside.nka");
-        std::fs::write(&outside,b"%preset\n0\n").unwrap();
-        assert!(selected_file(&base,&inside,&["nka"]).is_ok());
-        assert!(selected_file(&base,&inside,&["mid"]).is_err());
-        assert!(selected_file(&base,&outside,&["nka"]).is_err());
-        #[cfg(unix)] {
-            let linked = base.join("linked.nka");
-            std::os::unix::fs::symlink(&outside,&linked).unwrap();
-            assert!(selected_file(&base,&linked,&["nka"]).is_err());
-        }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 }
