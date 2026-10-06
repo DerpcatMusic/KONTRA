@@ -275,11 +275,14 @@ fn runtime_ui_requests_update_the_model() {
     for _ in 0..3 {
         level(&mut rt);
     }
+    let mut view = model.view();
     let mut applied = 0;
     rt.drain_effects(|e| {
         applied += usize::from(model.apply_ui_effect(e));
+        assert!(view.apply_ui_effect(e));
         true
     });
+    assert_eq!(view.ui(&|_| None).unwrap(), model.ui(&|_| None).unwrap());
     let w = &model.model().interface.widgets[0];
     assert_eq!(applied, 2);
     assert_eq!(w.int("$CONTROL_PAR_HIDE"), Some(16));
