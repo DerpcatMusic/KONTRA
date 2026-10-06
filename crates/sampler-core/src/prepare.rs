@@ -645,6 +645,10 @@ impl Prepared {
             .max()
             .unwrap_or(0)
     }
+    /// Script modules a note passes through, in order.
+    pub fn stage_count(&self) -> usize {
+        self.stages.len()
+    }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()
     }
