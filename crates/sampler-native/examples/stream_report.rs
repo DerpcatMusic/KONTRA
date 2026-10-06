@@ -65,7 +65,8 @@ fn main() {
     let plan = loaded.plan;
     let rate = plan.sample_rate();
     let x: usize = std::env::var("LIMITS_X").map_or(1, |v| v.parse().unwrap());
-    let pick = |name: &str| std::env::var("LIMITS_ONLY").map_or(x, |o| if o == name { x } else { 1 });
+    let pick =
+        |name: &str| std::env::var("LIMITS_ONLY").map_or(x, |o| if o == name { x } else { 1 });
     let limits = Limits {
         notes: 256 * pick("notes"),
         channels: 16,
@@ -77,7 +78,9 @@ fn main() {
         commands: 1024 * pick("commands"),
         behaviors: 64 * pick("behaviors"),
         behavior_fuel: (1 << 20) * pick("fuel"),
-        behavior_cells: plan.behavior_local_count().saturating_mul(64 * pick("behavior_cells")),
+        behavior_cells: plan
+            .behavior_local_count()
+            .saturating_mul(64 * pick("behavior_cells")),
         note_cells: plan.note_cell_count().saturating_mul(256),
     };
     let mut rt = Runtime::new(plan, limits)
@@ -116,9 +119,12 @@ fn main() {
         })
         .collect();
     let mut buffer = [[0.0f32; 2]; 64];
-    let horizon = (report.head_frames + buffer.len()) as u32;
+    // Heads bound only starts; running voices request a page ahead.
+    let horizon = (report.head_frames.max(PAGE_FRAMES) + buffer.len()) as u32;
     let (mut next, mut times, mut refused, mut reloaded) = (0, Vec::new(), 0, 0);
     let (mut peak, mut most) = (0.0f32, 0);
+    let (mut pending, mut service_errors) = (0, std::collections::BTreeMap::new());
+    let play = Instant::now();
     for start in (0..frames + 3 * rate as usize).step_by(buffer.len()) {
         let mut batch = Vec::new();
         while next < packets.len() && packets[next].offset < start + buffer.len() {
@@ -128,8 +134,17 @@ fn main() {
             });
             next += 1;
         }
+        // Pace blocks to real time, as an audio callback would be.
+        let due = play + std::time::Duration::from_secs_f64(start as f64 / f64::from(rate));
+        if let Some(wait) = due.checked_duration_since(Instant::now()) {
+            std::thread::sleep(wait);
+        }
         let t = Instant::now();
-        let _ = rt.service_streaming(horizon);
+        match rt.service_streaming(horizon) {
+            Ok(true) => {}
+            Ok(false) => pending += 1,
+            Err(e) => *service_errors.entry(format!("{e:?}")).or_insert(0) += 1,
+        }
         ingress
             .render(&mut rt, &mut buffer, &batch, batch.len(), |_, result| {
                 if let Err(e) = &result {
@@ -166,6 +181,32 @@ fn main() {
         stats.nonfinite_frames,
         status("VmRSS:"),
         status("VmHWM:"),
+    );
+    // Decode thread CPU time (utime + stime, clock ticks) against wall time.
+    let decode_ticks: u64 = std::fs::read_dir("/proc/self/task")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|t| {
+            std::fs::read_to_string(t.path().join("comm"))
+                .is_ok_and(|c| c.starts_with("sampler-stream"))
+        })
+        .filter_map(|t| std::fs::read_to_string(t.path().join("stat")).ok())
+        .map(|stat| {
+            let fields: Vec<&str> = stat
+                .rsplit(')')
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .collect();
+            fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
+        })
+        .sum();
+    println!("service: {pending} blocks with pages pending, errors {service_errors:?}");
+    println!(
+        "decode threads busy {:.1} s over {:.1} s of playback",
+        decode_ticks as f64 / 100.0,
+        play.elapsed().as_secs_f64()
     );
     let idle = rt.now().saturating_sub(10 * u64::from(rate));
     let freed = streamer.purge(&assets, idle);
