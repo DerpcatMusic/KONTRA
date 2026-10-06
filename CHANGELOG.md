@@ -10,6 +10,10 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Decode the non-monolithic NKS 4.2 container profile with a bounded native
+  FastLZ reader. Validate tokens and exact expansion size before allocation;
+  retain raw header/metadata and inspect decoded records without old-core code.
+
 - Add a dependency-free Kontakt source reader and expanded-payload inspection
   command. Borrowed records retain unknown bytes, ordering and saved script state;
   malformed tables fail explicitly. No old importer or engine dependency is added.

@@ -1,24 +1,34 @@
 //! Source inspection only: decoding never silently admits an instrument for audio.
-use sampler_kontakt::{Chunks, Limits, Script};
+use sampler_kontakt::{Chunks, Limits, Nks42, Script};
 use std::{
     io::{self, Read, Write},
     path::Path,
 };
 
-pub fn inspect(path: &Path) -> io::Result<()> {
+fn source(error: sampler_kontakt::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+pub fn inspect(path: &Path, nks: bool) -> io::Result<()> {
     let limits = Limits {
         bytes: 256 * 1024 * 1024,
         records: 1_000_000,
     };
     let mut bytes = Vec::new();
+    let input_limit = if nks { 128 * 1024 * 1024 } else { limits.bytes };
     std::fs::File::open(path)?
-        .take(limits.bytes as u64 + 1)
+        .take(input_limit as u64 + 1)
         .read_to_end(&mut bytes)?;
+    if nks {
+        bytes = Nks42::parse(&bytes, input_limit)
+            .map_err(source)?
+            .expand(limits.bytes)
+            .map_err(source)?;
+    }
     report(&bytes, limits, &mut io::stdout().lock())
 }
 
 fn report(bytes: &[u8], limits: Limits, out: &mut impl Write) -> io::Result<()> {
-    let source = |error| io::Error::new(io::ErrorKind::InvalidData, error);
     let chunks = Chunks::parse(bytes, limits).map_err(source)?;
     writeln!(
         out,

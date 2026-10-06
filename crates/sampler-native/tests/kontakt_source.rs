@@ -36,6 +36,29 @@ fn expanded_source_inspection_preserves_input_and_reports_malformed_records() {
     assert!(text.contains("program version 0x00af"));
     assert!(text.contains("unmodeled child 0xbeef at 21: 1 bytes retained"));
     assert_eq!(fs::read(&path).unwrap(), bytes);
+    let mut nks = vec![0; 222];
+    nks[..4].copy_from_slice(&0x7fa89012u32.to_le_bytes());
+    nks[4..8].copy_from_slice(&29u32.to_le_bytes());
+    nks[8..10].copy_from_slice(&0x110u16.to_le_bytes());
+    nks[10..14].copy_from_slice(&0xea37631au32.to_le_bytes());
+    nks[186..190].copy_from_slice(&28u32.to_le_bytes());
+    nks.push(27); // A single 28-byte FastLZ literal.
+    nks.extend(bytes);
+    nks.extend(0xb00ee1aeu32.to_le_bytes());
+    nks.extend([1, 1, 12, 0]);
+    fs::write(&path, &nks).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_sampler-native"))
+        .arg("inspect-kontakt-nks")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), text);
+    assert_eq!(fs::read(&path).unwrap(), nks);
     fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
     let output = run();
     assert!(!output.status.success());

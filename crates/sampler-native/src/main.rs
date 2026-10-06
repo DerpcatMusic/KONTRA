@@ -310,8 +310,10 @@ fn demo_sample() -> Pcm {
 fn run() -> io::Result<()> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
-        [command, input] if command == "inspect-kontakt-chunks" => {
-            kontakt::inspect(Path::new(input))
+        [command, input]
+            if command == "inspect-kontakt-chunks" || command == "inspect-kontakt-nks" =>
+        {
+            kontakt::inspect(Path::new(input), command == "inspect-kontakt-nks")
         }
         [command, output] if command == "demo" || command == "echo" => render(
             demo_sample(),
@@ -340,7 +342,7 @@ fn run() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin",
+            "usage: sampler-native demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki",
         )),
     }
 }
