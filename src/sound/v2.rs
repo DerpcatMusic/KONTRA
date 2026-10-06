@@ -27,7 +27,7 @@ use sampler_core::{
     Region, Runtime, Stealing, StreamCache,
 };
 use sampler_ir as ir;
-use sampler_midi::{ApplyError, Mpe, Packets, Zone};
+use sampler_midi::{ApplyError, Articulator, Intercept, Mpe, Packets, Zone};
 
 use super::event::{Event, HostNote, NoteExpression};
 use super::mix::{Mix, PartControls, Peaks, balance};
@@ -62,6 +62,11 @@ pub struct Part {
     /// DAW pairs some node plays to directly, as a bit set.
     direct: u32,
     problems: RuntimeProblems,
+    /// Velocity, channel, CC or program selecting articulations, when not keys.
+    articulator: Option<Articulator>,
+    /// The instrument's default articulation, when the runtime holds the
+    /// articulation (it numbers that one 0).
+    articulations: Option<usize>,
     /// Notes keep their member channel ([`PartControls::mpe`]).
     mpe_zone: bool,
     /// The bend range last sent to the zone, 0 for its default.
@@ -76,6 +81,10 @@ impl Part {
     fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe = Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
+        let articulator = (runtime.switching().driver() != sampler_core::Driver::Keys)
+            .then(|| Articulator::new(&runtime, runtime.performance(0)?, WIRE.port))
+            .transpose()
+            .map_err(core)?;
         let count = tree.nodes.len();
         Ok(Self {
             runtime,
@@ -87,6 +96,8 @@ impl Part {
             audible: vec![true; count].into_boxed_slice(),
             direct: 0,
             problems: RuntimeProblems::default(),
+            articulator,
+            articulations: None,
             mpe_zone: false,
             bend_range: 0,
             horizon: None,
@@ -196,11 +207,21 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
     let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
     words[0] &= if part.mpe_zone { 0xf0ff_ffff } else { 0xf0f0_ffff };
     let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
+    if !articulated(part, words) {
+        return;
+    }
     if let Some(Ok(packet)) = Packets::new(words).next()
         && let Err(ApplyError::Core(sampler_core::Error::Capacity)) = part.mpe.apply(&mut part.runtime, packet)
     {
         part.problems.capacity_drops += 1;
     }
+}
+
+/// Run the articulation driver on a packet; false when it took the packet.
+fn articulated(part: &mut Part, words: &[u32]) -> bool {
+    let Some(articulator) = part.articulator.as_mut() else { return true };
+    let Some(Ok(packet)) = Packets::new(words).next() else { return true };
+    !matches!(articulator.intercept(&mut part.runtime, packet), Ok(Intercept::Consumed(_)))
 }
 
 /// Change one note's expression in place.
@@ -265,6 +286,11 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
         Event::NoteOn { note, velocity, tune } => {
             if held.len() == HELD {
                 *overflow += 1;
+                return;
+            }
+            // The driver sees the note as MIDI on its own channel.
+            let key = u32::from(note.key & 127) << 8 | (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u32;
+            if !articulated(part, &[0x2090_0000 | u32::from(note.channel & 15) << 16 | key]) {
                 return;
             }
             let input = host_input(note, part.mpe_zone);
@@ -579,6 +605,18 @@ impl Core for V2Core {
         }
     }
 
+    fn articulation(&self, part: usize) -> Option<usize> {
+        let p = self.parts.get(part)?.as_ref()?;
+        let default = p.articulations?;
+        let id = p.runtime.articulation(p.runtime.performance(0).ok()?).ok()? as usize;
+        // Undo the runtime's numbering: the default is 0, those before it shift up.
+        Some(match id {
+            0 => default,
+            id if id <= default => id - 1,
+            id => id,
+        })
+    }
+
     fn clock(&self, part: usize) -> u64 {
         self.parts.get(part).and_then(Option::as_ref).map_or(0, |p| p.runtime.now())
     }
@@ -737,11 +775,17 @@ fn kontakt(
         e => CoreError::Load(e.to_string()),
     };
     let mut source = sampler_kontakt::read(&request.path).map_err(load)?;
+    if request.driver != ir::Driver::Keys {
+        source.instrument.switching.driver = request.driver;
+        // "CC 32" in the articulation view.
+        source.instrument.assign_alternatives(32);
+    }
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
         rate: request.sample_rate as u32,
         library: Some(request.path.clone()),
+        mpe: request.mpe.then(Default::default),
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {
@@ -877,6 +921,9 @@ impl CoreLoader for V2Loader {
             )));
         }
         let mut part = Part::new(runtime, tree.clone())?;
+        part.articulations = instrument.as_deref().filter(|i| {
+            !i.articulations.is_empty() && i.switching.owner == ir::SwitchOwner::Native
+        }).map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
             part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
@@ -1066,6 +1113,47 @@ mod tests {
         // The manager channel bends the whole zone, at its own range.
         core.event(0, Event::midi1(0xe0, 127, 127));
         assert!(pitch(&core, 1) > 1.0);
+    }
+
+    #[test]
+    fn a_velocity_driver_selects_and_reports_the_articulation() {
+        // Key 60 in three articulations; keys 24..=26 switch; the second is the default.
+        let zone = |asset, articulation| ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            articulation: Some(ir::ArticulationRef(articulation)),
+            ..ir::Zone::new(ir::AssetRef(asset))
+        };
+        let asset = |i| ir::Asset {
+            location: ir::AssetLocation::Path(format!("{i}.wav")),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: Vec::new(),
+        };
+        let mut instrument = ir::Instrument {
+            assets: (0..3).map(asset).collect(),
+            zones: (0..3).map(|a| zone(a, a)).collect(),
+            articulations: (0..3u8)
+                .map(|a| ir::Articulation { name: a.to_string(), switch_keys: vec![24 + a], default: a == 1, ..Default::default() })
+                .collect(),
+            ..Default::default()
+        };
+        instrument.switching.driver = crate::sound::driver(1);
+        instrument.assign_alternatives(32);
+        let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
+        let plan = sampler_kontakt::prepare(instrument, pcm, &Default::default()).unwrap().plan;
+        let limits = limits(&plan);
+        let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
+        part.articulations = Some(1);
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        assert_eq!(core.articulation(0), Some(1), "the default plays first");
+        // Velocities split 1..=127 in three by lowest switch key.
+        for (velocity, articulation) in [(10.0, 0), (120.0, 2), (64.0, 1)] {
+            let note = HostNote { port: 0, channel: 0, key: 60, id: velocity as i32, clap: true };
+            core.event(0, Event::NoteOn { note, velocity: velocity / 127.0, tune: 0.0 });
+            core.render(64);
+            assert_eq!(core.articulation(0), Some(articulation), "velocity {velocity}");
+        }
     }
 
     #[test]

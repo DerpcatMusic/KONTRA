@@ -226,7 +226,7 @@ impl Watch {
                 || (0..view.parts.len().max(selection.parts.len())).any(|n| {
                     let (path, program) = selection.parts.get(n).map_or(("", 0), |p| (p.path.as_str(), p.program));
                     match view.parts.get(n).and_then(|v| v.attempted.as_ref()) {
-                        Some((a, b, _)) => (a.as_str(), *b) != (path, program),
+                        Some((a, b, ..)) => (a.as_str(), *b) != (path, program),
                         None => !path.is_empty(),
                     }
                 });
