@@ -164,7 +164,12 @@ impl Polyphase {
                 *coefficient = f64::from(table.sample(fraction, stretch, impulse)[0]);
             }
             let sum: f64 = coefficients[..taps].iter().sum();
-            for (pair, c) in row.chunks_exact_mut(2).zip(&coefficients[..taps]) {
+            for (pair, c) in row
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(&coefficients[..taps])
+            {
                 pair.fill((c / sum) as f32);
             }
         }
@@ -205,11 +210,12 @@ impl Polyphase {
         // Independent lanes, interleaved left/right: no serial f32 reduction
         // and no deinterleave, so the loop vectorizes as written.
         let mut sum = [[0.0_f32; 4]; 2];
-        for ((a, b), x) in a
-            .chunks_exact(CHUNK)
-            .zip(b.chunks_exact(CHUNK))
-            .zip(window.chunks_exact(CHUNK))
-        {
+        let (a, b, x) = (
+            a.as_chunks::<CHUNK>().0,
+            b.as_chunks::<CHUNK>().0,
+            window.as_chunks::<CHUNK>().0,
+        );
+        for ((a, b), x) in a.iter().zip(b).zip(x) {
             accumulate(&mut sum, t, a, b, x);
         }
         // Fold in register order (lanes k and k + 4), then the stereo pairs.
@@ -222,11 +228,15 @@ impl Polyphase {
 }
 
 #[inline(always)]
-fn accumulate(sum: &mut [[f32; 4]; 2], t: f32, a: &[f32], b: &[f32], x: &[f32]) {
+fn accumulate(
+    sum: &mut [[f32; 4]; 2],
+    t: f32,
+    a: &[f32; CHUNK],
+    b: &[f32; CHUNK],
+    x: &[f32; CHUNK],
+) {
     for (half, sum) in sum.iter_mut().enumerate() {
-        let a: &[f32; 4] = a[4 * half..][..4].try_into().unwrap();
-        let b: &[f32; 4] = b[4 * half..][..4].try_into().unwrap();
-        let x: &[f32; 4] = x[4 * half..][..4].try_into().unwrap();
+        let (a, b, x) = (&a[4 * half..], &b[4 * half..], &x[4 * half..]);
         for k in 0..4 {
             sum[k] += (a[k] + t * (b[k] - a[k])) * x[k];
         }
