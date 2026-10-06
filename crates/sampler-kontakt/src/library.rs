@@ -84,6 +84,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         },
         assets: HashMap::new(),
         locations: Vec::new(),
+        start_criteria: Vec::new(),
     };
     let groups = GroupList::try_from(
         program
@@ -204,6 +205,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
         };
         out.zone(index, zone, end, group, &params, location.clone());
     }
+    crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
@@ -305,6 +307,11 @@ struct Translation {
     ir: ir::Instrument,
     assets: HashMap<PathBuf, ir::AssetRef>,
     locations: Vec<PathBuf>,
+    start_criteria: Vec<(
+        String,
+        ir::GroupRef,
+        Vec<ni_file::kontakt::objects::StartCriteriaParams>,
+    )>,
 }
 
 impl Translation {
@@ -348,20 +355,12 @@ impl Translation {
         if v.midi_channel >= 0 {
             self.unsupported(&at, "MIDI channel filter", v.midi_channel, not_modeled);
         }
-        if !v.start_criteria.items.is_empty() {
-            let modes: Vec<_> = v
-                .start_criteria
-                .items
-                .iter()
-                .map(|c| (c.mode, c.next_criteria, c.cycle_class))
-                .collect();
-            self.unsupported(
-                &at,
-                "group start options (mode, next, cycle class)",
-                format!("{modes:?}"),
-                not_modeled,
-            );
-        }
+        // Start options become articulations or reports in `keyswitch::translate`.
+        self.start_criteria.push((
+            at.clone(),
+            ir::GroupRef(self.ir.groups.len()),
+            v.start_criteria.items.clone(),
+        ));
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
             Ok(source) if source.mode == 9 => {

@@ -3,11 +3,11 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Bus, BusSend, ControllerCondition, Direction, Envelope, EnvelopeCurve, Error,
+    Biquad, Bus, BusSend, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
     FilterKind, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute,
     ModSource, ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Region, SelectionPolicy,
-    Sequence, SequenceScope, StateVariableFilter, SvfMode, Take, TakePolicy, Trigger,
-    VelocityCurve, VoiceChain,
+    Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
+    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -802,9 +802,15 @@ impl Lowering<'_> {
             i if i < default => i as u32 + 1,
             i => i as u32,
         };
+        let switching = self.ir.switching;
+        let behavior = switching.owner == ir::SwitchOwner::Behavior;
+        // A behavior reads its own switch keys; freed keys play notes.
+        let native_keys = !behavior
+            && (switching.driver == ir::Driver::Keys || switching.keys != ir::SwitchKeys::Play);
         let switches = articulations
             .iter()
             .enumerate()
+            .filter(|_| native_keys)
             .flat_map(|(i, a)| {
                 a.switch_keys.iter().map(move |&key| Keyswitch {
                     key,
@@ -818,12 +824,59 @@ impl Lowering<'_> {
             .iter()
             .map(|z| z.articulation.map(|a| id(a.0)))
             .collect();
+        let selectors = articulations
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| {
+                let alt = a.alternatives;
+                let (controller, low, high) = match switching.driver {
+                    ir::Driver::Keys => return None,
+                    ir::Driver::Velocity => alt.velocities.map(|v| (0, v.low, v.high))?,
+                    ir::Driver::Channel => alt.channel.map(|c| (0, c, c))?,
+                    ir::Driver::Controller => {
+                        alt.controller.map(|c| (c.controller, c.low, c.high))?
+                    }
+                    ir::Driver::Program => alt.program.map(|p| (0, p, p))?,
+                };
+                let switch = if behavior {
+                    Switch::Tap(*a.switch_keys.first()?)
+                } else {
+                    Switch::Articulation(id(i))
+                };
+                Some(Selector {
+                    controller,
+                    low,
+                    high,
+                    switch,
+                })
+            })
+            .collect();
+        let switching = Switching::new(
+            match switching.driver {
+                ir::Driver::Keys => Driver::Keys,
+                ir::Driver::Velocity => Driver::Velocity,
+                ir::Driver::Channel => Driver::Channel,
+                ir::Driver::Controller => Driver::Controller,
+                ir::Driver::Program => Driver::Program,
+            },
+            match switching.keys {
+                ir::SwitchKeys::Keep => SwitchKeys::Keep,
+                ir::SwitchKeys::Play => SwitchKeys::Play,
+                ir::SwitchKeys::Swallow => SwitchKeys::Swallow,
+            },
+            articulations
+                .iter()
+                .flat_map(|a| a.switch_keys.iter().copied()),
+            selectors,
+        )
+        .map_err(core(Stage::Articulations, "articulation drivers"))?;
         plan.with_articulations(
             tags,
             switches,
             SelectionPolicy::Onset,
             SelectionPolicy::Onset,
         )
+        .map(|plan| plan.with_switching(switching))
         .map_err(core(Stage::Articulations, "articulations"))
     }
 
