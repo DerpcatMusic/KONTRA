@@ -111,6 +111,11 @@ pub fn run(instrument: &Path, output: &Path, notes: &[Note], scripts: bool) -> i
     };
     let mut rt =
         Runtime::new(plan, limits).map_err(|e| io::Error::other(format!("native core: {e}")))?;
+    rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
+        rt.sample_rate(),
+        limits.voices,
+    )))
+    .map_err(|e| io::Error::other(format!("native core: {e}")))?;
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let mut events: Vec<(usize, u32)> = notes
         .iter()
