@@ -330,15 +330,29 @@ fn matrix(
 pub(crate) fn group_inserts(slots: &[Slot]) -> (Vec<sampler_ir::Processor>, Vec<Note>) {
     let mut notes = Vec::new();
     let mut combined = IDENTITY;
+    let mut filters = Vec::new();
     for fx in slots.iter().filter(|fx| !fx.bypass) {
         let name = module_name(fx.module);
         let mut slot_notes = Vec::new();
         let params = fx.params();
+        let wet = f64::from(fx.output_gain);
+        let gain = [[wet, 0.0], [0.0, wet]];
+        if let Some(Params::Eq { bands }) = &params {
+            filters.extend(
+                bands
+                    .iter()
+                    .filter_map(|band| eq_band(*band, &mut slot_notes)),
+            );
+            combined = product(gain, combined);
+            notes.extend(
+                slot_notes
+                    .into_iter()
+                    .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
+            );
+            continue;
+        }
         match params.as_ref().and_then(|p| matrix(p, &mut slot_notes)) {
-            Some(m) => {
-                let wet = f64::from(fx.output_gain);
-                combined = product(m.map(|row| row.map(|x| x * wet)), combined);
-            }
+            Some(m) => combined = product(product(gain, m), combined),
             // Linear filters applied alike to both channels commute with
             // the matrices, so leaving one out does not reorder the rest.
             None => notes.push((
@@ -354,12 +368,45 @@ pub(crate) fn group_inserts(slots: &[Slot]) -> (Vec<sampler_ir::Processor>, Vec<
                 .map(|(f, v, r)| (fx.slot, format!("{name}: {f}"), v, r)),
         );
     }
-    let processors = if combined == IDENTITY {
-        Vec::new()
-    } else {
-        vec![sampler_ir::Processor::StereoMatrix(combined)]
-    };
+    // Filters alike on both channels commute with the matrix.
+    let mut processors = filters;
+    if combined != IDENTITY {
+        processors.push(sampler_ir::Processor::StereoMatrix(combined));
+    }
     (processors, notes)
+}
+
+/// One EQ band (Hz, octaves, dB) as a peaking filter; flat bands vanish.
+fn eq_band(
+    [hz, octaves, db]: [f32; 3],
+    notes: &mut Vec<(String, String, sampler_ir::Reason)>,
+) -> Option<sampler_ir::Processor> {
+    if db == 0.0 {
+        return None;
+    }
+    if !(hz > 0.0 && octaves > 0.0) {
+        notes.push((
+            "EQ band".into(),
+            format!("{hz} Hz {octaves} oct {db} dB"),
+            sampler_ir::Reason::InvalidValue,
+        ));
+        return None;
+    }
+    // A peaking biquad whose bandwidth spans `octaves` (RBJ). Kontakt's own
+    // band shape is not verified against a rendering.
+    notes.push((
+        "EQ band shape".into(),
+        format!("{hz} Hz {octaves} oct {db} dB"),
+        sampler_ir::Reason::UnknownLaw,
+    ));
+    let q = 1.0 / (2.0 * (std::f64::consts::LN_2 / 2.0 * f64::from(octaves)).sinh());
+    Some(sampler_ir::Processor::Filter(sampler_ir::Filter {
+        kind: sampler_ir::FilterKind::Peak {
+            gain: sampler_ir::Gain::Decibels(f64::from(db)),
+        },
+        cutoff: sampler_ir::Frequency::Hertz(f64::from(hz)),
+        resonance: sampler_ir::Resonance::Q(q),
+    }))
 }
 
 #[cfg(test)]
@@ -397,6 +444,26 @@ mod tests {
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");
+        // An EQ: its boosted band, then its slot gain.
+        let mut eq = Vec::new();
+        for x in [24i32, 24] {
+            eq.extend(x.to_le_bytes());
+        }
+        for x in [100.0f32, 1.0, 0.0, 1000.0, 1.0, 6.0, 5000.0, 2.0, 0.0] {
+            eq.extend(x.to_le_bytes());
+        }
+        let (processors, _) = group_inserts(&[slot(0x18, eq, 2.0)]);
+        assert!(
+            matches!(
+                processors.as_slice(),
+                [
+                    sampler_ir::Processor::Filter(f),
+                    sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]])
+                ] if f.cutoff == sampler_ir::Frequency::Hertz(1000.0)
+                    && matches!(f.resonance, sampler_ir::Resonance::Q(q) if (q - std::f64::consts::SQRT_2).abs() < 1e-9)
+            ),
+            "{processors:?}"
+        );
         // Unity everything: no processor at all.
         let (processors, _) = group_inserts(&[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)]);
         assert!(processors.is_empty());
