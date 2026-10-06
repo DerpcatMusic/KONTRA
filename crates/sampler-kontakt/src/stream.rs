@@ -496,9 +496,11 @@ impl Streamer {
                 let (sources, ranges) = (streamer.sources.clone(), streamer.ranges.clone());
                 let stop = streamer.stop.clone();
                 move || {
+                    // Woken by the audio side (`StreamCache::set_wake`) when a
+                    // start finds an asset cold, and by Drop.
                     while !stop.load(Ordering::Relaxed) {
                         let _ = reload(&assets, &sources, &ranges);
-                        std::thread::park_timeout(Duration::from_millis(50));
+                        std::thread::park();
                     }
                 }
             })?;
@@ -538,7 +540,7 @@ impl Streamer {
 
     /// Read start ranges again for assets whose start found them purged.
     /// Returns how many were reloaded.
-    /// A background thread already does this every 50 ms.
+    /// A background thread already does this when a start finds one cold.
     pub fn reload(&self, assets: &[Pcm]) -> io::Result<usize> {
         reload(assets, &self.sources, &self.ranges)
     }
@@ -590,9 +592,9 @@ fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Arc<dyn Asset
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
         let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
-            // The runtime unparks decoders after queuing requests; the
-            // timeout only bounds a missed wake and notices `stop`.
-            std::thread::park_timeout(Duration::from_millis(20));
+            // The runtime unparks decoders after queuing requests and Drop
+            // unparks them to stop; an unpark before this park is not lost.
+            std::thread::park();
             continue;
         };
         tick += 1;
@@ -678,6 +680,7 @@ impl Streamed {
             streamer
                 .threads
                 .iter()
+                .chain(&streamer.reloader)
                 .map(|t| t.thread().clone())
                 .collect(),
         );
