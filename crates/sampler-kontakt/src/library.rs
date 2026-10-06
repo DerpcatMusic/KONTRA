@@ -120,7 +120,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
                 if state.len() < script.persistent.len() {
                     out.unsupported(
                         &location,
-                        "saved persistent arrays",
+                        "saved persistent text arrays",
                         script.persistent.len() - state.len(),
                         ir::Reason::NotModeled,
                     );
@@ -1270,6 +1270,12 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
                 b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
                 b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
                 b'@' => ir::Saved::Text(rest.to_owned()),
+                b'%' => ir::Saved::Ints(
+                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                ),
+                b'?' => ir::Saved::Reals(
+                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                ),
                 _ => return None,
             };
             Some((name.to_owned(), value))
@@ -1280,7 +1286,7 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 #[cfg(test)]
 mod saved_tests {
     #[test]
-    fn saved_values_keep_their_types_and_skip_arrays() {
+    fn saved_values_keep_their_types_and_arrays() {
         let entries = [
             "$level 17",
             "~mix 0.5",
@@ -1299,6 +1305,7 @@ mod saved_tests {
                     "@label".to_owned(),
                     sampler_ir::Saved::Text("two words".into())
                 ),
+                ("%table".to_owned(), sampler_ir::Saved::Ints(vec![1, 2, 3])),
             ]
         );
     }
