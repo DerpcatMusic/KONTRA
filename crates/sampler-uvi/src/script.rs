@@ -1,26 +1,25 @@
 //! The Falcon/UVI Lua script runtime (design: `docs/architecture-v2/UVI_LUA.md`).
 //!
-//! A [`ScriptHost`] runs a program's scripts in a sandboxed Lua 5.1 state on a
+//! A [`ScriptHost`] runs a program's scripts in a sandboxed Luau state on a
 //! control thread, never on the audio thread. It is fed note events with a
 //! time and answers with timed [`Command`]s; `wait`/`spawn` are coroutines
 //! resumed by [`ScriptHost::advance`], so timing follows the host's clock.
 //! Whatever the host does not model is inert and reported, not silent.
 
 use mlua::{
-    Function, HookTriggers, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, Variadic,
-    VmState,
+    Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, Variadic, VmState,
 };
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 mod ui;
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
 /// Instructions between two budget checks of the VM hook.
-const TICK: u32 = 10_000;
 
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
@@ -34,7 +33,7 @@ impl<T: Files> Files for std::rc::Rc<T> {
 }
 
 /// A bank's Lua members, by path.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Scripts {
     files: Vec<(String, String)>,
 }
@@ -67,19 +66,27 @@ impl Files for () {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    /// Instructions one callback may run before it is aborted.
-    pub callback_instructions: u64,
-    /// Instructions loading the scripts (their data tables) may run.
-    pub load_instructions: u64,
+    /// Time one callback may run before it is aborted.
+    pub callback: Duration,
+    /// Time loading the scripts (their data tables) may take.
+    pub load: Duration,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
+}
+
+impl Config {
+    /// For a plugin: a callback that overruns a few milliseconds is aborted
+    /// (its commands up to then stand) rather than left to lag the sound.
+    pub fn realtime() -> Self {
+        Self { callback: Duration::from_millis(8), ..Self::default() }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            callback_instructions: 20_000_000,
-            load_instructions: 400_000_000,
+            callback: Duration::from_millis(200),
+            load: Duration::from_secs(20),
             memory: 1536 << 20,
         }
     }
@@ -146,8 +153,8 @@ struct Shared {
     now: Cell<f64>,
     ids: Cell<u64>,
     seq: Cell<u64>,
-    ticks: Cell<u64>,
-    limit: Cell<u64>,
+    /// When the running callback is aborted.
+    deadline: Cell<Option<Instant>>,
     current: Cell<Option<u64>>,
     commands: RefCell<Vec<Command>>,
     findings: RefCell<BTreeMap<String, Finding>>,
@@ -179,6 +186,11 @@ impl Shared {
                 }
             }
         }
+    }
+
+    /// Start a time budget for the code about to run.
+    fn arm(&self, budget: Duration) {
+        self.deadline.set(Some(Instant::now() + budget));
     }
 
     fn next_id(&self) -> u64 {
@@ -296,7 +308,7 @@ impl ScriptHost {
         let doc =
             roxmltree::Document::parse_with_options(xml, options).map_err(|e| e.to_string())?;
         let lua = Lua::new_with(
-            StdLib::TABLE | StdLib::STRING | StdLib::MATH,
+            StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE,
             LuaOptions::new(),
         )
         .map_err(lua_error)?;
@@ -305,8 +317,7 @@ impl ScriptHost {
             now: Cell::new(0.0),
             ids: Cell::new(0),
             seq: Cell::new(0),
-            ticks: Cell::new(0),
-            limit: Cell::new(config.load_instructions / u64::from(TICK)),
+            deadline: Cell::new(Some(Instant::now() + config.load)),
             current: Cell::new(None),
             commands: RefCell::new(Vec::new()),
             findings: RefCell::new(BTreeMap::new()),
@@ -360,32 +371,21 @@ impl ScriptHost {
 
     fn install(&self) -> mlua::Result<()> {
         let lua = &self.lua;
+        // Only table/string/math/coroutine are loaded (no io, os, debug,
+        // package); `lua.sandbox` would give every coroutine its own proxy
+        // environment, which breaks the globals the prelude and scripts share.
         let globals = lua.globals();
         let shared = &self.shared;
 
-        let hook_shared = shared.clone();
-        lua.set_global_hook(
-            HookTriggers::new().every_nth_instruction(TICK),
-            move |_, _| {
-                let ticks = hook_shared.ticks.get() + 1;
-                hook_shared.ticks.set(ticks);
-                if ticks > hook_shared.limit.get() {
-                    return Err(mlua::Error::runtime("instruction budget exceeded"));
-                }
-                Ok(VmState::Continue)
-            },
-        )?;
-        lua.set_hook(HookTriggers::new().every_nth_instruction(TICK), {
-            let hook_shared = shared.clone();
-            move |_, _| {
-                let ticks = hook_shared.ticks.get() + 1;
-                hook_shared.ticks.set(ticks);
-                if ticks > hook_shared.limit.get() {
-                    return Err(mlua::Error::runtime("instruction budget exceeded"));
-                }
-                Ok(VmState::Continue)
+        // Luau calls the interrupt at calls and loop back-edges: a callback
+        // that outlives its time budget is aborted.
+        let budget = shared.clone();
+        lua.set_interrupt(move |_| {
+            if budget.deadline.get().is_some_and(|d| Instant::now() > d) {
+                return Err(mlua::Error::runtime("time budget exceeded"));
             }
-        })?;
+            Ok(VmState::Continue)
+        });
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
@@ -427,6 +427,14 @@ impl ScriptHost {
             })?,
         )?;
         let s = shared.clone();
+        native.set(
+            "defglobal",
+            // The main environment: a coroutine's own is a throwaway proxy.
+            lua.create_function({
+                let env = globals.clone();
+                move |_, (name, value): (String, Value)| env.raw_set(name, value)
+            })?,
+        )?;
         native.set("nextId", lua.create_function(move |_, ()| Ok(s.next_id()))?)?;
         let s = shared.clone();
         native.set(
@@ -527,10 +535,7 @@ impl ScriptHost {
             if text.trim().is_empty() {
                 continue;
             }
-            self.shared.ticks.set(0);
-            self.shared
-                .limit
-                .set(self.shared.config.load_instructions / u64::from(TICK));
+            self.shared.arm(self.shared.config.load);
             let function = self
                 .lua
                 .load(&text)
@@ -573,10 +578,7 @@ impl ScriptHost {
         let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>(name) else {
             return;
         };
-        self.shared.ticks.set(0);
-        self.shared
-            .limit
-            .set(self.shared.config.callback_instructions / u64::from(TICK));
+        self.shared.arm(self.shared.config.callback);
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
         };
@@ -626,7 +628,7 @@ impl ScriptHost {
             woken
         };
         for w in woken {
-            self.shared.ticks.set(0);
+            self.shared.arm(self.shared.config.callback);
             resume(&self.shared, w.thread, MultiValue::new(), w.note);
         }
         let e = self.event(
@@ -676,10 +678,7 @@ impl ScriptHost {
             };
             let Some(w) = next else { break };
             self.shared.now.set(w.due.max(self.shared.now.get()));
-            self.shared.ticks.set(0);
-            self.shared
-                .limit
-                .set(self.shared.config.callback_instructions / u64::from(TICK));
+            self.shared.arm(self.shared.config.callback);
             resume(&self.shared, w.thread, MultiValue::new(), w.note);
             self.cycle();
         }
@@ -893,7 +892,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|f| f.feature == "lua error" && f.value.contains("instruction budget")),
+                .any(|f| f.feature == "lua error" && f.value.contains("time budget")),
             "{findings:?}"
         );
         // The host is still usable.

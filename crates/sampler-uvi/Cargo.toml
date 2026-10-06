@@ -18,6 +18,7 @@ sampler-ui-ir = { path = "../sampler-ui-ir" }
 sampler-core = { path = "../sampler-core" }
 sampler-kontakt = { path = "../sampler-kontakt", default-features = false }
 roxmltree = "=0.21.1"
+rtrb = "=0.4.0"
 symphonia = { version = "0.5", default-features = false, features = ["aiff", "wav", "pcm", "flac"] }
 anyhow = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
@@ -28,7 +29,7 @@ sha2 = { version = "0.10.9", optional = true }
 libc = { version = "0.2", optional = true }
 dirs = { version = "5", optional = true }
 # Lua 5.1 (what UVI documents), built from source; see docs/architecture-v2/UVI_LUA.md.
-mlua = { version = "=0.12.2", features = ["lua51", "vendored"] }
+mlua = { version = "=0.12.2", features = ["luau", "luau-jit"] }
 
 [lints.rust]
 unsafe_code = "forbid"

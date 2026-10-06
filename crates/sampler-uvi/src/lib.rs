@@ -905,6 +905,53 @@ pub struct Translated {
     pub locations: Vec<String>,
     /// The bank and program path the samples come from; loose files have none.
     bank: Option<(Bank, String)>,
+    /// Where each (layer, oscillator) of the program plays, for its scripts.
+    pub groups: Vec<OscGroup>,
+    /// The program's XML and the bank's Lua members, for its scripts.
+    text: String,
+    lua: script::Scripts,
+}
+
+/// A program's scripts loaded on a script thread for a host that owns the runtime.
+pub struct AttachedScript {
+    pub driver: scripted::Driver<scripted::ScriptThread>,
+    /// The script's widgets.
+    pub interface: sampler_ui_ir::Interface,
+}
+
+impl Translated {
+    /// Start the program's Lua scripts on their own thread and mark the
+    /// instrument as scripted: what they replace is no longer reported, what
+    /// they use that is not modeled is. `None` when the program has none.
+    pub fn attach_script(
+        &mut self,
+        rate: u32,
+        config: script::Config,
+    ) -> Result<Option<AttachedScript>, String> {
+        if self.instrument.behaviors.is_empty() {
+            return Ok(None);
+        }
+        let (thread, loaded) =
+            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config)?;
+        let unsupported = &mut self.instrument.unsupported;
+        if scripted::Script::handles_notes(&thread) {
+            unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
+        }
+        unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
+        for finding in loaded.findings {
+            unsupported.push(ir::Unsupported {
+                location: "script".into(),
+                feature: finding.feature,
+                value: format!("{} (x{})", finding.value, finding.count),
+                reason: ir::Reason::NotModeled,
+            });
+        }
+        let groups = self.groups.clone();
+        Ok(Some(AttachedScript {
+            driver: scripted::Driver::new(thread, groups, rate),
+            interface: loaded.interface,
+        }))
+    }
 }
 
 /// Translate what [`load`] accepts without decoding samples, so a host can
@@ -931,16 +978,23 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             member
         };
         let (text, program_path) = bank.program(&member)?;
-        let (instrument, locations) =
-            translate_bank(&text).map_err(|e| describe(Path::new(&member), e))?;
-        return Ok(Translated { instrument, locations, bank: Some((bank, program_path)) });
+        let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+            .map_err(|e| describe(Path::new(&member), e))?;
+        let lua = bank.scripts();
+        return Ok(Translated {
+            instrument,
+            locations,
+            bank: Some((bank, program_path)),
+            groups,
+            text,
+            lua,
+        });
     }
-    let (instrument, locations) = translate_with(
-        &read_text(path)?,
-        Source::Disk(path.parent().unwrap_or(Path::new(".")).into()),
-    )
-    .map_err(|e| describe(path, e))?;
-    Ok(Translated { instrument, locations, bank: None })
+    let text = read_text(path)?;
+    let (instrument, locations, groups) =
+        translate_full(&text, Source::Disk(path.parent().unwrap_or(Path::new(".")).into()))
+            .map_err(|e| describe(path, e))?;
+    Ok(Translated { instrument, locations, bank: None, groups, text, lua: Default::default() })
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.
@@ -1289,6 +1343,151 @@ mod survey {
                 }
             }
         }
+    }
+
+    /// Plays every program at a key its zones cover through its Lua script and
+    /// prints one `UC` line per program: sounds, silent or failed, with counts
+    /// only. Shard with `KONTRA_SHARD=i/n`.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "library-access")]
+    fn census_scripted_render() {
+        let (shard, shards): (usize, usize) = std::env::var("KONTRA_SHARD")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once('/')?;
+                Some((a.parse().ok()?, b.parse().ok()?))
+            })
+            .unwrap_or((0, 1));
+        let root = std::env::var("KONTRA_UVI_LIBRARIES").unwrap();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let mut files = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e == "ufs") {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        let mut index = 0;
+        for f in files {
+            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            for program in bank.programs() {
+                index += 1;
+                if index % shards != shard {
+                    continue;
+                }
+                let name = format!("{}::{program}", f.display());
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    census_one(&bank, &program)
+                }));
+                match outcome {
+                    Ok(line) => println!("UC {line} {name}"),
+                    Err(_) => println!("UC panic - {name}"),
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "library-access")]
+    fn census_one(bank: &crate::Bank, program: &str) -> String {
+        use sampler_core::Limits;
+        let Ok((text, _)) = bank.program(program) else { return "open-fail -".into() };
+        let Ok((ir, _)) = crate::translate_bank(&text) else { return "translate-fail -".into() };
+        if ir.zones.is_empty() {
+            return "no-zones -".into();
+        }
+        // Keys a played note could mean: the median zone, middle C inside the
+        // covered range, and the widest zone's middle.
+        let mut mids: Vec<u8> = ir
+            .zones
+            .iter()
+            .map(|z| ((u16::from(z.keys.low) + u16::from(z.keys.high)) / 2) as u8)
+            .collect();
+        mids.sort_unstable();
+        let (lo, hi) = (
+            ir.zones.iter().map(|z| z.keys.low).min().unwrap(),
+            ir.zones.iter().map(|z| z.keys.high).max().unwrap(),
+        );
+        let widest = ir.zones.iter().max_by_key(|z| z.keys.high - z.keys.low).unwrap();
+        let mut candidates = vec![
+            mids[mids.len() / 2],
+            60.clamp(lo, hi),
+            ((u16::from(widest.keys.low) + u16::from(widest.keys.high)) / 2) as u8,
+        ];
+        candidates.dedup();
+        let mut last = String::new();
+        for key in candidates {
+            last = census_play(bank, program, key);
+            if last.starts_with("sounds") {
+                break;
+            }
+        }
+        last
+    }
+
+    #[cfg(feature = "library-access")]
+    fn census_play(bank: &crate::Bank, program: &str, key: u8) -> String {
+        use sampler_core::Limits;
+        let options = sampler_kontakt::Options {
+            keys: key.saturating_sub(12)..=key.saturating_add(12).min(127),
+            ..Default::default()
+        };
+        let program = match crate::load_program_scripted_with_options(bank, program, &options) {
+            Ok(p) => p,
+            Err(e) => return format!("load-fail {}", e.to_string().chars().take(60).collect::<String>().replace(' ', "_")),
+        };
+        let errors = program
+            .instrument
+            .unsupported
+            .iter()
+            .filter(|u| u.feature == "lua error")
+            .count();
+        let first = program
+            .instrument
+            .unsupported
+            .iter()
+            .find(|u| u.feature == "lua error")
+            .map(|u| u.value.chars().take(70).collect::<String>().replace(' ', "_"))
+            .unwrap_or_else(|| "-".into());
+        let scripted = program.host.handles_notes();
+        let limits = Limits {
+            notes: 64, channels: 16, performances: 1, expressions: 64, families: 64,
+            decisions: 256, voices: 512, commands: 256, behaviors: 16,
+            behavior_fuel: 1 << 20, behavior_cells: 0, note_cells: 0,
+        };
+        let Ok(mut player) = crate::scripted::Player::new(program, limits, 48_000) else {
+            return "player-fail -".into();
+        };
+        let mut peak = 0.0f32;
+        let mut buf = [[0.0f32; 2]; 256];
+        let mut run = |player: &mut crate::scripted::Player, blocks: usize| {
+            for _ in 0..blocks {
+                player.render(&mut buf)?;
+                peak = buf.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
+            }
+            Ok::<(), sampler_core::Error>(())
+        };
+        let result = player
+            .note_on(key, 100.0 / 127.0)
+            .and_then(|_| run(&mut player, 188))
+            .and_then(|_| player.note_off(key))
+            .and_then(|_| run(&mut player, 188));
+        let (ok, failure) = (result.is_ok(), result.err());
+        let state = match (ok, peak > 1e-4) {
+            (false, _) => "render-err",
+            (true, true) => "sounds",
+            (true, false) => "silent",
+        };
+        let first = match failure {
+            Some(e) => e.to_string().chars().take(60).collect::<String>().replace(' ', "_"),
+            None => first,
+        };
+        format!("{state} peak={peak:.3} key={key} lua={} errs={errors} {first}", u8::from(scripted))
     }
 
     /// Which modulation translates and what stays reported, across the
