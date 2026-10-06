@@ -195,3 +195,12 @@ same message. Index schema 2 rebuilds the disposable catalog from older indexes;
 user settings and presets are unaffected. Clear banks receive no access warning.
 The authored clear-bank playback test embeds a sine sample, deletes its loose
 source, then uses the product's catalog, V2 loader, MIDI note and audio output.
+Protected and clear XML share the parser and byte bounds: `9309bf5a`.
+
+## Verification on the shared machine
+
+Wrap every Cargo command and real-library census/render with
+`flock --close /home/derpcat/.cache/kontakto-heavy.lock COMMAND ...`.
+Use the target directory and sccache from `~/.cargo/config.toml`; do not set
+`CARGO_TARGET_DIR` or `RUSTC_WRAPPER`. `--close` keeps persistent child daemons
+such as sccache from inheriting the lock after the job finishes.
