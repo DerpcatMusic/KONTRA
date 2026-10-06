@@ -49,7 +49,11 @@ pub struct Loaded {
 }
 
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
-pub fn load(path: &Path, options: &Options, progress: impl FnMut(Progress)) -> Result<Loaded, LoadError> {
+pub fn load(
+    path: &Path,
+    options: &Options,
+    progress: impl FnMut(Progress),
+) -> Result<Loaded, LoadError> {
     load_cancelable(path, options, progress, || false)
 }
 
@@ -252,12 +256,7 @@ pub fn prepare(
     pcm: Vec<Pcm>,
     scripts: bool,
 ) -> Result<Loaded, LoadError> {
-    let limits = sampler_ksp::Limits {
-        source_bytes: 4 << 20,
-        instructions: 1 << 20,
-        variables: 1 << 16,
-        array_cells: 1 << 22,
-    };
+    let limits = sampler_ksp::Limits::LIBRARY;
     let mut compiled = Vec::new();
     let mut failed = Vec::new();
     for behavior in &instrument.behaviors {
