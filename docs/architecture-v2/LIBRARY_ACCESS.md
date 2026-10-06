@@ -26,6 +26,8 @@ The installed test reads the wallpaper in `Afflatus Chapter II Brass.nicnt`
 and validates its complete PNG framing. Authored tests cover NKR versions
 0x110/0x111, invalid container ranges/markers and the disabled-feature API.
 Implementation: `fed97989`.
+An installed Solo `Pyramid v1.0.6.nkr` test also validates an encrypted PNG
+buffer and confirms that reading the same member without local access fails.
 
 ## UVI programs
 
