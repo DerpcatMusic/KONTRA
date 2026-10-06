@@ -392,6 +392,10 @@ fn probe_instrument() {
         d.instrument.behaviors.clear();
     }
     eprintln!(
+        "DYNAMICS amplitude controllers {:?}",
+        d.instrument.amplitude_controllers()
+    );
+    eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),
         d.instrument.behaviors.len()
@@ -508,7 +512,10 @@ fn probe_instrument() {
             let loaded = sampler_kontakt::finish(ir, pcm, labels, &d.options).unwrap();
             let mut words = vec![0x2000_0000];
             // KONTRA_PROBE_CC="100=64;11=127": controllers sent before the note.
-            for cc in std::env::var("KONTRA_PROBE_CC").unwrap_or_default().split(';') {
+            for cc in std::env::var("KONTRA_PROBE_CC")
+                .unwrap_or_default()
+                .split(';')
+            {
                 if let Some((n, v)) = cc.split_once('=')
                     && let (Ok(n), Ok(v)) = (n.parse::<u32>(), v.parse::<u32>())
                 {
