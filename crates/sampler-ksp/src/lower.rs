@@ -1520,6 +1520,25 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
+            GetEventPar
+                if matches!(
+                    self.const_int(args, 1),
+                    Some(b::event_par::ZONE_ID | b::event_par::MIDI_CHANNEL)
+                ) && !self.selects_many(builtin, args, 0) =>
+            {
+                let info = if self.const_int(args, 1) == Some(b::event_par::ZONE_ID) {
+                    sampler_core::EventInfo::ZoneId
+                } else {
+                    sampler_core::EventInfo::MidiChannel
+                };
+                self.arg(args, 0, dst)?;
+                self.emit(I::ReadEventInfo {
+                    event: dst,
+                    info,
+                    local: dst,
+                })?;
+                true
+            }
             AllowGroup | DisallowGroup if self.note_context() => {
                 let allowed = builtin == AllowGroup;
                 let pending_only = self.ctx == Context::Note;
