@@ -44,6 +44,10 @@
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"
     },
+    "$EVENT_VELOCITY": {
+      "implementation": "partial_native_subset",
+      "evidence": "KSP_FRONTEND.md"
+    },
     "$NOTE_HELD": {
       "implementation": "partial_native_subset",
       "evidence": "KSP_FRONTEND.md"

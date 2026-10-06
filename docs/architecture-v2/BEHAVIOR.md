@@ -313,3 +313,14 @@ Program validation includes every referenced register, including aliased operand
 and dead code. `Prepared::behavior_local_count` exposes the largest callback width
 for control-side arena sizing; runtime construction and replacement still reject
 insufficient capacity. Execution uses no temporary heap stack or dynamic dispatch.
+
+
+## Evaluated time and MIDI arguments
+
+`ReadVelocity7` provides an explicit nearest-integer view of onset velocity without
+mutating high-resolution note state. `MicrosToFrames` converts nonnegative register
+microseconds to u32 sample frames with checked integer ceil division. `WaitLocal`
+uses the same scheduler as `Wait`. `PlayMidi` reads separate key, seven-bit velocity
+and positive frame-duration registers and calls the same admission implementation as
+native `Play`. Invalid arguments publish no child/timer; wider register values are
+checked, not truncated. KSP uses these operations; no language VM runs on audio.

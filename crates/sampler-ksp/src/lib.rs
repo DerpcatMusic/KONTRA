@@ -2,8 +2,8 @@
 //! Clean-sheet, control-thread KSP 8.12 source subset. No vendor VM dependency.
 //! Native sample-time lowering is explicit; this is not a Kontakt fidelity claim.
 use sampler_core::{
-    Comparison, ControlDefinition, ControlDomain, ControlId, ControlValue, Duration, Inheritance,
-    Instruction, Prepared, Program, ScriptInstanceId, Velocity, WaitLifetime,
+    Comparison, ControlDefinition, ControlDomain, ControlId, ControlValue, Inheritance,
+    Instruction, Prepared, Program, ScriptInstanceId, WaitLifetime,
 };
 use std::collections::BTreeMap;
 mod expression;
@@ -131,7 +131,6 @@ enum Variable {
 struct Parser<'a> {
     source: &'a str,
     offset: usize,
-    rate: u32,
     limit: usize,
     emitted: usize,
     code: Vec<Instruction>,
@@ -307,17 +306,19 @@ impl<'a> Parser<'a> {
                         name.as_bytes()
                             .first()
                             .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-                    }) || matches!(name, "$EVENT_NOTE" | "$EVENT_ID" | "$NOTE_HELD")
-                        || [
-                            "$NI_",
-                            "$CONTROL_PAR_",
-                            "$EVENT_PAR_",
-                            "$ENGINE_PAR_",
-                            "$ZONE_PAR_",
-                            "$LOOP_PAR_",
-                        ]
-                        .iter()
-                        .any(|prefix| name.starts_with(prefix))
+                    }) || matches!(
+                        name,
+                        "$EVENT_NOTE" | "$EVENT_VELOCITY" | "$EVENT_ID" | "$NOTE_HELD"
+                    ) || [
+                        "$NI_",
+                        "$CONTROL_PAR_",
+                        "$EVENT_PAR_",
+                        "$ENGINE_PAR_",
+                        "$ZONE_PAR_",
+                        "$LOOP_PAR_",
+                    ]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
                     {
                         return Err(Error {
                             offset: token.offset,
@@ -509,9 +510,10 @@ impl<'a> Parser<'a> {
             match token.kind {
                 Kind::Word("wait") => {
                     self.symbol(b'(')?;
-                    let (micros, offset) = self.number()?;
+                    self.scalar(0)?;
                     self.symbol(b')')?;
-                    self.emit(Instruction::Wait(self.frames(micros, offset)?))?;
+                    self.emit(Instruction::MicrosToFrames { local: 0 })?;
+                    self.emit(Instruction::WaitLocal { local: 0 })?;
                 }
                 Kind::Word("play_note") => self.play()?,
                 Kind::Word(command @ ("inc" | "dec")) => self.increment(command == "inc")?,
@@ -625,45 +627,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn frames(&self, micros: u64, offset: usize) -> Result<u32, Error> {
-        let frames = (u128::from(micros) * u128::from(self.rate)).div_ceil(1_000_000);
-        u32::try_from(frames).map_err(|_| Error {
-            offset,
-            message: "time exceeds native frame-instruction range",
-        })
-    }
     fn play(&mut self) -> Result<(), Error> {
         self.symbol(b'(')?;
-        self.expect(
-            Kind::Word("$EVENT_NOTE"),
-            "only $EVENT_NOTE with an optional constant transpose is supported",
-        )?;
-        let token = self.next()?;
-        let transpose = match token.kind {
-            Kind::Symbol(b',') => 0,
-            Kind::Symbol(sign @ (b'+' | b'-')) => {
-                let (value, offset) = self.number()?;
-                let value = i8::try_from(value).map_err(|_| Error {
-                    offset,
-                    message: "transpose must be within -127..127",
-                })?;
-                self.symbol(b',')?;
-                if sign == b'-' { -value } else { value }
-            }
-            _ => {
-                return Err(Error {
-                    offset: token.offset,
-                    message: "unsupported note expression",
-                });
-            }
-        };
-        let (velocity, offset) = self.number()?;
-        if !(1..=127).contains(&velocity) {
-            return Err(Error {
-                offset,
-                message: "play_note velocity must be 1..127",
-            });
-        }
+        self.scalar(0)?;
+        self.symbol(b',')?;
+        self.scalar(1)?;
         self.symbol(b',')?;
         let (sample_offset, offset) = self.number()?;
         if sample_offset != 0 {
@@ -673,19 +641,14 @@ impl<'a> Parser<'a> {
             });
         }
         self.symbol(b',')?;
-        let (duration, offset) = self.number()?;
-        if duration == 0 {
-            return Err(Error {
-                offset,
-                message: "whole-source duration is unsupported; provide a positive duration",
-            });
-        }
+        self.scalar(2)?;
         self.symbol(b')')?;
-        self.emit(Instruction::Play {
-            transpose,
-            velocity: Velocity::Fixed(velocity as f64 / 127.),
+        self.emit(Instruction::MicrosToFrames { local: 2 })?;
+        self.emit(Instruction::PlayMidi {
+            key: 0,
+            velocity: 1,
+            frames: 2,
             inheritance: Inheritance::Independent,
-            duration: Duration::Frames(self.frames(duration, offset)?),
         })
     }
 }
@@ -731,7 +694,6 @@ pub fn compile(
     let mut p = Parser {
         source,
         offset: 0,
-        rate,
         limit: limits.instructions,
         emitted: 0,
         code: Vec::new(),

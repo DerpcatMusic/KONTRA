@@ -87,7 +87,7 @@ fn source_controls_drive_audio_without_a_ui_and_keep_polyphonic_memory_separate(
                 commands: 4,
                 behaviors: 4,
                 behavior_fuel: 32,
-                behavior_cells: 8,
+                behavior_cells: 12,
                 note_cells: 4,
             },
         )
@@ -290,7 +290,7 @@ fn ui_handlers_wait_and_control_note_playback_without_fabricated_notes() {
             commands: 4,
             behaviors: 2,
             behavior_fuel: 32,
-            behavior_cells: 4,
+            behavior_cells: 6,
             note_cells: 0,
         },
     )
@@ -413,7 +413,7 @@ fn globals_are_shared_across_waiting_callbacks_while_polyphonic_values_remain_pe
                 commands: 8,
                 behaviors: 8,
                 behavior_fuel: 64,
-                behavior_cells: 16,
+                behavior_cells: 24,
                 note_cells: 4,
             },
         )

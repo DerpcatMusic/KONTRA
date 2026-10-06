@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Execute KSP integer expressions in note key, velocity, duration and wait arguments
+  through native register services, preserving bounded child ownership and scheduler
+  reservations. Add explicit seven-bit onset reads without narrowing core note state.
+  Invalid evaluated arguments fault before publishing work; Kontakt parity remains open.
+
 - Execute KSP integer expressions, precedence, parentheses, bitwise operators and scalar inc/dec through explicit signed-32 native instructions. Bound expression depth and register storage; the native audition command now sizes callback registers from the prepared plan.
 
 - Add generation-owned script-instance integer banks and explicit program bindings. KSP globals now share values across note/release/UI waits while polyphonic cells stay per-note; schema validation, replacement, faults, cancellation and deferred destruction preserve ownership.

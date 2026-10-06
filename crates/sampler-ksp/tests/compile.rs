@@ -56,8 +56,8 @@ fn authored_script_uses_new_native_ownership_after_input_release_without_heap() 
                     voices: 4,
                     commands: 4,
                     behaviors: 1,
-                    behavior_fuel: 8,
-                    behavior_cells: 0,
+                    behavior_fuel: 16,
+                    behavior_cells: 4,
                     note_cells: 0,
                 },
             )
@@ -130,7 +130,6 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         "on release ignore_event($EVENT_ID) end on",
         "on note ignore_event($EVENT_ID) message(1) end on",
         "on note ignore_event($EVENT_ID) wait($x) end on",
-        "on note ignore_event($EVENT_ID) wait(-1) end on",
         "on note ignore_event($EVENT_ID) wait(2147483648) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551616) end on",
         "on note ignore_event($EVENT_ID) wait(18446744073709551615) end on",
@@ -139,14 +138,7 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
         "on note ignore_event($OTHER_ID) end on",
         "{ unclosed",
         "{ { nested } }",
-        "on note ignore_event($EVENT_ID) play_note(60, 100, 0, 1000) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE + 128, 100, 0, 1000) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 1000) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 0, 0, 1000) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 128, 0, 1000) end on",
         "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 1, 1000) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 0, 0) end on",
-        "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 0, -1) end on",
         "on note ignore_event($EVENT_ID) play_note($EVENT_NOTE, 127, 0, 1000 end on",
         "🎹",
     ];
@@ -161,7 +153,7 @@ fn unsupported_and_malformed_source_fails_explicitly_with_a_valid_offset() {
     let source = "on note ignore_event($EVENT_ID) wait($x) end on";
     let error = compile(source, 48000, limits()).err().unwrap();
     assert_eq!(error.offset, source.find("$x").unwrap());
-    assert!(error.message.contains("dynamic expressions"));
+    assert!(error.message.contains("undeclared"));
 }
 
 #[test]
@@ -182,7 +174,7 @@ fn compilation_obeys_source_instruction_and_clock_budgets_without_panics() {
             u32::MAX,
             limits()
         )
-        .is_err()
+        .is_ok()
     );
     assert!(
         compile(
@@ -211,7 +203,7 @@ fn compilation_obeys_source_instruction_and_clock_budgets_without_panics() {
             source,
             48000,
             Limits {
-                instructions: 2,
+                instructions: 4,
                 ..limits()
             }
         )
@@ -278,8 +270,8 @@ fn polyphonic_source_state_reaches_release_callbacks_without_heap_or_note_aliasi
                     decisions: 0,
                     commands: 8,
                     behaviors: 4,
-                    behavior_fuel: 16,
-                    behavior_cells: 4,
+                    behavior_fuel: 32,
+                    behavior_cells: 16,
                     note_cells: 12,
                 },
             )
@@ -483,7 +475,7 @@ fn held_key_branches_survive_waits_and_keep_overlapping_owners_distinct() {
                     commands: 8,
                     behaviors: 4,
                     behavior_fuel: 64,
-                    behavior_cells: 8,
+                    behavior_cells: 16,
                     note_cells: 16,
                 },
             )
@@ -723,7 +715,7 @@ fn repeating_source_loops_stop_per_owner_at_key_up_and_cancel_without_heap() {
                     commands: 8,
                     behaviors: 2,
                     behavior_fuel: 32,
-                    behavior_cells: 4,
+                    behavior_cells: 8,
                     note_cells: 8,
                 },
             )
