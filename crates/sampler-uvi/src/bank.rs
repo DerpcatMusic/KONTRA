@@ -118,7 +118,7 @@ impl Bank {
         })
     }
 
-    /// Program member paths (`*.uvip`), in directory order.
+    /// Program member paths (`*.uvip`), sorted.
     pub fn programs(&self) -> Vec<String> {
         program_paths(&self.directory)
     }
@@ -345,6 +345,8 @@ fn normalize(path: &str) -> Result<String> {
 }
 
 /// Exact paths take priority; a bare member name is usable only if unique.
+/// Some banks retain WAV references after replacing their members with FLAC.
+/// An alternate lossless format must have the same directory and sample stem.
 fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     let path = normalize(path)?;
     let exact: Vec<_> = directory
@@ -356,13 +358,37 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
         return Ok(exact[0]);
     }
     ensure!(exact.is_empty(), "Ambiguous UVI member path");
-    ensure!(
-        !path.contains('/'),
-        "UVI resource path is absent from this bank"
-    );
-    let named: Vec<_> = directory.files.iter().filter(|m| m.name.eq_ignore_ascii_case(&path)).collect();
-    ensure!(named.len() == 1, "UVI member name is absent or ambiguous");
-    Ok(named[0])
+    let bare = !path.contains('/');
+    if bare {
+        let named: Vec<_> = directory.files.iter().filter(|m| m.name.eq_ignore_ascii_case(&path)).collect();
+        if named.len() == 1 {
+            return Ok(named[0]);
+        }
+        ensure!(named.is_empty(), "Ambiguous UVI member name");
+    }
+    if let Some(stem) = audio_stem(&path) {
+        let mut alternatives = directory.files.iter().filter(|member| {
+            let name = if bare {
+                Some(member.name.as_str())
+            } else {
+                member.path.as_deref()
+            };
+            name.and_then(audio_stem) == Some(stem)
+        });
+        if let Some(member) = alternatives.next() {
+            ensure!(alternatives.next().is_none(), "Ambiguous UVI audio format");
+            return Ok(member);
+        }
+    }
+    anyhow::bail!("UVI resource path is absent from this bank")
+}
+
+fn audio_stem(path: &str) -> Option<&str> {
+    let (stem, extension) = path.rsplit_once('.')?;
+    ["wav", "aif", "aiff", "flac"]
+        .iter()
+        .any(|format| extension.eq_ignore_ascii_case(format))
+        .then_some(stem)
 }
 
 fn resource<'a>(
@@ -564,6 +590,55 @@ mod tests {
         bank.directory.files[index].offset=offset;
         std::fs::remove_file(path).unwrap();
         assert_eq!(bank.ui_resource_result("preset.uvip", "preset.uvip"), Err(E::Read));
+    }
+
+    #[test]
+    fn audio_format_fallback_preserves_the_sample_and_rejects_ambiguity() {
+        let mut directory = Directory {
+            files: ["Samples/tone-C1.flac", "Other/tone-C1.flac"]
+                .into_iter()
+                .map(|path| Member {
+                    record_offset: 0,
+                    name: path.rsplit('/').next().unwrap().into(),
+                    parent: None,
+                    path: Some(path.into()),
+                    size: 0,
+                    offset: 0,
+                    mode: Protection::Clear,
+                    footer: Vec::new(),
+                })
+                .collect(),
+            directories: Vec::new(),
+            records: Vec::new(),
+            warnings: Vec::new(),
+            metadata_key: 0,
+        };
+        assert_eq!(
+            resolve(&directory, "Samples/tone-C1.wav")
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("Samples/tone-C1.flac")
+        );
+        assert!(resolve(&directory, "Samples/tone-C2.wav").is_err());
+        assert!(resolve(&directory, "Absent/tone-C1.wav").is_err());
+        assert!(resolve(&directory, "Samples/tone-C1.uvip").is_err());
+        assert!(resolve(&directory, "tone-C1.wav").is_err());
+        let mut member = directory.files[0].clone();
+        member.path = Some("Samples/tone-C1.aif".into());
+        member.name = "tone-C1.aif".into();
+        directory.files.push(member.clone());
+        assert!(resolve(&directory, "Samples/tone-C1.wav").is_err());
+        member.path = Some("Samples/tone-C1.wav".into());
+        member.name = "tone-C1.wav".into();
+        directory.files.push(member);
+        assert_eq!(
+            resolve(&directory, "Samples/tone-C1.wav")
+                .unwrap()
+                .path
+                .as_deref(),
+            Some("Samples/tone-C1.wav")
+        );
     }
 
     #[test]
