@@ -197,6 +197,8 @@ pub struct Prepared {
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
+    pub(super) signal_programs: Box<[super::SignalProgram]>,
+    pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
     keyswitches: [Option<u32>; 128],
     articulated: bool,
     conditions: Box<[Box<[ControllerCondition]>]>,
@@ -349,6 +351,8 @@ impl Prepared {
             controls: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
+            signal_programs: Box::new([]),
+            shared_store: (Box::new([]), 0),
             keyswitches: [None; 128],
             articulated: false,
             conditions: Box::new([]),
@@ -401,6 +405,7 @@ impl Prepared {
         }]);
         self.control_programs = Box::new([]);
         self.plan_programs = Box::new([]);
+        self.signal_programs = Box::new([]);
         Ok(self)
     }
 
