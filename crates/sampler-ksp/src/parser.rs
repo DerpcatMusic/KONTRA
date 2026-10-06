@@ -206,7 +206,7 @@ impl Parser<'_> {
                 let value = self.expr(0, 0)?;
                 let mut cases = Vec::new();
                 while self.is_kw(self.kw.case) {
-                    let span = self.next().span;
+                    self.pos += 1;
                     let low = self.expr(0, 0)?;
                     let high = if self.eat_kw(self.kw.to) {
                         Some(self.expr(0, 0)?)
@@ -214,12 +214,7 @@ impl Parser<'_> {
                         None
                     };
                     let body = self.block(depth + 1)?;
-                    cases.push(Case {
-                        span,
-                        low,
-                        high,
-                        body,
-                    });
+                    cases.push(Case { low, high, body });
                 }
                 self.close(self.kw.select, "case or end select")?;
                 StmtKind::Select(value, cases)

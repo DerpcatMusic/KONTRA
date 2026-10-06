@@ -655,23 +655,6 @@ pub const CONTROL_PARS: &[&str] = &[
     "$CONTROL_PAR_FILEPATH",
 ];
 
-/// Control parameters whose value is text.
-pub fn text_control_par(name: &str) -> bool {
-    matches!(
-        name,
-        "$CONTROL_PAR_TEXT"
-            | "$CONTROL_PAR_LABEL"
-            | "$CONTROL_PAR_HELP"
-            | "$CONTROL_PAR_PICTURE"
-            | "$CONTROL_PAR_AUTOMATION_NAME"
-            | "$CONTROL_PAR_TEXTLINE"
-            | "$CONTROL_PAR_SHORT_NAME"
-            | "$CONTROL_PAR_IDENTIFIER"
-            | "$CONTROL_PAR_BASEPATH"
-            | "$CONTROL_PAR_FILEPATH"
-    )
-}
-
 pub fn control_par(name: &str) -> Option<i32> {
     CONTROL_PARS
         .iter()
@@ -681,8 +664,6 @@ pub fn control_par(name: &str) -> Option<i32> {
 pub const CONTROL_PAR_VALUE: i32 = SYMBOL_BASE;
 pub const CONTROL_PAR_POS_X: i32 = SYMBOL_BASE + 1;
 pub const CONTROL_PAR_POS_Y: i32 = SYMBOL_BASE + 2;
-pub const CONTROL_PAR_WIDTH: i32 = SYMBOL_BASE + 3;
-pub const CONTROL_PAR_HEIGHT: i32 = SYMBOL_BASE + 4;
 pub const CONTROL_PAR_HIDE: i32 = SYMBOL_BASE + 5;
 pub const CONTROL_PAR_TEXT: i32 = SYMBOL_BASE + 6;
 pub const CONTROL_PAR_LABEL: i32 = SYMBOL_BASE + 7;
@@ -690,12 +671,6 @@ pub const CONTROL_PAR_HELP: i32 = SYMBOL_BASE + 8;
 pub const CONTROL_PAR_UNIT: i32 = SYMBOL_BASE + 9;
 pub const CONTROL_PAR_MIN_VALUE: i32 = SYMBOL_BASE + 10;
 pub const CONTROL_PAR_MAX_VALUE: i32 = SYMBOL_BASE + 11;
-pub const CONTROL_PAR_PICTURE: i32 = SYMBOL_BASE + 12;
 pub const CONTROL_PAR_DEFAULT_VALUE: i32 = SYMBOL_BASE + 13;
-pub const CONTROL_PAR_SELECTED_ITEM_IDX: i32 = SYMBOL_BASE + 14;
 pub const CONTROL_PAR_NUM_ITEMS: i32 = SYMBOL_BASE + 15;
-pub const CONTROL_PAR_TEXTLINE: i32 = SYMBOL_BASE + 20;
 pub const CONTROL_PAR_TYPE: i32 = SYMBOL_BASE + 21;
-pub const CONTROL_PAR_AUTOMATION_NAME: i32 = SYMBOL_BASE + 18;
-pub const CONTROL_PAR_ALLOW_AUTOMATION: i32 = SYMBOL_BASE + 16;
-pub const CONTROL_PAR_AUTOMATION_ID: i32 = SYMBOL_BASE + 17;

@@ -270,7 +270,7 @@ pub fn compile_with(
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
-        let hir = sema::analyze(ast, &syms, budget)?;
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view)?;
         let init = eval::run(&hir, environment)?;
         Ok((hir, init))
     })()

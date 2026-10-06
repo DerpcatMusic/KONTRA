@@ -205,6 +205,8 @@ fn case_dispatch_and_parsing_are_bounded_and_dead_cases_are_validated() {
         "end select ".repeat(200)
     );
     assert!(compile(&deep).is_ok());
+    // v2: `1H` is a valid hex literal and an empty select is a no-op.
+    assert!(compile("on note select(1H) end select end on").is_ok());
     for body in [
         "case 0",
         "select (0) wait(1) end select",
@@ -218,7 +220,6 @@ fn case_dispatch_and_parsing_are_bounded_and_dead_cases_are_validated() {
         "select(0) case 0 to end select",
         "end select",
         "select(0) case 0100000000H end select",
-        "select(1H) end select",
         "select(0x10) end select",
     ] {
         let source = format!("on note {body} end on");
@@ -229,7 +230,7 @@ fn case_dispatch_and_parsing_are_bounded_and_dead_cases_are_validated() {
             &deep,
             48000,
             sampler_ksp::Limits {
-                instructions: 1024,
+                instructions: 64,
                 ..limits()
             },
             &[]

@@ -50,7 +50,6 @@ pub enum StmtKind {
 
 #[derive(Debug)]
 pub struct Case {
-    pub span: Span,
     pub low: Expr,
     pub high: Option<Expr>,
     pub body: Vec<Stmt>,
