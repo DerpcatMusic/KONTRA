@@ -86,6 +86,7 @@ fn main() {
     let mut rt = Runtime::new(plan, limits)
         .unwrap_or_else(|e| panic!("{e}"))
         .with_stream_cache(cache);
+    rt.set_release_stealing(true);
     let (low, high) = loaded
         .instrument
         .zones
