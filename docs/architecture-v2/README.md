@@ -3,6 +3,9 @@
 Status: independent native ownership, scheduling, resident/paged DSP, behavior and MIDI services,
 2026-10-06. Production playback has not been replaced or certified.
 
+Work is paused at the user's request. Start with the [handoff and status inventory](HANDOFF.md)
+for implemented slices, partial/missing work, validation and the next priorities.
+
 This work starts on `docs/plan-v2-architecture`, in the isolated T3 worktree
 `t3code-deca12d9`, at source commit
 `ac2adc981191347bbdacaee3a29c359464ec712e`. “2.0” names the architecture effort;
@@ -83,25 +86,26 @@ without importing old engine types; container playback admission remains open.
 23. [Full Kontakt 8.12 KSP completion map](KSP_PARITY.md): manual surface inventory,
     native service dependencies and explicit implementation/reference gaps.
 
-24. [Native voice DSP chains](VOICE_DSP.md): gain/biquad processors, pre/post-envelope
+24. [Native voice DSP chains](VOICE_DSP.md): gain/biquad/state-variable/delay processors, pre/post-envelope
     order, independent state, retained tails and bounded whole-chain choke.
 
 25. [Native bus DSP](BUS_DSP.md): prepared summed-signal routing, shared kernels,
     independent bus histories, sample-clock controls and generation-owned tails.
 
 26. [Sample streaming work](STREAMING.md): immutable asset IDs and traversal-derived
-    demand; worker cache and paged playback are in progress.
+    demand, bounded worker/cache exchange, live page service, paged rendering and
+    starvation fades; production resource policies remain open.
 
 ## Implemented and still open
 
 - Native core: generational note/family/voice/expression ownership, physical versus
   effective gates, retained key/gate release context, direct ownership release traversal,
   bounded scheduling/behaviors,
-  resident selection, curved DAHDSR/AHD, voice-local gain/biquad chains, shared bus DAGs
+  resident selection, curved DAHDSR/AHD, voice-local gain/biquad/delay/filter chains, shared bus DAGs
   and scheduled family chokes,
   source views/loops, bandlimited rate conversion, root-key/native tuning and live pitch,
   initial expression, transactional multi-owner gestures and prepared event-rate
-  pressure/timbre modulation to gain, balance and pitch.
+  pressure/timbre modulation to gain, balance, pitch and voice filter parameters.
 - Selection: coordinated sequential/random/no-repeat/shuffle takes with explicit scope and
   storage budgets, retained note decisions and transactional multi-family admission.
   Key/gate release layers own reserved resources and independent phase decisions.
@@ -114,7 +118,7 @@ without importing old engine types; container playback admission remains open.
 - MIDI: UMP framing and MIDI 1/2 note/pedal/channel-mode ingress, MIDI 2 absolute pitch attributes; separate fixed-zone
   MPE pitch/pressure/CC74, whole-semitone RPN sensitivity and zone pedals. Full MIDI
   2 expression, MPE zone configuration/modes and raw scripting interception remain open.
-- Product work remains substantial: broader modulation rates/scopes, automated/vendor filter profiles and effects, streaming,
+- Product work remains substantial: broader modulation rates/scopes, vendor filter/effect profiles, production streaming policies,
   richer selection/behavior/imports, host integration, persistence and UI. The
   production plugin/UI still uses the old core. There is no new-core DAW build yet.
   Completion explicitly requires full Kontakt KSP parity, complete new-core UI wiring
