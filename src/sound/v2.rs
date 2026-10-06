@@ -1274,7 +1274,7 @@ mod tests {
         };
         let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
         let plan = sampler_kontakt::prepare(instrument.clone(), pcm, &Default::default()).unwrap().plan;
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
         part.set_drivers(&instrument);
@@ -1353,8 +1353,8 @@ mod tests {
         let plan = plan.with_buses(vec![bus], vec![Some(0)]).unwrap();
         let mut tree = MixTree::instrument("one");
         tree.nodes.push(MixNode { name: "g".into(), kind: NodeKind::Group, parent: Some(0), inserts: vec![], sends: vec![] });
-        let limits = limits(&plan);
-        let part = Box::new(Part::new(Runtime::new(plan, limits.0).unwrap(), tree).unwrap());
+        let limits = limits(&plan).0;
+        let part = Box::new(Part::new(Runtime::new(plan, limits).unwrap(), tree).unwrap());
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(part));
         let mut mix = Mix::default();
@@ -1387,8 +1387,8 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
-        let part = Part::new(Runtime::new(plan, limits.0).unwrap(), MixTree::instrument("s")).unwrap();
+        let limits = limits(&plan).0;
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
         assert!(core.set_control(0, k, 41.6), "rounded into the knob's integer range");
@@ -1417,7 +1417,7 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
@@ -1448,7 +1448,7 @@ mod tests {
         let one = sampler_ksp::bind_modules(vec![script(0)], Prepared::new(48000, vec![pcm()], vec![region.clone()], 1).unwrap()).unwrap();
         let four = sampler_ksp::bind_modules((0..4).map(script).collect(), Prepared::new(48000, vec![pcm()], vec![region], 1).unwrap()).unwrap();
         assert_eq!((Limits::script_capacity(&one), Limits::script_capacity(&four)), (4 * Limits::SCRIPT_KEYS + 1, 16 * Limits::SCRIPT_KEYS + 4));
-        let limits = limits(&four);
+        let limits = limits(&four).0;
         assert!(Runtime::new(four, limits).is_ok());
     }
 
