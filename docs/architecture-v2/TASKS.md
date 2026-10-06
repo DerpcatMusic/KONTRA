@@ -151,6 +151,10 @@ No SFZ frontend has been implemented. Shared primitives remain format independen
   and language/state/controller work stay open. Native per-note group masks now filter
   layer selection, snapshot into children and retain generation ownership. KSP
   allow/disallow and first-yield release-group commits use the same services.
+  Stored source IDs now support individual note_off and optional deadline overrides
+  through shared, retained key-up scheduling, including plan-owned UI callbacks.
+  Marked/all-event targets, broader mutation/status services and ordered script slots
+  remain open; individual-ID fixtures are not full vendor-command parity.
 
 - [ ] **P0; dependencies:** V2-03/04.
 - Build command/query services, continuations, callback contexts, cancellation and

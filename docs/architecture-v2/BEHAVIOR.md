@@ -452,3 +452,21 @@ reserves an ID before child publication; a later admission failure can leave a n
 gap. A note keeps its assigned alias until retirement and repeated reads consume no
 additional IDs. A fresh runtime resets its own namespace; plan validation prevents
 cross-runtime API lookup. Persistent source integers are not native ownership handles.
+
+
+## Targeted key-up and deadline replacement
+
+`replace_key_up_at(note, at, velocity)` atomically replaces that full handle's queued
+`KeyUp`/`Release` commands. It validates time, velocity, physical key state and net
+queue/work capacity before removing deadlines. A replacement can reuse an occupied
+slot; immediate key-up requires no slot. Existing equal-time commands run first.
+All future note-end commands now own private work pins, just like expression commands,
+so whole-source note retirement cannot invalidate a queued target. Cancellation and
+execution return each pin once; manual unpin cannot consume it.
+
+`KeyUpEvent` accepts a source ID and optional frame-delay register. Lookup is scoped
+to its behavior's plan, including plan-owned UI callbacks. No delay preserves a
+generated fixed-duration policy; an explicit delay overrides queued ends. Fixed
+policy is admission metadata, separate from host scheduling and source completion.
+Register layout is prepared off audio. Key-up reuses existing pedal, release callback
+and release-region behavior; it does not invent a second release implementation.

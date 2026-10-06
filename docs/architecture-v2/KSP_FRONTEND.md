@@ -460,8 +460,8 @@ ends, unmapped notes, effects-tail retention, muted/infinite loops, panic, exact
 quota recovery before host-terminal acceptance and no runtime heap operations.
 Current policy follows the parent's effective gate (including pedal holds); precise
 Kontakt pedal/special-duration behavior remains a differential-test obligation.
-Full event-targeted commands, explicit source `note_off`, offsets and ordered script
-stages remain open. No new vendor-fidelity claim or manual override count is added.
+Source note-end control is described below; broader event-targeted commands, sample
+offsets and ordered script stages remain open. No vendor-fidelity claim is added.
 
 Generated-lifetime validation: all 224 native tests pass in debug, release and
 Rust 1.92; strict all-target Clippy and both root boundary tests pass. Logs use
@@ -611,7 +611,40 @@ Tests cover IDs in scalar/array expressions, native result/argument register ali
 all three generated lifetimes, independent PCM at blocks 1/7/64, original release IDs,
 short-circuit suppression, bounded nesting, slot reuse, panic, rejected terminal
 acceptance, plan replacement and exhaustion. Event enumeration/status, targeted source
-mutations, `note_off`, marks/selectors, fades and ordered source stages remain open.
+mutations, marks/selectors, fades and ordered source stages remain open.
 
 Event-ID validation: 257 native tests pass in debug, release and Rust 1.92; strict
 all-target Clippy and both root boundary tests pass. Logs: `artifacts/event-ids-*`.
+
+## Stored-event note ends
+
+`note_off(id)` and `note_off(id, offset)` accept evaluated integer arguments from
+note, release and UI-control callbacks. IDs resolve only within the callback's plan
+generation; retired, unknown and already key-released targets are no-ops. A plain
+one-argument call preserves a generated fixed-duration policy. An explicit nonnegative
+microsecond offset replaces pending note-end deadlines; zero releases immediately.
+A queued host key-up is not a generated fixed duration. Arguments validate before
+replacement and offsets use the same upward frame rounding as other commands.
+
+This lowers to shared `KeyUpEvent` and `replace_key_up_at`, using the existing
+key-release callback, pedal, group-selection, envelope and release-layer services.
+Original release callbacks execute once; generated notes retain the existing
+single-stage policy of skipping their creator's callback. Repeated self-release
+cannot recurse. UI handlers target stored IDs without fabricating a note owner.
+
+The native queue owns pending note ends through private work pins, including when
+an independent source has finished. Replacing multiple deadlines returns their pins
+and uses their available capacity; invalid inputs and failed capacity checks leave
+them intact. Execution, early key-up, hard cleanup and panic release those pins.
+Same-time ordering remains stable and an exclusive block-end event stays pending.
+
+The NI general-command examples distinguish fixed durations and explicit overrides;
+legacy timer/stage code was inspected as a reference, not executed or copied.
+All-event/marked selectors, release-event suppression/forwarding and ordered script
+slots remain unimplemented. Pedal behavior, event lifetime details and exact timing
+still need vendor differential evidence; this is not full `note_off` parity.
+
+Validation: 261 native tests in debug, release and Rust 1.92, strict all-target Clippy,
+and both root boundary tests. Logs: `artifacts/note-off-*`. New fixtures cover exact
+PCM at blocks 1/7/64, callbacks, full-queue replacement, invalid offset/velocity,
+exclusive-end ordering, silent-source ownership, panic and stale IDs after reuse.

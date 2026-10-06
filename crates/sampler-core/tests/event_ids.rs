@@ -29,6 +29,128 @@ fn input() -> Input {
         external_id: Some(99),
     }
 }
+
+#[test]
+fn replacing_note_deadlines_is_atomic_at_capacity_and_keeps_equal_time_pedal_order() {
+    let mut capacity = limits(3);
+    capacity.commands = 3;
+    capacity.channels = 1;
+    let mut rt = Runtime::new(plan(), capacity).unwrap();
+    support::without_heap(|| {
+        let a = rt.note_on(input(), 60, 1.).unwrap();
+        let b = rt
+            .note_on(
+                Input {
+                    external_id: Some(100),
+                    ..input()
+                },
+                60,
+                1.,
+            )
+            .unwrap();
+        let channel = rt.register_channel(input().channel_address()).unwrap();
+        rt.release_at(a, 10).unwrap();
+        rt.release_at(a, 12).unwrap();
+        rt.schedule_event(5, Event::Sustain(channel, true)).unwrap();
+        assert_eq!(rt.replace_key_up_at(b, 5, None), Err(Error::Capacity));
+        assert_eq!(
+            rt.replace_key_up_at(a, 5, Some(f64::NAN)),
+            Err(Error::InvalidInput)
+        );
+        rt.replace_key_up_at(a, 5, Some(0.25)).unwrap();
+        assert_eq!(rt.pending_commands(), 2);
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.replace_key_up_at(a, 0, None), Err(Error::PastEvent));
+        rt.replace_key_up_at(b, 1, None).unwrap(); // Immediate release needs no slot.
+        rt.render(&mut [[0.; 2]; 4]).unwrap();
+        assert!(rt.key_down(a).unwrap()); // Exclusive end stays pending.
+        rt.render(&mut []).unwrap();
+        assert!(!rt.key_down(a).unwrap());
+        assert!(rt.note(a).unwrap().2); // Existing pedal command ran first.
+        assert_eq!(
+            rt.release_context(a).unwrap().key,
+            Some(KeyRelease {
+                at: 5,
+                velocity: Some(0.25),
+                cause: ReleaseCause::KeyUp,
+            })
+        );
+        assert_eq!(rt.pending_commands(), 0);
+        assert_eq!(rt.replace_key_up_at(a, 6, None), Err(Error::ClosedNote));
+        rt.sustain(channel, false).unwrap();
+        rt.flush_ended(|_| true);
+        assert_eq!(rt.note_count(), 0);
+        assert_eq!(rt.replace_key_up_at(a, 6, None), Err(Error::StaleHandle));
+    });
+}
+
+#[test]
+fn queued_note_ends_retain_silent_generated_notes_and_cancel_without_leaking_pins() {
+    for forced in [false, true] {
+        let plan = plan()
+            .with_programs(
+                vec![
+                    Program::new(vec![
+                        Instruction::SetLocal {
+                            local: 0,
+                            value: 60,
+                        },
+                        Instruction::SetLocal {
+                            local: 1,
+                            value: 127,
+                        },
+                        Instruction::PlayMidi {
+                            key: 0,
+                            velocity: 1,
+                            inheritance: Inheritance::Independent,
+                            duration: DurationValue::Fixed(Duration::UntilSilent),
+                            result: Some(0),
+                        },
+                    ])
+                    .unwrap(),
+                ],
+                None,
+            )
+            .unwrap();
+        let mut rt = Runtime::new(plan, limits(3)).unwrap();
+        support::without_heap(|| {
+            let parent = rt.note_on(input(), 60, 1.).unwrap();
+            let callback = rt.start_behavior(parent, 0).unwrap();
+            let alias = rt.behavior_local(callback, 0).unwrap() as i32;
+            let child = rt
+                .resolve_source_event(rt.active_plan(), alias)
+                .unwrap()
+                .unwrap();
+            if forced {
+                rt.release_at(child, 6).unwrap();
+            } else {
+                rt.schedule_event(6, Event::KeyUp(child, None)).unwrap();
+            }
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 2); // No source, but its queued end owns it.
+            rt.replace_key_up_at(child, 8, None).unwrap();
+            rt.render(&mut [[0.; 2]; 7]).unwrap();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 2);
+            if forced {
+                rt.panic();
+            } else {
+                rt.render(&mut [[0.; 2]; 2]).unwrap();
+                assert_eq!(rt.release_context(child).unwrap().key.unwrap().at, 8);
+            }
+            assert_eq!(rt.pending_commands(), 0);
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), usize::from(!forced));
+            rt.panic();
+            rt.flush_ended(|_| true);
+            assert_eq!(rt.note_count(), 0);
+        });
+    }
+}
 #[test]
 fn source_ids_are_not_host_ids_and_never_alias_reused_note_slots_or_panic() {
     let mut rt = Runtime::new(plan(), limits(1)).unwrap();

@@ -10,6 +10,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ### Experimental v2 development
 
+- Add stored-ID KSP note_off with explicit duration overrides through native key-up
+  scheduling. Deadline replacement preserves ownership and capacity on failure;
+  queued note ends retain silent-source owners until execution or cancellation.
+  Control callbacks can stop stored notes; full vendor stage/selector parity remains open.
+
 - Add generation-scoped source event IDs and KSP play_note return values through
   a preallocated native alias index. Retired IDs cannot target reused note slots;
   identity exhaustion fails before generated audio publication. Event-targeted

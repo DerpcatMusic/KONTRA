@@ -61,6 +61,13 @@ pub enum Instruction {
     ReadEventId {
         local: u16,
     },
+    /// Key-up a source ID in this program's plan. Unknown/closed IDs are no-ops.
+    /// None preserves a generated fixed duration; Some replaces it with a nonnegative
+    /// frame delay, including zero. May run in a plan-owned control callback.
+    KeyUpEvent {
+        event: u16,
+        delay: Option<u16>,
+    },
     /// Quantize script-visible velocity to nearest MIDI 1 value without changing it.
     ReadVelocity7 {
         local: u16,
@@ -283,6 +290,9 @@ impl Program {
             | Instruction::Binary32 { lhs, rhs, .. } = *op
             {
                 locals = locals.max(usize::from(lhs.max(rhs)) + 1);
+            }
+            if let Instruction::KeyUpEvent { event, delay } = *op {
+                locals = locals.max(usize::from(event.max(delay.unwrap_or(event))) + 1);
             }
             if let Instruction::ReadNoteCell { cell, .. }
             | Instruction::WriteNoteCell { cell, .. } = *op
@@ -657,6 +667,27 @@ impl Runtime {
                 let value = self.source_event_id(owner.note()?)?;
                 *self.local_cell_mut(id, local)? = i64::from(value);
             }
+            Instruction::KeyUpEvent { event, delay } => {
+                let event = i32::try_from(*self.local_cell_mut(id, event)?)
+                    .map_err(|_| Error::InvalidInput)?;
+                let frames = delay
+                    .map(|local| {
+                        u32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)
+                    })
+                    .transpose()?;
+                let at = self
+                    .now
+                    .checked_add(u64::from(frames.unwrap_or(0)))
+                    .ok_or(Error::ClockOverflow)?;
+                let plan = self.behavior_plan(owner)?;
+                if let Some(note) = self.resolve_source_event(plan, event)?
+                    && self.key_down(note)?
+                    && (frames.is_some() || !self.note_events[note.0.index].fixed_duration)
+                {
+                    self.replace_key_up_at(note, at, None)?;
+                }
+            }
             Instruction::ReadVelocity7 { local } => {
                 let note = self.note_event(owner.note()?)?;
                 let value = (note.velocity * 127.).round() as i64;
@@ -871,6 +902,7 @@ impl Runtime {
         let child = self.trigger_child(note, pitch, velocity, linked, inheritance);
         self.reserved_commands -= command;
         let child = child?;
+        self.note_events[child.0.index].fixed_duration = frames.is_some();
         self.notes.get_mut(child.0).unwrap().retire_when_silent = duration == Duration::UntilSilent;
         if let Some(at) = at {
             self.release_at(child, at)?;
