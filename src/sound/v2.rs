@@ -1328,6 +1328,29 @@ mod tests {
         assert!(silent.is_empty(), "silent with scripts on: {silent:#?}");
     }
 
+    /// The source's instrument and send buses are mixer nodes beside its groups.
+    /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
+    #[test]
+    fn real_instrument_buses_become_mixer_nodes() {
+        let relative = "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+        let buses: Vec<_> = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Bus).map(|n| n.name.as_str()).collect();
+        assert_eq!(buses, ["insert", "send 0"]);
+        let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
+        assert!(groups > 100, "every group is a node too: {groups}");
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        // The part accepts a setting for every node.
+        let mut mix = Mix::default();
+        mix.nodes[0] = vec![NodeMix::default(); loaded.tree.nodes.len() - 1];
+        core.set_mix(&mix);
+    }
+
     #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
