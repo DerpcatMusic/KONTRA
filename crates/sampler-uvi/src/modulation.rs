@@ -72,6 +72,9 @@ enum Signal {
         modulator: ir::ModulatorRef,
         curve: Vec<(f64, f64)>,
         bipolar: bool,
+        /// A second live source multiplying the value (an LFO's modulated
+        /// `Depth`): its modulator and `w` → factor points.
+        scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
     },
     /// A constant UVI value.
     Fixed { value: f64, bipolar: bool },
@@ -229,6 +232,7 @@ impl Translation {
                     modulator,
                     curve,
                     bipolar,
+                    scale: None,
                 }) if scale.is_none() => {
                     let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
                     let factor = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
@@ -291,7 +295,32 @@ impl Translation {
                 modulator,
                 curve,
                 bipolar,
+                scale: depth,
             } => {
+                let scale = match (scale, depth) {
+                    (Some(_), Some(_)) => {
+                        return Ok(Err(gap(
+                            "ratio and source depth both live-modulated",
+                            "",
+                            NotModeled,
+                        )));
+                    }
+                    (scale, None) => scale,
+                    // The product is exact only where the connection is
+                    // linear in the source: adding, no mapper, no `1 − s`.
+                    (None, Some(_))
+                        if law == Law::Factor
+                            || !connection.attribute("Mapper").unwrap_or_default().is_empty()
+                            || (!bipolar && number(connection, "Inverted", 0.0)? != 0.0) =>
+                    {
+                        return Ok(Err(gap(
+                            "live LFO depth through a nonlinear connection",
+                            "",
+                            NotModeled,
+                        )));
+                    }
+                    (None, depth) => depth,
+                };
                 if self.ir.modulators[modulator.0].source == ir::ModulationSource::PitchBend
                     && law != Law::Add(ir::Target::Pitch)
                 {
@@ -460,6 +489,7 @@ impl Translation {
                 modulator: this.modulator(format!("{source:?}"), source),
                 curve,
                 bipolar: polar,
+                scale: None,
             }))
         };
         // Key followers: exact at every MIDI key.
@@ -537,12 +567,49 @@ impl Translation {
             }));
         }
         let inputs = live_inputs(node)?;
-        if !inputs.is_empty() {
+        let only_depth = kind == "LFO"
+            && inputs
+                .iter()
+                .all(|c| c.attribute("Destination") == Some("Depth"));
+        if !inputs.is_empty() && !only_depth {
             return Ok(Err(gap(
                 "modulated modulation source",
                 format!("{kind} {}", describe(&inputs)),
                 NotModeled,
             )));
+        }
+        // A modulated LFO `Depth` takes the factor law (v1-measured, as
+        // `Ratio`): Depth × (1 − max(r, 0) + r·u). A constant input folds into
+        // Depth; one live input becomes the route's depth scale.
+        let (mut factor, mut scale) = (1.0, None);
+        for nested in inputs {
+            let r = number(nested, "Ratio", 1.0)?.clamp(-1.0, 1.0);
+            match self.signal(node, nested)? {
+                Err(gap) => return Ok(Err(gap)),
+                Ok(Signal::Live {
+                    modulator,
+                    curve,
+                    bipolar,
+                    scale: None,
+                }) if scale.is_none() => {
+                    let f = |m: f64| 1.0 - r.max(0.0) + r * Mapper::position(m, bipolar);
+                    match self.live_points(nested, &curve, bipolar, f)? {
+                        Ok(points) => scale = Some((modulator, points)),
+                        Err(gap) => return Ok(Err(gap)),
+                    }
+                }
+                Ok(Signal::Live { .. }) => {
+                    return Ok(Err(gap(
+                        "LFO depth modulated by several live sources",
+                        describe(&[nested]),
+                        NotModeled,
+                    )));
+                }
+                Ok(Signal::Fixed { value, bipolar }) => match self.stage(nested, value, bipolar)? {
+                    Ok(value) => factor *= 1.0 - r.max(0.0) + r * Mapper::position(value, bipolar),
+                    Err(gap) => return Ok(Err(gap)),
+                },
+            }
         }
         match kind {
             "ConstantModulation" => {
@@ -584,14 +651,20 @@ impl Translation {
                     modulator,
                     curve: if polar { bipolar } else { identity },
                     bipolar: polar,
+                    scale: None,
                 }))
             }
-            "LFO" => self.lfo(node),
+            "LFO" => self.lfo(node, factor, scale),
             _ => Ok(Err(gap("modulation source", kind, NotModeled))),
         }
     }
 
-    fn lfo(&mut self, node: Node) -> Result<Result<Signal, Gap>, String> {
+    fn lfo(
+        &mut self,
+        node: Node,
+        factor: f64,
+        scale: Option<(ir::ModulatorRef, Vec<(f64, f64)>)>,
+    ) -> Result<Result<Signal, Gap>, String> {
         use ir::Reason::{NotModeled, UnknownLaw};
         let retrigger = match number(node, "Retrigger", 1.0)? {
             1.0 => true,
@@ -639,7 +712,7 @@ impl Translation {
                 ir::Reason::InvalidValue,
             )));
         }
-        let depth = number(node, "Depth", 1.0)?.clamp(0.0, 1.0);
+        let depth = number(node, "Depth", 1.0)?.clamp(0.0, 1.0) * factor;
         let lfo = ir::Lfo {
             shape,
             rate,
@@ -661,6 +734,7 @@ impl Translation {
                 vec![(0.0, 0.0), (1.0, depth)]
             },
             bipolar: polar,
+            scale,
         }))
     }
 
@@ -877,6 +951,41 @@ mod tests {
         assert!(ir.unsupported.is_empty(), "{:?}", ir.unsupported);
         assert_eq!(ir.routes.len(), 1);
         assert_eq!(ir.zones[0].routes, [ir::RouteRef(0), ir::RouteRef(0)]);
+    }
+
+    #[test]
+    fn lfo_depth_by_mod_wheel_is_a_route_scale() {
+        let lfo = r#"<LFO Name="V" Depth="0.5"><Connections>
+               <SignalConnection Source="@MIDI CC 1" Destination="Depth" Ratio="1"/>
+               <SignalConnection Source="$Program/M" Destination="Depth" Ratio="-0.5"/>
+             </Connections></LFO><ConstantModulation Name="M" Value="1"/>"#;
+        let ir = translate(
+            lfo,
+            "",
+            r#"<SignalConnection Source="$Program/V" Destination="Pitch" Ratio="2"/>"#,
+        );
+        let (route, source) = only_route(&ir);
+        assert!(matches!(source, ir::ModulationSource::Lfo(_)));
+        // Depth 0.5 × the macro's factor 1 − 0.5·1 = 0.25: v = 0.25·x.
+        assert_eq!(shape(&ir, route), [(0.0, 0.375), (1.0, 0.625)]);
+        // × CC1's factor 1 − 1 + 1·u = u.
+        let scale = route.scale.expect("depth by CC1 is a route scale");
+        assert_eq!(
+            ir.modulators[scale.source.0].source,
+            ir::ModulationSource::Controller(1)
+        );
+        assert_eq!(scale.shape, None);
+        // Through a gain (factor law) the product is not separable: reported.
+        let ir = translate(
+            lfo,
+            r#"<SignalConnection Source="$Program/V" Destination="Gain" Ratio="1"/>"#,
+            "",
+        );
+        assert!(ir.zones[0].routes.is_empty());
+        assert_eq!(
+            ir.unsupported[0].feature,
+            "live LFO depth through a nonlinear connection"
+        );
     }
 
     #[test]
