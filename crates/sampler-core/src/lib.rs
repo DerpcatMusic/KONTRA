@@ -54,7 +54,7 @@ pub use stream::{
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
-pub use bus::{Bus, BusSend};
+pub use bus::{Bus, BusMix, BusSend};
 pub use resample::ResampleQuality;
 mod dsp;
 pub use dsp::{
@@ -587,6 +587,32 @@ impl Runtime {
     }
 
     /// Frames silenced because finite source values overflowed during summation.
+    /// Buses of the active plan.
+    pub fn bus_count(&self) -> usize {
+        self.plans
+            .get(self.active_plan.0)
+            .map_or(0, |g| g.prepared.buses.len())
+    }
+
+    /// Mix `bus` of the active plan from the next rendered frame on. Older
+    /// generations still sounding keep their own mix.
+    pub fn set_bus_mix(&mut self, bus: usize, mix: BusMix) -> Result<(), Error> {
+        if !mix.gain.iter().all(|g| g.is_finite()) {
+            return Err(Error::InvalidInput);
+        }
+        let generation = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
+        *generation
+            .dsp
+            .buses
+            .mix
+            .get_mut(bus)
+            .ok_or(Error::InvalidInput)? = mix;
+        Ok(())
+    }
+
     pub fn nonfinite_frames(&self) -> u64 {
         self.nonfinite_frames
     }
