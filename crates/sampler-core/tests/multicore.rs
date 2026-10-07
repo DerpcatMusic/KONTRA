@@ -6,7 +6,7 @@ mod support;
 const LAYERS: usize = 4;
 const NOTES: usize = 40;
 
-fn runtime(threads: usize) -> Runtime {
+fn runtime(threads: usize, modulated: bool) -> Runtime {
     // Pseudo-random, distinct per layer, so a misplaced voice cannot hide.
     let samples: Vec<Pcm> = (0..LAYERS)
         .map(|layer| {
@@ -53,6 +53,34 @@ fn runtime(threads: usize) -> Runtime {
             vec![Some(0), Some(0), None, Some(0)],
         )
         .unwrap();
+    let plan = if modulated {
+        // Envelope-driven level and cutoff, and an LFO on pitch, per voice.
+        let program = ModProgram {
+            sources: vec![
+                ModSource::Envelope(Envelope::new(300, 0, 200, 0.6, 400).unwrap()),
+                ModSource::Lfo(Lfo {
+                    shape: LfoShape::Sine,
+                    rate: LfoRate::Hertz(5.),
+                    phase: 0.,
+                    delay: 0,
+                    fade: 0,
+                    retrigger: true,
+                    shared: false,
+                }),
+            ],
+            routes: vec![
+                ModRoute::new(0, ModTarget::Attenuate, 0.5),
+                ModRoute::new(1, ModTarget::Pitch, 0.4),
+                ModRoute::new(0, ModTarget::Cutoff, 12.),
+                ModRoute::new(1, ModTarget::Pan, 0.5),
+            ],
+            shapes: vec![],
+            breakpoints: vec![],
+        };
+        plan.with_voice_modulation(vec![program], vec![Some(0); LAYERS], vec![0; LAYERS]).unwrap()
+    } else {
+        plan
+    };
     let rt = Runtime::new(
         plan,
         Limits {
@@ -105,11 +133,20 @@ fn play(rt: &mut Runtime, blocks: &[usize]) -> Vec<Frame> {
 
 #[test]
 fn any_thread_count_renders_the_single_threaded_output_exactly() {
+    check(false);
+}
+
+#[test]
+fn modulated_voices_render_the_single_threaded_output_exactly() {
+    check(true);
+}
+
+fn check(modulated: bool) {
     let blocks = [64, 37, 128, 64, 200, 1];
-    let expected = play(&mut runtime(1), &blocks);
+    let expected = play(&mut runtime(1, modulated), &blocks);
     assert!(expected.iter().any(|f| f[0] != 0.), "the workload is silent");
     for threads in [2, 3, 4] {
-        let mut rt = runtime(threads);
+        let mut rt = runtime(threads, modulated);
         let actual = play(&mut rt, &blocks);
         assert_eq!(rt.voice_count(), 0, "voices ended at {threads} threads");
         assert!(rt.parallel_blocks() > 10, "the pool rendered {} blocks", rt.parallel_blocks());

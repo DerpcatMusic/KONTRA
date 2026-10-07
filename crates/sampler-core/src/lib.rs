@@ -305,8 +305,12 @@ impl Limits {
     /// Capacities for playing `plan`: `notes` held at once and `voices`,
     /// with script state sized by [`Self::script_capacity`]. Hosts and test
     /// harnesses share this so a plan that plays in one plays in the other.
+    /// `voices` is the initial polyphony; each script note also gets the
+    /// release voices of every stage on top, which its release phase reserves.
     pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
         let behaviors = Self::script_capacity(plan);
+        let voices = voices
+            + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
         Self {
             notes,
             channels: 16,
@@ -392,6 +396,8 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
+    /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
+    quiet: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1320,6 +1326,7 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
+            quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
         self.voice_order += 1;

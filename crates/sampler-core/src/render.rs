@@ -79,6 +79,40 @@ impl Runtime {
     }
 }
 
+/// A voice's per-chunk modulation and script state, from `prepare_voice`.
+#[derive(Clone, Copy)]
+pub(super) struct Prelude {
+    pub points: Option<super::voice_mod::Ramp>,
+    pub modulated: bool,
+    pub stop: bool,
+    /// Filter-cutoff modulation for the chunk.
+    pub filter: Option<[f64; 2]>,
+}
+
+/// A releasing voice whose output cannot exceed this (about -120 dBFS) for
+/// `QUIET_FRAMES` in a row is ended: it costs CPU and nobody hears it.
+const INAUDIBLE: f32 = 1e-6;
+const QUIET_FRAMES: u32 = 512;
+
+/// Track how long a releasing voice has been inaudible; true once it can end.
+/// The bound is its envelope level times its gain and the gains applied
+/// after it (`gains`: expression, script volume, modulation), for samples up
+/// to full scale. Chain filters could add resonance, so a voice that is
+/// merely quiet is never cut: only one far below the threshold is.
+pub(super) fn inaudible(v: &mut super::Voice, frames: usize, gains: [f32; 2]) -> bool {
+    if !v.envelope.releasing() {
+        v.quiet = 0;
+        return false;
+    }
+    let bound = v.envelope.current().abs() * v.gain.abs() * gains[0].abs().max(gains[1].abs());
+    if bound < INAUDIBLE {
+        v.quiet = v.quiet.saturating_add(frames as u32);
+    } else {
+        v.quiet = 0;
+    }
+    v.quiet >= QUIET_FRAMES
+}
+
 impl Runtime {
     /// Events at the exclusive block end stay pending until the next render (including
     /// an empty block). Overflow is rejected before any output/state mutation.
@@ -227,7 +261,12 @@ impl Runtime {
         }
         let f = self.families.get(v.family.0).unwrap();
         let plan = self.notes.get(f.note.0).unwrap().plan.0;
-        let prepared = &self.plans.get(plan).unwrap().prepared;
+        let generation = self.plans.get(plan).unwrap();
+        // A modulated or script-layered voice mixes through its own ramp.
+        if self.script_params || generation.modulation.program(i).is_some() {
+            return None;
+        }
+        let prepared = &generation.prepared;
         prepared.voice_chains[chain]
             .batches()
             .then_some((plan.index, chain))
@@ -380,7 +419,7 @@ impl Runtime {
             if let Some(bus) = v.bus {
                 dsp.buses.fed(bus, produced);
             }
-            done[lane] = chain.done(v);
+            done[lane] = chain.done(v) || inaudible(v, produced, gains[lane]);
         }
         drop(cells);
         for (lane, &i) in voices.iter().enumerate() {
@@ -390,27 +429,20 @@ impl Runtime {
         }
     }
 
-    #[inline]
-    fn render_voice(&mut self, i: usize, segment: &mut [Frame], at: u64) {
-        let Some(v) = &mut self.voices.slots[i].value else {
-            return;
-        };
+    /// What a voice's chunk needs before it renders: its modulation ramp and
+    /// script layers, and its cursor's step. None for a voice not yet started.
+    /// Evaluated per voice, so the voices may be prepared ahead of rendering.
+    pub(super) fn prepare_voice(&mut self, i: usize, at: u64, frames: usize) -> Option<Prelude> {
+        let v = self.voices.slots[i].value.as_mut()?;
         if !v.started {
-            return;
+            return None;
         }
-        // Retention invariant: live voice -> counted family -> counted note
-        // -> expression owner. Each owner retires only after its dependents.
         let f = self.families.get(v.family.0).unwrap();
         let n = self.notes.get(f.note.0).unwrap();
         let expression = self.expressions.get(n.expression.0).unwrap();
-        let gains = expression.rendered.gains;
-        // Prepared playback bounds and the cursor's contiguous spans stay
-        // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
-        // Modulated voices render at most one BLOCK chunk per call (render_segment
-        // chunks whenever a plan has programs) into scratch, then mix with ramps.
-        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
         let modulated = plan.modulation.program(i).is_some();
+        let mut filter = None;
         let points = plan.modulation.program(i).map(|_| {
             let performance = self.selections[f.note.0.index].performance;
             let inputs = super::voice_mod::Inputs::new(
@@ -429,10 +461,10 @@ impl Runtime {
                 .modulation
                 .advance(&plan.prepared.voice_modulation, i, &inputs, clock);
             let (from, to) = (ramp.from, ramp.to);
-            plan.dsp.filters.as_mut_slice()[0].modulation = [
+            filter = Some([
                 (from.filter[0] + to.filter[0]) * 0.5,
                 (from.filter[1] + to.filter[1]) * 0.5,
-            ];
+            ]);
             ramp
         });
         // Script layers (render_segment chunks once a script writes one).
@@ -440,7 +472,7 @@ impl Runtime {
         let points = if self.script_params {
             let params = self.note_params[f.note.0.index];
             let layer = plan.script.layer(v.group).stack(params.layer);
-            let end = at + segment.len() as u64;
+            let end = at + frames as u64;
             let fade = |t| {
                 params
                     .fade
@@ -474,6 +506,32 @@ impl Runtime {
                 * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
             .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
         });
+        Some(Prelude { points, modulated, stop, filter })
+    }
+
+    #[inline]
+    fn render_voice(&mut self, i: usize, segment: &mut [Frame], at: u64) {
+        let Some(Prelude { points, modulated, stop, filter }) =
+            self.prepare_voice(i, at, segment.len())
+        else {
+            return;
+        };
+        let v = self.voices.slots[i].value.as_mut().unwrap();
+        // Retention invariant: live voice -> counted family -> counted note
+        // -> expression owner. Each owner retires only after its dependents.
+        let f = self.families.get(v.family.0).unwrap();
+        let n = self.notes.get(f.note.0).unwrap();
+        let expression = self.expressions.get(n.expression.0).unwrap();
+        let gains = expression.rendered.gains;
+        // Prepared playback bounds and the cursor's contiguous spans stay
+        // within immutable PCM; looping never changes asset ownership.
+        let plan = self.plans.get_mut(n.plan.0).unwrap();
+        // Modulated voices render at most one BLOCK chunk per call (render_segment
+        // chunks whenever a plan has programs) into scratch, then mix with ramps.
+        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        if let Some(filter) = filter {
+            plan.dsp.filters.as_mut_slice()[0].modulation = filter;
+        }
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
         let target = if let Some(bus) = bus {
@@ -534,7 +592,11 @@ impl Runtime {
                 ramp_mix(segment, target, ramp, at);
             }
         }
-        let done = done || stop;
+        let applied = points.map_or(gains, |r| {
+            let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+            [gains[0] * m(0), gains[1] * m(1)]
+        });
+        let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));
         if let Some(bus) = bus {
@@ -547,7 +609,7 @@ impl Runtime {
 }
 
 /// Mix `chunk` into `output`, ramping per-channel gains from `from` to `to`.
-fn ramp_mix(chunk: &[Frame], output: &mut [Frame], ramp: super::voice_mod::Ramp, now: u64) {
+pub(super) fn ramp_mix(chunk: &[Frame], output: &mut [Frame], ramp: super::voice_mod::Ramp, now: u64) {
     let (from, to) = (ramp.from.gains, ramp.to.gains);
     let len = ramp.end.saturating_sub(ramp.begin).max(1) as f32;
     let step = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
