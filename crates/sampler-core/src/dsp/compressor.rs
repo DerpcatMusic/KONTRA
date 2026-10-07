@@ -38,7 +38,11 @@ impl CompressorSettings {
     pub(super) fn prepare(self, rate: u32) -> Compressor {
         let coefficient = |seconds: f64| {
             let frames = seconds * f64::from(rate);
-            if frames <= 0. { 0. } else { (-1. / frames).exp() }
+            if frames <= 0. {
+                0.
+            } else {
+                (-1. / frames).exp()
+            }
         };
         Compressor {
             threshold_db: self.threshold_db,
@@ -73,7 +77,11 @@ impl Compressor {
         let [left, right] = block;
         for (l, r) in left[..len].iter_mut().zip(&mut right[..len]) {
             let mean = ((*l + *r) * 0.5).abs();
-            let detected = if self.link { [mean; 2] } else { [l.abs(), r.abs()] };
+            let detected = if self.link {
+                [mean; 2]
+            } else {
+                [l.abs(), r.abs()]
+            };
             let mut gain = [self.makeup; 2];
             for c in 0..if self.link { 1 } else { 2 } {
                 let target = if detected[c] > self.threshold {
@@ -81,7 +89,11 @@ impl Compressor {
                 } else {
                     0.
                 };
-                let coefficient = if target > reduction[c] { self.attack } else { self.release };
+                let coefficient = if target > reduction[c] {
+                    self.attack
+                } else {
+                    self.release
+                };
                 reduction[c] = target + coefficient * (reduction[c] - target);
                 if reduction[c] < 1e-12 {
                     reduction[c] = 0.;

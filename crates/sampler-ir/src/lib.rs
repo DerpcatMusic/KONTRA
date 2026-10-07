@@ -56,6 +56,8 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
+    /// Independent nested selectors (see [`Axis`]), beside the articulation.
+    pub axes: Vec<Axis>,
     /// Which input selects among [`Instrument::articulations`].
     pub switching: Switching,
     pub modulators: Vec<Modulator>,
@@ -211,6 +213,8 @@ pub struct Zone {
     pub trigger: Trigger,
     pub selection: Option<Selection>,
     pub articulation: Option<ArticulationRef>,
+    /// Nested selector choices this zone sounds under, all of which must hold.
+    pub axes: Vec<AxisPick>,
     pub pitch: KeyTracking,
     pub tune: Pitch,
     pub gain: Gain,
@@ -351,6 +355,7 @@ impl Zone {
             trigger: Trigger::Attack,
             selection: None,
             articulation: None,
+            axes: Vec::new(),
             pitch: KeyTracking::Tracked { root: 60 },
             tune: Pitch::NONE,
             gain: Gain::UNITY,
@@ -485,6 +490,31 @@ pub enum CounterScope {
     Key,
     Channel,
     ChannelKey,
+}
+
+/// One independent selector: exactly one choice is active, switched by the
+/// choices' keys, and it keeps its choice while other selectors change. A
+/// zone lists the choices it sounds under ([`Zone::axes`]), so a tree (outer
+/// articulation, inner variant) is a zone naming one choice per level.
+/// Choice 0 is active before any switch is played. At most four axes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Axis {
+    pub name: String,
+    pub choices: Vec<AxisChoice>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AxisChoice {
+    pub name: String,
+    /// Keys that select this choice.
+    pub switch_keys: Vec<u8>,
+}
+
+/// A zone's requirement that `axes[axis]` has `choice` active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AxisPick {
+    pub axis: usize,
+    pub choice: usize,
 }
 
 /// A selectable articulation, switched by keys and/or an alternative driver.
@@ -1214,4 +1244,68 @@ pub enum Reason {
     /// Recognized and representable, but how the source maps it to sound
     /// (its scaling, curve or timing law) is not established.
     UnknownLaw,
+}
+
+/// A feature name with its numbers and paths removed, so equal causes group:
+/// `"Filter: filter type 12"` and `"... 13"` are one line in a report.
+pub fn normalized_feature(feature: &str) -> String {
+    let words: Vec<String> = feature
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(|word| {
+            if word.contains('/') || word.contains('\\') {
+                return "<path>".to_string();
+            }
+            let mut out = String::new();
+            let mut digits = false;
+            for c in word.chars() {
+                if c.is_ascii_digit() {
+                    if !digits {
+                        out.push('N');
+                    }
+                    digits = true;
+                } else {
+                    digits = false;
+                    out.push(c);
+                }
+            }
+            out
+        })
+        .collect();
+    words.join(" ").chars().take(140).collect()
+}
+
+/// Unsupported features grouped by [`normalized_feature`] and ranked by how
+/// often they occur (ties by name). One function for the plugin's load report
+/// and the corpus scoreboard, so both rank the same way.
+pub fn rank_features<'a>(features: impl IntoIterator<Item = &'a str>) -> Vec<(String, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for f in features {
+        *counts.entry(normalized_feature(f)).or_default() += 1;
+    }
+    let mut ranked: Vec<_> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked
+}
+
+#[cfg(test)]
+mod ranking_tests {
+    use super::*;
+
+    #[test]
+    fn features_group_by_cause_and_rank_by_count() {
+        let ranked = rank_features([
+            "Filter: type 12",
+            "effect",
+            "Filter: type 13",
+            "Filter: type 7",
+            "effect",
+            "zero /mnt/a/b.wav",
+        ]);
+        assert_eq!(ranked[0], ("Filter: type N".to_string(), 3));
+        assert_eq!(ranked[1], ("effect".to_string(), 2));
+        assert_eq!(ranked[2], ("zero <path>".to_string(), 1));
+    }
 }

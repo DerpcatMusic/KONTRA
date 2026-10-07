@@ -42,13 +42,22 @@ pub struct SnapshotState {
 pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
     let chunks = crate::read_chunks(path).map_err(|e| e.at(crate::Stage::Container))?;
     let decode = |what, error| LoadError::decode(path, what, error).at(crate::Stage::Parse);
-    let snapshot = Snapshot::try_from(chunks.find_first(SNAPSHOT).ok_or_else(|| LoadError::Invalid {
-        path: path.into(),
-        reason: "not a snapshot".into(),
-    })?)
-    .map_err(|e| decode("snapshot", e))?;
+    let snapshot =
+        Snapshot::try_from(
+            chunks
+                .find_first(SNAPSHOT)
+                .ok_or_else(|| LoadError::Invalid {
+                    path: path.into(),
+                    reason: "not a snapshot".into(),
+                })?,
+        )
+        .map_err(|e| decode("snapshot", e))?;
     let instrument = match chunks.find_first(METADATA) {
-        Some(chunk) => snapshot_metadata_names(chunk).map_err(|e| decode("snapshot metadata", e))?.0,
+        Some(chunk) => {
+            snapshot_metadata_names(chunk)
+                .map_err(|e| decode("snapshot metadata", e))?
+                .0
+        }
         None => String::new(),
     };
     let float = |bytes: &[u8]| f32::from_le_bytes(bytes.try_into().expect("four bytes"));
@@ -62,17 +71,37 @@ pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
             octaves: float(&g.public_data[8..12]),
             key_tracking: g.public_data[12] != 0,
             reverse: g.public_data[13] != 0,
-            fx: (g.fx.version, g.fx.items.into_iter().map(|slot| slot.map(|c| (c.id, c.data))).collect()),
+            fx: (
+                g.fx.version,
+                g.fx.items
+                    .into_iter()
+                    .map(|slot| slot.map(|c| (c.id, c.data)))
+                    .collect(),
+            ),
         })
         .collect();
-    let effects = snapshot.effect_children.into_iter().map(|c| (c.id, c.data)).collect();
-    Ok(SnapshotState { instrument, persistent: snapshot.persistent, effects, groups })
+    let effects = snapshot
+        .effect_children
+        .into_iter()
+        .map(|c| (c.id, c.data))
+        .collect();
+    Ok(SnapshotState {
+        instrument,
+        persistent: snapshot.persistent,
+        effects,
+        groups,
+    })
 }
 
 /// Replace the instrument's saved script values with the snapshot's, slot by slot.
 pub fn apply_snapshot(kontakt: &mut Kontakt, snapshot: &SnapshotState) {
     for behavior in &mut kontakt.instrument.behaviors {
-        let Some(entries) = behavior.slot.and_then(|s| snapshot.persistent.get(usize::from(s))) else { continue };
+        let Some(entries) = behavior
+            .slot
+            .and_then(|s| snapshot.persistent.get(usize::from(s)))
+        else {
+            continue;
+        };
         for (name, value) in crate::library::saved(entries) {
             match behavior.state.iter_mut().find(|(n, _)| *n == name) {
                 Some(slot) => slot.1 = value,
@@ -91,21 +120,55 @@ mod probe {
     #[ignore = "census"]
     fn native_state_probe() {
         let root = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
-        let Some(lib) = std::env::split_paths(&root).map(|r| r.join("Una Corda Library")).find(|p| p.is_dir()) else { return };
+        let Some(lib) = std::env::split_paths(&root)
+            .map(|r| r.join("Una Corda Library"))
+            .find(|p| p.is_dir())
+        else {
+            return;
+        };
         let snaps = lib.join("Snapshots/Una Corda Cotton");
         let nki = lib.join("Instruments/Una Corda Cotton.nki");
         let base = crate::read_chunks(&nki).unwrap();
-        let program = ni_file::kontakt::objects::Program::try_from(base.find_first(0x28).unwrap()).unwrap();
-        let groups = ni_file::kontakt::objects::GroupList::try_from(program.0.find_first(0x33).unwrap()).unwrap();
+        let program =
+            ni_file::kontakt::objects::Program::try_from(base.find_first(0x28).unwrap()).unwrap();
+        let groups =
+            ni_file::kontakt::objects::GroupList::try_from(program.0.find_first(0x33).unwrap())
+                .unwrap();
         for (i, g) in groups.groups.iter().enumerate().take(3) {
             let p = g.params().unwrap();
-            println!("BASE group {i}: vol {} pan {} tune {} kt {} rev {} rt {} ch {}", p.volume, p.pan, p.tune, p.key_tracking, p.reverse, p.release_trigger, p.midi_channel);
+            println!(
+                "BASE group {i}: vol {} pan {} tune {} kt {} rev {} rt {} ch {}",
+                p.volume,
+                p.pan,
+                p.tune,
+                p.key_tracking,
+                p.reverse,
+                p.release_trigger,
+                p.midi_channel
+            );
         }
-        let mut files: Vec<_> = std::fs::read_dir(&snaps).unwrap().flatten().map(|e| e.path()).collect();
+        let mut files: Vec<_> = std::fs::read_dir(&snaps)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
         files.sort();
-        let base_effects: Vec<(u16, &Vec<u8>)> = program.0.children.iter().filter(|c| c.id == 0x3a || c.id == 0x45).map(|c| (c.id, &c.data)).collect();
-        println!("BASE effect chunks {:?}", base_effects.iter().map(|(i, d)| (*i, d.len())).collect::<Vec<_>>());
-        let mut distinct = std::collections::BTreeMap::<usize, std::collections::BTreeSet<Vec<u8>>>::new();
+        let base_effects: Vec<(u16, &Vec<u8>)> = program
+            .0
+            .children
+            .iter()
+            .filter(|c| c.id == 0x3a || c.id == 0x45)
+            .map(|c| (c.id, &c.data))
+            .collect();
+        println!(
+            "BASE effect chunks {:?}",
+            base_effects
+                .iter()
+                .map(|(i, d)| (*i, d.len()))
+                .collect::<Vec<_>>()
+        );
+        let mut distinct =
+            std::collections::BTreeMap::<usize, std::collections::BTreeSet<Vec<u8>>>::new();
         let mut same_as_base = 0;
         let mut group_diff = std::collections::BTreeSet::new();
         for f in &files {
@@ -113,10 +176,19 @@ mod probe {
             let s = Snapshot::try_from(chunks.find_first(SNAPSHOT).unwrap()).unwrap();
             for (i, c) in s.effect_children.iter().enumerate() {
                 distinct.entry(i).or_default().insert(c.data.clone());
-                if base_effects.get(i).is_some_and(|(id, d)| *id == c.id && **d == c.data) { same_as_base += 1; }
+                if base_effects
+                    .get(i)
+                    .is_some_and(|(id, d)| *id == c.id && **d == c.data)
+                {
+                    same_as_base += 1;
+                }
             }
             for (id, g) in s.group_snapshots().unwrap() {
-                group_diff.insert((g.public_data.to_vec(), g.fx.items.iter().flatten().count(), g.internal.items.iter().flatten().count()));
+                group_diff.insert((
+                    g.public_data.to_vec(),
+                    g.fx.items.iter().flatten().count(),
+                    g.internal.items.iter().flatten().count(),
+                ));
                 let _ = id;
             }
         }
@@ -125,18 +197,60 @@ mod probe {
             let chunks = crate::read_chunks(f).unwrap();
             let s = Snapshot::try_from(chunks.find_first(SNAPSHOT).unwrap()).unwrap();
             for (_, g) in s.group_snapshots().unwrap() {
-                for at in [0usize, 4, 8] { vals.entry(at).or_default().insert(u32::from_le_bytes(g.public_data[at..at + 4].try_into().unwrap())); }
-                for at in 12..24 { vals.entry(at).or_default().insert(u32::from(g.public_data[at])); }
+                for at in [0usize, 4, 8] {
+                    vals.entry(at).or_default().insert(u32::from_le_bytes(
+                        g.public_data[at..at + 4].try_into().unwrap(),
+                    ));
+                }
+                for at in 12..24 {
+                    vals.entry(at)
+                        .or_default()
+                        .insert(u32::from(g.public_data[at]));
+                }
             }
         }
-        for (at, v) in &vals { println!("PUBLIC byte {at}: {} distinct, e.g. {:?}", v.len(), v.iter().take(6).map(|x| if *at < 12 { format!("{}", f32::from_bits(*x)) } else { format!("{x}") }).collect::<Vec<_>>()); }
-        println!("{} files; distinct per effect child {:?}; equal-to-base {same_as_base}; distinct group (public,fx,internal) {}", files.len(), distinct.iter().map(|(i, d)| (*i, d.len())).collect::<Vec<_>>(), group_diff.len());
+        for (at, v) in &vals {
+            println!(
+                "PUBLIC byte {at}: {} distinct, e.g. {:?}",
+                v.len(),
+                v.iter()
+                    .take(6)
+                    .map(|x| if *at < 12 {
+                        format!("{}", f32::from_bits(*x))
+                    } else {
+                        format!("{x}")
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+        println!(
+            "{} files; distinct per effect child {:?}; equal-to-base {same_as_base}; distinct group (public,fx,internal) {}",
+            files.len(),
+            distinct
+                .iter()
+                .map(|(i, d)| (*i, d.len()))
+                .collect::<Vec<_>>(),
+            group_diff.len()
+        );
         for f in files.iter().take(0) {
             let chunks = crate::read_chunks(f).unwrap();
             let s = Snapshot::try_from(chunks.find_first(SNAPSHOT).unwrap()).unwrap();
-            println!("{} v{} groups {} effects {}", f.file_name().unwrap().to_string_lossy(), s.version, s.group_count, s.effect_children.len());
+            println!(
+                "{} v{} groups {} effects {}",
+                f.file_name().unwrap().to_string_lossy(),
+                s.version,
+                s.group_count,
+                s.effect_children.len()
+            );
             for (id, g) in s.group_snapshots().unwrap().into_iter().take(3) {
-                println!("  g{id} public {:02x?} fx used {} internal used {} external used {} flag {}", g.public_data, g.fx.items.iter().flatten().count(), g.internal.items.iter().flatten().count(), g.external.items.iter().flatten().count(), g.trailing_flag);
+                println!(
+                    "  g{id} public {:02x?} fx used {} internal used {} external used {} flag {}",
+                    g.public_data,
+                    g.fx.items.iter().flatten().count(),
+                    g.internal.items.iter().flatten().count(),
+                    g.external.items.iter().flatten().count(),
+                    g.trailing_flag
+                );
             }
         }
     }

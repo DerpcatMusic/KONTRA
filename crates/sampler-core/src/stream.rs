@@ -602,18 +602,24 @@ impl crate::Runtime {
         // a page that a later voice already needs in this same snapshot horizon.
         for requesting in [false, true] {
             // Only live voices: an idle part scans a few activity words, not every slot.
-            let live = self.voice_activity.iter().enumerate().flat_map(|(word, &bits)| {
-                let mut rest = bits;
-                std::iter::from_fn(move || {
-                    (rest != 0).then(|| {
-                        let bit = rest.trailing_zeros() as usize;
-                        rest &= rest - 1;
-                        word * 64 + bit
+            let live = self
+                .voice_activity
+                .iter()
+                .enumerate()
+                .flat_map(|(word, &bits)| {
+                    let mut rest = bits;
+                    std::iter::from_fn(move || {
+                        (rest != 0).then(|| {
+                            let bit = rest.trailing_zeros() as usize;
+                            rest &= rest - 1;
+                            word * 64 + bit
+                        })
                     })
-                })
-            });
+                });
             for index in live {
-                let Some(voice) = &self.voices.slots[index].value else { continue };
+                let Some(voice) = &self.voices.slots[index].value else {
+                    continue;
+                };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
                 let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];

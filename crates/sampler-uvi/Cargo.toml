@@ -16,6 +16,7 @@ library-access = ["sampler-kontakt/library-access", "dep:anyhow", "dep:base64", 
 sampler-ir = { path = "../sampler-ir" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 sampler-core = { path = "../sampler-core" }
+sampler-midi = { path = "../sampler-midi" }
 sampler-kontakt = { path = "../sampler-kontakt", default-features = false }
 roxmltree = "=0.21.1"
 rtrb = "=0.4.0"

@@ -30,6 +30,10 @@ pub struct Report {
     pub loaded: Vec<Loaded>,
     pub missing: Vec<Missing>,
     pub runtime: Vec<Runtime>,
+    /// Why the last silent note was silent, one sentence.
+    pub why_silent: Option<String>,
+    /// Script faults behind it, each "error in callback".
+    pub faults: Vec<String>,
 }
 
 /// A part of the instrument that was translated and plays.
@@ -197,7 +201,7 @@ impl Runtime {
     }
 }
 
-/// Missing rows, grouped: severe first, then by kind, each group in source order.
+/// Missing rows, grouped: severe first, then the biggest non-severe groups, then by kind; each group in source order.
 pub fn groups(missing: &[Missing]) -> Vec<Vec<&Missing>> {
     let mut groups: Vec<Vec<&Missing>> = Vec::new();
     for m in missing {
@@ -206,7 +210,7 @@ pub fn groups(missing: &[Missing]) -> Vec<Vec<&Missing>> {
             None => groups.push(vec![m]),
         }
     }
-    groups.sort_by_key(|g| (!g[0].severe(), g[0].key().0));
+    groups.sort_by_key(|g| (!g[0].severe(), if g[0].severe() { 0 } else { usize::MAX - g.len() }, g[0].key().0));
     groups
 }
 
@@ -268,6 +272,15 @@ pub fn view(ui: &mut Ui, state: &mut State, r: &Report) -> El {
                 lines.push(row![el].shrink(0));
             }
             rows.push(problem(g[0].severe().then(coral), title, g[0].impact(), lines));
+        }
+    }
+    if r.why_silent.is_some() || !r.faults.is_empty() {
+        rows.push(section("Why silent"));
+        if let Some(w) = &r.why_silent {
+            rows.push(problem(Some(coral()), w.clone(), "The last note you played made no sound.", Vec::new()));
+        }
+        for f in &r.faults {
+            rows.push(problem(Some(coral()), "Script fault".to_owned(), f, Vec::new()));
         }
     }
     if !r.runtime.is_empty() {

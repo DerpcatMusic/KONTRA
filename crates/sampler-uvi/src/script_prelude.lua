@@ -36,6 +36,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
+    if native.assigned(name) then return nil end
     report("global " .. name, "")
     local s = stub(name)
     rawset(_G, name, s)
@@ -98,21 +99,9 @@ local function widget(kind, name, value, min, max, integer)
       w.x, w.y, w.width, w.height = named.bounds[1], named.bounds[2], named.bounds[3], named.bounds[4]
     end
   end
-  -- The preset's saved value, unless the widget is not persistent.
+  -- The preset's saved value, applied once the scripts have initialised.
   local saved = name and named and named.persistent ~= false and native.saved(name)
-  if saved then
-    if kind == "OnOffButton" or kind == "Button" then
-      w.value = (saved == "1" or saved == "true")
-    elseif kind == "Table" then
-      local i = 0
-      for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
-        i = i + 1
-        if i <= w.length then w.values[i] = tonumber(number) or 0 end
-      end
-    elseif tonumber((string.gsub(saved, ",", "."))) then
-      w.value = tonumber((string.gsub(saved, ",", ".")))
-    end
-  end
+  if saved then rawset(w, "__saved", saved) end
   report("ui", kind)
   registry[#registry + 1] = w
   rawset(w, "id", #registry)
@@ -123,6 +112,32 @@ for _, kind in ipairs(kinds) do
     local first = ...
     -- Panel("name") or Kind("name", value, min, max, integer).
     return widget(kind, ...)
+  end
+end
+-- Persistent widgets take the preset's saved value after initialisation, and
+-- their `changed` runs, between the script body and onInit.
+function __restore()
+  for _, w in ipairs(registry) do
+    local saved = rawget(w, "__saved")
+    if saved then
+      rawset(w, "__saved", nil)
+      local kind = w.kind
+      if kind == "OnOffButton" or kind == "Button" then
+        w.value = (saved == "1" or saved == "true")
+      elseif kind == "Table" then
+        local i = 0
+        for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
+          i = i + 1
+          if i <= w.length then w.values[i] = tonumber(number) or 0 end
+        end
+      elseif tonumber((string.gsub(saved, ",", "."))) then
+        w.value = tonumber((string.gsub(saved, ",", ".")))
+      end
+      if kind ~= "Table" and type(w.changed) == "function" then
+        local ok, err = pcall(w.changed, w)
+        if not ok then report("lua error", tostring(err)) end
+      end
+    end
   end
 end
 local methods = {}
@@ -171,13 +186,39 @@ widget_mt.__index = function(t, k)
 end
 
 -- Elements -----------------------------------------------------------------
+-- Parameters the shipped scripts look up by name on elements whose presets
+-- often omit them (defaults).
+local known_params = {
+  Keygroup = { "Gain", "Pan" },
+  Layer = { "Gain", "Pan" },
+  SamplePlayer = { "Gain", "Pan", "Pitch" },
+  BusRouter = { "Gain" },
+  CombFilter = { "Freq", "Q", "Bypass", "Mode" },
+  MS20 = { "Freq", "Q", "Bypass" },
+  XpanderFilter = { "Freq", "Q", "Drive", "Mode", "Bypass" },
+  OnePole = { "Freq", "Bypass", "Mode" },
+  Flanger = { "Feedback", "Mix", "Speed", "Bypass" },
+  Phasor = { "Depth", "Feedback", "Speed", "Bypass" },
+  WaveShaper = { "Amount", "Mix", "Bypass" },
+  LFO = { "Depth", "Freq" },
+  MultiLFO = { "Depth", "Freq" },
+}
 local element = {}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then
-    local defs = {}
-    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do defs[#defs + 1] = { name = n } end
+    -- `id` is what setParameter takes back: the parameter's name. Parameters
+    -- a preset leaves at their default are still defined.
+    local defs, seen = {}, {}
+    local function add(n)
+      if not seen[n] then
+        seen[n] = true
+        defs[#defs + 1] = { id = n, name = n, min = 0, max = 1, default = native.param(rawget(t, "__id"), n) or 0 }
+      end
+    end
+    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do add(n) end
+    for _, n in ipairs(known_params[rawget(t, "type")] or {}) do add(n) end
     return defs
   end
   return nil
@@ -192,10 +233,14 @@ function element.getParameter(self, name)
   end
   return v
 end
+__touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
   local overlay = rawget(self, "__set")
-  if not overlay then overlay = {}; rawset(self, "__set", overlay) end
+  if not overlay then
+    overlay = {}; rawset(self, "__set", overlay)
+    __touched[#__touched + 1] = self
+  end
   overlay[name] = value
   if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
