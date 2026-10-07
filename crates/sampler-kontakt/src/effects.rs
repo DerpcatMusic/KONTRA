@@ -147,7 +147,7 @@ pub(crate) fn program_racks(
                 {
                     let mut slots = rack(&array);
                     // `$NI_BUS_OFFSET` + the bus number.
-                    apply_writes(&mut slots, writes, -1, 1000 + index as i32);
+                    apply_writes(&mut slots, writes, -1, 1000 + index);
                     out.push((format!("bus {index}"), slots));
                 }
             }
@@ -213,6 +213,9 @@ pub(crate) enum Params {
     StereoModeller { spread: f32, pan: f32, pseudo: bool },
     /// `$ENGINE_PAR_PHASE_INVERT`, `$ENGINE_PAR_LR_SWAP`.
     Inverter { invert: bool, swap: bool },
+    /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
+    /// threshold dB, ratio, attack and release ms, stereo link.
+    Compressor { mode: f32, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, link: bool },
     /// Linear level into each instrument send slot; a second table (17
     /// levels, 1.0 locally) of unknown meaning.
     SendLevels { sends: Vec<f32>, outputs: Vec<f32> },
@@ -294,6 +297,14 @@ impl Slot {
                     ir_index: r.i32()?,
                 }))
             }
+            0x19 => Params::Compressor {
+                mode: r.f32()?,
+                threshold_db: r.f32()?,
+                ratio: r.f32()?,
+                attack_ms: r.f32()?,
+                release_ms: r.f32()?,
+                link: r.flag()?,
+            },
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -644,6 +655,38 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Compressor {
+                mode,
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                link,
+            }) => {
+                // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
+                // the linked detector is the signed channel mean. The level law
+                // is the textbook one (ir::Compressor); the stored units are the
+                // importer's labels.
+                // ponytail: unverified - the first value is read as the mode and
+                // only mode 0 (Classic) is taken to share the kernel.
+                if *mode != 0.0 {
+                    notes.push((
+                        "compressor mode".into(),
+                        format!("{mode}"),
+                        sampler_ir::Reason::UnknownLaw,
+                    ));
+                }
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors.push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
+                    threshold_db: f64::from(*threshold_db),
+                    ratio: f64::from(*ratio).max(1.0),
+                    attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
+                    release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
+                    makeup: sampler_ir::Gain::UNITY,
+                    link: *link,
+                }));
+                combined = gain;
+            }
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
@@ -815,7 +858,7 @@ fn convolution(
     let [left, right] = channels;
     impulses
         .store
-        .push(sampler_ir::Impulse { rate, left, right });
+        .push(sampler_ir::Impulse { rate, left, right, asset: None });
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
@@ -1011,8 +1054,8 @@ mod tests {
             bypass: false,
             output_gain: gain,
             dry_level: 1.0,
-            public,
             output_set: true,
+            public,
         }
     }
 
@@ -1072,6 +1115,22 @@ mod tests {
         // not applied. A single reading; if it fails, apply the gain again.
         let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
         assert!(inverter.is_empty(), "{inverter:?}");
+    }
+
+    #[test]
+    fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
+        let mut bytes = Vec::new();
+        for x in [0.0f32, -18.0, 4.0, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Voice);
+        let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
+        assert_eq!(c.attack.seconds(), 0.01);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]

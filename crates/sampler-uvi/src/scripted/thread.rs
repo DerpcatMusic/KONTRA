@@ -5,7 +5,7 @@
 //! a thread cannot be deterministic against a clock that runs faster than real
 //! time.
 
-use super::Script;
+use super::{HostInput, Script};
 use crate::script::{Command, Config, Files, Finding, ScriptHost};
 use std::{
     sync::{
@@ -32,6 +32,10 @@ enum Message {
     Off {
         id: u64,
         key: u8,
+        at_ms: f64,
+    },
+    In {
+        input: HostInput,
         at_ms: f64,
     },
 }
@@ -99,6 +103,10 @@ impl ScriptThread {
                                 Message::Off { id, key, at_ms } => {
                                     host.set_time(at_ms);
                                     host.note_off(id, key, 64, 0);
+                                }
+                                Message::In { input, at_ms } => {
+                                    host.set_time(at_ms);
+                                    Script::input(&mut host, input);
                                 }
                             }
                         }
@@ -179,6 +187,12 @@ impl Script for ScriptThread {
         self.wake();
     }
 
+    fn input(&mut self, input: HostInput) {
+        let at_ms = self.time_ms;
+        let _ = self.events.push(Message::In { input, at_ms });
+        self.wake();
+    }
+
     /// The thread advances itself from the clock.
     fn advance(&mut self, _ms: f64) {}
 
@@ -186,12 +200,10 @@ impl Script for ScriptThread {
         None
     }
 
-    fn take_commands(&mut self) -> Vec<Command> {
-        let mut out = Vec::new();
+    fn drain(&mut self, out: &mut Vec<Command>) {
         while let Ok(command) = self.commands.pop() {
             out.push(command);
         }
-        out
     }
 
     fn tick(&mut self, now_ms: f64) {

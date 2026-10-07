@@ -94,6 +94,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_bank() -> Result<(), Error> {
         let chunk = Chunk::read(File::open(
             "tests/data/Objects/Kontakt/Bank/BankV73-000.kon",

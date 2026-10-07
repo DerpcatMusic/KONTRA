@@ -40,7 +40,7 @@ pub use control::{
 };
 mod controller_event;
 mod performance;
-pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -63,8 +63,8 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -108,7 +108,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
+    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
     service_mipmaps,
 };
 mod integer;
@@ -881,6 +881,22 @@ impl Runtime {
         self.plans
             .get(self.active_plan.0)
             .map_or(0, |g| g.prepared.buses.len())
+    }
+
+    /// Replace convolution `slot` of the active plan (see
+    /// [`Prepared::convolution_slots`]) with `upload`, at a block boundary and
+    /// without allocating; `upload` then holds the old processor, to drop off
+    /// the audio thread. The new one starts with empty history.
+    pub fn swap_convolution(
+        &mut self,
+        slot: usize,
+        upload: &mut ConvolutionUpload,
+    ) -> Result<(), Error> {
+        let g = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
+        g.dsp.buses.swap_convolution(&g.prepared.buses, slot, upload)
     }
 
     /// Each bus of the active plan's peak level since the last call, after

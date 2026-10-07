@@ -150,6 +150,7 @@ fn reference(
             SvfMode::BandPass => k * band,
             SvfMode::Notch => low + high,
             SvfMode::AllPass => low + high - k * band,
+            SvfMode::OnePoleLowPass | SvfMode::OnePoleHighPass => unreachable!("not in this list"),
         }) as f32
     })
 }

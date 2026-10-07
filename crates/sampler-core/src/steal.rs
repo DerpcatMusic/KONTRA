@@ -90,6 +90,11 @@ impl Runtime {
         Ok(())
     }
 
+    /// Voice slots the runtime was built with.
+    pub fn voice_slots(&self) -> usize {
+        self.voices.slots.len()
+    }
+
     pub fn voice_stealing(&self) -> Option<Stealing> {
         self.stealing
     }

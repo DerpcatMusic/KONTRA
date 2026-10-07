@@ -62,6 +62,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_authorization_read() -> Result<(), NIFileError> {
         let file = File::open(
             "tests/data/nisound/chunks/item-frame-property/kontakt-5/106-Authorization.data",

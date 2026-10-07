@@ -465,7 +465,7 @@ pub fn is_slot_control(id: ControlId) -> bool {
 /// so a script's runtime write finds it without a table.
 pub fn slot_control(kind: SlotKind, group: i32, slot: i32, generic: i32) -> ControlId {
     ControlId(
-        (0x4d49_58u128 << 104)
+        (0x004d_4958_u128 << 104)
             | (u128::from(kind as u8) << 96)
             | (u128::from(group as u32) << 64)
             | (u128::from(slot as u32) << 32)

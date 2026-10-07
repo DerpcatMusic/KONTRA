@@ -161,7 +161,9 @@ fn one_rack_plays_every_format_together() {
     let part_a = rack.add(wav_a, 0, false, 3, 0, 3, 0);
     let part_b = rack.add(wav_b, 0, false, 3, 0, 4, 0);
     let part_mpe = rack.add(wav_mpe, 0, true, 0, 1, 5, 0);
+    // First, a script-owned case: Afflatus Horns KS reads its switch keys in its script.
     let articulated = [
+        "Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki",
         "Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Legato Sustains.nki",
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
         "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
@@ -171,7 +173,7 @@ fn one_rack_plays_every_format_together() {
     let part_art = articulated.map(|p| rack.add(p, 0, false, 4, 0, 6, velocity));
     match part_art {
         Some(p) if rack.core.articulation(p).is_some() => {}
-        Some(_) => gaps.push("articulation migration: no candidate Kontakt instrument is articulated through the native switching path".into()),
+        Some(_) => gaps.push("articulation migration: no candidate Kontakt instrument (native or script-owned) is articulated".into()),
         None => gaps.push("no articulated Kontakt candidate is installed".into()),
     }
     rack.run(50, true);
