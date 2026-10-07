@@ -160,3 +160,7 @@ resolver = "3"
 [profile.ci]
 inherits = "release"
 lto = false
+
+[[example]]
+name = "uvi_ui_health"
+required-features = ["shots"]
