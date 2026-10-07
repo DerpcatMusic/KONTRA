@@ -19,8 +19,11 @@ pub struct GroupState {
     pub key_tracking: bool,
     pub reverse: bool,
     /// The group insert rack's array version and its slots as (chunk id, bytes).
-    pub fx: (u16, Vec<Option<(u16, Vec<u8>)>>),
+    pub fx: (u16, Vec<Option<RackSlot>>),
 }
+
+/// One insert slot: chunk id and bytes.
+pub type RackSlot = (u16, Vec<u8>);
 
 /// What a snapshot file holds that this crate applies.
 #[derive(Debug, Clone, PartialEq)]
