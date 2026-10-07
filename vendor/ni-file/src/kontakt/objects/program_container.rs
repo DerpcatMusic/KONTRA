@@ -40,7 +40,7 @@ impl ProgramContainer {
     }
 
     pub fn voice_group(&self) -> Result<VoiceGroup, Error> {
-        (&self.0.children[0]).try_into()
+        self.0.find_first(0x2b).ok_or(Error::Static("Missing program voice group"))?.try_into()
     }
 
     // pub fn save_settings(&self) -> Result<SaveSettings, Error> {
@@ -48,7 +48,7 @@ impl ProgramContainer {
     // }
 
     pub fn program_list(&self) -> Result<ProgramList, Error> {
-        (&self.0.children[2]).try_into()
+        self.0.find_first(0x36).ok_or(Error::Static("Missing program list"))?.try_into()
     }
 
     // pub fn programs(&self) -> Result<Vec<VoiceGroup>, Error> {
@@ -78,6 +78,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_bank() -> Result<(), Error> {
         let chunk = Chunk::read(File::open(
             "tests/data/Objects/Kontakt/0x29-ProgramContainer/ProgramContainerV51-000.kon",

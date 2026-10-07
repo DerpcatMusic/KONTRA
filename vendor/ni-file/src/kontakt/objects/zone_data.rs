@@ -43,6 +43,15 @@ pub struct ZoneParams {
 }
 
 impl Zone {
+    /// Sample reference from the common zone prefix, independent of later
+    /// version-specific public parameters.
+    pub fn filename_id(&self) -> Result<i32, Error> {
+        let at = if self.0.version >= 0x9a { 48 } else { 42 };
+        let bytes = self.0.public_data.get(at..at + 4)
+            .ok_or(Error::Static("Truncated zone sample reference"))?;
+        Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         Ok(Self(StructuredObject::read(&mut reader)?))
     }
@@ -99,6 +108,7 @@ mod tests {
     use crate::Error;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_zone_data_v9a_000() -> Result<(), Error> {
         let file =
             File::open("tests/data/Objects/Kontakt/ZoneData/ZoneDataV9A/ZoneDataV9A-000.kon")?;

@@ -1,44 +1,45 @@
-//! Output routing that runs itself: which bus each part (and each of its
-//! mic outputs) plays through, what each bus and host port is called, and
-//! the one-click actions that replace Kontakt's batch operations
-//! (`audits/ROUTING.md`).
+//! Output routing that runs itself: which DAW stereo pair each part (and
+//! each of its mic buses) plays through, what each pair and host port is
+//! called, and the one-click actions that replace Kontakt's batch operations.
 //!
-//! Assignments live in the saved rack ([`Part::output`], [`Part::mic_buses`])
-//! and are kept wherever they still hold: adding, removing or reordering
-//! parts moves no other part. A route the player picks by hand
-//! ([`Part::output_manual`]) is never moved, and automatic routes keep off
-//! its bus and off buses used as sends.
+//! A part is the root of an output tree ([`crate::sound::tree`]). By default
+//! every instrument gets a DAW pair of its own; "One per mic" also gives each
+//! of its top-level source buses (mic positions) one. Assignments live in the
+//! saved rack ([`Part::output`], [`NodeMix::output`]) and are kept wherever
+//! they still hold: adding, removing or reordering parts moves no other part.
+//! A route the player picks by hand ([`Part::output_manual`],
+//! [`NodeMix::manual`]) is never moved, and automatic routes keep off its pair
+//! and off pairs used as sends.
 
-use crate::engine::BUSES;
-#[cfg(test)]
-use crate::engine::RACK_SLOTS;
-use crate::fx::OUTS;
 use crate::plugin::{Part, Selection};
+use crate::sound::BUSES;
+#[cfg(test)]
+use crate::sound::tree::MixNode;
+use crate::sound::tree::{MixTree, NodeKind, NodeMix, NodeOutput};
 use std::time::{Duration, Instant};
 
 /// The mixer's "Outputs" choice ([`Selection::outputs`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Outputs {
-    /// Everything on st.1, as Kontakt starts: parts keep the bus they
-    /// have, new ones start on st.1 ([`to_stereo`] moves them all back).
+    /// Each part on a pair and host port of its own, named after it.
     #[default]
-    Stereo,
-    /// Each part on a bus and host port of its own, named after it.
     Instrument,
-    /// As [`Outputs::Instrument`], and each output channel a part's
-    /// instrument routes past its own output (a mic mixer's "Out 2") on
-    /// one more: "Harp Close".
+    /// Everything on outputs 1-2, as Kontakt starts: parts keep the pair
+    /// they have, new ones start on 1-2 ([`to_stereo`] moves them all back).
+    Stereo,
+    /// As [`Outputs::Instrument`], and each top-level bus of a part's tree
+    /// (a mic position) on one more: "Harp Close".
     Mic,
 }
 
 impl Outputs {
-    pub const ALL: [Self; 3] = [Self::Stereo, Self::Instrument, Self::Mic];
+    pub const ALL: [Self; 3] = [Self::Instrument, Self::Stereo, Self::Mic];
 
     pub fn of(n: u8) -> Self {
         match n {
-            1 => Self::Instrument,
+            1 => Self::Stereo,
             2 => Self::Mic,
-            _ => Self::Stereo,
+            _ => Self::Instrument,
         }
     }
 
@@ -50,11 +51,6 @@ impl Outputs {
         }
     }
 }
-
-/// Per rack slot and output channel, what the instrument routes there past
-/// its own output: 0 nothing, `1 + b` its instrument bus `b`, `0x100 + g`
-/// its group `g` (published by the audio thread, `plugin::outs_of`).
-pub type Mics = [[u16; OUTS]];
 
 /// Loaded slots, rack order first.
 fn loaded(sel: &Selection) -> Vec<usize> {
@@ -68,79 +64,94 @@ fn loaded(sel: &Selection) -> Vec<usize> {
     slots
 }
 
-/// Route every part not routed by hand as [`Selection::outputs`] says;
-/// `mic_name(slot, code)` names a mic output from its [`Mics`] code.
-pub fn apply(sel: &mut Selection, mics: &Mics, mic_name: impl Fn(usize, u16) -> String) {
+/// The nodes "One per mic" gives a pair of their own: the root's buses.
+fn mic(tree: &MixTree, node: usize) -> bool {
+    tree.nodes.get(node).is_some_and(|n| n.kind == NodeKind::Bus && n.parent == Some(0))
+}
+
+fn pair(mix: &NodeMix) -> Option<usize> {
+    match mix.output {
+        NodeOutput::Pair(p) => Some(usize::from(p).min(BUSES - 1)),
+        NodeOutput::Parent => None,
+    }
+}
+
+/// Route every part and node not routed by hand as [`Selection::outputs`]
+/// says; `trees` are the slots' loaded output trees, by slot. Each part's
+/// node settings are sized to its tree.
+pub fn apply(sel: &mut Selection, trees: &[Option<std::sync::Arc<MixTree>>]) {
     let mode = Outputs::of(sel.outputs);
     let slots = loaded(sel);
+    let tree = |s: usize| trees.get(s).and_then(Option::as_deref);
     let mut claimed = [false; BUSES];
     for &s in &slots {
-        let p = &sel.parts[s];
+        let p = &mut sel.parts[s];
+        if let Some(t) = tree(s) {
+            p.nodes.resize(t.nodes.len().saturating_sub(1), NodeMix::default());
+        }
         if p.output_manual {
             claimed[usize::from(p.output).min(BUSES - 1)] = true;
         }
         if let Ok(aux) = usize::try_from(p.aux) {
             claimed[aux.min(BUSES - 1)] = true;
         }
+        for n in p.nodes.iter().filter(|n| n.manual) {
+            if let Some(b) = pair(n) {
+                claimed[b] = true;
+            }
+        }
     }
     let mut pending = Vec::new();
     for &s in &slots {
         let p = &mut sel.parts[s];
-        if mode != Outputs::Mic {
-            p.mic_buses.clear();
-            p.mic_names.clear();
-        }
-        if p.output_manual || mode == Outputs::Stereo {
-            continue;
-        }
-        let o = usize::from(p.output).min(BUSES - 1);
-        if claimed[o] {
-            pending.push((s, None));
-        } else {
-            claimed[o] = true;
+        if !p.output_manual && mode != Outputs::Stereo {
+            let o = usize::from(p.output).min(BUSES - 1);
+            if claimed[o] {
+                pending.push((s, None));
+            } else {
+                claimed[o] = true;
+            }
         }
     }
-    if mode == Outputs::Mic {
-        for &s in &slots {
-            let p = &mut sel.parts[s];
-            p.mic_buses.resize(OUTS, -1);
-            p.mic_names.resize(OUTS, String::new());
-            for c in 0..OUTS {
-                let code = mics.get(s).map_or(0, |m| m[c]);
-                if code == 0 {
-                    p.mic_buses[c] = -1;
-                    p.mic_names[c].clear();
-                    continue;
-                }
-                p.mic_names[c] = mic_name(s, code);
-                match usize::try_from(p.mic_buses[c]) {
-                    Ok(b) if b < BUSES && !claimed[b] => claimed[b] = true,
-                    _ => pending.push((s, Some(c))),
-                }
+    for &s in &slots {
+        let p = &mut sel.parts[s];
+        for (n, node) in p.nodes.iter_mut().enumerate().filter(|(_, n)| !n.manual) {
+            if mode != Outputs::Mic || !tree(s).is_some_and(|t| mic(t, n + 1)) {
+                node.output = NodeOutput::Parent;
+                continue;
+            }
+            match pair(node) {
+                Some(b) if !claimed[b] => claimed[b] = true,
+                _ => pending.push((s, Some(n))),
             }
         }
     }
     // Instruments before mics: they claim in the order pending was built.
-    for (s, mic) in pending {
+    for (s, node) in pending {
         let free = claimed.iter().position(|c| !c);
         if let Some(b) = free {
             claimed[b] = true;
         }
         let p = &mut sel.parts[s];
-        match mic {
-            // ponytail: past 16 buses a part shares the one it had.
+        match node {
+            // ponytail: past 16 pairs a part shares the one it had.
             None => p.output = free.map_or(p.output, |b| b as u8),
             // Past 16, a mic plays with its instrument.
-            Some(c) => p.mic_buses[c] = free.map_or(-1, |b| b as i16),
+            Some(n) => p.nodes[n].output = free.map_or(NodeOutput::Parent, |b| NodeOutput::Pair(b as u8)),
         }
     }
 }
 
-/// Choose "Stereo mix": every part not routed by hand back on st.1.
+/// Choose "Stereo mix": every part and node not routed by hand back on 1-2.
 pub fn to_stereo(sel: &mut Selection) {
     sel.outputs = Outputs::Stereo as u8;
-    for p in sel.parts.iter_mut().filter(|p| !p.output_manual) {
-        p.output = 0;
+    for p in sel.parts.iter_mut() {
+        if !p.output_manual {
+            p.output = 0;
+        }
+        for n in p.nodes.iter_mut().filter(|n| !n.manual) {
+            n.output = NodeOutput::Parent;
+        }
     }
 }
 
@@ -184,23 +195,27 @@ fn common(names: &[String]) -> String {
     }
 }
 
-/// What each bus plays, by name: empty when nothing is routed to it.
-pub fn auto_names(sel: &Selection) -> [String; BUSES] {
+/// What each pair plays, by name: empty when nothing is routed to it.
+/// `trees` name the parts' nodes; without one a node is "Out N".
+pub fn auto_names_with(sel: &Selection, trees: &[Option<std::sync::Arc<MixTree>>]) -> [String; BUSES] {
     let mut sources: [Vec<String>; BUSES] = Default::default();
     for s in loaded(sel) {
         let p = &sel.parts[s];
         let name = part_name(p);
         sources[usize::from(p.output).min(BUSES - 1)].push(name.clone());
-        for (c, &b) in p.mic_buses.iter().enumerate() {
-            if let Ok(b) = usize::try_from(b)
-                && b < BUSES
-            {
-                let mic = p.mic_names.get(c).filter(|m| !m.is_empty()).cloned().unwrap_or(format!("Out {}", c + 1));
+        for (n, node) in p.nodes.iter().enumerate() {
+            if let Some(b) = pair(node) {
+                let tree = trees.get(s).and_then(Option::as_deref);
+                let mic = tree.and_then(|t| t.nodes.get(n + 1)).map_or(format!("Out {}", n + 2), |m| m.name.clone());
                 sources[b].push(mic_label(&name, &mic));
             }
         }
     }
     sources.map(|names| common(&names))
+}
+
+pub fn auto_names(sel: &Selection) -> [String; BUSES] {
+    auto_names_with(sel, &[])
 }
 
 /// Bus `n`'s name: the player's, else what plays through it, else "st.N".
@@ -217,10 +232,10 @@ fn label_with(sel: &Selection, auto: &[String; BUSES], n: usize) -> String {
     }
 }
 
-/// What the host lists each stereo output port as: the buses playing
+/// What the host lists each stereo output port as: the pairs playing
 /// through it, named; "st.N" when none does.
-pub fn port_names(sel: &Selection) -> [String; BUSES] {
-    let auto = auto_names(sel);
+pub fn port_names(sel: &Selection, trees: &[Option<std::sync::Arc<MixTree>>]) -> [String; BUSES] {
+    let auto = auto_names_with(sel, trees);
     std::array::from_fn(|port| {
         let names: Vec<String> = (0..BUSES)
             .filter(|&n| {
@@ -269,6 +284,9 @@ pub fn name_outputs(sel: &mut Selection) {
 pub fn reset(sel: &mut Selection) {
     for p in &mut sel.parts {
         p.output_manual = false;
+        for n in &mut p.nodes {
+            n.manual = false;
+        }
     }
     if Outputs::of(sel.outputs) == Outputs::Stereo {
         to_stereo(sel);
@@ -338,28 +356,20 @@ mod tests {
         sel
     }
 
-    const NO_MICS: [[u16; OUTS]; RACK_SLOTS] = [[0; OUTS]; RACK_SLOTS];
-
     fn outputs(sel: &Selection) -> Vec<u8> {
         sel.parts.iter().map(|p| p.output).collect()
     }
 
     fn apply_now(sel: &mut Selection) {
-        apply(sel, &NO_MICS, |_, _| String::new());
+        apply(sel, &[]);
     }
 
     #[test]
-    fn one_per_instrument_is_stable() {
+    fn one_per_instrument_is_the_default_and_stable() {
         let mut sel = rack(&["Harp", "Celli", "Horns"]);
-        sel.parts[1].output = 4;
         apply_now(&mut sel);
-        assert_eq!(outputs(&sel), [0, 4, 0], "stereo mix: an old session keeps its routes");
-        to_stereo(&mut sel);
-        assert_eq!(outputs(&sel), [0, 0, 0], "choosing it: everything on st.1");
-        sel.outputs = 1;
-        apply_now(&mut sel);
-        assert_eq!(outputs(&sel), [0, 1, 2]);
-        // Remove the middle one: the others keep their buses.
+        assert_eq!(outputs(&sel), [0, 1, 2], "each instrument on its own pair by default");
+        // Remove the middle one: the others keep their pairs.
         sel.parts[1] = Part::default();
         sel.order.retain(|&s| s != 1);
         apply_now(&mut sel);
@@ -368,7 +378,7 @@ mod tests {
         sel.order = vec![2, 0];
         apply_now(&mut sel);
         assert_eq!((sel.parts[0].output, sel.parts[2].output), (0, 2));
-        // A new part takes the free bus, a duplicate in rack order gets its own.
+        // A new part takes the free pair, a duplicate in rack order gets its own.
         sel.parts[1] = Part { path: "/lib/Flute.nki".into(), ..Default::default() };
         sel.order.push(1);
         let dup = Part { output: 2, ..sel.parts[2].clone() };
@@ -380,19 +390,22 @@ mod tests {
         let again = sel.clone();
         apply_now(&mut sel);
         assert!(sel == again);
-        let names = port_names(&sel);
+        let names = port_names(&sel, &[]);
         assert_eq!(&names[..5], ["Harp", "Flute", "Horns", "Horns", "st.5"]);
+        to_stereo(&mut sel);
+        assert_eq!(outputs(&sel), [0, 0, 0, 0], "choosing stereo: everything on 1-2");
+        apply_now(&mut sel);
+        assert_eq!(outputs(&sel), [0, 0, 0, 0], "and it stays there");
     }
 
     #[test]
     fn manual_routes_stick() {
         let mut sel = rack(&["Harp", "Celli", "Horns"]);
-        sel.outputs = 1;
         sel.parts[2].output = 1;
         sel.parts[2].output_manual = true;
         sel.parts[0].aux = 0;
         apply_now(&mut sel);
-        // Horns keep st.2; Harp leaves st.1, a send; Celli take the next free.
+        // Horns keep 3-4; Harp leaves 1-2, a send; Celli take the next free.
         assert_eq!(outputs(&sel), [2, 3, 1]);
         to_stereo(&mut sel);
         apply_now(&mut sel);
@@ -403,28 +416,25 @@ mod tests {
     }
 
     #[test]
-    fn mics_get_buses_and_names() {
+    fn mic_buses_get_pairs_and_names_groups_stay_inside() {
+        let node = |name: &str, kind, parent| MixNode { name: name.into(), kind, parent: Some(parent), inserts: vec![], sends: vec![] };
+        let mut harp = MixTree::instrument("Harp");
+        harp.nodes.extend([node("Close", NodeKind::Bus, 0), node("Tree", NodeKind::Bus, 0), node("Pluck", NodeKind::Group, 1)]);
+        let trees = [Some(std::sync::Arc::new(harp)), None];
         let mut sel = rack(&["Harp", "Celli"]);
-        sel.outputs = 2;
-        let mut mics = NO_MICS;
-        mics[0][1] = 1 + 3; // instrument bus 3 on "Out 2"
-        mics[0][2] = 0x100 + 7; // group 7 on "Out 3"
-        let name = |_: usize, code: u16| match code {
-            4 => "Close".to_owned(),
-            _ => "Tree".to_owned(),
-        };
-        apply(&mut sel, &mics, name);
+        sel.outputs = Outputs::Mic as u8;
+        apply(&mut sel, &trees);
         assert_eq!(outputs(&sel), [0, 1]);
-        assert_eq!(sel.parts[0].mic_buses[..3], [-1, 2, 3]);
-        let names = port_names(&sel);
+        let pairs: Vec<_> = sel.parts[0].nodes.iter().map(|n| n.output).collect();
+        assert_eq!(pairs, [NodeOutput::Pair(2), NodeOutput::Pair(3), NodeOutput::Parent]);
+        let names = port_names(&sel, &trees);
         assert_eq!(&names[..5], ["Harp", "Celli", "Harp Close", "Harp Tree", "st.5"]);
-        // The library moves "Close" back to its own output: its bus frees.
-        mics[0][1] = 0;
-        apply(&mut sel, &mics, name);
-        assert_eq!(sel.parts[0].mic_buses[..3], [-1, -1, 3], "the other mic stays put");
-        sel.outputs = 1;
-        apply(&mut sel, &mics, name);
-        assert!(sel.parts[0].mic_buses.is_empty());
+        // A node routed by hand keeps its pair; the rest go home with one per instrument.
+        sel.parts[0].nodes[2] = NodeMix { output: NodeOutput::Pair(9), manual: true, ..NodeMix::default() };
+        sel.outputs = Outputs::Instrument as u8;
+        apply(&mut sel, &trees);
+        let pairs: Vec<_> = sel.parts[0].nodes.iter().map(|n| n.output).collect();
+        assert_eq!(pairs, [NodeOutput::Parent, NodeOutput::Parent, NodeOutput::Pair(9)]);
     }
 
     #[test]
@@ -432,14 +442,15 @@ mod tests {
         assert_eq!(common(&["Violins 1".into(), "Violins 2".into()]), "Violins");
         assert_eq!(common(&["Harp".into(), "Celli".into(), "Flute".into()]), "Harp +2");
         let mut sel = rack(&["Violins 1", "Violins 2", "Harp"]);
-        assert_eq!(port_names(&sel)[0], "Violins 1 +2");
+        to_stereo(&mut sel);
+        assert_eq!(port_names(&sel, &[])[0], "Violins 1 +2");
         sel.parts[2].output = 1;
         sel.parts[2].output_manual = true;
         apply_now(&mut sel);
-        assert_eq!(port_names(&sel)[..3], ["Violins", "Harp", "st.3"]);
+        assert_eq!(port_names(&sel, &[])[..3], ["Violins", "Harp", "st.3"]);
         // Two buses on one port share it; a player's name wins.
         sel.bus_mut(1).port = 0;
-        assert_eq!(port_names(&sel)[..2], ["Violins +1", "st.2"]);
+        assert_eq!(port_names(&sel, &[])[..2], ["Violins +1", "st.2"]);
         sel.bus_mut(0).name = "Strings".into();
         assert_eq!(label(&sel, 0), "Strings");
         name_outputs(&mut sel);

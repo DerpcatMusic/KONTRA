@@ -129,6 +129,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_fntable_prek51_003() -> Result<(), Error> {
         let file =
             File::open("tests/data/Objects/Kontakt/0x3D-FNTablePreK51/FNTablePreK51-003.kon")?;

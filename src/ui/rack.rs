@@ -10,8 +10,8 @@
 //! part; parts dragged by their name reorder; anything dropped on the
 //! rack's foot or the empty canvas beyond it is added.
 
-use super::{Cx, RackDrag, instrument, menu, move_part, theme::*};
-use crate::import;
+use super::{Cx, RackDrag, menu, move_part, part as instrument, theme::*};
+use crate::library as import;
 use moose::mui::mui::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -26,13 +26,7 @@ pub fn name(cx: &Cx, slot: usize) -> String {
     if !part.name.is_empty() {
         return part.name.clone();
     }
-    // Snapshot imports carry the snapshot's name. Keep the base title above
-    // it; the second row names the selected snapshot independently.
-    let full = if part.snapshot.is_empty() {
-        instrument::instrument_of(cx, slot).map(|i| i.name.clone())
-    } else {
-        cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.instrument.clone())
-    }.unwrap_or_else(|| super::header::stem(&part.path));
+    let full = cx.instrument_name(slot).unwrap_or_else(|| super::header::stem(&part.path));
     without_library(&full, &cx.library_of(Path::new(&part.path))).to_owned()
 }
 
@@ -126,8 +120,6 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
     // row before deciding where to reveal it. Other offscreen rows stay unbuilt.
     for (i, &slot) in order.iter().enumerate() {
         near[i] |= cx.state.resizing.is_some_and(|(s, _)| s == slot)
-            || cx.state.held.is_some_and(|(s, _, _)| s == slot)
-            || cx.state.typing.as_ref().is_some_and(|(s, _, _)| *s == slot)
             || cx.state.renaming.as_ref().is_some_and(|(s, _)| *s == slot)
             || (cx.state.reveal == Some(slot) && !measured[i]);
     }
@@ -256,7 +248,7 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     // All of it: the header, then its notices and controls.
     let natural = cx.state.bodies.get(&slot).map(|b| SLIM + b);
     // A click anywhere on the part that no control takes selects it.
-    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
+    if [format!("part-{slot}"), format!("body-{slot}"), format!("stage-{slot}"), format!("inside-{slot}")].into_iter().any(|id| ui.get(id).clicked) {
         cx.state.select(slot);
     }
     let r = ui.get(edge_id.as_str());
@@ -303,13 +295,8 @@ fn part(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool, near: bool, shape: &
     let room = height.map(|h| h - SLIM);
     if room.is_none_or(|r| r >= 0.5) {
         let body = if near {
-            let mut body: Vec<El> = snapshot_row(ui, cx, slot).into_iter().collect();
-            body.extend(instrument::notices(cx, slot));
-            // Kept as drawn while nothing it shows moves: meters and keys
-            // redraw around it, not through it.
-            let deps = (instrument::stage_deps(ui, cx, slot), cx.selection.appearance);
-            deps.hash(shape);
-            let stage = ui.memo(format!("stage-memo-{slot}"), deps, |ui| instrument::stage(ui, cx, slot));
+            let mut body: Vec<El> = instrument::notices(cx, slot).into_iter().collect();
+            let stage = instrument::stage(ui, cx, slot);
             body.push(behind(cx, slot, stage));
             col(body).gap(0).align(Align::Stretch).shrink(0).id(format!("body-{slot}"))
         } else {
@@ -469,20 +456,11 @@ const NAME_MIN: f64 = 120.;
 /// taller than any header so covering one only ever crops it top and bottom.
 pub const BANNER: (f64, f64) = (TEXT * 36., TEXT * 7.);
 
-/// A part's header, after Kontakt's compact part strip: one slim line with
-/// the part's color down its left edge. The fold, the name with preset
-/// stepping; MIDI and output routing, pan, gain and tune; solo and mute,
-/// the activity dot, menu and remove; the part's meter at the right edge.
-/// The same line whether the part is open, folded or stuck at the rack's edge.
-pub fn header(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
-    header_at(ui, cx, slot, false)
-}
-
 /// How far `slot`'s samples have loaded, 0..1, while they load.
 pub(super) fn loading(cx: &Cx, slot: usize) -> Option<f64> {
     cx.view.parts[slot].loading.then(|| {
         let done = cx.p.shared.part(slot).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
-        (f64::from(done) / f64::from(crate::engine::LOAD_DONE)).clamp(0., 1.)
+        (f64::from(done) / f64::from(crate::sound::Progress::DONE.0)).clamp(0., 1.)
     })
 }
 
@@ -500,33 +478,6 @@ pub(super) fn load_chip(done: f64, words: bool) -> El {
         .lines(1)
         .shrink(0)
         .named("Loading")
-}
-
-/// A snapshot changes the current base instrument's state; it does not step
-/// the browser's NKI/NKM list. All paths here were prepared by the scan worker.
-fn snapshot_row(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
-    let part = cx.selection.parts.get(slot)?;
-    if !part.snapshot_base() { return None; }
-    let paths = cx.view.shelf.snapshots.get(Path::new(&part.path)).map(|s| s.paths.as_slice()).unwrap_or(&[]);
-    if paths.is_empty() && part.snapshot.is_empty() { return None; }
-    let chosen = paths.iter().position(|p| p == Path::new(&part.snapshot));
-    let previous = chosen.and_then(|i| i.checked_sub(1)).and_then(|i| paths.get(i)).cloned();
-    let next = chosen.map_or_else(|| paths.first(), |i| paths.get(i + 1)).cloned();
-    let title = if part.snapshot.is_empty() { "Select snapshot…".into() } else { super::header::stem(&part.snapshot) };
-    let id = format!("snapshot-{slot}");
-    let (hit, selector) = dropdown(ui, id.as_str(), &title, "Snapshot");
-    if hit { menu::open_under(ui, cx, menu::Target::Snapshots(slot), &id); }
-    let selector = selector.flex(1);
-    let arrow = |ui: &mut Ui, id: String, picture: Icon, label: &str, enabled: bool| {
-        if enabled { icon_button(ui, id, picture, label, false) } else { (false, dead_icon(picture, label)) }
-    };
-    let (prev_hit, prev) = arrow(ui, format!("snapshot-prev-{slot}"), Icon::Left, "Previous snapshot", previous.is_some());
-    let (next_hit, next_el) = arrow(ui, format!("snapshot-next-{slot}"), Icon::Right, "Next snapshot", next.is_some());
-    if let Some(path) = previous.filter(|_| prev_hit).or(next.filter(|_| next_hit)) {
-        cx.snapshot(slot, path.to_string_lossy().into_owned());
-    }
-    Some(col![row![selector, prev, next_el].gap(TIGHT).align(Align::Center)
-        .pad((SPACE, TIGHT)).w(Len::Pct(100.)), rule()].gap(0).shrink(0))
 }
 
 /// [`header`]; a `stuck` one, clicked, also scrolls back to its part.
@@ -581,18 +532,6 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
-    // Which performance view shows, when the library has one of its own:
-    // its original, that vectorized, or KONTRA's.
-    let view_el = super::perf_view::available(&cx.view.parts[slot]).then(|| {
-        let mode = super::perf_view::shows(cx, slot);
-        let id = format!("view-{slot}");
-        let tip = format!("Performance view: {}", mode.label());
-        let (hit, el) = icon_button(ui, id.as_str(), Icon::Picture, &tip, mode != crate::library::ViewMode::Kontra);
-        if hit {
-            menu::open_under(ui, cx, menu::Target::View(slot), &id);
-        }
-        el
-    });
     let more_id = format!("more-{slot}");
     let (more, more_el) = icon_button(ui, more_id.as_str(), Icon::More, "Part menu", false);
     if more {
@@ -606,7 +545,11 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let midi_id = format!("midi-{slot}");
     let output_id = format!("output-{slot}");
     let part = &cx.selection.parts[slot];
-    let channel = if part.channel < 0 { "Omni".to_owned() } else { (part.channel + 1).to_string() };
+    let channel = match (part.mpe, part.channel < 0) {
+        (true, _) => "MPE".to_owned(),
+        (false, true) => "Omni".to_owned(),
+        (false, false) => (part.channel + 1).to_string(),
+    };
     // Port A is the usual one and goes unsaid.
     let midi_text = if part.port == 0 {
         channel
@@ -642,7 +585,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let pan_el = pan_wedge(ui, &format!("pan-{slot}"), &mut pan);
     part.pan = pan as f32;
     let mut tune = f64::from(part.tune);
-    let range = f64::from(crate::engine::TUNE_RANGE);
+    let range = f64::from(crate::sound::TUNE_RANGE);
     let tune_el = tune_field(ui, &format!("tune-{slot}"), &mut tune, -range..=range);
     part.tune = tune as f32;
     let (mut solo, mut mute) = (part.solo, part.mute);
@@ -668,7 +611,6 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(if narrow { TIGHT } else { SPACE });
     let mut tail = vec![switches];
     if !narrow { tail.push(dot); }
-    tail.extend(view_el);
     tail.push(more_el);
     tail.extend(remove_el);
     let tail = cluster(tail).gap(TIGHT + 1.);
@@ -735,23 +677,11 @@ fn facts(cx: &Cx, slot: usize) -> String {
     // "Areia 1.2.0 [Audio Imperia]": the vendor in brackets goes.
     let library = library_label(&library);
     let mut facts = vec![library.split(" [").next().unwrap_or_default().to_owned()];
-    if let Some(i) = instrument::instrument_of(cx, slot) {
-        facts.push(format!("{} groups · {} zones", i.groups.len(), i.zones.len()));
-    }
-    if !v.loading && v.bytes > 0 {
-        facts.push(megabytes(v.bytes));
-        // What the smart memory handed back, of what the part held.
-        let purged = (v.freed as usize * 100).checked_div(v.bytes + v.freed as usize).unwrap_or(0);
-        if purged > 0 {
-            facts.push(format!("{purged}% purged"));
-        }
+    if let Some(r) = &v.report {
+        facts.push(format!("{} groups · {} zones", r.decoded.groups, r.decoded.zones));
     }
     if v.status.starts_with("Load failed") {
         facts.push("failed to load".into());
-    }
-    let timing = &cx.selection.parts[slot].timing;
-    if cx.selection.auto_align && !timing.exclude && !timing.source.is_empty() {
-        facts.push(format!("−{:.0} ms", timing.latest()));
     }
     facts.retain(|f| !f.is_empty());
     facts.join(" · ")
@@ -778,8 +708,7 @@ fn title(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
             let text = cx.state.renaming.take().map(|(_, t)| t).unwrap_or_default();
             let text = text.trim();
             let part = &cx.selection.parts[slot];
-            let default = instrument::instrument_of(cx, slot)
-                .map_or_else(|| super::header::stem(&part.path), |i| i.name.clone());
+            let default = cx.instrument_name(slot).unwrap_or_else(|| super::header::stem(&part.path));
             let shown = without_library(&default, &cx.library_of(Path::new(&part.path)));
             cx.selection.parts[slot].name = if text == default || text == shown || text.is_empty() {
                 String::new()

@@ -60,12 +60,13 @@ impl BParamArrayBParFX8 {
     }
 
     pub fn len(&self) -> usize {
-        self.items
-            .iter()
-            .filter(|p| p.is_some())
-            .collect::<Vec<&Option<_>>>()
-            .len()
+        self.items.iter().filter(|p| p.is_some()).count()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.iter().all(Option::is_none)
+    }
+
 }
 
 impl std::convert::TryFrom<&Chunk> for BParamArrayBParFX8 {
@@ -93,6 +94,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_bparam_array_v10() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/BParameterArray/BParameterArray-001")?;
         let arr = BParamArrayBParFX8::read(file, 8)?;
@@ -102,6 +104,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_bparam_array_v12() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/BParameterArray/BParameterArray-000")?;
         let arr = BParamArrayBParFX8::read(file, 8)?;

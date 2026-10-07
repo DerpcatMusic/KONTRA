@@ -28,7 +28,7 @@ impl VoiceGroups {
         let is_structured = reader.read_bool()?;
         let version = reader.read_u16_le()?;
 
-        assert_eq!(is_structured, false);
+        assert!(!is_structured);
 
         let voice_limit = match version {
             0x60 => VoiceLimit::read(&mut reader)?,
@@ -78,6 +78,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_voice_groups_v60() -> Result<(), Error> {
         let mut file = File::open("tests/data/Objects/Kontakt/VoiceGroups/v60/000")?;
 

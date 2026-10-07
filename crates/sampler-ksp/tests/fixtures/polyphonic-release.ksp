@@ -1,0 +1,19 @@
+on init
+    declare polyphonic $original
+    declare polyphonic $released
+    declare polyphonic $boundary
+end on
+
+on note
+    ignore_event($EVENT_ID)
+    $original := $EVENT_NOTE
+    $boundary := -2147483648
+    wait(125)
+    $boundary := +2147483647
+end on
+
+on release
+    $released := $original
+    wait(125)
+    play_note($EVENT_NOTE, 64, 0, 125)
+end on

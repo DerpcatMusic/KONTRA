@@ -1,0 +1,24 @@
+[package]
+name = "sampler-kontakt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["library-access"]
+# Reads a library's own .nicnt access data to open its encrypted content.
+library-access = ["dep:aes"]
+
+[dependencies]
+sampler-ir = { path = "../sampler-ir" }
+sampler-core = { path = "../sampler-core" }
+sampler-ksp = { path = "../sampler-ksp" }
+sampler-ui-ir = { path = "../sampler-ui-ir" }
+ni-file = { path = "../../vendor/ni-file" }
+ncw = { path = "../../vendor/ncw" }
+aes = { version = "0.8", optional = true }
+
+[lints.rust]
+unsafe_code = "deny" # Library forbids it; test allocator instrumentation opts out.
