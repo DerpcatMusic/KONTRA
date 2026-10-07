@@ -359,7 +359,7 @@ impl FilterContext<'_> {
             let filter = cache.filter;
             let middle = at + len as u64 / 2;
             let hz = (filter.cutoff.value(parameters, middle, expression) * cutoff)
-                .clamp(10.0_f64.min(filter.rate * 0.25), filter.rate * 0.49);
+                .clamp(20.0, 20_000.0_f64.min(filter.rate * 0.49));
             let q = (filter.q.value(parameters, middle, expression) * q).max(0.025);
             let c = Coefficients::new(filter.rate, hz, q);
             run(state, block, len, filter.mode.mix(), |_| c);
