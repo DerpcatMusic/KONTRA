@@ -19,6 +19,7 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
@@ -181,7 +182,7 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
-    translate_full(text, source).map(|(instrument, locations, _)| (instrument, locations))
+    translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
 
 /// [`translate_with`], plus the IR group of each (layer, oscillator) of a
@@ -189,7 +190,7 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
 fn translate_full(
     text: &str,
     source: Source,
-) -> Result<(ir::Instrument, Vec<String>, Vec<OscGroup>), Translate> {
+) -> Result<(ir::Instrument, Vec<String>, Vec<OscGroup>, Vec<InsertNode>), Translate> {
     let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
@@ -235,6 +236,7 @@ fn translate_full(
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
         osc_groups: Vec::new(),
+        insert_nodes: Vec::new(),
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
@@ -263,7 +265,7 @@ fn translate_full(
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
-    Ok((out.ir, out.locations, out.osc_groups))
+    Ok((out.ir, out.locations, out.osc_groups, out.insert_nodes))
 }
 
 /// A node's own `SignalConnection`s.
@@ -354,6 +356,8 @@ struct Translation {
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
     osc_groups: Vec<OscGroup>,
+    /// Where each insert element's processors sit, for script writes.
+    insert_nodes: Vec<InsertNode>,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
 }
@@ -439,14 +443,20 @@ impl Translation {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
             let bus = ir::BusRef(self.ir.buses.len());
             let live = number(aux, "Bypass", 0.0)? == 0.0;
-            let processors = if live { self.inserts(aux, false, None)? } else { Vec::new() };
-            let chain = (!processors.is_empty()).then(|| {
+            let (processors, placed) = if live {
+                self.inserts(aux, false, None)?
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            let chain = (!placed.is_empty()).then(|| {
                 self.ir.chains.push(ir::Chain {
                     scope: ir::Scope::Bus(bus),
                     pre_amplitude: processors,
                     post_amplitude: Vec::new(),
                 });
-                ir::ChainRef(self.ir.chains.len() - 1)
+                let chain = ir::ChainRef(self.ir.chains.len() - 1);
+                self.place(chain, placed);
+                chain
             });
             self.ir.buses.push(ir::Bus {
                 name: name.clone(),
@@ -618,14 +628,17 @@ impl Translation {
         };
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
-        let processors = self.inserts(keygroup, true, Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8))?;
-        let chain = (!processors.is_empty()).then(|| {
+        let (processors, placed) =
+            self.inserts(keygroup, true, Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8))?;
+        let chain = (!placed.is_empty()).then(|| {
             self.ir.chains.push(ir::Chain {
                 scope: ir::Scope::Voice,
                 pre_amplitude: processors,
                 post_amplitude: Vec::new(),
             });
-            ir::ChainRef(self.ir.chains.len() - 1)
+            let chain = ir::ChainRef(self.ir.chains.len() - 1);
+            self.place(chain, placed);
+            chain
         });
         for (oscillator, player) in keygroup
             .descendants()
@@ -936,6 +949,8 @@ pub struct Translated {
     bank: Option<(Bank, String)>,
     /// Where each (layer, oscillator) of the program plays, for its scripts.
     pub groups: Vec<OscGroup>,
+    /// Where each insert element sits in the IR chains, for parameter bindings.
+    pub inserts: Vec<InsertNode>,
     /// The program's XML and the bank's Lua members, for its scripts.
     text: String,
     lua: script::Scripts,
@@ -1007,7 +1022,7 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             member
         };
         let (text, program_path) = bank.program(&member)?;
-        let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+        let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
             .map_err(|e| describe(Path::new(&member), e))?;
         let lua = bank.scripts();
         return Ok(Translated {
@@ -1015,15 +1030,16 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             locations,
             bank: Some((bank, program_path)),
             groups,
+            inserts,
             text,
             lua,
         });
     }
     let text = read_text(path)?;
-    let (instrument, locations, groups) =
+    let (instrument, locations, groups, inserts) =
         translate_full(&text, Source::Disk(path.parent().unwrap_or(Path::new(".")).into()))
             .map_err(|e| describe(path, e))?;
-    Ok(Translated { instrument, locations, bank: None, groups, text, lua: Default::default() })
+    Ok(Translated { instrument, locations, bank: None, groups, inserts, text, lua: Default::default() })
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.
@@ -1232,7 +1248,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (mut instrument, locations, groups) = translate_full(&text, Source::Bank)
+    let (mut instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
         .map_err(|e| describe(Path::new(program), e))?;
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
@@ -1272,6 +1288,7 @@ pub fn load_program_scripted_with_options(
         plan: loaded.plan,
         host,
         groups,
+        inserts,
     })
 }
 

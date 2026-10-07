@@ -59,6 +59,8 @@ pub struct Program {
     pub plan: Prepared,
     pub host: ScriptHost,
     pub groups: Vec<OscGroup>,
+    /// Where each insert element sits in the IR chains.
+    pub inserts: Vec<crate::InsertNode>,
 }
 
 /// Plays made once their originating note was released sound at most this long.
