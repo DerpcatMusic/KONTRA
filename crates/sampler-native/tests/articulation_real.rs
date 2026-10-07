@@ -395,6 +395,9 @@ fn probe_instrument() {
         "DYNAMICS amplitude controllers {:?}",
         d.instrument.amplitude_controllers()
     );
+    for (i, g) in d.instrument.groups.iter().enumerate() {
+        eprintln!("GROUPNAME {i} {:?} gain {:?} out {:?}", g.name, g.gain, g.output);
+    }
     eprintln!("BUSES {:?}", d.instrument.buses);
     for b in &d.instrument.buses { if let Some(c) = b.chain { eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]); } }
     eprintln!(
