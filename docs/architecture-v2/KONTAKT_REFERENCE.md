@@ -233,3 +233,17 @@ Rig: `noise_instrument.sh` loads the noise sample, then Group Editor > Group Ins
 - LFO (Rectangle 0.25 Hz, bipolar, starts high; amount 17.4 %, knob 4000, retrigger on): high state 9070 Hz, low state 843 Hz against 2600 Hz neutral = +1.80 / -1.63 octaves (prediction +-1.74). The first half period (0-2 s) is the high state. Amount 100 %: high above 16 kHz, low about 35 dB down (cutoff pinned near 20 Hz): the swing is clamped to the knob range.
 - Envelope (AHDSR, unipolar, amount 34 %, knob 1000, attack 2000 ms, hold 0, decay 2000 ms, sustain -12 dB, curve 0): fc 855 / 1477 / 2585 / 4724 Hz at 0.25 / 0.75 / 1.25 / 1.75 s = env 0.12 / 0.35 / 0.59 / 0.84 (linear attack, octaves = 10 x 0.34 x env); peak at 2 s about 3.4 octaves; sustain 1150 Hz = 0.82 oct = env 0.24, so sustain -12 dB is the linear amplitude 0.25. The decay is exponential, not linear: env - sustain falls 0.51, 0.23, 0.085, 0.02 at 2.25 / 2.75 / 3.25 / 3.75 s (about x0.4 per 0.5 s, 97 % done within the 2000 ms decay time).
 - Caveat: the SV LP2 cutoff relation (0.65 x knob) was fitted from one filter type; the ratios, not the absolute -3 dB points, are the law. Measurements are +-0.1 octave (band resolution).
+
+## 18. Vista 3 Cellos solos g1, g4, g5, g33, g36 (silent in section 4 only because they are quiet)
+
+`scenarios/vista_solo_g1_4_5_33_36.txt` with the solo script of section 4 (`scenarios/solo_group.ksp`, replaces the Vista script in slot 1 through Apply from Clipboard; slot 2 cleared), CC1 = CC11 = 127, key 48 vel 100 held 3 s, 6 s apart; `lr_report.py` per channel, RMS over 0.5-2 s after onset, dBFS:
+
+| group | CC100 = 0 (L / R) | CC100 = 64 (L / R) | CC100 = 127 |
+|---|---|---|---|
+| g1 | -68.8 / -68.7 | -52.8 / -52.1 | silent |
+| g4 | -59.9 / -61.7 | -48.3 / -50.1 | silent |
+| g5 | -55.5 / -55.8 | -36.6 / -37.0 | silent |
+| g33 | -75.4 / -73.9 | -56.5 / -54.7 | silent |
+| g36 (control) | -61.8 / -56.5 | -50.1 / -44.8 | silent |
+
+So g1/g4/g5 are not gated: they sound at CC100 0 and 64, but 16-35 dB under g37 (-37 R at CC100 56, section 12), so section 4 (taken at an unspecified CC100) read them as silent. All five groups are silent at CC100 = 127, as g36 (section 12: silent from 88). Left-right differences are constant per group (g1 0, g4 +1.8, g5 +0.4, g33 -1.5, g36 -5.3 dB) as in section 12; the 64 level is 12-19 dB above the 0 level.
