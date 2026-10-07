@@ -331,7 +331,7 @@ fn controller_note_ids_support_fixed_stops_fault_cleanup_and_scoped_wait_cancell
     let mut faulted = runtime(
         "on init declare %values[1] end on
         on controller ignore_controller play_note(60,127,0,125)
-            %values[1] := 7
+            wait(1 - 2)
         end on",
     );
     support::without_heap(|| {
