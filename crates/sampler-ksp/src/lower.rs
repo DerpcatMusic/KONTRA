@@ -1596,9 +1596,8 @@ impl Gen<'_, '_> {
                         operation: IB::Multiply,
                     })?;
                 }
-                self.emit(I::MicrosToFrames { local: dst })?;
                 self.forward()?;
-                self.emit(I::WaitLocal { local: dst })?;
+                self.emit(I::WaitMicros { local: dst })?;
                 if builtin == WaitTicks {
                     self.cover(builtin, Coverage::Approximate);
                     return Ok(());
