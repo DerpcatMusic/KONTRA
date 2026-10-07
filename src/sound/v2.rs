@@ -1762,7 +1762,7 @@ mod tests {
         };
         let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
         let buses: Vec<_> = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Bus).map(|n| n.name.as_str()).collect();
-        assert_eq!(buses, ["insert", "send 0"]);
+        assert_eq!(buses, ["insert", "send 0", "send 1"]);
         let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
         assert!(groups > 100, "every group is a node too: {groups}");
         let mut core = V2Core::with_parts(1, 48000.0);
