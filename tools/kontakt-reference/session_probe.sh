@@ -7,7 +7,7 @@ OUT=$W/log/session_probe.txt; : >"$OUT"
 sess_begin
 for id in $IDS; do
   rel=$(grep -P "^$id\t" "$here/probe_set.tsv" | cut -f3); keys=$(grep -P "^$id\t" "$here/probe_set.tsv" | cut -f2)
-  P=$W/probe/$id; mkdir -p "$P"; python3 "$here/probe_grid.py" "$P" "$keys" | tee -a "$OUT"; python3 "$here/scenario.py" "$P/scen.txt" "$P/scen.mid" >/dev/null
+  P=$W/probe/$id; mkdir -p "$P"; mode=$(grep -P "^$id\t" "$here/probe_set.tsv" | cut -f4); python3 "$here/probe_grid.py" "$P" "$keys" MODE=${mode:-grid} | tee -a "$OUT"; python3 "$here/scenario.py" "$P/scen.txt" "$P/scen.mid" >/dev/null
   KONTAKT_NO_VIEW_FIX=1 "$here/kontakt.sh" start "/mnt/MAIN_STORAGE/Libraries/Kontakt/$rel" || { say "$id: start failed"; "$here/kontakt.sh" stop; continue; }
   export KONTAKT_NO_VIEW_FIX=1 KONTRA_NO_STATE_CHECK="probe $id: instrument GUI differs from the golden header, default state and nothing touched; calibration before and after"
   rm -f "$P/kontakt.wav"

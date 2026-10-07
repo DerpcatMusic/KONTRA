@@ -9,12 +9,26 @@ import json, os, sys
 
 out, keys = sys.argv[1], [int(k) for k in sys.argv[2].split(",")]
 opt = dict(a.split("=") for a in sys.argv[3:])
-cc1, ks = int(opt.get("CC1", 64)), opt.get("KS")
+cc1, ks, mode = int(opt.get("CC1", 64)), opt.get("KS"), opt.get("MODE", "grid")
 VELS, REPS, LEN, GAP, T0 = (20, 60, 100, 127), 4, 0.5, 2.0, 1.0
 os.makedirs(out, exist_ok=True)
 scen = ["# probe grid"] + [f"0 cc {n} {v}" for n, v in ((1, cc1), (7, 127), (10, 64), (11, 127), (64, 0))]
 cc = [f"{n}@0:{v}" for n, v in ((1, cc1), (7, 127), (10, 64), (11, 127), (64, 0))]
 notes, v1, t = [], [], T0
+if mode == "legato":
+    # overlapping stepwise phrases (A held while B starts) at 3 velocities, two keys: tests transition samples and their starts
+    t = T0
+    for base in keys[:2]:
+        for vel in (40, 80, 120):
+            for rep, step in enumerate((0, 2, 4, 2, 0)):
+                scen.append(f"{t} note {base + step} {vel} 1.3"); v1.append(f"{base + step}@{int(t*1000)}-{int((t+1.3)*1000)}:{vel}")
+                notes.append({"key": base + step, "vel": vel, "rep": rep, "t": t}); t += 1.0
+            t += 3.0
+    scen.append(f"{t + 1} end")
+    open(f"{out}/scen.txt", "w").write("\n".join(scen) + "\n")
+    json.dump({"notes": notes, "cc1": cc1, "ks": ks, "scale": 1.0}, open(f"{out}/grid.json", "w"))
+    open(f"{out}/v1.args", "w").write(",".join(v1) + "\n" + ",".join(cc) + "\n")
+    print(f"{len(notes)} notes, {t - T0:.0f} s"); sys.exit()
 if ks:
     scen.append(f"0.3 note {ks} 100 0.2"); v1.append(f"{ks}@300-500:100")
 for key in keys:
@@ -26,6 +40,6 @@ for key in keys:
             notes.append({"key": key, "vel": vel, "rep": rep, "t": t}); t += GAP
 scen.append(f"{t + 1} end")
 open(f"{out}/scen.txt", "w").write("\n".join(scen) + "\n")
-json.dump({"notes": notes, "cc1": cc1, "ks": ks}, open(f"{out}/grid.json", "w"))
+json.dump({"notes": notes, "cc1": cc1, "ks": ks, "scale": 0.5}, open(f"{out}/grid.json", "w"))
 open(f"{out}/v1.args", "w").write(",".join(v1) + "\n" + ",".join(cc) + "\n")
 print(f"{len(notes)} notes, {t - T0:.0f} s")
