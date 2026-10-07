@@ -100,7 +100,8 @@ fn legato() -> Vec<Message> {
 /// A new key every 0.2 s over five octaves: each starts a sample not yet played.
 fn sweep() -> Vec<Message> {
     let mut m = expression();
-    for i in 0..50 {
+    let n = std::env::var("PERF_SWEEP_N").ok().and_then(|v| v.parse().ok()).unwrap_or(50);
+    for i in 0..n {
         on_off(&mut m, 36 + i as u8 + i as u8 / 2, 60 + (i % 7) as u8 * 9, f64::from(i) * 0.2, 1.2);
     }
     m
@@ -166,7 +167,7 @@ fn fail(e: impl std::fmt::Display) -> String {
 /// Below this peak (-60 dBFS) a scenario counts as silent.
 const SILENT: f32 = 0.001;
 
-fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
+fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, String> {
     match &s.source {
         Source::Kontakt(rel) => {
             let path = root(KONTAKT, "/mnt/MAIN_STORAGE/Libraries/Kontakt").join(rel);
@@ -177,7 +178,7 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
                 library: Some(path.clone()),
                 ..Default::default()
             };
-            let streamed = sampler_kontakt::load_streamed(&path, &options, &sampler_kontakt::StreamPolicy { voices: 2048, ..Default::default() }, |_| {}).map_err(fail)?;
+            let streamed = sampler_kontakt::load_streamed(&path, &options, &sampler_kontakt::StreamPolicy { voices: std::env::var("PERF_STREAM_VOICES").ok().and_then(|v| v.parse().ok()).unwrap_or(2048), block_frames: block, ..Default::default() }, |_| {}).map_err(fail)?;
             let sampler_kontakt::Streamed { loaded, cache, report, streamer, assets } = streamed;
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
@@ -286,6 +287,12 @@ fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[
             if let Some(h) = horizon {
                 match rt.service_streaming(*h) { Err(e) if std::env::var_os("PERF_DEBUG").is_some() => eprintln!("service_streaming: {e:?} voices {}", rt.voice_count()), _ => {} }
             }
+            if std::env::var_os("PERF_VOICES").is_some() {
+                thread_local! { static LAST: Cell<usize> = const { Cell::new(0) }; static T: Cell<usize> = const { Cell::new(0) }; }
+                T.set(T.get() + buffer.len());
+                let n = rt.voice_count() / 5;
+                if n != LAST.replace(n) { eprintln!("t {:.3}s voices {} stolen {} events {}", T.get() as f64 / 48000., rt.voice_count(), rt.stolen_voices(), batch.len()); }
+            }
             let mut errors = 0;
             let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| { if let Err(e) = r { errors += 1; if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 { eprintln!("event {i} of block ({} events): {e:?}", batch.len()); } } });
             EVENT_ERRORS.set(EVENT_ERRORS.get() + errors);
@@ -361,7 +368,7 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
     };
     let started = Instant::now();
     let rss0 = proc_value("/proc/self/status", "VmRSS:");
-    let mut loaded = load(s, &messages)?;
+    let mut loaded = load(s, &messages, BLOCKS[0])?;
     let load_info = json!({
         "scenario": s.name,
         "load_seconds": started.elapsed().as_secs_f64(),
@@ -391,7 +398,7 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
             }
             // A fresh instrument per cell: held notes and script state of one cell never leak into the next.
             drop(loaded);
-            loaded = load(s, &messages)?;
+            loaded = load(s, &messages, block)?;
             if let Player::Midi { rt, .. } = &mut loaded.player {
                 rt.set_threads(Threads::Fixed(t));
             }
