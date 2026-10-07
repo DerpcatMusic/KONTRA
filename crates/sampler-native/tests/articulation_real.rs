@@ -666,3 +666,81 @@ fn probe_instrument() {
         );
     }
 }
+
+/// Kontakt 8 reference levels (KONTAKT_REFERENCE.md s.13): scripts on, nothing
+/// sent, 3 s held; max(|L|, |R|) peak over 0.3-3 s in dBFS.
+const REFERENCE: &[(&str, u8, u8, f64)] = &[
+    (
+        "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+        48,
+        100,
+        -38.6,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        64,
+        -24.7,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        100,
+        -14.7,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        127,
+        -8.6,
+    ),
+    (
+        "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+        55,
+        100,
+        -15.9,
+    ),
+];
+
+/// Every reference note within 1 dB of Kontakt. Known gaps while it fails: Una
+/// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
+/// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
+#[test]
+#[ignore = "known gaps: Una Cotton vel 100/127, Barbarian CC1 default"]
+fn full_notes_match_kontakt_within_a_decibel() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let mut off = Vec::new();
+    for &(relative, key, vel, kontakt) in REFERENCE {
+        let path = std::path::Path::new(&root).join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let d = decoded(&path, key);
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let mut words = vec![
+            0x2000_0000,
+            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+        ];
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let peak = out[14_400..144_000.min(out.len())]
+            .iter()
+            .flatten()
+            .fold(0f32, |p, x| p.max(x.abs()));
+        let db = 20.0 * f64::from(peak).log10();
+        if (db - kontakt).abs() >= 1.0 {
+            off.push(format!(
+                "{relative} key {key} vel {vel}: {db:.1} against {kontakt}"
+            ));
+        }
+    }
+    assert!(off.is_empty(), "{off:#?}");
+}

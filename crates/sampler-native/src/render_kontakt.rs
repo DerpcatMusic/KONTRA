@@ -59,12 +59,21 @@ pub type Message = (f64, [u8; 3]);
 /// time order, with tempo changes honoured. Meta and system messages are
 /// skipped.
 pub fn midi_file(smf: &[u8]) -> Result<Vec<Message>, String> {
-    let be16 = |at: usize| smf.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
-    let be32 = |at: usize| smf.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+    let be16 = |at: usize| {
+        smf.get(at..at + 2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+    };
+    let be32 = |at: usize| {
+        smf.get(at..at + 4)
+            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    };
     if smf.get(..4) != Some(b"MThd") {
         return Err("not a Standard MIDI File".into());
     }
-    let (tracks, division) = (be16(10).ok_or("short header")?, be16(12).ok_or("short header")?);
+    let (tracks, division) = (
+        be16(10).ok_or("short header")?,
+        be16(12).ok_or("short header")?,
+    );
     if division & 0x8000 != 0 {
         return Err("SMPTE time division is not supported".into());
     }
@@ -102,7 +111,10 @@ pub fn midi_file(smf: &[u8]) -> Result<Vec<Message>, String> {
                     let len = byte(i + 1)? as usize;
                     if kind == 0x51 && len == 3 {
                         let t = smf.get(i + 2..i + 5).ok_or("truncated tempo")?;
-                        tempos.push((tick, u32::from(t[0]) << 16 | u32::from(t[1]) << 8 | u32::from(t[2])));
+                        tempos.push((
+                            tick,
+                            u32::from(t[0]) << 16 | u32::from(t[1]) << 8 | u32::from(t[2]),
+                        ));
                     }
                     i += 2 + len;
                 }
@@ -112,7 +124,11 @@ pub fn midi_file(smf: &[u8]) -> Result<Vec<Message>, String> {
                 }
                 0x80..=0xef => {
                     running = status;
-                    let data = if matches!(status & 0xf0, 0xc0 | 0xd0) { 1 } else { 2 };
+                    let data = if matches!(status & 0xf0, 0xc0 | 0xd0) {
+                        1
+                    } else {
+                        2
+                    };
                     let d1 = byte(i)?;
                     let d2 = if data == 2 { byte(i + 1)? } else { 0 };
                     i += data;
@@ -137,21 +153,41 @@ pub fn midi_file(smf: &[u8]) -> Result<Vec<Message>, String> {
     };
     // Offs before ons at one tick, otherwise file order.
     raw.sort_by_key(|&(tick, order, m)| (tick, m[0] & 0xf0 == 0x90 && m[2] > 0, order));
-    Ok(raw.into_iter().map(|(tick, _, m)| (seconds(tick), m)).collect())
+    Ok(raw
+        .into_iter()
+        .map(|(tick, _, m)| (seconds(tick), m))
+        .collect())
 }
 
 /// `notes` as note-on and note-off messages.
 pub fn note_messages(notes: &[Note]) -> Vec<Message> {
     let mut m: Vec<Message> = notes
         .iter()
-        .flat_map(|n| [(n.start, [0x90, n.key, n.velocity]), (n.start + n.length, [0x80, n.key, n.velocity])])
+        .flat_map(|n| {
+            [
+                (n.start, [0x90, n.key, n.velocity]),
+                (n.start + n.length, [0x80, n.key, n.velocity]),
+            ]
+        })
         .collect();
-    m.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90))));
+    m.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90)))
+    });
     m
 }
 
-pub fn run(instrument: &Path, output: &Path, messages: &[Message], scripts: bool) -> io::Result<()> {
-    let keys: Vec<u8> = messages.iter().filter(|m| matches!(m.1[0] & 0xf0, 0x80 | 0x90)).map(|m| m.1[1]).collect();
+pub fn run(
+    instrument: &Path,
+    output: &Path,
+    messages: &[Message],
+    scripts: bool,
+) -> io::Result<()> {
+    let keys: Vec<u8> = messages
+        .iter()
+        .filter(|m| matches!(m.1[0] & 0xf0, 0x80 | 0x90))
+        .map(|m| m.1[1])
+        .collect();
     let options = sampler_kontakt::Options {
         keys: keys.iter().copied().min().unwrap_or(0)..=keys.iter().copied().max().unwrap_or(127),
         scripts,
@@ -166,7 +202,11 @@ pub fn run(instrument: &Path, output: &Path, messages: &[Message], scripts: bool
     render(loaded, output, messages)
 }
 
-pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, messages: &[Message]) -> io::Result<()> {
+pub fn render(
+    loaded: sampler_kontakt::Loaded,
+    output: &Path,
+    messages: &[Message],
+) -> io::Result<()> {
     let ir = &loaded.instrument;
     eprintln!(
         "{:?}: {} groups, {} zones, {} envelopes, {} scripts, {} unsupported",
@@ -224,7 +264,10 @@ pub fn render(loaded: sampler_kontakt::Loaded, output: &Path, messages: &[Messag
     let mut events: Vec<(usize, u32)> = messages
         .iter()
         .map(|&(at, [status, d1, d2])| {
-            (frame(at), 0x2000_0000 | u32::from(status) << 16 | u32::from(d1) << 8 | u32::from(d2))
+            (
+                frame(at),
+                0x2000_0000 | u32::from(status) << 16 | u32::from(d1) << 8 | u32::from(d2),
+            )
         })
         .collect();
     events.sort_by_key(|&(at, _)| at);
