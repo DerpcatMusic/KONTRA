@@ -1,19 +1,28 @@
 use std::io::Cursor;
 
 use crate::{
-    kontakt::{error::KontaktError, Chunk},
-    read_bytes::ReadBytesExt,
     Error,
+    kontakt::{Chunk, error::KontaktError},
+    read_bytes::ReadBytesExt,
 };
 
 const CHUNK_ID: u16 = 0x2b;
 
-#[derive(Debug)]
-pub struct VoiceGroup;
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceGroup(pub super::VoiceLimit);
 
 impl VoiceGroup {
-    pub fn read<R: ReadBytesExt>(mut _reader: R) -> Result<Self, Error> {
-        Ok(Self)
+    pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
+        if reader.read_u8()? != 0 {
+            return Err(Error::Static("Unsupported structured voice limit"));
+        }
+        let version = reader.read_u16_le()?;
+        if version != 0x60 {
+            return Err(Error::Generic(format!(
+                "Unsupported voice limit version 0x{version:x}"
+            )));
+        }
+        Ok(Self(super::VoiceLimit::read(reader)?))
     }
 }
 
