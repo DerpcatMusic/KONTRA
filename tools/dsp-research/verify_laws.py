@@ -45,8 +45,11 @@ def helper(cpu, address, size, unused):
         angle=xmm(cpu,UC_X86_REG_XMM0)
         row['angle']=angle
         cpu.reg_write(UC_X86_REG_XMM0,int.from_bytes(struct.pack('<ff',math.sin(angle),math.cos(angle)),'little'))
+    if name == 'eq_samples':
+        row['offset']=cpu.reg_read(UC_X86_REG_R8);row['frames']=cpu.reg_read(UC_X86_REG_R9)
     if name == 'eq_coefficients':
         row['values'] = [xmm(cpu, reg) for reg in [UC_X86_REG_XMM1, UC_X86_REG_XMM2, UC_X86_REG_XMM3]]
+        row['flags'] = cpu.mem_read(cpu.reg_read(UC_X86_REG_RSP)+0x28,1)[0]
     if name in ('memcpy', 'memset'):
         dest, source, length = [cpu.reg_read(reg) for reg in [UC_X86_REG_RCX, UC_X86_REG_RDX, UC_X86_REG_R8]]
         assert length<=0x40000
@@ -392,6 +395,85 @@ def solid_splines():
     return rows
 
 
+def eq_update_masks():
+    rows=[];saved=EXTRA.pop(0x1409591c0)
+    for incoming in [(-.5,1.5,-2.0),(.75,.25,.5),(.5,.5,0.0)]:
+        for mask in range(8):
+            clear();put(8,'f',48000)
+            call(0x1409591c0,[],[(1,.25),(2,.5),(3,.25)],(7,'B'))
+            before=[get(o,'f') for o in [0x138,0x128,0x12c,0x130,0x134]]
+            call(0x1409591c0,[],[(i+1,v) for i,v in enumerate(incoming)],(mask,'B'))
+            params=[get(o,'f') for o in [0x1c,0x20,0x24]]
+            expected=[f32(min(1,max(-1 if i==2 else 0,v))) if mask&(1<<i) else old for i,(v,old) in enumerate(zip(incoming,[.25,.5,.25]))]
+            assert params==expected,(mask,incoming,params,expected)
+            coefficients=[get(o,'f') for o in [0x138,0x128,0x12c,0x130,0x134]]
+            if not mask:assert coefficients==before
+            clear();put(8,'f',48000);call(0x1409591c0,[],[(i+1,v) for i,v in enumerate(params)],(7,'B'))
+            assert coefficients==[get(o,'f') for o in [0x138,0x128,0x12c,0x130,0x134]]
+            rows.append({'incoming':incoming,'mask':mask,'stored':params,'coefficients':coefficients})
+    EXTRA[0x1409591c0]=saved
+    return rows
+
+
+def eq_control_cadence():
+    rows=[];EXTRA[r.STOP+0x400]='eq_samples'
+    k=struct.unpack('<f',r.PE.get_data(0x1447148b4-r.BASE,4))[0]
+    for blocks in [[0],[1],[31],[32],[33],[65],[32,1],[1,31,1],[0,5,0,27,65]]:
+        clear();put(0,'Q',INPUT+0x20000);put(0x108,'Q',r.STOP+0x400,INPUT+0x20000)
+        for o,v in [(0x1d4,.5),(0x1dc,.1),(0x1d8,.5),(0x1e0,.1),(0x1e4,.5),(0x1e8,.5)]:put(o,'f',v)
+        put(0x1bc,'i',32);countdown=32;frequency=f32(.1);gain=f32(.1);observations=[]
+        for frames in blocks:
+            put(0x120,'i',frames);call(0x140904770,[CTX]);events=CALLS.copy();expected=[];remaining=frames;position=0
+            while remaining>0:
+                n=min(remaining,countdown)
+                if n:expected.append({'helper':'eq_samples','offset':position,'frames':n});position+=n
+                remaining-=n;countdown-=n
+                if countdown<1 and remaining>0:countdown=32
+                frequency=f32(f32(f32(f32(.5)-frequency)*k)+frequency);gain=f32(f32(f32(f32(.5)-gain)*k)+gain)
+                expected.append({'helper':'eq_coefficients','values':[frequency,0.0,gain],'flags':5})
+            assert events==expected and get(0x1bc,'i')==countdown,(blocks,frames,k,events,expected,get(0x1bc,'i'),countdown)
+            assert get(0x1dc,'f')==frequency and get(0x1e0,'f')==gain
+            observations.append({'frames':frames,'events':events,'countdown':countdown,'frequency':frequency,'gain':gain})
+        rows.append({'blocks':blocks,'smoothing_coefficient':k,'observations':observations})
+    del EXTRA[r.STOP+0x400]
+    return rows
+
+
+def eq_sample_kernel():
+    rows=[];dispatch=0x14a5ed92c;original=bytes(CPU.mem_read(dispatch,1));CPU.mem_write(dispatch,b'\0')
+    for gain in [-.5,.5]:
+        for channels in [1,2]:
+            for frames in [0,1,3,4,5,32,33,129]:
+                clear();put(0x1d0,'f',48000)
+                call(0x1409591c0,[],[(1,.5),(2,.5),(3,gain)],(7,'B'),OBJ+0x1c8)
+                coefficients=[get(o,'f') for o in [0x300,0x2f0,0x2f4,0x2f8,0x2fc]]
+                b0,b1,b2,a1,a2=coefficients;put(0x1ec,'f',gain);put(0x124,'i',channels)
+                histories=[];outputs=[]
+                for channel in range(channels):
+                    samples=[f32((i%11-5)*.03125) for i in range(frames)]
+                    src=INPUT+channel*0x4000;dst=INPUT+0x10000+channel*0x4000
+                    put(0x20+channel*8,'Q',src);put(0xa0+channel*8,'Q',dst)
+                    CPU.mem_write(src,struct.pack('<'+'f'*frames,*samples));CPU.mem_write(dst,b'\x55'*(4*(frames+1)))
+                    history=[f32(.125),f32(-.25),f32(.375),f32(-.5)]
+                    for i,v in enumerate(history):put(0x1f0+channel*16+i*4,'f',v)
+                    expected=[];x1,x2,y1,y2=history
+                    for v in samples:
+                        y=f32(f32(f32(f32(f32(y1*a1)+f32(y2*a2))+f32(x2*b2))+f32(v*b0))+f32(x1*b1))
+                        expected.append(y);x1,x2,y1,y2=v,x1,y,y1
+                    histories.append([x1,x2,y1,y2]);outputs.append(expected)
+                call(0x140aeada0,[CTX,0,frames],fifth=(1,'B'))
+                for channel in range(channels):
+                    dst=INPUT+0x10000+channel*0x4000
+                    actual=struct.unpack('<'+'f'*frames,CPU.mem_read(dst,frames*4));assert actual==tuple(outputs[channel]),(gain,channels,frames,channel,actual,outputs[channel])
+                    assert [get(0x1f0+channel*16+i*4,'f') for i in range(4)]==histories[channel]
+                    assert bytes(CPU.mem_read(dst+frames*4,4))==b'\x55'*4
+                call(0x14094a790)
+                assert bytes(CPU.mem_read(OBJ+0x1f0,16*16))==bytes(16*16)
+                rows.append({'gain':gain,'channels':channels,'frames':frames,'coefficients':coefficients,'samples':outputs,'final_histories':histories,'reset_checked':True,'vector_dispatch_disabled':True})
+    CPU.mem_write(dispatch,original)
+    return rows
+
+
 def external_modulator_queue():
     rows=[]
     for events in [[],[(0,-1.0)],[(0,-1.0),(2,.5),(5,1.0),(8,-.25)],[(12,.75)],[(0,.5),(0,-.5),(2,0.0)]]:
@@ -472,6 +554,6 @@ if __name__=='__main__':
             'mxcsr':'0x1f80','helper_substitutions':EXTRA,
             'ahdsr_controls':ahdsr_controls(),'ahdsr_kernel':ahdsr_kernel(),
             'galois_parameters':galois_parameters(),'eq_saved_conversion':eq_saved_conversion(),
-            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing(),'ahdsr_lifecycle':ahdsr_lifecycle(),'external_modulator_queue':external_modulator_queue()}
+            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing(),'ahdsr_lifecycle':ahdsr_lifecycle(),'external_modulator_queue':external_modulator_queue(),'eq_sample_kernel':eq_sample_kernel(),'eq_control_cadence':eq_control_cadence(),'eq_update_masks':eq_update_masks()}
     Path(sys.argv[2]).write_text(json.dumps(result,indent=2)+'\n')
     print({k:len(v) for k,v in result.items() if isinstance(v,list)})

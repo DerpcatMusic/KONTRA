@@ -21,7 +21,7 @@ Run `python tools/dsp-research/verify_laws.py ARTIFACT_ROOT OUTPUT_JSON`.
 Already-installed Unicorn and pefile map the hash-checked original image;
 each call has a two-second/two-million-instruction bound. No host launches,
 activation changes, library dumps, decoded presets or samples are involved.
-[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,157 result records,
+[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,222 result records,
 including 480 individual spline evaluations in 24 table records.
 
 Every arithmetic operation marked F rounds to IEEE binary32, ties to even.
@@ -53,6 +53,10 @@ parser interpretation rather than host execution proof. Snapshot/script
 changes after parsing are not represented. Signed modulation depth predates
 the FX/mod agent's correction; reconcile with `v2/gpt-format-fxmod` before
 using route signs. Parse/IR errors must be reported with the census denominator.
+
+Saved Filter subtype IDs 22,23,24 name legacy one-, two-, three-band EQ.
+These are distinct from the internal Ladder selector indices 22..33 in the
+reference byte checks; numeric equality does not identify the same module.
 
 ## AHDSR timing, attack curve and control kernel
 
@@ -134,9 +138,11 @@ counter cases establish state transitions, not the host's audio tail metadata.
 ## Legacy parametric EQ
 
 **Verified:** saved conversion `0x1409590a0` (160 cases) and peaking
-coefficient generator `0x1409591c0`, selector byte 7 (225 cases).
-**Open:** other selector modes, processing recurrence/history, coefficient
-smoothing/cadence, reset, host latency and tail. This is not Solid or Pro EQ.
+coefficient generator `0x1409591c0`, update mask 7 (225 cases);
+all eight partial-update masks (24 cases); one-band scalar sample kernel and
+local reset (32 cases); one-band wrapper control cadence (9 sequences).
+**Open:** optimized SIMD kernel, multi-band sample/control paths, modulation
+buffer cadence, initial dirty-state handling, full reset, host latency and tail. This is not Solid or Pro EQ.
 
 The normalized frequency conversion uses a float-bit logarithm approximation.
 Define u = clamp(F(F(hz − 20) × F(0.000050050050049321726)),0,1),
@@ -171,6 +177,65 @@ At Fs = 48,000, w = .5, g = .5:
 Saved 1,000 Hz / 1 octave / +6 dB converts to
 `.516291081905365, .2499999850988388, .3333333730697632`.
 All exact float values and Fs = 8,000/48,000/192,000 cases are in the vectors.
+
+
+### Parameter update masks
+
+The coefficient generator's fifth byte is a bit mask, not a filter-mode enum.
+Bit 1 updates normalized frequency, bit 2 width and bit 4 gain. Parameters
+whose bits are clear retain stored values; inputs in those registers are
+ignored. Frequency and width updates clamp to [0,1], gain to [-1,1]. Mask 0
+leaves the coefficient storage unchanged. All masks 0..7 are byte checked,
+including out-of-range incoming (-.5,1.5,−2). Each result's coefficients equal
+a full-mask evaluation at the resulting retained/updated parameter triplet.
+
+### One-band scalar sample recurrence and local reset
+
+`0x140aeada0` processes planar channels independently. Optimized vector
+dispatch flag `0x14a5ed92c` is forced off in these 32 tests; its fast branch
+is not claimed equivalent. The direct processing call has overwrite mode set,
+non-unity gain state, and frozen coefficients generated as specified above.
+
+Channel history consists of previous input, second-previous input, previous
+output and second-previous output. For stored coefficient order
+(b0,b1,b2,a1,a2), every product and successive addition is F, in this order:
+`((((a1*y1 + a2*y2) + b2*x2) + b0*x0) + b1*x1)`.
+The resulting y replaces y1, y1 moves to y2, x0 replaces x1 and x1 moves to x2.
+The overwrite output adds a +0 scratch value. Four-sample unrolling retains
+this dependency and arithmetic order. This differs in rounding from a
+conventional accumulator starting with b0*x0.
+
+The checks use Fs=48,000, frequency=.5, width=.5, gain=−.5 or +.5,
+one/two channels, lengths 0,1,3,4,5,32,33,129 and nonzero initial history
+[.125,−.25,.375,−.5]. Exact samples and final histories are in the vectors.
+The local reset `0x14094a790` clears all sixteen channel histories (256 bytes)
+and snaps current cutoff/gain controls to target. The base-reset call is
+stubbed. The scalar recurrence has a same-tick input contribution; this does
+not establish host latency compensation or a complete tail termination rule.
+
+### One-band wrapper smoothing with frozen targets
+
+Wrapper `0x140904770` (thunk to `0x140918420`) is checked with target cutoff
+and gain .5, current values .1, countdown initially 32, no modulation pointers,
+and initial dirty flag clear. Sample processing and coefficient generation
+are stubbed, preserving their argument traces. Behavior near convergence
+thresholds and initial dirty-state conversion remains open.
+
+Both cutoff and gain advance by
+`F(current + F(F(target−current) × F(.01)))` after each processed chunk,
+including a partial chunk at the end of a call. The actual constant is
+`.009999999776482582`. Processing consumes min(remaining,countdown); the
+countdown is restored to 32 when it expires while frames remain. An expired
+countdown inherited by a new nonempty call causes a coefficient/smoothing
+update before that call processes samples. Empty calls do not update.
+
+Consequently smoothing in this checked path depends on block partition.
+A single 33-frame call processes 32, updates, processes 1, updates: both
+current values finish `.10796000063419342`, countdown 31. Calls [32,1]
+add a boundary update before the second call and finish
+`.11188039928674698`, also countdown 31. Coefficient calls carry mask 5,
+so the zero width-register payload is ignored and retained width is preserved.
+The nine tested block sequences are in `eq_control_cadence` in the vectors.
 
 ## Stereo Modeller
 
