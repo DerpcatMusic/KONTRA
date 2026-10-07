@@ -124,6 +124,12 @@ pub struct RuntimeProblems {
     /// resident (cold starts off) or the pool could not admit them.
     #[serde(default)]
     pub refused_starts: u64,
+    /// Note-ons that rendered nothing for a quarter second, and the key of the
+    /// last one ([`LoadReport::why_silent`] explains it).
+    #[serde(default)]
+    pub silent_notes: u64,
+    #[serde(default)]
+    pub silent_key: u8,
 }
 
 /// A part's load report.
@@ -135,6 +141,13 @@ pub struct LoadReport {
     pub missing: Vec<Missing>,
     /// Refreshed by the shell from [`super::Core::problems`].
     pub runtime: RuntimeProblems,
+    /// Why the last silent note was silent, one sentence
+    /// ([`sampler_core::why_silent`]); set by a diagnostic replay of that key.
+    #[serde(default)]
+    pub why_silent: Option<String>,
+    /// Script faults seen in that replay, each with its callback.
+    #[serde(default)]
+    pub faults: Vec<String>,
 }
 
 impl From<&sampler_ir::Unsupported> for Missing {
@@ -182,7 +195,15 @@ impl LoadReport {
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
+            why_silent: None,
+            faults: Vec::new(),
         }
+    }
+
+    /// The missing features grouped by cause and ranked by count, most first
+    /// (the same ranking the corpus scoreboard uses).
+    pub fn ranked_missing(&self) -> Vec<(String, usize)> {
+        sampler_ir::rank_features(self.missing.iter().map(|m| m.feature.as_str()))
     }
 
     /// One line per entry, for the log file.
