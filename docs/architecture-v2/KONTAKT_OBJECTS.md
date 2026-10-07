@@ -106,7 +106,7 @@ actual parse results are recorded in the measurement table.
 | S+13 | bool | reverse | Reverse the selected source view |
 | S+14 | bool | release_trigger | Select at real note/gate release under pedal/script policy |
 | S+15 | bool | release_trigger_note_monophonic | Cut same-note release voices on retrigger |
-| S+16 | i32 | rls_trig_counter | Release age/decay counter; exact gain law unresolved |
+| S+16 | i32 | rls_trig_counter | T in milliseconds for release-counter modulation source |
 | S+20 | i16 | midi_channel | Native group MIDI channel filter; sentinel retained |
 | S+22 | i32 | voice_group_index | 1-based voice-limit assignment, zero unassigned |
 | S+26 | i32 | fx_idx_amp_split_point | Voice insert ordering before/after amplifier |
@@ -148,7 +148,7 @@ A zero flag still has a source record; it is not an absence marker.
 | R+8 / +9 | u8 / i32 | reserved3, reserved4 | Retained, semantics unresolved |
 | remainder | bytes | unknown_tail | Retained verbatim in memory |
 
-Known public sizes are 80 bytes at v0x95, 76 at v0x96..0x99, and 82 at v0x9a,
+Known public sizes are 80 bytes at v0x95, 76 at v0x96..0x99, and 82 at v0x9a/9c,
 before extension bytes. The six-byte prefix changes sample-reference offsets;
 it is not safe to keep reading the file ID at 42 for v0x9a.
 
@@ -246,8 +246,10 @@ Native writer/reader inspection establishes the serialized/internal mapping:
 
 The internal/serialized permutation is verified directly; the names other
 than Wavetable still need a controlled saved-mode/native-query cross-check.
-The official API's source names are not evidence that its table order equals
-either integer namespace. Modern source common fields are:
+The [official Group API](https://docs.native-instruments.com/ni-tech-manuals/kontakt-api-reference-manual/en/group)
+returns playback-mode names and up to four start-condition tables. Its
+source names are not evidence that table order equals either integer
+namespace, and its named operators do not establish saved operator IDs. Modern source common fields are:
 
 | Record offset | Type | Decoder field | Meaning confidence |
 |---:|---|---|---|
@@ -291,6 +293,24 @@ belong to oscillator scanning and shaping; phase randomness applies per
 trigger. DFD parameters concern source streaming policy, not articulation
 selection or sample start. `SourceField` retains byte offset, name and exact
 Float/Integer/Flag value; do not normalize unassigned fields in KSP getters.
+
+The group `rls_trig_counter` is the release-counter duration T in milliseconds.
+Kontakt's [Source module manual](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/classic-view)
+confirms a countdown begun at note-on and stopped at the corresponding
+note-off, exposed for modulation. The same manual describes release
+monophony as cutting previous sounding release samples on repeated notes;
+owner/channel/pedal boundaries still require native comparison.
+The existing v1 importer and v2 modulation lowerer use
+`clamp(1 - held_ms / T, 0, 1)` for T > 0, with the value held at note-off;
+v1 treats T <= 0 as disabled. This is a modulation source, so the saved routing
+and shaper determine whether it changes gain, pitch or sample start. The
+counter alone does not impose a gain envelope or add a sample offset. The v1
+Pacific regression routes it to sample start, illustrating why release voices
+need the original held duration. Native pedal/reset arbitration for
+`reset_rls_trig_counter` remains a separate verification gap. Implementations:
+`crates/sampler-kontakt/src/library.rs` (ReleaseTriggerCounter lowering),
+`crates/sampler-core/src/voice_mod.rs` (ReleaseCounter evaluation), and the
+read-only v1 `src/engine/params.rs` (release_counter regression).
 
 ## IR retention and remaining semantic gaps
 
@@ -340,7 +360,13 @@ the persistence reader and does not acquire invented full-group fields.
 A file may contain several programs and object versions; sum-of-version file
 counts is not a corpus total. Version 0x9c contributes 52 files and 104,760
 full-zone records from 0x34 lists. It is not compact snapshot state, and its
-library membership cannot be inferred from the file count. Files with loop
+library membership cannot be inferred from the file count. Inspection of the
+baseline per-field rows confirms nonbaseline sample starts in 51 of these 52
+files, sample-start modulation ranges in all 52, velocity fade-low in 51,
+zone pan in 51 and zone volume in 51. Every common field has 104,760 visited
+records. These are the baseline census's comparisons, not the neutral
+comparisons of this family's survey; they establish meaningful populated
+full-zone state rather than empty or snapshot-only instruments. Files with loop
 arrays can contain empty masks, so array-presence and occupied-loop record
 counts differ.
 
@@ -376,3 +402,25 @@ Borrowed `Group::parse` now admits both observed group versions (0x95/96),
 and `Zone::parse` admits observed 0x98/99/9a/9c plus the independently authored
 0x95 layout. Their bounded metadata/extension spans stay unchanged. Unknown
 versions still return an explicit unsupported-version error.
+
+## Executed checks and reference boundary
+
+On this branch, the Kontakt objects/mapping/containers/source checks passed
+13 tests; ni-file library checks passed 20 tests (55 fixture-dependent tests
+ignored). `cargo test --locked --no-run` passed for sampler-kontakt, sampler-ir,
+sampler-core, sampler-ksp and sampler-native. The Una Corda render retained
+113 authored groups and 4,402 authored zones while rendering 53 active zones,
+with peak 0.7194749. Conflux also passed its tracked-zone/pitch-range render check;
+all three render tests passed in 188.22 seconds. Vista measured maximum channel peak -37.664 dBFS against
+the existing -38.6 dBFS reference and passed its one-decibel bound. These are
+regression checks of the existing playback path, not proof that diagnostic
+fields have been wired into playback.
+
+The reference branch's `probe/vista_3cellos.md` identifies repeated key-36
+sample starts varying between 0 and 722 frames while the captured v2 starts
+remain 0. `probe/areia_vln_sus.md` identifies dynamic-layer disagreement and
+v2 starts around 90,601/90,742 frames on some repetitions. This motivates
+preserving sample-start modulation ranges and original group/start selection
+state; the reports do not establish that changing an individual serialized
+field fixes those scripts. Re-run those probes after KSP/core owners consume
+the authored values and reproduce each instrument's saved script state.
