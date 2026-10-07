@@ -4,6 +4,7 @@ CAL=/mnt/MAIN_STORAGE/kontra_ref_src/calibration.nki
 say() { echo "$@" | tee -a "$OUT"; }
 wine_pids() { pgrep -x "wineserver|services.exe|winedevice.exe|explorer.exe|plugplay.exe|svchost.exe|rpcss.exe|Kontakt 8.exe|start.exe|Xvfb" | sort; }
 sess_begin() {
+  for _ in $(seq 120); do awk '{exit !($1<6)}' /proc/loadavg && break; sleep 5; done   # up to 10 min for other jobs to leave the machine
   allb=$(wine_pids); before=$(pgrep -x wineserver | sort); wineserver -p; sleep 1
   WS=$(comm -13 <(echo "$before") <(pgrep -x wineserver | sort) | head -1); say "persistent wineserver pid ${WS:-existing}"
   export KONTRA_WS_PID=${WS:-}
