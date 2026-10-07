@@ -9,7 +9,7 @@ use crate::sema::fold;
 use sampler_core::{
     Comparison as Cmp, ControlId, Duration, DurationValue, EnvelopeStage, Inheritance,
     Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op,
-    ParamScope, Program, RealBinary, RealUnary, ScriptArray, TextPart, TextRef, WaitLifetime,
+    ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef, WaitLifetime,
     real_bits,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -1810,6 +1810,29 @@ impl Gen<'_, '_> {
                 self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
                 return self.effect(builtin, args, dst);
             }
+            SetEnginePar if self.slot_param(args).is_some() => {
+                // An effect slot's bypass, output gain or dry level, at runtime
+                // (the slot rack is the plan's; unknown slots are ignored).
+                let kind = self.slot_param(args).unwrap();
+                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
+                self.arg(args, 2, group)?;
+                self.arg(args, 3, slot)?;
+                self.arg(args, 4, generic)?;
+                self.arg(args, 1, value)?;
+                if kind != SlotKind::Bypass {
+                    self.effect_gain(value)?;
+                }
+                self.emit(I::WriteSlot {
+                    kind,
+                    group,
+                    slot,
+                    generic,
+                    local: value,
+                })?;
+                self.set(dst, 0)?;
+                self.cover(builtin, Coverage::Approximate);
+                return Ok(());
+            }
             SetEnginePar if self.envelope_param(args).is_some() => {
                 // The group's volume envelope when the slot is find_mod's
                 // "ENV_AHDSR"; any other modulator goes to the host as before.
@@ -2127,6 +2150,45 @@ impl Gen<'_, '_> {
             "ENGINE_PAR_ATK_CURVE" => Some(EnvelopeStage::AttackCurve),
             _ => None,
         }
+    }
+
+    /// Effect slot parameters a script sets at runtime.
+    fn slot_param(&self, args: &[Arg]) -> Option<SlotKind> {
+        let name = crate::eval::symbol_name(self.u.hir, self.const_int(args, 0)?)?;
+        match name.trim_start_matches('$') {
+            "ENGINE_PAR_EFFECT_BYPASS" | "ENGINE_PAR_SEND_EFFECT_BYPASS" => Some(SlotKind::Bypass),
+            "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+                Some(SlotKind::Output)
+            }
+            "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => Some(SlotKind::Dry),
+            _ => None,
+        }
+    }
+
+    /// Effect level engine units (0..=1000000) to linear gain real bits in
+    /// place: (v / 396851)^3, the law `sampler-kontakt` fitted to stored slots.
+    fn effect_gain(&mut self, local: u16) -> Result<()> {
+        self.clamp(local, 0, 1_000_000)?;
+        let t = reg(local, 1)?;
+        self.emit(I::Op(Op::IntegerToReal { local }))?;
+        let real = |s: &mut Self, value: f64, operation| -> Result<()> {
+            s.set(t, real_bits(value))?;
+            s.emit(I::Op(Op::Real {
+                lhs: local,
+                rhs: t,
+                operation,
+            }))
+        };
+        real(self, 1.0 / 396_851.0, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Ln,
+        }))?;
+        real(self, 3.0, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Exp,
+        }))
     }
 
     /// Sustain engine units (0..=1000000, shown in dB with 1000000 at 0 dB) to
