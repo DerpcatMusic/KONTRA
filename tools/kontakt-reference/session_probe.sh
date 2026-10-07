@@ -14,4 +14,8 @@ for id in $IDS; do
   "$here/record.sh" "$P/scen.mid" "$P/kontakt.wav" 3 >/dev/null 2>"$W/log/rec_err.txt" && say "$id: recorded $(grep -E 'capture_actual|load1' "$P/kontakt.wav.log" | tr '\n' ' ')" || say "$id: RECORD FAILED: $(tail -1 "$W/log/rec_err.txt")"
   "$here/kontakt.sh" stop; sleep 3
 done
+if [ -n "${SHOT_NKI:-}" ]; then  # GUI-only look (no MIDI, no recording): screenshot the performance view and grep Kontakt's log
+  KONTAKT_NOAUDIO=1 KONTAKT_NO_VIEW_FIX=1 "$here/kontakt.sh" start "$SHOT_NKI" && { sleep 5; import -window root "$W/log/shot_${SHOT_NAME:-gui}.png"; grep -iE 'articulation_list|missing|resource|cannot|not found' "$W/log/kontakt.log" | head -20 >"$W/log/shot_${SHOT_NAME:-gui}.txt"; say "shot ${SHOT_NAME:-gui}: $W/log/shot_${SHOT_NAME:-gui}.png"; }
+  "$here/kontakt.sh" stop; sleep 3
+fi
 sess_end
