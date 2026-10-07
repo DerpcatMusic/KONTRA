@@ -463,6 +463,49 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
 
 
 #[test]
+fn one_pole_filters_follow_the_6_db_per_octave_law() {
+    // 3 kHz sine through a 500 Hz one-pole: |H| = 1 / sqrt(1 + (tan(pi f / fs) / tan(pi fc / fs))^2).
+    let energy = |kind: Option<ir::FilterKind>| {
+        let mut ir = instrument();
+        if let Some(kind) = kind {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                    kind,
+                    cutoff: ir::Frequency::Hertz(500.0),
+                    resonance: ir::Resonance::Decibels(0.0),
+                })],
+                post_amplitude: vec![],
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let wave = (0..4800)
+            .map(|i| [(std::f32::consts::TAU * 3000.0 * i as f32 / 48000.0).sin() * 0.5; 2])
+            .collect::<Vec<_>>();
+        let pcm = vec![
+            Pcm::new(48000, wave.into_boxed_slice()).unwrap(),
+            constant(0.2),
+            constant(0.3),
+            constant(0.05),
+        ];
+        let plan = lower(&ir, 48000, pcm, no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0f32; 2]; 1024];
+        rt.trigger(input(60), 60, 0.3).unwrap();
+        rt.render(&mut out).unwrap();
+        out[512..].iter().map(|f| f[0] * f[0]).sum::<f32>()
+    };
+    let plain = energy(None);
+    let ratio = (std::f64::consts::PI * 3000.0 / 48000.0).tan() / (std::f64::consts::PI * 500.0 / 48000.0).tan();
+    let low = f64::from(energy(Some(ir::FilterKind::LowPass { poles: 1 })) / plain);
+    let high = f64::from(energy(Some(ir::FilterKind::HighPass { poles: 1 })) / plain);
+    // Power gains: 1 / (1 + r^2) and r^2 / (1 + r^2).
+    let want = 1.0 / (1.0 + ratio * ratio);
+    assert!((low - want).abs() < want * 0.03, "low {low}, want {want}");
+    assert!((high - (1.0 - want)).abs() < 0.02, "high {high}, want {}", 1.0 - want);
+}
+
+#[test]
 fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     let zone = |group| ir::Zone {
         keys: ir::KeyRange { low: 0, high: 127 },

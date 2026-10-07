@@ -10,6 +10,10 @@ pub enum SvfMode {
     BandPass,
     Notch,
     AllPass,
+    /// 6 dB/octave, 1 / (1 + s/w). Runs on the SVF recurrence with `a1 = a2 = 0`
+    /// (the band state stays zero) and `a3` the one-pole gain; Q is unused.
+    OnePoleLowPass,
+    OnePoleHighPass,
 }
 
 /// Stereo trapezoidal state-variable filter. Smoothing occurs in hertz and Q,
@@ -36,7 +40,8 @@ impl StateVariableFilter {
                 if rate == 0 || hz <= 0. || hz >= f64::from(rate) * 0.5 || q <= 0. {
                     return Err(Error::InvalidInput);
                 }
-                let coefficients = Coefficients::new(f64::from(rate), hz, q);
+                let coefficients = Coefficients::new(self.mode, f64::from(rate), hz, q);
+                let one = self.mode.one_pole();
                 if ![
                     coefficients.a1,
                     coefficients.a2,
@@ -44,7 +49,7 @@ impl StateVariableFilter {
                     coefficients.k,
                 ]
                 .iter()
-                .all(|v| v.is_finite() && *v > 0.)
+                .all(|v| v.is_finite() && (*v > 0. || (one && *v == 0.)))
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -81,8 +86,16 @@ pub(super) struct Coefficients {
     pub k: f64,
 }
 impl Coefficients {
-    fn new(rate: f64, hz: f64, q: f64) -> Self {
+    fn new(mode: SvfMode, rate: f64, hz: f64, q: f64) -> Self {
         let g = (std::f64::consts::PI * (hz / rate)).tan();
+        if mode.one_pole() {
+            return Self {
+                a1: 0.,
+                a2: 0.,
+                a3: g / (1. + g),
+                k: 0.,
+            };
+        }
         let k = 1. / q;
         let a1 = 1. / (1. + g * (g + k));
         let a2 = g * a1;
@@ -150,7 +163,7 @@ impl FilterCache {
                 self.filter.q.value(parameters, frame, expression),
             ];
             if self.last_values != Some(values) {
-                self.last = Coefficients::new(self.filter.rate, values[0], values[1]);
+                self.last = Coefficients::new(self.filter.mode, self.filter.rate, values[0], values[1]);
                 self.last_values = Some(values);
             }
             self.uniform &= self.filled == 0 || self.last == self.coefficients[0];
@@ -219,7 +232,13 @@ impl SvfMode {
             Self::BandPass => [0., 1., 0.],
             Self::Notch => [1., -1., 0.],
             Self::AllPass => [1., -2., 0.],
+            Self::OnePoleLowPass => [0., 0., 1.],
+            Self::OnePoleHighPass => [1., 0., -1.],
         }
+    }
+
+    fn one_pole(self) -> bool {
+        matches!(self, Self::OnePoleLowPass | Self::OnePoleHighPass)
     }
 }
 
@@ -361,7 +380,7 @@ impl FilterContext<'_> {
             let hz = (filter.cutoff.value(parameters, middle, expression) * cutoff)
                 .clamp(20.0, 20_000.0_f64.min(filter.rate * 0.49));
             let q = (filter.q.value(parameters, middle, expression) * q).max(0.025);
-            let c = Coefficients::new(filter.rate, hz, q);
+            let c = Coefficients::new(filter.mode, filter.rate, hz, q);
             run(state, block, len, filter.mode.mix(), |_| c);
             return;
         }
