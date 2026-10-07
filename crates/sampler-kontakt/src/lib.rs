@@ -27,7 +27,7 @@ pub use container::{Multi, read_chunks, read_multi};
 pub use library::{Kontakt, read, read_program, read_with_snapshot};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
-    ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
+    ArticulationMigration, Loaded, Options, Progress, articulation_migration, compile_ui, finish, load,
     load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
