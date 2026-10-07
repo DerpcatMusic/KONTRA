@@ -38,3 +38,7 @@ All numbers are gains relative to the sample file, bare noise instrument, per ch
 ## Not automated (manual, logged)
 
 The volume of Output channels and instrument buses is not read; the calibration gain covers them. The instrument Velocity-to-Volume amount, group volumes and zone volumes are instrument content, not setup; read them from the Group and Mapping Editors and put them in the report (see section 19 for Una Cotton).
+
+## Host load
+
+Kontakt under Wine drops or underruns voices when the host is busy (observed at load average 11-18: silent notes, wrong sustain). `record.sh` refuses to send MIDI while the 1-minute load average is >= 4 (`KONTRA_MAX_LOAD`), and logs `load1_start` and `load1_end` in each recording's `.log`. Recordings made above that load are invalid. Never use `wineserver -k` on ~/.wine (shared with other sessions); kill only the PIDs you started.
