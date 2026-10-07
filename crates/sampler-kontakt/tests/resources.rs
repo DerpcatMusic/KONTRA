@@ -86,6 +86,18 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         Some(b"loose override".as_slice())
     );
 
+    let neighbor = root.join("Kontakt/Other/other.nicnt");
+    std::fs::create_dir_all(neighbor.parent().unwrap()).unwrap();
+    std::fs::write(&neighbor, &nicnt).unwrap();
+    let unrelated = root.join("Kontakt/Own/Instruments/Piano.nki");
+    std::fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+    assert!(
+        sampler_kontakt::Resources::of(&unrelated)
+            .read("resources/pictures/wallpaper.png")
+            .is_none(),
+        "a sibling library must not supply another instrument's missing picture"
+    );
+
     // Invalid markers, exaggerated counts/ranges and truncated bodies are errors.
     for at in [0, 272, 632 + 904, 1544] {
         let mut corrupt = container.clone();
