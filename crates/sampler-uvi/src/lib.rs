@@ -622,13 +622,23 @@ impl Translation {
             }
             let tracking = number(player, "NoteTracking", 1.0)?;
             let root = midi(player, "BaseNote", 60)?;
+            // The runtime tracks the key at 100 cents per key or not at all, so
+            // another scale is tracked normally and detuned by the scale's
+            // difference at the middle of the zone's keys.
+            let mut scaling_tune = 0.0;
             let pitch = match tracking {
                 1.0 => ir::KeyTracking::Tracked { root },
                 0.0 => ir::KeyTracking::Fixed,
-                t => ir::KeyTracking::Scaled {
-                    root,
-                    cents_per_key: (t * 100.0).round() as i32,
-                },
+                t => {
+                    let middle = (f64::from(keys.0) + f64::from(keys.1)) / 2.0;
+                    scaling_tune = (middle - f64::from(root)) * (t - 1.0);
+                    self.unsupported(
+                        &at,
+                        "NoteTracking approximated by a detune at the middle of the zone",
+                        t,
+                    );
+                    ir::KeyTracking::Tracked { root }
+                }
             };
             let player_pan = number(player, "Pan", 0.0)?;
             if player_pan != 0.0 && pan != 0.0 {
@@ -675,7 +685,8 @@ impl Translation {
                     number(player, "CoarseTune", 0.0)?
                         + number(player, "FineTune", 0.0)? / 100.0
                         + number(player, "Pitch", 0.0)?
-                        + modulation.pitch,
+                        + modulation.pitch
+                        + scaling_tune,
                 ),
                 gain: ir::Gain::Linear(gain * number(player, "Gain", 1.0)? * modulation.gain),
                 velocity,
@@ -1441,6 +1452,330 @@ mod survey {
         }
     }
 
+    /// What each program is made of and what the translation drops: `UE`
+    /// lines (element tag, attribute names, one per element) and `UM` lines
+    /// (feature, value). Names only. Shard with `KONTRA_SHARD=i/n`.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "library-access")]
+    fn census_modules() {
+        let (shard, shards): (usize, usize) = std::env::var("KONTRA_SHARD")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once('/')?;
+                Some((a.parse().ok()?, b.parse().ok()?))
+            })
+            .unwrap_or((0, 1));
+        let mut index = 0;
+        // (tag|parent|attrs) -> (elements, programs); (feature|value) -> programs
+        let mut elements: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+        let mut dropped: std::collections::BTreeMap<String, usize> = Default::default();
+        // per library and insert module: (active, bypassed), and per numeric
+        // attribute its (min, max) over the active instances
+        let mut inserts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+        let mut ranges: std::collections::BTreeMap<String, (f64, f64)> = Default::default();
+        let mut files = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e == "ufs") {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        for f in files {
+            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            for program in bank.programs() {
+                index += 1;
+                if index % shards != shard {
+                    continue;
+                }
+                let Ok((text, _)) = bank.program(&program) else { continue };
+                let name = format!("{}::{program}", f.display());
+                let Ok(doc) = crate::parse_program_xml(&text) else { continue };
+                let lib = f.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().replace(' ', "_")).unwrap_or_default();
+                let lib = lib.split("_-_").last().unwrap_or("").to_owned();
+                let mut seen = std::collections::BTreeSet::new();
+                for node in doc.descendants().filter(|n| n.is_element()) {
+                    if node.parent().is_some_and(|p| p.has_tag_name("Inserts")) {
+                        let tag = node.tag_name().name();
+                        let bypassed = node.attribute("Bypass") == Some("1");
+                        let e = inserts.entry(format!("{lib}|{tag}")).or_default();
+                        if bypassed {
+                            e.1 += 1;
+                        } else {
+                            e.0 += 1;
+                            for a in node.attributes() {
+                                if let Ok(v) = a.value().parse::<f64>() {
+                                    let r = ranges.entry(format!("{lib}|{tag}|{}", a.name())).or_insert((v, v));
+                                    r.0 = r.0.min(v);
+                                    r.1 = r.1.max(v);
+                                }
+                            }
+                        }
+                    }
+                }
+                for node in doc.descendants().filter(|n| n.is_element()) {
+                    let mut attrs: Vec<&str> = node.attributes().map(|a| a.name()).collect();
+                    attrs.sort();
+                    let parent = node.parent().map(|p| p.tag_name().name()).unwrap_or("");
+                    let key = format!("{}|{}|{}", node.tag_name().name(), parent, attrs.join(","));
+                    let e = elements.entry(key.clone()).or_default();
+                    e.0 += 1;
+                    if seen.insert(key) {
+                        e.1 += 1;
+                    }
+                }
+                let mut once = std::collections::BTreeSet::new();
+                match crate::translate_bank(&text) {
+                    Ok((ir, _)) => {
+                        for u in &ir.unsupported {
+                            let key = format!("{}|{}", u.feature, u.value.chars().take(60).collect::<String>().replace(' ', "_"));
+                            if once.insert(key.clone()) {
+                                *dropped.entry(key).or_default() += 1;
+                            }
+                        }
+                    }
+                    Err(_) => *dropped.entry("translate-fail|".into()).or_default() += 1,
+                }
+            }
+        }
+        for (k, (n, p)) in &elements {
+            println!("UE {n} {p} {k}");
+        }
+        for (k, p) in &dropped {
+            println!("UM {p} {k}");
+        }
+        for (k, (a, y)) in &inserts {
+            println!("UB {a} {y} {k}");
+        }
+        for (k, (lo, hi)) in &ranges {
+            println!("UR {lo} {hi} {k}");
+        }
+    }
+
+    /// How many programs' scripts (and the modules they require) use each API
+    /// name: `US name programs occurrences` for the names in the file
+    /// `KONTRA_SYMS`, and `UK name programs` for names that are called but
+    /// that no script defines. Names and counts only. Shard like the others.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "library-access")]
+    fn census_symbols() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let wanted: BTreeSet<String> = std::env::var("KONTRA_SYMS")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let mut files = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e == "ufs") {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        let mut used: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut called: BTreeMap<String, usize> = BTreeMap::new();
+        let mut defined_anywhere: BTreeSet<String> = BTreeSet::new();
+        let mut programs = 0;
+        let words = |src: &str| -> Vec<(String, bool, bool)> {
+            // (word, called, defined)
+            let b = src.as_bytes();
+            let mut out = Vec::new();
+            let mut i = 0;
+            let mut prev = String::new();
+            while i < b.len() {
+                if b[i] == b'-' && b.get(i + 1) == Some(&b'-') {
+                    while i < b.len() && b[i] != b'\n' {
+                        i += 1;
+                    }
+                } else if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+                    let st = i;
+                    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                        i += 1;
+                    }
+                    let w = src[st..i].to_owned();
+                    let mut j = i;
+                    while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+                        j += 1;
+                    }
+                    let called = matches!(b.get(j), Some(b'(') | Some(b'{') | Some(b'"') | Some(b'\''));
+                    let assigned = b.get(j) == Some(&b'=') && b.get(j + 1) != Some(&b'=');
+                    let defined = assigned || matches!(prev.as_str(), "function" | "local" | "class");
+                    prev = w.clone();
+                    out.push((w, called, defined));
+                } else {
+                    if !b[i].is_ascii_whitespace() && b[i] != b'.' && b[i] != b':' {
+                        prev.clear();
+                    }
+                    i += 1;
+                }
+            }
+            out
+        };
+        for f in files {
+            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let lua = bank.scripts();
+            for program in bank.programs() {
+                let Ok((text, _)) = bank.program(&program) else { continue };
+                let Ok(doc) = crate::parse_program_xml(&text) else { continue };
+                let mut sources: Vec<String> = doc
+                    .descendants()
+                    .filter(|n| n.has_tag_name("script"))
+                    .filter_map(|n| n.text().map(str::to_owned))
+                    .collect();
+                if sources.is_empty() {
+                    continue;
+                }
+                programs += 1;
+                use crate::script::Files;
+                let mut seen_modules = BTreeSet::new();
+                let mut k = 0;
+                while k < sources.len() {
+                    let src = sources[k].clone();
+                    k += 1;
+                    let mut rest = src.as_str();
+                    while let Some(at) = rest.find("require") {
+                        rest = &rest[at + 7..];
+                        let t = rest.trim_start_matches(|c: char| c == ' ' || c == '(');
+                        if let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                            if let Some(end) = t[1..].find(q) {
+                                let m = &t[1..1 + end];
+                                if seen_modules.insert(m.to_owned()) {
+                                    if let Some(source) = lua.script(m) {
+                                        sources.push(source);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut here: BTreeMap<String, usize> = BTreeMap::new();
+                let mut here_called = BTreeSet::new();
+                for src in &sources {
+                    for (w, c, d) in words(src) {
+                        if d {
+                            defined_anywhere.insert(w.clone());
+                        }
+                        if c {
+                            here_called.insert(w.clone());
+                        }
+                        if wanted.contains(&w) {
+                            *here.entry(w).or_default() += 1;
+                        }
+                    }
+                }
+                for (w, n) in here {
+                    let e = used.entry(w).or_default();
+                    e.0 += 1;
+                    e.1 += n;
+                }
+                for w in here_called {
+                    *called.entry(w).or_default() += 1;
+                }
+            }
+        }
+        println!("UN programs {programs}");
+        for (w, (p, n)) in &used {
+            println!("US {w} {p} {n}");
+        }
+        for (w, p) in &called {
+            if !defined_anywhere.contains(w) {
+                println!("UK {w} {p}");
+            }
+        }
+    }
+
+    /// What the corpus scripts use that the host leaves inert, and whether their
+    /// widgets export: prints `UA` lines (feature, first value; counts only) and
+    /// one `UI` line per program. Shard with `KONTRA_SHARD=i/n`.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "library-access")]
+    fn census_script_api() {
+        let (shard, shards): (usize, usize) = std::env::var("KONTRA_SHARD")
+            .ok()
+            .and_then(|v| {
+                let (a, b) = v.split_once('/')?;
+                Some((a.parse().ok()?, b.parse().ok()?))
+            })
+            .unwrap_or((0, 1));
+        let mut index = 0;
+        let mut files = Vec::new();
+        let mut stack = vec![std::path::PathBuf::from(std::env::var("KONTRA_UVI_LIBRARIES").unwrap())];
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e == "ufs") {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        for f in files {
+            let Ok(bank) = crate::Bank::open(&f) else { continue };
+            let scripts = bank.scripts();
+            for program in bank.programs() {
+                index += 1;
+                if index % shards != shard {
+                    continue;
+                }
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
+                    continue;
+                }
+                let Ok((text, _)) = bank.program(&program) else { continue };
+                let name = format!("{}::{program}", f.display());
+                let mut host = match crate::script::ScriptHost::new(&text, scripts.clone(), crate::script::Config::default()) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        println!("UL compile-fail {} {name}", e.chars().take(90).collect::<String>().replace(' ', "_"));
+                        continue;
+                    }
+                };
+                host.note_on(1, 60, 100, 0);
+                host.advance(1000.0);
+                host.note_off(1, 60, 64, 0);
+                host.advance(2000.0);
+                for f in host.findings() {
+                    println!("UA {}|{}|{}", f.feature, f.value.chars().take(200).collect::<String>().replace(' ', "_"), name);
+                }
+                if let Ok(spec) = std::env::var("KONTRA_LINE") {
+                    // transient debugging aid, prints to the terminal only
+                    if let Some((m, l)) = spec.split_once(':') {
+                        use crate::script::Files;
+                        let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
+                        let l: usize = l.parse().unwrap();
+                        for (i, line) in src.lines().enumerate() {
+                            if i + 3 >= l && i < l + 2 {
+                                println!("UX {}: {}", i + 1, line);
+                            }
+                        }
+                    }
+                }
+                let ui = host.interface();
+                println!("UI {} {} {}", ui.widgets.len(), ui.unsupported.len(), name);
+                for u in &ui.unsupported {
+                    println!("UU {}|{}", u.feature, u.value.chars().take(40).collect::<String>().replace(' ', "_"));
+                }
+            }
+        }
+    }
+
     /// Plays every program at a key its zones cover through its Lua script and
     /// prints one `UC` line per program: sounds, silent or failed, with counts
     /// only. Shard with `KONTRA_SHARD=i/n`.
@@ -1475,6 +1810,9 @@ mod survey {
             for program in bank.programs() {
                 index += 1;
                 if index % shards != shard {
+                    continue;
+                }
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
                     continue;
                 }
                 let name = format!("{}::{program}", f.display());
@@ -1531,7 +1869,7 @@ mod survey {
         use sampler_core::Limits;
         let program = match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default()) {
             Ok(p) => p,
-            Err(e) => return format!("load-fail {}", e.to_string().chars().take(60).collect::<String>().replace(' ', "_")),
+            Err(e) => return format!("load-fail {}", e.to_string().chars().take(160).collect::<String>().replace(' ', "_")),
         };
         let errors = program
             .instrument
