@@ -81,6 +81,16 @@ impl Prepared {
         self
     }
 
+    /// [`Self::with_initial_controllers`] at finer than a MIDI step: `level` is
+    /// 0..=1 of the controller's range. Applied after the integer values.
+    pub fn with_initial_level(mut self, controller: u8, level: f64) -> Self {
+        if controller < 128 {
+            let value = (level.clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32;
+            self.initial_controllers.push((controller, value));
+        }
+        self
+    }
+
     pub fn with_script_release_triggers(mut self, script: bool) -> Self {
         self.script_release_triggers = script;
         self

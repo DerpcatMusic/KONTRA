@@ -410,19 +410,18 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
                     NotModeled,
                 ));
             }
-            if spread != 0.0 || pan != 0.0 {
-                // Mid/side width 1 + spread and balance pan: v1's law, not
-                // verified against Kontakt.
-                notes.push((
-                    "stereo modeller width/pan law".into(),
-                    format!("spread {spread} pan {pan}"),
-                    UnknownLaw,
-                ));
-            }
-            let width = (1.0 + f64::from(spread)).clamp(0.0, 2.0);
+            // KONTAKT_REFERENCE.md s.20 (measured 2x2 fits, pure matrix): spread
+            // s in -1..=1 (GUI percent / 100). s < 0: M/S width 1 + s, mono at
+            // -1. s > 0: [[1+s, -s], [-s, 1+s]], clamped at 1. Pan p is a
+            // linear balance: the opposite channel is scaled by 1 - |p|.
+            let s = f64::from(spread).clamp(-1.0, 1.0);
             let pan = f64::from(pan);
             let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
-            let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
+            let (same, other) = if s < 0.0 {
+                ((2.0 + s) / 2.0, -s / 2.0)
+            } else {
+                (1.0 + s, -s)
+            };
             [
                 [same * gains[0], other * gains[0]],
                 [other * gains[1], same * gains[1]],
@@ -575,7 +574,15 @@ pub(crate) fn chain_with(
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        let wet = f64::from(fx.output_gain);
+        // The Inverter's Output knob does not reach the signal: Una g39 and g94
+        // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
+        // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
+        // 6.0 dB louder with it.
+        let wet = if fx.module == 0x1a {
+            1.0
+        } else {
+            f64::from(fx.output_gain)
+        };
         let gain = [[wet, 0.0], [0.0, wet]];
         // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
         // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
@@ -960,6 +967,42 @@ mod tests {
     }
 
     #[test]
+    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_is_pending() {
+        let modeller = |spread: f32, pan: f32| {
+            let mut bytes = spread.to_le_bytes().to_vec();
+            bytes.extend(pan.to_le_bytes());
+            bytes.push(0);
+            match chain(&[slot(0x1f, bytes, 1.0)], Scope::Voice)
+                .processors
+                .as_slice()
+            {
+                [sampler_ir::Processor::StereoMatrix(m)] => *m,
+                [] => [[1.0, 0.0], [0.0, 1.0]],
+                other => panic!("{other:?}"),
+            }
+        };
+        let near = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
+            for (a, b) in m.iter().flatten().zip(want.iter().flatten()) {
+                assert!((a - b).abs() < 1e-6, "{m:?} against {want:?}");
+            }
+        };
+        // KONTAKT_REFERENCE.md s.20, divided by the base gain 0.3838 (vel 100):
+        // 100%: 0.7677 / -0.3838; 50%: 0.5757 / -0.1919; -50%: 0.2879 / 0.0960.
+        near(modeller(1.0, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(0.5, 0.0), [[1.5, -0.5], [-0.5, 1.5]]);
+        near(modeller(1.5, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(-0.5, 0.0), [[0.75, 0.25], [0.25, 0.75]]);
+        near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
+        // Pan -50: R x0.5.
+        near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
+        // PENDING (reference agent measuring Output at -6/0/+6 dB): Una g39 and
+        // g94's post-amp Inverter at +6 dB reads exactly as if its Output were
+        // not applied. A single reading; if it fails, apply the gain again.
+        let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
+        assert!(inverter.is_empty(), "{inverter:?}");
+    }
+
+    #[test]
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
         let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         let inverter = slot(0x1a, vec![1, 1], 0.5);
@@ -972,12 +1015,12 @@ mod tests {
             sampler_kontakt_chain.processors,
             sampler_kontakt_chain.notes,
         );
-        // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
+        // 2 * (swap, inverted; its Output is not applied) * 2 = swap, inverted, * 4.
         assert_eq!(
             processors,
             vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -2.0],
-                [-2.0, 0.0]
+                [0.0, -4.0],
+                [-4.0, 0.0]
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");

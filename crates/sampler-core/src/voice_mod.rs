@@ -13,6 +13,8 @@
 //! largest program, so rendering never allocates.
 use crate::{Envelope, EnvelopeCurve, Error, envelope::EnvelopeState};
 
+type Shape = Box<[(f32, f32)]>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
     Sine,
@@ -202,7 +204,7 @@ struct Program {
     envelopes: Box<[Envelope]>,
     breakpoints: Box<[Breakpoints]>,
     routes: Box<[ModRoute]>,
-    shapes: Box<[Box<[(f32, f32)]>]>,
+    shapes: Box<[Shape]>,
     /// Whether any route reaches each kind of output, so unused work is skipped.
     filter: bool,
     tone: bool,
