@@ -55,3 +55,71 @@ also searched; none are present. Loose sample census: 495 WAV, 21,066 NCW and
 Recognition, raw extraction, translated/lowered load and native-host playback
 parity are separate measurements. A parse-tier pass uses placeholder audio;
 it does not establish embedded-sample access or sound parity.
+
+## Implemented fields and behavior
+
+FileContainer uses the existing TOC decoder: u64 member index, 600-byte UTF-16
+filename slot, cumulative member end offsets and the validated file-section
+base. The instrument reader now opens a unique NKI/NKM/NKB member with a
+128 MiB preset bound, instead of rejecting the entire container or limiting
+its sample section to 128 MiB. A member must itself be a supported NI preset
+container; arbitrary byte scanning is not used to guess preset boundaries.
+Multiple preset members fail explicitly because no active-member selector is
+established. Recursive preset wrappers are limited to four levels.
+
+Embedded samples are resolved to bounded physical `(container, offset, length)`
+sources. Authored `|` and backslash separators normalize to `/`. A saved external
+path can resolve by an exact member suffix or a unique basename. Ambiguous,
+duplicate and escaping member names fail explicitly. Resident decode, frame
+counts and random-access streaming use the same source; no files are extracted.
+Only the outer FileContainer sample directory is indexed; nested sample-bearing
+containers need an explicit nesting/identity model before claiming support.
+
+The shared sample reader now accepts AIFF and AIFC PCM alongside WAV and NCW.
+It decodes FORM/COMM/SSND sizes, channels, frame count, left-justified signed
+integer PCM (1–32 bits), the IEEE extended sample-rate field, SSND byte offset,
+chunk padding and either COMM/SSND order. `NONE`/`twos`, little-endian `sowt`
+and big-endian `fl32`/`FL32` are accepted. Other AIFC codecs, including float64,
+are refused. Metadata traversal is limited to 10,000 chunks. The random-access
+reader skips sample bodies to reach a later COMM. AIFF's own MARK/INST loops
+remain unmodeled; Kontakt's preset zone loops remain the playback authority.
+Evidence: Apple's [AIFF specification](https://ich.music.mcgill.ca/classes/synth/AudioIFF1.2.1/AudioIFF1.2.1.html),
+**Common Chunk**, **Sound Data Chunk**, **Sample Points** and **File Structure**.
+AIFC codec identifiers also match the already-vendored Symphonia AIFF reader.
+
+Legacy NKS extraction now honors the V1 absolute zlib offset, including padding
+between header and stream, and bounds expanded v1/v2 XML and v4.22+ binary
+presets to 128 MiB by default. An explicit `decompressed_preset_bounded(limit)`
+API permits a smaller worker budget. Malformed XML UTF-8 returns an error
+instead of panicking. This is extraction support, **not** an XML-to-IR translator.
+Synthetic XML fixtures test byte extraction only; they are not claimed to be
+Kontakt-authored semantic fixtures. The existing old NKS-monolith rejection
+remains, since the patch-member envelope is not described well enough in the
+available resource-tree template and no installed witness exists.
+
+## Runnable checks and measurement commands
+
+All cargo commands use `~/.cache/kontakto-heavy` without slot overrides.
+The baseline binary is preserved privately before reader changes. The
+coordinator authorized the already-running baseline outside the wrapper.
+Future corpus jobs use the wrapper in resumable shards lasting at most five
+minutes; each shard releases its slot before the next begins.
+
+- `cargo test -p sampler-kontakt --test monolith`: authored NKS binary presets
+  wrapped in FileContainers, WAV/AIFF/AIFC/NCW resident and random-access audio,
+  audible runtime render, sparse multi slots, large outer containers, missing
+  or ambiguous preset members, ambiguous samples and malformed AIFF.
+- `cargo test --manifest-path vendor/ni-file/Cargo.toml --test legacy`:
+  V1 padded zlib offset, V2 zlib, exact expansion budgets and malformed UTF-8.
+- `legacy_health /mnt/MAIN_STORAGE/Libraries/Kontakt`: per-file authoring
+  version from the NIS sound header; snapshot state parse; complete named
+  resource reads for NKR/NICNT; NKX directory indexing. Its TSV contains only
+  filenames, header versions, counts and errors. It writes no payloads.
+- `corpus-health run BEFORE.jsonl --tier parse --workers 4 /mnt/MAIN_STORAGE/Libraries/Kontakt`
+  and the same command for AFTER: explicit roots bypass cached items and avoid
+  modifying the shared corpus cache. They test every installed NKI and NKM,
+  with dummy sample audio, script compile and IR lowering.
+
+Snapshot/resource results are separate from instrument load counts: a snapshot
+is state for a parent instrument, a NICNT/NKR is resources and an NKX is sample
+storage. Supplemental probe success is not a promise of independent playback.
