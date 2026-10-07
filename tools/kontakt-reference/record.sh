@@ -27,9 +27,10 @@ trap 'kill $ka 2>/dev/null' EXIT
 pw-record --target kontra_ref -P '{ stream.capture.sink=true }' --rate 48000 --format f32 --channels 2 "$out" &
 rec=$!
 sleep 1
-aplaymidi -p 14:0 "$mid"
+t_m0=$(date +%s.%N); aplaymidi -p 14:0 "$mid"; t_m1=$(date +%s.%N)
 sleep "$tail"
+alive=no; kill -0 "$rec" 2>/dev/null && alive=yes
 kill -INT "$rec"; wait "$rec" 2>/dev/null || true
 { echo "time=$(date -Is)"; echo "midi_sha256=$(sha256sum "$mid" | cut -d' ' -f1) controller_state=$(cat "$mid.proto")"
-  echo "load1_start=$load_start load1_end=$(load1) (max $maxload)"; echo "sample_rate=$(python3 -c "import struct,sys;print(struct.unpack('<I',open(sys.argv[1],'rb').read(28)[24:28])[0])" "$out") (protocol: 48000)"
+  echo "midi_wall_s=$(echo "$t_m1 - $t_m0" | bc) recorder_alive_after_tail=$alive"; echo "load1_start=$load_start load1_end=$(load1) (max $maxload)"; echo "sample_rate=$(python3 -c "import struct,sys;print(struct.unpack('<I',open(sys.argv[1],'rb').read(28)[24:28])[0])" "$out") (protocol: 48000)"
   echo "calibration=$(cat "$W/log/calibration.txt" 2>/dev/null | tail -1)"; cat "$W/log/state.txt" 2>/dev/null || echo "state=unchecked (calibration recording)"; } >"$out.log"
