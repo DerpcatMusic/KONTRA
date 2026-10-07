@@ -114,6 +114,10 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         (p.ignored_input, lr::Runtime::InputIgnored { count: p.ignored_input }),
         (p.stolen_voices, lr::Runtime::VoicesStolen { count: p.stolen_voices }),
     ];
+    if p.silent_notes > 0 {
+        // The note the player just played, from the audio thread's own tally.
+        r.why_silent = Some(sampler_core::SilentNote::unpack(p.silent).message(&[]));
+    }
     r.runtime.extend(counts.into_iter().filter(|(n, _)| *n > 0).map(|(_, r)| r));
     r
 }
