@@ -80,9 +80,18 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
         reason: reason.into(),
     };
     let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
-    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
-        .map_err(|e| decode("multi bank", e))?;
-    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
+    let bank = Bank::try_from(
+        chunks
+            .find_first(3)
+            .ok_or_else(|| invalid("missing multi bank"))?,
+    )
+    .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank
+        .slot_list()
+        .map_err(|e| decode("multi slots", e))?
+        .slots
+        .into_iter()
+        .collect();
     slots.sort_by_key(|(slot, _)| *slot);
     let mut programs = Vec::new();
     for (_, container) in slots {
@@ -1279,10 +1288,14 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
                 b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
                 b'@' => ir::Saved::Text(rest.to_owned()),
                 b'%' => ir::Saved::Ints(
-                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
                 ),
                 b'?' => ir::Saved::Reals(
-                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
                 ),
                 _ => return None,
             };
@@ -1573,6 +1586,8 @@ mod curved_shaper_tests {
         assert!((at(&up, 0.5) + at(&down, 0.5) - 1.0).abs() < 1e-9);
         let flat = seg(0.0, 1.0, 0.0);
         assert_eq!(flat.len(), 2);
+    }
+}
 
 #[cfg(test)]
 mod census {
@@ -1600,7 +1615,8 @@ mod census {
             for g in &i.groups {
                 outs.insert(format!("{:?}", g.output));
             }
-            let names: std::collections::BTreeSet<_> = i.groups.iter().map(|g| g.name.as_str()).collect();
+            let names: std::collections::BTreeSet<_> =
+                i.groups.iter().map(|g| g.name.as_str()).collect();
             let buses: Vec<_> = i.buses.iter().map(|b| b.name.as_str()).collect();
             println!(
                 "CENSUS\t{}\tgroups={}\tdistinct_names={}\touts={}\tbuses={:?}\tnames={:?}",
