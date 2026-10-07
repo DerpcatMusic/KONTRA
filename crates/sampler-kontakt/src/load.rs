@@ -493,6 +493,45 @@ pub fn prepare(
     prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
+/// What a script may query while its `on init` runs.
+pub(crate) fn script_environment(
+    behavior: &ir::Behavior,
+    index: usize,
+    groups: Vec<String>,
+    performance_view: sampler_ksp::model::PerformanceView,
+) -> sampler_ksp::Environment {
+    sampler_ksp::Environment {
+        groups,
+        slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
+        persisted: behavior
+            .state
+            .iter()
+            .filter_map(|(name, saved)| {
+                let value = match saved {
+                    ir::Saved::Int(n) => Value::Int(*n as i32),
+                    ir::Saved::Real(r) => Value::Real(*r),
+                    ir::Saved::Text(t) => Value::Text(t.clone()),
+                    _ => return None,
+                };
+                Some((name.clone(), value))
+            })
+            .collect(),
+        persisted_arrays: behavior
+            .state
+            .iter()
+            .filter_map(|(name, saved)| {
+                let values = match saved {
+                    ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
+                    ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
+                    _ => return None,
+                };
+                Some((name.clone(), values))
+            })
+            .collect(),
+        performance_view,
+    }
+}
+
 fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
@@ -534,36 +573,7 @@ fn prepare_inner(
                 }),
             }
         }
-        let environment = sampler_ksp::Environment {
-            groups: groups.clone(),
-            slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
-            persisted: behavior
-                .state
-                .iter()
-                .filter_map(|(name, saved)| {
-                    let value = match saved {
-                        ir::Saved::Int(n) => Value::Int(*n as i32),
-                        ir::Saved::Real(r) => Value::Real(*r),
-                        ir::Saved::Text(t) => Value::Text(t.clone()),
-                        _ => return None,
-                    };
-                    Some((name.clone(), value))
-                })
-                .collect(),
-            persisted_arrays: behavior
-                .state
-                .iter()
-                .filter_map(|(name, saved)| {
-                    let values = match saved {
-                        ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
-                        ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
-                        _ => return None,
-                    };
-                    Some((name.clone(), values))
-                })
-                .collect(),
-            performance_view,
-        };
+        let environment = script_environment(behavior, index, groups.clone(), performance_view);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
