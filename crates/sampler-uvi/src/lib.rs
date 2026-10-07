@@ -185,11 +185,11 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
     translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
 
+type FullTranslation = (ir::Instrument, Vec<String>, Vec<OscGroup>, Vec<InsertNode>);
+
 /// [`translate_with`], plus the IR group of each (layer, oscillator) of a
 /// scripted program (empty when the program has no script).
-type Translated = (ir::Instrument, Vec<String>, Vec<OscGroup>, Vec<InsertNode>);
-
-fn translate_full(text: &str, source: Source) -> Result<Translated, Translate> {
+fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Translate> {
     let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
