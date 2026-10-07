@@ -588,11 +588,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             // silent and fades in, instead of being refused.
             rt.set_cold_starts(true);
         }
+        if std::env::var_os("CH_STEAL").is_some() {
         rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
             rt.sample_rate(),
             limits.voices,
         )))
         .map_err(|e| format!("prepare: runtime: {e}"))?;
+        }
         Ok(Box::new(rt))
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
@@ -678,6 +680,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     }
     let note_index = pre_words.len();
     let mut note = String::from("not sent");
+    let mut note_started = false;
+    let mut note_other: Option<String> = None;
     let mut faults = Vec::new();
     stage("render");
     for begin in (0..total).step_by(buffer.len()) {
@@ -725,10 +729,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                         batch.len(),
                         |i, result| {
                             if begin == 0 && i == note_index {
-                                note = match result {
-                                    Ok(Applied::Started(_)) => "started".into(),
-                                    other => format!("{other:?}"),
-                                };
+                                // No allocation on the started path: the
+                                // allocation counter covers this closure.
+                                note_started = matches!(result, Ok(Applied::Started(_)));
+                                if !note_started {
+                                    note_other = Some(format!("{result:?}"));
+                                }
                             }
                         },
                     )
@@ -789,6 +795,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }
         block_times.push(t0.elapsed().as_secs_f64());
         let used = heap::calls() - a0;
+        if begin == 0 && matches!(rig, Rig::Midi { .. }) {
+            note = if note_started {
+                "started".into()
+            } else {
+                note_other.take().unwrap_or(note)
+            };
+        }
         if begin == 0 {
             allocs_on += used;
         } else if has_release {
