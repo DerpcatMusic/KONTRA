@@ -209,3 +209,12 @@ Vista with no CC sent is far below its CC1 = CC11 = 127 solo levels (section 6):
   - The curve over CC1 is not monotonic (script and layer crossfades), so "about 48" is the nearest sampled match, not a measured default.
 - Vista 3 Cellos group g37 (solo, CC100 = 56): level is identical (L -37.0, R -32.4 dBFS) with no CC1/CC11 sent, with CC11 = 127 only, with CC1 = 0 and with CC1 = 127; g37 does not depend on CC1 or CC11. CC100 unsent equals CC100 = 0 (section 6).
 - Full Vista with its own script and no CC sent is -52.5 dBFS RMS (section 13): the instrument's default dynamics is low.
+
+## 15. Instrument volume, reload persistence, Una without scripts, key crossfade
+
+- Barbarian Brass instrument volume slider (read on a 2560x1440 desktop, `KONTAKT_RES=2560x1440`): 0.0 dB; the four mic faders also 0.0 dB. So the section 13/14 levels have no hidden instrument gain.
+- Reload: controller state survives removing and reloading an instrument in the same Kontakt session. After CC1=100, CC11=50, CC7=90, CC64=127, bend +0.5 (4096) and an instrument reload, `%CC` still reads 1:100 7:90 11:50 64:127 pb:4096. The section 14 zeros apply only to a fresh Kontakt process.
+- Una Corda Cotton with all four scripts bypassed (key 60 vel 100): unsent, CC80 = 0 and CC80 = 127 are identical: max-channel peak -3.8 (L -5.8, R -3.8), RMS -24.3. CC80 does nothing without the scripts.
+- Key crossfade fade-out (`scenarios/key_fade.ksp` on the noise instrument made by `noise_instrument.sh`; `ZONE_PAR_HIGH_KEY` 72, `ZONE_PAR_FADE_HIGH_KEY` 36, vel 100, attack/release 0). Zone key range applies (key 73 silent). Level, dB re key 60: 61 -1.8, 62 -2.5, 63 -3.3, 64 -4.3, 65 -5.3, 66 -6.4, 67 -7.8, 68 -9.4, 69 -11.3, 70 -13.9, 71 -17.3, 72 -22.2; key 48 +4.8; keys 30 and 36 equal (about +9, full level). Matches linear amplitude gain (H-k+1)/(F+1) for k in [H-F, H] (72 vs 60: -22.3 dB, 48 vs 60: +5.7, 66 vs 60: -5.3; measured within about 1 dB), unity below H-F, silent above H.
+- Pitfall: the sample is not cut at note-off and keys below 60 pitch it down (longer than 20 s), so tails pollute later notes. Measure with 21 s spacing and only keys >= 60 before the key under test, or one note per recording.
+- Not measured: module-parameter modulation (needs GUI-built filter plus modulator).
