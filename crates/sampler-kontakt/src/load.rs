@@ -22,6 +22,10 @@ pub struct Options {
     /// Native per-note pressure/timbre routing added to every zone; `None`
     /// leaves expression to authored modulation (pitch bend stays native).
     pub mpe: Option<sampler_core::lower::MpeDefaults>,
+    /// Value (0..=127) the dynamics controllers other than CC11 start at when
+    /// the host has not sent them; `None` is Kontakt's power-on state (CC11
+    /// full, the rest 0, so a CC1 instrument is near-silent until it moves).
+    pub dynamics_start: Option<u8>,
 }
 
 impl Default for Options {
@@ -32,6 +36,7 @@ impl Default for Options {
             scripts: true,
             library: None,
             mpe: Some(Default::default()),
+            dynamics_start: None,
         }
     }
 }
@@ -64,6 +69,7 @@ pub struct Loaded {
     pub scripts: Vec<sampler_ksp::ScriptView>,
     /// The library's pictures and resources, when [`Options::library`] is known.
     pub resources: Option<Resources>,
+    dynamics: Vec<(u8, f64)>,
 }
 
 /// How well an instrument's keyswitches reached the articulation map.
@@ -118,12 +124,14 @@ impl Loaded {
     /// value before any is received (CC11 full, the rest 0; Kontakt's
     /// power-on state). A host can show "dynamics: CC1 (now 0)" on load.
     pub fn dynamics(&self) -> Vec<(u8, f64)> {
-        self.instrument
-            .amplitude_controllers()
-            .into_iter()
-            .filter(|&cc| Some(cc) != self.instrument.host_volume.map(|v| v.controller))
-            .map(|cc| (cc, if cc == 11 { 1.0 } else { 0.0 }))
-            .collect()
+        self.dynamics.clone()
+    }
+
+    /// Whether the instrument is near-silent until a host sends a dynamics
+    /// controller: one drives loudness and starts at 0. Velocity- or
+    /// script-driven loudness is not covered.
+    pub fn needs_controller(&self) -> bool {
+        self.dynamics.iter().any(|&(_, v)| v == 0.0)
     }
 }
 
@@ -375,7 +383,30 @@ fn host_volume(instrument: &mut ir::Instrument) {
     }
 }
 
-fn powered(plan: Prepared, instrument: &ir::Instrument) -> Prepared {
+/// Dynamics controllers with their power-on value: Kontakt's (CC11 full, the
+/// rest 0) unless the host asked for `start` on those other than CC11.
+fn power_on(instrument: &ir::Instrument, start: Option<u8>) -> Vec<(u8, f64)> {
+    let volume = instrument.host_volume.map(|v| v.controller);
+    instrument
+        .amplitude_controllers()
+        .into_iter()
+        .filter(|&cc| Some(cc) != volume)
+        .map(|cc| {
+            let value = match (cc, start) {
+                (11, _) => 1.0,
+                (_, Some(v)) => f64::from(v.min(127)) / 127.0,
+                _ => 0.0,
+            };
+            (cc, value)
+        })
+        .collect()
+}
+
+fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) -> Prepared {
+    let plan = dynamics
+        .iter()
+        .filter(|&&(cc, v)| cc != 11 && v != 0.0)
+        .fold(plan, |plan, &(cc, v)| plan.with_initial_level(cc, v));
     match instrument.host_volume.filter(|v| v.saved > 0.0) {
         Some(v) if !instrument.zones.is_empty() => {
             plan.with_initial_level(v.controller, v.saved.cbrt())
@@ -634,8 +665,10 @@ fn prepare_inner(
             instrument.articulations = articulations;
             instrument.switching = switching;
         }
+        let dynamics = power_on(&instrument, options.dynamics_start);
         return Ok(Loaded {
-            plan: powered(lowered.map_err(LoadError::Lower)?, &instrument),
+            plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
+            dynamics,
             instrument,
             interfaces,
             scripts: Vec::new(),
@@ -650,8 +683,10 @@ fn prepare_inner(
                 message: e.to_string(),
             })
         });
+    let dynamics = power_on(&instrument, options.dynamics_start);
     Ok(Loaded {
-        plan: powered(lowered.map_err(LoadError::Lower)?, &instrument),
+        plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
+        dynamics,
         instrument,
         interfaces,
         scripts,
@@ -759,5 +794,35 @@ mod volume_tests {
         near(peak_db(1.0, None), 0.0);
         near(peak_db(1.0, Some(127)), 0.0);
         near(peak_db(1.0, Some(64)), -17.95);
+    }
+}
+
+#[cfg(test)]
+mod dynamics_tests {
+    use super::*;
+
+    fn cc1_instrument() -> ir::Instrument {
+        let mut ir = ir::Instrument::default();
+        ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Controller(1),
+        });
+        ir.routes.push(ir::Route::new(
+            ir::ModulatorRef(0),
+            ir::Target::Amplitude,
+            ir::Depth::Normalized(1.0),
+        ));
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.routes.push(ir::RouteRef(0));
+        ir.zones.push(zone);
+        ir
+    }
+
+    #[test]
+    fn the_dynamics_controller_starts_at_zero_unless_the_host_says_otherwise() {
+        let ir = cc1_instrument();
+        assert_eq!(power_on(&ir, None), vec![(1, 0.0)]);
+        assert_eq!(power_on(&ir, Some(127)), vec![(1, 1.0)]);
+        assert!(power_on(&ir, Some(64))[0].1 > 0.5);
     }
 }
