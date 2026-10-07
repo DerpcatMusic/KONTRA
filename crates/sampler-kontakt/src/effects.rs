@@ -681,7 +681,11 @@ pub(crate) fn chain_with(
                 attack_ms,
                 release_ms,
                 link,
-            }) => {
+            }) if scope == Scope::Bus => {
+                // Bus scope only: a group insert sees the group's summed signal in
+                // Kontakt, but a voice chain sees one voice, whose level is far
+                // lower (Analog Strings' compressor, threshold -14 dB, would
+                // never act while its +9 dB output gain applied).
                 // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
                 // the linked detector is the signed channel mean. The level law
                 // is the textbook one (ir::Compressor); the stored units are the
@@ -698,7 +702,10 @@ pub(crate) fn chain_with(
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors.push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
                     threshold_db: f64::from(*threshold_db),
-                    ratio: f64::from(*ratio).max(1.0),
+                    // Stored as the inverse ratio (Analog Strings: 0.501 beside a
+                    // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
+                    // slope 1 - 1/ratio would read the same here.
+                    ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
                     attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
                     release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
                     makeup: sampler_ir::Gain::UNITY,
@@ -1139,11 +1146,11 @@ mod tests {
     #[test]
     fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
         let mut bytes = Vec::new();
-        for x in [0.0f32, -18.0, 4.0, 10.0, 120.0] {
+        for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
-        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Voice);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
         let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
