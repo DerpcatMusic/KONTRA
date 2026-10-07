@@ -165,3 +165,44 @@ fn batched_voices_rectify_like_scalar_voices() {
         .collect();
     close(&audio, &expected);
 }
+
+#[test]
+fn rack_branches_sum_at_their_gains_with_nested_stages() {
+    // Branch 1: |x| at 0.5 then x2 gain (count 2). Branch 2: empty at 0.25.
+    // Expected: 0.5 * 2 * |x| + 0.25 * x.
+    let expected: Vec<[f64; 2]> = source()
+        .iter()
+        .map(|f| {
+            std::array::from_fn(|c| {
+                let x = f64::from(f[c]);
+                x.abs() * 1.0 + 0.25 * x
+            })
+        })
+        .collect();
+    let stages = vec![
+        Processor::Branch { count: 2, gain: 0.5, first: true, last: false },
+        Processor::Rectify(Rectifier::Full),
+        Processor::Gain(2.),
+        Processor::Branch { count: 0, gain: 0.25, first: false, last: true },
+    ];
+    for block in [1, 7, 64, 129] {
+        let voice = plan()
+            .with_voice_chains(
+                vec![VoiceChain::new(vec![], stages.clone(), 0).unwrap()],
+                vec![Some(0)],
+            )
+            .unwrap();
+        close(&run(voice, block), &expected);
+        let bus = plan()
+            .with_buses(
+                vec![Bus {
+                    processors: stages.clone(),
+                    sends: vec![BusSend { bus: None, gain: 1. }],
+                    tail_frames: 0,
+                }],
+                vec![Some(0)],
+            )
+            .unwrap();
+        close(&run(bus, block), &expected);
+    }
+}
