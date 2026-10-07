@@ -1,0 +1,17 @@
+[package]
+name = "sampler-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+realfft = "3.5"
+rtrb = "=0.4.0"
+sampler-ir = { path = "../sampler-ir" }
+sampler-simd = { path = "../sampler-simd" }
+sampler-pool = { path = "../sampler-pool" }
+
+[lints.rust]
+unsafe_code = "deny" # The library forbids it; only allocator instrumentation opts out.

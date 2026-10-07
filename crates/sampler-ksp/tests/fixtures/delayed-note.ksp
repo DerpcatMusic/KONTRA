@@ -1,0 +1,6 @@
+{ Authored fixture: the callback resumes after the originating input is released. }
+on note
+    ignore_event($EVENT_ID)
+    wait(1250000)
+    play_note($EVENT_NOTE, 96, 0, 125000)
+end on

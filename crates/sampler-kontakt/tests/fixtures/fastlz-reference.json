@@ -1,0 +1,16 @@
+{
+  "reference": "ariya/FastLZ",
+  "commit": "b1342dabcf5257ab303743c9332fe75e9147a011",
+  "input_bytes": 16096,
+  "input_sha256": "765c3174b76c8bf0862928c37f9d5e20fce18f6e62c60936daf51e606948dbf3",
+  "files": {
+    "fastlz-level1.bin": {
+      "bytes": 13479,
+      "sha256": "db6fef775e4ab3cd519a31c49e955b41df94cc8f0ebd2604381bdd92e1a6d8f4"
+    },
+    "fastlz-level2.bin": {
+      "bytes": 12415,
+      "sha256": "76221926ff8881c88b0c50f2cf913ee247ad18f7d6d21cbced148013b249b05f"
+    }
+  }
+}

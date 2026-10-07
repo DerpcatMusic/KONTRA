@@ -4,7 +4,6 @@
 //! with a falling peak hold. Only a spectrum on screen asks for samples.
 
 use super::theme::*;
-use super::viz;
 use crate::plugin::Scope;
 use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::mui::prelude::*;
@@ -148,7 +147,7 @@ impl Analyser {
                 self.peak[i] = (self.peak[i] - PEAK_FALL * dt).max(*level);
             }
         }
-        let points = |v: &[f32]| (0..BANDS).map(|i| [viz::freq_x(band_hz(i)), db_y(v[i])]).collect();
+        let points = |v: &[f32]| (0..BANDS).map(|i| [freq_x(band_hz(i)), db_y(v[i])]).collect();
         self.shape = Arc::new(Shape { level: points(&self.level), peak: points(&self.peak) });
         self.shape.clone()
     }
@@ -178,7 +177,7 @@ pub fn panel(shape: Arc<Shape>, name: &str) -> El {
         let place = |[x, y]: [f32; 2]| Point::new(f64::from(x) * s.width, (1. - f64::from(y)) * s.height);
         let mut out = Vec::new();
         for hz in [100., 1000., 10_000.] {
-            let x = place([viz::freq_x(hz), 0.]).x.round();
+            let x = place([freq_x(hz), 0.]).x.round();
             out.push(Draw::fill(rect(x, 0., 1., s.height), hairline()));
         }
         for db in [-24., -48., -72.] {
@@ -202,6 +201,11 @@ pub fn panel(shape: Arc<Shape>, name: &str) -> El {
     .gap(TIGHT)
     .flex(1)
     .min_h(0)
+}
+
+/// Horizontal place of `hz` on a 20 Hz-20 kHz log axis, 0..=1.
+fn freq_x(hz: f32) -> f32 {
+    (hz / 20.).log10() / 1000f32.log10()
 }
 
 #[cfg(test)]

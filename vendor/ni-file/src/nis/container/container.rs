@@ -100,7 +100,7 @@ impl ItemContainer {
     }
 
     pub fn first_child(&self) -> Option<&ItemContainer> {
-        self.children.get(0)
+        self.children.first()
     }
 
     pub fn id(&self) -> ItemType {
@@ -111,7 +111,7 @@ impl ItemContainer {
     pub fn find(&self, kind: &ItemType) -> Option<&ItemContainer> {
         // Check this Item first
         if &self.data.header.item_type() == kind {
-            return Some(&self);
+            return Some(self);
         }
         // Recursively search the children
         for item in &self.children {
@@ -142,7 +142,7 @@ impl ItemContainer {
     where
         I: TryFrom<&'a ItemData, Error = NIFileError>,
     {
-        self.find_data(&kind).map(I::try_from)
+        self.find_data(kind).map(I::try_from)
     }
 
     fn read_children(
@@ -175,6 +175,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_read() -> Result<(), Error> {
         let data = File::open("test-data/NIS/Item/BNISoundPreset/BNISoundPreset-000")?;
         let item = ItemContainer::read(data)?;
@@ -183,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_with_children_read() -> Result<(), Error> {
         let data = File::open("tests/filetype/NISD/kontakt/7.1.3.0/000-default.nki")?;
         let item = ItemContainer::read(data)?;

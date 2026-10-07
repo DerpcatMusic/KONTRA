@@ -1,0 +1,19 @@
+on init
+    declare polyphonic $skip
+    declare polyphonic $finished
+end on
+
+on note
+    ignore_event($EVENT_ID)
+    while ($NOTE_HELD = 1)
+        if ($skip = 0)
+            $skip := 1
+            wait(125)
+            continue
+        end if
+        $skip := 0
+        play_note($EVENT_NOTE, 127, 0, 125)
+        wait(125)
+    end while
+    $finished := 1
+end on

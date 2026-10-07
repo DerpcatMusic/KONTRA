@@ -29,12 +29,12 @@ impl std::convert::TryFrom<KontaktChunks> for KontaktV42 {
         Ok(Self {
             program: chunks
                 .first()
-                .ok_or(NIFileError::Static("Could not find Program".into()))?
+                .ok_or(NIFileError::Static("Could not find Program"))?
                 .try_into()?,
             filetable: chunks
                 .last()
                 .ok_or(NIFileError::Static(
-                    "Could not find FileNameListPreK51".into(),
+                    "Could not find FileNameListPreK51",
                 ))?
                 .try_into()?,
         })

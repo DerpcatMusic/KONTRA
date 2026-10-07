@@ -1,0 +1,37 @@
+on init
+    declare polyphonic $at_entry
+    declare polyphonic $after_wait
+    declare polyphonic $chosen
+    declare polyphonic $released
+end on
+
+on note
+    ignore_event($EVENT_ID)
+    $at_entry := $NOTE_HELD
+    wait(125)
+    $after_wait := $NOTE_HELD
+    if ($NOTE_HELD = 0)
+        $chosen := -2147483648
+        exit
+    else
+        if ($EVENT_NOTE = 61)
+            $chosen := +2147483647
+            play_note($EVENT_NOTE, 127, 0, 125)
+            wait(125)
+            if ($NOTE_HELD # 0)
+                $chosen := 42
+            end if
+        else
+            $chosen := 7
+        end if
+    end if
+end on
+
+on release
+    if ($NOTE_HELD = 0)
+        $released := 1
+        wait(125)
+    else
+        $released := -1
+    end if
+end on

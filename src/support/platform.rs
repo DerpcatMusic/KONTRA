@@ -986,8 +986,8 @@ fn windows_wer_matches_host(text: &str, host: &str) -> bool {
     let expected = comparable_process_name(host);
     let mut found = false;
     for line in text.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if matches!(key.trim(), "AppPath" | "AppName") {
+        if let Some((key, value)) = line.split_once('=')
+            && matches!(key.trim(), "AppPath" | "AppName") {
                 let basename = value
                     .trim()
                     .trim_matches('"')
@@ -999,7 +999,6 @@ fn windows_wer_matches_host(text: &str, host: &str) -> bool {
                 }
                 found = true;
             }
-        }
     }
     found
 }

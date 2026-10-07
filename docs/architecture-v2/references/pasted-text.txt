@@ -1,0 +1,849 @@
+**The core should be a universal instrument runtime, not a collection of separate sampler engines.** Kontakt support, Falcon support, SINE support, and future adapters should mostly contribute **translation, behavioral rules, and any genuinely missing algorithms**. They should not each bring another voice allocator, another streaming engine, another modulation system, and another MIDI implementation.
+
+Your MPE requirement makes that distinction particularly important:
+
+> **Expression must belong to the note inside your engine, not merely to whichever MIDI channel delivered it.**
+
+Below is the deeper architectural direction I recommend. The existing-product observations are grounded in documentation; the proposed architecture is a design synthesis, not a claim that proprietary library compatibility or DSP equivalence has already been demonstrated.
+
+# 1. What the research changes about the design
+
+Several documented details are particularly revealing.
+
+| System | Documented behavior | Consequence for your core |
+|---|---|---|
+| **Kontakt** | Group insert effects operate separately for each voice, rather than simply processing a summed group signal. | A source “group” cannot automatically become an audio bus. Processing scope must be explicit. |
+| **Falcon / UVI Script** | Event callbacks, generated notes, mapping dimensions, and voice manipulation are exposed through a programmable event model. | Importing a mapping tree is insufficient. The runtime must also represent event behavior. |
+| **Decent Sampler** | Its documented MPE design includes voice-scoped pressure and timbre modulation. | Per-note expression must connect to scoped modulation destinations, not just MIDI forwarding. |
+| **SINE** | Performance Articulations combine articulation selection, switching, crossfading, and legato behavior. Its changelog documents release-sample attribution problems when variations change during held notes. | Articulation state, transition ownership, and release ownership need first-class representations. |
+| **SampleTank** | Multiple playback engines coexist with modulation and performance generators such as arpeggiators and strummers. | “Sample player” and “event generator” should be replaceable modules within a shared runtime. |
+
+These are documented features, not evidence that their internal implementations are identical to the architecture proposed here. [Native Instruments](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/using-filters-and-effects-in-classic-view.html)
+
+**The central conclusion: preserve behavior and ownership, not merely the original product’s object names.**
+
+A Kontakt Group, Falcon Layer, SFZ Group, and SINE articulation are not interchangeable just because they all appear as containers in an interface.
+
+# 2. The architecture: source languages feeding one runtime
+
+I would organize the platform around this flow:
+
+```text
+SOURCE SIDE, outside the audio callback
+─────────────────────────────────────────────────────────────
+
+Kontakt adapter ───────┐
+Falcon/UVI adapter ────┤
+SINE adapter ──────────┤
+Decent adapter ────────┼──► Semantic Instrument IR
+SFZ adapter ──────────┤       │
+Native authoring ─────┘       ├── validation
+                              ├── capability resolution
+Asset providers ──────────────┤
+Script frontends ─────────────┤
+DSP kernel registry ──────────┘
+                              │
+                         Plan compiler
+                              │
+                              ▼
+                     Immutable Render Plan
+
+
+RUNTIME SIDE
+─────────────────────────────────────────────────────────────
+
+MIDI 1 / MPE / MIDI 2 / CLAP / VST3
+                  │
+          Protocol normalization
+                  │
+        Timestamped internal events
+                  │
+   Event behavior + performance state
+                  │
+    Selection + articulation decisions
+                  │
+           Note/voice allocation
+                  │
+     Scoped modulation + voice kernels
+                  │
+          Buses / effects / outputs
+```
+
+The first important boundary is that **source adapters do not become permanent interpreters of arbitrary source objects inside the per-sample processing loop**.
+
+They translate the source into something the shared engine understands.
+
+The second is that the runtime is **not limited to multisample playback**. A voice can contain a sample cursor, granular generator, oscillator, transition player, or registered specialized kernel. That leaves room for Falcon-like instruments without forcing every future oscillator into the sampler’s foundational code.
+
+The third is that **file compatibility, behavior compatibility, and audio equivalence remain separate**. A clean module system solves neither inaccessible assets nor undocumented DSP automatically.
+
+## Two internal representations, not one
+
+You need both a **Semantic IR** and a **Render IR**.
+
+### Semantic IR: preserve meaning
+
+This represents the instrument as an editable, inspectable program:
+
+- Sample assets and mappings.
+- Conditions, articulations, sequences, and release rules.
+- Event processors and script state.
+- Audio and modulation graphs.
+- Parameter units, curves, scopes, and inheritance.
+- Source-specific behavioral profiles and provenance.
+
+It should preserve information even when the current renderer cannot execute every feature.
+
+### Render IR: execute efficiently
+
+This contains only prepared execution data:
+
+- Dense indices rather than string lookups.
+- Precompiled selection predicates.
+- Allocated state layouts.
+- Scheduled modulation operations.
+- Kernel batches.
+- Buffer assignments.
+- Resolved routing.
+- Bounded resource requirements.
+
+**The Semantic IR should optimize for expressiveness. The Render IR should optimize for predictable execution.**
+
+Trying to use one representation for both usually produces either an awkward importer or a pointer-heavy renderer.
+
+# 3. Model behavior as independent dimensions
+
+Do not start with one giant structure called `Group` and gradually bolt every product’s meaning onto it.
+
+Separate at least these concepts:
+
+| Concept | Meaning |
+|---|---|
+| **Mapping region** | Where an asset or generator is eligible to play. |
+| **Selection set** | How eligible alternatives are selected or weighted. |
+| **Articulation** | A named performance behavior or sound configuration. |
+| **State domain** | Which notes, channels, or parts share counters and switches. |
+| **Voice template** | What processing gets instantiated when a selection sounds. |
+| **Audio bus** | Where signals are summed and processed together. |
+| **Modulation scope** | Which instances own a modulator’s state and receive its result. |
+| **Event processor** | How incoming events are transformed, consumed, or generated. |
+
+For example, the documented Kontakt Group-insert behavior means a group can supply a **shared processing template whose state is instantiated separately for every voice**. Converting it into a single shared bus would change both modulation and nonlinear processing. [docs.native-instruments.com](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/using-filters-and-effects-in-classic-view.html)
+
+That distinction should be represented explicitly, not discovered later as a Kontakt-specific exception.
+
+## Every important operation needs a scope
+
+I recommend scope types such as:
+
+```text
+Engine
+Part
+Instrument
+Selection domain
+Musical phrase
+Note instance
+Render voice
+Audio bus
+```
+
+These are not all points on one simple hierarchy. A bus may receive voices from several instruments. A musical phrase may connect multiple successive notes.
+
+A modulator should therefore declare its actual owner and evaluation rate, rather than inheriting an ambiguous “group scope.”
+
+A useful parameter descriptor would include:
+
+```text
+Identity
+Physical unit
+Value domain
+Legal modulation scopes
+Evaluation rate
+Combination rule
+Smoothing policy
+State ownership
+Serialization version
+```
+
+For instance:
+
+```text
+Filter cutoff:
+    unit = Hz
+    modulation domain = log-frequency or explicitly defined Hz
+    owner = render voice
+    update rate = control-rate or audio-rate
+    smoothing = selected policy
+
+Articulation index:
+    unit = discrete identifier
+    owner = performance state domain
+    update rate = event
+    smoothing = forbidden
+```
+
+This prevents a surprisingly common design error: treating all parameters as interchangeable normalized floats.
+
+# 4. Strong ownership means musical ownership as well as Rust ownership
+
+Rust’s borrow checker helps with memory access. It does not decide which note owns a release sample, which expression controls a generated note, or when an old graph can be destroyed.
+
+Those are architectural obligations.
+
+## Distinguish events, notes, and voices
+
+They are three different things.
+
+**An event** is something that happened: a key press, controller change, script-generated release, or host expression update.
+
+**A note instance** is a musical lifetime with identity, performance context, and expression.
+
+**A render voice** is an active audio-processing instance.
+
+One note might produce:
+
+```text
+Note instance 481
+    ├── close-microphone sample voice
+    ├── room-microphone sample voice
+    ├── second velocity-layer voice
+    ├── legato-transition voice
+    └── later release-sample voice
+```
+
+Conversely, a voice may be stolen while the corresponding key is still down. You still need enough note state to handle its eventual note-off correctly.
+
+Kontakt’s own event API distinguishes event metadata from voice-specific information; its documentation notes that zone information belongs to voices rather than to the event itself. [Native Instruments](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+
+I would use distinct, generationally checked handle types for:
+
+```text
+InputEventId
+NoteInstanceId
+VoiceId
+ExpressionOwnerId
+PhraseId
+ArticulationSnapshotId
+GraphGenerationId
+AssetId
+```
+
+Do not use one untyped integer everywhere.
+
+## Preserve performance context without freezing everything
+
+A note should retain the information needed to reproduce its lifecycle:
+
+```text
+Original input address
+Original key and attack velocity
+Selected articulation and variation
+Selected round-robin family
+Expression ownership
+Pedal-held state
+Parent/generated-note relationship
+Release-selection policy
+Graph generation
+```
+
+However, **do not blindly snapshot every controller at note-on**.
+
+Some source behaviors intentionally use current controller state when releasing or transitioning. Others use the state that selected the original attack. Your semantic model needs to distinguish:
+
+```text
+Evaluate at attack
+Evaluate at physical key release
+Evaluate at pedal release
+Evaluate continuously
+Inherit from parent note
+```
+
+SFZ is an excellent warning here: its reference distinguishes `release` from `release_key`, and documents further release-behavior differences between players. A single universal “on note-off, play release region” rule is insufficient. [SFZ Format](https://sfzformat.com/opcodes/trigger/)
+
+## Legato belongs to relationships, not a global last-note variable
+
+Represent a transition as a relationship:
+
+```text
+Transition:
+    source note
+    destination note
+    phrase
+    interval
+    overlap duration
+    source/destination velocity policy
+    articulation context
+```
+
+Otherwise, polyphony and MPE will expose the weakness immediately. One global `last_note` can accidentally connect a new note to an unrelated finger, part, or articulation.
+
+# 5. Rust thread ownership: one clear writer per mutable domain
+
+My recommended division is:
+
+| Domain | Owner |
+|---|---|
+| Active note and voice state | Audio execution domain |
+| Controller, articulation, and sequence runtime state | Audio execution domain |
+| Mutable filter/envelope/sample-cursor state | Assigned render execution owner |
+| Importing, parsing, validation | Background workers |
+| Graph compilation and buffer preparation | Background workers |
+| Disk reads and sample decoding | Streaming workers |
+| UI state and editing model | Control/UI domain |
+| Destruction of retired heavyweight resources | Non-audio retirement domain |
+
+The audio callback should not reach into an `Arc<Mutex<Engine>>` shared with the editor.
+
+Instead, the editor submits bounded commands or publishes prepared plans. The audio execution domain applies them at defined boundaries.
+
+PortAudio’s callback guidance explicitly warns against operations with unpredictable duration, including allocation, deallocation, I/O, and mutex-related work. That is the relevant standard of care; “the Rust compiler accepts it” is not enough. [portaudio.com](https://portaudio.com/docs/v19-doxydocs/writing_a_callback.html)
+
+## The `Arc` trap
+
+`Arc` is useful for immutable shared assets, but it is not automatically real-time-safe ownership. Dropping the last strong reference destroys the contained value. That could mean freeing a large sample allocation, destroying an effect, or unloading module-owned resources on the audio thread. [Rust Documentation](https://doc.rust-lang.org/std/sync/struct.Arc.html)
+
+Use an explicit retirement mechanism:
+
+```text
+Worker prepares plan B
+        │
+Audio adopts B at an allowed boundary
+        │
+Old notes may retain plan A
+        │
+A becomes unused
+        │
+Audio transfers retirement responsibility
+        │
+Non-audio owner destroys A
+```
+
+Bound the number of outstanding plans and retirement records. When capacity is exhausted, **backpressure belongs on the control side**, not in an audio-thread wait loop.
+
+A bounded SPSC queue such as the design exposed by `rtrb` is a useful building block, but queue selection does not replace a complete overflow and destruction policy. [Docs.rs](https://docs.rs/rtrb/latest/rtrb/)
+
+## Module unloading is also a lifetime problem
+
+A module must remain loaded while any of the following exist:
+
+- A render plan containing its function pointers.
+- An active voice or effect tail using its state.
+- A suspended script continuation depending on it.
+- An outstanding worker operation or destruction callback.
+
+“Remove module from registry” must not mean “unload its shared library now.”
+
+# 6. The module system: several contracts, not one enormous interface
+
+A vendor-support package should be a bundle of independently useful capabilities.
+
+## A. Import adapter
+
+Responsible for probing, parsing, source-version handling, asset references, and conversion into Semantic IR.
+
+It should not own the runtime’s voices.
+
+## B. Semantic compatibility module
+
+Responsible for source-specific behavior that cannot be represented by mappings alone:
+
+- Event forwarding rules.
+- Callback ordering.
+- Numeric conventions.
+- Script-visible state.
+- Selection-counter rules.
+- Release and retrigger policies.
+- Source-specific parameter behavior.
+
+This module may contribute compiler lowering rules and bounded runtime operations.
+
+## C. DSP kernel module
+
+Responsible for a genuinely missing algorithm.
+
+For example, a specific filter topology or specialized sample-transformation engine.
+
+It should use the core’s buffers, scheduling, parameter delivery, and resource lifecycle rather than bringing its own mini-engine.
+
+## D. Asset provider
+
+Responsible for obtaining readable audio or other assets through supported access paths.
+
+Container handling and decoding remain outside the audio callback. The renderer receives prepared asset handles and ready sample pages.
+
+## E. Host/protocol adapter
+
+Responsible for CLAP, VST3, MIDI, MPE, standalone input, and similar interfaces.
+
+**Kontakt support should not know whether the instrument is running inside CLAP or standalone.**
+
+## API and ABI are different decisions
+
+For modules compiled together in your Rust workspace, use a **versioned Rust API**: traits, typed handles, and explicit capabilities.
+
+For independently distributed native modules, use a deliberately restricted **C-compatible ABI**. Rust’s reference explicitly states that the native Rust ABI has no stability guarantees, while `extern "C"` follows the target platform’s C ABI. This does not produce one binary that works across operating systems or architectures. [Rust Documentation](https://doc.rust-lang.org/reference/items/external-blocks.html)
+
+A native module boundary should use:
+
+```text
+Versioned, size-tagged descriptors
+Fixed-width scalar fields
+C-compatible layouts
+Opaque handles
+Pointer-and-length buffer views
+Explicit ownership and destruction functions
+Explicit thread restrictions
+No Rust unwinding across the boundary
+```
+
+Do not expose `Vec`, `String`, Rust trait objects, or unspecified-layout Rust structures as the public binary contract.
+
+## The kernel contract must be richer than `process()`
+
+A useful descriptor needs to answer:
+
+| Contract field | Why it matters |
+|---|---|
+| Type identity and semantic version | Presets must identify behavior, not just a display name. |
+| Input/output types and layouts | Prevent invalid graph connections. |
+| Allowed state scopes | Establish whether per-note instantiation is meaningful. |
+| State and scratch requirements | Prepare memory before rendering. |
+| Supported block sizes and rates | Compile valid execution schedules. |
+| Latency and tail behavior | Route and retire correctly. |
+| Reset, migration, and serialization rules | Reload without corrupting state. |
+| Modulation support | Distinguish event, control-rate, and audio-rate parameters. |
+| Fast-forward/sleep capability | Make inactive-node optimization safe. |
+| Execution restrictions | State whether allocation, blocking, or external calls are prohibited. |
+
+A declaration that a module is real-time-safe is not proof. Native extensions are trusted executable code, not sandboxed merely because the ABI is tidy.
+
+**My implementation recommendation: establish the Rust source API first. Freeze an external ABI only after several substantially different adapters have exercised it.**
+
+An ABI designed around one importer tends to preserve that importer’s assumptions permanently.
+
+# 7. MPE must become native note expression, not a compatibility patch
+
+The internal expression system should be broader than MPE.
+
+MPE encodes per-note expression using MIDI 1.0 channel messages. Other interfaces can address notes and expression differently. CLAP, for example, defines note-addressed expression events, and VST3 exposes note-expression events associated with note IDs. [MIDI.org](https://midi.org/mpe-midi-polyphonic-expression)
+
+Normalize these into a common internal model:
+
+```text
+Note expression:
+    pitch offset
+    pressure
+    timbre / slide
+    gain
+    pan
+    additional named expression dimensions
+```
+
+Preserve protocol-specific information alongside the normalized representation. Do not discard the raw information needed by compatibility scripts.
+
+## Physical MIDI channel must not equal musical part
+
+This is one of the most important design requirements in your entire project.
+
+Suppose a legacy instrument uses:
+
+```text
+Channel 1 → sustain
+Channel 2 → staccato
+Channel 3 → tremolo
+```
+
+An MPE controller also distributes notes across channels.
+
+If you directly feed those physical channels into the legacy selection rules, finger allocation becomes articulation selection.
+
+The engine therefore needs separate concepts:
+
+```text
+Physical input channel
+MPE zone/member assignment
+Logical part
+Compatibility-visible channel
+Note instance
+Expression owner
+```
+
+An expressive compatibility mode may route all member channels into one logical part while preserving independent expression.
+
+A fidelity mode may preserve the original channel semantics.
+
+**Neither mode should silently masquerade as the other.**
+
+## The MPE adapter needs actual state management
+
+Its responsibilities include zone configuration, member-channel assignment, pitch-bend sensitivity, initial expression, channel reuse, pedals, resets, and the interpretation of overlapping notes.
+
+JUCE’s reference implementation illustrates why this is not trivial: it exposes separate pressure, pitch-bend, and timbre tracking policies when multiple notes share a channel, and distinguishes member-channel from zone-level behavior. Its zone implementation also handles zone layouts and pitch-bend ranges. [docs.juce.com](https://docs.juce.com/master/classjuce_1_1MPEInstrument.html)
+
+Do not make the expression owner simply “whatever currently occupies channel 4.”
+
+When a channel is reused, the engine must decide, according to the selected policy, whether an earlier release tail retains its expression, continues tracking, or is terminated.
+
+If an input protocol does not uniquely identify overlapping notes, your engine can apply a documented matching policy. It cannot reconstruct information the sender never supplied.
+
+## Parameter scope is the second half of MPE
+
+Receiving independent pressure values achieves nothing if all notes share one mutable cutoff parameter.
+
+For a sample voice, an expression path might be:
+
+```text
+Note pressure
+    → response curve
+    → note-scoped gain contribution
+
+Note slide
+    → response curve
+    → voice-scoped filter cutoff contribution
+
+Note pitch
+    → tuning composition
+    → each owned sample cursor
+```
+
+Decent Sampler’s documented `mpePressure` and `mpeTimbre` sources explicitly demonstrate voice-scoped mappings. The 2025 article described those features as alpha at publication; that historical status should not be treated as a verified statement about today’s release. [decent|SAMPLES](https://www.decentsamples.com/tag/decent-sampler/)
+
+I recommend implementing expression as a distinct contribution layer, rather than overwriting the source instrument’s base values.
+
+For example:
+
+```text
+Final pitch =
+    mapping/root-note tuning
+  + source-script tuning
+  + instrument tuning
+  + protocol-normalized note expression
+  + applicable pitch modulation
+```
+
+The protocol adapter must apply each interface’s combination rules before producing those contributions. CLAP specifically distinguishes global and polyphonic parameter values/modulation; blindly adding everything can double-count modulation. [GitHub](https://github.com/free-audio/clap/blob/main/include/clap/events.h)
+
+## “Make non-MPE instruments MPE” has three different meanings
+
+### 1. Your core renders the imported instrument
+
+This is the strongest case.
+
+For imported sample voices that your engine owns, it can provide independent pitch, gain, pan, and appropriate per-note modulation even when the original preset never defined an MPE mapping.
+
+Additional timbral expression can target existing layers or filters, or a deliberately added per-voice processor.
+
+But enhancement does not manufacture missing acoustic information. Pressure-controlled gain is not automatically equivalent to a newly recorded bow-pressure layer. Retuning an attack is not the same as reconstructing a natural performance at another pitch.
+
+### 2. You host an external, non-MPE instrument
+
+A conditional workaround is to use separately addressable parts or an instance pool.
+
+That only works well when the external instrument provides enough isolation and controllability. It can duplicate CPU, memory, scripts, and effects, and requires careful channel-reuse and tail handling.
+
+It is a separate hosting feature, not something a format adapter provides for free.
+
+### 3. You only receive its summed stereo output
+
+Independent expression is no longer generally available from MIDI routing alone.
+
+Once unrelated notes have been summed into opaque audio, your core does not possess their separate sample cursors or filter states. A universal per-note pitch or filter retrofit cannot be promised at that boundary.
+
+**The achievable architectural promise is full internal note expression for instruments your core renders, with explicit capability limits for externally hosted engines.**
+
+## Script-generated notes must inherit expression deliberately
+
+A harmonizer, legato script, or arpeggiator can replace the incoming note with generated notes.
+
+Those generated notes need an explicit policy:
+
+```text
+Linked expression
+Snapshot expression
+Independent expression
+Source-dialect behavior
+```
+
+Kontakt’s documentation already warns that ignoring an event and generating a replacement can lose tuning, volume, and pan unless those values are carried over appropriately. That is exactly the class of problem an explicit expression owner avoids. [Native Instruments](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+
+# 8. Shared DSP: one framework, several real algorithms
+
+Your “filter that can become all types” idea is right at the **framework** level, but not as one universal algorithm.
+
+Kontakt’s filter reference distinguishes SV, ladder, legacy, and other designs. Falcon likewise documents multiple filter families rather than one interchangeable transfer function. Even JUCE’s TPT state-variable filter documentation distinguishes its bandpass normalization from another common design. [Native Instruments](https://docs.native-instruments.com/ni-tech-manuals/kontakt-manual/en/filter-reference)
+
+I would build this:
+
+| Shared family | Representative implementations |
+|---|---|
+| State-variable filters | Lowpass, bandpass, highpass, derived mixtures |
+| Biquad/cascade filters | EQ, shelves, peaks, conventional response designs |
+| Nonlinear circuit-inspired filters | Ladder, diode, Sallen-Key and other topologies |
+| Delay-based filters | Comb, resonant delay, related structures |
+| Resonator networks | Formants and modal structures |
+| FIR/spectral processors | Linear-phase and frequency-domain processing |
+
+The reusable parts include parameter handling, smoothing, numerical utilities, SIMD layout, oversampling infrastructure, modulation delivery, state allocation, and testing.
+
+The topology-specific parts remain real implementations.
+
+## A common parameter name is not a sonic specification
+
+Two filters with “cutoff,” “resonance,” and “drive” can differ in gain compensation, saturation placement, coefficient updates, feedback behavior, phase response, and modulation response.
+
+Therefore, a compatibility adapter should identify both:
+
+```text
+Required algorithm or approximation
+Parameter translation
+Behavior/version profile
+Quality requirements
+```
+
+“Maps to a lowpass filter” is a functional fallback, not proof of a Kontakt filter emulation.
+
+## Morphing also needs several meanings
+
+Keep these separate:
+
+**Parameter morphing:** interpolating values within a compatible algorithm.
+
+**Audio crossfading:** mixing outputs from two running paths.
+
+**Selection morphing:** continuously weighting mapped samples or articulations.
+
+**Spectral transformation:** a separate processing algorithm.
+
+Switching within a compatible state-variable family can share substantial state. Switching between unrelated nonlinear topologies may require preparing a second processor and crossfading, with temporary extra CPU and potentially different latency.
+
+Likewise, an equal-power crossfade is not automatically correct for correlated samples. Phase and correlation affect the result.
+
+## Do not optimize a per-voice processor into a bus indiscriminately
+
+For a nonlinear processor \(f\), generally:
+
+\[
+f(x_1+x_2) \ne f(x_1)+f(x_2)
+\]
+
+Moving per-voice distortion after summation changes the instrument.
+
+A compiler may share work only when the operation, parameters, state, and mathematical properties allow it. “Fewer filters” is not an optimization if it changes the required semantics.
+
+# 9. KSP and UVI Script need semantic frontends, not syntax substitution
+
+UVI’s official KSP-porting documentation makes the problem concrete:
+
+- KSP generally forwards incoming events unless they are ignored.
+- A defined UVI callback must explicitly forward its event.
+- Units and conventions differ, including timing and tuning.
+- Some callback and API capabilities do not have direct equivalents. [Lua UVI](https://lua.uvi.net/_ksp_porting.html)
+
+That means the appropriate architecture is:
+
+```text
+KSP frontend ───────────┐
+                       ├──► Behavior IR / VM operations
+UVI-Lua frontend ──────┤
+                       │
+Native behavior DSL ───┘
+```
+
+But translation must preserve:
+
+```text
+Callback lifecycle
+Event consumption and forwarding
+Per-note versus shared variables
+Generated-note relationships
+Suspension and resumption
+Numeric semantics
+Persistent state
+Engine API side effects
+```
+
+Kontakt’s documented polyphonic variables, for example, are associated with individual note events and remain available to the corresponding release callback. That is a runtime-state rule, not a syntactic detail. [Native Instruments](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/variables?utm_source=chatgpt.com)
+
+## Split script execution by responsibility
+
+My recommendation is:
+
+**Real-time behavior VM:** event transformations, selection, note generation, parameter changes, and scheduled continuations.
+
+**Non-real-time scripting environment:** UI, file access, importing, graph editing, resource preparation, and tools.
+
+A `wait` operation should suspend a continuation in a bounded scheduler, not block a thread. UVI’s timing documentation describes its callback execution in terms of cooperative coroutines and explicit waits. [Lua UVI](https://lua.uvi.net/_time_intro.html)
+
+For the real-time VM, preallocate stacks, locals, continuation records, event queues, and allowed mutable storage. Give loops and generated events explicit budgets.
+
+However, **bounded execution and unrestricted script compatibility are different goals**. A script exceeding its budget needs a visible failure policy. Silently delaying it until the next audio buffer changes musical timing.
+
+## Where Lua and WebAssembly fit
+
+Lua is attractive for authoring and compatibility tooling. A general Lua environment with dynamic tables and garbage collection should not be assumed to have bounded callback execution merely because it uses coroutines. [lua.org](https://www.lua.org/manual/5.1/manual.html)
+
+WebAssembly is attractive for isolated importers and portable extensions. Wasmtime provides deterministic fuel interruption and lower-overhead, nondeterministic epoch interruption. Neither mechanism alone proves that all imported host calls meet an audio deadline. [docs.wasmtime.dev](https://docs.wasmtime.dev/examples-interrupting-wasm.html)
+
+I would prioritize **native DSP plus a small, deliberately bounded event VM**, and evaluate Lua/Wasm around that boundary rather than making one general scripting environment responsible for everything.
+
+# 10. Performance comes from compilation, scope, and resource preparation
+
+The lowest CPU will not come from making the core less expressive. It will come from making an expressive instrument compile into a specialized execution plan.
+
+## Compile selection instead of scanning the whole library
+
+At load time, build candidate indexes for keys, velocity intervals, articulation state, trigger type, and other useful dimensions.
+
+At note time:
+
+```text
+Get indexed candidates
+    → evaluate remaining predicates
+    → apply source-defined sequence/random policy
+    → commit selection
+    → allocate selected voices
+```
+
+Round-robin state needs an explicit domain and commit rule. A silent microphone, failed allocation, or rejected condition must not accidentally advance unrelated counters.
+
+For correlated microphone sets, choose the performance take once, then fan out to microphone assets.
+
+## Compile modulation rates and scopes
+
+Evaluate one shared LFO once when it is truly shared.
+
+Evaluate note expression once per owning note, then distribute its result.
+
+Evaluate per-voice randomization separately.
+
+Only process audio-rate modulation at audio rate where required. Precompute constants, remove unused routes, and specialize common graphs.
+
+Dispatch native kernels per prepared batch or processing span, not through a chain of dynamic trait calls for every sample.
+
+## Streaming must account for expressive playback
+
+A four-octave upward sample-rate pitch shift consumes source frames at \(2^4=16\) times the unshifted rate. That is a direct mathematical consequence of rate-based transposition, not a measured performance figure.
+
+A preload and scheduling policy therefore needs the expected maximum source-frame consumption rate, including pitch modulation, not merely the sample’s nominal duration.
+
+Conceptually:
+
+\[
+\text{Required ready frames}
+\ge
+\text{maximum consumption rate}
+\times
+(\text{I/O delay}+\text{decode delay}+\text{safety margin})
+\]
+
+Looping, reverse playback, large offsets, and granular access need different request patterns.
+
+A dynamically introduced extreme bend may exceed the prepared budget. Define that failure behavior instead of pretending a finite preload guarantees every possible gesture.
+
+## Sleeping voices need a state-continuity contract
+
+A silent layer may become audible through pressure or CC morphing.
+
+Skipping its work is safe only when the engine can preserve or reconstruct the required cursor, envelope, modulation, filter, and streaming state.
+
+A useful kernel contract should distinguish:
+
+```text
+Can sleep without state change
+Can advance state cheaply
+Can reconstruct state exactly
+Can only restart approximately
+Cannot safely sleep
+```
+
+That is more useful than a universal `active: bool`.
+
+## Measure deadline behavior, not only average CPU
+
+At 48 kHz, a 64-frame buffer lasts about 1.33 ms. That is the whole host processing interval, not a budget reserved for your sampler.
+
+Track worst observed and high-percentile callback duration, allocations, page misses, event density, decode starvation, graph-swap costs, and memory high-water marks.
+
+No “10× faster” claim is justified until equivalent workloads and quality settings have been measured.
+
+# 11. Compatibility must produce a report, not a boolean
+
+A module should declare required and optional capabilities. The compiler should then explain what happened.
+
+An illustrative report might distinguish:
+
+```text
+Assets:
+    available / missing / inaccessible
+
+Mapping:
+    supported / partially translated
+
+Event behavior:
+    validated profile / approximation / unsupported operation
+
+Scripts:
+    supported subset / rejected callback / resource limit exceeded
+
+DSP:
+    matching implementation / calibrated approximation / substitution
+
+Expression:
+    original behavior / enhanced per-note mappings
+
+State:
+    fully restored / migrated / unsupported fields preserved
+```
+
+This avoids the misleading outcome where an instrument “loads successfully” but its legato logic or release behavior is missing.
+
+Version the semantic profiles and algorithms as well as the file schema. A future improvement to a filter should not silently change every previously saved project.
+
+Host-facing parameter identity also needs stability. CLAP’s parameter specification explicitly requires stable parameter identifiers and defines restrictions around structural parameter changes. Your internal dense indices must not become your persistent automation identities. [GitHub](https://github.com/free-audio/clap/blob/main/include/clap/ext/params.h)
+
+For proprietary ecosystems, the research and implementation must separately establish container access, asset availability, script access, observable behavior, and DSP coverage. **An extensible ABI cannot substitute for those investigations.**
+
+# 12. The conformance suite should define the core
+
+Before attempting huge commercial instruments, build small synthetic instruments whose behavior is unmistakable.
+
+Use distinct diagnostic samples for attack, release, round-robin takes, microphone positions, and articulations. Record event and selection traces alongside audio.
+
+The important tests include:
+
+| Test | What it exposes |
+|---|---|
+| Two simultaneous same-pitch notes with different identities | Incorrect note matching |
+| Reused MPE channel while an earlier note releases | Expression ownership leakage |
+| Keyswitch or variation change during a held note | Incorrect release attribution |
+| Note stolen before physical key release | Confusion between note and voice lifetime |
+| Script replaces a note and creates harmonies | Lost expression inheritance |
+| CC, note-on, and expression at the same sample | Ordering and initialization errors |
+| Sustain plus release-trigger regions | Incorrect release policy |
+| Dormant layer becomes audible during a morph | State and streaming discontinuities |
+| Graph replacement during long tails | Premature resource destruction |
+| Module removal with active continuations | Invalid code/resource lifetime |
+| Streaming under large pitch excursions | Inadequate consumption-rate budgeting |
+| Identical input rendered at different block sizes | Accidental block-dependent behavior |
+
+Protocol normalization itself needs conformance tests. For example, CLAP explicitly allows a note-on with zero velocity; it must not be normalized using MIDI 1.0’s zero-velocity note-off convention. [GitHub](https://github.com/free-audio/clap/blob/main/include/clap/events.h)
+
+For compatibility testing, compare against reference engines where available, but label the result precisely: **validated on these cases and versions**, not “universally identical.”
+
+# What I would build first
+
+**First: the semantic foundation.** Define event identity, note lifetime, expression ownership, parameter scopes, release policies, graph generations, and capability reporting. Build a headless deterministic test renderer around them.
+
+**Second: the shared sample engine.** Implement sample playback, loops, resampling, streaming, selectors, envelopes, modulation, and routing. Exercise the architecture with at least two different public-format adapters rather than designing around only one.
+
+**Third: the behavior runtime.** Add script continuations, generated notes, phrase relationships, and source-dialect lowering. Start compatibility work with small, observable behavioral cases.
+
+**Fourth: deeper source adapters and specialized DSP.** Add Kontakt-, Falcon-, and SINE-oriented capabilities as their actual requirements become established. New algorithms enter the kernel registry; they do not become reasons to fork the entire engine.
+
+**Fifth: stabilize the external module SDK.** Preserve the now-tested boundaries in a versioned ABI, with explicit ownership, resources, execution constraints, and compatibility diagnostics.
+
+The decisive acceptance criterion is:
+
+> **Adding the next sampler format should require a parser, semantic translation, and only its genuinely missing behavior or DSP. It should not require another MIDI engine, voice manager, modulation system, or disk streamer.**
+
+That is the architecture that gives you both extensibility and substantial reuse. And by making note identity, expression, and processing scope foundational, MPE becomes a capability of the platform rather than a feature every imported instrument has to reinvent.

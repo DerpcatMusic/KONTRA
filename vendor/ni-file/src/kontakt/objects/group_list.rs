@@ -57,6 +57,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_group_list_000() -> Result<(), Error> {
         let mut file = File::open("tests/data/Objects/Kontakt/GroupList/GroupList-000")?;
 
@@ -71,6 +72,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_group_list_001() -> Result<(), Error> {
         let mut file = File::open("tests/data/Objects/Kontakt/GroupList/GroupList-001")?;
 

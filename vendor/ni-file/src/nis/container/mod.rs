@@ -1,3 +1,4 @@
+#[allow(clippy::module_inception)] // Preserve the vendored module API.
 mod container;
 mod data;
 mod header;
