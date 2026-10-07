@@ -1260,13 +1260,17 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
             .iter()
             .max_by(|a, b| loudness(a).total_cmp(&loudness(b)))
             .cloned();
-        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller"));
+        // A rack slot may hold no instrument: a program with no zones is empty, not broken.
+        let empty = |r: &Value| r["load"]["kind"] == "NoZone";
+        let subs: Vec<Value> = subs;
+        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller")) || empty(r);
         let stage = subs.iter().find(|r| !ok(r)).map_or("ok", |r| r["stage"].as_str().unwrap_or("load")).to_string();
         let load_ms: u64 = subs.iter().map(|r| r["load_ms"].as_u64().unwrap_or(0)).sum();
         let summary = json!({
             "programs": programs,
             "checked": subs.len(),
             "ok": subs.iter().filter(|r| ok(r)).count(),
+            "empty": subs.iter().filter(|r| empty(r)).count(),
             "sounding": subs.iter().filter(|r| r["sound"]["sounds"] == true || r["musical"]["sounds"] == true).count(),
             "finite": subs.iter().all(|r| r["sound"]["finite"] != false),
             "results": subs.iter().enumerate().map(|(i, r)| json!({
@@ -1376,7 +1380,8 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             // sounds, find the controller it needs.
             if let Ok(d) = &first {
                 // The quick tier only asks again of an item that was silent.
-                if (ctx.tier == Tier::Full || silent(d))
+                let t = Instant::now();
+                if silent(d)
                     && let Some(m) = reload(&ccs, false)
                 {
                     let mut musical = json!({
@@ -1396,10 +1401,18 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                     }
                     record["musical"] = musical;
                 }
+                record["perf_musical_ms"] = json!(t.elapsed().as_millis() as u64);
+                // Five full loads per probe: one instrument in eight (by id hash),
+                // or all with CH_MPE=all.
+                let sampled = std::env::var_os("CH_MPE").is_some()
+                    || item.id().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 8 == 0;
                 if ctx.tier == Tier::Full
+                    && sampled
                     && let Item::Kontakt(path) = item
                 {
+                    let t = Instant::now();
                     record["mpe"] = mpe_probe(path, pick, &ccs);
+                    record["perf_mpe_ms"] = json!(t.elapsed().as_millis() as u64);
                 }
             }
             match first {
