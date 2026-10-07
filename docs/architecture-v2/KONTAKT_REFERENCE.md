@@ -315,3 +315,21 @@ Range about 800 ms to 20 s (typed 100 and 500 are rejected and leave the old val
 **High Cut** lowers wet level and leaves the decay: wet peak -37.0 dB (1 kHz), -34.6 (4k), -32.1 (10k), -32.2 (21k). **Low Shelf** (+-12 dB) changes the 250 Hz band by about 0.1 s of RT60 and the wet peak by under 0.4 dB (a shelf on the wet low end; level effect not separated). **Mod** and **Return** not measured.
 
 Note on the first-sight default: the Time display shows "3.2k ms" and the measured default RT60 is 2.59-2.62 s, matching 3200 typed.
+
+## 22. Volume envelope: hold and decay time laws (GUI ms to seconds)
+
+Rig: `noise_instrument.sh noise` (continuous noise), Group Editor, scrolled to the Modulation > Volume AHDSR row. Defaults on a new sample instrument: Curve -33%, Attack 0, Hold 0, Decay 500 ms, Sustain 0 dB, Release 300 ms, mode AHDSR (the "AHD Only" button off). Sustain set to -24 dB so the decay is visible. `scenarios/ahd_note.txt` (one 6 s key-60 note), `env_sweep.sh TAG FX FY VALUE...` (fields at y 818: Curve 700, Attack 860, Hold 998, Decay 1135, Sustain 1265, Release 1410) and `env_ahd.py` (time after the plateau at which the 10 ms RMS falls 1/3/6/10/20 dB).
+
+**Hold**: the level stays flat for the displayed time, then the decay starts. Time to -3 dB minus the hold-0 value (0.072 s, which is the decay's own 3 dB point):
+
+| Hold ms | 100 | 500 | 1000 | 3000 |
+|---|---|---|---|---|
+| T(-3 dB) - 0.072 s | 0.084 | 0.480 | 0.985 | 2.95 |
+
+So hold = the displayed ms, linear, within about 2% (10 ms measurement window).
+
+**Decay**: with sustain -24 dB the level falls linearly in dB and reaches the sustain level at exactly the displayed Decay time. Time to -20 dB (fraction 20/24 = 0.833 of the decay): D=100 ms: 0.094 s; 250: 0.216; 500: 0.427; 1000: 0.844; 2000: 1.647 (0.84-0.94 x D). Decay 500 ms: -1/-3/-6/-10/-20 dB at 0.031/0.072/0.130/0.216/0.427 s, i.e. about 46 dB/s (24 dB over 0.5 s). So the decay is exponential in amplitude (a straight line in dB). Decay 2000: 20 dB at 1.647 s (49 ... 12 dB/s). The time to reach the sustain level scales linearly with the Decay setting (this measurement does not depend on the sustain depth at constant D: dB/s = depth / D).
+
+The Curve field (-100, -33, 0, 50, 100%) did not change the decay timings at all; it shapes only the attack segment.
+
+Release and attack time laws are in sections 5 and 9 (engine value -> seconds). Not yet cross-checked: the engine value (set_engine_par) against the GUI ms display for hold and decay; read the ms display after setting the engine value in a KSP script if that mapping is needed.
