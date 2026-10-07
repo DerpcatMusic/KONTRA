@@ -613,3 +613,52 @@ fn transition_zones_follow_the_interval_from_the_held_key() {
     // 67 is the most recent held key: 62 is 5 below it.
     assert!((start(&mut rt, 62) - (0.1 + 0.2 + 0.4)).abs() < 1e-6);
 }
+
+/// Two nested selectors (outer A/B, inner x/y): each keeps its choice while the
+/// other changes, and a zone sounds only under the pair it names.
+#[test]
+fn nested_selectors_are_independent_axes() {
+    let axis = |names: [&str; 2], keys: [u8; 2]| ir::Axis {
+        name: names.join("/"),
+        choices: names
+            .iter()
+            .zip(keys)
+            .map(|(n, k)| ir::AxisChoice {
+                name: (*n).into(),
+                switch_keys: vec![k],
+            })
+            .collect(),
+    };
+    let zone = |asset, outer, inner| ir::Zone {
+        keys: ir::KeyRange { low: 60, high: 60 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        axes: vec![
+            ir::AxisPick { axis: 0, choice: outer },
+            ir::AxisPick { axis: 1, choice: inner },
+        ],
+        ..ir::Zone::new(ir::AssetRef(asset))
+    };
+    let ir = ir::Instrument {
+        assets: ["ax", "ay", "bx", "by"].map(asset).to_vec(),
+        axes: vec![axis(["A", "B"], [10, 11]), axis(["x", "y"], [20, 21])],
+        zones: vec![zone(0, 0, 0), zone(1, 0, 1), zone(2, 1, 0), zone(3, 1, 1)],
+        ..Default::default()
+    };
+    let pcm = vec![constant(0.1), constant(0.2), constant(0.4), constant(0.8)];
+    let mut rt = Runtime::new(lower(&ir, 48000, pcm, no_behaviors).unwrap(), limits()).unwrap();
+    let mut out = [[0.0; 2]; 64];
+    let mut sound = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.0).unwrap();
+        rt.render(&mut out).unwrap();
+        rt.note_off(input(key), None).unwrap();
+        out[32][0]
+    };
+    assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 1); // A.x before any switch
+    sound(&mut rt, 21);
+    assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 2); // inner y under outer A
+    sound(&mut rt, 11);
+    assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 8); // outer B keeps inner y
+    sound(&mut rt, 20);
+    assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 4); // inner x under outer B
+}

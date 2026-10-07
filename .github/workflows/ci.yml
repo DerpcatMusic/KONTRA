@@ -28,6 +28,11 @@ env:
   CARGO_TARGET_DIR: target
   # Snapshots call this same workflow at their exact source commit, in release mode.
   CI_PROFILE: ${{ inputs.release_validation && 'release' || 'ci' }}
+  # First-party crates (cargo test/clippy at the workspace root covers only the root package).
+  CRATES: >-
+    -p kontakto -p sampler-core -p sampler-ir -p sampler-simd -p sampler-pool -p sampler-ksp
+    -p sampler-kontakt -p sampler-uvi -p sampler-midi -p sampler-native -p sampler-ui-ir
+    -p sampler-perf
 
 jobs:
   changes:
@@ -108,11 +113,13 @@ jobs:
         continue-on-error: true
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets
+        # The root package plus every first-party sampler crate; vendored crates are
+        # checked only as dependencies.
+        run: cargo clippy --locked --profile "$CI_PROFILE" --all-targets $CRATES
       - name: test
         # library-access is already a default feature; this includes access::*.
         run: |
-          cargo test --locked --profile "$CI_PROFILE"
+          cargo test --locked --profile "$CI_PROFILE" $CRATES
           cargo test --locked --profile "$CI_PROFILE" -p kontra-native-host --lib
       - name: Native host lifecycle and software-GL presentation
         env:
