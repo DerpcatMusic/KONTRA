@@ -70,7 +70,7 @@ calibrate)  # gain through the whole chain: bare noise instrument at unity, reco
   python3 "$here/scenario.py" "$here/scenarios/calibration.txt" "$W/cal.mid"
   KONTRA_NO_STAMP_CHECK=1 "$here/record.sh" "$W/cal.mid" "$W/wav/cal.wav" 3 || exit 1
   if python3 "$here/calibrate.py" "$W/wav/cal.wav" /tmp/noise.wav 0.0 | tee "$W/log/calibration.txt"; then
-    echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $(pgrep -o wineserver) $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
+    echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $("$(dirname "$0")/wsid.sh") $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
   else rm -f "$W/calibrated"; echo "calibrate: FAILED, session aborted (no recordings allowed)" >&2; exit 1; fi ;;
 stop)
   click 20 57 || true; click 42 123 || true   # File > Exit
