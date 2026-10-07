@@ -9,7 +9,34 @@ fn db(db: f64) -> ir::Gain {
     ir::Gain::Linear(10f64.powf(db / 20.0))
 }
 
+/// Where an insert element's processors sit in its chain, so a script that
+/// writes the insert's parameters can reach them. Every insert element has an
+/// entry, a bypassed or unmodeled one with `count` 0. A DigitalEq's range is
+/// one processor per enabled non-flat band in band order, then its
+/// OverallGain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InsertNode {
+    /// The element's `roxmltree::NodeId::get_usize()`.
+    pub node: usize,
+    pub chain: ir::ChainRef,
+    pub first: usize,
+    pub count: usize,
+}
+
+/// An insert's processors before its chain exists: element, first, count.
+pub(super) type Placed = (usize, usize, usize);
+
 impl Translation {
+    /// Record `placed` entries (relative to one chain) once the chain is `chain`.
+    pub(super) fn place(&mut self, chain: ir::ChainRef, placed: Vec<Placed>) {
+        self.insert_nodes.extend(placed.into_iter().map(|(node, first, count)| InsertNode {
+            node,
+            chain,
+            first,
+            count,
+        }));
+    }
+
     /// The enabled inserts of `parent` (an AuxEffect or a Keygroup), in order.
     /// `voice` chains have no convolution; `key` is the middle key of a
     /// keygroup, for key-tracked cutoffs.
@@ -18,13 +45,17 @@ impl Translation {
         parent: Node,
         voice: bool,
         key: Option<u8>,
-    ) -> Result<Vec<ir::Processor>, String> {
+    ) -> Result<(Vec<ir::Processor>, Vec<Placed>), String> {
         let mut out = Vec::new();
+        let mut placed = Vec::new();
         let Some(inserts) = parent.children().find(|n| n.has_tag_name("Inserts")) else {
-            return Ok(out);
+            return Ok((out, placed));
         };
         for node in inserts.children().filter(|n| n.is_element()) {
+            let first = out.len();
+            let id = node.id().get_usize();
             if number(node, "Bypass", 0.0)? != 0.0 {
+                placed.push((id, first, 0));
                 continue;
             }
             let at = path(node);
@@ -78,18 +109,17 @@ impl Translation {
                     }));
                 }
                 "Convolver" | "SampledReverb" if !voice => {
-                    let Some(sample) = node.attribute("SamplePath").filter(|p| !p.is_empty())
-                    else {
-                        continue;
-                    };
-                    let Some(asset) = self.asset(&at, sample) else {
-                        continue;
-                    };
+                    // No file (or an unreadable one) leaves a unit impulse: the
+                    // processor stays, so a script can swap an impulse in.
+                    let asset = node
+                        .attribute("SamplePath")
+                        .filter(|p| !p.is_empty())
+                        .and_then(|sample| self.asset(&at, sample));
                     self.ir.impulses.push(ir::Impulse {
                         rate: 48000,
                         left: vec![1.0],
                         right: vec![1.0],
-                        asset: Some(asset),
+                        asset,
                     });
                     if node.has_tag_name("SampledReverb") {
                         for name in ["Time", "DampingLow", "DampingHigh", "PreDelay", "Width"] {
@@ -124,20 +154,27 @@ impl Translation {
                             out.push(ir::Processor::Gain(ir::Gain::Linear(number(
                                 chain, "Gain", 1.0,
                             )?)));
-                            let inner = self.inserts(chain, voice, key)?;
+                            let (inner, entries) = self.inserts(chain, voice, key)?;
+                            let base = out.len();
+                            placed.extend(entries.into_iter().map(|(n, f, c)| (n, base + f, c)));
                             out.extend(inner);
                         }
                         _ => {
                             self.unsupported(&at, "EffectRack with parallel chains", live.len());
+                            placed.push((id, first, 0));
                             continue;
                         }
                     }
                 }
-                _ => continue,
+                _ => {
+                    placed.push((id, first, 0));
+                    continue;
+                }
             }
+            placed.push((id, first, out.len() - first));
             self.used.push(node.id());
         }
-        Ok(out)
+        Ok((out, placed))
     }
 
     fn digital_eq(
