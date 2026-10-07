@@ -2,7 +2,9 @@
 # Kontakt 8 standalone under Wine on a private Xvfb, audio to a null sink,
 # MIDI from ALSA "Midi Through". Does not touch the Wine prefix or yabridge;
 # Kontakt's own prefs (Portapotty/UserData/Settings.cfg) hold the audio device.
-# Usage: kontakt.sh start INSTRUMENT.nki | setup | route | stop
+# Usage: kontakt.sh start INSTRUMENT.nki | setup | route | state | calibrate | stop
+# Reference protocol (docs/architecture-v2/REFERENCE_PROTOCOL.md): `calibrate` (needs scenarios/calibration.nki loaded) must pass once per
+# session; record.sh refuses to run without a valid stamp, a pinned `state` and a protocol-compliant MIDI file.
 # One-time: in Kontakt Options > Audio pick device "kontra_ref" (WASAPI shared,
 # 48000 Hz); back up Settings.cfg first. GUI coordinates assume the 1600x1000 desktop.
 set -euo pipefail
@@ -55,7 +57,21 @@ route)  # routing guard: Kontakt's output ports must be linked ONLY to kontra_re
     sleep 1
   done
   echo "route: FAILED, Kontakt is not isolated on kontra_ref" >&2; exit 1 ;;
+state)  # pinned-state check: master 0.00 dB / 440 Hz, instrument volume 0 dB, pan C, tune 0 (golden screenshots); prints the values it verified
+  here=$(cd "$(dirname "$0")" && pwd); xdotool mousemove 1300 420; sleep 0.5; import -window root "$W/log/state_closed.png"
+  click 1224 98 1.5; xdotool mousemove 1300 420; sleep 0.5; import -window root "$W/log/state_master.png"; click 1224 98 1.0
+  python3 "$here/state_check.py" "$W/log/state_closed.png" "$W/log/state_master.png" ;;
+calibrate)  # gain through the whole chain: bare noise instrument at unity, recorded level must be the file level x the master law
+  here=$(cd "$(dirname "$0")" && pwd)
+  [ -f /tmp/noise.wav ] || python3 "$here/make_noise.py" /tmp/noise.wav noise
+  "$0" state || { echo "calibrate: state not pinned, abort" >&2; exit 1; }
+  python3 "$here/scenario.py" "$here/scenarios/calibration.txt" "$W/cal.mid"
+  KONTRA_NO_STAMP_CHECK=1 "$here/record.sh" "$W/cal.mid" "$W/wav/cal.wav" 3 || exit 1
+  if python3 "$here/calibrate.py" "$W/wav/cal.wav" /tmp/noise.wav 0.0 | tee "$W/log/calibration.txt"; then
+    echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $(pgrep -o wineserver) $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
+  else rm -f "$W/calibrated"; echo "calibrate: FAILED, session aborted (no recordings allowed)" >&2; exit 1; fi ;;
 stop)
+  rm -f "$W/calibrated"
   click 20 57 || true; click 42 123 || true   # File > Exit
   sleep 3
   pkill -f '[K]ontakt 8.exe' || true
