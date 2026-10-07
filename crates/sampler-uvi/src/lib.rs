@@ -1904,6 +1904,15 @@ mod survey {
                         println!("UF {}|{}", f.feature, f.value.chars().take(300).collect::<String>().replace(' ', "_"));
                     }
                 }
+                if std::env::var_os("KONTRA_INSERTS").is_some() {
+                    // survey aid: the inserts of the program with their main values
+                    let doc = roxmltree::Document::parse(&text).unwrap();
+                    for n in doc.descendants().filter(|n| n.parent().is_some_and(|p| p.has_tag_name("Inserts"))) {
+                        let keep = ["Name", "Bypass", "SamplePath", "Dry", "Wet", "Gain_1_1", "Gain_1_2", "Gain_2_1", "Gain_2_2", "Time", "Freq", "Mode", "Volume", "OverallGain", "Gain"];
+                        let attrs: Vec<String> = n.attributes().filter(|a| keep.contains(&a.name())).map(|a| format!("{}={}", a.name(), a.value())).collect();
+                        println!("UN {} {}", n.tag_name().name(), attrs.join(" "));
+                    }
+                }
                 if let Ok(specs) = std::env::var("KONTRA_LINE") {
                     // transient debugging aid, prints to the terminal only
                     for spec in specs.split(',') {
@@ -2036,6 +2045,26 @@ mod survey {
             Ok(p) => p,
             Err(e) => return format!("load-fail {}", e.to_string().chars().take(160).collect::<String>().replace(' ', "_")),
         };
+        if std::env::var_os("KONTRA_CHAINS").is_some() {
+            // survey aid: the chain of the zone covering `key`, and the buses' and groups' chains
+            let ins = &program.instrument;
+            let show = |label: &str, c: Option<sampler_ir::ChainRef>| {
+                if let Some(c) = c {
+                    let ch = &ins.chains[c.0];
+                    println!("UK {label} {:?} pre={} post={}", ch.scope, format!("{:?}", ch.pre_amplitude).chars().take(400).collect::<String>(), format!("{:?}", ch.post_amplitude).chars().take(400).collect::<String>());
+                }
+            };
+            for z in ins.zones.iter().filter(|z| z.keys.low <= key && key <= z.keys.high).take(2) {
+                show("zone", z.chain);
+            }
+            for g in &ins.groups {
+                show(&format!("group {}", g.name), g.chain);
+            }
+            for b in &ins.buses {
+                show(&format!("bus {}", b.name), b.chain);
+            }
+            println!("UK zones={} chains={} impulses={:?}", ins.zones.len(), ins.chains.len(), ins.impulses.iter().map(|i| (i.rate, i.left.len())).collect::<Vec<_>>());
+        }
         let errors = program
             .instrument
             .unsupported
