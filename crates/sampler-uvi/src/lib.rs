@@ -1798,6 +1798,9 @@ mod survey {
     impl crate::script::Files for Marked {
         fn script(&self, module: &str) -> Option<String> {
             let text = self.0.script(module)?;
+            if let Some(dir) = std::env::var_os("KONTRA_DUMP") {
+                let _ = std::fs::write(std::path::Path::new(&dir).join(module.replace('/', "_")), &text);
+            }
             if std::env::var_os("KONTRA_TRACE").is_none() {
                 return Some(text);
             }
@@ -1884,7 +1887,7 @@ mod survey {
                     host.advance(500.0);
                     let mut clock = 500.0;
                     for key in [24u8, 36, 48, 59, 60, 72, 84] {
-                        host.note_on(1000 + u64::from(key), key, 100, 0);
+                        host.note_on(1000 + u64::from(key), key, std::env::var("KONTRA_VEL").ok().and_then(|v| v.parse().ok()).unwrap_or(100), 0);
                         clock += 2000.0;
                         host.advance(clock);
                         let c = host.take_commands();
