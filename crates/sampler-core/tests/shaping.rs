@@ -29,7 +29,11 @@ fn source() -> Vec<[f32; 2]> {
     (0..FRAMES)
         .map(|i| {
             let x = ((i * 37 % 101) as f32 / 50. - 1.) * if i < 150 { 0.9 } else { 0.05 };
-            if (200..250).contains(&i) { [x, -x] } else { [x, x * 0.5 + 0.01] }
+            if (200..250).contains(&i) {
+                [x, -x]
+            } else {
+                [x, x * 0.5 + 0.01]
+            }
         })
         .collect()
 }
@@ -59,7 +63,14 @@ fn run(prepared: Prepared, block: usize) -> Vec<[f32; 2]> {
     let mut audio = vec![[0f32; 2]; FRAMES];
     support::without_heap(|| {
         rt.trigger(
-            Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) },
+            Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            },
             60,
             1.,
         )
@@ -74,7 +85,10 @@ fn run(prepared: Prepared, block: usize) -> Vec<[f32; 2]> {
 fn close(actual: &[[f32; 2]], expected: &[[f64; 2]]) {
     for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
         for c in 0..2 {
-            assert!((f64::from(a[c]) - e[c]).abs() < 3e-7, "frame {i}: {a:?} != {e:?}");
+            assert!(
+                (f64::from(a[c]) - e[c]).abs() < 3e-7,
+                "frame {i}: {a:?} != {e:?}"
+            );
         }
     }
 }
@@ -92,7 +106,10 @@ fn both_scopes(stage: Processor, expected: &[[f64; 2]]) {
             .with_buses(
                 vec![Bus {
                     processors: vec![stage],
-                    sends: vec![BusSend { bus: None, gain: 1. }],
+                    sends: vec![BusSend {
+                        bus: None,
+                        gain: 1.,
+                    }],
                     tail_frames: 0,
                 }],
                 vec![Some(0)],
@@ -105,7 +122,10 @@ fn both_scopes(stage: Processor, expected: &[[f64; 2]]) {
 #[test]
 fn rectifiers_follow_their_branches() {
     let wide = |f: fn(f64) -> f64| -> Vec<[f64; 2]> {
-        source().iter().map(|f2| [f(f64::from(f2[0])), f(f64::from(f2[1]))]).collect()
+        source()
+            .iter()
+            .map(|f2| [f(f64::from(f2[0])), f(f64::from(f2[1]))])
+            .collect()
     };
     both_scopes(Processor::Rectify(Rectifier::Full), &wide(f64::abs));
     both_scopes(Processor::Rectify(Rectifier::Half), &wide(|x| x.max(0.)));
@@ -152,7 +172,14 @@ fn batched_voices_rectify_like_scalar_voices() {
     let mut audio = vec![[0f32; 2]; FRAMES];
     support::without_heap(|| {
         for (id, velocity) in [(1, 1.), (2, 0.5), (3, 0.25)] {
-            let input = Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+            let input = Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(id),
+            };
             rt.trigger(input, 60, velocity).unwrap();
         }
         for chunk in audio.chunks_mut(37) {
