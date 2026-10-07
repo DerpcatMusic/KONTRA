@@ -1520,6 +1520,31 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
+            GetEventPar
+                if matches!(
+                    self.const_int(args, 1),
+                    Some(
+                        b::event_par::ZONE_ID
+                            | b::event_par::MIDI_CHANNEL
+                            | b::event_par::NOTE
+                            | b::event_par::VELOCITY
+                    )
+                ) && !self.selects_many(builtin, args, 0) =>
+            {
+                let info = match self.const_int(args, 1) {
+                    Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
+                    Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
+                    Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
+                    _ => sampler_core::EventInfo::MidiChannel,
+                };
+                self.arg(args, 0, dst)?;
+                self.emit(I::ReadEventInfo {
+                    event: dst,
+                    info,
+                    local: dst,
+                })?;
+                true
+            }
             AllowGroup | DisallowGroup if self.note_context() => {
                 let allowed = builtin == AllowGroup;
                 let pending_only = self.ctx == Context::Note;
@@ -1636,6 +1661,38 @@ impl Gen<'_, '_> {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
                 self.write_param(ParamScope::Note, target, dst, args, Some(2))?;
+                true
+            }
+            // Group selection of a note this callback just played.
+            SetEventParArr
+                if self.const_int(args, 1) == Some(b::event_par::ALLOW_GROUP)
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 2, t)?;
+                let group = reg(dst, 2)?;
+                self.arg(args, 3, group)?;
+                let all = reg(dst, 3)?;
+                self.set(all, i64::from(b::ALL_GROUPS))?;
+                self.emit(I::CompareLocal {
+                    lhs: all,
+                    rhs: group,
+                    comparison: Cmp::Equal,
+                })?;
+                let one = self.jump_if_zero(all)?;
+                self.emit(I::WriteEventGroup {
+                    event: dst,
+                    group: None,
+                    allowed: t,
+                })?;
+                let end = self.jump()?;
+                self.land(one);
+                self.emit(I::WriteEventGroup {
+                    event: dst,
+                    group: Some(group),
+                    allowed: t,
+                })?;
+                self.land(end);
                 true
             }
             // "From script" modulator values (Kontakt 6.6+), per source event.
@@ -2576,7 +2633,7 @@ impl Gen<'_, '_> {
             offset
         };
         let scratch = reg(frames, 1)?;
-        let inheritance = Inheritance::Independent;
+        let inheritance = Inheritance::Expression;
         let play = |duration| I::PlayMidi {
             key: dst,
             velocity,

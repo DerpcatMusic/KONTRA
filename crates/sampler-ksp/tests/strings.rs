@@ -225,3 +225,39 @@ fn user_event_parameters_reach_the_release_callback() {
     }
     assert_eq!((cell(&rt, 0), cell(&rt, 1)), (1234567, -5));
 }
+
+/// `get_event_par` reports a sounding event's zone as nonzero and an ignored
+/// one as 0, and the event's MIDI channel (Solo clears finished events by it).
+#[test]
+fn event_zone_id_is_nonzero_only_while_the_event_sounds() {
+    let rt = run(
+        "on init declare $sounding declare $ch declare $ignored end on
+         on note
+           wait(500)
+           $sounding := get_event_par($EVENT_ID, $EVENT_PAR_ZONE_ID)
+           $ch := get_event_par($EVENT_ID, $EVENT_PAR_MIDI_CHANNEL) + 10
+           $ignored := get_event_par(99999, $EVENT_PAR_ZONE_ID) + 7
+         end on",
+        &[],
+    );
+    assert_ne!(cell(&rt, 0), 0);
+    assert_eq!((cell(&rt, 1), cell(&rt, 2)), (10, 7));
+}
+
+/// Another event's key and velocity read back through its id (legato scripts
+/// keep them in arrays of ids).
+#[test]
+fn another_events_key_and_velocity_read_through_its_id() {
+    let rt = run(
+        "on init declare $id declare $k declare $v end on
+         on note
+           ignore_event($EVENT_ID)
+           $id := play_note(61, 100, 0, 0)
+           wait(100)
+           $k := get_event_par($id, $EVENT_PAR_NOTE)
+           $v := get_event_par($id, $EVENT_PAR_VELOCITY)
+         end on",
+        &[],
+    );
+    assert_eq!((cell(&rt, 1), cell(&rt, 2)), (61, 100));
+}

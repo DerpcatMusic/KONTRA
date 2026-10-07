@@ -42,11 +42,11 @@ pub(crate) enum Origin {
 
 impl Origin {
     fn open(&self) -> io::Result<Bytes> {
-        let (file, base, size, key) = match self {
+        let (file, base, size, key, guard) = match self {
             Self::File(path) => {
                 let file = File::open(path)?;
-                let size = file.metadata()?.len();
-                (file, 0, size, None)
+                let meta = file.metadata()?;
+                (file, 0, meta.len(), None, Guard::Loose(meta.len(), meta.modified().ok()))
             }
             #[cfg(feature = "library-access")]
             Self::Member { ufs, offset, size, key } => (
@@ -54,14 +54,40 @@ impl Origin {
                 *offset,
                 *size,
                 *key,
+                Guard::Bank(ufs.clone()),
             ),
         };
-        Ok(Bytes { file, base, size, key, pos: 0, buf: Vec::new(), at: 0, riff: false })
+        Ok(Bytes { file, base, size, key, guard, pos: 0, buf: Vec::new(), at: 0, riff: false })
+    }
+}
+
+/// What a read re-checks, so a library changed under a stream fails cleanly.
+enum Guard {
+    /// Length and modification time of a loose file when it was opened.
+    Loose(u64, Option<std::time::SystemTime>),
+    #[cfg(feature = "library-access")]
+    Bank(Arc<crate::ufs::Ufs>),
+}
+
+impl Guard {
+    fn check(&self, file: &File) -> io::Result<()> {
+        match self {
+            Self::Loose(len, modified) => {
+                let meta = file.metadata()?;
+                if meta.len() != *len || meta.modified().ok() != *modified {
+                    return Err(invalid("sample file changed while streaming"));
+                }
+                Ok(())
+            }
+            #[cfg(feature = "library-access")]
+            Self::Bank(ufs) => ufs.check_snapshot(file).map_err(|e| invalid(e)),
+        }
     }
 }
 
 /// A seekable, on-the-fly decrypted view of one member.
 struct Bytes {
+    guard: Guard,
     file: File,
     /// Physical offset of the member, also the cipher nonce base.
     base: u64,
@@ -92,7 +118,11 @@ impl Read for Bytes {
                     n => filled += n,
                 }
             }
-            self.buf.truncate(filled);
+            if filled < len {
+                self.buf.clear();
+                return Err(invalid("sample data truncated"));
+            }
+            self.guard.check(&self.file)?;
             if let Some(key) = self.key {
                 crate::crypto::transform_blocks(&mut self.buf, key, self.base + start);
             }
@@ -372,6 +402,30 @@ mod tests {
                 assert_eq!(out, full.frames[range]);
             }
             assert!(reader.read(full.frames.len() - 1, &mut [[0.0; 2]; 2]).is_err());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_changed_or_truncated_under_a_stream_fails_cleanly() {
+        let dir = std::env::temp_dir().join(format!("uvi-stream-change-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = wav(50000, 2, false);
+        for truncate in [false, true] {
+            let path = dir.join(format!("{truncate}.wav"));
+            std::fs::write(&path, &bytes).unwrap();
+            let mut reader = Sample { parts: vec![Origin::File(path.clone())] }.open().unwrap();
+            let mut out = vec![[0.0; 2]; 100];
+            reader.read(0, &mut out).unwrap();
+            let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            if truncate {
+                file.set_len(bytes.len() as u64 / 2).unwrap();
+            } else {
+                // Same length, new modification time.
+                file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5)).unwrap();
+            }
+            // Far enough ahead to need a fresh chunk of the file.
+            assert!(reader.read(40000, &mut out).is_err(), "truncate {truncate}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

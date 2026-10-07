@@ -3774,6 +3774,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sampler-perf"
+version = "0.1.0"
+dependencies = [
+ "sampler-core",
+ "sampler-ir",
+ "sampler-kontakt",
+ "sampler-midi",
+ "sampler-uvi",
+ "serde_json",
+]
+
+[[package]]
 name = "sampler-pool"
 version = "0.1.0"
 
