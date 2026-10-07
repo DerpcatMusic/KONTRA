@@ -1149,6 +1149,9 @@ impl CoreLoader for V2Loader {
         let voices = limits.voices;
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
+        // A source whose first window is not resident starts silent and fades in
+        // rather than being refused NotReady.
+        runtime.set_cold_starts(true);
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
