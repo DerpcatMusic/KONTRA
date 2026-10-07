@@ -1075,12 +1075,19 @@ impl Runtime {
                 self.behavior_ready.remove(index);
                 continue;
             };
-            if fuel == 0 {
+            if fuel == 0 || self.block_fuel_left == 0 {
                 self.behavior_ready.remove(index);
                 self.yield_behavior(id);
                 continue;
             }
+            let ran = self.run_straight(id, fuel.min(self.block_fuel_left));
+            if ran > 0 {
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
+                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - ran };
+                continue;
+            }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
+            self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             let stepped = self.behavior_step(id, c.owner, op);
             if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
@@ -1105,6 +1112,145 @@ impl Runtime {
             }
         }
         self.dispatching_behavior = false;
+    }
+
+    /// Run straight-line local and script-cell instructions in a tight loop,
+    /// resolving the callback's locals, plan and cell bank once instead of
+    /// per instruction. Stops before anything else, a would-be fault or when
+    /// `fuel` is spent; the general path then runs or reports that instruction.
+    /// Returns the instructions run.
+    fn run_straight(&mut self, id: BehaviorId, fuel: usize) -> usize {
+        let Some(c) = self.behaviors.get(id.0) else {
+            return 0;
+        };
+        let (owner, program, mut pc) = (c.owner, c.program, c.pc);
+        let Ok(plan) = self.behavior_plan(owner) else {
+            return 0;
+        };
+        let Some(generation) = self.plans.get_mut(plan.0) else {
+            return 0;
+        };
+        let code = &generation.prepared.programs[program].code;
+        let instance = generation.prepared.programs[program].script_instance;
+        let mut cells = instance
+            .and_then(|i| generation.scripts.get_mut(usize::from(i.0)))
+            .map(|bank| &mut bank.cells[..]);
+        let base = id.0.index * self.behavior_stride;
+        let Some(locals) = self
+            .behavior_locals
+            .get_mut(base..base + self.behavior_stride)
+        else {
+            return 0;
+        };
+        let mut steps = 0;
+        macro_rules! local {
+            ($l:expr) => {
+                match locals.get_mut(usize::from($l)) {
+                    Some(cell) => cell,
+                    None => break,
+                }
+            };
+        }
+        macro_rules! cell {
+            ($c:expr) => {
+                match cells
+                    .as_deref_mut()
+                    .and_then(|cells| cells.get_mut($c as usize))
+                {
+                    Some(cell) => cell,
+                    None => break,
+                }
+            };
+        }
+        while steps < fuel {
+            let Some(op) = code.get(pc).copied() else {
+                break;
+            };
+            let mut next = pc + 1;
+            match op {
+                Instruction::SetLocal { local, value } => *local!(local) = value,
+                Instruction::AddLocal { local, value } => {
+                    let cell = local!(local);
+                    let Some(sum) = cell.checked_add(value) else {
+                        break;
+                    };
+                    *cell = sum;
+                }
+                Instruction::Binary32 {
+                    lhs,
+                    rhs,
+                    operation,
+                } => {
+                    let Ok(right) = i32::try_from(*local!(rhs)) else {
+                        break;
+                    };
+                    let left = local!(lhs);
+                    let Ok(value) = i32::try_from(*left) else {
+                        break;
+                    };
+                    *left = i64::from(operation.apply(value, right));
+                }
+                Instruction::Unary32 { local, operation } => {
+                    let cell = local!(local);
+                    let Ok(value) = i32::try_from(*cell) else {
+                        break;
+                    };
+                    *cell = i64::from(operation.apply(value));
+                }
+                Instruction::CompareLocal {
+                    lhs,
+                    rhs,
+                    comparison,
+                } => {
+                    let right = *local!(rhs);
+                    let left = local!(lhs);
+                    *left = i64::from(comparison.apply(*left, right));
+                }
+                Instruction::Jump { target } => next = target,
+                Instruction::JumpIfZero { local, target } => {
+                    if *local!(local) == 0 {
+                        next = target;
+                    }
+                }
+                Instruction::ReadScriptCell { local, cell } => {
+                    let value = *cell!(cell);
+                    *local!(local) = value;
+                }
+                Instruction::WriteScriptCell { cell, local } => {
+                    let value = *local!(local);
+                    *cell!(cell) = value;
+                }
+                Instruction::ReadScriptArray {
+                    array,
+                    index,
+                    local,
+                } => {
+                    let Ok(at) = array.cell(*local!(index)) else {
+                        break;
+                    };
+                    let value = *cell!(at);
+                    *local!(local) = value;
+                }
+                Instruction::WriteScriptArray {
+                    array,
+                    index,
+                    local,
+                } => {
+                    let Ok(at) = array.cell(*local!(index)) else {
+                        break;
+                    };
+                    let value = *local!(local);
+                    *cell!(at) = value;
+                }
+                _ => break,
+            }
+            pc = next;
+            steps += 1;
+        }
+        if steps > 0 {
+            self.behaviors.get_mut(id.0).unwrap().pc = pc;
+        }
+        steps
     }
 
     fn yielded_plan(&self, id: BehaviorId) -> Option<super::PlanId> {

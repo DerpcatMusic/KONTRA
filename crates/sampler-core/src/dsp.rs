@@ -121,6 +121,18 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    /// One parallel branch of an effect rack: the next `count` processors run
+    /// on the signal that entered the first branch, and `gain` times their
+    /// output joins the sum. The last branch leaves the sum as the signal.
+    /// Per-voice scalar path.
+    Branch {
+        count: u16,
+        gain: f64,
+        first: bool,
+        last: bool,
+    },
+    /// Kontakt Daft filter; per-voice scalar path.
+    Daft(DaftSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -160,6 +172,8 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
+            Processor::Daft(settings) => settings.valid(),
+            Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
@@ -169,12 +183,14 @@ impl Processor {
 pub(super) mod control;
 mod compressor;
 mod convolution;
+mod daft;
 mod delay;
 pub(super) mod lanes;
 mod reverb;
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
+pub use daft::DaftSettings;
 pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
@@ -198,6 +214,13 @@ pub(super) enum PreparedProcessor {
     Compressor(compressor::Compressor),
     Rectify(Rectifier),
     Decimate(Decimator),
+    Daft(daft::Daft),
+    Branch {
+        count: u16,
+        gain: f64,
+        first: bool,
+        last: bool,
+    },
     StateVariable(usize),
     /// Index into the bus graph's reverbs.
     Reverb(usize),
@@ -319,6 +342,20 @@ pub(super) fn compile_processors(
                 }
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate))
+                }
+                Processor::Branch {
+                    count,
+                    gain,
+                    first,
+                    last,
+                } => PreparedProcessor::Branch {
+                    count,
+                    gain,
+                    first,
+                    last,
+                },
+                Processor::Daft(settings) => {
+                    PreparedProcessor::Daft(settings.compile(rate, bindings))
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
@@ -543,6 +580,8 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::Daft(_)
+                        | PreparedProcessor::Branch { .. }
                 )
             })
     }
@@ -603,7 +642,7 @@ fn flush32(v: f32) -> f32 {
 pub(super) struct ProcessorState {
     z: [[f64; 2]; 2],
     /// Further state for stages that need more than `z` (the decimator).
-    aux: [f64; 3],
+    aux: [f64; 16],
     delay_position: u32,
     delay_filled: u32,
 }
@@ -628,11 +667,46 @@ pub(super) fn process(
 ) -> bool {
     let mut fault = false;
     let mut next = 0;
+    // The entering signal and the running sum of the rack branch in progress.
+    let mut split: Option<(Planar, Planar)> = None;
     while next < stages.len() {
         let (stage, index) = (&stages[next], next);
         next += 1;
         let state = &mut states[index];
         match stage {
+            PreparedProcessor::Branch {
+                count,
+                gain,
+                first,
+                last,
+            } => {
+                let inner = next..next + usize::from(*count);
+                next = inner.end;
+                if *first || split.is_none() {
+                    split = Some((*block, [[0.; BLOCK]; 2]));
+                }
+                fault |= process(
+                    &stages[inner.clone()],
+                    &mut states[inner],
+                    block,
+                    len,
+                    parameters,
+                    at,
+                    delay_samples,
+                    filters,
+                );
+                if let Some((entering, sum)) = split.as_mut() {
+                    for c in 0..2 {
+                        for i in 0..len {
+                            sum[c][i] += gain * block[c][i];
+                        }
+                    }
+                    *block = if *last { *sum } else { *entering };
+                }
+                if *last {
+                    split = None;
+                }
+            }
             PreparedProcessor::Mix { count, lanes } => {
                 let inner = next..next + usize::from(*count);
                 next = inner.end;
@@ -710,6 +784,7 @@ pub(super) fn process(
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
+            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
