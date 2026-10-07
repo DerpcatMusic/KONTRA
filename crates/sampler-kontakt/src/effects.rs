@@ -11,8 +11,8 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
-const RACK: u16 = 0x3a;
-const BUS: u16 = 0x45;
+pub(crate) const RACK: u16 = 0x3a;
+pub(crate) const BUS: u16 = 0x45;
 
 /// Module names by serialization ID (Kontakt's `BParFX*` classes).
 const MODULES: &[(u16, &str)] = &[
@@ -78,8 +78,9 @@ pub(crate) struct Slot {
     pub bypass: bool,
     pub output_gain: f32,
     pub dry_level: f32,
+    /// A script wrote the output gain with `set_engine_par`.
+    pub output_set: bool,
     pub public: Vec<u8>,
-    pub private: Vec<u8>,
 }
 
 pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
@@ -99,10 +100,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
                 bypass: state.bypass,
                 output_gain: state.output_gain,
                 dry_level: state.dry_level,
+                output_set: false,
                 public: object
                     .as_ref()
                     .map_or_else(Vec::new, |o| o.public_data.clone()),
-                private: object.map_or_else(Vec::new, |o| o.private_data),
             })
         })
         .collect()
@@ -110,7 +111,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
 
 /// The program's racks with their locations: instrument insert, send and
 /// main, then each bus.
-pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
+pub(crate) fn program_racks(
+    program: &Program,
+    writes: &[sampler_ksp::EnginePar],
+) -> Vec<(String, Vec<Slot>)> {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut out = Vec::new();
     let mut racks = 0;
@@ -123,7 +127,13 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                     .map_or_else(|| format!("rack {racks}"), |n| (*n).into());
                 racks += 1;
                 if let Ok(array) = BParamArrayBParFX8::try_from(child) {
-                    out.push((name, rack(&array)));
+                    let mut slots = rack(&array);
+                    // File order insert, send, main; `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0,
+                    // `$NI_MAIN_BUS` 2.
+                    if let Some(&generic) = [1, 0, 2].get(racks - 1) {
+                        apply_writes(&mut slots, writes, -1, generic);
+                    }
+                    out.push((name, slots));
                 }
             }
             BUS => {
@@ -135,13 +145,61 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                         .find_first(RACK)
                         .and_then(|c| BParamArrayBParFX8::try_from(c).ok())
                 {
-                    out.push((format!("bus {index}"), rack(&array)));
+                    let mut slots = rack(&array);
+                    // `$NI_BUS_OFFSET` + the bus number.
+                    apply_writes(&mut slots, writes, -1, 1000 + index as i32);
+                    out.push((format!("bus {index}"), slots));
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// Engine value (0..1000000) of an effect level as a linear gain: cubic about
+/// 396851 (2^(-4/3)) = unity, so 1000000 is +24 dB. Fitted to stored slots whose
+/// saved output gain and dry level follow the script's init writes (396280 ->
+/// 0.99570, 303068 -> 0.44539, 560434 -> 2.8164, 3305 -> 5.776e-7).
+pub(crate) fn engine_gain(value: i32) -> f32 {
+    if value <= 0 {
+        return 0.0;
+    }
+    (f64::from(value) / 396_851.0).powi(3) as f32
+}
+
+/// Apply the `set_engine_par` writes a script left at init to a rack's slots.
+/// `group` is the group index or -1; `generic` selects the instrument rack
+/// (`$NI_SEND_BUS` 0, `$NI_INSERT_BUS` 1, `$NI_MAIN_BUS` 2, `$NI_BUS_OFFSET`
+/// + n) or is -1 for a group's inserts.
+pub(crate) fn apply_writes(
+    slots: &mut [Slot],
+    writes: &[sampler_ksp::EnginePar],
+    group: i32,
+    generic: i32,
+) {
+    for w in writes
+        .iter()
+        .filter(|w| w.group == group && w.generic == generic)
+    {
+        let Some(fx) = usize::try_from(w.slot)
+            .ok()
+            .and_then(|i| slots.iter_mut().find(|fx| fx.slot == i))
+        else {
+            continue;
+        };
+        match w.parameter.trim_start_matches('$') {
+            "ENGINE_PAR_EFFECT_BYPASS" | "ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+                fx.bypass = w.value != 0
+            }
+            "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+                fx.output_gain = engine_gain(w.value);
+                fx.output_set = true;
+            }
+            "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            _ => {}
+        }
+    }
 }
 
 /// A module's stored parameters, where the layout is known (byte-exact on
@@ -352,19 +410,18 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
                     NotModeled,
                 ));
             }
-            if spread != 0.0 || pan != 0.0 {
-                // Mid/side width 1 + spread and balance pan: v1's law, not
-                // verified against Kontakt.
-                notes.push((
-                    "stereo modeller width/pan law".into(),
-                    format!("spread {spread} pan {pan}"),
-                    UnknownLaw,
-                ));
-            }
-            let width = (1.0 + f64::from(spread)).clamp(0.0, 2.0);
+            // KONTAKT_REFERENCE.md s.20 (measured 2x2 fits, pure matrix): spread
+            // s in -1..=1 (GUI percent / 100). s < 0: M/S width 1 + s, mono at
+            // -1. s > 0: [[1+s, -s], [-s, 1+s]], clamped at 1. Pan p is a
+            // linear balance: the opposite channel is scaled by 1 - |p|.
+            let s = f64::from(spread).clamp(-1.0, 1.0);
             let pan = f64::from(pan);
             let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
-            let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
+            let (same, other) = if s < 0.0 {
+                ((2.0 + s) / 2.0, -s / 2.0)
+            } else {
+                (1.0 + s, -s)
+            };
             [
                 [same * gains[0], other * gains[0]],
                 [other * gains[1], same * gains[1]],
@@ -517,13 +574,31 @@ pub(crate) fn chain_with(
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        let wet = f64::from(fx.output_gain);
+        // The Inverter's Output knob does not reach the signal: Una g39 and g94
+        // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
+        // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
+        // 6.0 dB louder with it.
+        let wet = if fx.module == 0x1a {
+            1.0
+        } else {
+            f64::from(fx.output_gain)
+        };
         let gain = [[wet, 0.0], [0.0, wet]];
+        // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
+        // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
+        // audible in Kontakt and its script never writes the slot's output gain. So
+        // the stored value counts for an EQ only when a script wrote it.
+        // ponytail: a guess from that corpus count; confirm against Kontakt output.
+        let eq_gain = if fx.output_gain == 0.0 && !fx.output_set {
+            IDENTITY
+        } else {
+            gain
+        };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
-                combined = product(gain, combined);
+                combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
                 if out.sends.is_empty() {
@@ -887,9 +962,45 @@ mod tests {
             bypass: false,
             output_gain: gain,
             dry_level: 1.0,
+            output_set: true,
             public,
-            private: Vec::new(),
         }
+    }
+
+    #[test]
+    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_is_pending() {
+        let modeller = |spread: f32, pan: f32| {
+            let mut bytes = spread.to_le_bytes().to_vec();
+            bytes.extend(pan.to_le_bytes());
+            bytes.push(0);
+            match chain(&[slot(0x1f, bytes, 1.0)], Scope::Voice)
+                .processors
+                .as_slice()
+            {
+                [sampler_ir::Processor::StereoMatrix(m)] => *m,
+                [] => [[1.0, 0.0], [0.0, 1.0]],
+                other => panic!("{other:?}"),
+            }
+        };
+        let near = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
+            for (a, b) in m.iter().flatten().zip(want.iter().flatten()) {
+                assert!((a - b).abs() < 1e-6, "{m:?} against {want:?}");
+            }
+        };
+        // KONTAKT_REFERENCE.md s.20, divided by the base gain 0.3838 (vel 100):
+        // 100%: 0.7677 / -0.3838; 50%: 0.5757 / -0.1919; -50%: 0.2879 / 0.0960.
+        near(modeller(1.0, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(0.5, 0.0), [[1.5, -0.5], [-0.5, 1.5]]);
+        near(modeller(1.5, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(-0.5, 0.0), [[0.75, 0.25], [0.25, 0.75]]);
+        near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
+        // Pan -50: R x0.5.
+        near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
+        // PENDING (reference agent measuring Output at -6/0/+6 dB): Una g39 and
+        // g94's post-amp Inverter at +6 dB reads exactly as if its Output were
+        // not applied. A single reading; if it fails, apply the gain again.
+        let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
+        assert!(inverter.is_empty(), "{inverter:?}");
     }
 
     #[test]
@@ -905,12 +1016,12 @@ mod tests {
             sampler_kontakt_chain.processors,
             sampler_kontakt_chain.notes,
         );
-        // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
+        // 2 * (swap, inverted; its Output is not applied) * 2 = swap, inverted, * 4.
         assert_eq!(
             processors,
             vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -2.0],
-                [-2.0, 0.0]
+                [0.0, -4.0],
+                [-4.0, 0.0]
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");

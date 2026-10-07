@@ -671,7 +671,9 @@ impl Runtime {
         let (begin, end) = (range.start, range.end);
         if self.selection_log.is_some() {
             let record = self.diagnose(note, trigger, velocity, snapshot);
-            self.selection_log.as_mut().unwrap().push(record);
+            if let Some(log) = self.selection_log.as_mut() {
+                log.push(record);
+            }
         }
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
@@ -759,7 +761,7 @@ impl Runtime {
                     .unwrap()
                     .script
                     .envelope(group, r.envelope);
-                let voice = self
+                let admitted = self
                     .admit_voice(
                         family,
                         r.sample,
@@ -768,7 +770,15 @@ impl Runtime {
                         envelope,
                         cursor.with_step(step),
                     )
-                    .expect("prepared and preflighted source admission");
+                    ;
+                // Preflight reserved this start, but a page can be evicted or
+                // the pool fill between then and now. Never panic on the audio
+                // thread: refuse this voice, count it, carry on.
+                let Ok(voice) = admitted else {
+                    self.refused_starts = self.refused_starts.saturating_add(1);
+                    continue;
+                };
+
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.chain = r.chain;
                 state.group = group;
