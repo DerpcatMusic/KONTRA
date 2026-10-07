@@ -556,6 +556,7 @@ impl Runtime {
             crate::EventInfo::Velocity => {
                 (self.notes.get(note.0).unwrap().velocity * 127.).round() as i64
             }
+            crate::EventInfo::Source => i64::from(self.notes.get(note.0).unwrap().input.is_none()),
             crate::EventInfo::MidiChannel => {
                 i64::from(self.notes.get(note.0).unwrap().address.channel)
             }
