@@ -42,6 +42,7 @@ struct Survey {
     lanes: BTreeMap<(String, String, String), Vec<Count>>,
     errors: BTreeMap<String, Count>,
     file: usize,
+    metadata_only: bool,
 }
 
 impl Survey {
@@ -85,6 +86,13 @@ impl Survey {
         let key = format!("Kontakt:0x{id:02x}");
         let version = format!("0x{:x}", object.version);
         self.field(&key, &version, "structure", true);
+        if self.metadata_only && matches!(id, 3 | 0x28 | 0x29) {
+            match object.children(LIMITS) {
+                Ok(children) => self.chunks(children, depth + 1),
+                Err(_) => self.error("metadata children framing"),
+            }
+            return;
+        }
         self.blob(&key, &version, "private", object.private.data(), id != 6);
         self.blob(
             &key,
@@ -177,6 +185,11 @@ impl Survey {
             return;
         }
         for chunk in chunks.iter() {
+            if self.metadata_only
+                && !matches!(chunk.id, 3 | 0x28 | 0x29 | 0x36 | 0x37 | 0x47 | 0x4b)
+            {
+                continue;
+            }
             let id = format!("Kontakt:0x{:02x}", chunk.id);
             match chunk.id {
                 0x33 | 0x34 => match chunk.records(LIMITS) {
@@ -324,9 +337,70 @@ impl Survey {
                 0x38 | 0x3d | 0x35 => self.blob(&id, "raw", "body", chunk.body.data(), false),
                 _ => match chunk.structured() {
                     Ok(object) => {
+                        if self.metadata_only && chunk.id == 0x28 {
+                            let version = format!("0x{:x}", object.version);
+                            match sampler_kontakt::ProgramResources::parse(chunk) {
+                                Ok(program) => {
+                                    for (field, value) in [
+                                        ("container_reference", program.container),
+                                        (
+                                            "snapshot_directory_reference",
+                                            program.snapshot_directory,
+                                        ),
+                                        ("full_path_reference", program.full_path),
+                                        ("wallpaper_reference", program.wallpaper),
+                                    ] {
+                                        self.field(&id, &version, field, value != u32::MAX);
+                                    }
+                                    self.blob(
+                                        &id,
+                                        &version,
+                                        "public_extension",
+                                        program.extension.data(),
+                                        true,
+                                    );
+                                }
+                                Err(_) => self.error("program resource fields"),
+                            }
+                        }
+                        if self.metadata_only && chunk.id == 3 {
+                            let version = format!("0x{:x}", object.version);
+                            match sampler_kontakt::Bank::parse(chunk) {
+                                Ok(bank) => {
+                                    for (field, changed) in [
+                                        ("master_volume", bank.volume != 1.0),
+                                        ("master_tune", bank.tune != 1.0),
+                                        ("master_tempo", bank.tempo != 0),
+                                    ] {
+                                        self.field(&id, &version, field, changed);
+                                    }
+                                    self.blob(
+                                        &id,
+                                        &version,
+                                        "extension",
+                                        bank.extension.data(),
+                                        true,
+                                    );
+                                }
+                                Err(_) => self.error("bank fields"),
+                            }
+                        }
+
                         if chunk.id == 0x47 {
                             match sampler_kontakt::SaveSettings::parse(chunk, LIMITS) {
                                 Ok(settings) => {
+                                    self.field(
+                                        &id,
+                                        "0x10",
+                                        "translated_reference",
+                                        settings.translated != u32::MAX,
+                                    );
+                                    self.field(
+                                        &id,
+                                        "0x10",
+                                        "original_reference",
+                                        settings.original != -1,
+                                    );
                                     self.field(&id, "0x10", "unknown", settings.unknown != 0);
                                     for (i, flag) in settings.flags.iter().enumerate() {
                                         self.field(&id, "0x10", &format!("flag{i}"), *flag);
@@ -405,6 +479,11 @@ impl Survey {
                 .get(..4)
                 .map(|b| u32::from_le_bytes(b.try_into().unwrap()).to_string())
                 .unwrap_or_else(|| "empty".into());
+            let v = match layer.header.item_type() {
+                ni_file::nis::ItemType::BNISoundHeader => "BPatchHeaderV42".into(),
+                ni_file::nis::ItemType::BNISoundPreset => "inherited".into(),
+                _ => v,
+            };
             self.field(&id, &v, "structure", true);
             if layer.header.item_type() == ni_file::nis::ItemType::Preset {
                 if let Some(factory) = layer.data.get(4) {
@@ -462,7 +541,7 @@ impl Survey {
         {
             let mut file = std::fs::File::open(path)?;
             let mut head = Vec::new();
-            file.by_ref().take(4 << 20).read_to_end(&mut head)?;
+            Read::by_ref(&mut file).take(4 << 20).read_to_end(&mut head)?;
             let marker = b"/\\ NI FC MTD  /\\";
             let start = head
                 .windows(marker.len())
@@ -559,6 +638,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = Path::new(&args[2]);
     std::fs::create_dir_all(out)?;
     let mut survey = Survey::default();
+    survey.metadata_only = args.get(3).is_some_and(|s| s == "--metadata-only");
     let mut instruments = Vec::new();
     let mut snapshots = Vec::new();
     let mut status = std::fs::File::create(out.join("files.tsv"))?;
@@ -583,9 +663,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             continue;
         }
-        if let Ok(mut file) = std::fs::File::open(path) {
-            if let Ok(ni_file::NIFile::NISoundContainer(item)) = ni_file::NIFile::read(&mut file) {
-                survey.nis(&item, path, 0);
+        if !survey.metadata_only {
+            if let Ok(mut file) = std::fs::File::open(path) {
+                if let Ok(ni_file::NIFile::NISoundContainer(item)) =
+                    ni_file::NIFile::read(&mut file)
+                {
+                    survey.nis(&item, path, 0);
+                }
             }
         }
         match sampler_kontakt::read_chunks(path) {

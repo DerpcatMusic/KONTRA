@@ -28,7 +28,7 @@ def definitions(path):
         yield "discarded_wire_field", [(f"{path.stem}.{match[1]}@{line}", match[2].strip(), line)], "see enclosing version dispatch"
 
 
-def generate(repo, v1, destination):
+def generate(repo, v1, destination, census=None):
     roots = ["vendor/ni-file/src/kontakt", "vendor/ni-file/src/nis", "vendor/ni-file/src/nks",
              "vendor/ni-file/src/nkr", "vendor/ni-file/src/file_container", "crates/sampler-kontakt/src"]
     destination.mkdir(parents=True, exist_ok=True)
@@ -46,19 +46,25 @@ def generate(repo, v1, destination):
                                          "present" if re.search(r"pub struct " + name + r"\b", old_text) else "absent", "unverified (upstream unavailable)"])
     text = (repo / "vendor/ni-file/src/kontakt/chunk.rs").read_text()
     names = dict((int(i, 16), name) for i, name in re.findall(r"(0x[0-9a-f]+) => KontaktObject::(\w+)", text))
+    observed = {}
+    if census and census.exists():
+        for row in csv.DictReader(census.open(), delimiter="\t"):
+            if row["structure"].startswith("Kontakt:") and row["field"] == "structure":
+                id = int(row["structure"].split(":")[1], 16)
+                observed.setdefault(id, set()).add(row["version"])
     with (destination / "KONTAKT_ID_REGISTRY.tsv").open("w") as out:
         writer = csv.writer(out, delimiter="\t", lineterminator="\n")
-        writer.writerow(["domain", "id", "name", "dispatch", "owner"])
-        for i in range(0x65):
+        writer.writerow(["domain", "id", "name", "dispatch", "owner", "observed_versions"])
+        for i in sorted(set(range(0x65)) | observed.keys()):
             owner = "gpt-format-fxmod" if 0x10 <= i <= 0x25 or i in [0, 7, 8, 9, 10, 11, 12, 13, 0x3a, 0x3b, 0x3c, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x4a, 0x4c, 0x4d] or i >= 0x52 else "gpt-format-gaps"
             if i in [4, 5, 0xe, 0xf, 0x26, 0x27, 0x28, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x32, 0x33, 0x34, 0x38, 0x39]: owner = "gpt-format-objects"
             if i in [6, 0x4f, 0x50, 0x51]: owner = "gpt-decipher-persist"
             if i == 0x3d: owner = "gpt-format-legacy"
-            writer.writerow(["Kontakt", f"0x{i:02x}", names.get(i, "unmapped/reserved"), "typed wrapper" if f"KontaktObject::{names.get(i, '')}(chunk.try_into()?)" in text else "name/raw only", owner])
+            writer.writerow(["Kontakt", f"0x{i:02x}", names.get(i, "unmapped/reserved"), "typed wrapper" if f"KontaktObject::{names.get(i, '')}(chunk.try_into()?)" in text else "name/raw only", owner, ",".join(sorted(observed.get(i, []))) or "not observed"])
         source = (repo / "vendor/ni-file/src/nis/container/data/item_type.rs").read_text()
         for domain, body in re.findall(r'"(NISD|NIK4|RKTR)" => match item_id \{(.*?)\n            \}', source, re.S):
             for i, name in re.findall(r"(0x[0-9a-f]+) => ItemType::(\w+)", body):
-                writer.writerow([domain, i, name, "framed; see property source", "gpt-format-gaps" if domain != "RKTR" else "outside Kontakt scope"])
+                writer.writerow([domain, i, name, "framed; see property source", "gpt-format-gaps" if domain != "RKTR" else "outside Kontakt scope", "see census"])
 
 
 if __name__ == "__main__":
@@ -66,5 +72,6 @@ if __name__ == "__main__":
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--v1", type=Path, default=Path("/home/derpcat/.t3/worktrees/KONTAKTO/decipher-readers-v1"))
     parser.add_argument("--out", type=Path, default=Path("docs/architecture-v2"))
+    parser.add_argument("--census", type=Path, default=Path("docs/architecture-v2/kontakt-census/fields.tsv"))
     args = parser.parse_args()
-    generate(args.repo, args.v1, args.out)
+    generate(args.repo, args.v1, args.out, args.census)
