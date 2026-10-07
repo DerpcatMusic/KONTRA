@@ -221,6 +221,8 @@ fn load(s: &Scenario, messages: &[Message], block: usize) -> Result<Loaded, Stri
 #[derive(Default)]
 struct Cell_ {
     times: Vec<u64>,
+    /// Per block: nanoseconds `service_streaming` took (inside `times`).
+    service: Vec<u64>,
     allocations: u64,
     peak: f32,
     /// Seconds of the first and last block with output above -80 dB.
@@ -240,7 +242,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
             ((at * f64::from(RATE)).round() as usize, TimedPacket { offset: 0, packet })
         })
         .collect();
-    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
+    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), service: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
     let start = Instant::now();
@@ -254,7 +256,8 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         let before = CALLS.get();
         COUNTING.set(true);
         let t = Instant::now();
-        render(p, &mut buffer, &batch, messages, begin, &mut next);
+        let service = render(p, &mut buffer, &batch, messages, begin, &mut next);
+        cell.service.push(service);
         let took = t.elapsed();
         COUNTING.set(false);
         if std::env::var_os("PERF_DEBUG").is_some() {
@@ -265,6 +268,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
             }
         }
         cell.allocations += CALLS.get() - before;
+        if std::env::var_os("PERF_SLOW").is_some() && took.as_micros() > 3000 { eprintln!("slow block at {:.3}s: {} us (service {} us, {} events)", begin as f64 / f64::from(RATE), took.as_micros(), service / 1000, batch.len()); }
         cell.times.push(took.as_nanos() as u64);
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
         cell.peak = cell.peak.max(top);
@@ -281,11 +285,15 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     cell
 }
 
-fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[Message], _: usize, _: &mut usize) {
+fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[Message], _: usize, _: &mut usize) -> u64 {
+    let mut service = 0;
     match p {
         Player::Midi { rt, ingress, horizon } => {
             if let Some(h) = horizon {
-                match rt.service_streaming(*h) { Err(e) if std::env::var_os("PERF_DEBUG").is_some() => eprintln!("service_streaming: {e:?} voices {}", rt.voice_count()), _ => {} }
+                let t = Instant::now();
+                let r = rt.service_streaming(*h);
+                service = t.elapsed().as_nanos() as u64;
+                match r { Err(e) if std::env::var_os("PERF_DEBUG").is_some() => eprintln!("service_streaming: {e:?} voices {}", rt.voice_count()), _ => {} }
             }
             if std::env::var_os("PERF_VOICES").is_some() {
                 thread_local! { static LAST: Cell<usize> = const { Cell::new(0) }; static T: Cell<usize> = const { Cell::new(0) }; }
@@ -307,6 +315,7 @@ fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[
             let _ = player.render(buffer);
         }
     }
+    service
 }
 
 fn uvi_events(p: &mut Player, messages: &[Message], from: usize, to: usize) {
@@ -419,6 +428,8 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
             });
             let mut times = cell.times.clone();
             times.sort_unstable();
+            let mut service = cell.service.clone();
+            service.sort_unstable();
             let deadline = (block as f64 / f64::from(RATE) * 1e9) as u64;
             let st = stats(&loaded.player);
             // A cell that is silent, refused events or underran measured nothing useful.
@@ -444,6 +455,8 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
                 "p50_us": percentile(&times, 0.5) as f64 / 1e3,
                 "p99_us": percentile(&times, 0.99) as f64 / 1e3,
                 "max_us": *times.last().unwrap() as f64 / 1e3,
+                "service_p99_us": percentile(&service, 0.99) as f64 / 1e3,
+                "service_max_us": service.last().copied().unwrap_or(0) as f64 / 1e3,
                 "misses": times.iter().filter(|&&t| t > deadline).count(),
                 "audio_thread_allocations": cell.allocations, "event_errors": event_errors, "peak": cell.peak, "audible_seconds": cell.audible,
                 "perf": counters,
@@ -464,7 +477,7 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
 
 /// [`play`] for a script-hosted program: notes go to the player between blocks.
 fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Cell_ {
-    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
+    let mut cell = Cell_ { times: Vec::with_capacity(frames / block + 1), service: Vec::with_capacity(frames / block + 1), allocations: 0, peak: 0.0, audible: None };
     let mut buffer = vec![[0.0f32; 2]; block];
     let start = Instant::now();
     for begin in (0..frames).step_by(block) {
