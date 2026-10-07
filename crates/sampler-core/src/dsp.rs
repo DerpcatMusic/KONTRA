@@ -722,7 +722,10 @@ impl DspState {
     ) -> Result<(Slab<ProcessorState>, Slab<[f64; 2]>), Error> {
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
         let delays = delay.checked_mul(voices).ok_or(Error::Capacity)?;
-        Ok((Slab::new(allocate(cells)?, stride), Slab::new(allocate(delays)?, delay)))
+        Ok((
+            Slab::new(allocate(cells)?, stride),
+            Slab::new(allocate(delays)?, delay),
+        ))
     }
     /// Take the larger per-voice storage `cells`/`delays` (from
     /// `voice_storage`), moving every live voice's state across; the old
@@ -754,7 +757,9 @@ impl DspState {
             return Ok(());
         }
         let empty = Slab::new(Box::new([]), 1);
-        let mut banks = std::mem::replace(&mut self.filters, empty).into_items().into_vec();
+        let mut banks = std::mem::replace(&mut self.filters, empty)
+            .into_items()
+            .into_vec();
         while banks.len() < lanes {
             banks.push(svf::FilterBank::new(&plan.filters, expressions)?);
         }

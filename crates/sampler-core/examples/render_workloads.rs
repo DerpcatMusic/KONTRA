@@ -203,7 +203,11 @@ fn idle(threads: usize, notes: usize) {
         notes.max(1) * LAYERS,
         1024,
         false,
-        Processing { filters: 1, automated: true, ..Processing::default() },
+        Processing {
+            filters: 1,
+            automated: true,
+            ..Processing::default()
+        },
         false,
     );
     rt.set_threads(sampler_core::Threads::Fixed(threads));

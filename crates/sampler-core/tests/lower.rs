@@ -425,6 +425,43 @@ fn group_voice_limits_fade_out_the_oldest_member_instead_of_rejecting() {
     assert_eq!(voices, 5);
 }
 
+/// A 4-pole filter lowers as two cascaded 2-pole sections: it attenuates a
+/// tone well above the cutoff more than one 2-pole section does.
+#[test]
+fn four_pole_filters_lower_to_two_cascaded_sections() {
+    let tone = |poles| {
+        let mut ir = instrument();
+        ir.chains.push(ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::LowPass { poles },
+                cutoff: ir::Frequency::Hertz(500.0),
+                resonance: ir::Resonance::Decibels(0.0),
+            })],
+            post_amplitude: vec![],
+        });
+        ir.zones[0].chain = Some(ir::ChainRef(0));
+        // 6 kHz square-ish tone: alternating pairs of frames.
+        let wave = (0..4800).map(|i| [if (i / 4) % 2 == 0 { 0.5 } else { -0.5 }; 2]).collect::<Vec<_>>();
+        let pcm = vec![
+            Pcm::new(48000, wave.into_boxed_slice()).unwrap(),
+            constant(0.2),
+            constant(0.3),
+            constant(0.05),
+        ];
+        let plan = lower(&ir, 48000, pcm, no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0f32; 2]; 512];
+        rt.trigger(input(60), 60, 0.3).unwrap();
+        rt.render(&mut out).unwrap();
+        out[256..].iter().map(|f| f[0] * f[0]).sum::<f32>()
+    };
+    let (two, four) = (tone(2), tone(4));
+    assert!(two.is_finite() && four.is_finite());
+    assert!(four < two * 0.5, "two {two}, four {four}");
+}
+
+
 #[test]
 fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     let zone = |group| ir::Zone {
