@@ -262,3 +262,9 @@ No `0x09`/`0x0a` source appeared; step-source identity/layout remains unverified
 Absence does not establish support. New `0x65/66/68/69/6a/72/74` objects remain
 unknown, with no names or normalization invented. Older missing FX types and
 versions likewise need independent native or controlled-saved fixtures.
+
+Bus `0x45` carries a UTF-16 name, float volume, float pan and signed output
+index, followed by retained extension bytes. The master profile observes up to
+36 public bytes for `0x12`, versus 28 for `0x11`; string length contributes to
+these sizes, so the difference alone does not identify eight fixed new fields.
+The reader now keeps every byte after output instead of silently discarding it.

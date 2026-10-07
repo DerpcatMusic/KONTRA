@@ -219,6 +219,12 @@ impl Survey {
                                 "output",
                                 &SourceParameterValue::Integer(i64::from(p.output)),
                             );
+                            self.field(
+                                c.id,
+                                bus.0.version,
+                                "unknown_tail",
+                                &SourceParameterValue::Opaque(p.unknown_tail),
+                            );
                         } else {
                             self.count("error\tbus-state");
                         }
