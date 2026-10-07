@@ -11,8 +11,8 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
-const RACK: u16 = 0x3a;
-const BUS: u16 = 0x45;
+pub(crate) const RACK: u16 = 0x3a;
+pub(crate) const BUS: u16 = 0x45;
 
 /// Module names by serialization ID (Kontakt's `BParFX*` classes).
 const MODULES: &[(u16, &str)] = &[
