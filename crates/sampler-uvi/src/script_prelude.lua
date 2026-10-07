@@ -43,6 +43,9 @@ setmetatable(_G, {
   end,
 })
 
+-- The API revision the shipped scripts gate on (they require at least 22).
+__API_VERSION__ = 22
+
 -- Constants ----------------------------------------------------------------
 Event = {
   NoteOn = 1, NoteOff = 2, Controller = 3, PitchBend = 4, AfterTouch = 5,
