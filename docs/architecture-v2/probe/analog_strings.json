@@ -1,0 +1,946 @@
+{
+ "instrument": "analog_strings",
+ "name": "ANALOG STRINGS",
+ "notes": 48,
+ "engines": {
+  "kontra": {
+   "identified": 19,
+   "silent_notes": 0,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 100.0,
+   "attack_db_error_mean": 3.0,
+   "onset_ms_diff_mean": 10.0,
+   "same_sample_pct": 34.5,
+   "same_velocity_layer_pct": 62.1,
+   "rr_groups": 3,
+   "rr_sequence_equal": 1,
+   "rr_same_set": 1,
+   "level_db_mean": 4.27,
+   "level_db_worst": 5.72,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 48,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 2,
+     "sequence_equal": false
+    },
+    {
+     "key": 48,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 2,
+     "sequence_equal": false
+    },
+    {
+     "key": 48,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    }
+   ],
+   "per_note": [
+    {
+     "i": 1,
+     "key": 48,
+     "vel": 20,
+     "kontakt": null,
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6129999756813049,
+      "layer": [],
+      "rms_db": -24.78
+     }
+    },
+    {
+     "i": 2,
+     "key": 48,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.699999988079071,
+      "layer": [],
+      "rms_db": -28.77
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6069999933242798,
+      "layer": [],
+      "rms_db": -24.28
+     }
+    },
+    {
+     "i": 3,
+     "key": 48,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7379999756813049,
+      "layer": [],
+      "rms_db": -29.38
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6060000061988831,
+      "layer": [],
+      "rms_db": -24.27
+     }
+    },
+    {
+     "i": 5,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7670000195503235,
+      "layer": [],
+      "rms_db": -25.38
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6110000014305115,
+      "layer": [],
+      "rms_db": -20.68
+     }
+    },
+    {
+     "i": 6,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7369999885559082,
+      "layer": [],
+      "rms_db": -24.92
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6069999933242798,
+      "layer": [],
+      "rms_db": -20.43
+     }
+    },
+    {
+     "i": 7,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7390000224113464,
+      "layer": [],
+      "rms_db": -25.01
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6060000061988831,
+      "layer": [],
+      "rms_db": -20.42
+     }
+    },
+    {
+     "i": 9,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7689999938011169,
+      "layer": [],
+      "rms_db": -21.89
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6110000014305115,
+      "layer": [],
+      "rms_db": -16.84
+     }
+    },
+    {
+     "i": 10,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.6869999766349792,
+      "layer": [],
+      "rms_db": -21.05
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6069999933242798,
+      "layer": [],
+      "rms_db": -16.58
+     }
+    },
+    {
+     "i": 11,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7519999742507935,
+      "layer": [],
+      "rms_db": -21.33
+     },
+     "engine": {
+      "asset": "Wide Strings Pad-C2-100-0.ncw",
+      "ncc": 0.6060000061988831,
+      "layer": [],
+      "rms_db": -16.57
+     }
+    },
+    {
+     "i": 16,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 17,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 18,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 19,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 21,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7839999794960022,
+      "layer": [],
+      "rms_db": -23.69
+     },
+     "engine": null
+    },
+    {
+     "i": 22,
+     "key": 60,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 23,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.6990000009536743,
+      "layer": [],
+      "rms_db": -23.25
+     },
+     "engine": null
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7689999938011169,
+      "layer": [],
+      "rms_db": -20.3
+     },
+     "engine": null
+    },
+    {
+     "i": 26,
+     "key": 60,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 27,
+     "key": 60,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 29,
+     "key": 60,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 30,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7329999804496765,
+      "layer": [],
+      "rms_db": -17.13
+     },
+     "engine": null
+    },
+    {
+     "i": 31,
+     "key": 60,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 32,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 33,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 34,
+     "key": 72,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5090000033378601,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -27.74
+     },
+     "engine": null
+    },
+    {
+     "i": 35,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 36,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 37,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 38,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 39,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 40,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 41,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-110-81-Tape Loop.ncw",
+      "ncc": 0.5270000100135803,
+      "layer": [],
+      "rms_db": -21.5
+     },
+     "engine": null
+    },
+    {
+     "i": 42,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5199999809265137,
+      "layer": [],
+      "rms_db": -20.81
+     },
+     "engine": null
+    },
+    {
+     "i": 43,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5460000038146973,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -20.87
+     },
+     "engine": null
+    },
+    {
+     "i": 44,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5049999952316284,
+      "layer": [],
+      "rms_db": -20.82
+     },
+     "engine": null
+    },
+    {
+     "i": 45,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5260000228881836,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -18.54
+     },
+     "engine": null
+    },
+    {
+     "i": 46,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 47,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5490000247955322,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -18.27
+     },
+     "engine": null
+    }
+   ]
+  },
+  "v1": {
+   "identified": 7,
+   "silent_notes": 0,
+   "kontakt_audible_engine_silent": 0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 14.3,
+   "attack_db_error_mean": 1.7,
+   "onset_ms_diff_mean": 5.0,
+   "same_sample_pct": 24.1,
+   "same_velocity_layer_pct": 24.1,
+   "rr_groups": 3,
+   "rr_sequence_equal": 1,
+   "rr_same_set": 1,
+   "level_db_mean": -3.05,
+   "level_db_worst": -4.3,
+   "articulations": [
+    "-"
+   ],
+   "rr_detail": [
+    {
+     "key": 48,
+     "vel": 60,
+     "kontakt_distinct": 1,
+     "engine_distinct": 2,
+     "sequence_equal": false
+    },
+    {
+     "key": 48,
+     "vel": 100,
+     "kontakt_distinct": 1,
+     "engine_distinct": 2,
+     "sequence_equal": false
+    },
+    {
+     "key": 48,
+     "vel": 127,
+     "kontakt_distinct": 1,
+     "engine_distinct": 1,
+     "sequence_equal": true
+    }
+   ],
+   "per_note": [
+    {
+     "i": 1,
+     "key": 48,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 2,
+     "key": 48,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.699999988079071,
+      "layer": [],
+      "rms_db": -28.77
+     },
+     "engine": null
+    },
+    {
+     "i": 3,
+     "key": 48,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7379999756813049,
+      "layer": [],
+      "rms_db": -29.38
+     },
+     "engine": null
+    },
+    {
+     "i": 5,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7670000195503235,
+      "layer": [],
+      "rms_db": -25.38
+     },
+     "engine": null
+    },
+    {
+     "i": 6,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7369999885559082,
+      "layer": [],
+      "rms_db": -24.92
+     },
+     "engine": null
+    },
+    {
+     "i": 7,
+     "key": 48,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7390000224113464,
+      "layer": [],
+      "rms_db": -25.01
+     },
+     "engine": null
+    },
+    {
+     "i": 9,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7689999938011169,
+      "layer": [],
+      "rms_db": -21.89
+     },
+     "engine": null
+    },
+    {
+     "i": 10,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.6869999766349792,
+      "layer": [],
+      "rms_db": -21.05
+     },
+     "engine": null
+    },
+    {
+     "i": 11,
+     "key": 48,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C2-127-0-Tape Loop.ncw",
+      "ncc": 0.7519999742507935,
+      "layer": [],
+      "rms_db": -21.33
+     },
+     "engine": null
+    },
+    {
+     "i": 16,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 17,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 18,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 19,
+     "key": 60,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 20,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7139999866485596,
+      "layer": [],
+      "rms_db": -27.34
+     },
+     "engine": null
+    },
+    {
+     "i": 21,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7839999794960022,
+      "layer": [],
+      "rms_db": -23.69
+     },
+     "engine": null
+    },
+    {
+     "i": 22,
+     "key": 60,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 23,
+     "key": 60,
+     "vel": 60,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.6990000009536743,
+      "layer": [],
+      "rms_db": -23.25
+     },
+     "engine": null
+    },
+    {
+     "i": 24,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7179999947547913,
+      "layer": [],
+      "rms_db": -23.1
+     },
+     "engine": null
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7689999938011169,
+      "layer": [],
+      "rms_db": -20.3
+     },
+     "engine": null
+    },
+    {
+     "i": 26,
+     "key": 60,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 27,
+     "key": 60,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 28,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.6949999928474426,
+      "layer": [],
+      "rms_db": -18.81
+     },
+     "engine": null
+    },
+    {
+     "i": 29,
+     "key": 60,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 30,
+     "key": 60,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Large Ensemble Con Sordino Trem Cls-C3-127-0-Tape Loop.ncw",
+      "ncc": 0.7329999804496765,
+      "layer": [],
+      "rms_db": -17.13
+     },
+     "engine": null
+    },
+    {
+     "i": 31,
+     "key": 60,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 32,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 33,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 34,
+     "key": 72,
+     "vel": 20,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5090000033378601,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -27.74
+     },
+     "engine": null
+    },
+    {
+     "i": 35,
+     "key": 72,
+     "vel": 20,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 36,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 37,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 38,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 39,
+     "key": 72,
+     "vel": 60,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 40,
+     "key": 72,
+     "vel": 100,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 41,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-110-81-Tape Loop.ncw",
+      "ncc": 0.5270000100135803,
+      "layer": [],
+      "rms_db": -21.5
+     },
+     "engine": null
+    },
+    {
+     "i": 42,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5199999809265137,
+      "layer": [],
+      "rms_db": -20.81
+     },
+     "engine": null
+    },
+    {
+     "i": 43,
+     "key": 72,
+     "vel": 100,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5460000038146973,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -20.87
+     },
+     "engine": null
+    },
+    {
+     "i": 44,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5049999952316284,
+      "layer": [],
+      "rms_db": -20.82
+     },
+     "engine": null
+    },
+    {
+     "i": 45,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5260000228881836,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -18.54
+     },
+     "engine": null
+    },
+    {
+     "i": 46,
+     "key": 72,
+     "vel": 127,
+     "kontakt": null,
+     "engine": null
+    },
+    {
+     "i": 47,
+     "key": 72,
+     "vel": 127,
+     "kontakt": {
+      "asset": "Piano Swell Tape-C4-127-111-Tape Loop.ncw",
+      "ncc": 0.5490000247955322,
+      "layer": [
+       [
+        111,
+        127
+       ]
+      ],
+      "rms_db": -18.27
+     },
+     "engine": null
+    }
+   ]
+  }
+ },
+ "kontakt": {
+  "identified": 29,
+  "silent": 0,
+  "distinct_samples": 4,
+  "articulations": [
+   "-"
+  ]
+ }
+}
