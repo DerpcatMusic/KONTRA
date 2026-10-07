@@ -741,7 +741,12 @@ impl Prepared {
     }
     /// Most voices one key's release phase can start together.
     pub fn release_voices(&self) -> usize {
-        self.release_reserves.iter().flatten().map(|r| r.voices).max().unwrap_or(0)
+        self.release_reserves
+            .iter()
+            .flatten()
+            .map(|r| r.voices)
+            .max()
+            .unwrap_or(0)
     }
     /// Convolution processors across the bus chains, in bus then processor
     /// order: the slots [`crate::Runtime::swap_convolution`] addresses.
