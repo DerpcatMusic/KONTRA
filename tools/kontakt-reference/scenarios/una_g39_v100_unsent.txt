@@ -1,0 +1,4 @@
+# protocol: unsent CC7 default state of a fresh Kontakt process (the 0.5x finding); CC20 only selects the group
+0.1 cc 20 39
+0.6 note 60 100 3
+5 end
