@@ -69,7 +69,7 @@ impl Parameter {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum PreparedParameter {
+pub(crate) enum PreparedParameter {
     Constant(f64),
     Control(usize),
     Expression {
