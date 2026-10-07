@@ -328,7 +328,7 @@ fn config_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    Some(dirs::config_dir()?.join("kontra2"))
+    Some(dirs::config_dir()?.join("kontra"))
 }
 
 /// The app's data folder: chosen artwork, and multis saved with no library
@@ -337,7 +337,7 @@ pub fn data_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("data"));
     }
-    Some(dirs::data_dir()?.join("kontra2"))
+    Some(dirs::data_dir()?.join("kontra"))
 }
 
 /// One library found.
@@ -636,7 +636,7 @@ fn words(text: &str) -> Vec<&str> {
 }
 
 /// The extension of a rack KONTRA saved (`plugin::SavedMulti`).
-pub const MULTI: &str = "kontra2-multi";
+pub const MULTI: &str = "kontra-multi";
 
 pub fn is_multi(path: &Path) -> bool {
     path.extension().is_some_and(|x| x.eq_ignore_ascii_case(MULTI))

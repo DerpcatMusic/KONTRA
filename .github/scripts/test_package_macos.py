@@ -46,13 +46,13 @@ def fixtures(root):
             subtype = 0 if arch == 'arm64' else 3
             path.write_bytes(struct.pack('<8I', 0xfeedfacf, cpu, subtype, 1, 0, 0, 0, 0) + arch.encode() + fmt.encode() + json.dumps(info).encode())
             if fmt == 'standalone':
-                (stage / 'KONTRA2.app/Contents/Info.plist').write_bytes(plistlib.dumps(package.app_info(VERSION)))
+                (stage / 'KONTRA.app/Contents/Info.plist').write_bytes(plistlib.dumps(package.app_info(VERSION)))
             else:
-                (stage / f'KONTRA2.{fmt}/Contents/Info.plist').write_bytes(plistlib.dumps(dict(
-                    CFBundleExecutable='KONTRA2', CFBundleIdentifier=f'audio.matari.kontra2.{fmt}',
+                (stage / f'KONTRA.{fmt}/Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+                    CFBundleExecutable='KONTRA', CFBundleIdentifier=f'audio.matari.kontra.{fmt}',
                     CFBundlePackageType='BNDL',
                     CFBundleVersion='0.3.87', CFBundleShortVersionString='0.3.87', KONTRAVersion=VERSION)))
-                resource = stage / f'KONTRA2.{fmt}/Contents/Resources/native-resource.txt'
+                resource = stage / f'KONTRA.{fmt}/Contents/Resources/native-resource.txt'
                 resource.parent.mkdir()
                 resource.write_text('unchanged bundle resource')
     return sources
@@ -81,13 +81,13 @@ class Packaging(unittest.TestCase):
         self.assertEqual(identity['architectures'], ['arm64', 'x86_64'])
         self.assertEqual(identity['target'], 'universal-apple-darwin')
         for fmt, destination in package.BUNDLES.items():
-            binary = self.stage / 'payload' / destination / 'Contents/MacOS/KONTRA2'
+            binary = self.stage / 'payload' / destination / 'Contents/MacOS/KONTRA'
             self.assertEqual(set(subprocess.check_output([LIPO, '-archs', str(binary)], text=True).split()), {'arm64', 'x86_64'})
             for arch in package.TARGETS:
                 thin = self.root / f'{fmt}-{arch}'
                 subprocess.run([LIPO, str(binary), '-thin', arch, '-output', str(thin)], check=True)
                 self.assertEqual(thin.read_bytes(), (self.sources[arch] / package.BINARIES[fmt]).read_bytes())
-        resources = self.stage / 'payload/Applications/KONTRA2.app/Contents/Resources/KONTRA'
+        resources = self.stage / 'payload/Applications/KONTRA.app/Contents/Resources/KONTRA'
         self.assertEqual(resources.stat().st_mode & 0o777, 0o755)
         for name in package.REQUIRED + ('licenses/sources/patched.crate',):
             self.assertEqual((resources / name).stat().st_mode & 0o777, 0o644)
@@ -95,9 +95,9 @@ class Packaging(unittest.TestCase):
         for arch in package.TARGETS:
             for name in package.MANIFESTS.values():
                 self.assertEqual((resources / 'source-builds' / arch / name).read_bytes(), (self.sources[arch] / name).read_bytes())
-        plist = plistlib.loads((self.stage / 'payload/Applications/KONTRA2.app/Contents/Info.plist').read_bytes())
+        plist = plistlib.loads((self.stage / 'payload/Applications/KONTRA.app/Contents/Info.plist').read_bytes())
         self.assertEqual(plist, package.app_info(VERSION))
-        self.assertFalse((resources / 'KONTRA2.app').exists())
+        self.assertFalse((resources / 'KONTRA.app').exists())
 
     def test_mismatched_identity_or_resources_never_produces_payload(self):
         for case in ('revision', 'version', 'profile', 'features', 'resources', 'plist', 'app-types', 'arch', 'binary', 'legal', 'symlink'):
@@ -113,11 +113,11 @@ class Packaging(unittest.TestCase):
                 elif case == 'resources':
                     (arm / 'NOTICE').write_text('different resource')
                 elif case == 'plist':
-                    path = arm / 'KONTRA2.vst3/Contents/Info.plist'
+                    path = arm / 'KONTRA.vst3/Contents/Info.plist'
                     info = plistlib.loads(path.read_bytes()); info['CFBundleIdentifier'] = 'wrong.identity'
                     path.write_bytes(plistlib.dumps(info))
                 elif case == 'app-types':
-                    path = arm / 'KONTRA2.app/Contents/Info.plist'
+                    path = arm / 'KONTRA.app/Contents/Info.plist'
                     info = plistlib.loads(path.read_bytes()); info.pop('UTImportedTypeDeclarations')
                     path.write_bytes(plistlib.dumps(info))
                 elif case == 'arch':
