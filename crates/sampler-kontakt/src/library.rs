@@ -347,6 +347,10 @@ fn translate(
         .filter_map(|s| s.as_ref().ok())
         .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
+    out.ir.source_parameters.extend(
+        crate::source_parameters::program(&program)
+            .map_err(|e| decode("authored program FX", e))?,
+    );
     drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
@@ -814,6 +818,14 @@ impl Translation {
             objects.groups.push(source);
         }
         let saved = self.snapshot_groups.get(index).cloned();
+        let overlaid;
+        let group = if let Some(state) = &saved {
+            overlaid = crate::snapshot::overlay_modulation(group, &state.modulation);
+            &overlaid
+        } else {
+            group
+        };
+        let mut v = group.params()?;
         if let Some(state) = &saved {
             v.volume = state.volume;
             v.pan = state.pan;
@@ -822,7 +834,37 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
+        let insert = match &saved {
+            Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
+                version: state.fx.0,
+                items: state
+                    .fx
+                    .1
+                    .iter()
+                    .map(|slot| {
+                        slot.as_ref().map(|(id, data)| ni_file::kontakt::Chunk {
+                            id: *id,
+                            data: data.clone(),
+                        })
+                    })
+                    .collect(),
+            }),
+            None => group.insert_fx(),
+        };
+        match &insert {
+            Ok(array) => self
+                .ir
+                .source_parameters
+                .extend(crate::source_parameters::rack(
+                    &format!("group {index} insert"),
+                    array,
+                )?),
+            Err(error) => self.unsupported(&at, "group insert rack", error, ir::Reason::Unknown),
+        }
         if v.muted {
+            self.ir
+                .source_parameters
+                .extend(crate::source_parameters::muted_group(group, index)?);
             // Empty source groups retain their numeric address for KSP and DSP writes.
             self.ir.groups.push(ir::Group {
                 name: v.name,
@@ -925,6 +967,13 @@ impl Translation {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                 let params = modulator.params()?;
                 let at = format!("{at} modulator slot {slot}");
+                self.ir
+                    .source_parameters
+                    .extend(crate::source_parameters::internal(
+                        &format!("group {index} internal slot {slot}"),
+                        &modulator,
+                        &params,
+                    )?);
                 // [router UI, bypass, retrigger, unknown]
                 if params.unknown_flags[1] != 0 || params.targets.is_empty() {
                     continue;
@@ -1048,9 +1097,17 @@ impl Translation {
                     }
                 }
                 let at = format!("{at} external modulation slot {slot}");
+                self.ir
+                    .source_parameters
+                    .push(crate::source_parameters::external(
+                        &format!("group {index} external slot {slot}"),
+                        &modulation,
+                        &params,
+                    ));
                 let plain_volume = |t: &ni_file::kontakt::objects::ModTarget| {
                     t.param == "volume"
                         && t.slot.is_none()
+                        && t.unknown_flags & 2 == 0
                         && !t.invert
                         && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled)

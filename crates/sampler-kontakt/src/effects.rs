@@ -177,7 +177,7 @@ pub(crate) fn program_racks(
             _ => {}
         }
     }
-    out
+    Ok(out)
 }
 
 /// Engine value (0..1000000) of an effect level as a linear gain: cubic about
@@ -263,6 +263,8 @@ pub(crate) enum Params {
     Reverb([f32; 10]),
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
+    /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
+    Fields(Vec<ni_file::kontakt::objects::EffectField>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -374,8 +376,8 @@ impl Slot {
                     };
                     let (cutoff, resonance) = (r.f32()?, r.f32()?);
                     let mut extra: Vec<f32> = leading.into_iter().collect();
-                    while let Some(x) = r.f32() {
-                        extra.push(x);
+                    while !r.0.is_empty() {
+                        extra.push(r.f32()?);
                     }
                     Params::Filter {
                         kind,
@@ -385,7 +387,16 @@ impl Slot {
                     }
                 }
             }
-            _ => return None,
+            _ => {
+                return ni_file::kontakt::objects::EffectParameters::read(
+                    self.module,
+                    self.version,
+                    &self.public,
+                )
+                .ok()
+                .flatten()
+                .map(|p| Params::Fields(p.fields));
+            }
         };
         r.0.is_empty().then_some(params)
     }

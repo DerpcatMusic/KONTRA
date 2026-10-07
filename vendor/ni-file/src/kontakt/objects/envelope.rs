@@ -1,9 +1,9 @@
 use std::io::{Cursor, Write};
 
 use crate::{
-    Error,
     kontakt::{Chunk, KontaktError},
     read_bytes::ReadBytesExt,
+    Error,
 };
 
 const CHUNK_ID: u16 = 0x3F;
@@ -13,6 +13,30 @@ const AHDSR_TAIL_V10: usize = 16;
 // Corpus-inferred v0x11 minimum: four packed 13-byte records.
 // Preserve additional opaque bytes rather than imposing an exact-size cap.
 const AHDSR_TAIL: usize = 52;
+
+/// Packed envelope timing metadata. Binary field boundaries are known; the
+/// numeric words and flag are not yet assigned verified timing/loop semantics.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvelopeTimingRecord {
+    pub values: [f32; 3],
+    pub flag: u8,
+}
+
+impl EnvelopeTimingRecord {
+    fn read(data: &[u8]) -> Result<Self, Error> {
+        if data.len() != 13 {
+            return Err(Error::Static("Invalid envelope timing record length"));
+        }
+        let mut values = [0.0; 3];
+        for (v, bytes) in values.iter_mut().zip(data[..12].chunks_exact(4)) {
+            *v = f32::from_le_bytes(bytes.try_into().unwrap());
+        }
+        Ok(Self {
+            values,
+            flag: data[12],
+        })
+    }
+}
 
 /// # EnvelopeAhdsr
 ///
@@ -49,6 +73,18 @@ pub struct EnvelopeAhdsr {
 }
 
 impl EnvelopeAhdsr {
+    pub fn timing_records(&self) -> Result<[EnvelopeTimingRecord; 4], Error> {
+        let data = self
+            .unknown_tail
+            .get(..AHDSR_TAIL)
+            .ok_or(Error::Static("Truncated AHDSR timing records"))?;
+        Ok([
+            EnvelopeTimingRecord::read(&data[..13])?,
+            EnvelopeTimingRecord::read(&data[13..26])?,
+            EnvelopeTimingRecord::read(&data[26..39])?,
+            EnvelopeTimingRecord::read(&data[39..52])?,
+        ])
+    }
     fn validate(&self) -> Result<(), Error> {
         let times = [self.attack_ms, self.decay_ms, self.hold_ms, self.release_ms];
         if self.unknown_tail.len() != AHDSR_TAIL_V10 && self.unknown_tail.len() < AHDSR_TAIL {
@@ -188,6 +224,17 @@ pub struct EnvelopeFlex {
 }
 
 impl EnvelopeFlex {
+    pub fn timing_record(&self) -> Result<EnvelopeTimingRecord, Error> {
+        if !matches!(self.unknown_tail.len(), FLEX_TAIL | FLEX_TAIL_V12) {
+            return Err(Error::Static("Invalid flex timing metadata"));
+        }
+        EnvelopeTimingRecord::read(&self.unknown_tail[self.unknown_tail.len() - 13..])
+    }
+
+    pub fn unknown_version_word(&self) -> Option<u16> {
+        (self.unknown_tail.len() == FLEX_TAIL_V12)
+            .then(|| u16::from_le_bytes(self.unknown_tail[..2].try_into().unwrap()))
+    }
     fn validate(&self) -> Result<(), Error> {
         let count = self.points.len();
         if count == 0
@@ -299,5 +346,58 @@ impl TryFrom<&Chunk> for EnvelopeFlex {
         };
         envelope.validate()?;
         Ok(envelope)
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+    #[test]
+    fn packed_timing_records_preserve_unassigned_words_and_flags() {
+        let mut tail = Vec::new();
+        for index in 0..4 {
+            for bits in [0x80000000u32, 0x7fc01234, index] {
+                tail.extend(bits.to_le_bytes());
+            }
+            tail.push(0xa5);
+        }
+        let envelope = EnvelopeAhdsr {
+            attack_curve: 0.0,
+            attack_ms: 1.0,
+            decay_ms: 2.0,
+            hold_ms: 3.0,
+            release_ms: 4.0,
+            sustain: 0.5,
+            unknown_flag: 0,
+            unknown_tail: tail.clone(),
+        };
+        for (index, record) in envelope.timing_records().unwrap().into_iter().enumerate() {
+            assert_eq!(
+                record.values.map(f32::to_bits),
+                [0x80000000, 0x7fc01234, index as u32]
+            );
+            assert_eq!(record.flag, 0xa5);
+        }
+        for version_word in [None, Some(0xbeefu16)] {
+            let mut metadata = version_word.map_or_else(Vec::new, |v| v.to_le_bytes().to_vec());
+            metadata.extend(&tail[..13]);
+            let flex = EnvelopeFlex {
+                points: vec![FlexPoint {
+                    time_ms: 0.0,
+                    level: 0.5,
+                    curve: 0.0,
+                }],
+                sustain: 0,
+                unknown_index: 0,
+                unknown_tail: metadata,
+            };
+            assert_eq!(flex.unknown_version_word(), version_word);
+            assert_eq!(
+                flex.timing_record().unwrap().values[0].to_bits(),
+                0x80000000
+            );
+            assert_eq!(flex.timing_record().unwrap().flag, 0xa5);
+        }
+        assert!(EnvelopeTimingRecord::read(&tail[..12]).is_err());
     }
 }
