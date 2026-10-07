@@ -701,3 +701,35 @@ fn a_full_pool_steals_instead_of_refusing_or_panicking() {
     assert_eq!(stats.voices, 2);
     assert_eq!(stats.voice_drops + stats.refused_starts, 0);
 }
+
+#[test]
+fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_cold() {
+    // Selection preflights the region's first window (page 0, resident); the
+    // sample-start route then moves the voice into page 2, which is not.
+    let data = vec![[0.5; 2]; PAGE_FRAMES * 3];
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+    load(&mut cache, &mut worker, &asset, &data, 0);
+    let program = ModProgram {
+        breakpoints: vec![],
+        sources: vec![ModSource::Velocity],
+        routes: vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],
+        shapes: vec![],
+    };
+    let plan = Prepared::new(48000, vec![asset.clone()], vec![region(0, Playback::default())], 8)
+        .unwrap()
+        .with_velocity_curves(vec![VelocityCurve::Constant])
+        .unwrap()
+        .with_voice_modulation(vec![program], vec![Some(0)], vec![PAGE_FRAMES as u32 * 2])
+        .unwrap();
+    let mut rt = from_plan(plan).with_stream_cache(cache);
+    rt.set_cold_starts(false);
+    assert!(!asset.take_cold());
+    let mut output = [[0.; 2]; 64];
+    rt.trigger(input(), 60, 1.).unwrap();
+    rt.render(&mut output).unwrap();
+    let stats = rt.stats();
+    assert_eq!((stats.refused_starts, stats.voices), (1, 0));
+    assert!(output.iter().all(|f| f == &[0.; 2]));
+    assert!(asset.take_cold(), "the refusal asks for the page to be loaded");
+}
