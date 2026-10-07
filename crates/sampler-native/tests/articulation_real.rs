@@ -820,6 +820,7 @@ fn full_note_runtime_trace_probe() {
         };
         let mut rt = Runtime::new(plan, limits).unwrap();
         rt.record_selections(true);
+        rt.record_script_writes(true);
         let mut groups = [None; 16];
         groups[0] = Some(Version::Midi1);
         let mut ingress = Ingress::new(0, groups);
@@ -836,6 +837,10 @@ fn full_note_runtime_trace_probe() {
                 let _ = ingress.apply(&mut rt, packet);
             }
             rt.render(&mut out).unwrap();
+            let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            if i % 50 == 0 {
+                println!("step {i} peak {:.1} dB voices {}", 20.0 * f64::from(peak).log10(), rt.voice_count());
+            }
             for r in rt.take_selection_records() {
                 let sounded: Vec<String> = r
                     .candidates
@@ -858,6 +863,11 @@ fn full_note_runtime_trace_probe() {
                     sounded.iter().take(60).collect::<Vec<_>>()
                 );
             }
+            for w in rt.take_script_writes() {
+                if i < 200 {
+                    println!("step {i} WRITE {w}");
+                }
+            }
             rt.drain_effects(|e| {
                 let view = e.instance.and_then(|id| scripts.get(usize::from(id.0)));
                 let name = view.and_then(|v| v.service(e.service)).unwrap_or("?");
@@ -878,5 +888,55 @@ fn full_note_runtime_trace_probe() {
             });
         }
         println!("effect totals {counts:?} dropped {}", rt.dropped_effects());
+    }
+}
+
+/// Una Cotton key 60 vel 100: the script-played note against the same group
+/// played natively with scripts off (peak dBFS over 0.1 s windows).
+#[test]
+#[ignore = "probe"]
+fn una_script_vs_native_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let windows = |out: &[[f32; 2]]| {
+        (0..8)
+            .map(|w| {
+                let seg = &out[w * 4800..((w + 1) * 4800).min(out.len())];
+                let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+                format!("{:.1}", 20.0 * f64::from(p).log10())
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | 100];
+    words.resize(1500, 0x2000_0000);
+    for scripts in [true, false] {
+        let mut d = decoded(&path, 60);
+        if !scripts {
+            let keep: Vec<_> = d
+                .instrument
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.name == "DRY_C3")
+                .map(|(i, _)| i)
+                .collect();
+            println!("native groups {keep:?}");
+            let kept = d.instrument.retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
+            d.pcm = kept.iter().map(|&i| d.pcm[i].clone()).collect();
+            d.labels = kept.iter().map(|&i| d.labels[i].clone()).collect();
+            d.options.scripts = false;
+        }
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let out = render(loaded, &words);
+        println!("scripts {scripts}: {}", windows(&out));
     }
 }

@@ -320,6 +320,18 @@ impl ModValues {
 }
 
 impl Runtime {
+    /// Diagnostics: log every script parameter write (`change_vol`, group
+    /// volume, `set_event_par`, envelope stages). Allocates; keep it off the
+    /// audio path.
+    pub fn record_script_writes(&mut self, on: bool) {
+        self.write_log = on.then(Vec::new);
+    }
+
+    /// Writes logged since the last call, oldest first.
+    pub fn take_script_writes(&mut self) -> Vec<String> {
+        self.write_log.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     /// Set a note's "from script" modulator `id` for a frontend that drives
     /// the runtime directly (the Falcon Lua host); `value` clamps to ±1.
     /// Voices of the note read it on their next chunk.
@@ -372,6 +384,11 @@ impl Runtime {
         relative: bool,
     ) -> Result<(), Error> {
         self.script_params = true;
+        if let Some(log) = &mut self.write_log {
+            log.push(format!(
+                "param {scope:?} {index} {target:?} {value} relative {relative}"
+            ));
+        }
         let Some(layer) = self.param_layer(plan, scope, index)? else {
             return Ok(());
         };
@@ -397,6 +414,9 @@ impl Runtime {
         let (Ok(event), Ok(id)) = (i32::try_from(event), u16::try_from(id)) else {
             return Ok(());
         };
+        if let Some(log) = &mut self.write_log {
+            log.push(format!("event_par event {event} id {id} value {value}"));
+        }
         let user = (crate::USER_EVENT_PAR..crate::USER_EVENT_PAR + 4).contains(&id);
         if id > 1000 && !user {
             return Ok(());
@@ -490,6 +510,9 @@ impl Runtime {
         value: i64,
     ) -> Result<(), Error> {
         let value = u32::try_from(value).map_err(|_| Error::InvalidInput)?;
+        if let Some(log) = &mut self.write_log {
+            log.push(format!("envelope group {group} {stage:?} {value}"));
+        }
         let layers = &mut self.plans.get_mut(plan.0).unwrap().script;
         if let Some(set) = usize::try_from(group)
             .ok()
