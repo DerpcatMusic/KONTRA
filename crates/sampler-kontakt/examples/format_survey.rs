@@ -4,7 +4,7 @@ use ni_file::kontakt::{Chunk as OwnedChunk, StructuredObject};
 use sampler_kontakt::{Chunks, Limits};
 use std::{
     collections::BTreeMap,
-    io::{Cursor, Write},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -109,6 +109,54 @@ impl Survey {
                 }
             } else {
                 self.error("group private FX rack");
+            }
+        }
+        if id == 0x4f {
+            match ni_file::kontakt::objects::Snapshot::try_from(&owned) {
+                Ok(snapshot) => {
+                    self.field(&key, &version, "group_count", snapshot.group_count != 0);
+                    for (slot, entries) in snapshot.persistent.iter().enumerate() {
+                        self.field(
+                            &key,
+                            &version,
+                            &format!("persistent_slot_{slot}"),
+                            !entries.is_empty(),
+                        );
+                    }
+                    for child in &snapshot.effect_children {
+                        self.owned(child, depth + 1);
+                    }
+                    match snapshot.group_snapshots() {
+                        Ok(groups) => {
+                            for (_, group) in groups {
+                                let v = format!("0x{:x}", group.version);
+                                self.field("Kontakt:0x50", &v, "structure", true);
+                                self.blob("Kontakt:0x50", &v, "public", &group.public_data, true);
+                                self.blob("Kontakt:0x50", &v, "source", &group.source_data, true);
+                                self.blob(
+                                    "Kontakt:0x50",
+                                    &v,
+                                    "trailing",
+                                    &group.trailing_data,
+                                    true,
+                                );
+                                self.field(
+                                    "Kontakt:0x50",
+                                    &v,
+                                    "trailing_flag",
+                                    group.trailing_flag != 0,
+                                );
+                                for array in [&group.fx, &group.internal, &group.external] {
+                                    for child in array.items.iter().flatten() {
+                                        self.owned(child, depth + 1);
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => self.error("compact snapshot groups"),
+                    }
+                }
+                Err(_) => self.error("snapshot state"),
             }
         }
         match object.children(LIMITS) {
@@ -333,6 +381,17 @@ impl Survey {
             item.header.header_flags != 0,
         );
         self.field("NIS:item", "1", "reserved", item.header.reserved != 0);
+        self.blob("NIS:item", "1", "uuid", &item.header.uuid, false);
+        for descriptor in &item.child_headers {
+            for (field, at) in [("child_index", 0), ("child_domain", 4), ("child_id", 8)] {
+                self.field(
+                    "NIS:item",
+                    "1",
+                    field,
+                    descriptor[at..at + 4].iter().any(|&b| b != 0),
+                );
+            }
+        }
         self.blob("NIS:item", "1", "trailing", &item.trailing_data, false);
         let mut data = Some(&item.data);
         while let Some(layer) = data {
@@ -347,6 +406,19 @@ impl Survey {
                 .map(|b| u32::from_le_bytes(b.try_into().unwrap()).to_string())
                 .unwrap_or_else(|| "empty".into());
             self.field(&id, &v, "structure", true);
+            if layer.header.item_type() == ni_file::nis::ItemType::Preset {
+                if let Some(factory) = layer.data.get(4) {
+                    self.field(&id, &v, "factory", *factory != 0);
+                }
+                if let Some(app) = layer.data.get(5..9) {
+                    self.blob(&id, &v, "authoring_app", app, false);
+                }
+            }
+            if layer.header.item_type() == ni_file::nis::ItemType::PresetChunkItem {
+                if let Some(checksum) = layer.data.get(4..8) {
+                    self.blob(&id, &v, "auth_checksum", checksum, false);
+                }
+            }
             // Never profile authorization, encrypted bytes or access properties.
             if layer.header.item_type() == ni_file::nis::ItemType::EncryptionItem {
                 let encrypted = layer.data.get(4) == Some(&1);
@@ -382,6 +454,103 @@ impl Survey {
         // are excluded. Baselines are documented, not guessed from mode values.
         scalar_fields(self, id, v, chunk);
     }
+
+    fn resource(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nicnt"))
+        {
+            let mut file = std::fs::File::open(path)?;
+            let mut head = Vec::new();
+            file.by_ref().take(4 << 20).read_to_end(&mut head)?;
+            let marker = b"/\\ NI FC MTD  /\\";
+            let start = head
+                .windows(marker.len())
+                .enumerate()
+                .skip(1)
+                .find_map(|(at, b)| (b == marker).then_some(at))
+                .ok_or("missing NICNT resource section")?;
+            file.seek(SeekFrom::Start(start as u64))?;
+            let files = ni_file::file_container::NIFileContainer::read(&mut file)?;
+            self.field("NICNT:FileContainer", "unversioned", "structure", true);
+            self.field(
+                "NICNT:FileContainer",
+                "unversioned",
+                "member_count",
+                !files.items.is_empty(),
+            );
+            for item in files.items {
+                self.field(
+                    "NICNT:FileContainer",
+                    "unversioned",
+                    "member_index",
+                    item.index != 0,
+                );
+                self.field(
+                    "NICNT:FileContainer",
+                    "unversioned",
+                    "member_offset",
+                    item.file_start_offset != 0,
+                );
+                self.field(
+                    "NICNT:FileContainer",
+                    "unversioned",
+                    "member_size",
+                    item.file_size != 0,
+                );
+            }
+            // Product XML/access fields in `head` are neither decoded nor output.
+        } else {
+            let mut file = std::fs::File::open(path)?;
+            let mut header = [0; 22];
+            file.read_exact(&mut header)?;
+            let v = format!("0x{:x}", u16::from_le_bytes([header[4], header[5]]));
+            self.field("NKR:root-directory", &v, "structure", true);
+            for (field, at) in [
+                ("set_id", 6),
+                ("unknown", 10),
+                ("count", 14),
+                ("padding", 18),
+            ] {
+                self.field(
+                    "NKR:root-directory",
+                    &v,
+                    field,
+                    header[at..at + 4].iter().any(|&b| b != 0),
+                );
+            }
+            file.rewind()?;
+            let archive = ni_file::nkr::Archive::read_index(&mut file)?;
+            self.field(
+                "NKR:root-directory",
+                &v,
+                "index_issues",
+                !archive.issues.is_empty(),
+            );
+            for name in archive.entries.keys() {
+                if let Some(entry) = archive.member(&mut file, name)? {
+                    file.seek(SeekFrom::Start(entry.header_offset))?;
+                    let mut common = [0; 14];
+                    file.read_exact(&mut common)?;
+                    let version = format!("0x{:x}", u16::from_le_bytes([common[4], common[5]]));
+                    let magic = u32::from_le_bytes(common[..4].try_into().unwrap());
+                    let kind = format!("NKR:member:0x{magic:x}");
+                    self.field(&kind, &version, "structure", true);
+                    self.field(&kind, &version, "valid", entry.valid);
+                    self.field(&kind, &version, "encoded", entry.encoded);
+                    self.field(
+                        &kind,
+                        &version,
+                        "key_index_not_clear",
+                        entry.key_index != 0xff,
+                    );
+                    self.field(&kind, &version, "size", entry.size != 0);
+                    self.blob(&kind, &version, "reserved_word", &common[6..10], true);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -390,11 +559,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out = Path::new(&args[2]);
     std::fs::create_dir_all(out)?;
     let mut survey = Survey::default();
+    let mut instruments = Vec::new();
+    let mut snapshots = Vec::new();
     let mut status = std::fs::File::create(out.join("files.tsv"))?;
     writeln!(status, "path\tstatus")?;
     for (i, path) in files.lines().enumerate() {
         survey.file = i;
         let path = Path::new(path);
+        if path.extension().is_some_and(|e| {
+            ["nkr", "nkx", "nicnt"]
+                .iter()
+                .any(|s| e.eq_ignore_ascii_case(s))
+        }) {
+            writeln!(
+                status,
+                "{}\t{}",
+                path.display(),
+                if survey.resource(path).is_ok() {
+                    "resource-ok"
+                } else {
+                    "resource-error"
+                }
+            )?;
+            continue;
+        }
         if let Ok(mut file) = std::fs::File::open(path) {
             if let Ok(ni_file::NIFile::NISoundContainer(item)) = ni_file::NIFile::read(&mut file) {
                 survey.nis(&item, path, 0);
@@ -402,6 +590,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match sampler_kontakt::read_chunks(path) {
             Ok(chunks) => {
+                if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+                {
+                    if let Some(Ok(program)) = chunks.program() {
+                        if let Ok(params) = program.params() {
+                            instruments.push((path.to_owned(), params.name));
+                        }
+                    }
+                }
+                if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("nksn"))
+                {
+                    snapshots.push((
+                        path.to_owned(),
+                        chunks.find_first(0x51).and_then(|c| {
+                            ni_file::kontakt::objects::snapshot_metadata_names(c).ok()
+                        }),
+                    ));
+                }
                 let mut bytes = Vec::new();
                 chunks.write(&mut bytes)?;
                 match Chunks::parse(&bytes, LIMITS) {
@@ -417,6 +626,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i % 100 == 0 {
             eprintln!("surveyed {} files", i + 1);
         }
+    }
+    let mut bindings = std::fs::File::create(out.join("snapshot-bindings.tsv"))?;
+    writeln!(bindings, "snapshot\tstatus\tbase_instrument")?;
+    let mut base_counts = BTreeMap::<std::path::PathBuf, usize>::new();
+    for (snapshot, names) in snapshots {
+        let Some((name, content)) = names else {
+            writeln!(bindings, "{}\tinvalid-metadata\t", snapshot.display())?;
+            continue;
+        };
+        let candidates = snapshot_candidates(&snapshot, &name, &content, &instruments);
+        let state = match candidates.len() {
+            0 => "unresolved",
+            1 => "unique-metadata-match",
+            _ => "ambiguous",
+        };
+        if let [base] = candidates.as_slice() {
+            *base_counts.entry((*base).to_owned()).or_default() += 1;
+        }
+        // Only installed filesystem paths are output, never saved metadata names.
+        writeln!(
+            bindings,
+            "{}\t{state}\t{}",
+            snapshot.display(),
+            candidates
+                .iter()
+                .map(|p| p.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )?;
+    }
+    let mut bases = std::fs::File::create(out.join("snapshot-instruments.tsv"))?;
+    writeln!(bases, "instrument\tsnapshots")?;
+    for (base, count) in base_counts {
+        writeln!(bases, "{}\t{count}", base.display())?;
     }
     let mut fields = std::fs::File::create(out.join("fields.tsv"))?;
     writeln!(
@@ -452,6 +695,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn library(path: &Path) -> Option<&std::ffi::OsStr> {
+    path.strip_prefix("/mnt/MAIN_STORAGE/Libraries/Kontakt")
+        .ok()?
+        .components()
+        .next()
+        .map(|c| c.as_os_str())
+}
+
+fn snapshot_candidates<'a>(
+    snapshot: &Path,
+    name: &str,
+    content: &str,
+    instruments: &'a [(std::path::PathBuf, String)],
+) -> Vec<&'a Path> {
+    let basename = content.rsplit(['/', '\\']).next().unwrap_or(content);
+    let content = Path::new(basename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(basename);
+    let generic = matches!(name, "Kontakt" | "TemplateSnapshot");
+    instruments
+        .iter()
+        .filter(|(path, saved)| {
+            library(path) == library(snapshot)
+                && if generic {
+                    path.file_stem()
+                        .is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(content))
+                } else {
+                    saved.eq_ignore_ascii_case(name)
+                }
+        })
+        .map(|(path, _)| path.as_path())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +741,36 @@ mod tests {
         c.add(0, true);
         c.add(1, false);
         assert_eq!((c.files, c.changed, c.records), (2, 1, 4));
+    }
+    #[test]
+    fn snapshot_binding_keeps_library_identity_and_ambiguity() {
+        let root = "/mnt/MAIN_STORAGE/Libraries/Kontakt";
+        let instruments = vec![
+            (
+                Path::new(root).join("A/Instruments/One.nki"),
+                "Piano".into(),
+            ),
+            (
+                Path::new(root).join("B/Instruments/Two.nki"),
+                "Piano".into(),
+            ),
+        ];
+        let snapshot = Path::new(root).join("A/Snapshots/Preset.nksn");
+        assert_eq!(
+            snapshot_candidates(&snapshot, "Piano", "", &instruments),
+            [instruments[0].0.as_path()]
+        );
+        assert_eq!(
+            snapshot_candidates(&snapshot, "TemplateSnapshot", "old\\One.nki", &instruments),
+            [instruments[0].0.as_path()]
+        );
+        assert!(snapshot_candidates(&snapshot, "Missing", "", &instruments).is_empty());
+        let mut duplicate = instruments.clone();
+        duplicate.push((Path::new(root).join("A/More/One.nki"), "Piano".into()));
+        assert_eq!(
+            snapshot_candidates(&snapshot, "Piano", "", &duplicate).len(),
+            2
+        );
     }
 }
 
@@ -543,7 +851,7 @@ fn scalar_fields(s: &mut Survey, id: &str, v: &str, chunk: &OwnedChunk) {
                 );
                 s.field(id, v, "rls_trig_counter", p.rls_trig_counter != 0);
                 s.field(id, v, "midi_channel", p.midi_channel != -1);
-                s.field(id, v, "voice_group_index", p.voice_group_index != -1);
+                s.field(id, v, "voice_group_index", p.voice_group_index != 0);
                 s.field(
                     id,
                     v,
@@ -566,7 +874,7 @@ fn scalar_fields(s: &mut Survey, id: &str, v: &str, chunk: &OwnedChunk) {
                     id,
                     v,
                     "sample_start_mod_range",
-                    p.sample_start_mod_range != 0,
+                    p.sample_start_mod_range != -1,
                 );
                 s.field(id, v, "low_velocity", p.low_velocity != 0);
                 s.field(id, v, "high_velocity", p.high_velocity != 127);
