@@ -150,6 +150,15 @@ pub struct LoadRequest {
     /// Per-note pressure and timbre reach every zone (louder, brighter), for
     /// MPE controllers; otherwise only routes the instrument authored do.
     pub mpe: bool,
+    /// Voice-rendering threads (`None`: one, the audio thread alone).
+    pub threads: Option<ThreadChoice>,
+}
+
+/// A request for voice-rendering threads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadChoice {
+    Auto,
+    Fixed(usize),
 }
 
 /// A prepared part with what the shell shows of it.

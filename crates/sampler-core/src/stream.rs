@@ -209,7 +209,9 @@ impl StreamCache {
     }
     /// Unpark the decoder threads if requests were queued since the last call.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed) | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        if std::mem::take(&mut self.pushed)
+            | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             for thread in &self.wake {
                 thread.unpark();
             }
@@ -420,7 +422,10 @@ impl StreamCache {
     }
     /// The read-only view rendering uses; shareable across render threads.
     pub fn reader(&self) -> PageReader<'_> {
-        PageReader { entries: &self.entries, index: &self.index }
+        PageReader {
+            entries: &self.entries,
+            index: &self.index,
+        }
     }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
         self.reader().frame(asset, frame)
@@ -596,8 +601,19 @@ impl crate::Runtime {
         // Protect all voices before any eviction: admission order must never evict
         // a page that a later voice already needs in this same snapshot horizon.
         for requesting in [false, true] {
-            for (index, slot) in self.voices.slots.iter().enumerate() {
-                let Some(voice) = &slot.value else { continue };
+            // Only live voices: an idle part scans a few activity words, not every slot.
+            let live = self.voice_activity.iter().enumerate().flat_map(|(word, &bits)| {
+                let mut rest = bits;
+                std::iter::from_fn(move || {
+                    (rest != 0).then(|| {
+                        let bit = rest.trailing_zeros() as usize;
+                        rest &= rest - 1;
+                        word * 64 + bit
+                    })
+                })
+            });
+            for index in live {
+                let Some(voice) = &self.voices.slots[index].value else { continue };
                 let family = self.families.get(voice.family.0).unwrap();
                 let note = self.notes.get(family.note.0).unwrap();
                 let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[voice.sample];
