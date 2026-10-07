@@ -563,10 +563,9 @@ impl Env {
                 let args = arguments(&line[line.find('(').map_or(0, |i| i + 1)..]);
                 if let [key, name] = args[..]
                     && let (Some(key), Some(name)) = (env.eval(key), literal(name))
-                    && let Ok(key) = u8::try_from(key)
-                {
-                    env.names.insert(key, name);
-                }
+                        && let Ok(key) = u8::try_from(key) {
+                            env.names.insert(key, name);
+                        }
                 continue;
             }
             let (target, value) = match statement.split_once(":=") {
@@ -634,10 +633,9 @@ impl Env {
                         .and_then(|t| env.eval(t));
                     if let (Some(i), Some(text), Some(a)) =
                         (index, literal(v), env.strings.get_mut(&name))
-                        && let Some(slot) = usize::try_from(i).ok().and_then(|i| a.get_mut(i))
-                    {
-                        *slot = Some(text);
-                    }
+                        && let Some(slot) = usize::try_from(i).ok().and_then(|i| a.get_mut(i)) {
+                            *slot = Some(text);
+                        }
                 }
                 _ => {}
             }
