@@ -11,8 +11,11 @@ if [ -z "${KONTRA_NO_STAMP_CHECK:-}" ]; then
   [ -f "$W/calibrated" ] || { echo "record: no calibration stamp, run kontakt.sh calibrate first" >&2; exit 1; }
   read -r sink wsrv _ <"$W/calibrated"
   [ "$sink" = "$(pactl list short modules | awk '/kontra_ref/{print $1}')" ] && [ "$wsrv" = "$("$here/wsid.sh")" ] || { echo "record: calibration stamp is from another sink/wine session, recalibrate" >&2; exit 1; }
+  if [ -n "${KONTRA_NO_STATE_CHECK:-}" ]; then echo "state=SKIPPED: $KONTRA_NO_STATE_CHECK" >"$W/log/state.txt"; ok=1
+  else
   ok=; for _ in 1 2 3; do "$here/kontakt.sh" state >"$W/log/state.txt" 2>&1 && { ok=1; break; }; sleep 3; done   # retry: a transient redraw can fail one capture
   [ -n "$ok" ] || { cat "$W/log/state.txt" >&2; echo "record: Kontakt state is not pinned ($(grep MISMATCH "$W/log/state.txt" | tr '\n' ';')), no MIDI sent" >&2; exit 1; }
+  fi
 fi
 load1() { cut -d' ' -f1 /proc/loadavg; }
 maxload=${KONTRA_MAX_LOAD:-8}; for _ in $(seq 12); do load_start=$(load1); awk -v l="$load_start" -v m="$maxload" 'BEGIN{exit !(l<m)}' && break; sleep 5; done   # wait up to 60 s for the load to drop
