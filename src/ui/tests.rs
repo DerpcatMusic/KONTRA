@@ -331,7 +331,7 @@ fn a_header_is_one_line_at_any_width() {
         h.press("preset-next-0");
         assert_eq!(read(&p.selection).parts[0].path,"/virtual/Library/Zeta.nki","preset navigation remains interactive");
         h.press("more-0");
-        let last = (0..64).filter(|n| h.ui.scene().unwrap().surface(&format!("menu-item-{n}")).is_some()).last().unwrap();
+        let last = (0..64).filter(|n| h.ui.scene().unwrap().surface(&format!("menu-item-{n}")).is_some()).next_back().unwrap();
         h.press(&format!("menu-item-{last}"));
         assert!(read(&p.selection).parts[0].path.is_empty(),"Remove remains reachable from the Part menu at {width}");
     }
@@ -1397,7 +1397,7 @@ fn screenshot() {
     // Sticky headers need a second part to scroll past the first.
     let sticky_ok = instruments.len() > 1;
     for &(state, loaded, presses) in states
-        .into_iter()
+        .iter()
         // Without the owner's library (CI), only the states with no instrument.
         .filter(|(s, loaded, _)| wanted(s) && (*s != "sticky" || sticky_ok) && (!loaded || !instruments.is_empty()))
     {
