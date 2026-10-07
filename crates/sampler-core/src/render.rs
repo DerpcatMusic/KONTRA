@@ -41,6 +41,10 @@ impl Runtime {
         self.block_fuel_left = fuel;
     }
 
+    pub fn behavior_block_fuel(&self) -> usize {
+        self.block_fuel
+    }
+
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
