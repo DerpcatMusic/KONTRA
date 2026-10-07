@@ -1122,15 +1122,19 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&*e, "container/decrypt"),
             };
             stage("parse");
+            let t = Instant::now();
             let ir = match sampler_uvi::translate_program(&bank, program) {
                 Ok(i) => i,
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
+            let translate_ms = t.elapsed().as_millis() as u64;
             let Some(pick) = pick_key(&ir) else {
                 return no_zone();
             };
             if ctx.tier == Tier::Parse {
-                return (ok(pick, &ir), Some((Subject::Ir(Box::new(ir)), pick)));
+                let mut record = ok(pick, &ir);
+                record["phases_ms"] = json!({"translate": translate_ms, "pick": t.elapsed().as_millis() as u64 - translate_ms});
+                return (record, Some((Subject::Ir(Box::new(ir)), pick)));
             }
             stage("load");
             match sampler_uvi::load_program_scripted_streamed(&bank, program, 48000, &policy) {
@@ -1251,7 +1255,11 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
-        let cap = if ctx.tier == Tier::Full { 16 } else { 4 };
+        let cap = match ctx.tier {
+            Tier::Full => 16,
+            Tier::Quick => 4,
+            Tier::Parse => 1, // each program re-reads the whole multi
+        };
         let subs: Vec<Value> = (0..programs.min(cap))
             .map(|index| check_one(&Item::MultiProgram { path: path.into(), index }, ctx))
             .collect();
@@ -1844,7 +1852,27 @@ fn run(out: &Path, opts: &Opts) -> i32 {
         queue.push((item, key, hint));
     }
     // Biggest first, so the long jobs start early and the pool drains evenly.
-    queue.sort_by_key(|q| std::cmp::Reverse(q.2));
+    // UVI programs last: their banks open in the background meanwhile, and
+    // opening a cold bank takes up to a minute.
+    queue.sort_by_key(|q| (matches!(q.0, Item::UviProgram { .. }), std::cmp::Reverse(q.2)));
+    let banks: Vec<PathBuf> = queue
+        .iter()
+        .filter_map(|q| match &q.0 {
+            Item::UviProgram { bank, .. } => Some(bank.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let next_bank = Arc::new(AtomicUsize::new(0));
+    for _ in 0..3.min(banks.len()) {
+        let (banks, next_bank) = (banks.clone(), next_bank.clone());
+        std::thread::spawn(move || {
+            while let Some(p) = banks.get(next_bank.fetch_add(1, Ordering::Relaxed)) {
+                let _ = bank(p);
+            }
+        });
+    }
     pool.queue = queue;
     let total = pool.queue.len();
     eprintln!(
