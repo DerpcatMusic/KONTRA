@@ -157,7 +157,7 @@ fn one_rack_plays_every_format_together() {
     let velocity = 0x80 | (sampler_ir::Driver::Velocity as u8) << 1;
     let part_nki = rack.add(nki, 0, false, 0, 0, 0, 0);
     let part_uvi = rack.add(uvi, 0, false, 1, 0, 1, 0);
-    let part_multi = rack.add(multi, 0, false, 2, 0, 2, 0);
+    let part_multi = rack.add(multi, 1, false, 2, 0, 2, 0);
     let part_a = rack.add(wav_a, 0, false, 3, 0, 3, 0);
     let part_b = rack.add(wav_b, 0, false, 3, 0, 4, 0);
     let part_mpe = rack.add(wav_mpe, 0, true, 0, 1, 5, 0);
@@ -177,7 +177,7 @@ fn one_rack_plays_every_format_together() {
     rack.run(50, true);
 
     // Each part sounds on its own channel and pair, and only there.
-    let probes = [(0u8, 60u8, part_nki, "kontakt nki"), (1, 36, part_uvi, "uvi"), (2, 40, part_multi, "kontakt multi")];
+    let probes = [(0u8, 60u8, part_nki, "kontakt nki"), (1, 36, part_uvi, "uvi"), (2, 60, part_multi, "kontakt multi")];
     let mut failures = Vec::new();
     for (channel, key, part, what) in probes {
         rack.silence();
