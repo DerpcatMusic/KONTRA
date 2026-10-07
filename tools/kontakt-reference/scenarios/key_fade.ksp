@@ -1,0 +1,8 @@
+on init
+set_snapshot_type(3)
+set_zone_par(get_zone_id(0), $ZONE_PAR_LOW_KEY, 0)
+set_zone_par(get_zone_id(0), $ZONE_PAR_HIGH_KEY, 72)
+set_zone_par(get_zone_id(0), $ZONE_PAR_FADE_HIGH_KEY, 36)
+set_engine_par($ENGINE_PAR_ATTACK, 0, 0, 0, -1)
+set_engine_par($ENGINE_PAR_RELEASE, 0, 0, 0, -1)
+end on

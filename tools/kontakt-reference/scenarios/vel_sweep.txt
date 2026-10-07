@@ -1,0 +1,17 @@
+# bare noise instrument (scenarios/calibration.nki), master 0.00 dB, explicit controller state; velocity law sweep
+0 cc 1 0
+0 cc 7 127
+0 cc 10 64
+0 cc 11 127
+0 cc 64 0
+0.1 note 60 1 2
+4.1 note 60 8 2
+8.1 note 60 16 2
+12.1 note 60 32 2
+16.1 note 60 48 2
+20.1 note 60 64 2
+24.1 note 60 80 2
+28.1 note 60 100 2
+32.1 note 60 110 2
+36.1 note 60 127 2
+41 end
