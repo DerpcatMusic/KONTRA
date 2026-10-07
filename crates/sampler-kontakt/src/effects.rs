@@ -352,20 +352,18 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
                     NotModeled,
                 ));
             }
-            if spread != 1.0 || pan != 0.0 {
-                // Mid/side width = spread (Una's instrument insert, spread 0,
-                // pan centre, plays L=R in Kontakt 8: spread 0 is mono) and
-                // balance pan (unverified).
-                notes.push((
-                    "stereo modeller width/pan law".into(),
-                    format!("spread {spread} pan {pan}"),
-                    UnknownLaw,
-                ));
-            }
-            let width = f64::from(spread).clamp(0.0, 2.0);
+            // KONTAKT_REFERENCE.md s.20 (measured 2x2 fits, pure matrix): spread
+            // s in -1..=1 (GUI percent / 100). s < 0: M/S width 1 + s, mono at
+            // -1. s > 0: [[1+s, -s], [-s, 1+s]], clamped at 1. Pan p is a
+            // linear balance: the opposite channel is scaled by 1 - |p|.
+            let s = f64::from(spread).clamp(-1.0, 1.0);
             let pan = f64::from(pan);
             let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
-            let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
+            let (same, other) = if s < 0.0 {
+                ((2.0 + s) / 2.0, -s / 2.0)
+            } else {
+                (1.0 + s, -s)
+            };
             [
                 [same * gains[0], other * gains[0]],
                 [other * gains[1], same * gains[1]],
@@ -902,19 +900,37 @@ mod tests {
     }
 
     #[test]
-    fn a_modeller_at_spread_zero_sums_to_mono_and_the_inverter_output_is_not_applied() {
-        let mut modeller = 0.0f32.to_le_bytes().to_vec();
-        modeller.extend(0.0f32.to_le_bytes());
-        modeller.push(0);
-        let mono = chain(&[slot(0x1f, modeller, 1.0)], Scope::Voice).processors;
-        assert_eq!(
-            mono,
-            vec![sampler_ir::Processor::StereoMatrix([
-                [0.5, 0.5],
-                [0.5, 0.5]
-            ])]
-        );
-        // Una g39's post-amp Inverter: Output +6 dB (linear 2) is not applied.
+    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_is_pending() {
+        let modeller = |spread: f32, pan: f32| {
+            let mut bytes = spread.to_le_bytes().to_vec();
+            bytes.extend(pan.to_le_bytes());
+            bytes.push(0);
+            match chain(&[slot(0x1f, bytes, 1.0)], Scope::Voice)
+                .processors
+                .as_slice()
+            {
+                [sampler_ir::Processor::StereoMatrix(m)] => *m,
+                [] => [[1.0, 0.0], [0.0, 1.0]],
+                other => panic!("{other:?}"),
+            }
+        };
+        let near = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
+            for (a, b) in m.iter().flatten().zip(want.iter().flatten()) {
+                assert!((a - b).abs() < 1e-6, "{m:?} against {want:?}");
+            }
+        };
+        // KONTAKT_REFERENCE.md s.20, divided by the base gain 0.3838 (vel 100):
+        // 100%: 0.7677 / -0.3838; 50%: 0.5757 / -0.1919; -50%: 0.2879 / 0.0960.
+        near(modeller(1.0, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(0.5, 0.0), [[1.5, -0.5], [-0.5, 1.5]]);
+        near(modeller(1.5, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(-0.5, 0.0), [[0.75, 0.25], [0.25, 0.75]]);
+        near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
+        // Pan -50: R x0.5.
+        near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
+        // PENDING (reference agent measuring Output at -6/0/+6 dB): Una g39 and
+        // g94's post-amp Inverter at +6 dB reads exactly as if its Output were
+        // not applied. A single reading; if it fails, apply the gain again.
         let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
         assert!(inverter.is_empty(), "{inverter:?}");
     }
@@ -923,7 +939,7 @@ mod tests {
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
         let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         let inverter = slot(0x1a, vec![1, 1], 0.5);
-        let mut modeller = 1.0f32.to_le_bytes().to_vec();
+        let mut modeller = 0.0f32.to_le_bytes().to_vec();
         modeller.extend(0.0f32.to_le_bytes());
         modeller.push(0);
         let modeller = slot(0x1f, modeller, 2.0);
