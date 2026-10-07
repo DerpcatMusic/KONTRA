@@ -72,6 +72,8 @@ pub struct Config {
     pub load: Duration,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
+    /// The host's sample rate, for `getSamplingRate` and the sample conversions.
+    pub rate: f64,
 }
 
 impl Config {
@@ -88,6 +90,7 @@ impl Default for Config {
             callback: Duration::from_millis(200),
             load: Duration::from_secs(20),
             memory: 1536 << 20,
+            rate: 48000.0,
         }
     }
 }
@@ -159,6 +162,44 @@ pub enum Command {
         voice: Option<u64>,
         at_ms: f64,
     },
+    /// `changeVolume`/`changePan`/`changeTune` on one voice.
+    Change {
+        id: u64,
+        what: Change,
+        value: f64,
+        relative: bool,
+        at_ms: f64,
+    },
+    /// `fadein`/`fadeout`/`fade`/`fade2` on one voice: its gain from `from`
+    /// (its current level when `None`) to `to` over `ms`, ending the voice at
+    /// silence when `kill`.
+    Fade {
+        id: u64,
+        from: Option<f64>,
+        to: f64,
+        ms: f64,
+        kill: bool,
+        at_ms: f64,
+    },
+    /// A MIDI message the script generated, for the host to play into the part.
+    Midi(MidiOut),
+}
+
+/// What `changeVolume`/`changeVolumedB`, `changePan` and `changeTune` set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Decibels,
+    Pan,
+    /// Semitones.
+    Tune,
+}
+
+/// A MIDI 1.0 channel voice message (`status` carries the channel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiOut {
+    pub status: u8,
+    pub a: u8,
+    pub b: u8,
 }
 
 /// What the host left inert or could not run: feature, one example, count.
@@ -194,6 +235,10 @@ struct Shared {
     saved: RefCell<BTreeMap<String, String>>,
     files: Box<dyn Files>,
     config: Config,
+    tempo: Cell<f64>,
+    /// When each key went down (ms), if it is down.
+    down: RefCell<[Option<f64>; 128]>,
+    cc: RefCell<[u8; 128]>,
 }
 
 impl Shared {
@@ -355,6 +400,9 @@ impl ScriptHost {
             saved: RefCell::new(BTreeMap::new()),
             files: Box::new(files),
             config,
+            tempo: Cell::new(120.0),
+            down: RefCell::new([None; 128]),
+            cc: RefCell::new([0; 128]),
         });
         let host = Self { lua, shared };
         host.install().map_err(lua_error)?;
@@ -526,7 +574,7 @@ impl ScriptHost {
                     s.command(Command::Modulation {
                         id: id.clamp(0.0, f64::from(u16::MAX)) as u16,
                         value,
-                        glide_ms: glide.unwrap_or(0.0).max(0.0),
+                        glide_ms: glide.unwrap_or(20.0).max(0.0),
                         voice: voice.map(|v| v as u64),
                         at_ms: s.now.get(),
                     });
@@ -554,7 +602,187 @@ impl ScriptHost {
                 Ok(())
             })?,
         )?;
+        self.install_api()?;
         lua.load(PRELUDE).set_name("prelude").exec()
+    }
+
+    /// The musical context, conversions, voice manipulation and MIDI
+    /// generation functions of the engine API.
+    fn install_api(&self) -> mlua::Result<()> {
+        let (lua, shared) = (&self.lua, &self.shared);
+        let globals = lua.globals();
+        macro_rules! define {
+            ($name:literal, $shared:ident, $f:expr) => {{
+                let $shared = shared.clone();
+                globals.raw_set($name, lua.create_function($f)?)?;
+            }};
+        }
+        let beat = |s: &Shared| 60_000.0 / s.tempo.get();
+        // Musical context.
+        define!("getTempo", s, move |_, ()| Ok(s.tempo.get()));
+        define!("getBeatDuration", s, move |_, ()| Ok(beat(&s)));
+        define!("getBarDuration", s, move |_, ()| Ok(beat(&s) * 4.0));
+        globals.raw_set("getTimeSignature", lua.create_function(|_, ()| Ok((4, 4)))?)?;
+        define!("getSamplingRate", s, move |_, ()| Ok(s.config.rate));
+        define!("getBeatTime", s, move |_, ()| Ok(s.now.get() / beat(&s)));
+        define!("getRunningBeatTime", s, move |_, ()| Ok(s.now.get() / beat(&s)));
+        define!("getNoteDuration", s, move |_, note: f64| {
+            let down = s.down.borrow();
+            Ok(down
+                .get(note as usize)
+                .copied()
+                .flatten()
+                .map_or(0.0, |at| (s.now.get() - at).max(0.0)))
+        });
+        define!("isKeyDown", s, move |_, note: f64| {
+            Ok(s.down.borrow().get(note as usize).is_some_and(Option::is_some))
+        });
+        define!("isOctaveKeyDown", s, move |_, note: f64| {
+            let class = (note as usize) % 12;
+            Ok(s.down.borrow().iter().enumerate().any(|(k, d)| k % 12 == class && d.is_some()))
+        });
+        define!("isNoteHeld", s, move |_, ()| Ok(s.down.borrow().iter().any(Option::is_some)));
+        define!("getCC", s, move |_, cc: f64| {
+            Ok(s.cc.borrow().get(cc as usize).copied().unwrap_or(0))
+        });
+        // Conversions.
+        define!("beat2ms", s, move |_, beats: f64| Ok(beats * beat(&s)));
+        define!("ms2beat", s, move |_, ms: f64| Ok(ms / beat(&s)));
+        define!("ms2samples", s, move |_, ms: f64| Ok(ms * s.config.rate / 1000.0));
+        define!("samples2ms", s, move |_, n: f64| Ok(n * 1000.0 / s.config.rate));
+        // Voice manipulation.
+        let change = |what: Change, to_value: fn(f64) -> f64| {
+            move |s: Rc<Shared>| {
+                move |_: &Lua, (id, value, relative, _): (f64, f64, Option<bool>, Option<bool>)| {
+                    s.command(Command::Change {
+                        id: id as u64,
+                        what,
+                        value: to_value(value),
+                        relative: relative.unwrap_or(false),
+                        at_ms: s.now.get(),
+                    });
+                    Ok(())
+                }
+            }
+        };
+        let db = |gain: f64| 20.0 * gain.max(1e-6).log10();
+        globals.raw_set(
+            "changeVolume",
+            lua.create_function(change(Change::Decibels, db)(shared.clone()))?,
+        )?;
+        globals.raw_set(
+            "changeVolumedB",
+            lua.create_function(change(Change::Decibels, |v| v)(shared.clone()))?,
+        )?;
+        globals.raw_set(
+            "changePan",
+            lua.create_function(change(Change::Pan, |v| v)(shared.clone()))?,
+        )?;
+        globals.raw_set(
+            "changeTune",
+            lua.create_function(change(Change::Tune, |v| v)(shared.clone()))?,
+        )?;
+        define!("fadein", s, move |_, (id, ms, reset): (f64, f64, Option<bool>)| {
+            s.command(Command::Fade {
+                id: id as u64,
+                from: reset.unwrap_or(false).then_some(0.0),
+                to: 1.0,
+                ms: ms.max(0.0),
+                kill: false,
+                at_ms: s.now.get(),
+            });
+            Ok(())
+        });
+        define!(
+            "fadeout",
+            s,
+            move |_, (id, ms, kill, reset): (f64, f64, Option<bool>, Option<bool>)| {
+                s.command(Command::Fade {
+                    id: id as u64,
+                    from: reset.unwrap_or(false).then_some(1.0),
+                    to: 0.0,
+                    ms: ms.max(0.0),
+                    kill: kill.unwrap_or(false),
+                    at_ms: s.now.get(),
+                });
+                Ok(())
+            }
+        );
+        define!("fade", s, move |_, (id, to, ms): (f64, f64, f64)| {
+            s.command(Command::Fade {
+                id: id as u64,
+                from: None,
+                to,
+                ms: ms.max(0.0),
+                kill: false,
+                at_ms: s.now.get(),
+            });
+            Ok(())
+        });
+        define!("fade2", s, move |_, (id, from, to, ms): (f64, f64, f64, f64)| {
+            s.command(Command::Fade {
+                id: id as u64,
+                from: Some(from),
+                to,
+                ms: ms.max(0.0),
+                kill: false,
+                at_ms: s.now.get(),
+            });
+            Ok(())
+        });
+        define!(
+            "sendScriptModulation2",
+            s,
+            move |_, (id, from, to, ramp, voice): (f64, f64, f64, Option<f64>, Option<f64>)| {
+                let id = id.clamp(0.0, f64::from(u16::MAX)) as u16;
+                let voice = voice.map(|v| v as u64);
+                let at_ms = s.now.get();
+                s.command(Command::Modulation { id, value: from, glide_ms: 0.0, voice, at_ms });
+                s.command(Command::Modulation {
+                    id,
+                    value: to,
+                    glide_ms: ramp.unwrap_or(20.0).max(0.0),
+                    voice,
+                    at_ms,
+                });
+                Ok(())
+            }
+        );
+        // MIDI generation: the channel is 1..=16, 0 or none the first.
+        let midi = |s: &Shared, status: u8, channel: Option<f64>, a: f64, b: f64| {
+            let channel = channel.map_or(0, |c| (c as i64 - 1).clamp(0, 15) as u8);
+            s.command(Command::Midi(MidiOut {
+                status: status | channel,
+                a: a.clamp(0.0, 127.0) as u8,
+                b: b.clamp(0.0, 127.0) as u8,
+            }));
+        };
+        define!("controlChange", s, move |_, (cc, v, ch, _): (f64, f64, Option<f64>, Option<f64>)| {
+            midi(&s, 0xb0, ch, cc, v);
+            Ok(())
+        });
+        define!("programChange", s, move |_, (v, ch, _): (f64, Option<f64>, Option<f64>)| {
+            midi(&s, 0xc0, ch, v, 0.0);
+            Ok(())
+        });
+        define!("pitchBend", s, move |_, (bend, ch, _): (f64, Option<f64>, Option<f64>)| {
+            let raw = (8192.0 + bend.clamp(-1.0, 1.0) * 8192.0).round().min(16383.0) as u16;
+            midi(&s, 0xe0, ch, f64::from(raw & 127), f64::from(raw >> 7));
+            Ok(())
+        });
+        define!("afterTouch", s, move |_, (v, ch, _): (f64, Option<f64>, Option<f64>)| {
+            midi(&s, 0xd0, ch, v, 0.0);
+            Ok(())
+        });
+        define!(
+            "polyAfterTouch",
+            s,
+            move |_, (v, note, ch, _): (f64, f64, Option<f64>, Option<f64>)| {
+                midi(&s, 0xa0, ch, note, v);
+                Ok(())
+            }
+        );
+        Ok(())
     }
 
     fn load_scripts(&self, doc: &roxmltree::Document) -> Result<(), String> {
@@ -596,14 +824,23 @@ impl ScriptHost {
     /// Whether the scripts handle note-ons themselves (the original attack is
     /// then theirs to replay).
     pub fn handles_notes(&self) -> bool {
-        matches!(
-            self.lua.globals().raw_get::<Value>("onNote"),
-            Ok(Value::Function(_))
-        )
+        let globals = self.lua.globals();
+        ["onNote", "onEvent"]
+            .iter()
+            .any(|name| matches!(globals.raw_get::<Value>(*name), Ok(Value::Function(_))))
     }
 
     fn call(&self, name: &str, event: Option<Table>) {
-        let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>(name) else {
+        let globals = self.lua.globals();
+        // `onEvent` takes precedence over the specialized handlers.
+        let handler = match (event.is_some(), globals.raw_get::<Value>("onEvent")) {
+            (true, Ok(Value::Function(f))) => Some(f),
+            _ => match globals.raw_get::<Value>(name) {
+                Ok(Value::Function(f)) => Some(f),
+                _ => None,
+            },
+        };
+        let Some(f) = handler else {
             return;
         };
         self.shared.arm(self.shared.config.callback);
@@ -624,12 +861,16 @@ impl ScriptHost {
         table.set("type", kind)?;
         for (name, value) in fields {
             table.set(*name, *value)?;
+            if *name == "id" {
+                table.set("voiceId", *value)?;
+            }
         }
         Ok(table)
     }
 
     /// A note-on the host received, as the script's `onNote(e)`.
     pub fn note_on(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        self.shared.down.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
         let e = self.event(
             1,
             &[
@@ -647,6 +888,7 @@ impl ScriptHost {
 
     /// A note-off for the note-on `id`: `onRelease(e)`, and wakes `waitForRelease`.
     pub fn note_off(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        self.shared.down.borrow_mut()[usize::from(key & 127)] = None;
         let woken: Vec<Waiting> = {
             let mut waiting = self.shared.waiting.borrow_mut();
             let (woken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiting)
@@ -676,6 +918,7 @@ impl ScriptHost {
     }
 
     pub fn controller(&mut self, controller: u8, value: u8, channel: u8) {
+        self.shared.cc.borrow_mut()[usize::from(controller & 127)] = value;
         let e = self.event(
             3,
             &[
@@ -687,6 +930,55 @@ impl ScriptHost {
         match e {
             Ok(e) => self.call("onController", Some(e)),
             Err(e) => self.shared.find("onController event", &lua_error(e)),
+        }
+    }
+
+    fn deliver(&self, name: &str, kind: i32, fields: &[(&str, f64)]) {
+        match self.event(kind, fields) {
+            Ok(e) => self.call(name, Some(e)),
+            Err(e) => self.shared.find(&format!("{name} event"), &lua_error(e)),
+        }
+    }
+
+    /// Pitch bend in -1..=1.
+    pub fn pitch_bend(&mut self, value: f64, channel: u8) {
+        self.deliver("onPitchBend", 4, &[("value", value), ("channel", f64::from(channel) + 1.0)]);
+    }
+
+    pub fn after_touch(&mut self, value: u8, channel: u8) {
+        self.deliver("onAfterTouch", 5, &[("value", f64::from(value)), ("channel", f64::from(channel) + 1.0)]);
+    }
+
+    pub fn poly_after_touch(&mut self, key: u8, value: u8, channel: u8) {
+        self.deliver(
+            "onPolyAfterTouch",
+            6,
+            &[("note", f64::from(key)), ("value", f64::from(value)), ("channel", f64::from(channel) + 1.0)],
+        );
+    }
+
+    pub fn program_change(&mut self, value: u8, channel: u8) {
+        self.deliver("onProgramChange", 7, &[("value", f64::from(value)), ("channel", f64::from(channel) + 1.0)]);
+    }
+
+    /// The host's transport: `onTransport(playing)`.
+    pub fn transport(&mut self, playing: bool) {
+        let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onTransport") else {
+            return;
+        };
+        self.shared.arm(self.shared.config.callback);
+        if let Ok(thread) = self.lua.create_thread(f) {
+            let mut args = MultiValue::new();
+            args.push_front(Value::Boolean(playing));
+            resume(&self.shared, thread, args, None);
+            self.cycle();
+        }
+    }
+
+    /// The host's tempo in beats per minute, for the beat conversions.
+    pub fn set_tempo(&mut self, bpm: f64) {
+        if bpm.is_finite() && bpm > 0.0 {
+            self.shared.tempo.set(bpm);
         }
     }
 
@@ -959,6 +1251,83 @@ mod tests {
     }
 
     #[test]
+    fn context_conversions_and_key_state() {
+        let mut h = host(
+            "function onNote(e)\n\
+               playNote(60 + beat2ms(1) / 100, 100 + (isKeyDown(e.note) and 1 or 0), 0)\n\
+               playNote(getTempo(), ms2samples(1000) / 1000, 0)\n\
+             end",
+        );
+        h.set_tempo(120.0);
+        h.note_on(1, 60, 100, 0);
+        let keys: Vec<_> = h
+            .take_commands()
+            .into_iter()
+            .map(|c| match c {
+                Command::Play(p) => (p.key, p.velocity),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        // 500 ms per beat; the key is down; 120 bpm; 48 samples per ms.
+        assert_eq!(keys, [(65, 101), (120, 48)]);
+        h.note_off(1, 60, 64, 0);
+        assert!(h.findings().is_empty(), "{:?}", h.findings());
+    }
+
+    #[test]
+    fn voice_manipulation_and_generated_midi_become_commands() {
+        let mut h = host(
+            "function onNote(e)\n\
+               local v = playNote(e.note, 100, 0)\n\
+               changeVolume(v, 0.5)\n changeTune(v, 2, true)\n changePan(v, -1)\n\
+               fadeout(v, 100, true)\n fade2(v, 0, 1, 50)\n\
+               sendScriptModulation2(3, 0.2, 0.8, 100, v)\n\
+               controlChange(1, 64, 2)\n pitchBend(0)\n\
+               postEvent{type = Event.Controller, controller = 7, value = 90}\n\
+             end",
+        );
+        h.note_on(1, 60, 100, 0);
+        let c = h.take_commands();
+        assert!(matches!(&c[1], Command::Change { what: Change::Decibels, value, relative: false, .. } if (*value + 6.0206).abs() < 1e-3));
+        assert!(matches!(&c[2], Command::Change { what: Change::Tune, value: 2.0, relative: true, .. }));
+        assert!(matches!(&c[3], Command::Change { what: Change::Pan, value: -1.0, .. }));
+        assert!(matches!(&c[4], Command::Fade { from: None, to, ms: 100.0, kill: true, .. } if *to == 0.0));
+        assert!(matches!(&c[5], Command::Fade { from: Some(0.0), to: 1.0, ms: 50.0, .. }));
+        assert!(matches!(&c[6], Command::Modulation { id: 3, value, glide_ms: 0.0, .. } if *value == 0.2));
+        assert!(matches!(&c[7], Command::Modulation { id: 3, glide_ms: 100.0, .. }));
+        assert_eq!(c[8], Command::Midi(MidiOut { status: 0xb1, a: 1, b: 64 }));
+        assert_eq!(c[9], Command::Midi(MidiOut { status: 0xe0, a: 0, b: 64 }));
+        assert_eq!(c[10], Command::Midi(MidiOut { status: 0xb0, a: 7, b: 90 }));
+        assert!(h.findings().is_empty(), "{:?}", h.findings());
+    }
+
+    #[test]
+    fn other_host_events_reach_their_handlers_and_on_event_takes_precedence() {
+        let mut h = host(
+            "function onPitchBend(e) playNote(60, 100 + e.value * 10, 0) end\n\
+             function onAfterTouch(e) playNote(61, e.value, 0) end\n\
+             function onProgramChange(e) playNote(62, e.value, 0) end\n\
+             function onTransport(playing) playNote(63, playing and 5 or 6, 0) end",
+        );
+        h.pitch_bend(0.5, 0);
+        h.after_touch(40, 0);
+        h.program_change(9, 0);
+        h.transport(true);
+        let seen: Vec<_> = h
+            .take_commands()
+            .into_iter()
+            .map(|c| match c {
+                Command::Play(p) => (p.key, p.velocity),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(seen, [(60, 105), (61, 40), (62, 9), (63, 5)]);
+        let mut h = host("function onEvent(e) playNote(70, 1, 0) end function onController(e) playNote(71, 1, 0) end");
+        h.controller(1, 2, 0);
+        assert!(matches!(&h.take_commands()[..], [Command::Play(p)] if p.key == 70));
+    }
+
+    #[test]
     fn widgets_export_to_the_ui_ir() {
         let h = host(
             "setSize(400, 200)\n\
@@ -986,10 +1355,10 @@ mod tests {
              assert(k.value == 0.75)",
         );
         let features: Vec<_> = h.findings().into_iter().map(|f| f.feature).collect();
-        assert!(features.contains(&"lua global".to_owned()), "{features:?}");
+        assert!(features.contains(&"lua global Mystery".to_owned()), "{features:?}");
         assert!(!features.contains(&"lua error".to_owned()), "{features:?}");
         assert!(
-            features.contains(&"lua setParameter".to_owned()),
+            features.contains(&"lua setParameter SamplePlayer.Gain".to_owned()),
             "{features:?}"
         );
         assert!(matches!(&h.take_commands()[..], [Command::Play(p)] if p.key == 61));
@@ -1002,6 +1371,6 @@ mod tests {
         // `io` is an unknown global: an inert stub, never the real library.
         let c = h.take_commands();
         assert!(matches!(&c[0], Command::Play(p) if p.key == 2));
-        assert!(h.findings().iter().any(|f| f.value == "io"));
+        assert!(h.findings().iter().any(|f| f.feature == "lua global io"));
     }
 }

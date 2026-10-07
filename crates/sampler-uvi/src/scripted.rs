@@ -7,10 +7,10 @@
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
 mod thread;
-use crate::script::{Command, Play, ScriptHost};
+use crate::script::{Change, Command, MidiOut, Play, ScriptHost};
 use crate::OscGroup;
 use sampler_core::{
-    Error, Expression, Frame, Inheritance, Input, Limits, NoteId, Prepared, Protocol, Runtime,
+    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol, Runtime,
 };
 use std::collections::HashMap;
 pub use thread::{Loaded, ScriptThread};
@@ -28,6 +28,21 @@ pub trait Script {
     fn drain(&mut self, out: &mut Vec<Command>);
     /// The audio clock at the start of a block, in milliseconds.
     fn tick(&mut self, _now_ms: f64) {}
+    /// A host message other than a note.
+    fn input(&mut self, _input: HostInput) {}
+}
+
+/// What the host tells a script besides notes (channels are 0-based).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HostInput {
+    Controller { cc: u8, value: u8, channel: u8 },
+    /// -1..=1.
+    Bend { value: f64, channel: u8 },
+    Touch { value: u8, channel: u8 },
+    PolyTouch { key: u8, value: u8, channel: u8 },
+    Program { value: u8, channel: u8 },
+    Transport(bool),
+    Tempo(f64),
 }
 
 impl Script for ScriptHost {
@@ -51,6 +66,17 @@ impl Script for ScriptHost {
     }
     fn drain(&mut self, out: &mut Vec<Command>) {
         out.extend(ScriptHost::take_commands(self));
+    }
+    fn input(&mut self, input: HostInput) {
+        match input {
+            HostInput::Controller { cc, value, channel } => self.controller(cc, value, channel),
+            HostInput::Bend { value, channel } => self.pitch_bend(value, channel),
+            HostInput::Touch { value, channel } => self.after_touch(value, channel),
+            HostInput::PolyTouch { key, value, channel } => self.poly_after_touch(key, value, channel),
+            HostInput::Program { value, channel } => self.program_change(value, channel),
+            HostInput::Transport(playing) => self.transport(playing),
+            HostInput::Tempo(bpm) => self.set_tempo(bpm),
+        }
     }
 }
 
@@ -112,21 +138,8 @@ pub struct Driver<S: Script> {
     /// audio thread allocates nothing once warm.
     inbox: Vec<Command>,
     ended: Vec<u64>,
-    /// Notes played since the host last looked, when it asked to hear of them.
-    adopt: bool,
-    spawned: Vec<Spawn>,
-    /// (physical note, note played from it), for per-note expression.
-    family: Vec<(NoteId, NoteId)>,
-}
-
-/// A note a script played, for a host that carries bend and MPE to it.
-#[derive(Clone, Copy, Debug)]
-pub struct Spawn {
-    pub note: NoteId,
-    /// The physical note it was played from, if any.
-    pub parent: Option<NoteId>,
-    /// Its script `tune` in semitones, which the host's gestures must keep.
-    pub tune: f64,
+    /// MIDI the scripts generated, for the host to play into the part.
+    midi: Vec<MidiOut>,
 }
 
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
@@ -149,29 +162,19 @@ impl<S: Script> Driver<S> {
             glide_at: 0,
             inbox: Vec::with_capacity(256),
             ended: Vec::with_capacity(TRACKED),
-            adopt: false,
-            spawned: Vec::with_capacity(256),
-            family: Vec::with_capacity(TRACKED),
+            midi: Vec::with_capacity(256),
         }
     }
 
-    /// Record the notes scripts play for [`Self::drain_spawns`].
-    pub fn track_spawns(&mut self) {
-        self.adopt = true;
+    /// A host message for the scripts.
+    pub fn input(&mut self, rt: &Runtime, input: HostInput) {
+        self.host.set_time(self.now_ms(rt));
+        self.host.input(input);
     }
 
-    /// The notes played since the last call.
-    pub fn drain_spawns(&mut self, mut each: impl FnMut(Spawn)) {
-        self.spawned.drain(..).for_each(&mut each);
-    }
-
-    /// The notes played from `parent` that still may sound.
-    pub fn family(&self, parent: NoteId, mut each: impl FnMut(NoteId)) {
-        for (p, child) in &self.family {
-            if *p == parent {
-                each(*child);
-            }
-        }
+    /// The MIDI the scripts generated since the last call.
+    pub fn drain_midi(&mut self, mut each: impl FnMut(MidiOut)) {
+        self.midi.drain(..).for_each(&mut each);
     }
 
     /// Whether the scripts take over note selection.
@@ -272,7 +275,7 @@ impl<S: Script> Driver<S> {
         closing: bool,
         inbox: &mut Vec<Command>,
     ) -> Result<(), Error> {
-        if !inbox.is_empty() && (self.notes.len() >= TRACKED / 2 || self.family.len() >= TRACKED / 2) {
+        if !inbox.is_empty() && self.notes.len() >= TRACKED / 2 {
             self.prune(rt);
         }
         for command in inbox.drain(..) {
@@ -290,6 +293,37 @@ impl<S: Script> Driver<S> {
                     voice,
                     at_ms,
                 } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
+                Command::Change { id, what, value, relative, .. } => {
+                    if let Some(note) = self.notes.get(&id).copied() {
+                        let target = match what {
+                            Change::Decibels => ModTarget::Decibels,
+                            Change::Pan => ModTarget::Pan,
+                            Change::Tune => ModTarget::Pitch,
+                        };
+                        match rt.set_note_param(note, target, value, relative) {
+                            Err(Error::StaleHandle) => {
+                                self.notes.remove(&id);
+                            }
+                            other => other?,
+                        }
+                    }
+                }
+                Command::Fade { id, from, to, ms, kill, .. } => {
+                    if let Some(note) = self.notes.get(&id).copied() {
+                        let frames = self.frames(ms);
+                        match rt.fade_note(note, from, to, frames, kill && to <= 0.0) {
+                            Err(Error::StaleHandle) => {
+                                self.notes.remove(&id);
+                            }
+                            other => other?,
+                        }
+                    }
+                }
+                Command::Midi(out) => {
+                    if self.midi.len() < self.midi.capacity() {
+                        self.midi.push(out);
+                    }
+                }
             }
         }
         Ok(())
@@ -298,7 +332,6 @@ impl<S: Script> Driver<S> {
     /// Forget notes the runtime no longer holds.
     fn prune(&mut self, rt: &Runtime) {
         self.notes.retain(|_, note| rt.note(*note).is_ok());
-        self.family.retain(|(_, child)| rt.note(*child).is_ok());
         let notes = &self.notes;
         self.voice_values.retain(|(v, _), _| notes.contains_key(v));
     }
@@ -406,7 +439,7 @@ impl<S: Script> Driver<S> {
         let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
         let note = match parent {
-            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Independent),
+            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
             None => {
                 let input = Input {
                     protocol: Protocol::Native,
@@ -426,19 +459,16 @@ impl<S: Script> Driver<S> {
             Err(e) => return Err(e),
         };
         self.notes.insert(play.id, note);
-        if self.adopt && self.spawned.len() < self.spawned.capacity() {
-            self.spawned.push(Spawn { note, parent, tune: play.tune });
-            if let (Some(parent), true) = (parent, self.family.len() < TRACKED) {
-                self.family.push((parent, note));
-            }
-        }
         self.select(rt, note, play)?;
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
             pan: play.pan.clamp(-1.0, 1.0),
-            pitch_semitones: play.tune,
             ..Expression::default()
         };
+        // The script's tune is the note's own: bend follows the parent.
+        if play.tune != 0.0 {
+            rt.set_note_param(note, ModTarget::Pitch, play.tune, false)?;
+        }
         if expression != Expression::default() {
             let id = rt.expression_id(note)?;
             rt.set_expression(id, expression)?;

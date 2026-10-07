@@ -312,36 +312,37 @@ fn unit_scale(value: f64) -> u32 {
     (value.clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32
 }
 
-/// `expression` on one held note, and on the notes a script played from it.
+/// `expression` on one held note; the notes a script played from it follow.
 fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
     let tune = f64::from(part.tune);
-    let apply = |runtime: &mut Runtime, note: NoteId| {
-        express(runtime, note, |e| match expression {
-            NoteExpression::Tune(semitones) => e.pitch_semitones = semitones + tune,
-            NoteExpression::Gain(gain) => e.gain = gain,
-            NoteExpression::Pan(pan) => e.pan = pan,
-            NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
-            NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
-        })
-    };
-    apply(&mut part.runtime, id);
-    if let Some(script) = part.script.as_ref() {
-        script.family(id, |child| apply(&mut part.runtime, child));
-    }
+    express(&mut part.runtime, id, |e| match expression {
+        NoteExpression::Tune(semitones) => e.pitch_semitones = semitones + tune,
+        NoteExpression::Gain(gain) => e.gain = gain,
+        NoteExpression::Pan(pan) => e.pan = pan,
+        NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
+        NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
+    })
 }
 
-/// Bring the notes the part's scripts played under its MPE zone, so bend,
-/// pressure and timbre reach them too.
-fn adopt_spawns(part: &mut Part, index: usize, held: &[Held]) {
-    let Part { script: Some(script), mpe, runtime, .. } = part else { return };
-    script.drain_spawns(|spawn| {
-        let channel = spawn
-            .parent
-            .and_then(|p| held.iter().find(|h| h.part == index && h.id == p))
-            .map_or(WIRE.channel, |h| h.input.channel);
-        // A full zone leaves the note without gestures, not silent.
-        let _ = mpe.adopt(runtime, channel, spawn.note, spawn.tune);
-    });
+/// Controllers, bend, pressure and program changes reach the part's scripts
+/// (they still reach the engine: a script's `postEvent` of one adds to it).
+fn tell_script(part: &mut Part, kind: u32, status: u8, channel: u8, a: u8, b: u8, data: u32) {
+    use sampler_uvi::scripted::HostInput as Input;
+    let Part { script: Some(script), runtime, .. } = part else { return };
+    let high = (data >> 25) as u8;
+    let input = match (kind, status) {
+        (2, 0xb0) => Input::Controller { cc: a, value: b, channel },
+        (4, 0xb0) => Input::Controller { cc: a, value: high, channel },
+        (2, 0xe0) => Input::Bend { value: (f64::from(u16::from(b) << 7 | u16::from(a)) - 8192.0) / 8192.0, channel },
+        (4, 0xe0) => Input::Bend { value: f64::from(data) / 2_147_483_648.0 - 1.0, channel },
+        (2, 0xd0) => Input::Touch { value: a, channel },
+        (4, 0xd0) => Input::Touch { value: high, channel },
+        (2, 0xa0) => Input::PolyTouch { key: a, value: b, channel },
+        (4, 0xa0) => Input::PolyTouch { key: a, value: high, channel },
+        (2 | 4, 0xc0) => Input::Program { value: a, channel },
+        _ => return,
+    };
+    script.input(runtime, input);
 }
 
 /// A channel voice packet into one part, MIDI 2.0 values at full precision;
@@ -356,6 +357,7 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
             note_expression(part, h.id, expression);
         }
     };
+    tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
         (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
         (4, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX))),
@@ -398,7 +400,6 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                             Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
                             _ => {}
                         }
-                        adopt_spawns(part, index, held);
                     }
                     Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
                     Err(_) => {}
@@ -558,7 +559,18 @@ impl Core for V2Core {
             }
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
-                adopt_spawns(part, index, &self.held);
+                // What the scripts generated plays into the part.
+                let mut midi = [None; 64];
+                let mut n = 0;
+                script.drain_midi(|out| {
+                    if n < midi.len() {
+                        midi[n] = Some(out);
+                        n += 1;
+                    }
+                });
+                for out in midi.iter().flatten() {
+                    wire_event(part, out.status, out.a, out.b);
+                }
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
@@ -1120,10 +1132,7 @@ impl CoreLoader for V2Loader {
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.grower = Some(grower);
-        part.script = script.map(|mut s| {
-            s.track_spawns();
-            Box::new(s)
-        });
+        part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
