@@ -83,27 +83,28 @@ pub(crate) struct Slot {
     pub public: Vec<u8>,
 }
 
-pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
+pub(crate) fn rack(array: &BParamArrayBParFX8) -> Result<Vec<Slot>, ni_file::Error> {
     array
         .items
         .iter()
         .enumerate()
-        .filter_map(|(slot, chunk)| {
-            let fx = BParFX::try_from(chunk.as_ref()?).ok()?;
-            let state = fx.params().ok()?;
-            let effect: &Chunk = fx.effect()?;
-            let object = StructuredObject::try_from(effect).ok();
-            Some(Slot {
+        .filter_map(|(slot, chunk)| chunk.as_ref().map(|c| (slot, c)))
+        .map(|(slot, chunk)| {
+            let fx = BParFX::try_from(chunk)?;
+            let state = fx.params()?;
+            let effect: &Chunk = fx
+                .effect()
+                .ok_or(ni_file::Error::Static("Missing FX module"))?;
+            let object = StructuredObject::try_from(effect)?;
+            Ok(Slot {
                 slot,
                 module: effect.id,
-                version: object.as_ref().map_or(0, |o| o.version),
+                version: object.version,
                 bypass: state.bypass,
                 output_gain: state.output_gain,
                 dry_level: state.dry_level,
                 output_set: false,
-                public: object
-                    .as_ref()
-                    .map_or_else(Vec::new, |o| o.public_data.clone()),
+                public: object.public_data,
             })
         })
         .collect()
@@ -114,7 +115,7 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
 pub(crate) fn program_racks(
     program: &Program,
     writes: &[sampler_ksp::EnginePar],
-) -> Vec<(String, Vec<Slot>)> {
+) -> Result<Vec<(String, Vec<Slot>)>, ni_file::Error> {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut out = Vec::new();
     let mut racks = 0;
@@ -126,8 +127,9 @@ pub(crate) fn program_racks(
                     .get(racks)
                     .map_or_else(|| format!("rack {racks}"), |n| (*n).into());
                 racks += 1;
-                if let Ok(array) = BParamArrayBParFX8::try_from(child) {
-                    let mut slots = rack(&array);
+                {
+                    let array = BParamArrayBParFX8::try_from(child)?;
+                    let mut slots = rack(&array)?;
                     // File order insert, send, main; `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0,
                     // `$NI_MAIN_BUS` 2.
                     if let Some(&generic) = [1, 0, 2].get(racks - 1) {
@@ -145,7 +147,7 @@ pub(crate) fn program_racks(
                         .find_first(RACK)
                         .and_then(|c| BParamArrayBParFX8::try_from(c).ok())
                 {
-                    let mut slots = rack(&array);
+                    let mut slots = rack(&array)?;
                     // `$NI_BUS_OFFSET` + the bus number.
                     apply_writes(&mut slots, writes, -1, 1000 + index);
                     out.push((format!("bus {index}"), slots));
@@ -154,7 +156,7 @@ pub(crate) fn program_racks(
             _ => {}
         }
     }
-    out
+    Ok(out)
 }
 
 /// Engine value (0..1000000) of an effect level as a linear gain: cubic about
@@ -242,6 +244,8 @@ pub(crate) enum Params {
     Reverb([f32; 10]),
     /// `BParFXIRC`: the impulse response is an index into the preset's other-files table.
     Convolution(Box<Convolution>),
+    /// Decoded storage fields whose DSP/physical parameter laws are not yet modeled.
+    Fields(Vec<ni_file::kontakt::objects::EffectField>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -322,6 +326,9 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
+                if (30..=41).contains(&kind) && self.version == 0x92 {
+                    r.take::<1>()?;
+                }
                 if r.i32()? != kind {
                     return None;
                 }
@@ -331,16 +338,16 @@ impl Slot {
                         .collect::<Option<_>>()?;
                     Params::Eq { bands }
                 } else {
-                    // Daft (70, 71) stores a leading value first.
-                    let leading = if matches!(kind, 70 | 71) {
+                    // Ladder and Daft store a leading value before cutoff/resonance.
+                    let leading = if matches!(kind, 30..=41 | 70 | 71) {
                         Some(r.f32()?)
                     } else {
                         None
                     };
                     let (cutoff, resonance) = (r.f32()?, r.f32()?);
                     let mut extra: Vec<f32> = leading.into_iter().collect();
-                    while let Some(x) = r.f32() {
-                        extra.push(x);
+                    while !r.0.is_empty() {
+                        extra.push(r.f32()?);
                     }
                     Params::Filter {
                         kind,
@@ -350,7 +357,16 @@ impl Slot {
                     }
                 }
             }
-            _ => return None,
+            _ => {
+                return ni_file::kontakt::objects::EffectParameters::read(
+                    self.module,
+                    self.version,
+                    &self.public,
+                )
+                .ok()
+                .flatten()
+                .map(|p| Params::Fields(p.fields));
+            }
         };
         r.0.is_empty().then_some(params)
     }
@@ -705,17 +721,18 @@ pub(crate) fn chain_with(
                     ));
                 }
                 flush(&mut combined, &mut filters, &mut out);
-                out.processors.push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
-                    threshold_db: f64::from(*threshold_db),
-                    // Stored as the inverse ratio (Analog Strings: 0.501 beside a
-                    // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
-                    // slope 1 - 1/ratio would read the same here.
-                    ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
-                    attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
-                    release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
-                    makeup: sampler_ir::Gain::UNITY,
-                    link: *link,
-                }));
+                out.processors
+                    .push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
+                        threshold_db: f64::from(*threshold_db),
+                        // Stored as the inverse ratio (Analog Strings: 0.501 beside a
+                        // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
+                        // slope 1 - 1/ratio would read the same here.
+                        ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
+                        attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
+                        release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
+                        makeup: sampler_ir::Gain::UNITY,
+                        link: *link,
+                    }));
                 combined = gain;
             }
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
@@ -1249,13 +1266,18 @@ mod tests {
     #[test]
     fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
         let r = |time: f32, cut: f32, shelf: f32| {
-            reverb(&[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0], &mut Vec::new())
+            reverb(
+                &[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0],
+                &mut Vec::new(),
+            )
         };
         // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
         assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
         assert!((r(1.0, 0.0, 0.0).decay_seconds - 16.16).abs() < 0.5);
         let end = r(0.0, 1.0, 1.0);
-        assert!((end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9);
+        assert!(
+            (end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9
+        );
         assert_eq!(r(0.0, 0.0, 0.0).input_cutoff_hz, 21_000.0);
     }
 
@@ -1265,7 +1287,9 @@ mod tests {
         let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
         g.dry_level = 0.5;
         let c = chain(&[g], Scope::Bus);
-        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else { panic!("{:?}", c.processors) };
+        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else {
+            panic!("{:?}", c.processors)
+        };
         assert!((m[0][0] - 0.7505).abs() < 1e-6 && m[0][1] == 0.0, "{m:?}");
     }
 
@@ -1374,7 +1398,61 @@ mod tests {
         let [sampler_ir::Processor::Daft(d), ..] = built.processors[..] else {
             panic!("{:?} {:?}", built.processors, built.notes)
         };
-        assert_eq!((d.gain, d.cutoff, d.resonance, d.highpass), (0.25, 0.5, 0.75, true));
+        assert_eq!(
+            (d.gain, d.cutoff, d.resonance, d.highpass),
+            (0.25, 0.5, 0.75, true)
+        );
+    }
+
+    #[test]
+    fn ladder_versions_keep_leading_gain_separate_from_cutoff_and_resonance() {
+        for version in [0x90u16, 0x91, 0x92] {
+            let mut bytes = 33i32.to_le_bytes().to_vec();
+            if version == 0x92 {
+                bytes.push(1);
+            }
+            bytes.extend(33i32.to_le_bytes());
+            for value in [0.25f32, 0.75, 0.5] {
+                bytes.extend(value.to_le_bytes());
+            }
+            let mut fx = slot(0x18, bytes, 1.0);
+            fx.version = version;
+            let Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
+                extra,
+            }) = fx.params()
+            else {
+                panic!("Ladder v{version:x}")
+            };
+            assert_eq!(
+                (kind, cutoff, resonance, extra),
+                (33, 0.75, 0.5, vec![0.25])
+            );
+            fx.public.pop();
+            assert!(fx.params().is_none());
+        }
+        let mut bytes = 2i32.to_le_bytes().to_vec();
+        bytes.extend(2i32.to_le_bytes());
+        for value in [0.5f32, 0.25, f32::NAN] {
+            bytes.extend(value.to_le_bytes());
+        }
+        assert!(
+            slot(0x18, bytes, 1.0).params().is_none(),
+            "non-finite extra must not disappear"
+        );
+        let invalid = ni_file::kontakt::objects::BParamArrayBParFX8 {
+            version: 0x12,
+            items: vec![Some(Chunk {
+                id: 0x25,
+                data: vec![0, 0x50, 0],
+            })],
+        };
+        assert!(
+            rack(&invalid).is_err(),
+            "occupied malformed slots must not disappear"
+        );
     }
 
     #[test]

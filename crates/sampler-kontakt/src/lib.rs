@@ -20,6 +20,7 @@ mod resources;
 mod samples;
 mod script;
 mod snapshot;
+mod source_parameters;
 mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;

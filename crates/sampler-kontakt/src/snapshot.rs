@@ -1,6 +1,6 @@
 //! Kontakt snapshots (`.nksn`): the saved state of an existing instrument.
 //! Applied: script persistent values, instrument racks and buses, and each
-//! group's level, pan, tune, flags and insert rack. Modulator state is not.
+//! group's level, pan, tune, flags, insert rack and modulation arrays.
 use crate::{Kontakt, LoadError};
 use ni_file::kontakt::objects::{Snapshot, snapshot_metadata_names};
 use std::path::Path;
@@ -20,10 +20,45 @@ pub struct GroupState {
     pub reverse: bool,
     /// The group insert rack's array version and its slots as (chunk id, bytes).
     pub fx: (u16, Vec<Option<RackSlot>>),
+    /// Internal and external modulation array chunks, preserving versions and slots.
+    pub modulation: Vec<RackSlot>,
 }
 
 /// One insert slot: chunk id and bytes.
 pub type RackSlot = (u16, Vec<u8>);
+
+/// Replace only the two modulation arrays, retaining the original group topology.
+pub(crate) fn overlay_modulation(
+    group: &ni_file::kontakt::objects::Group,
+    saved: &[RackSlot],
+) -> ni_file::kontakt::objects::Group {
+    use ni_file::kontakt::{Chunk, StructuredObject, objects::Group};
+    let mut children: Vec<_> = group
+        .0
+        .children
+        .iter()
+        .map(|c| Chunk {
+            id: c.id,
+            data: c.data.clone(),
+        })
+        .collect();
+    for &(id, ref data) in saved.iter().filter(|(id, _)| matches!(id, 0x3b | 0x3c)) {
+        let chunk = Chunk {
+            id,
+            data: data.clone(),
+        };
+        match children.iter_mut().find(|c| c.id == id) {
+            Some(original) => *original = chunk,
+            None => children.push(chunk),
+        }
+    }
+    Group(StructuredObject {
+        version: group.0.version,
+        public_data: group.0.public_data.clone(),
+        private_data: group.0.private_data.clone(),
+        children,
+    })
+}
 
 /// What a snapshot file holds that this crate applies.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,21 +100,30 @@ pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
         .group_snapshots()
         .map_err(|e| decode("snapshot groups", e))?
         .into_iter()
-        .map(|(_, g)| GroupState {
-            volume: float(&g.public_data[0..4]),
-            pan: float(&g.public_data[4..8]),
-            octaves: float(&g.public_data[8..12]),
-            key_tracking: g.public_data[12] != 0,
-            reverse: g.public_data[13] != 0,
-            fx: (
-                g.fx.version,
-                g.fx.items
-                    .into_iter()
-                    .map(|slot| slot.map(|c| (c.id, c.data)))
-                    .collect(),
-            ),
+        .map(|(_, g)| {
+            let modulation = g
+                .modulation_chunks()?
+                .into_iter()
+                .map(|c| (c.id, c.data))
+                .collect();
+            Ok(GroupState {
+                volume: float(&g.public_data[0..4]),
+                pan: float(&g.public_data[4..8]),
+                octaves: float(&g.public_data[8..12]),
+                key_tracking: g.public_data[12] != 0,
+                reverse: g.public_data[13] != 0,
+                fx: (
+                    g.fx.version,
+                    g.fx.items
+                        .into_iter()
+                        .map(|slot| slot.map(|c| (c.id, c.data)))
+                        .collect(),
+                ),
+                modulation,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, ni_file::Error>>()
+        .map_err(|e| decode("snapshot modulation", e))?;
     let effects = snapshot
         .effect_children
         .into_iter()
@@ -114,6 +158,57 @@ pub fn apply_snapshot(kontakt: &mut Kontakt, snapshot: &SnapshotState) {
 #[cfg(test)]
 mod probe {
     use super::*;
+
+    #[test]
+    fn snapshot_modulation_replaces_both_arrays_and_preserves_other_children() {
+        use ni_file::kontakt::{
+            Chunk, StructuredObject,
+            objects::{ExternalModArray32, Group, InternalModArray16},
+        };
+        let base = Group(StructuredObject {
+            version: 0x95,
+            private_data: vec![8],
+            public_data: vec![9],
+            children: vec![
+                Chunk {
+                    id: 0x3b,
+                    data: vec![0, 0x12, 0, 1],
+                },
+                Chunk {
+                    id: 0x4a,
+                    data: vec![7],
+                },
+                Chunk {
+                    id: 0x3c,
+                    data: vec![0, 0x12, 0, 1],
+                },
+            ],
+        });
+        let mut internal = vec![0, 0x12, 0];
+        internal.extend([0; 16]);
+        let mut external = vec![0, 0x13, 0];
+        external.extend(64u32.to_le_bytes());
+        external.extend([0; 64]);
+        let overlay = overlay_modulation(&base, &[(0x3b, internal), (0x3c, external)]);
+        assert!(
+            InternalModArray16::try_from(&overlay.0.children[0])
+                .unwrap()
+                .slots()
+                .unwrap()
+                .is_empty()
+        );
+        let external = ExternalModArray32::try_from(&overlay.0.children[2]).unwrap();
+        assert_eq!(external.slot_count().unwrap(), 64);
+        assert!(external.slots().unwrap().is_empty());
+        assert_eq!(overlay.0.children[1].data, [7]);
+        assert_eq!(overlay.0.private_data, [8]);
+        assert_eq!(overlay.0.public_data, [9]);
+        assert_eq!(
+            base.0.children[0].data,
+            [0, 0x12, 0, 1],
+            "base remains unchanged"
+        );
+    }
 
     /// What differs between snapshots and their instrument: run with --ignored.
     #[test]
