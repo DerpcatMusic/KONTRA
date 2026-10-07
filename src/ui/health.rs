@@ -31,7 +31,7 @@ pub fn survey(
             .find(|(i, b)| b.slot.unwrap_or(*i as u8) == slot)
             .map(|(_, b)| b);
         let frontend =
-            if behavior.is_some_and(|b| sampler_ksp::nckp::view_name(&b.source).is_some()) {
+            if behavior.is_some_and(|b| b.source.contains("load_performance_view")) {
                 "creator_tools"
             } else if !face.assets.is_empty() {
                 "bitmap_ksp"
@@ -240,10 +240,10 @@ pub fn survey(
     });
     let expected: Vec<_> = instrument.behaviors.iter().enumerate().filter(|(_,b)| b.source.contains("make_perfview") || b.source.contains("load_performance_view") || b.source.contains("load_komplete_ui") || b.source.contains("ui_")).map(|(i,b)| {
         let slot = b.slot.unwrap_or(i as u8);
-        let frontend = if b.source.contains("load_komplete_ui") { "komplete_ui" } else if sampler_ksp::nckp::view_name(&b.source).is_some() { "creator_tools" } else if b.source.contains("CONTROL_PAR_PICTURE") || b.source.contains("set_skin_offset") { "bitmap_ksp" } else { "stock_ksp" };
-        json!({"slot":slot,"frontend":frontend,"loaded":views.iter().any(|v| v["slot"] == slot)})
+        let frontend = if b.source.contains("load_komplete_ui") { "komplete_ui" } else if b.source.contains("load_performance_view") { "creator_tools" } else if b.source.contains("CONTROL_PAR_PICTURE") || b.source.contains("set_skin_offset") { "bitmap_ksp" } else { "stock_ksp" };
+        json!({"slot":slot,"frontend":frontend,"loaded":frontend != "komplete_ui" && views.iter().any(|v| v["slot"] == slot)})
     }).collect();
-    json!({"resource_locations":resource_locations,"expected_frontends":expected,"authored":authored,"loaded":!faces.is_empty(),"usable":errors.is_empty() && (!authored || views.iter().any(|v| v["widgets"].as_u64().unwrap_or(0)>0)) && views.iter().all(|v| v["usable"] == true),"views":views,"errors":errors,"recall":"source persistent state applied before UI; host recall not probed"})
+    json!({"resource_locations":resource_locations,"expected_frontends":expected,"authored":authored,"loaded":!faces.is_empty(),"usable":errors.is_empty() && expected.iter().all(|e| e["loaded"] == true) && (!authored || views.iter().any(|v| v["widgets"].as_u64().unwrap_or(0)>0)) && views.iter().all(|v| v["usable"] == true),"views":views,"errors":errors,"recall":"source persistent state applied before UI; host recall not probed"})
 }
 
 #[cfg(test)]
@@ -262,5 +262,7 @@ mod tests {
         }, None);
         assert_eq!(report["authored"], true);
         assert_eq!(report["expected_frontends"][0]["frontend"], "komplete_ui");
+        assert_eq!(report["expected_frontends"][0]["loaded"], false);
+        assert_eq!(report["usable"], false);
     }
 }
