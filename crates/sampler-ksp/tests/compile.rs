@@ -1169,10 +1169,17 @@ fn type_constants_outside_the_vendor_families_compile() {
     ];
     let mut body = String::from("on init\n  declare $a\n");
     for name in names {
-        body.push_str(&format!("  $a := {name}\n  set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, {name}, 0, 0, -1)\n"));
+        body.push_str(&format!(
+            "  $a := {name}\n  set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, {name}, 0, 0, -1)\n"
+        ));
     }
     body.push_str("end on\n");
-    let limits = sampler_ksp::Limits { source_bytes: 65536, instructions: 4096, variables: 16, array_cells: 16 };
+    let limits = sampler_ksp::Limits {
+        source_bytes: 65536,
+        instructions: 4096,
+        variables: 16,
+        array_cells: 16,
+    };
     if let Err(error) = sampler_ksp::compile(&body, 48000, limits, &[]) {
         panic!("{error:?}");
     }
