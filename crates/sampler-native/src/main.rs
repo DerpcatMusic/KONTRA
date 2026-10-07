@@ -1,5 +1,6 @@
 //! Independent offline composition root; no legacy application or engine dependency.
 mod census;
+mod identify;
 mod kontakt;
 mod render_kontakt;
 mod render_uvi;
@@ -388,9 +389,16 @@ fn run() -> io::Result<()> {
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
             render_kontakt::run(Path::new(instrument), Path::new(output), &messages, scripts)
         }
+        [command, instrument] if command == "kontakt-keys" => identify::keys(Path::new(instrument)),
+        [command, instrument, grid, output, renders @ ..]
+            if command == "identify-kontakt" && !renders.is_empty() =>
+        {
+            let renders: Vec<String> = renders.iter().map(|r| r.to_string_lossy().into_owned()).collect();
+            identify::run(Path::new(instrument), Path::new(grid), Path::new(output), &renders)
+        }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: sampler-native census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | render-kontakt-midi INPUT.nki OUTPUT.wav SCENARIO.mid [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
+            "usage: sampler-native identify-kontakt INPUT.nki GRID.json OUT.json NAME=WAV[@LEAD] ... | census [ROOT ...] | render-uvi BANK.ufs PROGRAM.uvip OUTPUT.wav [KEY:VEL:START:LENGTH,...] | render-kontakt INPUT.nki OUTPUT.wav [KEY:VEL:START:LENGTH,...] [--no-scripts] | render-kontakt-midi INPUT.nki OUTPUT.wav SCENARIO.mid [--no-scripts] | demo OUTPUT.wav | echo OUTPUT.wav | render INPUT.wav OUTPUT.wav | script INPUT.ksp [INPUT.wav] OUTPUT.wav | replace FIRST.wav SECOND.wav OUTPUT.wav | inspect-kontakt-chunks EXPANDED.bin | inspect-kontakt-nks INPUT.nki | inspect-kontakt-nis INPUT.nki",
         )),
     }
 }

@@ -4208,6 +4208,7 @@ name = "sampler-native"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "realfft",
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
