@@ -584,6 +584,9 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
         if let Some(cache) = cache {
             rt = rt.with_stream_cache(cache);
+            // As the host does: a note whose pages are not resident yet starts
+            // silent and fades in, instead of being refused.
+            rt.set_cold_starts(true);
         }
         rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
             rt.sample_rate(),
@@ -952,6 +955,12 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 };
             }
             stage("load");
+            if std::env::var_os("CH_NOSTREAM").is_some() {
+                return match sampler_kontakt::load(path, &options, |_| {}) {
+                    Ok(l) => (ok(pick, &l.instrument), Some((Subject::Plan(Box::new(l)), pick))),
+                    Err(e) => load_failure(&e, "load"),
+                };
+            }
             match sampler_kontakt::load_read_streamed(kontakt, &options, &policy, |_| {}) {
                 Ok(s) => (
                     ok(pick, &s.loaded.instrument),
@@ -1894,6 +1903,12 @@ fn main() {
             run(Path::new(out), &opts)
         }
         [cmd, rest @ ..] if cmd == "quick" => quick(rest),
+        [cmd, rest @ ..] if cmd == "list" => {
+            for item in items(&roots(rest)) {
+                println!("{}\t{}", item.kind(), item.id());
+            }
+            0
+        }
         [cmd, dir] if cmd == "quick-list" => {
             quick_list(Path::new(dir));
             0
