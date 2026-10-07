@@ -198,6 +198,7 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
+    let mut resources = None;
     for (slot, chunk) in program
         .0
         .children
@@ -205,9 +206,18 @@ fn translate(
         .filter(|c| c.id == SCRIPT)
         .enumerate()
     {
-        let script = BParScript::try_from(chunk)
+        let mut script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
+        if !script.bypass {
+            if let Some(link) = script.textfile_name.as_deref().filter(|n| !n.trim().is_empty()) {
+                if let Some(text) = resources.get_or_insert_with(|| crate::Resources::of(&path))
+                    .linked_script(link)
+                {
+                    script.text = Some(text);
+                }
+            }
+        }
         let location = format!("script slot {slot}");
         match script.text {
             _ if script.bypass => {}
