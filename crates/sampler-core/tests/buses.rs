@@ -634,6 +634,9 @@ fn mix_block_blends_bypasses_and_ramps_by_slot_controls() {
         set(&mut rt, SlotKind::Output, 0.);
         assert!((run(&mut rt, 20) - 0.5).abs() < 1e-9, "silent wet");
     }
+}
+
+#[test]
 fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_tail() {
     let mut first = vec![0.; 4];
     first[0] = 1.;

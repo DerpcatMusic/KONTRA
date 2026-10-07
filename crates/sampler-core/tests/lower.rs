@@ -556,7 +556,7 @@ fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     };
     let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
-    let mut voices = |rt: &mut Runtime, key| {
+    let voices = |rt: &mut Runtime, key| {
         rt.trigger(input(key), key, 1.).unwrap();
         rt.render(&mut [[0.0; 2]; 1024]).unwrap();
         rt.voice_count()
