@@ -119,6 +119,30 @@ struct Glide {
     ms: f64,
 }
 
+/// Plays what the scripts generate (`controlChange`, `postEvent`...) back into
+/// the runtime on channel 0, as a host does with a part's script output.
+pub struct MidiFeed(sampler_midi::Ingress);
+
+impl Default for MidiFeed {
+    fn default() -> Self {
+        let mut groups = [None; 16];
+        groups[0] = Some(sampler_midi::Version::Midi1);
+        Self(sampler_midi::Ingress::new(0, groups))
+    }
+}
+
+impl MidiFeed {
+    pub fn pump<S: Script>(&mut self, driver: &mut Driver<S>, rt: &mut Runtime) {
+        let ingress = &mut self.0;
+        driver.drain_midi(|out| {
+            let word = [0x2000_0000 | u32::from(out.status) << 16 | u32::from(out.a & 127) << 8 | u32::from(out.b & 127)];
+            if let Some(Ok(packet)) = sampler_midi::Packets::new(&word).next() {
+                let _ = ingress.apply(rt, packet);
+            }
+        });
+    }
+}
+
 pub struct Driver<S: Script> {
     host: S,
     groups: Vec<OscGroup>,
@@ -229,7 +253,8 @@ impl<S: Script> Driver<S> {
         // Plays made by onRelease must not be linked to the closing gate.
         self.apply(rt, true)?;
         if let Some(note) = self.notes.get(&id).copied() {
-            rt.key_up(note, None)?;
+            // A note whose voices already ended is gone; closing it is a no-op.
+            stale_ok(rt.key_up(note, None))?;
         }
         Ok(())
     }
@@ -470,11 +495,11 @@ impl<S: Script> Driver<S> {
 
     fn release(&mut self, rt: &mut Runtime, note: NoteId, at_ms: f64) -> Result<(), Error> {
         let at = self.frames(at_ms);
-        if at <= rt.now() {
+        stale_ok(if at <= rt.now() {
             rt.key_up(note, None)
         } else {
             rt.release_at(note, at)
-        }
+        })
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
@@ -541,7 +566,7 @@ impl<S: Script> Driver<S> {
         rt.set_note_group(note, None, false)?;
         for g in &self.groups {
             if (play.layers.is_empty() || play.layers.contains(g.layer))
-                && play.osc.is_none_or(|o| o == g.osc)
+                && play.osc.is_none_or(|o| o + 1 == g.osc)
             {
                 rt.set_note_group(note, Some(g.group), true)?;
             }
@@ -557,6 +582,16 @@ pub struct Player {
     /// Frames ahead of the clock that streamed voices read, if any stream.
     horizon: Option<u32>,
     _stream: Option<Stream>,
+    feed: MidiFeed,
+}
+
+/// A handle freed because its voices finished is not an error for a later
+/// release, fade or modulation.
+fn stale_ok(r: Result<(), Error>) -> Result<(), Error> {
+    match r {
+        Err(Error::StaleHandle) => Ok(()),
+        other => other,
+    }
 }
 
 impl Player {
@@ -576,6 +611,7 @@ impl Player {
             driver: Driver::new(program.host, program.groups, rate),
             horizon,
             _stream: stream,
+            feed: MidiFeed::default(),
         })
     }
 
@@ -586,6 +622,11 @@ impl Player {
     /// What plays asked for that was ignored, once each.
     pub fn unmodeled(&self) -> &[&'static str] {
         self.driver.unmodeled()
+    }
+
+    /// A host message (controller, bend...) for the scripts.
+    pub fn input(&mut self, input: HostInput) {
+        self.driver.input(&self.rt, input);
     }
 
     pub fn note_on(&mut self, key: u8, velocity: f64) -> Result<(), Error> {
@@ -611,6 +652,7 @@ impl Player {
         while done < out.len() {
             let left = out.len() - done;
             let due = self.driver.wake(&mut self.rt)?;
+            self.feed.pump(&mut self.driver, &mut self.rt);
             let step = due.map_or(left, |d| d.max(1).min(left));
             if let Some(horizon) = self.horizon {
                 // Pending pages play silent and count as underruns.
