@@ -1523,13 +1523,19 @@ impl Gen<'_, '_> {
             GetEventPar
                 if matches!(
                     self.const_int(args, 1),
-                    Some(b::event_par::ZONE_ID | b::event_par::MIDI_CHANNEL)
+                    Some(
+                        b::event_par::ZONE_ID
+                            | b::event_par::MIDI_CHANNEL
+                            | b::event_par::NOTE
+                            | b::event_par::VELOCITY
+                    )
                 ) && !self.selects_many(builtin, args, 0) =>
             {
-                let info = if self.const_int(args, 1) == Some(b::event_par::ZONE_ID) {
-                    sampler_core::EventInfo::ZoneId
-                } else {
-                    sampler_core::EventInfo::MidiChannel
+                let info = match self.const_int(args, 1) {
+                    Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
+                    Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
+                    Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
+                    _ => sampler_core::EventInfo::MidiChannel,
                 };
                 self.arg(args, 0, dst)?;
                 self.emit(I::ReadEventInfo {

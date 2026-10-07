@@ -243,3 +243,21 @@ fn event_zone_id_is_nonzero_only_while_the_event_sounds() {
     assert_ne!(cell(&rt, 0), 0);
     assert_eq!((cell(&rt, 1), cell(&rt, 2)), (10, 7));
 }
+
+/// Another event's key and velocity read back through its id (legato scripts
+/// keep them in arrays of ids).
+#[test]
+fn another_events_key_and_velocity_read_through_its_id() {
+    let rt = run(
+        "on init declare $id declare $k declare $v end on
+         on note
+           ignore_event($EVENT_ID)
+           $id := play_note(61, 100, 0, 0)
+           wait(100)
+           $k := get_event_par($id, $EVENT_PAR_NOTE)
+           $v := get_event_par($id, $EVENT_PAR_VELOCITY)
+         end on",
+        &[],
+    );
+    assert_eq!((cell(&rt, 1), cell(&rt, 2)), (61, 100));
+}
