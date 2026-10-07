@@ -40,7 +40,7 @@ pub use control::{
 };
 mod controller_event;
 mod performance;
-pub use performance::{Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -63,7 +63,7 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
     Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
@@ -108,7 +108,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
+    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
     service_mipmaps,
 };
 mod integer;
@@ -651,6 +651,11 @@ pub struct Runtime {
     /// The plan whose plan programs have started.
     started_plan: Option<PlanId>,
     behavior_fuel: usize,
+    /// Instructions every callback together may run per block, and what is
+    /// left of it. The excess waits in `yielded`, so a chord's script work
+    /// spreads over blocks instead of landing in one.
+    block_fuel: usize,
+    block_fuel_left: usize,
     behavior_stride: usize,
     behavior_locals: Box<[i64]>,
     note_stride: usize,
@@ -806,6 +811,8 @@ impl Runtime {
             dispatching_behavior: false,
             started_plan: None,
             behavior_fuel: limits.behavior_fuel,
+            block_fuel: usize::MAX,
+            block_fuel_left: usize::MAX,
             behavior_stride,
             behavior_locals: vec![0; cells].into_boxed_slice(),
             executing_due: false,
