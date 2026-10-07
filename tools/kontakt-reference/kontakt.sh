@@ -29,6 +29,8 @@ start)
   sleep 5
   # KONTAKT_NOAUDIO=1: read the GUI only (larger desktop); no audio device setup, never send MIDI
   [ -n "${KONTAKT_NOAUDIO:-}" ] || { "$0" setup; sleep 3; "$0" setup; "$0" route || { "$0" stop; exit 1; }; }
+  # a killed/restarted Kontakt may come up in the new view; the GUI coordinates need Classic View (menu > Switch to Classic View)
+  "$0" state >/dev/null 2>&1 || { click 325 98; click 128 579 3; }
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
