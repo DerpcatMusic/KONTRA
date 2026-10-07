@@ -181,3 +181,7 @@ required-features = ["shots"]
 [[example]]
 name = "uvi_audit_pcm"
 required-features = ["shots"]
+
+[[example]]
+name = "ui_health"
+required-features = ["shots"]
