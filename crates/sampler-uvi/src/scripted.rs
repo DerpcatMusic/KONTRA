@@ -119,6 +119,30 @@ struct Glide {
     ms: f64,
 }
 
+/// Plays what the scripts generate (`controlChange`, `postEvent`...) back into
+/// the runtime on channel 0, as a host does with a part's script output.
+pub struct MidiFeed(sampler_midi::Ingress);
+
+impl Default for MidiFeed {
+    fn default() -> Self {
+        let mut groups = [None; 16];
+        groups[0] = Some(sampler_midi::Version::Midi1);
+        Self(sampler_midi::Ingress::new(0, groups))
+    }
+}
+
+impl MidiFeed {
+    pub fn pump<S: Script>(&mut self, driver: &mut Driver<S>, rt: &mut Runtime) {
+        let ingress = &mut self.0;
+        driver.drain_midi(|out| {
+            let word = [0x2000_0000 | u32::from(out.status) << 16 | u32::from(out.a & 127) << 8 | u32::from(out.b & 127)];
+            if let Some(Ok(packet)) = sampler_midi::Packets::new(&word).next() {
+                let _ = ingress.apply(rt, packet);
+            }
+        });
+    }
+}
+
 pub struct Driver<S: Script> {
     host: S,
     groups: Vec<OscGroup>,
@@ -557,6 +581,7 @@ pub struct Player {
     /// Frames ahead of the clock that streamed voices read, if any stream.
     horizon: Option<u32>,
     _stream: Option<Stream>,
+    feed: MidiFeed,
 }
 
 impl Player {
@@ -576,6 +601,7 @@ impl Player {
             driver: Driver::new(program.host, program.groups, rate),
             horizon,
             _stream: stream,
+            feed: MidiFeed::default(),
         })
     }
 
@@ -616,6 +642,7 @@ impl Player {
         while done < out.len() {
             let left = out.len() - done;
             let due = self.driver.wake(&mut self.rt)?;
+            self.feed.pump(&mut self.driver, &mut self.rt);
             let step = due.map_or(left, |d| d.max(1).min(left));
             if let Some(horizon) = self.horizon {
                 // Pending pages play silent and count as underruns.

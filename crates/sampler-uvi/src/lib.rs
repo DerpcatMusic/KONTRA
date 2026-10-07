@@ -1895,7 +1895,7 @@ mod survey {
                             .collect::<Vec<_>>()
                             .join(" ");
                         println!("UT key {key}: {} commands, {plays} plays; {globals}", c.len());
-                        for command in c.iter().filter(|c| matches!(c, crate::script::Command::Play(_))).take(6) {
+                        for command in c.iter().filter(|c| matches!(c, crate::script::Command::Play(_) | crate::script::Command::Parameter { .. })).take(8) {
                             println!("UT   {}", format!("{command:?}").chars().take(160).collect::<String>());
                         }
                         host.note_off(1000 + u64::from(key), key, 64, 0);

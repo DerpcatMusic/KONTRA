@@ -3813,6 +3813,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-midi",
  "sampler-ui-ir",
  "serde_json",
  "sha2",
