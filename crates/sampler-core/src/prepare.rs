@@ -732,6 +732,10 @@ impl Prepared {
             .max()
             .unwrap_or(0)
     }
+    /// Most voices one key's release phase can start together.
+    pub fn release_voices(&self) -> usize {
+        self.release_reserves.iter().flatten().map(|r| r.voices).max().unwrap_or(0)
+    }
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {
         self.stages.len()

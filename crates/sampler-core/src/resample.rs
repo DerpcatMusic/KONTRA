@@ -202,13 +202,26 @@ impl Polyphase {
     /// meet zero coefficients and must be finite), shorter ones are padded.
     #[inline]
     pub(super) fn sample(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
+        // The same arithmetic as the vector runs use on this CPU, so a frame
+        // does not depend on whether it was rendered alone or in a run.
+        sampler_simd::dispatch_fused(
+            (self, fraction, window),
+            #[inline(always)]
+            |(this, f, w)| this.sample_with::<false>(f, w),
+            #[inline(always)]
+            |(this, f, w)| this.sample_with::<true>(f, w),
+        )
+    }
+
+    #[inline(always)]
+    fn sample_with<const FUSED: bool>(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
         if window.len() < self.width() {
             let mut padded = [[0.0; 2]; MAX_WIDTH];
             let taps = 2 * self.radius + 1;
             padded[..taps].copy_from_slice(&window[..taps]);
-            return self.dot::<false>(fraction, &padded[..self.width()]);
+            return self.dot::<FUSED>(fraction, &padded[..self.width()]);
         }
-        self.dot::<false>(fraction, window)
+        self.dot::<FUSED>(fraction, window)
     }
 
     /// [`Self::sample`] for a window of at least `width()` frames; `FUSED`
