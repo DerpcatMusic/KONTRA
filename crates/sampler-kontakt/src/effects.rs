@@ -764,6 +764,21 @@ pub(crate) fn chain_with(
                     }
                 }
             }
+            // A Gainer mixes its slot's dry level with the gained signal,
+            // `dry + out * g` (KONTAKT_REFERENCE s.25 measured a fresh module at
+            // 0.5 + 0.5 g). Every stored Gainer in the local corpus has dry 0 and
+            // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
+            Some(p @ Params::Gainer { .. }) if mix.is_none() => match matrix(p, &mut notes) {
+                Some(m) => {
+                    let wet = product(gain, m);
+                    let dry = f64::from(fx.dry_level);
+                    let mixed = std::array::from_fn(|i| {
+                        std::array::from_fn(|j| wet[i][j] + if i == j { dry } else { 0.0 })
+                    });
+                    combined = product(mixed, combined);
+                }
+                None => modelled = false,
+            },
             Some(p) => match matrix(p, &mut notes) {
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
@@ -789,7 +804,7 @@ pub(crate) fn chain_with(
                             slot: fx.slot as i32,
                             generic,
                         },
-                        dry: if convolution { f64::from(fx.dry_level) } else { 0.0 },
+                        dry: if convolution || fx.module == 0x13 { f64::from(fx.dry_level) } else { 0.0 },
                         wet,
                         bypass: fx.bypass,
                     },
@@ -1110,6 +1125,16 @@ mod tests {
     }
 
     #[test]
+    fn gainer_mixes_its_stored_dry_level_with_the_gained_signal() {
+        // KONTAKT_REFERENCE s.25: a fresh Gainer at -6 dB reads 0.5 + 0.5 * 0.501.
+        let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
+        g.dry_level = 0.5;
+        let c = chain(&[g], Scope::Bus);
+        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else { panic!("{:?}", c.processors) };
+        assert!((m[0][0] - 0.7505).abs() < 1e-6 && m[0][1] == 0.0, "{m:?}");
+    }
+
+    #[test]
     fn dynamic_slots_run_in_mix_blocks_bypassed_ones_included() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
@@ -1206,7 +1231,8 @@ mod tests {
 
     #[test]
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
-        let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        gainer.dry_level = 0.0;
         let inverter = slot(0x1a, vec![1, 1], 0.5);
         let mut modeller = 0.0f32.to_le_bytes().to_vec();
         modeller.extend(0.0f32.to_le_bytes());
@@ -1247,11 +1273,9 @@ mod tests {
             "{processors:?}"
         );
         // Unity everything: no processor at all.
-        let processors = chain(
-            &[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)],
-            Scope::Voice,
-        )
-        .processors;
+        let mut unity = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
+        unity.dry_level = 0.0;
+        let processors = chain(&[unity], Scope::Voice).processors;
         assert!(processors.is_empty());
     }
 
