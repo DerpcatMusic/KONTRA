@@ -948,6 +948,15 @@ impl ScriptHost {
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             resume(&self.shared, thread, MultiValue::new(), None);
             self.cycle();
+            // Saved widget values and their `changed` callbacks come after the script body
+            // and before onInit, which is why scripts test for a restored zero there.
+            if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
+                self.shared.arm(self.shared.config.load);
+                if let Ok(thread) = self.lua.create_thread(f) {
+                    resume(&self.shared, thread, MultiValue::new(), None);
+                    self.cycle();
+                }
+            }
             self.call("onInit", None);
         }
         Ok(())
@@ -1505,6 +1514,22 @@ mod tests {
         let found = h.findings();
         let f: Vec<_> = found.iter().map(|f| f.feature.as_str()).collect();
         assert_eq!(f, ["lua setParameter Layer.Mute"]);
+    }
+
+    #[test]
+    fn saved_widget_values_apply_after_init_and_run_changed() {
+        let xml = "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor Name='S' Link='1'>\
+             <script><![CDATA[\
+             local calls, link = 0, 0\n\
+             local b = OnOffButton{'Link', false, changed = function(self) calls = calls + 1; link = self.value and 1 or 0 end}\n\
+             local atInit = b.value and 100 or 0\n\
+             function onNote(e) playNote(e.note, atInit + calls * 10 + link) end]]></script>\
+             </ScriptProcessor></EventProcessors></Program></UVI4>";
+        let mut h = ScriptHost::new(xml, (), Config::default()).unwrap();
+        h.note_on(1, 60, 100, 0);
+        let c = h.take_commands();
+        // Not set while initialising; set afterwards, with `changed` run once.
+        assert!(matches!(&c[0], Command::Play(p) if p.velocity == 11), "{c:?}");
     }
 
     #[test]
