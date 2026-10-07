@@ -83,7 +83,7 @@ impl ResourceContainer {
     /// Names are case insensitive; NICNT's `|` separators also accept `/`.
     pub fn read(&mut self, name: &str) -> Result<Option<Vec<u8>>, LoadError> {
         use std::io::{Read, Seek, SeekFrom};
-        let (offset, size) = match &self.index {
+        let (offset, size) = match &mut self.index {
             Index::Archive(archive) => {
                 let Some(entry) = archive
                     .member(&mut self.file, name)
@@ -111,6 +111,7 @@ impl ResourceContainer {
                         }
                     })?);
                 }
+                archive.entries.insert(entry.name.to_lowercase(), entry);
                 return archive
                     .read_entry_with_key(&mut self.file, name, self.key.as_deref())
                     .map(Some)
