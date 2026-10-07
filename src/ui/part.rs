@@ -105,7 +105,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let shared = cx.p.shared.part(slot);
     let current: Vec<_> = shared.as_ref().map(|p| p.control_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
-    let view = ir_view::view(ui, &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);
+    let view = ir_view::view(ui, &format!("part-{slot}-script-{}-", face.shown), &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)
             && now != was
