@@ -161,11 +161,11 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
     assets.sync(&face, ir::Presentation::Bitmap, load);
     let bitmap = assets.bytes();
     let mut values = ir_view::Values::default();
-    let ui = settle(633., 300., |ui| ir_view::view(ui, &face, page, &assets, ir::Presentation::Bitmap, 1., &mut values));
+    let ui = settle(633., 300., |ui| ir_view::view(ui, "", &face, page, &assets, ir::Presentation::Bitmap, 1., &mut values));
     shoot(&ui, 633, 300, "ir-bitmap-synthetic.png");
     assets.sync(&face, ir::Presentation::Vector, load);
     let vector = assets.bytes();
-    let ui = settle(633., 300., |ui| ir_view::view(ui, &face, page, &assets, ir::Presentation::Vector, 1., &mut values));
+    let ui = settle(633., 300., |ui| ir_view::view(ui, "", &face, page, &assets, ir::Presentation::Vector, 1., &mut values));
     shoot(&ui, 633, 300, "ir-vector-synthetic.png");
     assert_eq!(bitmap - vector, 64 * 64 * 4 * 64 + 80 * 24 * 4 * 2, "strips released");
     assert_eq!(vector, (633 * 300 + 300 * 120) * 4, "wallpaper and panel art kept");
@@ -187,7 +187,7 @@ fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<A
     for (n, (p, mode)) in [(ir::Presentation::Bitmap, "bitmap"), (ir::Presentation::Vector, "vector")].into_iter().enumerate() {
         assets.sync(&face, p, &mut *load);
         bytes[n] = assets.bytes();
-        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, p, 1., &mut values));
+        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, "", &face, ir::PageRef(0), &assets, p, 1., &mut values));
         shoot(&ui, w, h, &format!("{dir}/{stem}-{mode}.png"));
     }
     bytes
@@ -461,4 +461,44 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
     super::replace_part(&mut part, "/x/New.nki".into());
     assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
     assert_eq!(part.dynamics, -1);
+}
+
+#[test]
+fn menus_show_a_fallback_without_editing_the_script_value() {
+    let control = ir::ControlId(7);
+    let mut menu = ir::Widget::new("$menu", ir::PageRef(0), ir::Rect::new(0, 0, 120, 20), ir::Kind::Menu {
+        items: vec![ir::MenuItem { text: "First".into(), value: 10, visible: true }, ir::MenuItem { text: "Second".into(), value: 30, visible: true }],
+    });
+    menu.binding = ir::Binding::Control(control);
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 160, height: 60 }, ..Default::default() }], widgets: vec![menu], ..Default::default() };
+    let assets = ir_view::Assets::default();
+    for value in [0., 10., 30., -1.] {
+        let mut values: ir_view::Values = [(control, value)].into();
+        settle(160., 60., |ui| ir_view::view(ui, "", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
+        assert_eq!(values[&control], value, "drawing a menu must not submit an edit");
+    }
+}
+
+#[test]
+fn an_unsized_axis_does_not_discard_the_authored_other_axis() {
+    let mut control = ir::Widget::new("$slider", ir::PageRef(0), ir::Rect::new(0, 0, 220, 0), ir::Kind::Slider { range: Default::default(), orientation: ir::Orientation::Horizontal });
+    control.auto_size = true;
+    let face = ir::Interface { pages: vec![ir::Page::default()], widgets: vec![control], ..Default::default() };
+    let resolved = ir_view::resolved(&face);
+    assert_eq!((resolved.widgets[0].rect.width, resolved.widgets[0].rect.height), (220, 18));
+}
+
+#[test]
+fn rack_interfaces_have_independent_input_identities() {
+    let mut widget = ir::Widget::new("$switch", ir::PageRef(0), ir::Rect::new(0,0,85,18), ir::Kind::Switch);
+    let id = ir::ControlId(7);
+    widget.binding = ir::Binding::Control(id);
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 100, height: 30 }, ..Default::default() }], widgets: vec![widget], ..Default::default() };
+    let assets = ir_view::Assets::default();
+    let mut a: ir_view::Values = [(id, 0.)].into();
+    let mut b: ir_view::Values = [(id, 1.)].into();
+    let ui = settle(100., 80., |ui| col![ir_view::view(ui, "part-0-", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut a), ir_view::view(ui, "part-1-", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut b)]);
+    assert!(ui.scene().unwrap().surface("part-0-ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("part-1-ir-0").is_some());
+    assert_eq!((a[&id], b[&id]), (0., 1.));
 }

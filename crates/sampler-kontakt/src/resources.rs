@@ -73,6 +73,15 @@ impl Resources {
         }
     }
 
+    /// Files and containers that participate in lookup, for read-only diagnostics
+    /// and survey cache identity. Resource contents and library keys stay private.
+    pub fn locations(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = self.files.values().cloned().chain(self.containers.iter().cloned()).collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     /// The bytes at library-relative `path`, if the library has them.
     pub fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         if let Some(f) = self.files.get(&path.to_lowercase()) {
