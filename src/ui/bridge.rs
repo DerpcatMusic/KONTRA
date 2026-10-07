@@ -98,6 +98,9 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         let widgets: usize = v.interfaces.iter().map(|i| i.widgets.len()).sum();
         r.loaded.push(loaded(lr::Area::Interface, format!("{} views · {widgets} controls", v.interfaces.len())));
     }
+    if !d.mpe.is_empty() {
+        r.loaded.push(loaded(lr::Area::Modulation, format!("MPE: {}", d.mpe)));
+    }
     r.missing.extend(l.missing.iter().map(missing));
     let p = part.map(|s| s.problems()).unwrap_or(l.runtime);
     let counts = [

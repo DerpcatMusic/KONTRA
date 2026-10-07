@@ -407,3 +407,56 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     assert!(!there(&h, "mpe-0"), "MPE stays in the header's MIDI menu");
     shoot(&h.ui, 1180, 780, "app/synthetic-performance.png");
 }
+
+/// What an importer set in the IR (owner, driver, key policy) is the part's
+/// until the player remaps it: opening the Articulations view must not write
+/// a remap of its own over it.
+#[test]
+fn imported_switching_survives_the_first_ui_sync() {
+    use sampler_ir as sir;
+    let drivers = [sir::Driver::Keys, sir::Driver::Velocity, sir::Driver::Channel, sir::Driver::Controller, sir::Driver::Program];
+    let owners = [sir::SwitchOwner::Native, sir::SwitchOwner::Behavior];
+    let policies = [sir::SwitchKeys::Keep, sir::SwitchKeys::Play, sir::SwitchKeys::Swallow];
+    for owner in owners {
+        for driver in drivers {
+            for keys in policies {
+                let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
+                inst.switching = sir::Switching { owner, driver, keys };
+                for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
+                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                }
+                inst.assign_alternatives(32);
+                let p = Arc::new(crate::plugin::SamplerParams::new());
+                p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Imported.nki".into(), ..Default::default() });
+                {
+                    let mut v = p.shared.view.lock().unwrap();
+                    if v.parts.is_empty() {
+                        v.parts.push(Default::default());
+                    }
+                    v.parts[0].instrument = Some(Arc::new(inst));
+                }
+                let mut h = Harness::new(&p, 1180., 780.);
+                h.idle(4);
+                h.press("view-0-Articulations");
+                h.idle(3);
+                let stored = p.selection.read().unwrap().parts[0].switching;
+                assert_eq!(stored, 0, "{owner:?} {driver:?} {keys:?}: the view wrote {stored:#x} over the import");
+            }
+        }
+    }
+}
+
+/// A remap or start value belongs to the instrument it was made on: replacing
+/// the part's instrument leaves the new import's own switching in force.
+#[test]
+fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
+    let mut part = crate::plugin::Part {
+        path: "/x/Old.nki".into(),
+        switching: 0x80 | (sampler_ir::Driver::Velocity as u8) << 1,
+        dynamics: 64,
+        ..Default::default()
+    };
+    super::replace_part(&mut part, "/x/New.nki".into());
+    assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
+    assert_eq!(part.dynamics, -1);
+}

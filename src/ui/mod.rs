@@ -625,8 +625,10 @@ fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
     part.name.clear();
-    // Another instrument has another output tree.
+    // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
+    part.switching = 0;
+    part.dynamics = -1;
 }
 
 /// How many rack parts `path` opens as: one per program of a Kontakt multi.

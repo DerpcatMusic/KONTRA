@@ -12,11 +12,17 @@ pub struct MpeResponse {
     pub pitch_ratio: f64,
     /// RMS with pressure at full over RMS without, in dB.
     pub pressure_db: f64,
+    /// Spectral centroid with timbre (CC74) at 0 over without; below 1 is darker.
+    pub timbre_ratio: f64,
 }
 impl MpeResponse {
     /// Pitch moved up by about 1 to 3 semitones' worth of crossings.
     pub fn pitch_responds(&self) -> bool {
         (1.06..=1.19).contains(&self.pitch_ratio)
+    }
+    /// Timbre at 0 darkened the spectrum by at least 5 percent.
+    pub fn timbre_responds(&self) -> bool {
+        self.timbre_ratio < 0.95
     }
     /// Level moved by at least 1 dB.
     pub fn pressure_responds(&self) -> bool {
@@ -51,6 +57,7 @@ pub fn mpe_response(mut fresh: impl FnMut() -> Runtime, key: u8) -> Result<MpeRe
     let plain = run(None)?;
     let bent = run(Some(0x20E1_0000 | (8533 & 127) << 8 | 8533 >> 7))?;
     let pressed = run(Some(0x20D1_0000 | 127 << 8))?;
+    let dark = run(Some(0x20B1_0000 | 74 << 8))?;
     let rms = |x: &[[f32; 2]]| {
         let s: f64 = x
             .iter()
@@ -61,6 +68,7 @@ pub fn mpe_response(mut fresh: impl FnMut() -> Runtime, key: u8) -> Result<MpeRe
     Ok(MpeResponse {
         pitch_ratio: spectral_ratio(&plain, &bent),
         pressure_db: 20.0 * ((rms(&pressed) + 1e-12) / (rms(&plain) + 1e-12)).log10(),
+        timbre_ratio: centroid(&dark) / centroid(&plain).max(1e-9),
     })
 }
 
@@ -129,7 +137,7 @@ fn log_bands(x: &[[f32; 2]], rate: f64) -> Vec<f64> {
 
 /// The frequency ratio that best maps `plain`'s spectrum onto `bent`'s,
 /// within +-6 semitones; 0 when either is silent. Rate is the runtime's 48 kHz.
-fn spectral_ratio(plain: &[[f32; 2]], bent: &[[f32; 2]]) -> f64 {
+pub fn spectral_ratio(plain: &[[f32; 2]], bent: &[[f32; 2]]) -> f64 {
     const RATE: f64 = 48_000.0;
     let (a, b) = (log_bands(plain, RATE), log_bands(bent, RATE));
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
@@ -190,5 +198,31 @@ mod tests {
             spectral_ratio(&tone(330.0, 20), &vec![[0.0; 2]; WINDOW]),
             0.0
         );
+    }
+}
+
+/// Power-weighted mean frequency of the mid signal, Hz (0 when silent).
+pub fn centroid(x: &[[f32; 2]]) -> f64 {
+    let n = x.len();
+    let mut re: Vec<f64> = x
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos();
+            0.5 * (f64::from(f[0]) + f64::from(f[1])) * w
+        })
+        .collect();
+    let mut im = vec![0.0; n];
+    fft(&mut re, &mut im);
+    let (mut num, mut den) = (0.0, 0.0);
+    for k in 1..n / 2 {
+        let p = re[k] * re[k] + im[k] * im[k];
+        num += p * k as f64;
+        den += p;
+    }
+    if den < 1e-12 {
+        0.0
+    } else {
+        num / den * 48_000.0 / n as f64
     }
 }

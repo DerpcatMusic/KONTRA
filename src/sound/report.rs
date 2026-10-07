@@ -58,6 +58,22 @@ pub struct Decoded {
     /// One of them starts at 0: the part is near-silent until it moves.
     #[serde(default)]
     pub needs_controller: bool,
+    /// How per-note MPE expression is mapped, in words; empty with MPE off.
+    #[serde(default)]
+    pub mpe: String,
+}
+
+/// The default MPE mapping as the load report states it: pressure and timbre
+/// reach every zone; bend is the note's own pitch.
+pub fn mpe_summary(m: &sampler_core::lower::MpeDefaults) -> String {
+    let mut parts = vec!["per-note bend".to_owned()];
+    if m.pressure_db != 0.0 {
+        parts.push(format!("pressure raises the level up to {:+.1} dB", m.pressure_db));
+    }
+    if m.timbre_semitones != 0.0 {
+        parts.push(format!("timbre (CC74) darkens the tone below centre, down to {:.0} semitones under open", m.timbre_semitones));
+    }
+    parts.join(" · ")
 }
 
 impl Decoded {
@@ -155,6 +171,7 @@ impl LoadReport {
                 full_bytes: 0,
                 dynamics: Vec::new(),
                 needs_controller: false,
+                mpe: String::new(),
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
@@ -176,6 +193,14 @@ impl LoadReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mpe_mapping_is_stated_in_the_report() {
+        let text = super::mpe_summary(&sampler_core::lower::MpeDefaults::default());
+        assert_eq!(text, "per-note bend · pressure raises the level up to +6.0 dB · timbre (CC74) darkens the tone below centre, down to 60 semitones under open");
+        let off = sampler_core::lower::MpeDefaults { pressure_db: 0.0, timbre_semitones: 0.0 };
+        assert_eq!(super::mpe_summary(&off), "per-note bend");
+    }
+
     #[test]
     fn key_bits_cover_each_zone_range() {
         let d = super::Decoded { keys: super::range_bits(60, 64), ..Default::default() };
