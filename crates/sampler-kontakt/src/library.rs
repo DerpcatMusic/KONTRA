@@ -513,10 +513,12 @@ impl Translation {
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
         let mut chain = None;
+        let mut filter_slots = Vec::new();
         if let Ok(array) = group.insert_fx() {
             let c =
                 crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
             let processors = c.processors;
+            filter_slots = c.filter_slots;
             for (slot, feature, value, reason) in c.notes {
                 self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
             }
@@ -622,7 +624,13 @@ impl Translation {
                     continue;
                 }
                 for target in &params.targets {
-                    routes.extend(self.route(&at, modulator, envelope_source, target));
+                    routes.extend(self.route(
+                        &at,
+                        modulator,
+                        envelope_source,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    ));
                 }
             }
         }
@@ -706,7 +714,13 @@ impl Translation {
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
                 for target in &params.targets {
-                    routes.extend(self.route(&at, modulator, !bipolar, target));
+                    routes.extend(self.route(
+                        &at,
+                        modulator,
+                        !bipolar,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    ));
                 }
             }
         }
@@ -750,6 +764,7 @@ impl Translation {
         source: ir::ModulatorRef,
         unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
+        filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
         let i = f64::from(target.intensity);
         let report = |this: &mut Self, feature: &str, reason| {
@@ -761,7 +776,23 @@ impl Translation {
             );
             None
         };
-        if target.slot.is_some() {
+        // Filter cutoff of an insert slot: octaves, linear in the modulator,
+        // 10 octaves per 100 % (KONTAKT_REFERENCE.md section 17).
+        let cutoff = match (target.slot, target.param.as_str()) {
+            (None, _) => None,
+            (Some(slot), "filterCutoff") => filters.and_then(|(chain, slots)| {
+                slots
+                    .iter()
+                    .find(|(s, _)| *s == usize::from(slot))
+                    .map(|&(_, index)| ir::Target::Processor {
+                        chain,
+                        index,
+                        parameter: ir::ProcessorParameter::Cutoff,
+                    })
+            }),
+            _ => None,
+        };
+        if target.slot.is_some() && cutoff.is_none() {
             return report(
                 self,
                 "modulation of a module parameter",
@@ -774,6 +805,10 @@ impl Translation {
             return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
+            _ if cutoff.is_some() => (
+                cutoff.unwrap_or(ir::Target::Amplitude),
+                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)),
+            ),
             "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
             "pitch" => (
                 ir::Target::Pitch,
@@ -1384,6 +1419,62 @@ mod modulation {
         }
     }
 
+    /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
+    /// envelope minus sustain falls 0.51, 0.23, 0.085, 0.02 at 0.25 s steps
+    /// from the 2 s peak (1 - 0.25 = 0.75 of travel, so ratios .67/.30/.11/.026).
+    #[test]
+    fn ahdsr_decay_is_exponential_like_the_measurement() {
+        let (attack, ir::Curve::Exponential(k)) = ahdsr_curves(0.0) else {
+            panic!("exponential decay")
+        };
+        let remaining = |t: f64| 1.0 - ((k * t).exp() - 1.0) / (k.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.67), (0.375, 0.30), (0.625, 0.11), (0.875, 0.026)] {
+            assert!(
+                (remaining(t) - measured).abs() < 0.04,
+                "t {t}: {} vs {measured}",
+                remaining(t)
+            );
+        }
+        // Curve 0 attack is near-linear: env 0.12/0.35/0.59/0.84 at 1/8, 3/8, 5/8, 7/8.
+        let ir::Curve::Exponential(a) = attack else {
+            panic!("attack curve")
+        };
+        let rise = |t: f64| ((a * t).exp() - 1.0) / (a.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.12), (0.375, 0.35), (0.625, 0.59), (0.875, 0.84)] {
+            assert!((rise(t) - measured).abs() < 0.04, "t {t}: {}", rise(t));
+        }
+    }
+
+    #[test]
+    fn filter_cutoff_modulation_is_ten_octaves_per_full_amount() {
+        let mut t = translation();
+        let source = ir::ModulatorRef(0);
+        let cutoff = ModTarget {
+            slot: Some(2),
+            ..target("filterCutoff", 0.444)
+        };
+        let chain = ir::ChainRef(3);
+        t.route("g", source, true, &cutoff, Some((chain, &[(2, 1)])))
+            .unwrap();
+        assert_eq!(
+            t.ir.routes[0].target,
+            ir::Target::Processor {
+                chain,
+                index: 1,
+                parameter: ir::ProcessorParameter::Cutoff
+            }
+        );
+        let ir::Depth::Pitch(p) = t.ir.routes[0].depth else {
+            panic!("pitch depth")
+        };
+        assert!((p.semitones() / 12.0 - 4.44 * 1.0).abs() < 1e-6);
+        // A slot with no translated filter stays reported.
+        assert!(
+            t.route("g", source, true, &cutoff, Some((chain, &[])))
+                .is_none()
+        );
+    }
+
     #[test]
     fn targets_translate_with_kontakt_laws_or_are_reported() {
         let mut t = translation();
@@ -1393,7 +1484,7 @@ mod modulation {
             invert: true,
             ..target("pitch", 0.5)
         };
-        t.route("g", source, true, &lagged).unwrap();
+        t.route("g", source, true, &lagged, None).unwrap();
         assert_eq!(
             t.ir.routes[0],
             ir::Route {
@@ -1406,9 +1497,11 @@ mod modulation {
                 scale: None,
             }
         );
-        t.route("g", source, true, &target("volume", 0.25)).unwrap();
+        t.route("g", source, true, &target("volume", 0.25), None)
+            .unwrap();
         assert_eq!(t.ir.routes[1].depth, ir::Depth::Normalized(0.25));
-        t.route("g", source, true, &target("playPos", 1.0)).unwrap();
+        t.route("g", source, true, &target("playPos", 1.0), None)
+            .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
         for unknown in [
             target("pan", 1.0),
@@ -1422,7 +1515,7 @@ mod modulation {
                 ..target("cutoff", 1.0)
             },
         ] {
-            assert!(t.route("g", source, true, &unknown).is_none());
+            assert!(t.route("g", source, true, &unknown, None).is_none());
         }
         assert_eq!(t.ir.routes.len(), 3);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
