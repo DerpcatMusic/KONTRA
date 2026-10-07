@@ -121,6 +121,8 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    /// Kontakt Daft filter; per-voice scalar path.
+    Daft(DaftSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -160,6 +162,7 @@ impl Processor {
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
+            Processor::Daft(settings) => settings.valid(),
             Processor::Rectify(_) => true,
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
@@ -169,12 +172,14 @@ impl Processor {
 pub(super) mod control;
 mod compressor;
 mod convolution;
+mod daft;
 mod delay;
 pub(super) mod lanes;
 mod reverb;
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
+pub use daft::DaftSettings;
 pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
@@ -198,6 +203,7 @@ pub(super) enum PreparedProcessor {
     Compressor(compressor::Compressor),
     Rectify(Rectifier),
     Decimate(Decimator),
+    Daft(daft::Daft),
     StateVariable(usize),
     /// Index into the bus graph's reverbs.
     Reverb(usize),
@@ -319,6 +325,9 @@ pub(super) fn compile_processors(
                 }
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate))
+                }
+                Processor::Daft(settings) => {
+                    PreparedProcessor::Daft(settings.compile(rate, bindings))
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
@@ -543,6 +552,7 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::Daft(_)
                 )
             })
     }
@@ -603,7 +613,7 @@ fn flush32(v: f32) -> f32 {
 pub(super) struct ProcessorState {
     z: [[f64; 2]; 2],
     /// Further state for stages that need more than `z` (the decimator).
-    aux: [f64; 3],
+    aux: [f64; 16],
     delay_position: u32,
     delay_filled: u32,
 }
@@ -710,6 +720,7 @@ pub(super) fn process(
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
+            PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));

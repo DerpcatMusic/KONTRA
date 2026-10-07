@@ -7,7 +7,7 @@ use crate::{
     ControlValue, ControllerCondition, SlotKind, slot_control, Direction, Driver,
     Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
-    CompressorSettings, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
+    CompressorSettings, DaftSettings, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
     ReverbSettings,
     SelectionPolicy,
     Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
@@ -887,6 +887,12 @@ impl Lowering<'_> {
                 release_seconds: c.release.seconds(),
                 makeup: c.makeup.linear(),
                 link: c.link,
+            }),
+            ir::Processor::Daft(d) => Processor::Daft(DaftSettings {
+                gain: Parameter::Constant(d.gain),
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+                response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
