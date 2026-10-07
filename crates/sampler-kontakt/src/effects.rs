@@ -922,6 +922,7 @@ mod tests {
                 voice_limit: None,
                 monophonic_release: false,
                 sends: Vec::new(),
+                tap: None,
             }],
             ..Default::default()
         };

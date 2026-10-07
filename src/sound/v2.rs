@@ -885,7 +885,11 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
         instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
         instrument.groups[index].output = ir::Output::Bus(bus);
         instrument.tap_group(index, bus);
-        let sends = instrument.buses[bus.0].sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect();
+        let post = instrument.groups[index].tap.as_ref().map_or(&[][..], |t| &t.post[..]);
+        let fader = instrument.buses[bus.0].gain.linear();
+        let sends = (instrument.buses[bus.0].sends.iter().enumerate())
+            .map(|(n, s)| (node(s.to), (s.gain.linear() * if post.contains(&n) { fader } else { 1.0 }) as f32))
+            .collect();
         tree.nodes.last_mut().expect("pushed above").sends = sends;
     }
     tree
@@ -1815,13 +1819,14 @@ mod send_tests {
         let bus = &i.buses[1];
         assert_eq!(i.groups[0].gain, ir::Gain::UNITY, "voices feed the tap unscaled");
         assert_eq!(tree.nodes[2].sends.len(), 2);
-        (bus.gain, bus.sends.iter().map(|s| s.gain.linear()).collect())
+        (bus.gain, tree.nodes[2].sends.iter().map(|s| f64::from(s.1)).collect())
     }
 
     #[test]
     fn a_closed_fader_silences_the_output_but_not_the_pre_fader_send() {
         let (out, sends) = tapped(0.0);
         assert_eq!((out.linear(), sends), (0.0, vec![0.5, 0.0]));
+        assert_eq!(instrument(0.0).groups[0].sends.len(), 2);
     }
 
     #[test]
@@ -1829,7 +1834,7 @@ mod send_tests {
         let fader = 10f64.powf(-12.0 / 20.0);
         let (out, sends) = tapped(fader);
         assert_eq!(out.linear(), fader);
-        assert_eq!(sends, vec![0.5, 0.5 * fader]);
+        assert!((sends[0] - 0.5).abs() < 1e-6 && (sends[1] - 0.5 * fader).abs() < 1e-6, "{sends:?}");
     }
 
     #[test]

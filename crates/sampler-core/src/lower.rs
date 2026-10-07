@@ -277,7 +277,13 @@ pub fn lower_with(
             .groups
             .iter()
             .map(|g| GroupParams {
-                decibels: 20.0 * g.gain.linear().max(1e-9).log10(),
+                decibels: 20.0
+                    * g.tap
+                        .as_ref()
+                        .map_or(g.gain, |t| instrument.buses[t.bus.0].gain)
+                        .linear()
+                        .max(1e-9)
+                        .log10(),
                 pan: g.pan.position,
                 semitones: g.tune.semitones(),
             })
@@ -928,9 +934,10 @@ impl Lowering<'_> {
                     processors.push(self.processor(&owner, *p)?);
                 }
             }
+            let tapped = self.ir.groups.iter().any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
             let mut sends = vec![BusSend {
                 bus: target(bus.output),
-                gain: bus.gain.linear(),
+                gain: if tapped { 1.0 } else { bus.gain.linear() },
             }];
             for send in &bus.sends {
                 if send.position == ir::SendPosition::PreChain {
@@ -966,9 +973,27 @@ impl Lowering<'_> {
             .iter()
             .map(|z| self.group(z).and_then(|g| target(g.output)))
             .collect();
-        plan.with_impulses(impulses)
+        let faders: Vec<_> = self
+            .ir
+            .groups
+            .iter()
+            .map(|g| {
+                g.tap.as_ref().map(|t| crate::GroupFader {
+                    bus: t.bus.0,
+                    follows: std::iter::once(0).chain(t.post.iter().map(|n| n + 1)).collect(),
+                    initial: self.ir.buses[t.bus.0].gain.linear(),
+                })
+            })
+            .collect();
+        let plan = plan
+            .with_impulses(impulses)
             .with_buses(buses, bindings)
-            .map_err(core(Stage::Buses, "buses"))
+            .map_err(core(Stage::Buses, "buses"))?;
+        if faders.iter().all(Option::is_none) {
+            return Ok(plan);
+        }
+        plan.with_group_faders(faders)
+            .map_err(core(Stage::Buses, "group faders"))
     }
 
     fn variation(&self, plan: Prepared) -> Result<Prepared, LowerError> {
