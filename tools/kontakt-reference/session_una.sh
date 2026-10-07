@@ -15,7 +15,7 @@ say "load at start: $(cat /proc/loadavg)"
 "$here/kontakt.sh" start "$UNA" && "$here/una_setup.sh"
 rec() { # name scenario spacing n
   python3 "$here/scenario.py" "$here/scenarios/$2.txt" "$W/wav/$1.mid" >/dev/null &&
-  "$here/record.sh" "$W/wav/$1.mid" "$W/wav/$1.wav" 3 >/dev/null 2>&1 || { say "$1: RECORD FAILED"; return; }
+  "$here/record.sh" "$W/wav/$1.mid" "$W/wav/$1.wav" 3 >/dev/null 2>"$W/log/rec_err.txt" || { say "$1: RECORD FAILED: $(tail -1 "$W/log/rec_err.txt")"; return; }
   say "$1 [$(grep load1 "$W/wav/$1.wav.log")]"; python3 "$here/note_levels.py" "$W/wav/$1.wav" "$3" "$4" | tee -a "$OUT"; }
 for r in a b; do
   rec g39_v100_$r una_g39_v100 6 1; rec g94_v100_$r una_g94_v100 6 1
