@@ -515,21 +515,24 @@ pub(crate) fn chain_with(
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        // A stored output gain of 0 is a script-driven rack (its script writes
-        // INSERT_EFFECT_OUTPUT_GAIN at init, which is not modelled yet): treat it as
-        // unity rather than muting the instrument.
-        // ponytail: replace with runtime effect parameters from set_engine_par.
-        let wet = if fx.output_gain == 0.0 {
-            1.0
-        } else {
-            f64::from(fx.output_gain)
-        };
+        let wet = f64::from(fx.output_gain);
         let gain = [[wet, 0.0], [0.0, wet]];
+        // A stored EQ output gain of 0 is a script-driven rack (ANALOG STRINGS: its script
+        // writes INSERT_EFFECT_OUTPUT_GAIN at init, which is not modelled yet): treat it
+        // as unity rather than muting the instrument. Across the corpus this is the only
+        // EQ slot stored at 0; the 75 convolution and 4 legacy delay slots stored at 0
+        // keep their meaning.
+        // ponytail: replace with runtime effect parameters from set_engine_par.
+        let eq_gain = if fx.output_gain == 0.0 {
+            IDENTITY
+        } else {
+            gain
+        };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
-                combined = product(gain, combined);
+                combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
                 if out.sends.is_empty() {
