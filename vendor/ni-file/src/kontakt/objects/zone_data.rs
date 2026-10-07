@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use crate::{kontakt::structured_object::StructuredObject, read_bytes::ReadBytesExt, Error};
+use crate::{Error, kontakt::structured_object::StructuredObject, read_bytes::ReadBytesExt};
 
 #[derive(Debug)]
 pub struct Zone(pub StructuredObject);
@@ -8,7 +8,7 @@ pub struct Zone(pub StructuredObject);
 /// Type:           StructuredObject
 /// Kontakt 7:      BZone, BProgram::readZones()
 /// KontaktIO:      K4PL_Zone<K4PO::K4PL_ZoneDataV95>
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ZoneParams {
     pub sample_start: i32,
     pub sample_end: i32,
@@ -27,6 +27,7 @@ pub struct ZoneParams {
     pub zone_tune: f32,
     /// The index of the file in the filetable.
     pub filename_id: i32,
+    pub filename_prefix: Option<[u8; 6]>,
     pub sample_data_type: i32,
     pub sample_rate: i32,
     pub num_channels: u8,
@@ -35,8 +36,9 @@ pub struct ZoneParams {
     pub reserved2: Option<i32>,
     pub root_note: i32,
     pub tuning: f32,
-    pub reserved3: bool,
+    pub reserved3: u8,
     pub reserved4: i32,
+    pub unknown_tail: Vec<u8>,
     // LoopArray 0x39
     // QuickBrowseData 0x4e
     // PrivateRawObject 0x35
@@ -47,7 +49,10 @@ impl Zone {
     /// version-specific public parameters.
     pub fn filename_id(&self) -> Result<i32, Error> {
         let at = if self.0.version >= 0x9a { 48 } else { 42 };
-        let bytes = self.0.public_data.get(at..at + 4)
+        let bytes = self
+            .0
+            .public_data
+            .get(at..at + 4)
             .ok_or(Error::Static("Truncated zone sample reference"))?;
         Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
     }
@@ -58,7 +63,6 @@ impl Zone {
 
     pub fn params(&self) -> Result<ZoneParams, Error> {
         let mut reader = Cursor::new(&self.0.public_data);
-
 
         Ok(ZoneParams {
             sample_start: reader.read_i32_le()?,
@@ -76,26 +80,29 @@ impl Zone {
             zone_volume: reader.read_f32_le()?,
             zone_pan: reader.read_f32_le()?,
             zone_tune: reader.read_f32_le()?,
-            filename_id: {
-                if self.0.version >= 0x9a { reader.read_bytes(6)?; }
-                reader.read_i32_le()?
+            filename_prefix: if self.0.version >= 0x9a {
+                let mut prefix = [0; 6];
+                std::io::Read::read_exact(&mut reader, &mut prefix)?;
+                Some(prefix)
+            } else {
+                None
             },
+            filename_id: reader.read_i32_le()?,
             sample_data_type: reader.read_i32_le()?,
             sample_rate: reader.read_i32_le()?,
             num_channels: reader.read_u8()?,
             num_frames: reader.read_i32_le()?,
             reserved1: reader.read_i32_le()?,
-            reserved2: {
-                match self.0.version {
-                    _ if self.0.version < 0x96 => Some(reader.read_i32_le()?),
-                    _ if self.0.version < 0x99 => None,
-                    _ => None,
-                }
+            reserved2: if self.0.version < 0x96 {
+                Some(reader.read_i32_le()?)
+            } else {
+                None
             },
             root_note: reader.read_i32_le()?,
             tuning: reader.read_f32_le()?,
-            reserved3: reader.read_bool()?,
+            reserved3: reader.read_u8()?,
             reserved4: reader.read_i32_le()?,
+            unknown_tail: reader.read_all()?,
         })
     }
 }
