@@ -4,6 +4,9 @@ use sampler_core::{Limits, Runtime};
 use sampler_ir as ir;
 use sampler_midi::{Articulator, Ingress, Intercept, Packets, Version};
 
+#[path = "support/reference.rs"]
+mod reference;
+
 const INSTRUMENT: &str =
     "Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki";
 const KEY: u8 = 60;
@@ -46,9 +49,8 @@ fn decoded(path: &std::path::Path, key: u8) -> Decoded {
         pcm,
         labels: kept.iter().map(|a| a.to_string()).collect(),
         options: sampler_kontakt::Options {
-            keys: key..=key,
             library: Some(path.to_owned()),
-            ..Default::default()
+            ..reference::options(key..=key)
         },
     }
 }
@@ -71,6 +73,7 @@ impl Decoded {
 /// Render `words` (one per 64-frame step) through the articulator and ingress.
 fn render(loaded: sampler_kontakt::Loaded, words: &[u32]) -> Vec<[f32; 2]> {
     let plan = loaded.plan;
+    reference::assert_matched(&plan);
     let limits = Limits {
         notes: 64,
         channels: 16,
@@ -541,7 +544,6 @@ fn probe_instrument() {
             .collect();
         groups.sort();
         groups.dedup();
-        let db = |x: f64| 20.0 * (x + 1e-12).log10();
         for g in groups {
             let mut ir = d.instrument.clone();
             ir.behaviors.clear();
@@ -573,22 +575,16 @@ fn probe_instrument() {
             words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
             words.resize(1500, 0x2000_0000);
             let out = render(loaded, &words);
-            let sr = 48000;
-            let seg = &out[sr / 2..2 * sr];
-            let rms = (seg
-                .iter()
-                .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
-                .sum::<f64>()
-                / (2.0 * seg.len() as f64))
-                .sqrt();
-            let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-            let lr = |c: usize| out.iter().fold(0f32, |p, f| p.max(f[c].abs()));
+            let whole = reference::levels(&out, 0.0, 3.0);
+            let tail = reference::levels(&out, 0.5, 2.0);
             eprintln!(
-                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1}",
-                db(f64::from(pk)),
-                db(rms),
-                db(f64::from(lr(0))),
-                db(f64::from(lr(1)))
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1} rmsL {:.1} rmsR {:.1}",
+                whole.max_peak(),
+                (tail.rms[0] + tail.rms[1]) / 2.0,
+                whole.peak[0],
+                whole.peak[1],
+                tail.rms[0],
+                tail.rms[1]
             );
         }
     }
@@ -736,11 +732,7 @@ fn full_notes_match_kontakt_within_a_decibel() {
         ];
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())]
-            .iter()
-            .flatten()
-            .fold(0f32, |p, x| p.max(x.abs()));
-        let db = 20.0 * f64::from(peak).log10();
+        let db = reference::levels(&out, 0.3, 3.0).max_peak();
         if (db - kontakt).abs() >= 1.0 {
             off.push(format!(
                 "{relative} key {key} vel {vel}: {db:.1} against {kontakt}"
@@ -763,8 +755,7 @@ fn una_velocity_sweep_probe() {
         let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-        eprintln!("PROBE vel {vel}: {:.1}", 20.0 * f64::from(peak).log10());
+        eprintln!("PROBE vel {vel}: {:.1}", reference::levels(&out, 0.3, 3.0).max_peak());
     }
 }
 
@@ -786,7 +777,6 @@ fn barbarian_cc1_sweep_probe() {
         words.push(0x2090_0000 | 55 << 8 | 100);
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-        eprintln!("PROBE cc1 {cc1:?}: {:.1}", 20.0 * f64::from(peak).log10());
+        eprintln!("PROBE cc1 {cc1:?}: {:.1}", reference::levels(&out, 0.3, 3.0).max_peak());
     }
 }
