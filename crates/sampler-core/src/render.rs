@@ -519,13 +519,22 @@ impl Runtime {
                 * ((ramp.from.pitch + ramp.to.pitch) / 24.0).exp2())
             .clamp(super::resample::MIN_STEP, super::resample::MAX_STEP),
         });
-        Some(Prelude { points, modulated, stop, filter })
+        Some(Prelude {
+            points,
+            modulated,
+            stop,
+            filter,
+        })
     }
 
     #[inline]
     fn render_voice(&mut self, i: usize, segment: &mut [Frame], at: u64) {
-        let Some(Prelude { points, modulated, stop, filter }) =
-            self.prepare_voice(i, at, segment.len())
+        let Some(Prelude {
+            points,
+            modulated,
+            stop,
+            filter,
+        }) = self.prepare_voice(i, at, segment.len())
         else {
             return;
         };
@@ -622,7 +631,12 @@ impl Runtime {
 }
 
 /// Mix `chunk` into `output`, ramping per-channel gains from `from` to `to`.
-pub(super) fn ramp_mix(chunk: &[Frame], output: &mut [Frame], ramp: super::voice_mod::Ramp, now: u64) {
+pub(super) fn ramp_mix(
+    chunk: &[Frame],
+    output: &mut [Frame],
+    ramp: super::voice_mod::Ramp,
+    now: u64,
+) {
     let (from, to) = (ramp.from.gains, ramp.to.gains);
     let len = ramp.end.saturating_sub(ramp.begin).max(1) as f32;
     let step = [(to[0] - from[0]) / len, (to[1] - from[1]) / len];
