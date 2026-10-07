@@ -76,6 +76,8 @@ fn nested_mixer_strips_step_down_and_fold() {
 fn load_report_shot() {
     let r = lr::Report {
         instrument: "Vista - 3 Cellos".into(),
+        why_silent: Some("key 60: 1122 zones rejected by group selection (script)".into()),
+        faults: vec!["InvalidInput in script 1 on note".into()],
         loaded: vec![
             lr::Loaded { area: lr::Area::Mapping, summary: "3 412 zones · 48 groups".into() },
             lr::Loaded { area: lr::Area::Samples, summary: "2.1 GB, 64 KB resident heads".into() },
