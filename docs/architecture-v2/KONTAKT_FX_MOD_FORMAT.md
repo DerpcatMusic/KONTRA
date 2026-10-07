@@ -119,3 +119,62 @@ legacy Multi ripples and the final version flag are not replaced with guesses.
 DBD `0x41`, glide `0x0b`, step and older source types require corpus/native
 reader evidence before their fields can be declared decoded. An ID/name-only
 mapping is not support.
+
+## Reader changes and executable limits
+
+`EffectParameters::read(id, version, public)` exposes exact-length fixed fields
+for Delay, Chorus, Flanger, Gainer, Phaser, Compressor, Inverter, Limiter,
+Surround Panner, Distortion, Stereo Modeller, Lo-Fi, Skreamer, Rotator, Tape
+Saturator, Transient Master, Solid G-EQ, Solid Bus Comp, Feedback Compressor,
+and Reverb. Send Levels, Convolution and Filter/EQ have counted or conditional
+layouts. Packed bytes remain bytes; Convolution block size and IR index remain
+integers. Unassigned parameter names follow the reference specification.
+A matching length proves field framing, not the complete physical or KSP law.
+Unknown IDs and mismatched known layouts retain opaque public data in memory.
+
+The Ladder reader now consumes the leading parameter separately from cutoff
+and resonance, plus the byte between subtype IDs at version `0x92`. Previously
+v2 shifted those fields or discarded modern records. Malformed occupied slots
+now produce errors rather than silently disappearing from a rack.
+
+`Instrument.source_parameters` retains version-pinned records at their original
+instrument/group/bus/rack/slot locations, including bypassed FX, muted-group
+sources, signed depths, target names and slots, shaper tables/breakpoint curves,
+smoothing, retrigger, source payloads and unknown fields. Envelope timing records
+expose three float words plus their raw byte, without asserting sync semantics.
+Additional AHDSR bytes remain opaque. The IR's debug output hides opaque bytes.
+These records are authored state; script writes continue through the existing
+executable translation. Lowering does not execute the storage records.
+
+Snapshot group modulation arrays now overlay base arrays before translation,
+including the source records for muted groups. Empty saved arrays replace base
+arrays; absent arrays leave base state. Group topology and unrelated children
+remain unchanged. Corpus census covers manifest instruments/multis; this
+snapshot behavior currently has an authored fixture, not a whole-snapshot census.
+
+Executable gaps include unknown/newer FX and filter subtype laws; DBD, glide and
+step sources; AHDSR/Flex stage sync and loop metadata; LFO type 6, legacy waveform
+ripples and unknown sync words; release velocity and random bipolar execution;
+unproven destination intensity/normalization laws and modulation of envelope
+parameters. Retaining bytes is not execution or sound-parity certification.
+The DSP agent should consume established fields and physical units, independently
+establish remaining laws, and keep unknown fields out of audible execution.
+
+## Reproducing the census
+
+Build `cargo build -p sampler-kontakt --example fx_mod_survey` through
+`/home/derpcat/.cache/kontakto-heavy`. Run the resulting executable through that
+wrapper with positional arguments `items.tsv start limit cache-directory`.
+`start` and `limit` address original manifest line numbers; only Kontakt rows
+are read. Each call stops starting new items after 240 seconds, and writes
+one atomic metadata-only TSV per completed item. Run another wrapper call for
+the next shard; existing completed item files are skipped. Never set
+`KONTAKTO_HEAVY_SLOTS`, or launch another local heavy job concurrently.
+
+Merge with `python3 tools/fx-mod-survey.py cache-directory`. `COUNT` rows give
+object occurrences and affected-file counts. `FIELD` rows give object ID,
+version, field path, observed files, files with values differing from the most
+frequent value, distinct signatures and that baseline. Float arrays and opaque
+regions use lengths/fingerprints; these are variation evidence, not decoded
+laws. Per-item cached `VALUE` rows retain scalar metadata frequencies.
+Run `python3 tools/fx-mod-survey.py --check` for the aggregation check.
