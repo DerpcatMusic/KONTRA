@@ -694,7 +694,7 @@ fn convolution(
     let [left, right] = channels;
     impulses
         .store
-        .push(sampler_ir::Impulse { rate, left, right });
+        .push(sampler_ir::Impulse { rate, left, right, asset: None });
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
