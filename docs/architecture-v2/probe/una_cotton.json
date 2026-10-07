@@ -7,13 +7,17 @@
    "identified": 48,
    "silent_notes": 0,
    "kontakt_audible_engine_silent": 0,
-   "same_sample_pct": 33.3,
-   "same_velocity_layer_pct": 33.3,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 84.1,
+   "attack_db_error_mean": 0.6,
+   "onset_ms_diff_mean": -0.8,
+   "same_sample_pct": 91.7,
+   "same_velocity_layer_pct": 91.7,
    "rr_groups": 12,
-   "rr_sequence_equal": 4,
-   "rr_same_set": 4,
-   "level_db_mean": 3.58,
-   "level_db_worst": 8.93,
+   "rr_sequence_equal": 8,
+   "rr_same_set": 8,
+   "level_db_mean": 0.06,
+   "level_db_worst": 0.76,
    "articulations": [
     "-"
    ],
@@ -21,14 +25,14 @@
     {
      "key": 36,
      "vel": 20,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
      "sequence_equal": false
     },
     {
      "key": 36,
      "vel": 60,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
      "sequence_equal": false
     },
@@ -37,33 +41,33 @@
      "vel": 100,
      "kontakt_distinct": 1,
      "engine_distinct": 1,
-     "sequence_equal": false
+     "sequence_equal": true
     },
     {
      "key": 36,
      "vel": 127,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
-     "sequence_equal": true
+     "sequence_equal": false
     },
     {
      "key": 60,
      "vel": 20,
      "kontakt_distinct": 1,
      "engine_distinct": 1,
-     "sequence_equal": false
+     "sequence_equal": true
     },
     {
      "key": 60,
      "vel": 60,
      "kontakt_distinct": 1,
      "engine_distinct": 1,
-     "sequence_equal": false
+     "sequence_equal": true
     },
     {
      "key": 60,
      "vel": 100,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
      "sequence_equal": false
     },
@@ -79,14 +83,14 @@
      "vel": 20,
      "kontakt_distinct": 1,
      "engine_distinct": 1,
-     "sequence_equal": false
+     "sequence_equal": true
     },
     {
      "key": 84,
      "vel": 60,
      "kontakt_distinct": 1,
      "engine_distinct": 1,
-     "sequence_equal": false
+     "sequence_equal": true
     },
     {
      "key": 84,
@@ -109,161 +113,26 @@
      "key": 36,
      "vel": 20,
      "kontakt": {
-      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
-      "ncc": 1.0,
+      "asset": "GI_UC_Flag_REL_C1n.ncw",
+      "ncc": 0.6489999890327454,
       "layer": [
        [
-        19,
-        27
+        1,
+        127
        ]
       ],
       "rms_db": -41.35
      },
      "engine": {
-      "asset": "GI_UC_COTT_C1_266_20150623an.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -38.28
-     }
-    },
-    {
-     "i": 1,
-     "key": 36,
-     "vel": 20,
-     "kontakt": {
       "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
-      "ncc": 1.0,
+      "ncc": 0.7559999823570251,
       "layer": [
        [
         19,
         27
        ]
       ],
-      "rms_db": -41.37
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_266_20150623an.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -38.28
-     }
-    },
-    {
-     "i": 2,
-     "key": 36,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
-      "ncc": 1.0,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -41.38
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_266_20150623an.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -38.28
-     }
-    },
-    {
-     "i": 3,
-     "key": 36,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
-      "ncc": 1.0,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -41.37
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_266_20150623an.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -38.28
-     }
-    },
-    {
-     "i": 4,
-     "key": 36,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -32.3
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_136_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -26.01
-     }
-    },
-    {
-     "i": 5,
-     "key": 36,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -32.3
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_136_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -26.01
+      "rms_db": -41.29
      }
     },
     {
@@ -271,404 +140,65 @@
      "key": 36,
      "vel": 60,
      "kontakt": {
-      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
+      "asset": "GI_UC_Cott_Reso_C1_p_196_20150530n.ncw",
+      "ncc": 0.5929999947547913,
       "layer": [
        [
-        53,
-        60
+        1,
+        41
+       ],
+       [
+        1,
+        127
+       ],
+       [
+        42,
+        90
        ]
       ],
       "rms_db": -32.29
      },
      "engine": {
-      "asset": "GI_UC_COTT_C1_136_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -26.01
-     }
-    },
-    {
-     "i": 7,
-     "key": 36,
-     "vel": 60,
-     "kontakt": {
       "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
+      "ncc": 0.9259999990463257,
       "layer": [
        [
         53,
         60
        ]
       ],
-      "rms_db": -32.31
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_136_20150623bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -26.01
+      "rms_db": -32.23
      }
     },
     {
-     "i": 8,
+     "i": 15,
      "key": 36,
-     "vel": 100,
+     "vel": 127,
      "kontakt": {
-      "asset": "GI_UC_COTT_C1_085_20150623n.ncw",
-      "ncc": 0.9990000128746033,
+      "asset": "GI_UC_COTT_C1_014_20150623n.ncw",
+      "ncc": 0.8009999990463257,
       "layer": [
        [
-        95,
-        100
+        123,
+        127
        ]
       ],
-      "rms_db": -21.28
+      "rms_db": -16.4
      },
      "engine": {
-      "asset": "GI_UC_COTT_C1_077_20150623n.ncw",
-      "ncc": 0.9990000128746033,
+      "asset": "GI_UC_COTT_C1_028_20150623n.ncw",
+      "ncc": 0.7630000114440918,
       "layer": [
        [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -20.94
-     }
-    },
-    {
-     "i": 9,
-     "key": 36,
-     "vel": 100,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_085_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
+        1,
+        127
+       ],
        [
-        95,
-        100
+        118,
+        122
        ]
       ],
-      "rms_db": -21.28
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_077_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -20.94
-     }
-    },
-    {
-     "i": 10,
-     "key": 36,
-     "vel": 100,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_085_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        95,
-        100
-       ]
-      ],
-      "rms_db": -21.28
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_077_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -20.94
-     }
-    },
-    {
-     "i": 11,
-     "key": 36,
-     "vel": 100,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C1_085_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        95,
-        100
-       ]
-      ],
-      "rms_db": -21.28
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C1_077_20150623n.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -20.94
-     }
-    },
-    {
-     "i": 16,
-     "key": 60,
-     "vel": 20,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_280_20150726bn.ncw",
-      "ncc": 0.996999979019165,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -47.82
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_269_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -44.01
-     }
-    },
-    {
-     "i": 17,
-     "key": 60,
-     "vel": 20,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_280_20150726bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -47.13
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_269_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -44.01
-     }
-    },
-    {
-     "i": 18,
-     "key": 60,
-     "vel": 20,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_280_20150726bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -47.15
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_269_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -44.01
-     }
-    },
-    {
-     "i": 19,
-     "key": 60,
-     "vel": 20,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_280_20150726bn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -47.13
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_269_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -44.01
-     }
-    },
-    {
-     "i": 20,
-     "key": 60,
-     "vel": 60,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_190_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -35.05
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_128_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -27.74
-     }
-    },
-    {
-     "i": 21,
-     "key": 60,
-     "vel": 60,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_190_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -35.02
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_128_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -27.74
-     }
-    },
-    {
-     "i": 22,
-     "key": 60,
-     "vel": 60,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_190_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -34.98
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_128_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -27.74
-     }
-    },
-    {
-     "i": 23,
-     "key": 60,
-     "vel": 60,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_190_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -34.99
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_128_20150726dn.ncw",
-      "ncc": 0.9990000128746033,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -27.74
-     }
-    },
-    {
-     "i": 24,
-     "key": 60,
-     "vel": 100,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        95,
-        100
-       ]
-      ],
-      "rms_db": -23.82
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_072_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -23.24
+      "rms_db": -16.34
      }
     },
     {
@@ -676,296 +206,26 @@
      "key": 60,
      "vel": 100,
      "kontakt": {
-      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
+      "asset": "GI_UC_FELT_REL_C3_046_00192_20150807n.ncw",
+      "ncc": 0.718999981880188,
       "layer": [
        [
-        95,
-        100
+        99,
+        112
        ]
       ],
       "rms_db": -23.79
      },
      "engine": {
-      "asset": "gi_uc_cott_c3_072_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -23.24
-     }
-    },
-    {
-     "i": 26,
-     "key": 60,
-     "vel": 100,
-     "kontakt": {
       "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
+      "ncc": 0.8199999928474426,
       "layer": [
        [
         95,
         100
        ]
       ],
-      "rms_db": -23.76
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_072_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -23.24
-     }
-    },
-    {
-     "i": 27,
-     "key": 60,
-     "vel": 100,
-     "kontakt": {
-      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        95,
-        100
-       ]
-      ],
-      "rms_db": -23.81
-     },
-     "engine": {
-      "asset": "gi_uc_cott_c3_072_20150726dn.ncw",
-      "ncc": 0.9980000257492065,
-      "layer": [
-       [
-        101,
-        106
-       ]
-      ],
-      "rms_db": -23.24
-     }
-    },
-    {
-     "i": 32,
-     "key": 84,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_263_20150623an.ncw",
-      "ncc": 0.9750000238418579,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -54.15
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_256_20150623an.ncw",
-      "ncc": 0.984000027179718,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -49.41
-     }
-    },
-    {
-     "i": 33,
-     "key": 84,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_263_20150623an.ncw",
-      "ncc": 0.9890000224113464,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -53.78
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_256_20150623an.ncw",
-      "ncc": 0.984000027179718,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -49.41
-     }
-    },
-    {
-     "i": 34,
-     "key": 84,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_263_20150623an.ncw",
-      "ncc": 0.9890000224113464,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -53.81
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_256_20150623an.ncw",
-      "ncc": 0.984000027179718,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -49.41
-     }
-    },
-    {
-     "i": 35,
-     "key": 84,
-     "vel": 20,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_263_20150623an.ncw",
-      "ncc": 0.9890000224113464,
-      "layer": [
-       [
-        19,
-        27
-       ]
-      ],
-      "rms_db": -53.78
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_256_20150623an.ncw",
-      "ncc": 0.984000027179718,
-      "layer": [
-       [
-        28,
-        36
-       ]
-      ],
-      "rms_db": -49.41
-     }
-    },
-    {
-     "i": 36,
-     "key": 84,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_206_20150623an.ncw",
-      "ncc": 0.9470000267028809,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -41.49
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_145_20150623an.ncw",
-      "ncc": 0.8519999980926514,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -32.56
-     }
-    },
-    {
-     "i": 37,
-     "key": 84,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_206_20150623an.ncw",
-      "ncc": 0.9470000267028809,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -41.46
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_145_20150623an.ncw",
-      "ncc": 0.8519999980926514,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -32.56
-     }
-    },
-    {
-     "i": 38,
-     "key": 84,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_206_20150623an.ncw",
-      "ncc": 0.9470000267028809,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -41.48
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_145_20150623an.ncw",
-      "ncc": 0.8519999980926514,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -32.56
-     }
-    },
-    {
-     "i": 39,
-     "key": 84,
-     "vel": 60,
-     "kontakt": {
-      "asset": "GI_UC_COTT_C5_206_20150623an.ncw",
-      "ncc": 0.9470000267028809,
-      "layer": [
-       [
-        53,
-        60
-       ]
-      ],
-      "rms_db": -41.47
-     },
-     "engine": {
-      "asset": "GI_UC_COTT_C5_145_20150623an.ncw",
-      "ncc": 0.8519999980926514,
-      "layer": [
-       [
-        75,
-        81
-       ]
-      ],
-      "rms_db": -32.56
+      "rms_db": -23.77
      }
     }
    ]
@@ -974,11 +234,15 @@
    "identified": 48,
    "silent_notes": 0,
    "kontakt_audible_engine_silent": 0,
-   "same_sample_pct": 100.0,
-   "same_velocity_layer_pct": 100.0,
+   "same_direction_pct": 100.0,
+   "same_start_offset_pct": 81.8,
+   "attack_db_error_mean": 1.1,
+   "onset_ms_diff_mean": -2.0,
+   "same_sample_pct": 91.7,
+   "same_velocity_layer_pct": 91.7,
    "rr_groups": 12,
-   "rr_sequence_equal": 12,
-   "rr_same_set": 12,
+   "rr_sequence_equal": 8,
+   "rr_same_set": 8,
    "level_db_mean": -6.0,
    "level_db_worst": -6.08,
    "articulations": [
@@ -988,16 +252,16 @@
     {
      "key": 36,
      "vel": 20,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
-     "sequence_equal": true
+     "sequence_equal": false
     },
     {
      "key": 36,
      "vel": 60,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
-     "sequence_equal": true
+     "sequence_equal": false
     },
     {
      "key": 36,
@@ -1009,9 +273,9 @@
     {
      "key": 36,
      "vel": 127,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
-     "sequence_equal": true
+     "sequence_equal": false
     },
     {
      "key": 60,
@@ -1030,9 +294,9 @@
     {
      "key": 60,
      "vel": 100,
-     "kontakt_distinct": 1,
+     "kontakt_distinct": 2,
      "engine_distinct": 1,
-     "sequence_equal": true
+     "sequence_equal": false
     },
     {
      "key": 60,
@@ -1070,13 +334,134 @@
      "sequence_equal": true
     }
    ],
-   "per_note": []
+   "per_note": [
+    {
+     "i": 0,
+     "key": 36,
+     "vel": 20,
+     "kontakt": {
+      "asset": "GI_UC_Flag_REL_C1n.ncw",
+      "ncc": 0.6489999890327454,
+      "layer": [
+       [
+        1,
+        127
+       ]
+      ],
+      "rms_db": -41.35
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_280_20150623an.ncw",
+      "ncc": 0.7559999823570251,
+      "layer": [
+       [
+        19,
+        27
+       ]
+      ],
+      "rms_db": -47.36
+     }
+    },
+    {
+     "i": 6,
+     "key": 36,
+     "vel": 60,
+     "kontakt": {
+      "asset": "GI_UC_Cott_Reso_C1_p_196_20150530n.ncw",
+      "ncc": 0.5929999947547913,
+      "layer": [
+       [
+        1,
+        41
+       ],
+       [
+        1,
+        127
+       ],
+       [
+        42,
+        90
+       ]
+      ],
+      "rms_db": -32.29
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_205_20150623bn.ncw",
+      "ncc": 0.9259999990463257,
+      "layer": [
+       [
+        53,
+        60
+       ]
+      ],
+      "rms_db": -38.29
+     }
+    },
+    {
+     "i": 15,
+     "key": 36,
+     "vel": 127,
+     "kontakt": {
+      "asset": "GI_UC_COTT_C1_014_20150623n.ncw",
+      "ncc": 0.8009999990463257,
+      "layer": [
+       [
+        123,
+        127
+       ]
+      ],
+      "rms_db": -16.4
+     },
+     "engine": {
+      "asset": "GI_UC_COTT_C1_028_20150623n.ncw",
+      "ncc": 0.7630000114440918,
+      "layer": [
+       [
+        1,
+        127
+       ],
+       [
+        118,
+        122
+       ]
+      ],
+      "rms_db": -22.4
+     }
+    },
+    {
+     "i": 25,
+     "key": 60,
+     "vel": 100,
+     "kontakt": {
+      "asset": "GI_UC_FELT_REL_C3_046_00192_20150807n.ncw",
+      "ncc": 0.718999981880188,
+      "layer": [
+       [
+        99,
+        112
+       ]
+      ],
+      "rms_db": -23.79
+     },
+     "engine": {
+      "asset": "gi_uc_cott_c3_079_20150726dn.ncw",
+      "ncc": 0.8199999928474426,
+      "layer": [
+       [
+        95,
+        100
+       ]
+      ],
+      "rms_db": -29.83
+     }
+    }
+   ]
   }
  },
  "kontakt": {
   "identified": 48,
   "silent": 0,
-  "distinct_samples": 12,
+  "distinct_samples": 14,
   "articulations": [
    "-"
   ]
