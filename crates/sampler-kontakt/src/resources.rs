@@ -75,7 +75,7 @@ impl Resources {
     /// Files and containers that participate in lookup, for read-only diagnostics
     /// and survey cache identity. Resource contents and library keys stay private.
     pub fn locations(&self) -> Vec<PathBuf> {
-        let mut paths: Vec<_> = self.files.values().cloned().chain(self.containers.iter().cloned()).collect();
+        let mut paths: Vec<_> = self.files.values().flatten().cloned().chain(self.containers.iter().cloned()).collect();
         paths.sort();
         paths.dedup();
         paths
