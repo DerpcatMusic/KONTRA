@@ -16,7 +16,13 @@ fn compile_in(source: &str, environment: &Environment) -> Script {
 }
 
 fn compile(source: &str) -> Script {
-    compile_in(source, &Environment::default())
+    compile_in(
+        source,
+        &Environment {
+            groups: vec!["Group 0".into()],
+            ..Environment::default()
+        },
+    )
 }
 
 fn runtime_scripts(scripts: Vec<Script>) -> Runtime {
@@ -177,6 +183,17 @@ contract!(
     42
 );
 contract!(
+    thirteen_script_modulator_ids_roundtrip,
+    "audit: per-note modulator store drops IDs after twelve",
+    "on init declare $out declare $i end on
+     on note $i := 0 while ($i < 13)
+     set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 42, $i)
+     inc($i) end while
+     $out := get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 12) end on",
+    0,
+    42
+);
+contract!(
     affected_groups_have_dynamic_size,
     "audit: GROUPS_AFFECTED",
     "on init declare $out end on on note $out := num_elements(%GROUPS_AFFECTED) end on",
@@ -200,6 +217,15 @@ contract!(
      $out := %table[1] end on",
     2,
     7
+);
+contract!(
+    pan_mode_two_is_absolute,
+    "audit: change_pan mode 2 accumulates",
+    "on init declare $out end on on note change_pan($EVENT_ID, 1000, 2)
+     change_pan($EVENT_ID, -1000, 2)
+     $out := get_event_par($EVENT_ID, $EVENT_PAR_PAN) end on",
+    0,
+    -1000
 );
 contract!(
     indexed_control_properties_do_not_alias,
@@ -354,9 +380,9 @@ fn dynamic_engine_parameter_write_changes_audio() {
 }
 
 #[test]
-#[ignore = "audit: init purge is never applied"]
-fn init_purge_excludes_group_from_playback() {
-    let mut rt = runtime("on init purge_group(0, 0) end on");
+#[ignore = "audit: load-time persistence purge is never applied"]
+fn load_persistence_purge_excludes_group_from_playback() {
+    let mut rt = runtime("on persistence_changed purge_group(0, 0) end on");
     note(&mut rt);
     let mut audio = [[0.; 2]; 256];
     rt.render(&mut audio).unwrap();
@@ -381,14 +407,46 @@ fn text_property_write_is_visible_to_script() {
 }
 
 #[test]
-#[ignore = "audit: async work cannot complete"]
-fn asynchronous_ir_request_has_identity_and_completion() {
+#[ignore = "audit: engine display queries return empty text"]
+fn engine_display_query_returns_pan_text() {
     let mut rt = runtime(
-        "on init declare $id declare $done end on
-        on note $id := load_ir_sample(\"missing.wav\", 0, 1) wait_async($id) end on
-        on async_complete $done := 1 end on",
+        "on init declare @out end on
+        on note @out := get_engine_par_disp($ENGINE_PAR_PAN, 0, -1, -1) end on",
     );
     note(&mut rt);
+    assert!(
+        !rt.script_text(rt.active_plan(), ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str()
+            .is_empty()
+    );
+}
+
+#[test]
+#[ignore = "audit: async work cannot complete"]
+fn asynchronous_ir_request_has_identity_and_completion() {
+    let script = compile(
+        "on init declare $id declare $done declare ui_button $load end on
+        on ui_control($load)
+        $id := load_ir_sample(\"missing.wav\", 0, $NI_SEND_BUS) wait_async($id) end on
+        on async_complete $done := 1 end on",
+    );
+    let id = script.controls()[0].definition.id;
+    let mut rt = runtime_scripts(vec![script]);
+    rt.invoke_control(
+        ControlContext {
+            performance: rt.performance(0).unwrap(),
+            origin: input(1).channel_address(),
+            channels: 1,
+        },
+        rt.active_plan(),
+        Some(0),
+        ControlWrite {
+            id,
+            value: ControlValue::Integer(1),
+        },
+    )
+    .unwrap();
     rt.render(&mut [[0.; 2]; 480]).unwrap();
     assert_eq!(
         cell(&rt, 0, 1),
@@ -443,7 +501,6 @@ fn string_capacity_covers_320_characters() {
 }
 
 #[test]
-#[ignore = "audit: timer listener lacks performance context for play_note"]
 fn listener_can_generate_notes_without_input() {
     let mut rt = runtime(
         "on init set_listener($NI_SIGNAL_TIMER_MS, 10000) end on
@@ -484,7 +541,6 @@ fn real_search_is_rejected_as_documented() {
 }
 
 #[test]
-#[ignore = "audit: aliased ignore_event becomes note_off"]
 fn ignore_event_accepts_an_aliased_current_id() {
     let mut rt = runtime(
         "on init declare $id end on
