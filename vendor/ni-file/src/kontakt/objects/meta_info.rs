@@ -49,6 +49,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_1() -> Result<(), NKSError> {
         BPatchMetaInfoHeader::read(File::open(
             "tests/data/Objects/BPatchMetaInfoHeader/BPatchMetaInfoHeader-000",

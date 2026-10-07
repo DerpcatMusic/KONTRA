@@ -60,6 +60,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_authorization_read() -> Result<(), NIFileError> {
         let mut file =
             File::open("tests/data/Containers/NIS/objects/EncryptionItem/000-EncryptionItem")?;

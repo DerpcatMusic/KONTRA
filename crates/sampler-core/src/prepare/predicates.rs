@@ -11,6 +11,11 @@ pub struct ControllerCondition {
     pub high: u32,
 }
 
+/// The virtual controller whose value is the interval from the previous held
+/// key ([`crate::previous_key_value`]); conditions on it select recorded
+/// transitions, first notes and legato notes.
+pub const PREVIOUS_KEY: u8 = 128;
+
 impl Prepared {
     /// Compile conditions in original region order. The budget bounds the supplied
     /// condition count before canonicalization/sharing, not a Cartesian state table.
@@ -33,7 +38,7 @@ impl Prepared {
         for (region, mut conditions) in self.regions.iter_mut().zip(regions) {
             if conditions
                 .iter()
-                .any(|c| c.controller >= 128 || c.low > c.high)
+                .any(|c| c.controller > PREVIOUS_KEY || c.low > c.high)
             {
                 return Err(Error::InvalidInput);
             }
@@ -65,6 +70,9 @@ impl Prepared {
         for (set, index) in intern {
             conditions[index] = set.into_boxed_slice();
         }
+        self.tracks_previous = conditions
+            .iter()
+            .any(|set| set.iter().any(|c| c.controller == PREVIOUS_KEY));
         self.conditions = conditions.into_boxed_slice();
         self.compile_selection();
         Ok(self)
@@ -97,7 +105,7 @@ impl Prepared {
                 let r = self.regions[c.region];
                 *counts.entry(r.take.map_or(0, |t| t.index)).or_default() += 1;
                 if let Some(index) = r.conditions {
-                    for condition in &self.conditions[index] {
+                    for condition in self.conditions[index].iter().filter(|c| c.controller < 128) {
                         controllers |= 1u128 << condition.controller;
                     }
                 }
@@ -214,7 +222,7 @@ impl Matching {
                 let active = state.is_none_or(|state| {
                     condition.is_none_or(|index| {
                         prepared.conditions[index].iter().all(|c| {
-                            let value = state.controllers[usize::from(c.controller)];
+                            let value = state.value(c.controller);
                             c.low <= value && value <= c.high
                         })
                     })

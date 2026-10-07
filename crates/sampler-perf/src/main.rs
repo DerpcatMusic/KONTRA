@@ -163,6 +163,9 @@ fn fail(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Below this peak (-60 dBFS) a scenario counts as silent.
+const SILENT: f32 = 0.001;
+
 fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
     match &s.source {
         Source::Kontakt(rel) => {
@@ -179,7 +182,12 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
-            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), ..Limits::for_plan(&plan, 2048, 2048) };
+            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), behaviors: std::env::var("PERF_BEHAVIORS").ok().and_then(|v| v.parse().ok()).unwrap_or(2048), ..Limits::for_plan(&plan, 2048, 2048) };
+            // Dense chords re-trigger scripts faster than their release tails end: Limits::script_capacity (about 4 per stage per key) is too small for 30 notes every half beat.
+            let limits = Limits { behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors), ..limits };
+            if std::env::var_os("PERF_DEBUG").is_some() {
+                eprintln!("limits: behaviors {} behavior_cells {} voices {} (stages {}, locals {})", limits.behaviors, limits.behavior_cells, limits.voices, plan.stage_count(), plan.behavior_local_count());
+            }
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
             let mut rt = Runtime::new(plan, limits).map_err(fail)?.with_stream_cache(cache);
             rt.set_cold_starts(true);
@@ -235,6 +243,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
     let start = Instant::now();
+    let mut last_underruns = 0;
     for begin in (0..frames).step_by(block) {
         batch.clear();
         while next < packets.len() && packets[next].0 < begin + block {
@@ -247,6 +256,13 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         render(p, &mut buffer, &batch, messages, begin, &mut next);
         let took = t.elapsed();
         COUNTING.set(false);
+        if std::env::var_os("PERF_DEBUG").is_some() {
+            let now = stats(p).stream_underruns;
+            if now != last_underruns {
+                eprintln!("underruns {last_underruns} -> {now} at {:.3}s ({} events in block)", begin as f64 / f64::from(RATE), batch.len());
+                last_underruns = now;
+            }
+        }
         cell.allocations += CALLS.get() - before;
         cell.times.push(took.as_nanos() as u64);
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
@@ -398,7 +414,23 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
             times.sort_unstable();
             let deadline = (block as f64 / f64::from(RATE) * 1e9) as u64;
             let st = stats(&loaded.player);
+            // A cell that is silent, refused events or underran measured nothing useful.
+            let mut failures = Vec::new();
+            if cell.peak < SILENT {
+                failures.push(format!("silent (peak {:.5})", cell.peak));
+            }
+            let event_errors = EVENT_ERRORS.replace(0);
+            if event_errors > 0 {
+                failures.push(format!("{event_errors} event errors"));
+            }
+            if st.stream_underruns > 0 {
+                failures.push(format!("{} stream underruns", st.stream_underruns));
+            }
+            for f in &failures {
+                eprintln!("FAIL {} block {block} threads {t}: {f}", s.name);
+            }
             cells.push(json!({
+                "failures": failures,
                 "scenario": s.name, "block": block, "threads": t,
                 "blocks": times.len(),
                 "deadline_us": deadline as f64 / 1e3,
@@ -406,7 +438,7 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
                 "p99_us": percentile(&times, 0.99) as f64 / 1e3,
                 "max_us": *times.last().unwrap() as f64 / 1e3,
                 "misses": times.iter().filter(|&&t| t > deadline).count(),
-                "audio_thread_allocations": cell.allocations, "event_errors": EVENT_ERRORS.replace(0), "peak": cell.peak, "audible_seconds": cell.audible,
+                "audio_thread_allocations": cell.allocations, "event_errors": event_errors, "peak": cell.peak, "audible_seconds": cell.audible,
                 "perf": counters,
                 "rss_kb": proc_value("/proc/self/status", "VmRSS:"),
                 "rss_kb_added": proc_value("/proc/self/status", "VmRSS:") as i64 - rss as i64,
@@ -494,12 +526,14 @@ fn run(args: &[String]) -> Result<(), String> {
     });
     let text = serde_json::to_string_pretty(&result).map_err(fail)?;
     match out {
-        Some(path) => std::fs::write(path, text).map_err(fail),
-        None => {
-            println!("{text}");
-            Ok(())
-        }
+        Some(path) => std::fs::write(path, text).map_err(fail)?,
+        None => println!("{text}"),
     }
+    let failed = result["cells"].as_array().map_or(0, |c| c.iter().filter(|c| c["failures"].as_array().is_some_and(|f| !f.is_empty())).count());
+    if failed > 0 {
+        return Err(format!("{failed} cells failed (silent, refused events or underruns)"));
+    }
+    Ok(())
 }
 
 /// Metrics where a rise is a regression, and whether noise needs the threshold.
@@ -522,6 +556,20 @@ fn compare(args: &[String]) -> Result<bool, String> {
     let old_cells = base["cells"].as_array().unwrap_or(&empty);
     let mut regressions = 0;
     for c in new["cells"].as_array().unwrap_or(&empty) {
+        // Hard checks on the new run alone: it must sound, refuse no event, never underrun and never miss a deadline.
+        let mut hard = Vec::new();
+        if c["peak"].as_f64().unwrap_or(0.0) < f64::from(SILENT) {
+            hard.push(format!("silent (peak {:.5})", c["peak"].as_f64().unwrap_or(0.0)));
+        }
+        for (field, what) in [("event_errors", "event errors"), ("stream_underruns", "stream underruns"), ("misses", "deadline misses")] {
+            if c[field].as_f64().unwrap_or(0.0) > 0.0 {
+                hard.push(format!("{} {what}", c[field]));
+            }
+        }
+        if !hard.is_empty() {
+            regressions += 1;
+            println!("FAILED {}: {} (max block {:.0} us, deadline {:.0} us)", key(c), hard.join("; "), c["max_us"].as_f64().unwrap_or(0.0), c["deadline_us"].as_f64().unwrap_or(0.0));
+        }
         let Some(o) = old_cells.iter().find(|o| key(o) == key(c)) else {
             println!("{}: new cell, no baseline", key(c));
             continue;

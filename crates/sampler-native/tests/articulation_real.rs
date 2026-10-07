@@ -399,10 +399,17 @@ fn probe_instrument() {
         d.instrument.amplitude_controllers()
     );
     for (i, g) in d.instrument.groups.iter().enumerate() {
-        eprintln!("GROUPNAME {i} {:?} gain {:?} out {:?}", g.name, g.gain, g.output);
+        eprintln!(
+            "GROUPNAME {i} {:?} gain {:?} out {:?}",
+            g.name, g.gain, g.output
+        );
     }
     eprintln!("BUSES {:?}", d.instrument.buses);
-    for b in &d.instrument.buses { if let Some(c) = b.chain { eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]); } }
+    for b in &d.instrument.buses {
+        if let Some(c) = b.chain {
+            eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]);
+        }
+    }
     eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),
@@ -670,42 +677,51 @@ fn probe_instrument() {
 
 /// Kontakt 8 reference levels (KONTAKT_REFERENCE.md s.13): scripts on, nothing
 /// sent, 3 s held; max(|L|, |R|) peak over 0.3-3 s in dBFS.
-const REFERENCE: &[(&str, u8, u8, f64)] = &[
+/// Library, key, velocity, Kontakt's peak in dBFS and the controllers its
+/// recording sent explicitly (CC, value) before the note.
+const REFERENCE: &[(&str, u8, u8, f64, &[(u8, u8)])] = &[
     (
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
         48,
         100,
         -38.6,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         64,
         -24.7,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         100,
         -14.7,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         127,
         -8.6,
+        &[],
     ),
     (
         "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
         55,
         100,
         -15.9,
+        &[],
     ),
 ];
 
 /// Every reference note within 1 dB of Kontakt. Known gaps while it fails: Una
 /// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
-/// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
+/// the recording sent no CC1 or CC11 (KONTAKT_REFERENCE.md s.13), so Kontakt's
+/// script supplies its own CC1 default, read as about 48 with the script
+/// bypassed; KONTRA's scripts-on path starts it at 0). Vista is +0.9 dB.
 #[test]
 #[ignore = "known gaps: Una Cotton 5/11/11 dB low at vel 64/100/127, Barbarian 11 dB low; script-driven, Vista passes"]
 fn full_notes_match_kontakt_within_a_decibel() {
@@ -713,7 +729,7 @@ fn full_notes_match_kontakt_within_a_decibel() {
         return;
     };
     let mut off = Vec::new();
-    for &(relative, key, vel, kontakt) in REFERENCE {
+    for &(relative, key, vel, kontakt, controllers) in REFERENCE {
         let path = std::path::Path::new(&root).join(relative);
         if !path.exists() {
             continue;
@@ -726,10 +742,9 @@ fn full_notes_match_kontakt_within_a_decibel() {
             &d.options,
         )
         .unwrap();
-        let mut words = vec![
-            0x2000_0000,
-            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
-        ];
+        let mut words = vec![0x2000_0000];
+        words.extend(reference::controller_words(controllers));
+        words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
         let db = reference::levels(&out, 0.3, 3.0).max_peak();
@@ -748,14 +763,24 @@ fn una_velocity_sweep_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let path =
+        std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
     for vel in [40u32, 64, 72, 80, 88, 94, 100, 110, 127] {
         let d = decoded(&path, 60);
-        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
         let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        eprintln!("PROBE vel {vel}: {:.1}", reference::levels(&out, 0.3, 3.0).max_peak());
+        eprintln!(
+            "PROBE vel {vel}: {:.1}",
+            reference::levels(&out, 0.3, 3.0).max_peak()
+        );
     }
 }
 
@@ -769,7 +794,13 @@ fn barbarian_cc1_sweep_probe() {
         .join("Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki");
     for cc1 in [None, Some(0u32), Some(48), Some(127)] {
         let d = decoded(&path, 55);
-        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
         let mut words = vec![0x2000_0000];
         if let Some(v) = cc1 {
             words.push(0x20B0_0000 | 1 << 8 | v);
@@ -777,7 +808,10 @@ fn barbarian_cc1_sweep_probe() {
         words.push(0x2090_0000 | 55 << 8 | 100);
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        eprintln!("PROBE cc1 {cc1:?}: {:.1}", reference::levels(&out, 0.3, 3.0).max_peak());
+        eprintln!(
+            "PROBE cc1 {cc1:?}: {:.1}",
+            reference::levels(&out, 0.3, 3.0).max_peak()
+        );
     }
 }
 
@@ -789,7 +823,7 @@ fn full_note_runtime_trace_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    for &(relative, key, vel, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
+    for &(relative, key, vel, _, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
         if vel != 100 {
             continue;
         }

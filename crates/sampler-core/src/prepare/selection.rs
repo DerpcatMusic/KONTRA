@@ -120,6 +120,25 @@ impl Runtime {
         Ok(note)
     }
 
+    /// Write the interval from the most recently started, still-held input key
+    /// of `performance` to `key` into the performance state the new note
+    /// will capture. Called before the note exists, so it is never its own
+    /// predecessor.
+    fn record_previous_key(&mut self, performance: usize, key: u8) {
+        let held = self
+            .notes
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| Some((i, s.value.as_ref()?)))
+            .filter(|(i, n)| {
+                n.input_down && n.input.is_some() && self.selections[*i].performance == performance
+            })
+            .max_by_key(|(_, n)| n.order)
+            .map(|(_, n)| i16::from(key) - i16::from(n.pitch.key()));
+        self.performance_state.edit(performance).previous = crate::previous_key_value(held);
+    }
+
     pub(crate) fn select(
         &mut self,
         origin: NoteOrigin,
@@ -195,6 +214,11 @@ impl Runtime {
             }
             NoteOrigin::Child(parent, ..) => self.selections[parent.0.index].performance,
         };
+        if matches!(origin, NoteOrigin::Input(..))
+            && self.plans.get(plan.0).unwrap().prepared.tracks_previous
+        {
+            self.record_previous_key(performance, note_pitch.key());
+        }
         let snapshot = self.performance_state.current[performance];
         let release = if routed {
             ReleaseReserve::default()
@@ -614,7 +638,7 @@ impl Runtime {
                 Some(Rejection::Articulation)
             } else if r.conditions.is_some_and(|i| {
                 !prepared.conditions[i].iter().all(|c| {
-                    let v = state.controllers[usize::from(c.controller)];
+                    let v = state.value(c.controller);
                     c.low <= v && v <= c.high
                 })
             }) {
