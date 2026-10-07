@@ -5,7 +5,7 @@ use super::{Envelope, Error, Frame, NotePitch, Playback};
 pub use predicates::{ControllerCondition, PREVIOUS_KEY};
 use predicates::Matching;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
 /// Immutable decoded-asset metadata with optional resident PCM. Construct, clone and drop on the
 /// control side. Clones share the original sample buffer; rendering only borrows.
@@ -32,7 +32,8 @@ struct PcmData {
     wanted: AtomicU8,
     used: AtomicU64,
     // A streamed asset's resident ranges (where voices start); empty when purged.
-    head: Mutex<Ranges>,
+    /// Readers (every render thread) share it; only a control-side swap writes.
+    head: RwLock<Ranges>,
     // A start was refused because its pages were not resident.
     cold: AtomicBool,
     length: usize,
@@ -132,15 +133,15 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(&mut *lock(&self.0.head), ranges))
+        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        lock(&self.0.head).iter().map(|(_, f)| f.len()).sum()
+        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
     }
     /// Bytes resident ranges hold, packed.
     pub fn head_bytes(&self) -> usize {
-        lock(&self.0.head).iter().map(|(_, f)| f.bytes()).sum()
+        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -152,8 +153,8 @@ impl Pcm {
         self.0.used.load(Relaxed)
     }
     /// Audio side: the resident ranges unless the control side is swapping them.
-    pub(crate) fn try_head(&self) -> Option<MutexGuard<'_, Ranges>> {
-        self.0.head.try_lock().ok()
+    pub(crate) fn try_head(&self) -> Option<RwLockReadGuard<'_, Ranges>> {
+        self.0.head.try_read().ok()
     }
     pub(crate) fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
@@ -175,7 +176,7 @@ impl Pcm {
             levels: Levels::default(),
             wanted: AtomicU8::new(0),
             used: AtomicU64::new(0),
-            head: Mutex::default(),
+            head: RwLock::default(),
             cold: AtomicBool::new(false),
             length,
         })))
