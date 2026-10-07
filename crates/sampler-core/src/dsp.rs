@@ -119,6 +119,8 @@ pub enum Processor {
     Biquad(Biquad),
     ControlGain(ControlRange),
     Delay(Delay),
+    /// Stereo compressor; the smoothed reduction lives in the stage's state.
+    Compressor(CompressorSettings),
     StateVariable(StateVariableFilter),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
@@ -152,17 +154,20 @@ impl Processor {
             Processor::Mix {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
+            Processor::Compressor(settings) => settings.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
 }
 
 pub(super) mod control;
+mod compressor;
 mod convolution;
 mod delay;
 pub(super) mod lanes;
 mod reverb;
 pub(super) mod svf;
+pub use compressor::CompressorSettings;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
@@ -182,6 +187,7 @@ pub(super) enum PreparedProcessor {
         delay: Delay,
         offset: usize,
     },
+    Compressor(compressor::Compressor),
     StateVariable(usize),
     /// Index into the bus graph's reverbs.
     Reverb(usize),
@@ -300,6 +306,9 @@ pub(super) fn compile_processors(
                         .checked_add(delay.frames as usize)
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
+                }
+                Processor::Compressor(settings) => {
+                    PreparedProcessor::Compressor(settings.prepare(rate))
                 }
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
@@ -510,13 +519,18 @@ impl PreparedVoiceChain {
         fault
     }
 
-    /// Whether every stage has a lane kernel (delay lines stay per voice).
+    /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
     pub(super) fn batches(&self) -> bool {
         !self
             .pre
             .iter()
             .chain(&self.post)
-            .any(|stage| matches!(stage, PreparedProcessor::Delay { .. }))
+            .any(|stage| {
+                matches!(
+                    stage,
+                    PreparedProcessor::Delay { .. } | PreparedProcessor::Compressor(_)
+                )
+            })
     }
 
     pub(super) fn pre(&self) -> &[PreparedProcessor] {
@@ -678,6 +692,7 @@ pub(super) fn process(
                     len,
                 );
             }
+            PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Gain(gain) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v *= gain);
