@@ -253,7 +253,8 @@ impl<S: Script> Driver<S> {
         // Plays made by onRelease must not be linked to the closing gate.
         self.apply(rt, true)?;
         if let Some(note) = self.notes.get(&id).copied() {
-            rt.key_up(note, None)?;
+            // A note whose voices already ended is gone; closing it is a no-op.
+            stale_ok(rt.key_up(note, None))?;
         }
         Ok(())
     }
@@ -494,11 +495,11 @@ impl<S: Script> Driver<S> {
 
     fn release(&mut self, rt: &mut Runtime, note: NoteId, at_ms: f64) -> Result<(), Error> {
         let at = self.frames(at_ms);
-        if at <= rt.now() {
+        stale_ok(if at <= rt.now() {
             rt.key_up(note, None)
         } else {
             rt.release_at(note, at)
-        }
+        })
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
@@ -565,7 +566,7 @@ impl<S: Script> Driver<S> {
         rt.set_note_group(note, None, false)?;
         for g in &self.groups {
             if (play.layers.is_empty() || play.layers.contains(g.layer))
-                && play.osc.is_none_or(|o| o == g.osc)
+                && play.osc.is_none_or(|o| o + 1 == g.osc)
             {
                 rt.set_note_group(note, Some(g.group), true)?;
             }
@@ -582,6 +583,15 @@ pub struct Player {
     horizon: Option<u32>,
     _stream: Option<Stream>,
     feed: MidiFeed,
+}
+
+/// A handle freed because its voices finished is not an error for a later
+/// release, fade or modulation.
+fn stale_ok(r: Result<(), Error>) -> Result<(), Error> {
+    match r {
+        Err(Error::StaleHandle) => Ok(()),
+        other => other,
+    }
 }
 
 impl Player {
