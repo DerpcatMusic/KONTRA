@@ -1397,6 +1397,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                     record["musical"] = musical;
                 }
                 if ctx.tier == Tier::Full
+                    && std::env::var_os("CH_NOMPE").is_none() // memory measurement: the probe decodes fully
                     && let Item::Kontakt(path) = item
                 {
                     record["mpe"] = mpe_probe(path, pick, &ccs);
