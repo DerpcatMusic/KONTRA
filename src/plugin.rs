@@ -1140,6 +1140,11 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         program: part.program,
         sample_rate: rate,
         mpe: part.mpe,
+        threads: match shared.libraries.settings().threads {
+            crate::library::ThreadSetting::Single => None,
+            crate::library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),
+            crate::library::ThreadSetting::Fixed(n) => Some(crate::sound::ThreadChoice::Fixed(n.into())),
+        },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
     let result = V2Loader.prepare(&request, &mut progress, &canceled);

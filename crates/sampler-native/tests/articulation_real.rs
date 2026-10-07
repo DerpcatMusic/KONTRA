@@ -749,3 +749,44 @@ fn full_notes_match_kontakt_within_a_decibel() {
     }
     assert!(off.is_empty(), "{off:#?}");
 }
+
+#[test]
+#[ignore = "probe"]
+fn una_velocity_sweep_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    for vel in [40u32, 64, 72, 80, 88, 94, 100, 110, 127] {
+        let d = decoded(&path, 60);
+        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+        eprintln!("PROBE vel {vel}: {:.1}", 20.0 * f64::from(peak).log10());
+    }
+}
+
+#[test]
+#[ignore = "probe"]
+fn barbarian_cc1_sweep_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let path = std::path::Path::new(&root)
+        .join("Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki");
+    for cc1 in [None, Some(0u32), Some(48), Some(127)] {
+        let d = decoded(&path, 55);
+        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let mut words = vec![0x2000_0000];
+        if let Some(v) = cc1 {
+            words.push(0x20B0_0000 | 1 << 8 | v);
+        }
+        words.push(0x2090_0000 | 55 << 8 | 100);
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+        eprintln!("PROBE cc1 {cc1:?}: {:.1}", 20.0 * f64::from(peak).log10());
+    }
+}

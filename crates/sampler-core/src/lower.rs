@@ -277,7 +277,13 @@ pub fn lower_with(
             .groups
             .iter()
             .map(|g| GroupParams {
-                decibels: 20.0 * g.gain.linear().max(1e-9).log10(),
+                decibels: 20.0
+                    * g.tap
+                        .as_ref()
+                        .map_or(g.gain, |t| instrument.buses[t.bus.0].gain)
+                        .linear()
+                        .max(1e-9)
+                        .log10(),
                 pan: g.pan.position,
                 semitones: g.tune.semitones(),
             })
@@ -470,10 +476,10 @@ impl Lowering<'_> {
                 return Err(unsupported(owner, Feature::VoiceReverb));
             }
             for p in &chain.pre_amplitude {
-                pre.push(self.processor(&owner, *p)?);
+                pre.extend(self.processors(&owner, *p)?);
             }
             for p in &chain.post_amplitude {
-                post.push(self.processor(&owner, *p)?);
+                post.extend(self.processors(&owner, *p)?);
             }
         }
         let chain = if pre.is_empty() && post.is_empty() {
@@ -833,6 +839,26 @@ impl Lowering<'_> {
         })
     }
 
+    /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
+    fn processors(&self, owner: &str, processor: ir::Processor) -> Result<Vec<Processor>, LowerError> {
+        let two = |kind| ir::Processor::Filter(match processor {
+            ir::Processor::Filter(f) => ir::Filter { kind, ..f },
+            _ => unreachable!(),
+        });
+        let kind = match processor {
+            ir::Processor::Filter(f) => f.kind,
+            _ => return Ok(vec![self.processor(owner, processor)?]),
+        };
+        let half = match kind {
+            ir::FilterKind::LowPass { poles: 4 } => ir::FilterKind::LowPass { poles: 2 },
+            ir::FilterKind::HighPass { poles: 4 } => ir::FilterKind::HighPass { poles: 2 },
+            ir::FilterKind::BandPass { poles: 4 } => ir::FilterKind::BandPass { poles: 2 },
+            ir::FilterKind::Notch { poles: 4 } => ir::FilterKind::Notch { poles: 2 },
+            _ => return Ok(vec![self.processor(owner, processor)?]),
+        };
+        Ok(vec![self.processor(owner, two(half))?, self.processor(owner, two(half))?])
+    }
+
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
         Ok(match processor {
             ir::Processor::Gain(gain) => Processor::Gain(gain.linear()),
@@ -944,12 +970,13 @@ impl Lowering<'_> {
                     return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
                 }
                 for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-                    processors.push(self.processor(&owner, *p)?);
+                    processors.extend(self.processors(&owner, *p)?);
                 }
             }
+            let tapped = self.ir.groups.iter().any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
             let mut sends = vec![BusSend {
                 bus: target(bus.output),
-                gain: bus.gain.linear(),
+                gain: if tapped { 1.0 } else { bus.gain.linear() },
             }];
             for send in &bus.sends {
                 if send.position == ir::SendPosition::PreChain {
@@ -985,9 +1012,27 @@ impl Lowering<'_> {
             .iter()
             .map(|z| self.group(z).and_then(|g| target(g.output)))
             .collect();
-        plan.with_impulses(impulses)
+        let faders: Vec<_> = self
+            .ir
+            .groups
+            .iter()
+            .map(|g| {
+                g.tap.as_ref().map(|t| crate::GroupFader {
+                    bus: t.bus.0,
+                    follows: std::iter::once(0).chain(t.post.iter().map(|n| n + 1)).collect(),
+                    initial: self.ir.buses[t.bus.0].gain.linear(),
+                })
+            })
+            .collect();
+        let plan = plan
+            .with_impulses(impulses)
             .with_buses(buses, bindings)
-            .map_err(core(Stage::Buses, "buses"))
+            .map_err(core(Stage::Buses, "buses"))?;
+        if faders.iter().all(Option::is_none) {
+            return Ok(plan);
+        }
+        plan.with_group_faders(faders)
+            .map_err(core(Stage::Buses, "group faders"))
     }
 
     fn variation(&self, plan: Prepared) -> Result<Prepared, LowerError> {

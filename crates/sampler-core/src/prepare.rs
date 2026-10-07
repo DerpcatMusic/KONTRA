@@ -422,6 +422,7 @@ pub struct Prepared {
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
     pub(super) group_params: Box<[super::GroupParams]>,
+    pub(super) group_faders: Box<[Option<super::GroupFader>]>,
     offsets: [usize; 129],
     phase_offsets: [[usize; 2]; 128],
     pub(super) release_options: [super::ReleaseOptions; 2],
@@ -604,6 +605,7 @@ impl Prepared {
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
             group_params: Box::new([]),
+            group_faders: Box::new([]),
             phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
             release_options: [super::ReleaseOptions::default(); 2],
             release_reserves: [[super::ReleaseReserve::default(); 2]; 128],
@@ -730,6 +732,10 @@ impl Prepared {
             .max()
             .unwrap_or(0)
     }
+    /// Most voices one key's release phase can start together.
+    pub fn release_voices(&self) -> usize {
+        self.release_reserves.iter().flatten().map(|r| r.voices).max().unwrap_or(0)
+    }
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {
         self.stages.len()
@@ -739,8 +745,18 @@ impl Prepared {
     /// `Limits::voices` against a memory budget.
     pub fn voice_state_bytes(&self) -> usize {
         use std::mem::size_of;
-        let stages = self.voice_chains.iter().map(|c| c.stages()).max().unwrap_or(0);
-        let delay = self.voice_chains.iter().map(|c| c.delay_frames).max().unwrap_or(0);
+        let stages = self
+            .voice_chains
+            .iter()
+            .map(|c| c.stages())
+            .max()
+            .unwrap_or(0);
+        let delay = self
+            .voice_chains
+            .iter()
+            .map(|c| c.delay_frames)
+            .max()
+            .unwrap_or(0);
         size_of::<crate::Slot<crate::Voice>>()
             + stages * size_of::<crate::dsp::ProcessorState>()
             + delay * size_of::<[f64; 2]>()

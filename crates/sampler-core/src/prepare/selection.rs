@@ -98,6 +98,7 @@ impl Runtime {
                 velocity,
                 0,
                 None,
+                None,
             );
         }
         let callbacks = prepared
@@ -126,6 +127,7 @@ impl Runtime {
         velocity: f64,
         offset_micros: u32,
         source_stage: Option<crate::behavior::NoteStage>,
+        defer: Option<crate::BehaviorId>,
     ) -> Result<NoteId, Error> {
         self.apply_due();
         if !note_pitch.valid() || !velocity.is_finite() || !(0.0..=1.0).contains(&velocity) {
@@ -261,6 +263,11 @@ impl Runtime {
         }
         if routed {
             self.begin_note_stages(note, entry);
+        } else if let Some(id) = defer {
+            // Pending until the callback waits or ends, so it can still edit
+            // the note's groups; `release` is recomputed then.
+            let _ = release;
+            self.deferred.push((id, note, entry));
         } else {
             self.commit_attack(note, release, snapshot, entry);
             let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
@@ -316,8 +323,12 @@ impl Runtime {
             groups: Some((note.0.index, crate::groups::GroupView::Note(stage))),
         };
         let pitch = self.pitch_range(n.expression, true)?;
-        let release = self.preflight_attack(selection, pitch)?;
+        // Preflight may reclaim idle notes; this one has no voices yet, so pin it.
+        self.notes.get_mut(note.0).unwrap().pins += 1;
+        let release = self.preflight_attack(selection, pitch);
         let n = self.notes.get_mut(note.0).unwrap();
+        n.pins -= 1;
+        let release = release?;
         n.pitch = event.pitch;
         n.velocity = event.velocity;
         self.commit_attack(note, release, snapshot, stage);
