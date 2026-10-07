@@ -290,6 +290,10 @@ fn translate(
             .is_ok_and(|script| script.writes_effect_slots())
         });
     out.dynamic = dynamic;
+    out.ir.source_parameters.extend(
+        crate::source_parameters::program(&program)
+            .map_err(|e| decode("authored program FX", e))?,
+    );
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
@@ -302,7 +306,8 @@ fn translate(
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program, &out.engine);
+    let racks = crate::effects::program_racks(&program, &out.engine)
+        .map_err(|e| decode("program FX racks", e))?;
     let routes: Vec<_> = translated
         .iter()
         .flatten()
@@ -547,8 +552,15 @@ impl Translation {
 
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
-        let mut v = group.params()?;
         let saved = self.snapshot_groups.get(index).cloned();
+        let overlaid;
+        let group = if let Some(state) = &saved {
+            overlaid = crate::snapshot::overlay_modulation(group, &state.modulation);
+            &overlaid
+        } else {
+            group
+        };
+        let mut v = group.params()?;
         if let Some(state) = &saved {
             v.volume = state.volume;
             v.pan = state.pan;
@@ -557,7 +569,37 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
+        let insert = match &saved {
+            Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
+                version: state.fx.0,
+                items: state
+                    .fx
+                    .1
+                    .iter()
+                    .map(|slot| {
+                        slot.as_ref().map(|(id, data)| ni_file::kontakt::Chunk {
+                            id: *id,
+                            data: data.clone(),
+                        })
+                    })
+                    .collect(),
+            }),
+            None => group.insert_fx(),
+        };
+        match &insert {
+            Ok(array) => self
+                .ir
+                .source_parameters
+                .extend(crate::source_parameters::rack(
+                    &format!("group {index} insert"),
+                    array,
+                )?),
+            Err(error) => self.unsupported(&at, "group insert rack", error, ir::Reason::Unknown),
+        }
         if v.muted {
+            self.ir
+                .source_parameters
+                .extend(crate::source_parameters::muted_group(group, index)?);
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
@@ -596,20 +638,8 @@ impl Translation {
         }
         let mut chain = None;
         let mut filter_slots = Vec::new();
-        let insert = match saved {
-            Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
-                version: state.fx.0,
-                items: state
-                    .fx
-                    .1
-                    .into_iter()
-                    .map(|slot| slot.map(|(id, data)| ni_file::kontakt::Chunk { id, data }))
-                    .collect(),
-            }),
-            None => group.insert_fx(),
-        };
         if let Ok(array) = insert {
-            let mut slots = crate::effects::rack(&array);
+            let mut slots = crate::effects::rack(&array)?;
             crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
             let dynamic = self.dynamic.then_some((index as i32, -1));
             let c = crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
@@ -634,6 +664,13 @@ impl Translation {
             for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
                 let params = modulator.params()?;
                 let at = format!("{at} modulator slot {slot}");
+                self.ir
+                    .source_parameters
+                    .extend(crate::source_parameters::internal(
+                        &format!("group {index} internal slot {slot}"),
+                        &modulator,
+                        &params,
+                    )?);
                 // [router UI, bypass, retrigger, unknown]
                 if params.unknown_flags[1] != 0 || params.targets.is_empty() {
                     continue;
@@ -748,9 +785,17 @@ impl Translation {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
                 let params = modulation.params()?;
                 let at = format!("{at} external modulation slot {slot}");
+                self.ir
+                    .source_parameters
+                    .push(crate::source_parameters::external(
+                        &format!("group {index} external slot {slot}"),
+                        &modulation,
+                        &params,
+                    ));
                 let plain_volume = |t: &ni_file::kontakt::objects::ModTarget| {
                     t.param == "volume"
                         && t.slot.is_none()
+                        && t.unknown_flags & 2 == 0
                         && !t.invert
                         && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled)
@@ -863,7 +908,7 @@ impl Translation {
         target: &ni_file::kontakt::objects::ModTarget,
         filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
-        let i = f64::from(target.intensity);
+        let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
             this.unsupported(
                 at,
@@ -896,9 +941,13 @@ impl Translation {
                 ir::Reason::NotModeled,
             );
         }
-        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
-        // source maps onto it is not established.
-        if unipolar && target.unknown_flags & 0x02 != 0 {
+        // Native producer evidence identifies 0x02 as negative depth, not a
+        // source polarity mode. Pitch/cutoff have independently established laws.
+        if unipolar
+            && target.unknown_flags & 0x02 != 0
+            && target.param != "pitch"
+            && cutoff.is_none()
+        {
             return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
@@ -1616,7 +1665,7 @@ mod modulation {
             target("cutoff", 1.0),
             ModTarget {
                 unknown_flags: 0x12,
-                ..target("pitch", 1.0)
+                ..target("volume", 1.0)
             },
             ModTarget {
                 slot: Some(0),
@@ -1636,6 +1685,45 @@ mod modulation {
                 ir::Reason::NotModeled
             ]
         );
+    }
+
+    #[test]
+    fn negative_saved_depth_is_independent_of_source_polarity_and_invert() {
+        for unipolar in [true, false] {
+            let mut t = translation();
+            let source = ir::ModulatorRef(0);
+            let pitch = ModTarget {
+                unknown_flags: 0x12,
+                invert: true,
+                lag_ms: 250,
+                ..target("pitch", 0.5)
+            };
+            t.route("g", source, unipolar, &pitch, None).unwrap();
+            assert_eq!(
+                t.ir.routes[0].depth,
+                ir::Depth::Pitch(ir::Pitch::Semitones(-6.0))
+            );
+            assert!(t.ir.routes[0].invert);
+            assert_eq!(t.ir.routes[0].smoothing, ir::Time::Milliseconds(250.0));
+            let cutoff = ModTarget {
+                slot: Some(2),
+                unknown_flags: 0x12,
+                ..target("filterCutoff", 0.25)
+            };
+            t.route(
+                "g",
+                source,
+                unipolar,
+                &cutoff,
+                Some((ir::ChainRef(1), &[(2, 0)])),
+            )
+            .unwrap();
+            assert_eq!(
+                t.ir.routes[1].depth,
+                ir::Depth::Pitch(ir::Pitch::Semitones(-30.0))
+            );
+            assert!(!t.ir.routes[1].invert);
+        }
     }
 
     #[test]
