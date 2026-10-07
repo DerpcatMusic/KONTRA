@@ -38,8 +38,8 @@ Percentages count modules, not usage. Weighted by corpus use the picture is diff
 
 ## Work order (by corpus instances, Kontakt)
 
-1. Filter types: Legacy HP1 (id 3, 1,996 slots), unparsed filter payloads (962 slots, Morphology Evolved 879 and Conflux
-   82), Formant I (291), AR LP2/4 (267, cutoff law known), AR/Ladder 100-105 (11).
+1. Filter types: Legacy HP1 (id 3, 1,996 slots), Ladder LP1 (id 30, 877 slots, Morphology Evolved) and Ladder LP4 (id 33, 83 slots, Conflux; both
+   now parsed, laws unmeasured), Formant I (291), AR LP2/4 (267, cutoff law known), AR/Ladder 100-105 (11).
 2. EQ band shape (202 instruments, 12,918 slots): modelled as an RBJ peak, never compared with Kontakt.
 3. Reverb algorithm (371 instruments): RT60 calibrated, density and diffusion not.
 4. Module-parameter modulation targets (1,311 instruments): `ahdsr_attack`, `ahdsr_release`, `eqGain1-3`, `filterCutoff`,
@@ -69,10 +69,10 @@ VWinds (40) uses OnePole (6,318), GainMatrix, DigitalEq, Convolver (376), Sample
 | SV BP2 | missing | unmeasured | 0 | id 53/56 per v1 table, unverified |
 | SV BP4 | missing | unmeasured | 0 |  |
 | SV Notch | missing | unmeasured | 0 |  |
-| Ladder LP1 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
+| Ladder LP1 | missing | parsed, law unmeasured | id 30: 877 slots (Morphology Evolved, 1 instrument) | REF s.2: Ladder LP2 = two cascaded one-poles |
 | Ladder LP2 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
 | Ladder LP3 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
-| Ladder LP4 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
+| Ladder LP4 | missing | parsed, law unmeasured | id 33: 83 slots (Conflux, Morphology Evolved) | REF s.2: Ladder LP2 = two cascaded one-poles |
 | Ladder HP1 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
 | Ladder HP2 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
 | Ladder HP3 | missing | unmeasured | ids 100-105 (11 slots) and 22-33; 1 instrument | REF s.2: Ladder LP2 = two cascaded one-poles |
