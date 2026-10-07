@@ -18,6 +18,7 @@ mod audio;
 mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
+mod inserts;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
@@ -396,7 +397,16 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let gain = number(program, "Gain", 1.0)?;
+        let mut gain = number(program, "Gain", 1.0)?;
+        for insert in program
+            .children()
+            .filter(|n| n.has_tag_name("Inserts"))
+            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
+            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+        {
+            gain *= number(insert, "Volume", 1.0)?;
+            self.used.push(insert.id());
+        }
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -427,14 +437,25 @@ impl Translation {
             .flat_map(|a| a.children().filter(|c| c.has_tag_name("AuxEffect")))
         {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
+            let bus = ir::BusRef(self.ir.buses.len());
+            let live = number(aux, "Bypass", 0.0)? == 0.0;
+            let processors = if live { self.inserts(aux, false, None)? } else { Vec::new() };
+            let chain = (!processors.is_empty()).then(|| {
+                self.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Bus(bus),
+                    pre_amplitude: processors,
+                    post_amplitude: Vec::new(),
+                });
+                ir::ChainRef(self.ir.chains.len() - 1)
+            });
             self.ir.buses.push(ir::Bus {
                 name: name.clone(),
-                chain: None,
+                chain,
                 sends: Vec::new(),
                 output: ir::Output::Master,
-                gain: ir::Gain::UNITY,
+                gain: ir::Gain::Linear(number(aux, "Gain", 1.0)?),
             });
-            auxes.push((name, ir::BusRef(self.ir.buses.len() - 1)));
+            auxes.push((name, bus));
         }
         for (ordinal, layer) in program
             .descendants()
@@ -597,6 +618,15 @@ impl Translation {
         };
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
+        let processors = self.inserts(keygroup, true, Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8))?;
+        let chain = (!processors.is_empty()).then(|| {
+            self.ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: processors,
+                post_amplitude: Vec::new(),
+            });
+            ir::ChainRef(self.ir.chains.len() - 1)
+        });
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -682,6 +712,7 @@ impl Translation {
                     law: ir::PanLaw::Balance,
                 },
                 playback,
+                chain,
                 amplitude,
                 routes: modulation.routes,
                 ..ir::Zone::new(asset)
@@ -1118,6 +1149,13 @@ fn assemble_streamed(
             });
         }
     }
+    inserts::fill_impulses(&mut instrument, &locations, |a| {
+        let source = sources[a].as_ref().map_err(Clone::clone)?;
+        let mut reader = source.open().map_err(|e| e.to_string())?;
+        let mut frames = vec![[0f32; 2]; reader.frames()];
+        reader.read(0, &mut frames).map_err(|e| e.to_string())?;
+        Ok((reader.rate(), frames))
+    });
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     let kept = instrument.retain_zones(|z| usable[z.asset.0]);
     let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
@@ -1291,6 +1329,10 @@ fn assemble(
             });
         }
     }
+    inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
+        Ok(d) => Ok((d.rate, d.frames.clone())),
+        Err(e) => Err(e.clone()),
+    });
     let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
     let mut pcm = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
@@ -1554,3 +1596,4 @@ mod survey {
         }
     }
 }
+

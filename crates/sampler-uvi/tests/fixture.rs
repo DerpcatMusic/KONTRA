@@ -193,3 +193,73 @@ fn protected_and_foreign_xml_is_rejected() {
     assert!(sampler_uvi::translate(r#"<Program Name="x" Password="y"/>"#, folder).is_err());
     assert!(sampler_uvi::translate("<Patch/>", folder).is_err());
 }
+
+/// A sine keygroup, either direct to the output or sent pre-fader to an aux
+/// bus with the given inserts (the layer's own fader is shut).
+fn insert_program(aux: Option<&str>) -> String {
+    let (layer_gain, router, auxs) = match aux {
+        Some(inserts) => (
+            0.0,
+            r#"<BusRouters><BusRouter Name="Send" Bypass="0" Gain="1" PreFader="1" Destination="../../Aux0"/></BusRouters>"#,
+            format!(r#"<Auxs><AuxEffect Name="Aux0" Bypass="0" Gain="1"><Inserts>{inserts}</Inserts></AuxEffect></Auxs>"#),
+        ),
+        None => (1.0, "", String::new()),
+    };
+    format!(
+        r#"<UVI4><Program Name="Inserts">{auxs}<Layers><Layer Name="Main" Gain="{layer_gain}">{router}<Keygroups>
+        <Keygroup Name="K"><Oscillators><SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60"/></Oscillators></Keygroup>
+        </Keygroups></Layer></Layers></Program></UVI4>"#
+    )
+}
+
+#[test]
+fn aux_inserts_gain_matrix_and_convolver_shape_the_bus() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-inserts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    // A unit-at-half impulse response: a convolution through it halves the signal.
+    std::fs::write(dir.join("samples/half.wav"), wav(48000, &[16384, 0, 0, 0])).unwrap();
+    let peaks = |aux: Option<&str>| {
+        let program = dir.join("Inserts.uvip");
+        std::fs::write(&program, insert_program(aux)).unwrap();
+        let loaded = sampler_uvi::load(&program, 48000).unwrap();
+        let mut rt = Runtime::new(
+            loaded.plan,
+            Limits {
+                notes: 4,
+                channels: 1,
+                performances: 1,
+                families: 4,
+                expressions: 4,
+                voices: 8,
+                decisions: 16,
+                commands: 16,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        rt.trigger(input, 60, 1.0).unwrap();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        rt.render(&mut out).unwrap();
+        out[1000..].iter().fold([0f32; 2], |p, f| [p[0].max(f[0].abs()), p[1].max(f[1].abs())])
+    };
+    let plain = peaks(None);
+    assert!(plain[0] > 0.05, "plain {plain:?}");
+    // Input 1 feeds output 2 at 0.5, then the impulse halves it again.
+    let inserts = r#"<GainMatrix Gain_1_1="0" Gain_1_2="0.5" Gain_2_1="0" Gain_2_2="0"/>
+        <Convolver Dry="0" Wet="1" SamplePath="samples/half.wav"/>"#;
+    let [left, right] = peaks(Some(inserts));
+    assert!(left < plain[0] * 0.001, "left {left}");
+    assert!((right / plain[1] - 0.25).abs() < 0.02, "right {right}, plain {plain:?}");
+    // A bypassed insert does nothing.
+    let bypassed = peaks(Some(r#"<GainMatrix Bypass="1" Gain_1_1="0"/>"#));
+    assert!((bypassed[0] / plain[0] - 1.0).abs() < 0.01, "{bypassed:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
