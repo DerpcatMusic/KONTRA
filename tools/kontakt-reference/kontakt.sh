@@ -29,6 +29,8 @@ start)
   sleep 5
   # KONTAKT_NOAUDIO=1: read the GUI only (larger desktop); no audio device setup, never send MIDI
   [ -n "${KONTAKT_NOAUDIO:-}" ] || { "$0" setup; sleep 3; "$0" setup; "$0" route || { "$0" stop; exit 1; }; }
+  # a killed/restarted Kontakt may come up in the new view; the GUI coordinates need Classic View (menu > Switch to Classic View)
+  "$0" state 2>&1 | grep -q 'MISMATCH master' && { click 325 98; click 128 579 3; }   # only when the master editor itself is not found (instrument-header mismatches mean "still loading")
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
@@ -68,7 +70,7 @@ calibrate)  # gain through the whole chain: bare noise instrument at unity, reco
   python3 "$here/scenario.py" "$here/scenarios/calibration.txt" "$W/cal.mid"
   KONTRA_NO_STAMP_CHECK=1 "$here/record.sh" "$W/cal.mid" "$W/wav/cal.wav" 3 || exit 1
   if python3 "$here/calibrate.py" "$W/wav/cal.wav" /tmp/noise.wav 0.0 | tee "$W/log/calibration.txt"; then
-    echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $(pgrep -o wineserver) $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
+    echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $("$(dirname "$0")/wsid.sh") $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
   else rm -f "$W/calibrated"; echo "calibrate: FAILED, session aborted (no recordings allowed)" >&2; exit 1; fi ;;
 stop)
   click 20 57 || true; click 42 123 || true   # File > Exit

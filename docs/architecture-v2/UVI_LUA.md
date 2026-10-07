@@ -35,7 +35,7 @@ Cargo.lock and vendor/ hold no Lua. Options:
 |---|---|
 | Own Lua interpreter | Rejected: string patterns, coroutines, 5.1 semantics are weeks of work and a conformance risk. |
 | `piccolo` (pure Rust) | Rejected: 5.4-style, incomplete stdlib (no `math.pow`, partial `string`). |
-| `mlua` with `lua51` + `vendored` | Chosen: exact 5.1 semantics and stdlib, coroutines, instruction-count hook, memory limit. Builds Lua from source (`cc` is already in the lock); no system Lua. Not pure Rust. |
+| `mlua` with `luau` + `luau-jit` | Chosen (switched from `lua51`): Luau is a Lua 5.1 derivative; all 660 corpus scripts compile. Coroutines, interrupt-based time budget, memory limit. Built from source; no system Lua. Not pure Rust. |
 
 Cargo.lock changes are additive only (new packages, no version bumps).
 

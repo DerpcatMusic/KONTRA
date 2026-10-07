@@ -31,6 +31,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
+#[allow(dead_code, reason = "not every test binary that includes this module counts heap use")]
 pub fn without_heap(f: impl FnOnce()) {
     struct Guard;
     impl Drop for Guard {

@@ -124,7 +124,7 @@ fn authored_program_translates_loads_and_renders() {
     let features: Vec<&str> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
     for expected in [
         "HighKeyFade",
-        "modulation source",
+        "AHD note-off release (default release used)",
         "sample outside the program's bank",
         "keygroup oscillators all play (the script may pick one per note)",
     ] {
@@ -135,7 +135,7 @@ fn authored_program_translates_loads_and_renders() {
     }
     // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
     let route = &ir.routes[zone.routes[0].0];
-    assert_eq!(zone.routes.len(), 1);
+    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD gain route");
     assert_eq!(route.target, ir::Target::Pitch);
     assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
     assert!(matches!(
@@ -192,4 +192,247 @@ fn protected_and_foreign_xml_is_rejected() {
     let folder = std::path::Path::new(".");
     assert!(sampler_uvi::translate(r#"<Program Name="x" Password="y"/>"#, folder).is_err());
     assert!(sampler_uvi::translate("<Patch/>", folder).is_err());
+}
+
+/// A sine keygroup, either direct to the output or sent pre-fader to an aux
+/// bus with the given inserts (the layer's own fader is shut).
+fn insert_program(aux: Option<&str>) -> String {
+    let (layer_gain, router, auxs) = match aux {
+        Some(inserts) => (
+            0.0,
+            r#"<BusRouters><BusRouter Name="Send" Bypass="0" Gain="1" PreFader="1" Destination="../../Aux0"/></BusRouters>"#,
+            format!(r#"<Auxs><AuxEffect Name="Aux0" Bypass="0" Gain="1"><Inserts>{inserts}</Inserts></AuxEffect></Auxs>"#),
+        ),
+        None => (1.0, "", String::new()),
+    };
+    format!(
+        r#"<UVI4><Program Name="Inserts">{auxs}<Layers><Layer Name="Main" Gain="{layer_gain}">{router}<Keygroups>
+        <Keygroup Name="K"><Oscillators><SamplePlayer Name="Osc" SamplePath="samples/sine.wav" BaseNote="60"/></Oscillators></Keygroup>
+        </Keygroups></Layer></Layers></Program></UVI4>"#
+    )
+}
+
+#[test]
+fn aux_inserts_gain_matrix_and_convolver_shape_the_bus() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-inserts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    // A unit-at-half impulse response: a convolution through it halves the signal.
+    std::fs::write(dir.join("samples/half.wav"), wav(48000, &[16384, 0, 0, 0])).unwrap();
+    let peaks = |aux: Option<&str>| {
+        let program = dir.join("Inserts.uvip");
+        std::fs::write(&program, insert_program(aux)).unwrap();
+        let loaded = sampler_uvi::load(&program, 48000).unwrap();
+        let mut rt = Runtime::new(
+            loaded.plan,
+            Limits {
+                notes: 4,
+                channels: 1,
+                performances: 1,
+                families: 4,
+                expressions: 4,
+                voices: 8,
+                decisions: 16,
+                commands: 16,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            },
+        )
+        .unwrap();
+        let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+        rt.trigger(input, 60, 1.0).unwrap();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        rt.render(&mut out).unwrap();
+        out[1000..].iter().fold([0f32; 2], |p, f| [p[0].max(f[0].abs()), p[1].max(f[1].abs())])
+    };
+    let plain = peaks(None);
+    assert!(plain[0] > 0.05, "plain {plain:?}");
+    // Input 1 feeds output 2 at 0.5, then the impulse halves it again.
+    let inserts = r#"<GainMatrix Gain_1_1="0" Gain_1_2="0.5" Gain_2_1="0" Gain_2_2="0"/>
+        <Convolver Dry="0" Wet="1" SamplePath="samples/half.wav"/>"#;
+    let [left, right] = peaks(Some(inserts));
+    assert!(left < plain[0] * 0.001, "left {left}");
+    assert!((right / plain[1] - 0.25).abs() < 0.02, "right {right}, plain {plain:?}");
+    // A bypassed insert does nothing.
+    let bypassed = peaks(Some(r#"<GainMatrix Bypass="1" Gain_1_1="0"/>"#));
+    assert!((bypassed[0] / plain[0] - 1.0).abs() < 0.01, "{bypassed:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+struct NoFiles;
+impl sampler_uvi::script::Files for NoFiles {
+    fn script(&self, _: &str) -> Option<String> {
+        None
+    }
+}
+
+/// A note a script plays follows its parent's per-note expression live (a
+/// bend moves it), while the parent's own gain, silenced here, does not.
+#[test]
+fn script_played_notes_follow_the_parents_expression() {
+    use sampler_core::Expression;
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-expr-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    let program = dir.join("Fixture.uvip");
+    std::fs::write(&program, PROGRAM).unwrap();
+    let limits = Limits {
+        notes: 4,
+        channels: 1,
+        performances: 1,
+        families: 4,
+        expressions: 4,
+        voices: 8,
+        decisions: 16,
+        commands: 16,
+        behaviors: 0,
+        behavior_fuel: 0,
+        behavior_cells: 0,
+        note_cells: 0,
+    };
+    let input = Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key: 60,
+        external_id: None,
+    };
+    let bent = |gain| Expression {
+        pitch_semitones: 12.0,
+        gain,
+        ..Expression::default()
+    };
+    // The reference plays the note itself: one block plain, one bent.
+    let mut reference = Runtime::new(sampler_uvi::load(&program, 48000).unwrap().plan, limits).unwrap();
+    let note = reference.trigger(input, 60, 1.0).unwrap();
+    let id = reference.expression_id(note).unwrap();
+    let mut expected = vec![[0.0f32; 2]; 960];
+    reference.render(&mut expected[..480]).unwrap();
+    reference.set_expression(id, bent(1.0)).unwrap();
+    reference.render(&mut expected[480..]).unwrap();
+
+    // The script's child follows a muted parent.
+    let mut rt = Runtime::new(sampler_uvi::load(&program, 48000).unwrap().plan, limits).unwrap();
+    let host = sampler_uvi::script::ScriptHost::new(PROGRAM, NoFiles, Default::default()).unwrap();
+    let mut driver = sampler_uvi::scripted::Driver::new(host, Vec::new(), 48000);
+    assert!(driver.handles_notes());
+    let parent = rt.note_on(input, 60, 1.0).unwrap();
+    driver.note_on(&mut rt, parent, 60, 1.0).unwrap();
+    let id = rt.expression_id(parent).unwrap();
+    let mut audio = vec![[0.0f32; 2]; 960];
+    driver.wake(&mut rt).unwrap();
+    rt.render(&mut audio[..480]).unwrap();
+    rt.set_expression(id, bent(0.0)).unwrap();
+    driver.wake(&mut rt).unwrap();
+    rt.render(&mut audio[480..]).unwrap();
+    let peak = audio.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    assert!(peak > 0.05, "the child sounds: peak {peak}");
+    let worst = audio
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .fold(0f32, |w, (a, b)| w.max((a - b).abs()));
+    assert!(worst < 1e-4, "child differs from the bent parent by {worst}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `setParameter` on the program reaches the runtime: Polyphony limits the
+/// voices, Gain moves the instrument's level.
+#[test]
+fn set_parameter_reaches_the_runtime() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-param-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &vec![8000i16; 4800])).unwrap();
+    let xml = PROGRAM.replace(
+        "function onNote(e) playNote(e.note, e.velocity) end",
+        "function onNote(e) Program:setParameter('Polyphony', 3); Program:setParameter('Gain', 0.25); playNote(e.note, e.velocity) end",
+    );
+    let program = dir.join("Fixture.uvip");
+    std::fs::write(&program, &xml).unwrap();
+    let limits = Limits {
+        notes: 4,
+        channels: 1,
+        performances: 1,
+        families: 4,
+        expressions: 4,
+        voices: 8,
+        decisions: 16,
+        commands: 16,
+        behaviors: 0,
+        behavior_fuel: 0,
+        behavior_cells: 0,
+        note_cells: 0,
+    };
+    let mut rt = Runtime::new(sampler_uvi::load(&program, 48000).unwrap().plan, limits).unwrap();
+    let host = sampler_uvi::script::ScriptHost::new(&xml, NoFiles, Default::default()).unwrap();
+    let mut driver = sampler_uvi::scripted::Driver::new(host, Vec::new(), 48000);
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let note = rt.note_on(input, 60, 1.0).unwrap();
+    driver.note_on(&mut rt, note, 60, 1.0).unwrap();
+    // 8 slots, 3 voices: 5 are headroom for fading stolen voices.
+    assert_eq!(rt.voice_stealing().map(|s| s.headroom), Some(5));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// One note of the sine through `inserts` on an aux bus, 4800 frames.
+fn through(inserts: &str, name: &str) -> Vec<[f32; 2]> {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    let program = dir.join("Inserts.uvip");
+    std::fs::write(&program, insert_program(Some(inserts))).unwrap();
+    let loaded = sampler_uvi::load(&program, 48000).unwrap();
+    let mut rt = Runtime::new(
+        loaded.plan,
+        Limits {
+            notes: 4,
+            channels: 1,
+            performances: 1,
+            families: 4,
+            expressions: 4,
+            voices: 8,
+            decisions: 16,
+            commands: 16,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    rt.trigger(input, 60, 1.0).unwrap();
+    let mut out = vec![[0.0f32; 2]; 4800];
+    rt.render(&mut out).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    out
+}
+
+#[test]
+fn wave_shaper_rectifies_and_comp_exp_compresses() {
+    let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let plain = through(r#"<Gain Volume="1"/>"#, "plain");
+    let full = through(r#"<WaveShaper Mode="6"/>"#, "full");
+    let half = through(r#"<WaveShaper Mode="7"/>"#, "half");
+    assert!(full.iter().flatten().all(|x| *x >= 0.0));
+    assert!(half.iter().flatten().all(|x| *x >= 0.0));
+    assert!((peak(&full) / peak(&plain) - 1.0).abs() < 0.01);
+    assert!(full[1000..].iter().flatten().sum::<f32>() > half[1000..].iter().flatten().sum::<f32>());
+    let squashed = through(
+        r#"<CompExp CompThreshold="-30" CompRatio="30" CompAttack="0" CompRelease="100"/>"#,
+        "comp",
+    );
+    assert!(peak(&squashed) < peak(&plain) * 0.2, "{} vs {}", peak(&squashed), peak(&plain));
 }

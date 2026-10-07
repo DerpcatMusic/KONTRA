@@ -108,6 +108,7 @@ mod tests {
     use crate::Error;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_zone_data_v9a_000() -> Result<(), Error> {
         let file =
             File::open("tests/data/Objects/Kontakt/ZoneData/ZoneDataV9A/ZoneDataV9A-000.kon")?;

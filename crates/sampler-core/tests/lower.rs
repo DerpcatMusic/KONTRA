@@ -201,15 +201,6 @@ fn amplitude_envelope_converts_source_time_to_frames() {
 fn unexecutable_meaning_is_rejected_with_its_owner() {
     let pcm = || vec![constant(0.1), constant(0.2), constant(0.3), constant(0.05)];
     let mut ir = instrument();
-    ir.zones[1].trigger = ir::Trigger::Legato;
-    assert_eq!(
-        rejected(&ir, pcm()),
-        LowerError::Unsupported {
-            owner: "zone 1".into(),
-            feature: Feature::Trigger(ir::Trigger::Legato)
-        }
-    );
-    let mut ir = instrument();
     ir.zones[2].selection = Some(ir::Selection {
         sequence: ir::SequenceRef(0),
         take: ir::Take::Probability {
@@ -463,6 +454,77 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
 
 
 #[test]
+fn one_pole_filters_follow_the_6_db_per_octave_law() {
+    // 3 kHz sine through a 500 Hz one-pole: |H| = 1 / sqrt(1 + (tan(pi f / fs) / tan(pi fc / fs))^2).
+    let energy = |kind: Option<ir::FilterKind>| {
+        let mut ir = instrument();
+        if let Some(kind) = kind {
+            ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![ir::Processor::Filter(ir::Filter {
+                    kind,
+                    cutoff: ir::Frequency::Hertz(500.0),
+                    resonance: ir::Resonance::Decibels(0.0),
+                })],
+                post_amplitude: vec![],
+            });
+            ir.zones[0].chain = Some(ir::ChainRef(0));
+        }
+        let wave = (0..4800)
+            .map(|i| [(std::f32::consts::TAU * 3000.0 * i as f32 / 48000.0).sin() * 0.5; 2])
+            .collect::<Vec<_>>();
+        let pcm = vec![
+            Pcm::new(48000, wave.into_boxed_slice()).unwrap(),
+            constant(0.2),
+            constant(0.3),
+            constant(0.05),
+        ];
+        let plan = lower(&ir, 48000, pcm, no_behaviors).unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0f32; 2]; 1024];
+        rt.trigger(input(60), 60, 0.3).unwrap();
+        rt.render(&mut out).unwrap();
+        out[512..].iter().map(|f| f[0] * f[0]).sum::<f32>()
+    };
+    let plain = energy(None);
+    // y += (x - y) b, b = 1 - exp(-2 pi fc / fs): H = b / (1 - (1 - b) e^-jw).
+    let b = 1.0 - (-std::f64::consts::TAU * 500.0 / 48000.0).exp();
+    let w = std::f64::consts::TAU * 3000.0 / 48000.0;
+    let h = num(b, 0.0) / (num(1.0, 0.0) - num(1.0 - b, 0.0) * num(w.cos(), -w.sin()));
+    let low = f64::from(energy(Some(ir::FilterKind::LowPass { poles: 1 })) / plain);
+    let high = f64::from(energy(Some(ir::FilterKind::HighPass { poles: 1 })) / plain);
+    let (want_low, want_high) = (h.0 * h.0 + h.1 * h.1, (1.0 - h.0).powi(2) + h.1 * h.1);
+    assert!((low - want_low).abs() < want_low * 0.03, "low {low}, want {want_low}");
+    assert!((high - want_high).abs() < want_high * 0.03, "high {high}, want {want_high}");
+}
+
+/// Minimal complex arithmetic for the one-pole response.
+#[derive(Clone, Copy)]
+struct C(f64, f64);
+fn num(re: f64, im: f64) -> C {
+    C(re, im)
+}
+impl std::ops::Sub for C {
+    type Output = C;
+    fn sub(self, o: C) -> C {
+        C(self.0 - o.0, self.1 - o.1)
+    }
+}
+impl std::ops::Mul for C {
+    type Output = C;
+    fn mul(self, o: C) -> C {
+        C(self.0 * o.0 - self.1 * o.1, self.0 * o.1 + self.1 * o.0)
+    }
+}
+impl std::ops::Div for C {
+    type Output = (f64, f64);
+    fn div(self, o: C) -> (f64, f64) {
+        let d = o.0 * o.0 + o.1 * o.1;
+        ((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
+    }
+}
+
+#[test]
 fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     let zone = |group| ir::Zone {
         keys: ir::KeyRange { low: 0, high: 127 },
@@ -485,7 +547,7 @@ fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     };
     let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
     let mut rt = Runtime::new(plan, limits()).unwrap();
-    let mut voices = |rt: &mut Runtime, key| {
+    let voices = |rt: &mut Runtime, key| {
         rt.trigger(input(key), key, 1.).unwrap();
         rt.render(&mut [[0.0; 2]; 1024]).unwrap();
         rt.voice_count()
@@ -495,4 +557,49 @@ fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     assert_eq!(voices(&mut rt, 60), 3);
     // Another key leaves both alone.
     assert_eq!(voices(&mut rt, 72), 5);
+}
+
+/// A recorded-legato layout: a plain attack on a first note, and one transition
+/// sample per interval (a step up, a step down) when another key is held.
+#[test]
+fn transition_zones_follow_the_interval_from_the_held_key() {
+    let zone = |asset, trigger| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        trigger,
+        ..ir::Zone::new(ir::AssetRef(asset))
+    };
+    let ir = ir::Instrument {
+        assets: ["first", "up", "down"].map(asset).to_vec(),
+        zones: vec![
+            zone(0, ir::Trigger::First),
+            zone(1, ir::Trigger::Transition { low: 1, high: 12 }),
+            zone(2, ir::Trigger::Transition { low: -12, high: -1 }),
+        ],
+        ..Default::default()
+    };
+    let plan = lower(
+        &ir,
+        48000,
+        vec![constant(0.1), constant(0.2), constant(0.4)],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut out = [[0.0; 2]; 64];
+    let mut start = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.0).unwrap();
+        rt.render(&mut out).unwrap();
+        out[32][0]
+    };
+    // Nothing held: the first-note sample.
+    assert!((start(&mut rt, 60) - 0.1).abs() < 1e-6);
+    rt.note_off(input(60), None).unwrap();
+    // A fresh first note again after release (the old note is no longer held).
+    assert!((start(&mut rt, 64) - 0.1).abs() < 1e-6);
+    // 64 held: 67 is a step up (+3) and sounds with the held note.
+    assert!((start(&mut rt, 67) - (0.1 + 0.2)).abs() < 1e-6);
+    // 67 is the most recent held key: 62 is 5 below it.
+    assert!((start(&mut rt, 62) - (0.1 + 0.2 + 0.4)).abs() < 1e-6);
 }
