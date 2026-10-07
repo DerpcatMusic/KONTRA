@@ -856,6 +856,22 @@ fn full_note_runtime_trace_probe() {
             sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options)
                 .unwrap();
         let names: Vec<String> = loaded.instrument.groups.iter().map(|g| g.name.clone()).collect();
+        if let Some(z) = std::env::var("KONTRA_TRACE_ZONE").ok().and_then(|v| v.parse::<usize>().ok()) {
+            let ir = &loaded.instrument;
+            for r in &ir.zones[z].routes {
+                let route = &ir.routes[r.0];
+                println!("ZONE {z} route {:?} src {:?} shape {:?}", route, ir.modulators[route.source.0].source, route.shape.map(|s| ir.shapes[s.0].points.clone()));
+            }
+        }
+        if std::env::var_os("KONTRA_TRACE_UNS").is_some() {
+            let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
+            for u in &loaded.instrument.unsupported {
+                *seen.entry(format!("{} | {:.90}", u.feature, u.value)).or_default() += 1;
+            }
+            for (k, n) in seen {
+                println!("UNS {n} {k}");
+            }
+        }
         let scripts = loaded.scripts.clone();
         let plan = loaded.plan;
         let limits = Limits {
@@ -911,6 +927,18 @@ fn full_note_runtime_trace_probe() {
                         format!("{g} z{} {:?}", c.region, loaded.instrument.zones[c.region].velocities)
                     })
                     .collect();
+                if let Ok(pat) = std::env::var("KONTRA_TRACE_REJ") {
+                    let mut by: std::collections::BTreeMap<String, usize> = Default::default();
+                    for c in r.candidates.iter().filter(|c| c.rejected.is_some()) {
+                        let g = c.group.map_or("?".into(), |g| names.get(g as usize).cloned().unwrap_or_default());
+                        if g.contains(&pat) {
+                            *by.entry(format!("{g} {:?}", c.rejected)).or_default() += 1;
+                        }
+                    }
+                    for (k, n) in by.iter().take(40) {
+                        println!("step {i} REJ {n} {k}");
+                    }
+                }
                 println!(
                     "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {} {:?}",
                     r.key,

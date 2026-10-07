@@ -232,6 +232,13 @@ pub enum Instruction {
         generic: u16,
         local: u16,
     },
+    /// Route group `group` to the bus at source address `address`
+    /// (`set_engine_par($ENGINE_PAR_OUTPUT_CHANNEL, ...)`). Voices that start
+    /// afterwards use it.
+    WriteGroupBus {
+        group: u16,
+        address: u16,
+    },
     Jump {
         target: usize,
     },
@@ -353,7 +360,7 @@ impl Program {
     pub fn writes_slots(&self) -> bool {
         self.code
             .iter()
-            .any(|op| matches!(op, Instruction::WriteSlot { .. }))
+            .any(|op| matches!(op, Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }))
     }
 
     /// Text constants addressed by `TextPart::Constant`.
@@ -551,6 +558,9 @@ impl Program {
             }
             if let Instruction::ReadEventInfo { event, local, .. } = *op {
                 locals = locals.max(usize::from(event.max(local)) + 1);
+            }
+            if let Instruction::WriteGroupBus { group, address } = *op {
+                locals = locals.max(usize::from(group.max(address)) + 1);
             }
             if let Instruction::WriteSlot {
                 group,
@@ -1806,6 +1816,14 @@ impl Runtime {
                         None,
                         &[super::ControlWrite { id: control, value }],
                     )?;
+                }
+            }
+            Instruction::WriteGroupBus { group, address } => {
+                let plan = self.behavior_plan(owner)?;
+                let group = *self.local_cell_mut(id, group)?;
+                let address = *self.local_cell_mut(id, address)?;
+                if let Ok(group) = usize::try_from(group) {
+                    self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?.script.set_route(group, address);
                 }
             }
             Instruction::Jump { target } => {

@@ -308,7 +308,12 @@ fn translate(
         .flatten()
         .filter_map(|g| g.bus.map(|bus| (g.group, bus)))
         .collect();
-    let buses = crate::effects::bus_plans(&program, &routes);
+    let mut buses = crate::effects::bus_plans(&program, &routes);
+    for bus in &mut buses {
+        if let Some(volume) = out.script_bus_volume(bus.index) {
+            bus.volume = volume;
+        }
+    }
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -746,7 +751,14 @@ impl Translation {
         let mut velocity = ir::VelocityResponse::None;
         if let Some(chunk) = group.0.find_first(EXTERNAL_MODS) {
             for (slot, modulation) in ExternalModArray32::try_from(chunk)?.slots()? {
-                let params = modulation.params()?;
+                let mut params = modulation.params()?;
+                if let Some(value) = self.script_intensity(index, &params.name) {
+                    // `set_engine_par($ENGINE_PAR_MOD_TARGET_INTENSITY, ...)` on init and
+                    // `on persistence_changed`: 0..=1000000 over 0..=1.
+                    for target in &mut params.targets {
+                        target.intensity = value;
+                    }
+                }
                 let at = format!("{at} external modulation slot {slot}");
                 let plain_volume = |t: &ni_file::kontakt::objects::ModTarget| {
                     t.param == "volume"
@@ -847,8 +859,43 @@ impl Translation {
             velocity,
             routes,
             chain,
-            bus: group.bus_route(),
+            bus: self.script_bus(index).or(group.bus_route()),
         }))
+    }
+
+    /// The `$ENGINE_PAR_*` value `on init` and `on persistence_changed` left for
+    /// `(parameter, group, slot, generic)`.
+    fn script_par(&self, parameter: &str, group: i32, slot: i32, generic: i32) -> Option<i32> {
+        self.engine
+            .iter()
+            .rev()
+            .find(|w| {
+                w.parameter.trim_start_matches('$') == parameter
+                    && (w.group, w.slot, w.generic) == (group, slot, generic)
+            })
+            .map(|w| w.value)
+    }
+
+    /// The instrument bus a script routed group `index` to
+    /// (`$ENGINE_PAR_OUTPUT_CHANNEL` = `$NI_BUS_OFFSET` + n).
+    fn script_bus(&self, index: usize) -> Option<u8> {
+        let value = self.script_par("ENGINE_PAR_OUTPUT_CHANNEL", index as i32, -1, -1)?;
+        u8::try_from(value.checked_sub(1000)?).ok().filter(|&n| n < 16)
+    }
+
+    /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
+    /// - 346.768, the one group volume uses (0 dB at 630957).
+    fn script_bus_volume(&self, bus: usize) -> Option<f32> {
+        let v = self.script_par("ENGINE_PAR_VOLUME", -1, -1, 1000 + bus as i32)?;
+        let millibels = 18000.0 * f64::from(v.clamp(1, 1_000_000)).log2() - 346_768.234_247_835_1;
+        Some(10f64.powf(millibels / 20_000.0) as f32)
+    }
+
+    /// The modulation intensity a script set for modulation `name` of group `index`.
+    fn script_intensity(&self, index: usize, name: &str) -> Option<f32> {
+        let slot = sampler_core::name_index(name);
+        let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
+        Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
 
     /// One Kontakt modulation target as an IR route, or a report entry.
