@@ -24,8 +24,8 @@ assert info['profile'] == 'release'
 print(info['version'].split('-', 1)[0])
 PY
 )
-for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA2.clap Library/Audio/Plug-Ins/VST3/KONTRA2.vst3 Applications/KONTRA2.app; do
-  binary="$stage/payload/$bundle/Contents/MacOS/KONTRA2"
+for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA.clap Library/Audio/Plug-Ins/VST3/KONTRA.vst3 Applications/KONTRA.app; do
+  binary="$stage/payload/$bundle/Contents/MacOS/KONTRA"
   lipo "$binary" -verify_arch arm64 x86_64
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$APPLE_SIGNING_KEYCHAIN" \
     --options runtime --timestamp "$binary"
@@ -36,9 +36,9 @@ for bundle in Library/Audio/Plug-Ins/CLAP/KONTRA2.clap Library/Audio/Plug-Ins/VS
   chmod -R a+rX "$stage/payload/$bundle"
   codesign --verify --deep --strict --all-architectures "$stage/payload/$bundle"
 done
-xcrun swift "$(dirname "$0")/check_macos_bundles.swift" --register "$stage/payload/Applications/KONTRA2.app" \
-  "$stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA2.clap" \
-  "$stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA2.vst3"
+xcrun swift "$(dirname "$0")/check_macos_bundles.swift" --register "$stage/payload/Applications/KONTRA.app" \
+  "$stage/payload/Library/Audio/Plug-Ins/CLAP/KONTRA.clap" \
+  "$stage/payload/Library/Audio/Plug-Ins/VST3/KONTRA.vst3"
 # Disable relocation: an old bundle elsewhere must not redirect installation
 # away from the explicit /Library plugin folders and /Applications.
 pkgbuild --analyze --root "$stage/payload" "$work/components.plist"
@@ -57,7 +57,7 @@ with open(path, 'wb') as output:
 PY
 pkgbuild --root "$stage/payload" --component-plist "$work/components.plist" \
   --scripts "$(dirname "$0")/macos_installer" \
-  --identifier audio.matari.kontra2.installer --version "$version" --install-location / \
+  --identifier audio.matari.kontra.installer --version "$version" --install-location / \
   --ownership recommended "$work/unsigned.pkg"
 productsign --sign "$APPLE_DEVELOPER_ID_INSTALLER" --keychain "$APPLE_SIGNING_KEYCHAIN" \
   --timestamp "$work/unsigned.pkg" "$work/KONTRA.pkg"
@@ -81,9 +81,9 @@ import hashlib, json, pathlib, sys
 stage, package, notary, receipt = map(pathlib.Path, sys.argv[1:])
 info = json.loads((stage / 'build-info.json').read_text())
 accepted = json.loads(notary.read_text())
-paths = ['Library/Audio/Plug-Ins/CLAP/KONTRA2.clap/Contents/MacOS/KONTRA2',
-         'Library/Audio/Plug-Ins/VST3/KONTRA2.vst3/Contents/MacOS/KONTRA2',
-         'Applications/KONTRA2.app/Contents/MacOS/KONTRA2']
+paths = ['Library/Audio/Plug-Ins/CLAP/KONTRA.clap/Contents/MacOS/KONTRA',
+         'Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA',
+         'Applications/KONTRA.app/Contents/MacOS/KONTRA']
 info.update(targets=['aarch64-apple-darwin', 'x86_64-apple-darwin'], id=accepted['id'],
             status=accepted['status'], stapled=True, signatures_verified=True,
             package_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),

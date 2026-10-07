@@ -939,9 +939,30 @@ impl Runtime {
         Ok(())
     }
 
+    /// [`Runtime::flush_behaviors`], also telling which program (in the plan's
+    /// program table) each behavior ran, so a fault can be named after its callback.
+    pub fn flush_behaviors_at(
+        &mut self,
+        mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, program| accept(id, owner, outcome, program));
+    }
+
+    /// The latest callback fault (plan program, error), once. Allocation-free.
+    pub fn take_fault(&mut self) -> Option<(usize, Error)> {
+        self.fault.take()
+    }
+
     pub fn flush_behaviors(
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, _| accept(id, owner, outcome));
+    }
+
+    fn flush_behaviors_inner(
+        &mut self,
+        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
         for i in 0..self.behaviors.slots.len() {
             let Some(c) = self.behaviors.slots[i].value else {
@@ -951,7 +972,7 @@ impl Runtime {
                 continue;
             };
             let id = BehaviorId(self.behaviors.id(i));
-            if !accept(id, c.owner, outcome) {
+            if !accept(id, c.owner, outcome, c.program) {
                 return;
             }
             self.release_controller_reserve(id);
@@ -2110,6 +2131,9 @@ impl Runtime {
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
+        if let Outcome::Fault(error) = outcome {
+            self.fault = Some((c.program, error));
+        }
         if let BehaviorOwner::Note(note) = c.owner {
             self.release_now(note, super::ReleaseCause::BehaviorFault)
                 .expect("continuation retains originating note");

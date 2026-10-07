@@ -194,6 +194,8 @@ impl Script {
             services: self.services.clone(),
             symbols: self.symbols.clone(),
             slot: self.slot,
+            entries: self.entries.clone(),
+            programs: self.programs.len(),
         }
     }
 
@@ -215,9 +217,39 @@ pub struct ScriptView {
     services: Vec<&'static str>,
     symbols: Vec<String>,
     slot: u8,
+    entries: Vec<Entry>,
+    programs: usize,
 }
 
 impl ScriptView {
+    /// How many programs the script contributed to the plan's program table.
+    pub fn program_count(&self) -> usize {
+        self.programs
+    }
+
+    /// The callback of this script's `local` program (`"on note"`...), if it
+    /// is one of its entry points.
+    pub fn callback(&self, local: usize) -> Option<&'static str> {
+        Some(match self.entries.iter().find(|e| e.program == local)?.kind {
+            EntryKind::Note => "on note",
+            EntryKind::Release => "on release",
+            EntryKind::Controller => "on controller",
+            EntryKind::PolyAt => "on poly_at",
+            EntryKind::UiControl(_) => "on ui_control",
+            EntryKind::Listener => "on listener",
+            EntryKind::PgsChanged => "on pgs_changed",
+            EntryKind::PersistenceChanged => "on persistence_changed",
+            EntryKind::AsyncComplete => "on async_complete",
+            EntryKind::Rpn => "on rpn",
+            EntryKind::Nrpn => "on nrpn",
+        })
+    }
+
+    /// The script slot.
+    pub fn slot(&self) -> u8 {
+        self.slot
+    }
+
     /// Builtin name of an effect service id (`sampler_core::Effect::service`).
     pub fn service(&self, id: u16) -> Option<&'static str> {
         self.services.get(usize::from(id)).copied()
@@ -328,6 +360,20 @@ pub fn bind_controller_chain(
         return Err(sampler_core::Error::InvalidInput);
     }
     bind_modules(scripts, plan)
+}
+
+/// Name the callback a plan program (`program`, the plan's table index) belongs
+/// to among `views` (bound in order): `"script 1 on note"`.
+pub fn callback_of(views: &[ScriptView], program: usize) -> String {
+    let mut base = 0;
+    for (i, v) in views.iter().enumerate() {
+        if program < base + v.programs {
+            let callback = v.callback(program - base).unwrap_or("callback");
+            return format!("script {} {callback}", i + 1);
+        }
+        base += v.programs;
+    }
+    format!("program {program}")
 }
 
 /// Bind source modules in order through the shared native routing table.
