@@ -1075,17 +1075,19 @@ impl Runtime {
                 self.behavior_ready.remove(index);
                 continue;
             };
-            if fuel == 0 {
+            if fuel == 0 || self.block_fuel_left == 0 {
                 self.behavior_ready.remove(index);
                 self.yield_behavior(id);
                 continue;
             }
-            let ran = self.run_straight(id, fuel);
+            let ran = self.run_straight(id, fuel.min(self.block_fuel_left));
             if ran > 0 {
+                self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
                 self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - ran };
                 continue;
             }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
+            self.block_fuel_left = self.block_fuel_left.saturating_sub(1);
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
             let stepped = self.behavior_step(id, c.owner, op);
             if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {

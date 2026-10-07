@@ -183,6 +183,9 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
             let mut rt = Runtime::new(plan, limits).map_err(fail)?.with_stream_cache(cache);
             rt.set_cold_starts(true);
+            if let Some(fuel) = std::env::var("PERF_BLOCK_FUEL").ok().and_then(|v| v.parse().ok()) {
+                rt.set_behavior_block_fuel(fuel);
+            }
             rt.set_voice_stealing(Some(Stealing::for_limits(RATE, limits.voices))).map_err(fail)?;
             let mut groups = [None; 16];
             groups[0] = Some(Version::Midi1);
