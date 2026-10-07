@@ -41,6 +41,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_bni_sound_header_read() -> Result<(), Error> {
         let file =
             File::open("tests/data/Containers/NIS/objects/BNISoundHeader/BNISoundHeader-000")?;

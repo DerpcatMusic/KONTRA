@@ -678,6 +678,11 @@ impl Eval<'_> {
         for i in 0..args.len() {
             let v = match &args[i] {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
+                // Engine parameters are recorded by name: hashed ids are unreadable.
+                _ if i == 0 && builtin == Builtin::SetEnginePar => {
+                    let id = self.int(args, 0)?;
+                    symbol_name(self.hir, id).map_or(V::I(id), V::S)
+                }
                 _ => self.arg(args, i)?,
             };
             values.push(v.value());

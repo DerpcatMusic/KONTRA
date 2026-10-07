@@ -218,6 +218,14 @@ pub struct ScriptView {
 }
 
 impl ScriptView {
+    /// Builtin name of an effect service id (`sampler_core::Effect::service`).
+    pub fn service(&self, id: u16) -> Option<&'static str> {
+        self.services.get(usize::from(id)).copied()
+    }
+    /// Symbolic name of an opaque vendor constant (`ENGINE_PAR_*`, `NI_*`).
+    pub fn symbol(&self, value: i32) -> Option<String> {
+        eval::symbol_in(&self.symbols, value)
+    }
     /// The model as runtime effects have left it (keys, widgets).
     pub fn model(&self) -> &model::Model {
         &self.model
@@ -329,7 +337,13 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut programs = Vec::new();
     let mut instances = Vec::new();
     let mut resources = Vec::new();
-    let mut controls = Vec::new();
+    // The plan's effect slot controls stay beside the scripts' own.
+    let mut controls: Vec<_> = plan
+        .controls()
+        .iter()
+        .filter(|c| sampler_core::is_slot_control(c.id))
+        .copied()
+        .collect();
     let mut callbacks = Vec::new();
     let mut stages = Vec::new();
     let mut starts = Vec::new();
@@ -425,6 +439,69 @@ pub fn derived_control_id(slot: u8, variable: &str) -> ControlId {
         h = (h ^ u128::from(b)).wrapping_mul(0x0000_0000_0100_0000_0000_0000_0000_013b);
     }
     ControlId(h)
+}
+
+/// One `set_engine_par` write `on init` left standing, by symbolic name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnginePar {
+    /// `ENGINE_PAR_*` name; the number when the script used a literal.
+    pub parameter: String,
+    pub value: i32,
+    pub group: i32,
+    pub slot: i32,
+    pub generic: i32,
+}
+
+impl Script {
+    /// Whether a callback sets effect slot bypass, output gain or dry level
+    /// while playing, so the host must build slots those writes can reach.
+    pub fn writes_effect_slots(&self) -> bool {
+        self.programs.iter().any(Program::writes_slots)
+    }
+}
+
+/// The `set_engine_par` values `on init` leaves, in parameter order, without
+/// compiling the callbacks. Hosts apply them to what they translated before
+/// the script runs (effect racks, buses).
+pub fn init_engine_pars(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Vec<EnginePar>, Error> {
+    let mut syms = lexer::Interner::default();
+    (|| {
+        let mut toks = lexer::lex(source, &mut syms)?;
+        lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        let ast = parser::parse(&toks, &syms)?;
+        let budget = sema::Budget {
+            variables: limits.variables,
+            array_cells: limits.array_cells,
+        };
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
+        let init = eval::run(&hir, environment)?;
+        let mut writes: Vec<_> = init
+            .engine
+            .iter()
+            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
+                parameter: eval::symbol_name(&hir, parameter)
+                    .unwrap_or_else(|| parameter.to_string()),
+                value,
+                group,
+                slot,
+                generic,
+            })
+            .collect();
+        writes.sort_by(|a, b| {
+            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
+                &b.parameter,
+                b.group,
+                b.slot,
+                b.generic,
+            ))
+        });
+        Ok(writes)
+    })()
+    .map_err(|f: diag::Fault| f.locate(source))
 }
 
 /// Compile a script. `on init` runs here on the control thread against

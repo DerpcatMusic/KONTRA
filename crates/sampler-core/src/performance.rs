@@ -95,7 +95,26 @@ impl Runtime {
 pub(super) struct State {
     pub articulation: u32,
     pub controllers: [u32; 128],
+    /// The virtual controller [`crate::PREVIOUS_KEY`]: see [`previous_key_value`].
+    pub previous: u32,
     owners: usize,
+}
+
+impl State {
+    /// A controller's value, including the virtual previous-key one.
+    pub fn value(&self, controller: u8) -> u32 {
+        self.controllers
+            .get(usize::from(controller))
+            .copied()
+            .unwrap_or(self.previous)
+    }
+}
+
+/// Value of the virtual previous-key controller: 0 with no other key held,
+/// else the interval from the most recent held key (this key minus that one,
+/// in -127..=127) offset into 1..=255.
+pub fn previous_key_value(interval: Option<i16>) -> u32 {
+    interval.map_or(0, |i| (i.clamp(-127, 127) + 128) as u32)
 }
 
 pub(super) struct PerformanceState {
@@ -119,6 +138,7 @@ impl PerformanceState {
             State {
                 articulation: 0,
                 controllers: RESET_CONTROLLERS,
+                previous: 0,
                 owners: 0
             };
             capacity

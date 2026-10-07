@@ -119,6 +119,12 @@ pub enum Processor {
     Biquad(Biquad),
     ControlGain(ControlRange),
     Delay(Delay),
+    /// Stereo compressor; the smoothed reduction lives in the stage's state.
+    Compressor(CompressorSettings),
+    /// WaveShaper rectification (stateless).
+    Rectify(Rectifier),
+    /// Formant Crusher decimation; per-voice scalar path.
+    Decimate(Decimator),
     StateVariable(StateVariableFilter),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
@@ -128,6 +134,15 @@ pub enum Processor {
         impulse: usize,
         dry: f64,
         wet: f64,
+    },
+    /// The next `count` processors run in parallel with the unprocessed
+    /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
+    /// bypass control (0..=1). All three are ramped controls. Bus scope only.
+    Mix {
+        count: u16,
+        dry: ControlRange,
+        wet: ControlRange,
+        bypass: ControlRange,
     },
 }
 
@@ -140,20 +155,31 @@ impl Processor {
             Processor::StateVariable(filter) => filter.valid(),
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
+            Processor::Mix {
+                dry, wet, bypass, ..
+            } => dry.valid() && wet.valid() && bypass.valid(),
+            Processor::Compressor(settings) => settings.valid(),
+            Processor::Decimate(decimator) => decimator.valid(),
+            Processor::Rectify(_) => true,
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
 }
 
 pub(super) mod control;
+mod compressor;
 mod convolution;
 mod delay;
 pub(super) mod lanes;
 mod reverb;
+mod shaping;
 pub(super) mod svf;
+pub use compressor::CompressorSettings;
+pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
+pub use convolution::ConvolutionUpload;
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
@@ -169,11 +195,20 @@ pub(super) enum PreparedProcessor {
         delay: Delay,
         offset: usize,
     },
+    Compressor(compressor::Compressor),
+    Rectify(Rectifier),
+    Decimate(Decimator),
     StateVariable(usize),
     /// Index into the bus graph's reverbs.
     Reverb(usize),
     /// Index into the bus graph's convolutions.
     Convolution(usize),
+    /// `count` following stages in parallel with the dry signal; the lanes are
+    /// dry, wet and bypass.
+    Mix {
+        count: u16,
+        lanes: [usize; 3],
+    },
 }
 
 pub(super) struct PreparedVoiceChain {
@@ -282,6 +317,11 @@ pub(super) fn compile_processors(
                         .ok_or(Error::Capacity)?;
                     PreparedProcessor::Delay { delay, offset }
                 }
+                Processor::Compressor(settings) => {
+                    PreparedProcessor::Compressor(settings.prepare(rate))
+                }
+                Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
+                Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
                     reverbs.push((settings, 0));
@@ -291,6 +331,22 @@ pub(super) fn compile_processors(
                     let all = convolutions.as_deref_mut().ok_or(Error::InvalidInput)?;
                     all.push((impulse, dry, wet));
                     PreparedProcessor::Convolution(all.len() - 1)
+                }
+                Processor::Mix {
+                    count,
+                    dry,
+                    wet,
+                    bypass,
+                } => {
+                    // Only buses (which have reverbs) can run a parallel block.
+                    if reverbs.is_none() {
+                        return Err(Error::InvalidInput);
+                    }
+                    let lanes = [dry, wet, bypass].map(|binding| {
+                        bindings.push(binding);
+                        bindings.len() - 1
+                    });
+                    PreparedProcessor::Mix { count, lanes }
                 }
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
@@ -475,13 +531,20 @@ impl PreparedVoiceChain {
         fault
     }
 
-    /// Whether every stage has a lane kernel (delay lines stay per voice).
+    /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
     pub(super) fn batches(&self) -> bool {
         !self
             .pre
             .iter()
             .chain(&self.post)
-            .any(|stage| matches!(stage, PreparedProcessor::Delay { .. }))
+            .any(|stage| {
+                matches!(
+                    stage,
+                    PreparedProcessor::Delay { .. }
+                        | PreparedProcessor::Compressor(_)
+                        | PreparedProcessor::Decimate(_)
+                )
+            })
     }
 
     pub(super) fn pre(&self) -> &[PreparedProcessor] {
@@ -539,12 +602,14 @@ fn flush32(v: f32) -> f32 {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ProcessorState {
     z: [[f64; 2]; 2],
+    /// Further state for stages that need more than `z` (the decimator).
+    aux: [f64; 3],
     delay_position: u32,
     delay_filled: u32,
 }
 impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
-        self.z.iter().flatten().all(|v| v.is_finite())
+        self.z.iter().flatten().chain(&self.aux).all(|v| v.is_finite())
     }
 }
 
@@ -562,8 +627,42 @@ pub(super) fn process(
     filters: &mut svf::FilterContext<'_>,
 ) -> bool {
     let mut fault = false;
-    for (stage, state) in stages.iter().zip(states) {
+    let mut next = 0;
+    while next < stages.len() {
+        let (stage, index) = (&stages[next], next);
+        next += 1;
+        let state = &mut states[index];
         match stage {
+            PreparedProcessor::Mix { count, lanes } => {
+                let inner = next..next + usize::from(*count);
+                next = inner.end;
+                let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
+                let last = at + len.saturating_sub(1) as u64;
+                // A fully bypassed block skips the inner processors (their
+                // state, such as a reverb tail, rests until the bypass lifts).
+                let off = bypass.value(at) >= 1. && bypass.value(last) >= 1.;
+                let dry_block = *block;
+                if !off {
+                    fault |= process(
+                        &stages[inner.clone()],
+                        &mut states[inner],
+                        block,
+                        len,
+                        parameters,
+                        at,
+                        delay_samples,
+                        filters,
+                    );
+                }
+                for c in 0..2 {
+                    for i in 0..len {
+                        let t = at + i as u64;
+                        let b = bypass.value(t);
+                        let wet_part = if off { 0. } else { wet.value(t) * (1. - b) * block[c][i] };
+                        block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
+                    }
+                }
+            }
             PreparedProcessor::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
@@ -608,6 +707,13 @@ pub(super) fn process(
                     block,
                     len,
                 );
+            }
+            PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
+            PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
+            PreparedProcessor::Rectify(mode) => {
+                for channel in block.iter_mut() {
+                    channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
+                }
             }
             PreparedProcessor::Gain(gain) => {
                 for channel in block.iter_mut() {

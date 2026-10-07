@@ -26,7 +26,7 @@ pub enum NIFileType {
 impl NIFileType {
     /// Detect NI filetypes based on file signatures.
     ///
-    /// ```
+    /// ```ignore
     /// use ni_file::NIFileType;
     ///
     /// let file = File::open("tests/data/kontakt-1/000-crunchy.nki").unwrap();
@@ -90,6 +90,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_1() -> Result<(), Error> {
         Ok(assert_eq!(
             NIFileType::read(File::open("tests/filetype/NKS/KontaktV1/000-crunchy.nki")?)?,
@@ -98,6 +99,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_nkm() -> Result<(), Error> {
         Ok(assert_eq!(
             NIFileType::read(File::open("test-data/NKM/000.nkm")?)?,
@@ -106,6 +108,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_2() -> Result<(), Error> {
         Ok(assert_eq!(
             NIFileType::read(File::open(
@@ -116,6 +119,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_42() -> Result<(), Error> {
         Ok(assert_eq!(
             NIFileType::read(File::open(
@@ -126,6 +130,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_ncw() -> Result<(), Error> {
         Ok(assert_eq!(
             NIFileType::read(File::open("test-data/NCW/16-bit.ncw")?)?,
@@ -134,6 +139,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_kontakt_7() -> Result<(), Error> {
         let file = File::open("tests/filetype/NISD/kontakt/7.1.3.0/000-default.nki")?;
         Ok(assert_eq!(

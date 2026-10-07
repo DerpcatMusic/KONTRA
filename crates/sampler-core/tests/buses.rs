@@ -562,3 +562,113 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
             .is_err()
     );
 }
+
+#[test]
+fn mix_block_blends_bypasses_and_ramps_by_slot_controls() {
+    let range = |kind: SlotKind| ControlRange {
+        control: slot_control(kind, -1, 3, 1),
+        low: 0.,
+        high: kind.max(),
+        ramp_frames: 4,
+    };
+    let definition = |kind: SlotKind, value| ControlDefinition {
+        id: slot_control(kind, -1, 3, 1),
+        domain: ControlDomain::Real {
+            min: 0.,
+            max: kind.max(),
+        },
+        default: ControlValue::Real(value),
+    };
+    for block in [1, 7, 64] {
+        let prepared = plan(vec![[1.; 2]; 400], 1)
+            .with_controls(vec![
+                definition(SlotKind::Dry, 0.),
+                definition(SlotKind::Output, 1.),
+                definition(SlotKind::Bypass, 0.),
+            ])
+            .unwrap()
+            .with_buses(
+                vec![Bus {
+                    processors: vec![
+                        Processor::Mix {
+                            count: 1,
+                            dry: range(SlotKind::Dry),
+                            wet: range(SlotKind::Output),
+                            bypass: range(SlotKind::Bypass),
+                        },
+                        Processor::Gain(3.),
+                    ],
+                    sends: vec![send(None, 1.)],
+                    tail_frames: 0,
+                }],
+                vec![Some(0)],
+            )
+            .unwrap();
+        let mut rt = Runtime::new(prepared, limits()).unwrap();
+        let plan = rt.active_plan();
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let run = |rt: &mut Runtime, frames: usize| {
+            let mut audio = vec![[0.; 2]; frames];
+            for chunk in audio.chunks_mut(block) {
+                rt.render(chunk).unwrap();
+            }
+            audio[frames - 1][0]
+        };
+        let set = |rt: &mut Runtime, kind: SlotKind, value| {
+            rt.edit_controls(
+                plan,
+                None,
+                &[ControlWrite {
+                    id: slot_control(kind, -1, 3, 1),
+                    value: ControlValue::Real(value),
+                }],
+            )
+            .unwrap();
+        };
+        assert!((run(&mut rt, 20) - 3.).abs() < 1e-9, "wet only");
+        set(&mut rt, SlotKind::Dry, 0.5);
+        assert!((run(&mut rt, 20) - 3.5).abs() < 1e-9, "dry joins");
+        set(&mut rt, SlotKind::Bypass, 1.);
+        assert!((run(&mut rt, 20) - 1.).abs() < 1e-9, "bypass is dry at unity");
+        set(&mut rt, SlotKind::Bypass, 0.);
+        set(&mut rt, SlotKind::Output, 0.);
+        assert!((run(&mut rt, 20) - 0.5).abs() < 1e-9, "silent wet");
+    }
+}
+
+#[test]
+fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_tail() {
+    let mut first = vec![0.; 4];
+    first[0] = 1.;
+    let first = Impulse::new(first.clone(), first).unwrap();
+    let prepared = plan(vec![[0.5, 0.5]], 1)
+        .with_impulses(vec![first])
+        .with_buses(
+            vec![Bus {
+                processors: vec![Processor::Convolution { impulse: 0, dry: 0., wet: 1. }],
+                sends: vec![send(None, 1.)],
+                tail_frames: 100,
+            }],
+            vec![Some(0)],
+        )
+        .unwrap();
+    assert_eq!(prepared.convolution_slots(), 1);
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let mut audio = vec![[0.; 2]; 20_000];
+    rt.trigger(input(1), 60, 1.).unwrap();
+    rt.render(&mut audio).unwrap();
+    assert!((audio[0][0] - 0.5).abs() < 1e-6);
+    // A later reflection than the plan's tail: built on the control side.
+    let mut h = vec![0.; 16_000];
+    h[10] = 0.5;
+    h[15_000] = 0.25;
+    let second = Impulse::new(h.clone(), h).unwrap();
+    let mut upload = ConvolutionUpload::new(&second, 0., 1.);
+    assert!(rt.swap_convolution(1, &mut upload).is_err());
+    support::without_heap(|| rt.swap_convolution(0, &mut upload).unwrap());
+    rt.trigger(input(2), 60, 1.).unwrap();
+    rt.render(&mut audio).unwrap();
+    assert!((audio[10][0] - 0.25).abs() < 1e-5, "{}", audio[10][0]);
+    assert!(audio[0][0].abs() < 1e-6, "the old impulse is gone");
+    assert!((audio[15_000][0] - 0.125).abs() < 1e-5, "the new tail rings: {}", audio[15_000][0]);
+}

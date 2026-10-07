@@ -4,6 +4,9 @@ use sampler_core::{Limits, Runtime};
 use sampler_ir as ir;
 use sampler_midi::{Articulator, Ingress, Intercept, Packets, Version};
 
+#[path = "support/reference.rs"]
+mod reference;
+
 const INSTRUMENT: &str =
     "Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki";
 const KEY: u8 = 60;
@@ -46,9 +49,8 @@ fn decoded(path: &std::path::Path, key: u8) -> Decoded {
         pcm,
         labels: kept.iter().map(|a| a.to_string()).collect(),
         options: sampler_kontakt::Options {
-            keys: key..=key,
             library: Some(path.to_owned()),
-            ..Default::default()
+            ..reference::options(key..=key)
         },
     }
 }
@@ -71,6 +73,7 @@ impl Decoded {
 /// Render `words` (one per 64-frame step) through the articulator and ingress.
 fn render(loaded: sampler_kontakt::Loaded, words: &[u32]) -> Vec<[f32; 2]> {
     let plan = loaded.plan;
+    reference::assert_matched(&plan);
     let limits = Limits {
         notes: 64,
         channels: 16,
@@ -395,8 +398,18 @@ fn probe_instrument() {
         "DYNAMICS amplitude controllers {:?}",
         d.instrument.amplitude_controllers()
     );
+    for (i, g) in d.instrument.groups.iter().enumerate() {
+        eprintln!(
+            "GROUPNAME {i} {:?} gain {:?} out {:?}",
+            g.name, g.gain, g.output
+        );
+    }
     eprintln!("BUSES {:?}", d.instrument.buses);
-    for b in &d.instrument.buses { if let Some(c) = b.chain { eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]); } }
+    for b in &d.instrument.buses {
+        if let Some(c) = b.chain {
+            eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]);
+        }
+    }
     eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),
@@ -538,7 +551,6 @@ fn probe_instrument() {
             .collect();
         groups.sort();
         groups.dedup();
-        let db = |x: f64| 20.0 * (x + 1e-12).log10();
         for g in groups {
             let mut ir = d.instrument.clone();
             ir.behaviors.clear();
@@ -570,22 +582,16 @@ fn probe_instrument() {
             words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
             words.resize(1500, 0x2000_0000);
             let out = render(loaded, &words);
-            let sr = 48000;
-            let seg = &out[sr / 2..2 * sr];
-            let rms = (seg
-                .iter()
-                .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
-                .sum::<f64>()
-                / (2.0 * seg.len() as f64))
-                .sqrt();
-            let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-            let lr = |c: usize| out.iter().fold(0f32, |p, f| p.max(f[c].abs()));
+            let whole = reference::levels(&out, 0.0, 3.0);
+            let tail = reference::levels(&out, 0.5, 2.0);
             eprintln!(
-                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1}",
-                db(f64::from(pk)),
-                db(rms),
-                db(f64::from(lr(0))),
-                db(f64::from(lr(1)))
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1} rmsL {:.1} rmsR {:.1}",
+                whole.max_peak(),
+                (tail.rms[0] + tail.rms[1]) / 2.0,
+                whole.peak[0],
+                whole.peak[1],
+                tail.rms[0],
+                tail.rms[1]
             );
         }
     }
@@ -671,50 +677,59 @@ fn probe_instrument() {
 
 /// Kontakt 8 reference levels (KONTAKT_REFERENCE.md s.13): scripts on, nothing
 /// sent, 3 s held; max(|L|, |R|) peak over 0.3-3 s in dBFS.
-const REFERENCE: &[(&str, u8, u8, f64)] = &[
+/// Library, key, velocity, Kontakt's peak in dBFS and the controllers its
+/// recording sent explicitly (CC, value) before the note.
+const REFERENCE: &[(&str, u8, u8, f64, &[(u8, u8)])] = &[
     (
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
         48,
         100,
         -38.6,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         64,
         -24.7,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         100,
         -14.7,
+        &[],
     ),
     (
         "Una Corda Library/Instruments/Una Corda Cotton.nki",
         60,
         127,
         -8.6,
+        &[],
     ),
     (
         "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
         55,
         100,
         -15.9,
+        &[],
     ),
 ];
 
 /// Every reference note within 1 dB of Kontakt. Known gaps while it fails: Una
 /// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
-/// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
+/// the recording sent no CC1 or CC11 (KONTAKT_REFERENCE.md s.13), so Kontakt's
+/// script supplies its own CC1 default, read as about 48 with the script
+/// bypassed; KONTRA's scripts-on path starts it at 0). Vista is +0.9 dB.
 #[test]
-#[ignore = "known gaps: Una Cotton vel 100/127, Barbarian CC1 default"]
+#[ignore = "known gaps: Una Cotton 5/11/11 dB low at vel 64/100/127, Barbarian 11 dB low; script-driven, Vista passes"]
 fn full_notes_match_kontakt_within_a_decibel() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
     let mut off = Vec::new();
-    for &(relative, key, vel, kontakt) in REFERENCE {
+    for &(relative, key, vel, kontakt, controllers) in REFERENCE {
         let path = std::path::Path::new(&root).join(relative);
         if !path.exists() {
             continue;
@@ -727,17 +742,12 @@ fn full_notes_match_kontakt_within_a_decibel() {
             &d.options,
         )
         .unwrap();
-        let mut words = vec![
-            0x2000_0000,
-            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
-        ];
+        let mut words = vec![0x2000_0000];
+        words.extend(reference::controller_words(controllers));
+        words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())]
-            .iter()
-            .flatten()
-            .fold(0f32, |p, x| p.max(x.abs()));
-        let db = 20.0 * f64::from(peak).log10();
+        let db = reference::levels(&out, 0.3, 3.0).max_peak();
         if (db - kontakt).abs() >= 1.0 {
             off.push(format!(
                 "{relative} key {key} vel {vel}: {db:.1} against {kontakt}"
@@ -753,15 +763,24 @@ fn una_velocity_sweep_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let path =
+        std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
     for vel in [40u32, 64, 72, 80, 88, 94, 100, 110, 127] {
         let d = decoded(&path, 60);
-        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
         let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-        eprintln!("PROBE vel {vel}: {:.1}", 20.0 * f64::from(peak).log10());
+        eprintln!(
+            "PROBE vel {vel}: {:.1}",
+            reference::levels(&out, 0.3, 3.0).max_peak()
+        );
     }
 }
 
@@ -775,7 +794,13 @@ fn barbarian_cc1_sweep_probe() {
         .join("Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki");
     for cc1 in [None, Some(0u32), Some(48), Some(127)] {
         let d = decoded(&path, 55);
-        let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
         let mut words = vec![0x2000_0000];
         if let Some(v) = cc1 {
             words.push(0x20B0_0000 | 1 << 8 | v);
@@ -783,7 +808,169 @@ fn barbarian_cc1_sweep_probe() {
         words.push(0x2090_0000 | 55 << 8 | 100);
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let peak = out[14_400..144_000.min(out.len())].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-        eprintln!("PROBE cc1 {cc1:?}: {:.1}", 20.0 * f64::from(peak).log10());
+        eprintln!(
+            "PROBE cc1 {cc1:?}: {:.1}",
+            reference::levels(&out, 0.3, 3.0).max_peak()
+        );
+    }
+}
+
+/// Runtime trace of a full note: every selection with its group verdicts and
+/// every effect the scripts emitted (set_engine_par and friends, by name).
+#[test]
+#[ignore = "probe"]
+fn full_note_runtime_trace_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    for &(relative, key, vel, _, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
+        if vel != 100 {
+            continue;
+        }
+        let path = std::path::Path::new(&root).join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let d = decoded(&path, key);
+        let loaded =
+            sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options)
+                .unwrap();
+        let names: Vec<String> = loaded.instrument.groups.iter().map(|g| g.name.clone()).collect();
+        let scripts = loaded.scripts.clone();
+        let plan = loaded.plan;
+        let limits = Limits {
+            notes: 64,
+            channels: 16,
+            performances: 1,
+            expressions: 64,
+            families: 64,
+            decisions: 256,
+            voices: 512,
+            commands: 256,
+            behaviors: 16,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count().saturating_mul(16),
+            note_cells: plan.note_cell_count().saturating_mul(64),
+        };
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        rt.record_selections(true);
+        rt.record_script_writes(true);
+        let mut groups = [None; 16];
+        groups[0] = Some(Version::Midi1);
+        let mut ingress = Ingress::new(0, groups);
+        let mut articulator = Articulator::new(&rt, rt.performance(0).unwrap(), 0).unwrap();
+        let mut out = vec![[0.0; 2]; 64];
+        println!("=== {relative} key {key} vel {vel}");
+        let mut words = vec![0x2000_0000, 0x2090_0000 | u32::from(key) << 8 | u32::from(vel)];
+        words.resize(1500, 0x2000_0000);
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for (i, &word) in words.iter().enumerate() {
+            let w = [word];
+            let packet = Packets::new(&w).next().unwrap().unwrap();
+            if articulator.intercept(&mut rt, packet).unwrap() == Intercept::Forward {
+                let _ = ingress.apply(&mut rt, packet);
+            }
+            rt.render(&mut out).unwrap();
+            let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            if i % 50 == 0 {
+                println!("step {i} peak {:.1} dB voices {}", 20.0 * f64::from(peak).log10(), rt.voice_count());
+            }
+            for r in rt.take_selection_records() {
+                let sounded: Vec<String> = r
+                    .candidates
+                    .iter()
+                    .filter(|c| c.rejected.is_none())
+                    .map(|c| {
+                        c.group.map_or("?".into(), |g| {
+                            format!("{g}:{}", names.get(g as usize).map_or("", |n| n.as_str()))
+                        })
+                    })
+                    .collect();
+                println!(
+                    "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {} {:?}",
+                    r.key,
+                    r.velocity,
+                    r.trigger,
+                    r.suppressed,
+                    r.candidates.len(),
+                    sounded.len(),
+                    sounded.iter().take(60).collect::<Vec<_>>()
+                );
+            }
+            for w in rt.take_script_writes() {
+                if i < 200 {
+                    println!("step {i} WRITE {w}");
+                }
+            }
+            rt.drain_effects(|e| {
+                let view = e.instance.and_then(|id| scripts.get(usize::from(id.0)));
+                let name = view.and_then(|v| v.service(e.service)).unwrap_or("?");
+                let args = e.args();
+                let shown = match (name, view) {
+                    ("set_engine_par", Some(v)) => {
+                        let par = args.first().and_then(|&a| v.symbol(a as i32)).unwrap_or_default();
+                        format!("{par} {:?}", &args[1.min(args.len())..])
+                    }
+                    _ => format!("{args:?}"),
+                };
+                let line = format!("{name} {shown}");
+                if i < 200 {
+                    println!("step {i} EFFECT {line}");
+                }
+                *counts.entry(name.to_string()).or_default() += 1;
+                true
+            });
+        }
+        println!("effect totals {counts:?} dropped {}", rt.dropped_effects());
+    }
+}
+
+/// Una Cotton key 60 vel 100: the script-played note against the same group
+/// played natively with scripts off (peak dBFS over 0.1 s windows).
+#[test]
+#[ignore = "probe"]
+fn una_script_vs_native_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    let windows = |out: &[[f32; 2]]| {
+        (0..8)
+            .map(|w| {
+                let seg = &out[w * 4800..((w + 1) * 4800).min(out.len())];
+                let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+                format!("{:.1}", 20.0 * f64::from(p).log10())
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | 100];
+    words.resize(1500, 0x2000_0000);
+    for scripts in [true, false] {
+        let mut d = decoded(&path, 60);
+        if !scripts {
+            let keep: Vec<_> = d
+                .instrument
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.name == "DRY_C3")
+                .map(|(i, _)| i)
+                .collect();
+            println!("native groups {keep:?}");
+            let kept = d.instrument.retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
+            d.pcm = kept.iter().map(|&i| d.pcm[i].clone()).collect();
+            d.labels = kept.iter().map(|&i| d.labels[i].clone()).collect();
+            d.options.scripts = false;
+        }
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let out = render(loaded, &words);
+        println!("scripts {scripts}: {}", windows(&out));
     }
 }

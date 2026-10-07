@@ -33,6 +33,9 @@ pub struct Articulator {
     /// Last key tapped into behavior-owned switching; behaviors keep their own
     /// state, so a repeat selection is not tapped again.
     tapped: Option<u8>,
+    /// The last switch key selected either way, a driver tap or a key pressed
+    /// directly: what a script-owned instrument was last asked for.
+    selected: Option<u8>,
     /// Keys whose switch note-on was swallowed / forwarded, so a remap while
     /// held cannot strand the release or leave a note on.
     // ponytail: per key, not per channel; two channels on one switch key share a bit.
@@ -48,9 +51,17 @@ impl Articulator {
             performance,
             port,
             tapped: None,
+            selected: None,
             swallowed: 0,
             played: 0,
         })
+    }
+
+    /// The last switch key selected, tapped by a driver or pressed directly in
+    /// the incoming MIDI: with the instrument's switch keys, which articulation
+    /// a script-owned instrument was asked for.
+    pub fn selected(&self) -> Option<u8> {
+        self.selected
     }
 
     /// Apply the driver part of `packet` at `Runtime::now()`.
@@ -81,6 +92,7 @@ impl Articulator {
                 }
             }
             Message::NoteOn { key, .. } if switching.is_switch_key(key) => {
+                self.selected = Some(key);
                 let bit = 1u128 << key;
                 if driver != Driver::Keys && switching.keys() == SwitchKeys::Swallow {
                     self.swallowed |= bit;
@@ -172,6 +184,7 @@ impl Articulator {
                 )?;
                 runtime.note_off_in(self.performance, input, None)?;
                 self.tapped = Some(key);
+                self.selected = Some(key);
             }
             Switch::Tap(_) => {}
         }
