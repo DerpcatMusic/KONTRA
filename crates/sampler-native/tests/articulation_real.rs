@@ -835,6 +835,7 @@ fn full_note_runtime_trace_probe() {
     });
     let list: Vec<(String, u8, u8)> = match one {
         Some((p, k)) => vec![(p, k, 100)],
+        // vel is read below
         None => REFERENCE
             .iter()
             .filter(|r| !r.0.contains("Vista"))
@@ -845,6 +846,7 @@ fn full_note_runtime_trace_probe() {
         if vel != 100 {
             continue;
         }
+        let vel = std::env::var("KONTRA_TRACE_VEL").ok().map_or(vel, |v| v.parse().unwrap());
         let path = std::path::Path::new(&root).join(relative);
         if !path.exists() {
             continue;
@@ -899,9 +901,10 @@ fn full_note_runtime_trace_probe() {
                     .iter()
                     .filter(|c| c.rejected.is_none())
                     .map(|c| {
-                        c.group.map_or("?".into(), |g| {
+                        let g = c.group.map_or("?".into(), |g| {
                             format!("{g}:{}", names.get(g as usize).map_or("", |n| n.as_str()))
-                        })
+                        });
+                        format!("{g} z{} {:?}", c.region, loaded.instrument.zones[c.region].velocities)
                     })
                     .collect();
                 println!(
