@@ -457,6 +457,50 @@ impl Runtime {
         Ok(())
     }
 
+    /// What `get_event_par` reports for a built-in parameter other than note
+    /// and velocity. An event that ended or never sounded reads 0.
+    pub(crate) fn read_event_info(
+        &mut self,
+        plan: crate::PlanId,
+        event: i64,
+        info: crate::EventInfo,
+    ) -> Result<i64, Error> {
+        let Ok(event) = i32::try_from(event) else {
+            return Ok(0);
+        };
+        let Some(note) = self.resolve_source_event(plan, event)? else {
+            return Ok(0);
+        };
+        Ok(match info {
+            crate::EventInfo::Key => i64::from(self.notes.get(note.0).unwrap().pitch.key()),
+            crate::EventInfo::Velocity => {
+                (self.notes.get(note.0).unwrap().velocity * 127.).round() as i64
+            }
+            crate::EventInfo::MidiChannel => {
+                i64::from(self.notes.get(note.0).unwrap().address.channel)
+            }
+            // ponytail: Kontakt's zone ids are unique per zone; the group's
+            // index + 1 is nonzero exactly while the event sounds, which is
+            // what scripts test, and tells groups apart.
+            crate::EventInfo::ZoneId => {
+                let mut family = self.notes.get(note.0).unwrap().first_family;
+                while let Some(index) = family {
+                    let f = self.families.slots[index.get()].value.unwrap();
+                    family = f.siblings.next;
+                    let mut voice = f.first_voice;
+                    while let Some(v) = voice {
+                        let state = self.voices.slots[v.get()].value.unwrap();
+                        voice = state.siblings.next;
+                        if !state.stolen {
+                            return Ok(i64::from(state.group.map_or(0, |g| g + 1)) + 1);
+                        }
+                    }
+                }
+                0
+            }
+        })
+    }
+
     pub(crate) fn read_mod_value(
         &mut self,
         plan: crate::PlanId,

@@ -19,7 +19,7 @@
 //! Not yet: per-note controllers and program changes (counted), a sample-rate change
 //! without reloading.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -90,22 +90,47 @@ pub struct Part {
     script: Option<Box<ScriptDriver>>,
 }
 
+/// Bytes the system could give a new allocation without swapping, from
+/// `/proc/meminfo`; `None` where that is unavailable.
+fn mem_available() -> Option<usize> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let line = info.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: usize = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// A growth may take at most this share of available memory.
+const GROWTH_SHARE: usize = 4;
+
 /// A thread that sleeps until the audio side reports a nearly full voice pool
-/// (or a growth coming back), then doubles the pool up to `ceiling`.
+/// (or a growth coming back), then doubles the pool while the new voices fit a
+/// quarter of the memory available at that moment (and note capacity, sized
+/// for `ceiling` voices, allows). Past that, only stealing is left.
 struct Grower {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Grower {
-    fn start(runtime: &mut Runtime, mut control: PlanControl, ceiling: usize) -> std::io::Result<Self> {
+    fn start(
+        runtime: &mut Runtime,
+        mut control: PlanControl,
+        ceiling: usize,
+        per_voice: usize,
+    ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
             let stop = stop.clone();
             move || {
                 while !stop.load(Ordering::Relaxed) {
-                    if control.voice_pressure() && control.voice_capacity() < ceiling {
-                        let _ = control.grow_voices((control.voice_capacity() * 2).min(ceiling));
+                    let capacity = control.voice_capacity();
+                    if control.voice_pressure() && capacity < ceiling {
+                        let next = (capacity * 2).min(ceiling);
+                        let fits = mem_available()
+                            .is_none_or(|free| (next - capacity).saturating_mul(per_voice) <= free / GROWTH_SHARE);
+                        if fits {
+                            let _ = control.grow_voices(next);
+                        }
                     }
                     std::thread::park();
                 }
@@ -788,25 +813,31 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
-/// One (the audio thread alone) unless set.
-fn render_threads() -> Threads {
+/// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
+/// wins, then the player's setting; one (the audio thread alone) otherwise.
+fn render_threads(request: &LoadRequest) -> Threads {
     match std::env::var("KONTRA_THREADS").as_deref() {
         Ok("auto") => Threads::Auto,
         Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
-        Err(_) => Threads::Fixed(1),
+        Err(_) => match request.threads {
+            Some(super::ThreadChoice::Auto) => Threads::Auto,
+            Some(super::ThreadChoice::Fixed(n)) => Threads::Fixed(n),
+            None => Threads::Fixed(1),
+        },
     }
 }
 
 /// Memory a part preallocates for per-voice state. Voices start sized to this,
 /// not to a fixed polyphony, and the pool doubles off the audio thread (see
-/// `Grower`) past three quarters full, up to `GROWTH` times as many. A note is
+/// `Grower`) past three quarters full, up to `GROWTH` times as many if memory allows. A note is
 /// refused only when that is exhausted too, and it is counted
 /// (`RuntimeStats::voice_drops`).
 const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
 const MAX_VOICES: usize = 16384;
-const GROWTH: usize = 4;
+const GROWTH: usize = 8;
+/// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
+const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
 /// the voice count the pool may grow to. Notes, families and decisions are
@@ -815,10 +846,11 @@ fn limits(plan: &Prepared) -> (Limits, usize) {
     let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
     let ceiling = voices * GROWTH;
     // Notes outlive their voices only in release, and each holds a few voices.
-    let notes = (ceiling / 4).max(NOTES);
+    // Capped: script cells are allocated per note.
+    let notes = (ceiling / 4).clamp(NOTES, 16384);
     let limits = Limits {
-        families: (ceiling / 2).max(256),
-        decisions: (ceiling / 2).max(256),
+        families: (ceiling / 2).clamp(256, 32768),
+        decisions: (ceiling / 2).clamp(256, 32768),
         ..Limits::for_plan(plan, notes, voices)
     };
     (limits, ceiling)
@@ -935,6 +967,32 @@ type Plan = (Prepared, Option<StreamCache>, Option<ScriptDriver>);
 /// A UVI program's Lua scripts, driving the part's runtime from their own thread.
 pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>;
 
+/// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
+/// folder above the snapshot, named by its metadata or by the snapshot's folder.
+fn snapshot_parent(snapshot: &Path, name: &str) -> Option<PathBuf> {
+    fn find(dir: &Path, wanted: &[String], depth: usize) -> Option<PathBuf> {
+        let mut folders = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+                && path.file_stem().is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
+            {
+                return Some(path);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        folders.sort();
+        folders.iter().find_map(|d| find(d, wanted, depth - 1))
+    }
+    let folder = snapshot.parent()?.file_name()?.to_string_lossy().into_owned();
+    let wanted: Vec<String> = [name.to_owned(), folder].into_iter().filter(|n| !n.is_empty()).collect();
+    snapshot.ancestors().skip(1).take(4).find_map(|dir| find(dir, &wanted, 3))
+}
+
 fn kontakt(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
@@ -944,18 +1002,32 @@ fn kontakt(
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load((&e).into()),
     };
-    let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
-    let mut source = if multi {
-        sampler_kontakt::read_program(&request.path, request.program as usize)
+    let extension = |e: &str| request.path.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+    // A snapshot is the saved state of an instrument found beside it in the library.
+    let snapshot = if extension("nksn") {
+        let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
+        let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
+            CoreError::Load(LoadFailure::message(format!("no instrument \"{}\" found for snapshot", state.instrument)))
+        })?;
+        Some((parent, state))
     } else {
-        sampler_kontakt::read(&request.path)
+        None
+    };
+    let path = snapshot.as_ref().map_or(&request.path, |(parent, _)| parent);
+    let mut source = if extension("nkm") {
+        sampler_kontakt::read_program(path, request.program as usize)
+    } else {
+        sampler_kontakt::read(path)
     }
     .map_err(load)?;
+    if let Some((_, state)) = &snapshot {
+        sampler_kontakt::apply_snapshot(&mut source, state);
+    }
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
         rate: request.sample_rate as u32,
-        library: Some(request.path.clone()),
+        library: Some(path.clone()),
         mpe: request.mpe.then(Default::default),
         ..Default::default()
     };
@@ -1111,10 +1183,11 @@ impl CoreLoader for V2Loader {
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         let (limits, ceiling) = limits(&prepared);
+        let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
-        let mut runtime = runtime.with_threads(render_threads());
+        let mut runtime = runtime.with_threads(render_threads(request));
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
@@ -1128,7 +1201,7 @@ impl CoreLoader for V2Loader {
                 runtime.bus_count()
             )));
         }
-        let grower = Grower::start(&mut runtime, control, ceiling)
+        let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.grower = Some(grower);
@@ -1150,7 +1223,12 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
+            let parent = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")).then(|| {
+                let state = sampler_kontakt::read_snapshot(path).ok()?;
+                snapshot_parent(path, &state.instrument)
+            });
+            let path = parent.flatten().unwrap_or_else(|| path.to_path_buf());
+            let instrument = sampler_kontakt::read(&path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -1720,6 +1798,36 @@ mod tests {
         mix.nodes[0][nodes[0] - 1].mute = true;
         let none = settled(&mut core, &mix);
         assert!(none < open * 0.05 + 1e-7 && one >= none, "one {one}, none {none}");
+    }
+
+    #[test]
+    fn real_snapshots_read_find_their_instrument_and_load() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(library) = std::env::split_paths(&roots).map(|r| r.join("Una Corda Library")).find(|p| p.is_dir()) else {
+            eprintln!("skipped: Una Corda Library is not installed");
+            return;
+        };
+        let files: Vec<_> = walkdir::WalkDir::new(library.join("Snapshots"))
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "nksn"))
+            .map(|e| e.into_path())
+            .collect();
+        assert!(!files.is_empty());
+        let mut changed = 0;
+        for file in &files {
+            let state = sampler_kontakt::read_snapshot(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let parent = snapshot_parent(file, &state.instrument).unwrap_or_else(|| panic!("no instrument for {}", file.display()));
+            let plain = sampler_kontakt::read(&parent).unwrap();
+            let mut applied = sampler_kontakt::read(&parent).unwrap();
+            sampler_kontakt::apply_snapshot(&mut applied, &state);
+            let states = |k: &sampler_kontakt::Kontakt| k.instrument.behaviors.iter().map(|b| b.state.clone()).collect::<Vec<_>>();
+            changed += usize::from(states(&plain) != states(&applied));
+        }
+        assert!(changed > 0, "no snapshot changed any script state across {} files", files.len());
+        let request = LoadRequest { path: files[0].clone(), sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        assert!(loaded.instrument.is_some_and(|i| !i.zones.is_empty()));
     }
 
     #[test]

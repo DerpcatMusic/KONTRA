@@ -183,6 +183,15 @@ pub enum Instruction {
         allowed: bool,
         pending_only: bool,
     },
+    /// `set_event_par_arr(event, $EVENT_PAR_ALLOW_GROUP, allowed, group)`: edit
+    /// the selection of a note this callback played and that has not started
+    /// yet (it starts when the callback waits or ends). `group` None is
+    /// `$ALL_GROUPS`. Edits to a note that already started do nothing.
+    WriteEventGroup {
+        event: u16,
+        group: Option<u16>,
+        allowed: u16,
+    },
     ReadGroupCount {
         local: u16,
     },
@@ -244,6 +253,13 @@ pub enum Instruction {
     ReadModValue {
         event: u16,
         id: u16,
+        local: u16,
+    },
+    /// Read what an event is doing (`get_event_par` of a built-in parameter)
+    /// into `local`; 0 for a retired or unknown event.
+    ReadEventInfo {
+        event: u16,
+        info: super::EventInfo,
         local: u16,
     },
     /// Read a script layer's own value, in `WriteParam` units.
@@ -507,6 +523,17 @@ impl Program {
             | Instruction::ReadModValue { event, id, local } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
+            }
+            if let Instruction::WriteEventGroup {
+                event,
+                group,
+                allowed,
+            } = *op
+            {
+                locals = locals.max(usize::from(event.max(allowed).max(group.unwrap_or(0))) + 1);
+            }
+            if let Instruction::ReadEventInfo { event, local, .. } = *op {
+                locals = locals.max(usize::from(event.max(local)) + 1);
             }
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
@@ -1015,6 +1042,7 @@ impl Runtime {
                 .unwrap()
                 .prepared;
             let Some(op) = plan.programs[c.program].code.get(c.pc).copied() else {
+                self.flush_deferred(id);
                 self.behaviors.get_mut(id.0).unwrap().outcome = Some(Outcome::Finished);
                 self.release_controller_reserve(id);
                 self.behavior_ready.remove(index);
@@ -1027,7 +1055,12 @@ impl Runtime {
             }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
             self.behaviors.get_mut(id.0).unwrap().pc += 1;
-            match self.behavior_step(id, c.owner, op) {
+            let stepped = self.behavior_step(id, c.owner, op);
+            if !matches!(stepped, Ok(false) | Err(Error::ClosedNote)) {
+                // The callback waited, ended or faulted: notes it played start now.
+                self.flush_deferred(id);
+            }
+            match stepped {
                 Ok(true) => {
                     if self.behaviors.get(id.0).unwrap().outcome.is_some() {
                         self.release_controller_reserve(id);
@@ -1252,6 +1285,22 @@ impl Runtime {
                     self.set_group_view(note, view, group, allowed)?;
                 }
             }
+            Instruction::WriteEventGroup {
+                event,
+                group,
+                allowed,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                let allowed = *self.local_cell_mut(id, allowed)? != 0;
+                let group = group
+                    .map(|local| {
+                        u32::try_from(*self.local_cell_mut(id, local)?)
+                            .map_err(|_| Error::InvalidInput)
+                    })
+                    .transpose()?;
+                self.write_event_group(plan, event, group, allowed)?;
+            }
             Instruction::ReadGroupCount { local } => {
                 let plan = self.behavior_plan(owner)?;
                 let count = self.plans.get(plan.0).unwrap().prepared.group_count;
@@ -1463,6 +1512,11 @@ impl Runtime {
                 let slot = *self.local_cell_mut(id, slot)?;
                 *self.local_cell_mut(id, local)? = self.read_mod_value(plan, event, slot)?;
             }
+            Instruction::ReadEventInfo { event, info, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = *self.local_cell_mut(id, event)?;
+                *self.local_cell_mut(id, local)? = self.read_event_info(plan, event, info)?;
+            }
             Instruction::ReadParam {
                 scope,
                 index,
@@ -1615,6 +1669,57 @@ impl Runtime {
         Ok(false)
     }
 
+    /// Start the notes `id` played since it last waited, with the group
+    /// selection it left them (Kontakt starts played notes when the callback
+    /// yields, so scripts adjust them right after `play_note`).
+    fn flush_deferred(&mut self, id: BehaviorId) {
+        while let Some(at) = self.deferred.iter().position(|d| d.0 == id) {
+            let (_, note, entry) = self.deferred.remove(at);
+            match self.commit_note_attack(note, entry) {
+                Ok(true) => {
+                    let plan = self.notes.get(note.0).unwrap().plan;
+                    let end = self.plans.get(plan.0).unwrap().prepared.stages.len();
+                    self.project_note(note, entry, end);
+                    let _ = self
+                        .plans
+                        .get_mut(plan.0)
+                        .unwrap()
+                        .projections
+                        .get_mut(note.0.index, end)
+                        .map(|p| p.forwarded = true);
+                }
+                Ok(false) | Err(Error::ClosedNote) => {}
+                // No room once the selection was edited: drop the note.
+                Err(_) => {
+                    let _ = self.suppress_attack(note);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn write_event_group(
+        &mut self,
+        plan: crate::PlanId,
+        event: i64,
+        group: Option<u32>,
+        allowed: bool,
+    ) -> Result<(), Error> {
+        let Ok(event) = i32::try_from(event) else {
+            return Ok(());
+        };
+        let Some(note) = self.resolve_source_event(plan, event)? else {
+            return Ok(());
+        };
+        let Some(&(_, _, entry)) = self.deferred.iter().find(|d| d.1 == note) else {
+            return Ok(());
+        };
+        match self.set_group_view(note, super::groups::GroupView::Note(entry), group, allowed) {
+            // A group the instrument lacks is ignored, as in Kontakt.
+            Err(Error::InvalidInput) => Ok(()),
+            other => other,
+        }
+    }
+
     fn wait_behavior(&mut self, id: BehaviorId, frames: u32) -> Result<bool, Error> {
         if frames == 0 {
             return Ok(false);
@@ -1686,7 +1791,14 @@ impl Runtime {
         let command = usize::from(at.is_some_and(|at| at != self.now));
         self.reserved_commands += command;
         let ready_begin = self.behavior_ready.len();
-        let child = self.select(origin, pitch, velocity, offset_micros, source_stage);
+        let child = self.select(
+            origin,
+            pitch,
+            velocity,
+            offset_micros,
+            source_stage,
+            Some(id),
+        );
         self.reserved_commands -= command;
         let child = child?;
         if linked && let Some(stage) = source_stage {

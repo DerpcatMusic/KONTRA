@@ -753,19 +753,18 @@ fn check(item: &Item) -> Value {
             Ok(mut s) if silent(&s) && item.kind() == "kontakt" => {
                 // Selection records allocate, so they only run on a second pass
                 // over an item that was silent.
-                if let (_, Some((again, pick))) = load_item(item) {
-                    if let Ok(d) = play(again, pick, true, &[]) {
+                if let (_, Some((again, pick))) = load_item(item)
+                    && let Ok(d) = play(again, pick, true, &[]) {
                         s.selection = d.selection;
                     }
-                }
                 Ok(s)
             }
             other => other,
         };
         // The same note again with the controllers up; if only that sounds, find
         // the controller it needs.
-        if let Ok(d) = &first {
-            if item.kind() == "kontakt" {
+        if let Ok(d) = &first
+            && item.kind() == "kontakt" {
                 let again = |ccs: &[(u8, u8)]| match load_item(item) {
                     (_, Some((subject, pick))) => play(subject, pick, false, ccs).ok(),
                     _ => None,
@@ -789,7 +788,6 @@ fn check(item: &Item) -> Value {
                     record["musical"] = musical;
                 }
             }
-        }
         match first {
             Ok(s) => {
                 let db = |p: f32| {
@@ -1122,19 +1120,17 @@ fn diff(old: &Path, new: &Path) {
                     _ => {}
                 }
                 let f = |r: &Value, a: &str, b: &str| r["perf"][a].as_f64().or(r[b].as_f64());
-                if let (Some(a), Some(b)) = (f(o, "load_ms", "load_ms"), f(n, "load_ms", "load_ms")) {
-                    if b > a * 1.25 && b - a > 50.0 {
+                if let (Some(a), Some(b)) = (f(o, "load_ms", "load_ms"), f(n, "load_ms", "load_ms"))
+                    && b > a * 1.25 && b - a > 50.0 {
                         slow.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
                     }
-                }
                 if let (Some(a), Some(b)) = (
                     o["perf"]["peak_rss_kib"].as_f64(),
                     n["perf"]["peak_rss_kib"].as_f64(),
-                ) {
-                    if b > a * 1.25 && b - a > 32768.0 {
+                )
+                    && b > a * 1.25 && b - a > 32768.0 {
                         fat.push(format!("{id}  rss {:.0} -> {:.0} MiB", a / 1024.0, b / 1024.0));
                     }
-                }
             }
         }
     }
