@@ -352,16 +352,17 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
                     NotModeled,
                 ));
             }
-            if spread != 0.0 || pan != 0.0 {
-                // Mid/side width 1 + spread and balance pan: v1's law, not
-                // verified against Kontakt.
+            if spread != 1.0 || pan != 0.0 {
+                // Mid/side width = spread (Una's instrument insert, spread 0,
+                // pan centre, plays L=R in Kontakt 8: spread 0 is mono) and
+                // balance pan (unverified).
                 notes.push((
                     "stereo modeller width/pan law".into(),
                     format!("spread {spread} pan {pan}"),
                     UnknownLaw,
                 ));
             }
-            let width = (1.0 + f64::from(spread)).clamp(0.0, 2.0);
+            let width = f64::from(spread).clamp(0.0, 2.0);
             let pan = f64::from(pan);
             let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
             let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
@@ -517,7 +518,15 @@ pub(crate) fn chain_with(
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        let wet = f64::from(fx.output_gain);
+        // The Inverter's Output knob does not reach the signal: Una g39 and g94
+        // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
+        // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
+        // 6.0 dB louder with it.
+        let wet = if fx.module == 0x1a {
+            1.0
+        } else {
+            f64::from(fx.output_gain)
+        };
         let gain = [[wet, 0.0], [0.0, wet]];
         let mut modelled = true;
         match &params {
@@ -893,10 +902,28 @@ mod tests {
     }
 
     #[test]
+    fn a_modeller_at_spread_zero_sums_to_mono_and_the_inverter_output_is_not_applied() {
+        let mut modeller = 0.0f32.to_le_bytes().to_vec();
+        modeller.extend(0.0f32.to_le_bytes());
+        modeller.push(0);
+        let mono = chain(&[slot(0x1f, modeller, 1.0)], Scope::Voice).processors;
+        assert_eq!(
+            mono,
+            vec![sampler_ir::Processor::StereoMatrix([
+                [0.5, 0.5],
+                [0.5, 0.5]
+            ])]
+        );
+        // Una g39's post-amp Inverter: Output +6 dB (linear 2) is not applied.
+        let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
+        assert!(inverter.is_empty(), "{inverter:?}");
+    }
+
+    #[test]
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
         let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         let inverter = slot(0x1a, vec![1, 1], 0.5);
-        let mut modeller = 0.0f32.to_le_bytes().to_vec();
+        let mut modeller = 1.0f32.to_le_bytes().to_vec();
         modeller.extend(0.0f32.to_le_bytes());
         modeller.push(0);
         let modeller = slot(0x1f, modeller, 2.0);
@@ -905,12 +932,12 @@ mod tests {
             sampler_kontakt_chain.processors,
             sampler_kontakt_chain.notes,
         );
-        // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
+        // 2 * (swap, inverted; its Output is not applied) * 2 = swap, inverted, * 4.
         assert_eq!(
             processors,
             vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -2.0],
-                [-2.0, 0.0]
+                [0.0, -4.0],
+                [-4.0, 0.0]
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");
