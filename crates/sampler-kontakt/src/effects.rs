@@ -78,6 +78,8 @@ pub(crate) struct Slot {
     pub bypass: bool,
     pub output_gain: f32,
     pub dry_level: f32,
+    /// A script wrote the output gain with `set_engine_par`.
+    pub output_set: bool,
     pub public: Vec<u8>,
 }
 
@@ -98,6 +100,7 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
                 bypass: state.bypass,
                 output_gain: state.output_gain,
                 dry_level: state.dry_level,
+                output_set: false,
                 public: object
                     .as_ref()
                     .map_or_else(Vec::new, |o| o.public_data.clone()),
@@ -191,6 +194,7 @@ pub(crate) fn apply_writes(
             }
             "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
                 fx.output_gain = engine_gain(w.value);
+                fx.output_set = true;
             }
             "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
             _ => {}
@@ -573,11 +577,21 @@ pub(crate) fn chain_with(
         let params = fx.params();
         let wet = f64::from(fx.output_gain);
         let gain = [[wet, 0.0], [0.0, wet]];
+        // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
+        // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
+        // audible in Kontakt and its script never writes the slot's output gain. So
+        // the stored value counts for an EQ only when a script wrote it.
+        // ponytail: a guess from that corpus count; confirm against Kontakt output.
+        let eq_gain = if fx.output_gain == 0.0 && !fx.output_set {
+            IDENTITY
+        } else {
+            gain
+        };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
-                combined = product(gain, combined);
+                combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
                 if out.sends.is_empty() {
