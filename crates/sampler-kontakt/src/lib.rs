@@ -571,15 +571,24 @@ mod stage_tests {
 
     #[test]
     fn errors_carry_their_stage_and_where_it_was_tagged() {
-        let e = read(std::path::Path::new("/nonexistent/x.nki")).err().unwrap();
+        let e = read(std::path::Path::new("/nonexistent/x.nki"))
+            .err()
+            .unwrap();
         assert_eq!(e.kind(), Kind::Io);
         assert_eq!(e.stage(), Some(Stage::Container));
         let bad = std::env::temp_dir().join("kontra-stage-test.nki");
         std::fs::write(&bad, b"not a kontakt file").unwrap();
         let e = read(&bad).err().unwrap();
         std::fs::remove_file(&bad).ok();
-        assert!(e.location().is_some_and(|l| l.file().ends_with("library.rs")), "{e}");
-        assert!(matches!(e.stage(), Some(Stage::Container | Stage::Parse)), "{e}");
+        assert!(
+            e.location()
+                .is_some_and(|l| l.file().ends_with("library.rs")),
+            "{e}"
+        );
+        assert!(
+            matches!(e.stage(), Some(Stage::Container | Stage::Parse)),
+            "{e}"
+        );
         // The first tag wins when an error is tagged again.
         let again = e.at(Stage::Prepare);
         assert_ne!(again.stage(), Some(Stage::Prepare));

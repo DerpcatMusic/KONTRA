@@ -46,9 +46,17 @@ fn main() {
             if std::env::var_os("LOOPS").is_some() && (u.feature.contains("loop")) {
                 println!("LOOP\t{i}\t{}\t{}\t{}", u.feature, u.value, path.display());
             }
-            if std::env::var_os("FILTERS").is_some() && u.feature == "effect" && u.value.starts_with("Filter") {
+            if std::env::var_os("FILTERS").is_some()
+                && u.feature == "effect"
+                && u.value.starts_with("Filter")
+            {
                 let size = std::fs::metadata(path).map_or(0, |m| m.len());
-                println!("FILTER\t{}\t{size}\t{}\t{}", u.value, path.display(), u.location);
+                println!(
+                    "FILTER\t{}\t{size}\t{}\t{}",
+                    u.value,
+                    path.display(),
+                    u.location
+                );
             }
             if u.feature.starts_with("Convolution") || u.feature == "impulse response" {
                 caveats.entry(u.feature.clone()).or_default().insert(i);
