@@ -21,6 +21,18 @@ pub struct Resources {
 }
 
 impl Resources {
+    /// Kontakt stores either a basename or an authored host path. Resolve its
+    /// basename inside this instrument's resources, never the saved host path.
+    pub(crate) fn linked_script(&mut self, name: &str) -> Option<String> {
+        let file = name.trim().rsplit(['/', '\\']).next()?;
+        if file.is_empty() || matches!(file, "." | "..") {
+            return None;
+        }
+        let bytes = self.read(&format!("Resources/scripts/{file}"))?;
+        let text = script_text(&bytes);
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     /// What lies near `instrument`; nothing is read until asked for.
     pub fn of(instrument: &Path) -> Self {
         let entries = |dir: &Path| -> Vec<PathBuf> {
@@ -76,6 +88,9 @@ impl Resources {
     /// The bytes at library-relative `path`, if the library has them.
     pub fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         if let Some(f) = self.files.get(&path.to_lowercase()) {
+            if std::fs::metadata(f).ok()?.len() > 32 << 20 {
+                return None;
+            }
             return std::fs::read(f).ok();
         }
         for n in 0.. {
@@ -95,6 +110,9 @@ impl Resources {
             let Ok(Some(entry)) = archive.member(&mut *f, path) else {
                 continue;
             };
+            if !entry.valid || entry.size > 32 << 20 {
+                continue;
+            }
             let needs_key = entry.encoded && entry.key_index != 0xff;
             archive.entries.insert(entry.name.to_lowercase(), entry);
             let key = match &self.key {
@@ -130,8 +148,53 @@ impl Resources {
     }
 }
 
+fn script_text(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    if bytes.starts_with(b"\xff\xfe")
+        || (bytes.len() >= 4 && bytes[0] != 0 && bytes[1] == 0 && bytes[3] == 0)
+    {
+        let units: Vec<_> = bytes
+            .strip_prefix(b"\xff\xfe")
+            .unwrap_or(bytes)
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    // ponytail: legacy byte strings use v1's Latin-1 fallback; use a Windows-1252
+    // decoder if a library needs the 0x80..0x9f punctuation mapping.
+    String::from_utf8(bytes.to_vec())
+        .unwrap_or_else(|_| bytes.iter().map(|&b| char::from(b)).collect())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linked_scripts_reload_from_resources_and_decode_saved_encodings() {
+        let dir =
+            std::env::temp_dir().join(format!("kontakt-linked-script-{}", std::process::id()));
+        let scripts = dir.join("Resources/Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::create_dir_all(dir.join("Instruments")).unwrap();
+        let source = "on init\nmessage(\"linked\")\nend on";
+        let mut bytes = vec![0xff, 0xfe];
+        for unit in source.encode_utf16() {
+            bytes.extend(unit.to_le_bytes());
+        }
+        std::fs::write(scripts.join("Linked.txt"), bytes).unwrap();
+        std::fs::write(scripts.join("Empty.txt"), b" \n").unwrap();
+        let mut r = super::Resources::of(&dir.join("Instruments/Piano.nki"));
+        assert_eq!(
+            r.linked_script(r"C:\old\LINKED.TXT").as_deref(),
+            Some(source)
+        );
+        for missing in ["Empty.txt", "missing.txt", "..", ""] {
+            assert!(r.linked_script(missing).is_none());
+        }
+        assert_eq!(super::script_text(b"\xef\xbb\xbfhello"), "hello");
+        assert_eq!(super::script_text(b"caf\xe9"), "café");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn loose_pictures_are_found_above_the_instrument() {
         let dir = std::env::temp_dir().join(format!("kontakt-resources-{}", std::process::id()));
