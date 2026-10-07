@@ -152,7 +152,7 @@ impl Runtime {
             }
         }
         let plan = &mut self.plans.get_mut(self.active_plan.0).unwrap().prepared;
-        plan.keyswitches = keys;
+        plan.keyswitches = Box::new(keys);
         plan.switching = switching;
         Ok(())
     }
