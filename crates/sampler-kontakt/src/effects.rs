@@ -442,6 +442,13 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
     })
 }
 
+/// Whether a Kontakt render has confirmed the compressor's level laws and the
+/// +output-gain interaction (Analog Strings: threshold -14.2 dB, ratio 0.501,
+/// output +9 dB peaks at 3.35 against 1.24 without it). Until then a 0x19 slot
+/// is reported as unmodelled (`UnknownLaw`) and the chain is left as before.
+// ponytail: flip once a Kontakt render of ANALOG STRINGS C4..G4 confirms the level.
+const KONTAKT_COMPRESSOR_VERIFIED: bool = false;
+
 /// Where a rack's processors will run.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Scope {
@@ -674,6 +681,23 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Compressor {
+                mode,
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                link,
+            }) if scope == Scope::Bus && !KONTAKT_COMPRESSOR_VERIFIED => {
+                notes.push((
+                    "compressor level law".into(),
+                    format!(
+                        "threshold {threshold_db} dB ratio {ratio} attack {attack_ms} ms release {release_ms} ms link {link} mode {mode}"
+                    ),
+                    sampler_ir::Reason::UnknownLaw,
+                ));
+                modelled = false;
+            }
             Some(Params::Compressor {
                 mode,
                 threshold_db,
@@ -1151,6 +1175,11 @@ mod tests {
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        if !KONTAKT_COMPRESSOR_VERIFIED {
+            assert!(built.processors.is_empty());
+            assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLaw));
+            return;
+        }
         let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
