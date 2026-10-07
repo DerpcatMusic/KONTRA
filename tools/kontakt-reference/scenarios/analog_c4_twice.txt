@@ -1,0 +1,9 @@
+# same note twice, 6 s apart (round robin / script state vs rig)
+0 cc 1 0
+0 cc 7 127
+0 cc 10 64
+0 cc 11 127
+0 cc 64 0
+0.5 note 60 100 3
+6.5 note 60 100 3
+14 end

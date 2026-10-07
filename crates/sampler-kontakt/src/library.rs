@@ -185,6 +185,7 @@ fn translate(
         voice_groups: Vec::new(),
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
+        dynamic: false,
     };
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
@@ -269,19 +270,6 @@ fn translate(
         .flatten()
         .collect();
     out.engine = writes;
-    let mut translated = Vec::new();
-    for (index, group) in groups.groups.iter().enumerate() {
-        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid("instrument has no folder"))?;
-    let root = path
-        .ancestors()
-        .find(|p| p.join("Samples").is_dir())
-        .unwrap_or(parent);
-    let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program, &out.engine);
     // Scripts that set slot bypass or levels while playing get runtime blocks.
     let dynamic = out
         .ir
@@ -295,6 +283,20 @@ fn translate(
             sampler_ksp::compile_with(&b.source, 48_000, sampler_ksp::Limits::LIBRARY, &[], &environment)
                 .is_ok_and(|script| script.writes_effect_slots())
         });
+    out.dynamic = dynamic;
+    let mut translated = Vec::new();
+    for (index, group) in groups.groups.iter().enumerate() {
+        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("instrument has no folder"))?;
+    let root = path
+        .ancestors()
+        .find(|p| p.join("Samples").is_dir())
+        .unwrap_or(parent);
+    let mut samples = Samples::new(root);
+    let racks = crate::effects::program_racks(&program, &out.engine);
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -413,6 +415,8 @@ struct Translation {
     snapshot_groups: Vec<crate::GroupState>,
     /// What the scripts' `on init` wrote with `set_engine_par`.
     engine: Vec<sampler_ksp::EnginePar>,
+    /// A script writes effect slots while playing.
+    dynamic: bool,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -615,7 +619,8 @@ impl Translation {
         if let Ok(array) = insert {
             let mut slots = crate::effects::rack(&array);
             crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
-            let c = crate::effects::chain(&slots, crate::effects::Scope::Voice);
+            let dynamic = self.dynamic.then_some((index as i32, -1));
+            let c = crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
             let processors = c.processors;
             filter_slots = c.filter_slots;
             for (slot, feature, value, reason) in c.notes {
@@ -1503,6 +1508,7 @@ mod modulation {
             voice_groups: Vec::new(),
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
+            dynamic: false,
         }
     }
 
