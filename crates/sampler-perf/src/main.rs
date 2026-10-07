@@ -182,7 +182,8 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
-            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), ..Limits::for_plan(&plan, 2048, 2048) };
+            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), behaviors: std::env::var("PERF_BEHAVIORS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), ..Limits::for_plan(&plan, 2048, 2048) };
+            let limits = if limits.behaviors == 0 { Limits { behaviors: Limits::script_capacity(&plan), ..limits } } else { Limits { behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors), ..limits } };
             if std::env::var_os("PERF_DEBUG").is_some() {
                 eprintln!("limits: behaviors {} behavior_cells {} voices {} (stages {}, locals {})", limits.behaviors, limits.behavior_cells, limits.voices, plan.stage_count(), plan.behavior_local_count());
             }
