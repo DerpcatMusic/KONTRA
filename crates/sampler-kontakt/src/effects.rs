@@ -79,7 +79,6 @@ pub(crate) struct Slot {
     pub output_gain: f32,
     pub dry_level: f32,
     pub public: Vec<u8>,
-    pub private: Vec<u8>,
 }
 
 pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
@@ -102,7 +101,6 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
                 public: object
                     .as_ref()
                     .map_or_else(Vec::new, |o| o.public_data.clone()),
-                private: object.map_or_else(Vec::new, |o| o.private_data),
             })
         })
         .collect()
@@ -896,7 +894,6 @@ mod tests {
             output_gain: gain,
             dry_level: 1.0,
             public,
-            private: Vec::new(),
         }
     }
 
