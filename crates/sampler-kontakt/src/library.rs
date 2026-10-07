@@ -1439,6 +1439,14 @@ mod modulation {
                 remaining(t)
             );
         }
+        // Section 22: a 500 ms decay to sustain -24 dB reaches -3/-6/-10/-20 dB
+        // at 0.072/0.130/0.216/0.427 s (within 0.5 dB), and sustain at 0.5 s.
+        let level = |t: f64| 1.0 - (1.0 - 0.063_1) * (1.0 - remaining(t / 0.5));
+        for (t, db) in [(0.072, -3.0), (0.130, -6.0), (0.216, -10.0), (0.427, -20.0)] {
+            let got = 20.0 * level(t).log10();
+            assert!((got - db).abs() < 0.5, "t {t}: {got} dB vs {db}");
+        }
+        assert!((level(0.5) - 0.063_1).abs() < 1e-9);
         // Curve 0 attack is near-linear: env 0.12/0.35/0.59/0.84 at 1/8, 3/8, 5/8, 7/8.
         let ir::Curve::Exponential(a) = attack else {
             panic!("attack curve")

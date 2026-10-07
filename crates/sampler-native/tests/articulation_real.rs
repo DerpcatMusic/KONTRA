@@ -711,7 +711,7 @@ const REFERENCE: &[(&str, u8, u8, f64)] = &[
 /// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
 /// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
 #[test]
-#[ignore = "known gaps: Una Cotton vel 100/127, Barbarian CC1 default"]
+#[ignore = "known gaps: Una Cotton 5/11/11 dB low at vel 64/100/127, Barbarian 11 dB low; script-driven, Vista passes"]
 fn full_notes_match_kontakt_within_a_decibel() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
