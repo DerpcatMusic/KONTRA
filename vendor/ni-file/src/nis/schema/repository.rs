@@ -46,6 +46,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn ni_container_read_test() -> Result<(), Error> {
         let file = std::fs::File::open("tests/filetype/NISD/kontakt/7.1.3.0/000-default.nki")?;
         let ic = ItemContainer::read(file)?;

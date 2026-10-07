@@ -36,7 +36,7 @@ mod control;
 pub use control::{
     ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
     ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    RejectedControls,
+    RejectedControls, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
@@ -63,7 +63,7 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    Biquad, ControlRange, ConvolutionUpload, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
     ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
@@ -667,6 +667,8 @@ pub struct Runtime {
     deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
+    /// Opt-in script parameter writes, see [`Runtime::record_script_writes`].
+    write_log: Option<Vec<String>>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -822,6 +824,7 @@ impl Runtime {
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
+            write_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -871,6 +874,22 @@ impl Runtime {
         self.plans
             .get(self.active_plan.0)
             .map_or(0, |g| g.prepared.buses.len())
+    }
+
+    /// Replace convolution `slot` of the active plan (see
+    /// [`Prepared::convolution_slots`]) with `upload`, at a block boundary and
+    /// without allocating; `upload` then holds the old processor, to drop off
+    /// the audio thread. The new one starts with empty history.
+    pub fn swap_convolution(
+        &mut self,
+        slot: usize,
+        upload: &mut ConvolutionUpload,
+    ) -> Result<(), Error> {
+        let g = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
+        g.dsp.buses.swap_convolution(&g.prepared.buses, slot, upload)
     }
 
     /// Each bus of the active plan's peak level since the last call, after

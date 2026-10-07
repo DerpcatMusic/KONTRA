@@ -263,6 +263,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_structured_object() -> Result<(), Error> {
         let file =
             File::open("tests/data/Objects/Kontakt/0x28-Program/ProgramV80/ProgramV80-000.kon")?;
@@ -273,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_fntableimpl() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/0x4B-FNTableImpl/FNTableImpl-000.kon")?;
         let data = Chunk::read(file)?;

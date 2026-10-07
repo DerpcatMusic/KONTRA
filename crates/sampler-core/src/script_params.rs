@@ -199,6 +199,8 @@ pub enum EnvelopeStage {
     /// Level as a 0..=1000 gain factor.
     Sustain,
     Release,
+    /// Attack curve 0..=1000000 (500000 straight, authored curve -1..1).
+    AttackCurve,
 }
 
 /// Per-plan-generation script engine state: group and instrument layers,
@@ -211,7 +213,7 @@ pub(crate) struct EngineLayers {
     /// Per group, the bus whose fader carries its volume.
     fader: Box<[Option<usize>]>,
     /// Per group, script envelope stages indexed like `EnvelopeStage`.
-    envelopes: Box<[[Option<u32>; 5]]>,
+    envelopes: Box<[[Option<u32>; 6]]>,
 }
 
 impl EngineLayers {
@@ -235,7 +237,7 @@ impl EngineLayers {
                 .map(|g| prepared.group_faders.get(g).and_then(|f| f.as_ref().map(|f| f.bus)))
                 .collect(),
             authored,
-            envelopes: vec![[None; 5]; count].into_boxed_slice(),
+            envelopes: vec![[None; 6]; count].into_boxed_slice(),
         }
     }
 
@@ -247,6 +249,7 @@ impl EngineLayers {
             EnvelopeStage::Decay,
             EnvelopeStage::Sustain,
             EnvelopeStage::Release,
+            EnvelopeStage::AttackCurve,
         ];
         if let Some(set) = group.and_then(|g| self.envelopes.get(g as usize)) {
             for (stage, value) in stages.into_iter().zip(set) {
@@ -320,6 +323,18 @@ impl ModValues {
 }
 
 impl Runtime {
+    /// Diagnostics: log every script parameter write (`change_vol`, group
+    /// volume, `set_event_par`, envelope stages). Allocates; keep it off the
+    /// audio path.
+    pub fn record_script_writes(&mut self, on: bool) {
+        self.write_log = on.then(Vec::new);
+    }
+
+    /// Writes logged since the last call, oldest first.
+    pub fn take_script_writes(&mut self) -> Vec<String> {
+        self.write_log.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
     /// Set a note's "from script" modulator `id` for a frontend that drives
     /// the runtime directly (the Falcon Lua host); `value` clamps to ±1.
     /// Voices of the note read it on their next chunk.
@@ -332,6 +347,74 @@ impl Runtime {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let value = (value.clamp(-1.0, 1.0) * 1_000_000.0).round() as i32;
         self.note_params[note.0.index].mods.set(id, value);
+        Ok(())
+    }
+
+    /// Set a note's script volume (decibels), pan (-1..=1) or pitch
+    /// (semitones), or add to it, for a frontend that drives the runtime
+    /// directly (Falcon's `changeVolume`, `changePan`, `changeTune`). Voices
+    /// ramp to it across their next chunk. Stale notes are an error.
+    pub fn set_note_param(
+        &mut self,
+        note: NoteId,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+    ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            ModTarget::Pitch => 100_000.0,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        self.script_params = true;
+        self.note_params[note.0.index]
+            .layer
+            .write(target, (value * scale).round() as i64, relative)
+    }
+
+    /// As [`Runtime::set_note_param`] for a group of the active plan (a
+    /// negative `group` is the whole instrument): a frontend writing a layer's
+    /// or program's Gain (decibels) or Pan (-1..=1), as Falcon's
+    /// `setParameter` does.
+    pub fn set_group_param(
+        &mut self,
+        group: i64,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+    ) -> Result<(), Error> {
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        let plan = self.active_plan();
+        self.write_param(plan, ParamScope::Group, group, target, (value * scale).round() as i64, relative)
+    }
+
+    /// Fade a note's gain linearly from `from` (its current level when
+    /// `None`) to `to` over `frames`; `stop` ends it when the fade completes
+    /// at silence.
+    pub fn fade_note(
+        &mut self,
+        note: NoteId,
+        from: Option<f64>,
+        to: f64,
+        frames: u64,
+        stop: bool,
+    ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.script_params = true;
+        let now = self.now;
+        let params = &mut self.note_params[note.0.index];
+        let from = from.unwrap_or_else(|| params.fade.map_or(1.0, |f| f.at(now)));
+        params.fade = Some(Fade { from, to, start: now, frames, stop });
         Ok(())
     }
 
@@ -372,6 +455,11 @@ impl Runtime {
         relative: bool,
     ) -> Result<(), Error> {
         self.script_params = true;
+        if let Some(log) = &mut self.write_log {
+            log.push(format!(
+                "param {scope:?} {index} {target:?} {value} relative {relative}"
+            ));
+        }
         let Some(layer) = self.param_layer(plan, scope, index)? else {
             return Ok(());
         };
@@ -397,6 +485,9 @@ impl Runtime {
         let (Ok(event), Ok(id)) = (i32::try_from(event), u16::try_from(id)) else {
             return Ok(());
         };
+        if let Some(log) = &mut self.write_log {
+            log.push(format!("event_par event {event} id {id} value {value}"));
+        }
         let user = (crate::USER_EVENT_PAR..crate::USER_EVENT_PAR + 4).contains(&id);
         if id > 1000 && !user {
             return Ok(());
@@ -490,6 +581,9 @@ impl Runtime {
         value: i64,
     ) -> Result<(), Error> {
         let value = u32::try_from(value).map_err(|_| Error::InvalidInput)?;
+        if let Some(log) = &mut self.write_log {
+            log.push(format!("envelope group {group} {stage:?} {value}"));
+        }
         let layers = &mut self.plans.get_mut(plan.0).unwrap().script;
         if let Some(set) = usize::try_from(group)
             .ok()
