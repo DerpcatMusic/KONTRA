@@ -180,8 +180,8 @@ impl Processor {
     }
 }
 
-pub(super) mod control;
 mod compressor;
+pub(super) mod control;
 mod convolution;
 mod daft;
 mod delay;
@@ -194,8 +194,8 @@ pub use daft::DaftSettings;
 pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
-pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::ConvolutionUpload;
+pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
@@ -644,7 +644,11 @@ pub(super) struct ProcessorState {
 }
 impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
-        self.z.iter().flatten().chain(&self.aux).all(|v| v.is_finite())
+        self.z
+            .iter()
+            .flatten()
+            .chain(&self.aux)
+            .all(|v| v.is_finite())
     }
 }
 
@@ -728,7 +732,11 @@ pub(super) fn process(
                     for i in 0..len {
                         let t = at + i as u64;
                         let b = bypass.value(t);
-                        let wet_part = if off { 0. } else { wet.value(t) * (1. - b) * block[c][i] };
+                        let wet_part = if off {
+                            0.
+                        } else {
+                            wet.value(t) * (1. - b) * block[c][i]
+                        };
                         block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
                     }
                 }
