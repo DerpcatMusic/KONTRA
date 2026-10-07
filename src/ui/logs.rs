@@ -159,8 +159,8 @@ impl State {
         if let Some(picker::Picked::Revealed(result)) = self.folder_picker.take() {
             self.folder_error = result.err();
         }
-        if self.copy_thread.is_some() {
-            if let Some(answer) = super::lock(&self.copy_answer).take() {
+        if self.copy_thread.is_some()
+            && let Some(answer) = super::lock(&self.copy_answer).take() {
                 let _ = self.copy_thread.take().unwrap().join();
                 match answer {
                     Ok(text) => self.copy_ready = Some(text),
@@ -170,9 +170,8 @@ impl State {
                     }
                 }
             }
-        }
-        if self.export_thread.is_some() {
-            if let Some(answer) = super::lock(&self.export_answer).take() {
+        if self.export_thread.is_some()
+            && let Some(answer) = super::lock(&self.export_answer).take() {
                 let _ = self.export_thread.take().unwrap().join();
                 match answer {
                     Ok(id) => {
@@ -182,7 +181,6 @@ impl State {
                     Err(error) => self.export_error = Some(error),
                 }
             }
-        }
         if self.reader.ready.swap(false, Ordering::AcqRel) {
             if let Some(handle) = self.reader_thread.take() {
                 let _ = handle.join();

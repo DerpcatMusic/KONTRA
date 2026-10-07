@@ -1313,7 +1313,7 @@ mod survey {
 /// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
 /// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
 /// left out.
-fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
+pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
     entries
         .iter()
         .filter_map(|entry| {
