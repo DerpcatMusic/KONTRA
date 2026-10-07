@@ -13,6 +13,7 @@ pub mod keyswitch;
 mod library;
 mod load;
 mod mapping;
+mod metadata;
 mod objects;
 pub mod nis;
 mod nks;
@@ -33,6 +34,7 @@ pub use load::{
     load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
+pub use metadata::{Bank, FileTable, Filename, FilenameEntry, FilenameSegment, ProgramList, ProgramResources, QuickBrowse, SaveSettings, SlotList};
 pub use nks::Nks42;
 pub use persistence::{ArrayTail, SavedEntry, SavedNumbers, SavedTexts, SavedValue};
 pub use resource_container::ResourceContainer;
