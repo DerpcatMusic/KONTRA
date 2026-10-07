@@ -980,15 +980,12 @@ fn kontakt(
         None
     };
     let path = snapshot.as_ref().map_or(&request.path, |(parent, _)| parent);
-    let mut source = if extension("nkm") {
-        sampler_kontakt::read_program(path, request.program as usize)
-    } else {
-        sampler_kontakt::read(path)
+    let mut source = match &snapshot {
+        Some((parent, state)) => sampler_kontakt::read_with_snapshot(parent, state),
+        None if extension("nkm") => sampler_kontakt::read_program(path, request.program as usize),
+        None => sampler_kontakt::read(path),
     }
     .map_err(load)?;
-    if let Some((_, state)) = &snapshot {
-        sampler_kontakt::apply_snapshot(&mut source, state);
-    }
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
@@ -1778,17 +1775,21 @@ mod tests {
             .map(|e| e.into_path())
             .collect();
         assert!(!files.is_empty());
-        let mut changed = 0;
+        let (mut script, mut groups, mut effects) = (0, 0, 0);
         for file in &files {
             let state = sampler_kontakt::read_snapshot(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
             let parent = snapshot_parent(file, &state.instrument).unwrap_or_else(|| panic!("no instrument for {}", file.display()));
             let plain = sampler_kontakt::read(&parent).unwrap();
-            let mut applied = sampler_kontakt::read(&parent).unwrap();
-            sampler_kontakt::apply_snapshot(&mut applied, &state);
+            let applied = sampler_kontakt::read_with_snapshot(&parent, &state).unwrap();
             let states = |k: &sampler_kontakt::Kontakt| k.instrument.behaviors.iter().map(|b| b.state.clone()).collect::<Vec<_>>();
-            changed += usize::from(states(&plain) != states(&applied));
+            let mix = |k: &sampler_kontakt::Kontakt| format!("{:?}{:?}", k.instrument.buses, k.instrument.chains);
+            let levels = |k: &sampler_kontakt::Kontakt| k.instrument.groups.iter().map(|g| (g.gain, g.pan, g.tune)).collect::<Vec<_>>();
+            script += usize::from(states(&plain) != states(&applied));
+            groups += usize::from(levels(&plain) != levels(&applied));
+            effects += usize::from(mix(&plain) != mix(&applied));
         }
-        assert!(changed > 0, "no snapshot changed any script state across {} files", files.len());
+        eprintln!("{} snapshots: {script} change script state, {groups} group levels, {effects} effects", files.len());
+        assert!(script > 0 && groups > 0 && effects > 0, "script {script} groups {groups} effects {effects} of {}", files.len());
         let request = LoadRequest { path: files[0].clone(), sample_rate: 48000.0, ..Default::default() };
         let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
         assert!(loaded.instrument.is_some_and(|i| !i.zones.is_empty()));
