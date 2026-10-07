@@ -900,6 +900,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Reverb(_) => "Reverb",
             ir::Processor::Compressor(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
+            ir::Processor::Daft(_) => "Daft",
+            ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
             ir::Processor::Delay { .. } => "Delay",

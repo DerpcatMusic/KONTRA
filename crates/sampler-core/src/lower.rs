@@ -4,7 +4,7 @@
 //! approximated silently.
 use crate::{
     Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    CompressorSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
+    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
     FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
     ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
     Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
@@ -550,12 +550,8 @@ impl Lowering<'_> {
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
             }
-            for p in &chain.pre_amplitude {
-                pre.extend(self.processors(&owner, *p)?);
-            }
-            for p in &chain.post_amplitude {
-                post.extend(self.processors(&owner, *p)?);
-            }
+            pre.extend(self.lower_list(&owner, &chain.pre_amplitude)?);
+            post.extend(self.lower_list(&owner, &chain.post_amplitude)?);
         }
         let chain = if pre.is_empty() && post.is_empty() {
             None
@@ -911,6 +907,28 @@ impl Lowering<'_> {
         })
     }
 
+    /// `listed` in order. A rack branch counts IR processors, and a 4-pole
+    /// filter lowers to two stages, so branch lengths are remapped.
+    fn lower_list(&self, owner: &str, listed: &[ir::Processor]) -> Result<Vec<Processor>, LowerError> {
+        let mut out = Vec::new();
+        let mut starts = Vec::with_capacity(listed.len() + 1);
+        for p in listed {
+            starts.push(out.len());
+            out.extend(self.processors(owner, *p)?);
+        }
+        starts.push(out.len());
+        for (n, p) in listed.iter().enumerate() {
+            if let ir::Processor::Branch { count, .. } = *p {
+                let end = starts[(n + 1 + usize::from(count)).min(listed.len())];
+                if let Processor::Branch { count, .. } = &mut out[starts[n]] {
+                    *count = u16::try_from(end - starts[n] - 1)
+                        .map_err(|_| unsupported(owner, Feature::Controls))?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
     fn processors(
         &self,
@@ -963,6 +981,18 @@ impl Lowering<'_> {
                 release_seconds: c.release.seconds(),
                 makeup: c.makeup.linear(),
                 link: c.link,
+            }),
+            ir::Processor::Branch { gain, first, last, .. } => Processor::Branch {
+                count: 0,
+                gain: gain.linear(),
+                first,
+                last,
+            },
+            ir::Processor::Daft(d) => Processor::Daft(DaftSettings {
+                gain: Parameter::Constant(d.gain),
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+                response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
@@ -1118,9 +1148,11 @@ impl Lowering<'_> {
                 }
                 starts.push(processors.len());
                 for (n, p) in listed.iter().enumerate() {
-                    if let ir::Processor::Mix { count, .. } = **p {
+                    if let ir::Processor::Mix { count, .. } | ir::Processor::Branch { count, .. } = **p {
                         let end = starts[(n + 1 + usize::from(count)).min(listed.len())];
-                        if let Processor::Mix { count, .. } = &mut processors[starts[n]] {
+                        if let Processor::Mix { count, .. } | Processor::Branch { count, .. } =
+                            &mut processors[starts[n]]
+                        {
                             *count = u16::try_from(end - starts[n] - 1)
                                 .map_err(|_| unsupported(&owner, Feature::Controls))?;
                         }
@@ -1153,6 +1185,7 @@ impl Lowering<'_> {
                     | Processor::StereoMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
+                    | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
