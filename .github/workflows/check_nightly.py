@@ -93,7 +93,7 @@ platforms = ("linux-x86_64", "windows-x86_64", "macos-arm64", "macos-x86_64")
 readme = Path(__file__).resolve().parents[2].joinpath("README.md").read_text()
 for platform in platforms:
     assert f"name: {platform}" in workflow
-    assert f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme
+    assert (f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme) != platform.startswith("macos-")
 assert "releases/latest/download/KONTRA-nightly-macos-universal.pkg" in readme
 assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
@@ -395,6 +395,7 @@ for case in cases:
             assert len(state["releases"])==(1 if case=="first" else 2)
             newest=next(r for r in state["releases"] if r["tag_name"]=="v"+version)
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
+            assert not any(a["name"].startswith(("KONTRA-nightly-macos-arm64","KONTRA-nightly-macos-x86_64")) for a in newest["assets"]), "macOS ships only the universal installer"
             assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"] and state["latest"]==newest["id"]
             if case!="first":
                 assert state["refs"]["nightly"]=="b"*40
@@ -462,4 +463,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 24 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 24 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and the stable README links.")
