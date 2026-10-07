@@ -759,8 +759,8 @@ impl Lowering<'_> {
             matches!(
                 p,
                 ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::LowPass { poles: 2 }
-                        | ir::FilterKind::HighPass { poles: 2 }
+                    kind: ir::FilterKind::LowPass { poles: 1 | 2 }
+                        | ir::FilterKind::HighPass { poles: 1 | 2 }
                         | ir::FilterKind::BandPass { poles: 2 }
                         | ir::FilterKind::Notch { poles: 2 }
                         | ir::FilterKind::AllPass,
@@ -912,6 +912,8 @@ impl Lowering<'_> {
                 .map_err(core(Stage::Filter, owner))
         };
         match filter.kind {
+            ir::FilterKind::LowPass { poles: 1 } => svf(SvfMode::OnePoleLowPass),
+            ir::FilterKind::HighPass { poles: 1 } => svf(SvfMode::OnePoleHighPass),
             ir::FilterKind::LowPass { poles: 2 } => svf(SvfMode::LowPass),
             ir::FilterKind::HighPass { poles: 2 } => svf(SvfMode::HighPass),
             ir::FilterKind::BandPass { poles: 2 } => svf(SvfMode::BandPass),
