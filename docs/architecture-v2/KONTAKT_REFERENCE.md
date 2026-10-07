@@ -364,3 +364,9 @@ Release and attack time laws are in sections 5 and 9 (engine value -> seconds). 
 | 127 | -10.3 / -7.7 | -21.4 / -17.1 | -18.9 / -13.6 | -28.7 / -24.8 |
 
 - Unsent CC1 is stored per instrument, not an engine-wide constant: Vista Cellos unsent equals CC1=0 exactly; Barbarian unsent sits between CC1=32 and 64 (rms interpolates to about 46-53, peak to about 52-60, so roughly 50).
+
+## 24. Una Corda Cotton g39 with the instrument scripts ON; group 39 post-amp Inverter
+
+- `session_una_on.sh`: scripts 1-4 left ON, only `solo_group.ksp` added in slot 5; quiet load, calibration PASS before and after, two repeats identical to 0.1 dB. g39 v100 L/R peak -17.3/-14.4, rms -45.4/-42.5; g94 v100 peak -14.7/-15.8, rms -25.2/-25.3; three-note g39 v64/v100/v127 identical to section 19a. So bypassing the four scripts changes nothing for these notes.
+- GUI read (Group Editor, group DRY_C3 = "Group 40 / 113", scripts on, nothing touched): Post-Amp FX has 2 slots. Slot 1 Inverter: bypassed (red Byp), L/R Swap ON, Output 0.0 dB. Slot 2 Inverter: active, Phase Invert off, L/R Swap off, **Output +6.0 dB**. Group volume -6.0 dB, pan C.
+- Group selection tip: the Group Editor "Group n / 113" dropdown is a long popup; open it, scroll with the mouse wheel and click the entry (keyboard Down stops after ~13 items).
