@@ -1027,6 +1027,20 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
     translate_untagged(path).map_err(|e| staged(e, path, sampler_kontakt::Stage::Translate))
 }
 
+/// Translate one program of an already opened `bank` to the IR, without its
+/// scripts or samples: what a census needs, with no per-program bank open.
+#[cfg(feature = "library-access")]
+#[track_caller]
+pub fn translate_program(bank: &Bank, program: &str) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+        let (text, _) = bank.program(program)?;
+        let (instrument, ..) = translate_full(&text, Source::Bank)
+            .map_err(|e| describe(Path::new(program), e))?;
+        Ok(instrument)
+    };
+    translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
+}
+
 /// Tag `error` with the load `stage` and the caller's location, as the other
 /// loaders do ([`sampler_kontakt::LoadError::at`]); reading failures are the
 /// container's.
