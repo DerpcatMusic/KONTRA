@@ -11,6 +11,7 @@ description = "Corpus health scoreboard: loads and plays every installed library
 sampler-core = { path = "../../crates/sampler-core" }
 sampler-midi = { path = "../../crates/sampler-midi" }
 sampler-kontakt = { path = "../../crates/sampler-kontakt", default-features = false }
+sampler-ksp = { path = "../../crates/sampler-ksp" }
 sampler-ir = { path = "../../crates/sampler-ir" }
 sampler-uvi = { path = "../../crates/sampler-uvi", default-features = false }
 serde_json = "1"
