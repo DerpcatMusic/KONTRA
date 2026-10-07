@@ -2570,3 +2570,18 @@ fn rack_interfaces_have_independent_input_identities() {
     assert!(ui.scene().unwrap().surface("part-1-ir-0").is_some());
     assert_eq!((a[&id], b[&id]), (0., 1.));
 }
+
+#[test]
+fn script_value_changes_wake_an_idle_editor() {
+    use std::sync::atomic::Ordering;
+    let params = crate::plugin::SamplerParams::new();
+    params.shared.ensure_parts(1);
+    let mut watch = super::Watch::default();
+    let meters = super::Meters::default();
+    let computer = super::computer::Computer::default();
+    assert!(watch.changed(&params, &meters, &computer));
+    assert!(!watch.changed(&params, &meters, &computer));
+    params.shared.part(0).unwrap().scalar_revision.fetch_add(1, Ordering::Release);
+    assert!(watch.changed(&params, &meters, &computer));
+    assert!(!watch.changed(&params, &meters, &computer));
+}
