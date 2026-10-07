@@ -70,8 +70,15 @@ pub fn mpe_summary(m: &sampler_core::lower::MpeDefaults) -> String {
     if m.pressure_db != 0.0 {
         parts.push(format!("pressure raises the level up to {:+.1} dB", m.pressure_db));
     }
-    if m.timbre_semitones != 0.0 {
-        parts.push(format!("timbre (CC74) darkens the tone below centre, down to {:.0} semitones under open", m.timbre_semitones));
+    use sampler_core::lower::TimbreTarget::*;
+    match m.timbre {
+        Controller(cc) => parts.push(format!("timbre (CC74) sets each note's CC{cc} dynamics position")),
+        Cutoff => parts.push("timbre (CC74) opens and closes the filter cutoff".to_owned()),
+        Tone if m.timbre_semitones != 0.0 => parts.push(format!(
+            "timbre (CC74) darkens the tone below centre, down to {:.0} semitones under open",
+            m.timbre_semitones
+        )),
+        Tone => {}
     }
     parts.join(" · ")
 }
@@ -197,8 +204,12 @@ mod tests {
     fn the_mpe_mapping_is_stated_in_the_report() {
         let text = super::mpe_summary(&sampler_core::lower::MpeDefaults::default());
         assert_eq!(text, "per-note bend · pressure raises the level up to +6.0 dB · timbre (CC74) darkens the tone below centre, down to 60 semitones under open");
-        let off = sampler_core::lower::MpeDefaults { pressure_db: 0.0, timbre_semitones: 0.0 };
+        let off = sampler_core::lower::MpeDefaults { pressure_db: 0.0, timbre_semitones: 0.0, ..Default::default() };
         assert_eq!(super::mpe_summary(&off), "per-note bend");
+        use sampler_core::lower::TimbreTarget::*;
+        let on = |timbre| super::mpe_summary(&sampler_core::lower::MpeDefaults { timbre, ..Default::default() });
+        assert!(on(Controller(1)).ends_with("timbre (CC74) sets each note's CC1 dynamics position"));
+        assert!(on(Cutoff).ends_with("timbre (CC74) opens and closes the filter cutoff"));
     }
 
     #[test]
