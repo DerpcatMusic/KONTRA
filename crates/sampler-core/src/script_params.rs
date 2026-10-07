@@ -199,6 +199,8 @@ pub enum EnvelopeStage {
     /// Level as a 0..=1000 gain factor.
     Sustain,
     Release,
+    /// Attack curve 0..=1000000 (500000 straight, authored curve -1..1).
+    AttackCurve,
 }
 
 /// Per-plan-generation script engine state: group and instrument layers,
@@ -211,7 +213,7 @@ pub(crate) struct EngineLayers {
     /// Per group, the bus whose fader carries its volume.
     fader: Box<[Option<usize>]>,
     /// Per group, script envelope stages indexed like `EnvelopeStage`.
-    envelopes: Box<[[Option<u32>; 5]]>,
+    envelopes: Box<[[Option<u32>; 6]]>,
 }
 
 impl EngineLayers {
@@ -235,7 +237,7 @@ impl EngineLayers {
                 .map(|g| prepared.group_faders.get(g).and_then(|f| f.as_ref().map(|f| f.bus)))
                 .collect(),
             authored,
-            envelopes: vec![[None; 5]; count].into_boxed_slice(),
+            envelopes: vec![[None; 6]; count].into_boxed_slice(),
         }
     }
 
@@ -247,6 +249,7 @@ impl EngineLayers {
             EnvelopeStage::Decay,
             EnvelopeStage::Sustain,
             EnvelopeStage::Release,
+            EnvelopeStage::AttackCurve,
         ];
         if let Some(set) = group.and_then(|g| self.envelopes.get(g as usize)) {
             for (stage, value) in stages.into_iter().zip(set) {
