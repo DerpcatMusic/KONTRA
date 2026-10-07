@@ -1882,6 +1882,42 @@
       ],
       "validation": "Commit 6355d3af changes crates/sampler-ksp/tests/strings.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
       "accepted": true
+    },
+    {
+      "id": "ksp-saved-menu-item-position",
+      "summary": "A saved ui_menu value is the item position and the variable takes that item's value (Una Corda velocity curve)",
+      "source_commits": [
+        "8a3fb7696b294a7662c1a17b3240a6c5ef634bca"
+      ],
+      "validation": "Commit 8a3fb769 changes crates/sampler-ksp/tests/ui.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-playnote-osc-index-zero-based",
+      "summary": "UVI playNote oscIndex is 0-based, so scripted Augmented Orchestra programs select a group",
+      "source_commits": [
+        "a2fa45b81d69af080b822ef78bd1e44086dbf60b"
+      ],
+      "validation": "Commit a2fa45b8 changes crates/sampler-uvi/src/lib.rs, crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-release-finished-note-not-error",
+      "summary": "Releasing an already finished UVI note no longer returns StaleHandle",
+      "source_commits": [
+        "a2fa45b81d69af080b822ef78bd1e44086dbf60b"
+      ],
+      "validation": "Commit a2fa45b8 changes crates/sampler-uvi/src/lib.rs, crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-init-log-memory-bound",
+      "summary": "KSP init no longer logs every set_zone_par and caps control text lines, cutting Conflux load memory from 1973 to 226 MiB",
+      "source_commits": [
+        "ee7525b57943e7548eb6abd56151e5d9525efaa4"
+      ],
+      "validation": "Commit ee7525b5 changes crates/sampler-ksp/src/eval.rs, crates/sampler-native/examples/stream_report.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
     }
   ]
 }
