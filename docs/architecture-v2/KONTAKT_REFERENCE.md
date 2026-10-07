@@ -176,3 +176,175 @@ Linear amplitude ramp, in integer steps, with a nonzero first step: for a note v
 - L = 30, F = 60 (velocity): gain (v-29)/61 at v = 32, 40, 48, 56, 64, 80 (measured 0.049, 0.180, 0.311, 0.443, 0.573, 0.837 vs 0.049, 0.180, 0.311, 0.443, 0.574, 0.836).
 - L = 24, F = 36 (key, vel 100): gain (k-23)/37 at k = 24, 30, 36, 48, 60 (measured 0.027, 0.188, 0.351, 0.677, 1.0); k = 42 and 54 read 0.503 and 0.810 vs 0.514 and 0.838 (pitch-shifted noise, about 0.2-0.3 dB level wobble).
 - The ramp is a linear amplitude gain, not equal-power and not dB-linear; the gain is not 0 at the low edge (first step is 1/(F+1)). Notes below L do not play. The high-edge fade-out is the mirror: with H = 100, F = 60 (velocity) gain = (H - v + 1)/(F + 1) = (101 - v)/61, measured 1.0 up to v = 40, then 0.868, 0.738, 0.607, 0.339 at v = 48, 56, 64, 80 (law: 0.869, 0.738, 0.607, 0.344). Notes above H do not play.
+
+## 12. Loudness metric, and Vista g36/g37 left/right split
+
+- The peaks and RMS in sections 2, 4 and 6 come from `compare.wav`, which returns the mono mix (L+R)/2. For uncorrelated channels that reads about 3 dB under the per-channel number. Sections added after this one use `loud_lr.py` / `lr_report.py` (per channel, combined = sqrt((L^2+R^2)/2), max-channel peak).
+- Vista g36 and g37 solo (key 48, vel 100, CC1 = CC11 = 127, solo via `allow_group` replacing the Vista script, instrument and group volume 0 dB): the right channel is louder than the left by a constant offset at every CC100.
+  - g36: L - R = -5.0 dB at every CC100 from 0 to 80. Example CC100 40: L -45.0, R -39.9, combined -41.8 dBFS RMS. CC100 88 and above is silent.
+  - g37: L - R = -4.4 dB (-4.6 at CC100 0-8). Example CC100 56: L -37.0, R -32.6, combined -34.3. CC100 96 is still audible at combined -45.7.
+  - The shape over CC100 is the same on both channels, so the split is a constant gain difference per group, not a CC-dependent pan.
+- Run through `scenarios/vista_g36_lr.txt` (CC20 selects the solo group: 36 or 37) and `lr_report.py`.
+
+## 13. Full-note levels per channel (real instruments, Kontakt scripts ON, fresh load, no controller sent)
+
+Peak over 0.3-3 s after onset (3 s held notes), RMS sqrt((L^2+R^2)/2) over 0.5-2 s, dBFS, instrument volume 0.0 dB. `monopk` is the (L+R)/2 peak that sections 2/4 report.
+
+| Instrument, note | L pk | R pk | max(L,R) pk | mono pk | RMS (L,R) |
+|---|---|---|---|---|---|
+| Vista 3 Cellos key 48 vel 100 | -44.5 | -38.6 | -38.6 | -45.0 | -52.5 |
+| Una Corda Cotton key 60 vel 64 | -27.1 | -24.7 | -24.7 | -25.8 | -53.5 |
+| Una Corda Cotton key 60 vel 100 | -17.5 | -14.7 | -14.7 | -16.1 | -44.1 |
+| Una Corda Cotton key 60 vel 127 | -11.3 | -8.6 | -8.6 | -9.9 | -40.3 |
+| Barbarian Brass key 55 vel 100 | -19.1 | -15.9 | -15.9 | -20.1 | -27.3 |
+
+Vista with no CC sent is far below its CC1 = CC11 = 127 solo levels (section 6): the power-on dynamics state is quiet. Tools: `loud_lr.py`.
+
+## 14. Power-on controller state (fresh load, before any controller message)
+
+- KSP read-back: a script in an empty slot showing `%CC[n]` in labels on the first note (before any CC sent) reads 0 for CC1, CC2, CC4, CC7, CC10, CC11, CC64, pitch bend (`%CC[$VCC_PITCH_BEND]`, centred = 0 in KSP) and channel pressure (`%CC[$VCC_MONO_AT]`). So the engine array has no non-zero power-on value, including CC11 and CC7. `%CC[]` cannot be read in `on init` (compile error); it is readable in `on note`. Not tested: the value after reloading the instrument in the same session.
+- That 0 is not what the modulators see. Barbarian Brass (key 55 vel 100, scripts on, max-channel peak / RMS (L,R) dBFS):
+  - CC11 never sent: -15.9 / -27.3. CC11 = 127: -15.9 / -27.3 (identical). CC11 = 0: silent (-98.8 / -126.5). So an unsent CC11 behaves as full (127), not 0.
+  - CC1 never sent (CC11 = 127): -15.9 / -27.3. CC1 = 0: -27.6 / -38.8; 32: -22.4 / -32.9; 48: -16.9 / -27.2; 64: -13.1 / -23.6; 80: -14.0 / -24.9; 96: -13.0 / -24.7; 127: -7.7 / -18.8. An unsent CC1 reads like CC1 about 48 (the instrument script sets its own default), not like 0 or 127.
+  - The curve over CC1 is not monotonic (script and layer crossfades), so "about 48" is the nearest sampled match, not a measured default.
+- Vista 3 Cellos group g37 (solo, CC100 = 56): level is identical (L -37.0, R -32.4 dBFS) with no CC1/CC11 sent, with CC11 = 127 only, with CC1 = 0 and with CC1 = 127; g37 does not depend on CC1 or CC11. CC100 unsent equals CC100 = 0 (section 6).
+- Full Vista with its own script and no CC sent is -52.5 dBFS RMS (section 13): the instrument's default dynamics is low.
+
+## 15. Instrument volume, reload persistence, Una without scripts, key crossfade
+
+- Barbarian Brass instrument volume slider (read on a 2560x1440 desktop, `KONTAKT_RES=2560x1440`): 0.0 dB; the four mic faders also 0.0 dB. So the section 13/14 levels have no hidden instrument gain.
+- Reload: controller state survives removing and reloading an instrument in the same Kontakt session. After CC1=100, CC11=50, CC7=90, CC64=127, bend +0.5 (4096) and an instrument reload, `%CC` still reads 1:100 7:90 11:50 64:127 pb:4096. The section 14 zeros apply only to a fresh Kontakt process.
+- Una Corda Cotton with all four scripts bypassed (key 60 vel 100): unsent, CC80 = 0 and CC80 = 127 are identical: max-channel peak -3.8 (L -5.8, R -3.8), RMS -24.3. CC80 does nothing without the scripts.
+- Key crossfade fade-out (`scenarios/key_fade.ksp` on the noise instrument made by `noise_instrument.sh`; `ZONE_PAR_HIGH_KEY` 72, `ZONE_PAR_FADE_HIGH_KEY` 36, vel 100, attack/release 0). Zone key range applies (key 73 silent). Level, dB re key 60: 61 -1.8, 62 -2.5, 63 -3.3, 64 -4.3, 65 -5.3, 66 -6.4, 67 -7.8, 68 -9.4, 69 -11.3, 70 -13.9, 71 -17.3, 72 -22.2; key 48 +4.8; keys 30 and 36 equal (about +9, full level). Matches linear amplitude gain (H-k+1)/(F+1) for k in [H-F, H] (72 vs 60: -22.3 dB, 48 vs 60: +5.7, 66 vs 60: -5.3; measured within about 1 dB), unity below H-F, silent above H.
+- Pitfall: the sample is not cut at note-off and keys below 60 pitch it down (longer than 20 s), so tails pollute later notes. Measure with 21 s spacing and only keys >= 60 before the key under test, or one note per recording.
+- Not measured: module-parameter modulation (needs GUI-built filter plus modulator).
+
+## 16. Barbarian Brass without its script
+
+Barbarian Brass has a single script (slot 1, "Barbarian Brass 1.00"). Bypassed, key 55 vel 100 (`scenarios/barb_bypass_cc1.txt`; max-channel peak / RMS(L,R) dBFS): unsent -3.4 / -19.3; CC1=0 -3.9 / -18.3; CC1=48 -3.9 / -17.9; CC1=127 -2.9 / -15.6; CC11=0 silent. So without the script CC1 moves the level by under 4 dB (script on: about 20 dB, section 14), an unsent CC1 is not distinguishable from 0 or 48, and CC11 still gates the volume (unsent = full). The "unsent CC1 behaves like about 48" of section 14 therefore comes from the script (its layer logic and initial state), not from NKI modulator bytes. The bypassed instrument is also about 8 dB louder (-19.3 vs -27.3 RMS): the script attenuates or mutes layers.
+
+## 17. Filter cutoff modulation (velocity, LFO, envelope)
+
+Rig: `noise_instrument.sh` loads the noise sample, then Group Editor > Group Insert FX slot 1 > Filters > Lowpass > SV LP2 (reso 0), `Mod` > Add Modulator > target Cutoff. `scenarios/cutoff_mod.nki` is the patch with the SV LP2 plus an AHDSR envelope on cutoff (references D:\kontra_ref_src\noise.wav). Each case is recorded twice, filter bypassed (reference) and active, and `cutoff_report.py WAV REF SPACING LABELS [WIN]` divides the 1/6-octave band spectra: fc is the -3 dB point of the measured response (plateau from 150-300 Hz). Scenarios: `cutoff_vel.txt` (velocities 127/100/64/32/16/1, 21 s apart), `cutoff_one.txt` (one 9 s note, time curves in 0.5 s windows).
+
+- Calibration: with no modulation the SV LP2 reads fc(-3 dB) = 0.65 x knob (knob 6000 -> 3.9 kHz, 800 -> 0.52 kHz). All modulation numbers below are octaves relative to that.
+- All cutoff modulators act in octaves, linearly in the modulator value: shift = 10 octaves x amount x modulator (the cutoff knob range 20 Hz-20 kHz is 10 octaves; 100 % amount = the full range), clamped at the range ends.
+- Velocity (unipolar, 0..1 = vel/127), amount 44.4 %, knob 800: v1 650 Hz, v32 1094, v64 2373, v100 5640, v127 11343 Hz = +0.0/+1.07/+2.19/+3.44/+4.45 octaves over 520 Hz, i.e. 9.6-10.0 oct per 100 %. Amount 100 %: v16 +1.17, v32 +2.22 octaves, v64 and above beyond 16 kHz. Linear in velocity, no curve with the default shape.
+- LFO (Rectangle 0.25 Hz, bipolar, starts high; amount 17.4 %, knob 4000, retrigger on): high state 9070 Hz, low state 843 Hz against 2600 Hz neutral = +1.80 / -1.63 octaves (prediction +-1.74). The first half period (0-2 s) is the high state. Amount 100 %: high above 16 kHz, low about 35 dB down (cutoff pinned near 20 Hz): the swing is clamped to the knob range.
+- Envelope (AHDSR, unipolar, amount 34 %, knob 1000, attack 2000 ms, hold 0, decay 2000 ms, sustain -12 dB, curve 0): fc 855 / 1477 / 2585 / 4724 Hz at 0.25 / 0.75 / 1.25 / 1.75 s = env 0.12 / 0.35 / 0.59 / 0.84 (linear attack, octaves = 10 x 0.34 x env); peak at 2 s about 3.4 octaves; sustain 1150 Hz = 0.82 oct = env 0.24, so sustain -12 dB is the linear amplitude 0.25. The decay is exponential, not linear: env - sustain falls 0.51, 0.23, 0.085, 0.02 at 2.25 / 2.75 / 3.25 / 3.75 s (about x0.4 per 0.5 s, 97 % done within the 2000 ms decay time).
+- Caveat: the SV LP2 cutoff relation (0.65 x knob) was fitted from one filter type; the ratios, not the absolute -3 dB points, are the law. Measurements are +-0.1 octave (band resolution).
+
+## 18. Vista 3 Cellos solos g1, g4, g5, g33, g36 (silent in section 4 only because they are quiet)
+
+`scenarios/vista_solo_g1_4_5_33_36.txt` with the solo script of section 4 (`scenarios/solo_group.ksp`, replaces the Vista script in slot 1 through Apply from Clipboard; slot 2 cleared), CC1 = CC11 = 127, key 48 vel 100 held 3 s, 6 s apart; `lr_report.py` per channel, RMS over 0.5-2 s after onset, dBFS:
+
+| group | CC100 = 0 (L / R) | CC100 = 64 (L / R) | CC100 = 127 |
+|---|---|---|---|
+| g1 | -68.8 / -68.7 | -52.8 / -52.1 | silent |
+| g4 | -59.9 / -61.7 | -48.3 / -50.1 | silent |
+| g5 | -55.5 / -55.8 | -36.6 / -37.0 | silent |
+| g33 | -75.4 / -73.9 | -56.5 / -54.7 | silent |
+| g36 (control) | -61.8 / -56.5 | -50.1 / -44.8 | silent |
+
+So g1/g4/g5 are not gated: they sound at CC100 0 and 64, but 16-35 dB under g37 (-37 R at CC100 56, section 12), so section 4 (taken at an unspecified CC100) read them as silent. All five groups are silent at CC100 = 127, as g36 (section 12: silent from 88). Left-right differences are constant per group (g1 0, g4 +1.8, g5 +0.4, g33 -1.5, g36 -5.3 dB) as in section 12; the 64 level is 12-19 dB above the 0 level.
+
+## 19. Una Corda Cotton g39 and g94 solos (all four scripts bypassed) - SUSPECT, see 19a
+
+Scenario: `tools/kontakt-reference/scenarios/una_solo_g39_g94.txt` plus `solo_group.ksp` in free slot 5 (MAIN, RESONANCE, RELEASE, REPEDAL all bypassed). Key 60, 3 s notes, 6 s apart; CC20 selects the group. dBFS, RMS 0.5-2 s, peak 0.3-3 s after onset.
+
+| group | vel | L rms | R rms | L peak | R peak |
+|---|---|---|---|---|---|
+| g39 | 64 | -54.5 | -51.6 | -26.4 | -24.0 |
+| g39 | 100 | -45.3 | -42.5 | -17.2 | -14.4 |
+| g39 | 127 | -39.9 | -37.4 | -9.5 | -6.8 |
+| g94 | 64 | -25.1 | -25.3 | -14.6 | -15.8 |
+| g94 | 100 | -25.2 | -25.3 | -14.6 | -15.8 |
+| g94 | 127 | -25.2 | -25.3 | -14.6 | -15.8 |
+
+- g39 is the velocity-sensitive note group: about 9 dB per step from 64 to 100 and 5.4 dB from 100 to 127; R is 2.4-2.8 dB louder than L.
+- g94 is velocity-independent (identical to 0.1 dB at 64, 100 and 127), nearly centred and 20 dB louder in RMS than g39 at vel 64 (a sustained layer, not a struck note).
+
+### 19a. Una g39/g94 re-record under REFERENCE_PROTOCOL (fresh Kontakt process)
+
+Fresh Kontakt process, calibration PASS (0.0000 dB), master 0.00 dB, instrument volume/pan/tune pinned, CC1/7/10/11/64 explicit (or CC7 unsent, see below), scripts 1-4 bypassed, `solo_group.ksp` in slot 5, key 60 vel 100, 3 s note. Level over the whole note (peak includes the first 0.3 s, RMS 0.5-2 s after onset), identical to 0.1 dB on 3 repeats:
+
+| group | L peak | R peak | L rms | R rms |
+|---|---|---|---|---|
+| g39 | -15.8 | -15.8 | -54.4 | -54.4 |
+| g94 | -17.7 | -17.7 | -30.0 | -30.0 |
+
+- Una Cotton's saved instrument volume is 0 dB, so CC7 unsent and CC7=127 give the same level here (-15.8 / -54.4 both); the 0.5x of section 18 applies to instruments whose saved volume is the Kontakt default of -6 dB (the noise instrument), not to Una.
+- g39 decays 30 dB in 0.2 s (struck, the sample is short); L=R exactly.
+- These do NOT reproduce section 19 (g39 v100 L/R peak -17.2/-14.4 after 0.3 s, rms -45.3/-42.5; g94 rms -25.2): g39 sustain is ~9 dB lower and the 2.4-2.8 dB L/R asymmetry is absent. Section 19 was recorded in a Kontakt process in which I had also opened the Group Editor and read module values; a state change there is the likely cause, but it is unproven. Treat 19a (fresh, unmodified instrument) as the protocol reference and section 19 as suspect until re-recorded.
+- The failures below and the mismatch happened at load average 11-18; treat those runs as invalid. record.sh now refuses to run above load 4 (KONTRA_MAX_LOAD) and logs the load.
+- Multi-note sequences in one recording were not stable (later groups silent in `una_solo_g39_g94.txt`, only 1 of 7 groups sounding in a CC20 36-42 sweep), so use one note per recording until the cause (script/CC20 timing or streaming under heavy host load, load average 11-18 during the session) is found.
+
+## 20. Stereo Modeller law
+
+Rig: `noise_instrument.sh stereo` (independent noise A in L, B in R) as a group Insert FX, then `sm_sweep.sh TAG FIELDX FIELDY VALUE...`, which types each value, records a 3.5 s key-60 note at vel 100 and runs `matrix_report.py` (least-squares 2x2 fit out = M [A,B], lag, residual). Base gain g = 0.3838 (-8.3 dB at vel 100); residual -119 dB, so the module is a pure memoryless matrix (unity at defaults).
+
+**Spread s (percent / 100)**
+- s > 0: M = g [[1+s, -s], [-s, 1+s]]. Mid gain stays 1, side gain is 1+2s. Clamped at 100% (150 and 200 equal 100).
+  - 25%: diag 0.4798, off -0.0960. 50%: 0.5757 / -0.1919. 100%: 0.7677 / -0.3838.
+- s < 0: standard M/S width w = 1+s, diag = g(1+w)/2, off = g(1-w)/2.
+  - -25%: 0.3359 / 0.0480. -50%: 0.2879 / 0.0960. -75%: 0.2399 / 0.1439. -100%: 0.1919 / 0.1919 (mono).
+  - One early -50% run read 0.1949 / 0.0653; it did not reproduce.
+
+**Pan p (-1..1)**: linear balance. The opposite channel is scaled by 1-|p|, the same side is unchanged. -100: R=0; -50: R x0.5 (0.1919); -25: R x0.75 (0.2879); +25, +50, +100 mirror on L.
+
+**Output (dB)**: plain linear gain 10^(dB/20): +6 dB gives x2.0, -6 dB gives x0.5.
+
+**Pseudo Stereo on (pan centre, stereo input)**: not a memoryless matrix (residual -3.1 dB, lag 60 samples, L about 0.0018, R 0.3838). Not resolved; needs a mono-input test.
+
+## 21. Reverb (Send FX "Reverb", Mode Room and Hall)
+
+Where: Instrument Send FX slot > Reverb > Reverb (not Group Insert FX; the other entries there are Convolution, Plate Reverb, Raum, Legacy Reverb and were not measured). Panel: Mode, Predelay, Size, Time, Damping, Diffusion, Mod, Stereo, Low Shelf, High Cut, Return. Defaults: Room, 0 ms, 50%, 3.2k ms, 50%, 50%, 50%, 100%, 0 dB, 21k Hz, Return 0.0 (send level at default).
+
+Rig: `noise_instrument.sh burst` (50 ms noise burst at 0.1 s, 15 s file), reverb in Send FX slot 1, `scenarios/reverb_burst.txt` (one 14 s key-60 note). `dry.wav` is the same scenario with the reverb bypassed; `reverb_report.py WET DRY` subtracts it (wet = WET - DRY, aligned, lag 0) and prints pre-delay (first 5 ms window within 30 dB of the wet peak), broadband RT60 (Schroeder integral, -5..-35 dB fit, extrapolated to -60) and RT60 per band (smooth 1-octave-wide Gaussian bands at 250, 1k, 4k and 8k Hz). `rv_sweep.sh TAG FX FY VALUE...` types the values and prints the report; fields (Room, scrolled): Predelay (860,768), Size (994,768), Time (1140,768), Damping (1270,768), Diffusion (1408,768), Mod (855,831), Stereo (996,831), Low Shelf (1138,831), High Cut (1275,831).
+
+**Time -> decay.** Measured RT60 is 0.81-0.83 x the displayed Time, linear over 0.8-20 s (Room, damping 50%):
+
+| Time ms | 800 | 1000 | 1500 | 2000 | 3000 | 3200 | 4000 | 5000 | 10000 | 20000 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RT60 s | 0.66 | 0.84 | 1.22 | 1.63 | 2.42 | 2.60 | 3.27 | 4.08 | 8.09 | 16.17 |
+
+Range about 800 ms to 20 s (typed 100 and 500 are rejected and leave the old value). The decay is exponential (straight in dB). Hall has the same law (1000 -> 0.86, 3200 -> 2.61, 5000 -> 4.09).
+
+**Damping** changes only the high-frequency decay (3.2 s Time; 250/1k bands stay 2.9 s):
+
+| damping % | 0 | 25 | 50 | 75 | 100 |
+|---|---|---|---|---|---|
+| 4 kHz RT60 s | 2.60 | 2.40 | 2.30 | 2.19 | 2.05 |
+| 8 kHz RT60 s | 2.11 | 1.78 | 1.63 | 1.47 | 1.33 |
+
+(Even damping 0 is shorter than mid at 8 kHz: 0.72 x.) At the default the band RT60 relative to 1 kHz is 4 kHz 0.79, 8 kHz 0.56, and the 250 Hz band is about 1.02 x.
+
+**Predelay**: wet starts at predelay + about 5-10 ms (20 -> 25, 50 -> 55, 100 -> 100, 250 -> 240 ms). Range 0-250 ms (500 rejected). RT60 unchanged. Hall starts with no offset (0 ms at 0, 95 ms at 100).
+
+**Size**: RT60 does not change (2.59-2.62 s for 0-100%). It changes early-reflection level and density: wet peak -27.6 dB at 0, -30.7 at 50, -32.6 at 100 (Hall -32.8, -33.8, -35.7), and first arrival 5 ms at size 0 versus 10 ms.
+
+**Diffusion**: RT60 unchanged; only the first-arrival time (15 ms at 0, 10 at 50, 5 at 100) and the early texture change.
+
+**Stereo**: wet L/R correlation (0.5-2 s) is 1.00 at 0%, 0.59 at 50%, -0.05 at 100%. Wet level rises with it (-34.3, -33.7, -31.5 dB).
+
+**High Cut** lowers wet level and leaves the decay: wet peak -37.0 dB (1 kHz), -34.6 (4k), -32.1 (10k), -32.2 (21k). **Low Shelf** (+-12 dB) changes the 250 Hz band by about 0.1 s of RT60 and the wet peak by under 0.4 dB (a shelf on the wet low end; level effect not separated). **Mod** and **Return** not measured.
+
+Note on the first-sight default: the Time display shows "3.2k ms" and the measured default RT60 is 2.59-2.62 s, matching 3200 typed.
+
+## 22. Volume envelope: hold and decay time laws (GUI ms to seconds)
+
+Rig: `noise_instrument.sh noise` (continuous noise), Group Editor, scrolled to the Modulation > Volume AHDSR row. Defaults on a new sample instrument: Curve -33%, Attack 0, Hold 0, Decay 500 ms, Sustain 0 dB, Release 300 ms, mode AHDSR (the "AHD Only" button off). Sustain set to -24 dB so the decay is visible. `scenarios/ahd_note.txt` (one 6 s key-60 note), `env_sweep.sh TAG FX FY VALUE...` (fields at y 818: Curve 700, Attack 860, Hold 998, Decay 1135, Sustain 1265, Release 1410) and `env_ahd.py` (time after the plateau at which the 10 ms RMS falls 1/3/6/10/20 dB).
+
+**Hold**: the level stays flat for the displayed time, then the decay starts. Time to -3 dB minus the hold-0 value (0.072 s, which is the decay's own 3 dB point):
+
+| Hold ms | 100 | 500 | 1000 | 3000 |
+|---|---|---|---|---|
+| T(-3 dB) - 0.072 s | 0.084 | 0.480 | 0.985 | 2.95 |
+
+So hold = the displayed ms, linear, within about 2% (10 ms measurement window).
+
+**Decay**: with sustain -24 dB the level falls linearly in dB and reaches the sustain level at exactly the displayed Decay time. Time to -20 dB (fraction 20/24 = 0.833 of the decay): D=100 ms: 0.094 s; 250: 0.216; 500: 0.427; 1000: 0.844; 2000: 1.647 (0.84-0.94 x D). Decay 500 ms: -1/-3/-6/-10/-20 dB at 0.031/0.072/0.130/0.216/0.427 s, i.e. about 46 dB/s (24 dB over 0.5 s). So the decay is exponential in amplitude (a straight line in dB). The time to reach the sustain level scales linearly with the Decay setting (Decay 2000: 20 dB at 1.647 s, 12 dB/s), and the slope in dB/s is depth / D.
+
+The Curve field (-100, -33, 0, 50, 100%) did not change the decay timings at all; it shapes only the attack segment.
+
+Release and attack time laws are in sections 5 and 9 (engine value -> seconds). Not yet cross-checked: the engine value (set_engine_par) against the GUI ms display for hold and decay; read the ms display after setting the engine value in a KSP script if that mapping is needed.
