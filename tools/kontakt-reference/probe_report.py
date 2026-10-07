@@ -12,7 +12,34 @@ THRESH, SILENT = 0.5, -80.0
 
 def primary(e):
     m = [x for x in e["matches"] if x["ncc"] >= THRESH]
-    return m[0] if m else None
+    if m:
+        p = dict(m[0])
+        pb = e.get("playback")
+        if pb and pb["asset"] == p["asset"]:
+            p["reversed"], p["offset"] = pb["reversed"], pb["start_offset_frames"]
+        return p
+    pb = e.get("playback")  # no onset match: moved start or reversed sample found by the wider search
+    if pb and pb["ncc"] >= THRESH:
+        return {"asset": pb["asset"], "ncc": pb["ncc"], "zones": [], "reversed": pb["reversed"], "offset": pb["start_offset_frames"], "wide": True}
+    return None
+
+
+def fmt(p):
+    if not p:
+        return "-"
+    z = p.get("zones") or [{}]
+    return f"{p['asset'].rsplit('.', 1)[0][-34:]}@{int(p.get('offset', 0))} {'rev' if p.get('reversed') else 'fwd'}"
+
+
+def attack(a, b):  # mean |dB| and correlation of the 50 ms onset envelopes
+    n = [(x, y) for x, y in zip(a, b)]
+    if len(n) < 8:
+        return None
+    d = statistics.mean(abs(x - y) for x, y in n)
+    mx, my = statistics.mean(x for x, _ in n), statistics.mean(y for _, y in n)
+    sx = sum((x - mx) ** 2 for x, _ in n) ** .5
+    sy = sum((y - my) ** 2 for _, y in n) ** .5
+    return round(d, 1), round(sum((x - mx) * (y - my) for x, y in n) / (sx * sy), 2) if sx > 0 and sy > 0 else None
 
 
 def layer(m):  # the velocity ranges of the zones that carry this sample at this key
@@ -61,6 +88,10 @@ for eng in engines:
         "identified": sum(p is not None for p in ep),
         "silent_notes": sum(r < SILENT for r in er),
         "kontakt_audible_engine_silent": sum(er[i] < SILENT and kont[i]["rms_db"] > SILENT for i in range(len(notes))),
+        "same_direction_pct": round(100 * len([i for i in both if bool(kp[i].get("reversed")) == bool(ep[i].get("reversed"))]) / max(1, len(both)), 1),
+        "same_start_offset_pct": round(100 * len([i for i in both if kp[i]["asset"] == ep[i]["asset"] and abs(kp[i].get("offset", 0) - ep[i].get("offset", 0)) <= 2400]) / max(1, len(same)), 1),
+        "attack_db_error_mean": (lambda v: round(statistics.mean(v), 1) if v else None)([a[0] for a in (attack(kont[i]["env_db"], notes[i]["engines"][eng]["env_db"]) for i in range(len(notes))) if a]),
+        "onset_ms_diff_mean": (lambda v: round(statistics.mean(v), 1) if v else None)([notes[i]["engines"][eng]["onset_ms"] - kont[i]["onset_ms"] for i in range(len(notes)) if notes[i]["engines"][eng].get("onset_ms") is not None and kont[i].get("onset_ms") is not None]),
         "same_sample_pct": round(100 * len(same) / max(1, len(kp) - kp.count(None)), 1),
         "same_velocity_layer_pct": round(100 * len(lay) / max(1, len(kp) - kp.count(None)), 1),
         "rr_groups": rr_n, "rr_sequence_equal": rr_exact, "rr_same_set": rr_set,
@@ -74,5 +105,15 @@ for eng in engines:
                      for i in range(len(notes)) if not kp[i] or not ep[i] or kp[i]["asset"] != ep[i]["asset"]],
     }
 json.dump(res, open(out, "w"), indent=1)
+reps = defaultdict(int)
+rows = ["| key/vel/rep | Kontakt (sample@offset dir) | v2 | v1 | match v2 / v1 |", "|---|---|---|---|---|"]
+for i, n in enumerate(notes):
+    g = (n["key"], n["vel"]); r = reps[g]; reps[g] += 1
+    cols = {e: primary(n["engines"][e]) for e in engines}
+    def ok(e):
+        c, k = cols.get(e), kp[i]
+        return "-" if not (c and k) else ("yes" if c["asset"] == k["asset"] and bool(c.get("reversed")) == bool(k.get("reversed")) and abs(c.get("offset", 0) - k.get("offset", 0)) <= 2400 else "offset" if c["asset"] == k["asset"] and bool(c.get("reversed")) == bool(k.get("reversed")) else "layer" if layer(c) == layer(k) and c.get("zones") else "NO")
+    rows.append(f"| {n['key']}/{n['vel']}/{r} | {fmt(kp[i])} | {fmt(cols.get('kontra'))} | {fmt(cols.get('v1'))} | {ok('kontra')} / {ok('v1')} |")
+open(out.replace(".json", ".md"), "w").write("\n".join(rows) + "\n")
 for eng, r in res["engines"].items():
     print(f"{ID:18} {eng:6} sample {r['same_sample_pct']:5.1f}%  layer {r['same_velocity_layer_pct']:5.1f}%  RR {r['rr_sequence_equal']}/{r['rr_groups']}  level {r['level_db_mean']} dB (worst {r['level_db_worst']})  silent-vs-kontakt {r['kontakt_audible_engine_silent']}  artic {','.join(r['articulations'])[:40]}")
