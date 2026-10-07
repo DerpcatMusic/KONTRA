@@ -175,11 +175,14 @@ fn one_rack_plays_every_format_together() {
     rack.run(50, true);
 
     // Each part sounds on its own channel and pair, and only there.
-    let probes = [(0u8, 60u8, part_nki, "kontakt nki"), (1, 36, part_uvi, "uvi"), (2, 60, part_multi, "kontakt multi")];
+    let probes = [(0u8, 60u8, part_nki, "kontakt nki"), (1, 36, part_uvi, "uvi"), (2, 40, part_multi, "kontakt multi")];
     let mut failures = Vec::new();
     for (channel, key, part, what) in probes {
         rack.silence();
-        rack.on(channel, key, 1, 0);
+        // A multi program's range is unknown: a spread of keys finds it.
+        for (i, k) in (0..if part == part_multi { 6 } else { 1 }).map(|i| key + i * 5).enumerate() {
+            rack.on(channel, k.min(120), 1 + i as i32, 0);
+        }
         let peak = rack.run(300, true);
         if !loud(peak[part]) {
             failures.push(format!("{what} (part {part}, channel {channel}) is silent on pair {part}"));
