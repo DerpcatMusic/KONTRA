@@ -581,7 +581,6 @@ fn remapped_pedals_use_the_shared_gate_while_consumed_pedals_leave_it_alone() {
         "on note ignore_controller end on",
         "on controller play_note(60,127,0,-1) end on",
         "on controller ignore_event($EVENT_ID) end on",
-        "on init set_controller(1,1) end on",
     ] {
         assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
     }

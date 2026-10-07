@@ -1,0 +1,6 @@
+# sustain pedal down, note held 1 s, released while pedal down, pedal up at 3 s
+0.0 pedal 127
+0.2 on 48 100
+1.2 off 48
+3.0 pedal 0
+6.0 end

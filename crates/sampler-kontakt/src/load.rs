@@ -120,12 +120,11 @@ pub fn load_read(
             total: kept.len(),
             sample,
         });
-        let decoded = samples.decode(sample)?;
+        let decoded = samples.decode(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
         let frames = decoded.frames.into_boxed_slice();
         pcm.push(
-            Pcm::new(decoded.rate, frames).map_err(|e| LoadError::Invalid {
-                path: sample.clone(),
-                reason: e.to_string(),
+            Pcm::new(decoded.rate, frames).map_err(|e| {
+                LoadError::Invalid { path: sample.clone(), reason: e.to_string() }.at(crate::Stage::SampleResolve)
             })?,
         );
     }
@@ -178,7 +177,10 @@ pub fn load_read_streamed(
     let mut sources = Vec::with_capacity(kept.len());
     for &asset in &kept {
         let location = &locations[asset];
-        sources.push((samples.source(location)?, location.as_path()));
+        sources.push((
+            std::sync::Arc::new(samples.source(location).map_err(|e| e.at(crate::Stage::SampleResolve))?) as std::sync::Arc<dyn crate::AssetSource>,
+            location.as_path(),
+        ));
     }
     let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
     let pcm = opened.assets.clone();
@@ -187,6 +189,29 @@ pub fn load_read_streamed(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    crate::Streamed::new(loaded, opened, kept)
+}
+
+/// Stream an instrument translated by another loader: `sources[i]` and
+/// `labels[i]` belong to asset `i`. As [`load_streamed`], without the Kontakt
+/// container: only zone starts and a page pool are resident.
+pub fn stream_instrument(
+    mut instrument: ir::Instrument,
+    sources: Vec<std::sync::Arc<dyn crate::AssetSource>>,
+    labels: Vec<String>,
+    options: &Options,
+    policy: &crate::StreamPolicy,
+) -> Result<crate::Streamed, LoadError> {
+    let (low, high) = (*options.keys.start(), *options.keys.end());
+    let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
+    let listed = kept
+        .iter()
+        .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
+        .collect();
+    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32)?;
+    let pcm = opened.assets.clone();
+    let labels = kept.iter().map(|&a| labels[a].clone()).collect();
     let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
     crate::Streamed::new(loaded, opened, kept)
 }
@@ -347,6 +372,14 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
 /// and hands back its interface, its pictures read from `options.library`;
 /// one that fails is reported and left out.
 pub fn prepare(
+    instrument: ir::Instrument,
+    pcm: Vec<Pcm>,
+    options: &Options,
+) -> Result<Loaded, LoadError> {
+    prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
+}
+
+fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     options: &Options,
@@ -392,13 +425,26 @@ pub fn prepare(
             persisted: behavior
                 .state
                 .iter()
-                .map(|(name, saved)| {
+                .filter_map(|(name, saved)| {
                     let value = match saved {
                         ir::Saved::Int(n) => Value::Int(*n as i32),
                         ir::Saved::Real(r) => Value::Real(*r),
                         ir::Saved::Text(t) => Value::Text(t.clone()),
+                        _ => return None,
                     };
-                    (name.clone(), value)
+                    Some((name.clone(), value))
+                })
+                .collect(),
+            persisted_arrays: behavior
+                .state
+                .iter()
+                .filter_map(|(name, saved)| {
+                    let values = match saved {
+                        ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
+                        ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
+                        _ => return None,
+                    };
+                    Some((name.clone(), values))
                 })
                 .collect(),
             performance_view,

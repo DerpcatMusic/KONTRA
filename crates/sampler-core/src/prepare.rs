@@ -414,6 +414,8 @@ pub struct Prepared {
     /// CC64 holds no gate: a behavior implements sustain itself.
     pub(super) script_sustain: bool,
     pub(super) script_release_triggers: bool,
+    /// Controller values a script set in `on init`, before any input.
+    pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
@@ -595,6 +597,7 @@ impl Prepared {
             source_event_limit: i32::MAX,
             script_sustain: false,
             script_release_triggers: false,
+            initial_controllers: Vec::new(),
             region_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
@@ -730,6 +733,18 @@ impl Prepared {
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {
         self.stages.len()
+    }
+    /// Bytes one voice slot costs under this plan: the voice itself, its chain
+    /// and delay state, and its modulation state. Control side, for sizing
+    /// `Limits::voices` against a memory budget.
+    pub fn voice_state_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let stages = self.voice_chains.iter().map(|c| c.stages()).max().unwrap_or(0);
+        let delay = self.voice_chains.iter().map(|c| c.delay_frames).max().unwrap_or(0);
+        size_of::<crate::Slot<crate::Voice>>()
+            + stages * size_of::<crate::dsp::ProcessorState>()
+            + delay * size_of::<[f64; 2]>()
+            + self.voice_modulation.bytes_per_voice()
     }
     pub fn sample_count(&self) -> usize {
         self.pcm.len()
