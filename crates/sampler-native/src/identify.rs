@@ -30,6 +30,7 @@ struct Candidate {
     window: Vec<f32>,
     norm: f32,
     spectrum: Vec<Complex<f32>>,
+    window_at: usize, // where in the resampled sample the onset window starts
 }
 
 fn cents(p: ir::Pitch) -> f64 {
@@ -82,6 +83,60 @@ impl Fft {
         let mut out = self.fwd.make_output_vec();
         self.fwd.process(&mut input, &mut out).expect("fft");
         out
+    }
+}
+
+/// First moment (seconds) the stereo render rises above its pre-note level and -80 dBFS, searching from just before `note_on`.
+fn resid_onset(mono: &[f32], note_on: f64) -> Option<f64> {
+    let a = ((note_on - 0.1) * RATE).max(0.0) as usize;
+    let pre = mono.get(a..a + 1_200)?.iter().fold(0f32, |m, x| m.max(x.abs()));
+    let thr = (pre * 2.0).max(3e-4);
+    let end = (a + 12_000).min(mono.len());
+    (a + 1_200..end).find(|&i| mono[i].abs() > thr).map(|i| i as f64 / RATE)
+}
+
+/// Best normalised correlation of `window` (norm `wn`) inside `hay`, and its start position.
+fn best_position(window: &[f32], wn: f32, hay: &[f32]) -> Option<(f32, usize)> {
+    let n = (hay.len() + window.len()).next_power_of_two();
+    let mut planner = RealFftPlanner::<f32>::new();
+    let (fwd, inv) = (planner.plan_fft_forward(n), planner.plan_fft_inverse(n));
+    let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+    a[..hay.len()].copy_from_slice(hay);
+    b[..window.len()].copy_from_slice(window);
+    let (mut fa, mut fb) = (fwd.make_output_vec(), fwd.make_output_vec());
+    fwd.process(&mut a, &mut fa).ok()?;
+    fwd.process(&mut b, &mut fb).ok()?;
+    for (x, y) in fa.iter_mut().zip(&fb) {
+        *x *= y.conj();
+    }
+    fa[0].im = 0.0;
+    let last = fa.len() - 1;
+    fa[last].im = 0.0;
+    let mut t = inv.make_output_vec();
+    inv.process(&mut fa, &mut t).ok()?;
+    let mut prefix = vec![0f64; hay.len() + 1];
+    for (i, x) in hay.iter().enumerate() {
+        prefix[i + 1] = prefix[i] + f64::from(x * x);
+    }
+    (0..=hay.len().saturating_sub(window.len()))
+        .filter_map(|p| {
+            let e = (prefix[p + window.len()] - prefix[p]).sqrt() as f32;
+            (e > 1e-5).then(|| (t[p] / n as f32 / (e * wn), p))
+        })
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+}
+
+/// Pre-emphasis by repeated first differences (+6 dB/octave each): sustained tones of one pitch correlate at any phase
+/// through their harmonics, the noise and upper partials are what tell recordings apart.
+fn emph(x: &mut [f32]) {
+    let order = std::env::var("KONTRA_ID_EMPH").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+    for _ in 0..order {
+        for i in (1..x.len()).rev() {
+            x[i] -= x[i - 1];
+        }
+        if let Some(f) = x.first_mut() {
+            *f = 0.0;
+        }
     }
 }
 
@@ -193,6 +248,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
 
     // First 1.5 s of every kept asset, in memory only.
     let mut heads: Vec<(u32, Vec<[f32; 2]>)> = Vec::with_capacity(kept.len());
+    let mut tails: Vec<Vec<[f32; 2]>> = Vec::with_capacity(kept.len());
     for &orig in &kept {
         let source = kontakt.samples.source(&kontakt.locations[orig]).map_err(|e| io::Error::other(e.to_string()))?;
         let mut reader = sampler_kontakt::SampleReader::open(&source)?;
@@ -200,6 +256,12 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
         let want = (reader.frames()).min((rate as usize) * 4);
         let mut buf = vec![[0f32; 2]; want];
         reader.read(0, &mut buf)?;
+        let total = reader.frames();
+        let from = total.saturating_sub((rate as usize) * 4);
+        let mut tail = vec![[0f32; 2]; total - from];
+        reader.read(from, &mut tail)?;
+        tail.reverse();
+        tails.push(tail);
         heads.push((rate, buf));
     }
 
@@ -226,6 +288,8 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
             let peak = long.iter().take(RATE as usize).fold(0f32, |m, x| m.max(x.abs()));
             let Some(on) = long.iter().position(|x| x.abs() > peak * 0.003 && peak > 0.0) else { continue };
             let on = on.saturating_sub(24);
+            let mut long = long;
+            emph(&mut long);
             let mut window: Vec<f32> = long[on..].iter().copied().take(WIN).collect();
             window.resize(WIN, 0.0);
             let norm = window.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -233,7 +297,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                 continue;
             }
             let spectrum = fft.spectrum(&window);
-            list.push(Candidate { asset: zone.asset.0, window, norm, spectrum });
+            list.push(Candidate { asset: zone.asset.0, window, norm, spectrum, window_at: on });
         }
         per_key.insert(key, list);
     }
@@ -268,6 +332,10 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                         "artic": z.articulation.map(|a| ins.articulations[a.0].name.clone()),
                         "take": take,
                         "trigger": format!("{:?}", z.trigger),
+                        "start": format!("{:?}", z.playback.start),
+                        "start_range": format!("{:?}", z.playback.start_range),
+                        "reverse": z.playback.reverse,
+                        "looping": format!("{:?}", z.playback.looping),
                     })
                 })
                 .collect()
@@ -277,6 +345,7 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
             let start = ((first + (t - first) * r.scale + r.lead - BEFORE) * RATE).max(0.0) as usize;
             let mut resid: Vec<f32> = r.mono.get(start.min(r.mono.len())..).unwrap_or(&[]).iter().copied().take(SEG).collect();
             resid.resize(SEG, 0.0);
+            emph(&mut resid);
             // Level: onset (first frame within 30 dB of the segment peak) plus 0.4 s, stereo power.
             let s48 = start * 2;
             let seg = r.stereo.get(s48.min(r.stereo.len())..(s48 + SEG * 2).min(r.stereo.len())).unwrap_or(&[]);
@@ -326,15 +395,92 @@ pub fn run(instrument: &Path, grid: &Path, output: &Path, renders: &[String]) ->
                 }
                 matches.push(json!({
                     "asset": label(c.asset),
+                    "asset_index": c.asset,
                     "ncc": (ncc * 1000.0).round() / 1000.0,
                     "gain_db": (db(f64::from(gain)) * 10.0).round() / 10.0,
                     "lag_ms": ((lag as f64 / RATE - BEFORE) * 1000.0).round(),
                     "zones": zone_info(c.asset),
                 }));
             }
+            // Where in the sample, and which way: the render's 100 ms at the top match's lag (or, with no match, at the render's
+            // own onset) against the whole first/last 4 s of the candidate sample, forward and reversed.
+            let note_on = first + (t - first) * r.scale + r.lead;
+            let mono_at = |from_s: f64| -> Vec<f32> {
+                let a = (from_s * RATE).max(0.0) as usize;
+                let mut v: Vec<f32> = r.mono.get(a.min(r.mono.len())..).unwrap_or(&[]).iter().copied().take(WIN).collect();
+                v.resize(WIN, 0.0);
+                emph(&mut v);
+                v
+            };
+            let mut playback = Value::Null;
+            let top = matches.first().and_then(|m| m["asset_index"].as_u64()).map(|a| a as usize);
+            let (probe_assets, probe_window, base_lag): (Vec<usize>, Vec<f32>, Option<usize>) = match (top, matches.first()) {
+                (Some(a), Some(m)) => {
+                    let lag = ((m["lag_ms"].as_f64().unwrap_or(0.0) / 1000.0 + BEFORE) * RATE) as usize;
+                    (vec![a], mono_at(note_on - BEFORE + lag as f64 / RATE), Some(lag))
+                }
+                _ => {
+                    // No onset-window match: sample start moved, reversed, or another sample. Search velocity-eligible samples.
+                    let on = resid_onset(&r.mono, note_on);
+                    let mut assets: Vec<usize> = ins.zones.iter()
+                        .filter(|z| z.keys.low <= key && key <= z.keys.high && z.velocities.low <= vel && vel <= z.velocities.high)
+                        .map(|z| z.asset.0).collect();
+                    assets.sort_unstable();
+                    assets.dedup();
+                    assets.truncate(300);
+                    (assets, mono_at(on.map_or(note_on, |o| o - 24.0 / RATE)), None)
+                }
+            };
+            let wn = probe_window.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if wn > 1e-6 {
+                let mut best: Option<(f32, usize, bool, f64, f64)> = None; // ncc, asset, reversed, position, step
+                for &asset in &probe_assets {
+                    let zone = ins.zones.iter().find(|z| z.asset.0 == asset && z.keys.low <= key && key <= z.keys.high);
+                    let Some(zone) = zone else { continue };
+                    let group_tune = zone.group.map_or(ir::Pitch::NONE, |g| ins.groups[g.0].tune);
+                    let semis = shift(zone, group_tune, key);
+                    let (rate, head) = &heads[asset];
+                    let step = 2f64.powf(semis / 12.0) * f64::from(*rate) / RATE;
+                    for (reversed, frames) in [(false, head), (true, &tails[asset])] {
+                        let mut hay = resample(frames, *rate, semis, (4.0 * RATE) as usize);
+                        emph(&mut hay);
+                        if let Some((ncc, pos)) = best_position(&probe_window, wn, &hay) {
+                            if best.is_none_or(|b| ncc > b.0) {
+                                best = Some((ncc, asset, reversed, pos as f64, step));
+                            }
+                        }
+                    }
+                }
+                if let Some((ncc, asset, reversed, pos, step)) = best {
+                    // Offset against the candidate's own onset window (the one `matches` used), forward only.
+                    let (rate, head) = &heads[asset];
+                    let _ = (rate, head);
+                    let ref_pos = candidates.iter().find(|c| c.asset == asset).map_or(0.0, |c| c.window_at as f64);
+                    let offset = if reversed { pos * step } else { (pos - ref_pos) * step };
+                    playback = json!({
+                        "asset": label(asset), "ncc": (ncc * 1000.0).round() / 1000.0, "reversed": reversed,
+                        "start_offset_frames": offset.round(), "from_match": base_lag.is_some(),
+                    });
+                }
+            }
+            // Attack shape: 2.5 ms bins over the first 50 ms from the onset, dB re the 0.1-0.4 s body.
+            let onset = resid_onset(&r.mono, note_on);
+            let env: Vec<f64> = match onset {
+                Some(o) => {
+                    let a = (o * 48_000.0) as usize;
+                    let rmsdb = |from: usize, len: usize| {
+                        let s = r.stereo.get(from.min(r.stereo.len())..(from + len).min(r.stereo.len())).unwrap_or(&[]);
+                        db((s.iter().map(|f| f64::from(f[0] * f[0] + f[1] * f[1])).sum::<f64>() / s.len().max(1) as f64).sqrt())
+                    };
+                    let body = rmsdb(a + 4_800, 14_400);
+                    (0..20).map(|b| ((rmsdb(a + b * 120, 120) - body) * 10.0).round() / 10.0).collect()
+                }
+                None => vec![],
+            };
             engines.insert(
                 r.name.clone(),
-                json!({ "rms_db": (db(power.sqrt()) * 100.0).round() / 100.0, "peak_db": (db(f64::from(peak)) * 100.0).round() / 100.0, "matches": matches }),
+                json!({ "rms_db": (db(power.sqrt()) * 100.0).round() / 100.0, "peak_db": (db(f64::from(peak)) * 100.0).round() / 100.0,
+                        "onset_ms": onset.map(|o| ((o - note_on) * 1000.0).round()), "env_db": env, "playback": playback, "matches": matches }),
             );
         }
         out_notes.push(json!({ "i": index, "key": key, "vel": vel, "t": t, "eligible": eligible, "engines": engines }));
