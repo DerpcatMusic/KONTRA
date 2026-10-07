@@ -108,6 +108,12 @@ pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
 }
 
 impl Loaded {
+    /// The instrument volume's controller and its starting linear gain (the
+    /// saved volume until the controller arrives; then `(cc/127)^3`).
+    pub fn host_volume(&self) -> Option<ir::HostVolume> {
+        self.instrument.host_volume
+    }
+
     /// The controllers that drive loudness, most used first, each with its
     /// value before any is received (CC11 full, the rest 0; Kontakt's
     /// power-on state). A host can show "dynamics: CC1 (now 0)" on load.
@@ -115,6 +121,7 @@ impl Loaded {
         self.instrument
             .amplitude_controllers()
             .into_iter()
+            .filter(|&cc| Some(cc) != self.instrument.host_volume.map(|v| v.controller))
             .map(|cc| (cc, if cc == 11 { 1.0 } else { 0.0 }))
             .collect()
     }
@@ -332,6 +339,51 @@ fn finish_kept(
     Ok((prepare(instrument, pcm, options)?, kept))
 }
 
+/// The instrument volume as a host parameter: zones lose the saved volume and
+/// gain a route `(cc/127)^3` from the controller, which starts at
+/// `saved^(1/3)` so the unsent state plays the saved value exactly.
+fn host_volume(instrument: &mut ir::Instrument) {
+    let Some(volume) = instrument.host_volume.filter(|v| v.saved > 0.0) else {
+        return;
+    };
+    if instrument.zones.is_empty() {
+        return;
+    }
+    instrument.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Controller(volume.controller),
+    });
+    instrument.shapes.push(ir::Shape {
+        points: (0..128)
+            .map(|i| {
+                let x = f64::from(i) / 127.0;
+                (x, x * x * x)
+            })
+            .collect(),
+    });
+    let mut route = ir::Route::new(
+        ir::ModulatorRef(instrument.modulators.len() - 1),
+        ir::Target::Amplitude,
+        ir::Depth::Normalized(1.0),
+    );
+    route.shape = Some(ir::ShapeRef(instrument.shapes.len() - 1));
+    instrument.routes.push(route);
+    let route = ir::RouteRef(instrument.routes.len() - 1);
+    for zone in &mut instrument.zones {
+        zone.gain = ir::Gain::Linear(zone.gain.linear() / volume.saved);
+        zone.routes.push(route);
+    }
+}
+
+fn powered(plan: Prepared, instrument: &ir::Instrument) -> Prepared {
+    match instrument.host_volume.filter(|v| v.saved > 0.0) {
+        Some(v) if !instrument.zones.is_empty() => {
+            plan.with_initial_level(v.controller, v.saved.cbrt())
+        }
+        _ => plan,
+    }
+}
+
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
 /// (`ratio` is the asset rate over the output rate). `false` when none remain.
 fn fit_keys(
@@ -447,6 +499,7 @@ fn prepare_inner(
     options: &Options,
 ) -> Result<Loaded, LoadError> {
     let (rate, scripts) = (options.rate, options.scripts);
+    host_volume(&mut instrument);
     let resources = options.library.as_deref().map(Resources::of);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits::LIBRARY;
@@ -582,7 +635,7 @@ fn prepare_inner(
             instrument.switching = switching;
         }
         return Ok(Loaded {
-            plan: lowered.map_err(LoadError::Lower)?,
+            plan: powered(lowered.map_err(LoadError::Lower)?, &instrument),
             instrument,
             interfaces,
             scripts: Vec::new(),
@@ -598,7 +651,7 @@ fn prepare_inner(
             })
         });
     Ok(Loaded {
-        plan: lowered.map_err(LoadError::Lower)?,
+        plan: powered(lowered.map_err(LoadError::Lower)?, &instrument),
         instrument,
         interfaces,
         scripts,
@@ -624,5 +677,87 @@ mod migration_tests {
         ir.zones.push(zone);
         let m = articulation_migration(&ir);
         assert_eq!((m.switches_found, m.migrated), (2, 1));
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+    use sampler_core::{Input, Limits, Protocol, Runtime};
+
+    /// Peak in dB of a full-scale constant sample, instrument volume saved as
+    /// `saved`, CC7 `cc` (`None`: never sent).
+    fn peak_db(saved: f64, cc: Option<u8>) -> f64 {
+        let mut ir = ir::Instrument::default();
+        ir.assets.push(ir::Asset {
+            location: ir::AssetLocation::Path("x".into()),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: Vec::new(),
+        });
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.pitch = ir::KeyTracking::Fixed;
+        zone.velocity = ir::VelocityResponse::None;
+        zone.gain = ir::Gain::Linear(saved);
+        ir.zones.push(zone);
+        ir.host_volume = Some(ir::HostVolume {
+            controller: 7,
+            saved,
+        });
+        let pcm = Pcm::new(48000, vec![[1.0f32; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = finish(ir, vec![pcm], vec!["x".into()], &Options::default()).unwrap();
+        assert_eq!(loaded.host_volume().map(|v| v.controller), Some(7));
+        let limits = Limits {
+            notes: 16,
+            channels: 16,
+            performances: 1,
+            expressions: 16,
+            families: 16,
+            decisions: 16,
+            voices: 16,
+            commands: 16,
+            behaviors: 1,
+            behavior_fuel: 1 << 10,
+            behavior_cells: 0,
+            note_cells: 0,
+        };
+        let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+        if let Some(cc) = cc {
+            let id = rt.performance(0).unwrap();
+            let value = (u64::from(cc) * u64::from(u32::MAX) / 127) as u32;
+            rt.set_controller(id, 7, value).unwrap();
+        }
+        let input = Input {
+            protocol: Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(1),
+        };
+        rt.trigger(input, 60, 1.0).unwrap();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        rt.render(&mut out).unwrap();
+        let peak = out[2400..]
+            .iter()
+            .flatten()
+            .fold(0f32, |p, x| p.max(x.abs()));
+        20.0 * f64::from(peak).max(1e-9).log10()
+    }
+
+    #[test]
+    fn cc7_replaces_the_saved_volume_with_its_cube() {
+        let near = |got: f64, want: f64| assert!((got - want).abs() < 0.15, "{got} against {want}");
+        // Saved -6 dB (the noise instrument): unsent -6.02, CC7 replaces it.
+        near(peak_db(0.5, None), -6.021);
+        near(peak_db(0.5, Some(127)), 0.0);
+        near(peak_db(0.5, Some(100)), -6.23);
+        near(peak_db(0.5, Some(64)), -17.95);
+        assert!(peak_db(0.5, Some(0)) < -120.0);
+        // Saved 0 dB (Una): unsent and 127 agree.
+        near(peak_db(1.0, None), 0.0);
+        near(peak_db(1.0, Some(127)), 0.0);
+        near(peak_db(1.0, Some(64)), -17.95);
     }
 }
