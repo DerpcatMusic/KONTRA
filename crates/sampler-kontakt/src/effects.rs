@@ -79,6 +79,8 @@ pub(crate) struct Slot {
     pub output_gain: f32,
     pub dry_level: f32,
     pub public: Vec<u8>,
+    /// Kept for the slot's opaque state; no law reads it yet.
+    #[allow(dead_code)]
     pub private: Vec<u8>,
 }
 
