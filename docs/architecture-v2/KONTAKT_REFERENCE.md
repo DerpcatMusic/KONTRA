@@ -348,3 +348,19 @@ So hold = the displayed ms, linear, within about 2% (10 ms measurement window).
 The Curve field (-100, -33, 0, 50, 100%) did not change the decay timings at all; it shapes only the attack segment.
 
 Release and attack time laws are in sections 5 and 9 (engine value -> seconds). Not yet cross-checked: the engine value (set_engine_par) against the GUI ms display for hold and decay; read the ms display after setting the engine value in a KSP script if that mapping is needed.
+
+## 23. Unsent CC1 (power-on value) on Barbarian Brass and Vista 3 Cellos
+
+`session_cc1.sh`, quiet load (3-6.5), calibration PASS before and after, two fresh-process repeats identical to 0.1 dB. Scripts on, vel 100, 3 s notes 6 s apart, all controllers unsent for note 1, then only CC1 sent. The state check was skipped for these two GUIs (header does not match the 1600x1000 goldens; logged in each `.log`). L/R peak (whole note) and RMS (0.5-2 s), dBFS.
+
+| CC1 | Barbarian key 55 L pk / R pk | L rms / R rms | Vista Cellos key 48 L pk / R pk | L rms / R rms |
+|---|---|---|---|---|
+| unsent | -19.1 / -15.9 | -30.0 / -25.7 | -44.5 / -38.6 | -55.7 / -50.7 |
+| 0 | -31.5 / -27.6 | -41.2 / -36.8 | -44.5 / -38.6 | -55.7 / -50.7 |
+| 32 | -27.1 / -22.4 | -36.4 / -30.5 | -29.2 / -23.3 | -40.5 / -35.5 |
+| 48 | -22.1 / -16.9 | -31.1 / -24.8 | -26.8 / -21.8 | -38.5 / -33.3 |
+| 64 | -18.0 / -13.1 | -27.3 / -21.1 | -25.5 / -22.2 | -37.3 / -32.3 |
+| 96 | -17.4 / -13.1 | -27.4 / -22.7 | -21.9 / -18.6 | -33.8 / -29.6 |
+| 127 | -10.3 / -7.7 | -21.4 / -17.1 | -18.9 / -13.6 | -28.7 / -24.8 |
+
+- Unsent CC1 is stored per instrument, not an engine-wide constant: Vista Cellos unsent equals CC1=0 exactly; Barbarian unsent sits between CC1=32 and 64 (rms interpolates to about 46-53, peak to about 52-60, so roughly 50).
