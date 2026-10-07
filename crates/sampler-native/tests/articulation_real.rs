@@ -848,8 +848,14 @@ fn full_note_runtime_trace_probe() {
                     })
                     .collect();
                 println!(
-                    "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {:?}",
-                    r.key, r.velocity, r.trigger, r.suppressed, r.candidates.len(), sounded
+                    "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {} {:?}",
+                    r.key,
+                    r.velocity,
+                    r.trigger,
+                    r.suppressed,
+                    r.candidates.len(),
+                    sounded.len(),
+                    sounded.iter().take(60).collect::<Vec<_>>()
                 );
             }
             rt.drain_effects(|e| {
