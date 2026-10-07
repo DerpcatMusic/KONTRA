@@ -496,13 +496,41 @@ fn one_pole_filters_follow_the_6_db_per_octave_law() {
         out[512..].iter().map(|f| f[0] * f[0]).sum::<f32>()
     };
     let plain = energy(None);
-    let ratio = (std::f64::consts::PI * 3000.0 / 48000.0).tan() / (std::f64::consts::PI * 500.0 / 48000.0).tan();
+    // y += (x - y) b, b = 1 - exp(-2 pi fc / fs): H = b / (1 - (1 - b) e^-jw).
+    let b = 1.0 - (-std::f64::consts::TAU * 500.0 / 48000.0).exp();
+    let w = std::f64::consts::TAU * 3000.0 / 48000.0;
+    let h = num(b, 0.0) / (num(1.0, 0.0) - num(1.0 - b, 0.0) * num(w.cos(), -w.sin()));
     let low = f64::from(energy(Some(ir::FilterKind::LowPass { poles: 1 })) / plain);
     let high = f64::from(energy(Some(ir::FilterKind::HighPass { poles: 1 })) / plain);
-    // Power gains: 1 / (1 + r^2) and r^2 / (1 + r^2).
-    let want = 1.0 / (1.0 + ratio * ratio);
-    assert!((low - want).abs() < want * 0.03, "low {low}, want {want}");
-    assert!((high - (1.0 - want)).abs() < 0.02, "high {high}, want {}", 1.0 - want);
+    let (want_low, want_high) = (h.0 * h.0 + h.1 * h.1, (1.0 - h.0).powi(2) + h.1 * h.1);
+    assert!((low - want_low).abs() < want_low * 0.03, "low {low}, want {want_low}");
+    assert!((high - want_high).abs() < want_high * 0.03, "high {high}, want {want_high}");
+}
+
+/// Minimal complex arithmetic for the one-pole response.
+#[derive(Clone, Copy)]
+struct C(f64, f64);
+fn num(re: f64, im: f64) -> C {
+    C(re, im)
+}
+impl std::ops::Sub for C {
+    type Output = C;
+    fn sub(self, o: C) -> C {
+        C(self.0 - o.0, self.1 - o.1)
+    }
+}
+impl std::ops::Mul for C {
+    type Output = C;
+    fn mul(self, o: C) -> C {
+        C(self.0 * o.0 - self.1 * o.1, self.0 * o.1 + self.1 * o.0)
+    }
+}
+impl std::ops::Div for C {
+    type Output = (f64, f64);
+    fn div(self, o: C) -> (f64, f64) {
+        let d = o.0 * o.0 + o.1 * o.1;
+        ((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
+    }
 }
 
 #[test]

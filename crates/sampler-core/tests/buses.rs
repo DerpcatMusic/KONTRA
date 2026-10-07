@@ -562,3 +562,40 @@ fn a_bus_convolution_mixes_the_impulse_response_with_the_dry_signal_without_heap
             .is_err()
     );
 }
+
+#[test]
+fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_tail() {
+    let mut first = vec![0.; 4];
+    first[0] = 1.;
+    let first = Impulse::new(first.clone(), first).unwrap();
+    let prepared = plan(vec![[0.5, 0.5]], 1)
+        .with_impulses(vec![first])
+        .with_buses(
+            vec![Bus {
+                processors: vec![Processor::Convolution { impulse: 0, dry: 0., wet: 1. }],
+                sends: vec![send(None, 1.)],
+                tail_frames: 100,
+            }],
+            vec![Some(0)],
+        )
+        .unwrap();
+    assert_eq!(prepared.convolution_slots(), 1);
+    let mut rt = Runtime::new(prepared, limits()).unwrap();
+    let mut audio = vec![[0.; 2]; 20_000];
+    rt.trigger(input(1), 60, 1.).unwrap();
+    rt.render(&mut audio).unwrap();
+    assert!((audio[0][0] - 0.5).abs() < 1e-6);
+    // A later reflection than the plan's tail: built on the control side.
+    let mut h = vec![0.; 16_000];
+    h[10] = 0.5;
+    h[15_000] = 0.25;
+    let second = Impulse::new(h.clone(), h).unwrap();
+    let mut upload = ConvolutionUpload::new(&second, 0., 1.);
+    assert!(rt.swap_convolution(1, &mut upload).is_err());
+    support::without_heap(|| rt.swap_convolution(0, &mut upload).unwrap());
+    rt.trigger(input(2), 60, 1.).unwrap();
+    rt.render(&mut audio).unwrap();
+    assert!((audio[10][0] - 0.25).abs() < 1e-5, "{}", audio[10][0]);
+    assert!(audio[0][0].abs() < 1e-6, "the old impulse is gone");
+    assert!((audio[15_000][0] - 0.125).abs() < 1e-5, "the new tail rings: {}", audio[15_000][0]);
+}

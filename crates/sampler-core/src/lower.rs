@@ -1291,7 +1291,7 @@ fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
 
 /// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below
 /// the lower Nyquist. Run at load, never on the audio thread.
-fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to {
         return x.to_vec();
     }

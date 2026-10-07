@@ -736,6 +736,11 @@ impl Prepared {
     pub fn release_voices(&self) -> usize {
         self.release_reserves.iter().flatten().map(|r| r.voices).max().unwrap_or(0)
     }
+    /// Convolution processors across the bus chains, in bus then processor
+    /// order: the slots [`crate::Runtime::swap_convolution`] addresses.
+    pub fn convolution_slots(&self) -> usize {
+        self.buses.convolution_slots()
+    }
     /// Script modules a note passes through, in order.
     pub fn stage_count(&self) -> usize {
         self.stages.len()
