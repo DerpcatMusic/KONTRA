@@ -51,6 +51,13 @@ pub struct Decoded {
     /// their start data. 0 when not counted.
     #[serde(default)]
     pub full_bytes: u64,
+    /// The controllers that drive loudness with the value each starts at
+    /// before the host sends one, most used first.
+    #[serde(default)]
+    pub dynamics: Vec<(u8, u8)>,
+    /// One of them starts at 0: the part is near-silent until it moves.
+    #[serde(default)]
+    pub needs_controller: bool,
 }
 
 impl Decoded {
@@ -146,6 +153,8 @@ impl LoadReport {
                 keys: key_bits(instrument),
                 script_callbacks: 0,
                 full_bytes: 0,
+                dynamics: Vec::new(),
+                needs_controller: false,
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
