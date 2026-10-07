@@ -387,6 +387,10 @@ impl Runtime {
             return Ok(0);
         };
         Ok(match info {
+            crate::EventInfo::Key => i64::from(self.notes.get(note.0).unwrap().pitch.key()),
+            crate::EventInfo::Velocity => {
+                (self.notes.get(note.0).unwrap().velocity * 127.).round() as i64
+            }
             crate::EventInfo::MidiChannel => {
                 i64::from(self.notes.get(note.0).unwrap().address.channel)
             }

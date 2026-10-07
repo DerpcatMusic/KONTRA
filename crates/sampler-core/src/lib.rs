@@ -151,6 +151,10 @@ pub struct RuntimeId(u64);
 /// A built-in event parameter a script reads with `get_event_par`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventInfo {
+    /// The event's key.
+    Key,
+    /// The event's velocity, 0..=127.
+    Velocity,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).

@@ -323,8 +323,12 @@ impl Runtime {
             groups: Some((note.0.index, crate::groups::GroupView::Note(stage))),
         };
         let pitch = self.pitch_range(n.expression, true)?;
-        let release = self.preflight_attack(selection, pitch)?;
+        // Preflight may reclaim idle notes; this one has no voices yet, so pin it.
+        self.notes.get_mut(note.0).unwrap().pins += 1;
+        let release = self.preflight_attack(selection, pitch);
         let n = self.notes.get_mut(note.0).unwrap();
+        n.pins -= 1;
+        let release = release?;
         n.pitch = event.pitch;
         n.velocity = event.velocity;
         self.commit_attack(note, release, snapshot, stage);
