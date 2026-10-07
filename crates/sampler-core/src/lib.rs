@@ -36,7 +36,7 @@ mod control;
 pub use control::{
     ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
     ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    RejectedControls,
+    RejectedControls, SlotKind, slot_control,
 };
 mod controller_event;
 mod performance;
