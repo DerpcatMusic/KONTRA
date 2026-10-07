@@ -36,7 +36,7 @@ mod control;
 pub use control::{
     ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
     ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    RejectedControls,
+    RejectedControls, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
@@ -667,6 +667,8 @@ pub struct Runtime {
     deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
+    /// Opt-in script parameter writes, see [`Runtime::record_script_writes`].
+    write_log: Option<Vec<String>>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -822,6 +824,7 @@ impl Runtime {
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
+            write_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
