@@ -15,6 +15,10 @@ pub struct ControllerCondition {
 /// key ([`crate::previous_key_value`]); conditions on it select recorded
 /// transitions, first notes and legato notes.
 pub const PREVIOUS_KEY: u8 = 128;
+/// Virtual controllers `AXIS_BASE..AXIS_BASE + MAX_AXES` hold the active
+/// choice of each nested selector.
+pub const AXIS_BASE: u8 = 129;
+pub const MAX_AXES: usize = 4;
 
 impl Prepared {
     /// Compile conditions in original region order. The budget bounds the supplied
@@ -38,7 +42,7 @@ impl Prepared {
         for (region, mut conditions) in self.regions.iter_mut().zip(regions) {
             if conditions
                 .iter()
-                .any(|c| c.controller > PREVIOUS_KEY || c.low > c.high)
+                .any(|c| c.controller >= AXIS_BASE + MAX_AXES as u8 || c.low > c.high)
             {
                 return Err(Error::InvalidInput);
             }
@@ -75,6 +79,22 @@ impl Prepared {
             .any(|set| set.iter().any(|c| c.controller == PREVIOUS_KEY));
         self.conditions = conditions.into_boxed_slice();
         self.compile_selection();
+        Ok(self)
+    }
+
+    /// Add keyswitches that set nested selector choices: `(key, axis, choice)`.
+    /// A key already used by an articulation switch is refused.
+    pub fn with_axis_switches(mut self, keys: Vec<(u8, usize, u32)>) -> Result<Self, Error> {
+        for (key, axis, choice) in keys {
+            let slot = self
+                .keyswitches
+                .get_mut(usize::from(key))
+                .ok_or(Error::InvalidInput)?;
+            if axis >= MAX_AXES || choice > 0xffff || slot.is_some() {
+                return Err(Error::InvalidInput);
+            }
+            *slot = Some(crate::AXIS_SWITCH | (axis as u32) << 16 | choice);
+        }
         Ok(self)
     }
 

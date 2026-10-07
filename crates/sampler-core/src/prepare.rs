@@ -2,7 +2,7 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-pub use predicates::{ControllerCondition, PREVIOUS_KEY};
+pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use predicates::Matching;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard};
