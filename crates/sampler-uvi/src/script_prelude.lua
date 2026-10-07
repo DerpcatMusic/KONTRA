@@ -36,7 +36,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
-    report("global", name)
+    report("global " .. name, "")
     local s = stub(name)
     rawset(_G, name, s)
     return s
@@ -53,7 +53,7 @@ Event = {
 }
 Unit = setmetatable({}, { __index = function(t, k) local v = k; rawset(t, k, v); return v end })
 Engine = setmetatable({}, { __index = function(t, k)
-  report("Engine", tostring(k))
+  report("Engine " .. tostring(k), "")
   return stub("Engine")
 end })
 
@@ -187,7 +187,7 @@ function element.getParameter(self, name)
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
   if v == nil then
-    report("getParameter", name)
+    report("getParameter " .. tostring(name), "")
     return 0
   end
   return v
@@ -197,7 +197,7 @@ function element.setParameter(self, name, value)
   local overlay = rawget(self, "__set")
   if not overlay then overlay = {}; rawset(self, "__set", overlay) end
   overlay[name] = value
-  report("setParameter", rawget(self, "type") .. "." .. tostring(name))
+  report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
 end
 -- Connections are not modeled: any index answers with one inert element.
 local inert, connections = {}, nil
@@ -208,7 +208,7 @@ function inert.getParameterConnections() return connections end
 function inert.setParameter(_, n) report("setParameter", "connection." .. tostring(n)) end
 function inert.getParameter(_, n) report("getParameter", "connection." .. tostring(n)); return 0 end
 function element.getParameterConnections(self, name)
-  report("getParameterConnections", tostring(name))
+  report("getParameterConnections " .. rawget(self, "type") .. "." .. tostring(name), "")
   return connections
 end
 function element.sendScriptModulation(self, ...) report("sendScriptModulation", "") end
@@ -224,7 +224,7 @@ __element_mt = element
 
 -- Threads ------------------------------------------------------------------
 function wait(ms) return coroutine.yield(ms or 0) end
-function waitBeat(beats) return coroutine.yield((beats or 0) * 500) end
+function waitBeat(beats) return coroutine.yield(beat2ms(beats or 0)) end
 function waitForRelease() return coroutine.yield("release") end
 
 function postEvent(e, delta)
@@ -233,14 +233,26 @@ function postEvent(e, delta)
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
-  if e.type == Event.NoteOn then
+  local t = e.type
+  if t == Event.NoteOn then
     return playNote(e)
-  elseif e.type == Event.NoteOff then
-    if e.id then releaseVoice(e.id) end
+  elseif t == Event.NoteOff then
+    if e.id or e.voiceId then releaseVoice(e.id or e.voiceId) end
+  elseif t == Event.Controller then
+    controlChange(e.controller or e.number or 0, e.value or 0, e.channel)
+  elseif t == Event.PitchBend then
+    pitchBend(e.value or 0, e.channel)
+  elseif t == Event.AfterTouch then
+    afterTouch(e.value or 0, e.channel)
+  elseif t == Event.PolyAfterTouch then
+    polyAfterTouch(e.value or 0, e.note or 0, e.channel)
+  elseif t == Event.ProgramChange then
+    programChange(e.value or 0, e.channel)
   else
-    report("postEvent", tostring(e.type))
+    report("postEvent", tostring(t))
   end
 end
+postMidiEvent = postEvent
 
 -- Scripts extend the libraries; Luau's are read-only, so they get copies.
 for _, lib in ipairs({ "table", "string", "math" }) do
@@ -264,7 +276,7 @@ local loaded = {}
 function require(name)
   if loaded[name] ~= nil then return loaded[name] end
   if string.sub(name, 1, 4) == "uvi." then
-    report("module", name)
+    report("module " .. name, "")
     loaded[name] = stub(name)
     return loaded[name]
   end

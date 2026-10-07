@@ -27,9 +27,6 @@ struct Binding {
     note: NoteId,
     channel: u8,
     member: Controls,
-    /// Semitones the note's owner added on top of the zone's gestures (a
-    /// script's `tune` on a note it played).
-    offset: f64,
 }
 
 /// Pressure and timbre at 32 bits (MIDI 1.0 values upscaled, MIDI 2.0 as sent).
@@ -357,53 +354,6 @@ impl Mpe {
         Ok(self.admit(runtime, channel, input, velocity)?)
     }
 
-    /// Bring a note another owner started (one a script played) under this
-    /// zone's gestures as if it arrived on `channel`: bends, pressure and
-    /// timbre reach it from now on. `offset` semitones stay on top of the
-    /// bends; gain and pan are untouched.
-    pub fn adopt(
-        &mut self,
-        runtime: &mut Runtime,
-        channel: u8,
-        note: NoteId,
-        offset: f64,
-    ) -> Result<(), ApplyError> {
-        if runtime.id() != self.runtime {
-            return Err(Error::StaleHandle.into());
-        }
-        if !self.zone.contains(channel, self.members) {
-            return Err(Error::InvalidInput.into());
-        }
-        if self.bindings.len() == self.limit {
-            self.bindings
-                .retain(|binding| runtime.note(binding.note).is_ok());
-            if self.bindings.len() == self.limit {
-                return Err(Error::Capacity.into());
-            }
-        }
-        let manager = self.controls[usize::from(self.zone.manager())];
-        let member = if channel == self.zone.manager() {
-            Controls::default()
-        } else {
-            self.controls[usize::from(channel)]
-        };
-        let combined = member.expression(manager);
-        let owner = runtime.expression_id(note)?;
-        let mut expression = runtime.expression(owner)?;
-        expression.pitch_semitones = combined.pitch_semitones + self.transpose + offset;
-        expression.bend = combined.bend;
-        expression.pressure = combined.pressure;
-        expression.timbre = combined.timbre;
-        runtime.set_expressions(&[(owner, expression)])?;
-        self.bindings.push(Binding {
-            note,
-            channel,
-            member,
-            offset,
-        });
-        Ok(())
-    }
-
     /// Offset every note of the zone, held or not, by `semitones` on top of its
     /// bends (a part's tuning). Commits only if every owner accepts it.
     pub fn transpose(
@@ -455,7 +405,6 @@ impl Mpe {
             note,
             channel,
             member,
-            offset: 0.0,
         });
         Ok(note)
     }
@@ -507,7 +456,7 @@ impl Mpe {
                     binding.member
                 };
                 let mut combined = member.expression(manager_controls);
-                combined.pitch_semitones += self.transpose + binding.offset;
+                combined.pitch_semitones += self.transpose;
                 // Each gesture owns only its dimension. Preserve native gain,
                 // pan and all expression fields not addressed by this control.
                 match control {
