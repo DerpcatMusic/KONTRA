@@ -13,7 +13,7 @@ shot() { import -window root -crop 1000x800+540+180 "$W/log/inv_$1.png"; }
 two() { rec "$1_a" inv_note 6 1; rec "$1_b" inv_note 6 1; }
 setf() { xdotool mousemove "$1" "$2"; sleep .5; xdotool click --repeat 2 --delay 100 1; sleep .6; xdotool key ctrl+a; xdotool type --delay 40 -- "$3"; xdotool key Return; sleep 1; xdotool mousemove 1300 300; sleep 1; shot "$4"; }
 say "== no FX control"; two inv_none
-clk 1178 981; clk 325 98; clk 128 579 5; clk 565 203; clk 770 307
+clk 325 98; clk 128 579 5; clk 565 203; clk 770 307
 xdotool mousemove 1000 500; for i in $(seq 25); do xdotool click 5; sleep .2; done; sleep 4; shot setup0
 addfx() { # plus-x plus-y utilities-y
   clk 590 540 1; clk "$1" "$2" 3; xdotool mousemove 730 "$3"; sleep 1; xdotool key Right; sleep .5; xdotool key Down; sleep .2; xdotool key Down; sleep .3; xdotool key Return; sleep 3; }
