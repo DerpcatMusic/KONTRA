@@ -517,7 +517,15 @@ pub(crate) fn chain_with(
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        let wet = f64::from(fx.output_gain);
+        // A stored output gain of 0 is a script-driven rack (its script writes
+        // INSERT_EFFECT_OUTPUT_GAIN at init, which is not modelled yet): treat it as
+        // unity rather than muting the instrument.
+        // ponytail: replace with runtime effect parameters from set_engine_par.
+        let wet = if fx.output_gain == 0.0 {
+            1.0
+        } else {
+            f64::from(fx.output_gain)
+        };
         let gain = [[wet, 0.0], [0.0, wet]];
         let mut modelled = true;
         match &params {

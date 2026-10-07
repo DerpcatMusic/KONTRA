@@ -22,22 +22,40 @@ pub struct SnapshotState {
 pub fn read_snapshot(path: &Path) -> Result<SnapshotState, LoadError> {
     let chunks = crate::read_chunks(path).map_err(|e| e.at(crate::Stage::Container))?;
     let decode = |what, error| LoadError::decode(path, what, error).at(crate::Stage::Parse);
-    let snapshot = Snapshot::try_from(chunks.find_first(SNAPSHOT).ok_or_else(|| LoadError::Invalid {
-        path: path.into(),
-        reason: "not a snapshot".into(),
-    })?)
-    .map_err(|e| decode("snapshot", e))?;
+    let snapshot =
+        Snapshot::try_from(
+            chunks
+                .find_first(SNAPSHOT)
+                .ok_or_else(|| LoadError::Invalid {
+                    path: path.into(),
+                    reason: "not a snapshot".into(),
+                })?,
+        )
+        .map_err(|e| decode("snapshot", e))?;
     let instrument = match chunks.find_first(METADATA) {
-        Some(chunk) => snapshot_metadata_names(chunk).map_err(|e| decode("snapshot metadata", e))?.0,
+        Some(chunk) => {
+            snapshot_metadata_names(chunk)
+                .map_err(|e| decode("snapshot metadata", e))?
+                .0
+        }
         None => String::new(),
     };
-    Ok(SnapshotState { instrument, persistent: snapshot.persistent, native_state: snapshot.groups.is_some() })
+    Ok(SnapshotState {
+        instrument,
+        persistent: snapshot.persistent,
+        native_state: snapshot.groups.is_some(),
+    })
 }
 
 /// Replace the instrument's saved script values with the snapshot's, slot by slot.
 pub fn apply_snapshot(kontakt: &mut Kontakt, snapshot: &SnapshotState) {
     for behavior in &mut kontakt.instrument.behaviors {
-        let Some(entries) = behavior.slot.and_then(|s| snapshot.persistent.get(usize::from(s))) else { continue };
+        let Some(entries) = behavior
+            .slot
+            .and_then(|s| snapshot.persistent.get(usize::from(s)))
+        else {
+            continue;
+        };
         for (name, value) in crate::library::saved(entries) {
             match behavior.state.iter_mut().find(|(n, _)| *n == name) {
                 Some(slot) => slot.1 = value,
