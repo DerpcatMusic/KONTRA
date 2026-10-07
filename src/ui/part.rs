@@ -170,6 +170,16 @@ pub fn volume_text(inst: &sampler_ir::Instrument) -> Option<String> {
     Some(if db.is_finite() { format!("CC{} {db:+.1} dB", v.controller) } else { format!("CC{} off", v.controller) })
 }
 
+/// The dynamics badge: the picked start (what the next load uses) wins over
+/// the last load's value; at the default start it warns when the part waits.
+pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> String {
+    match u8::try_from(picked) {
+        Ok(start) => format!("{controllers} starts at {start}"),
+        Err(_) if needs => format!("Needs {controllers}"),
+        Err(_) => format!("{controllers} starts at {loaded}"),
+    }
+}
+
 /// What the part plays and listens to, in one line under its header: the
 /// articulation (with its switch keys), the instrument volume, the dynamics
 /// controller it waits for (one click sets where it starts) and MPE.
@@ -198,7 +208,6 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
         }
     }
     let dynamics = report.as_ref().map(|r| r.decoded.dynamics.clone()).unwrap_or_default();
-    let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
     let moving: Vec<_> = dynamics.iter().filter(|&&(cc, _)| cc != 11).map(|&(cc, _)| format!("CC{cc}")).collect();
     if !moving.is_empty() {
         let now = cx.selection.parts[slot].dynamics;
@@ -214,19 +223,17 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
             })
             .collect();
         cx.selection.parts[slot].dynamics = picked;
-        let badge = if needs {
-            caption(format!("Needs {}", moving.join("/"))).fill(Role::Warning).tip("Near-silent until the controller moves; set where it starts")
+        // The picked start is what the next load uses; the report shows the last load's.
+        let loaded = dynamics.iter().find(|&&(cc, _)| cc != 11).map_or(0, |d| d.1);
+        let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
+        let words = badge_text(&moving.join("/"), picked, loaded, needs);
+        let badge = if words.starts_with("Needs") {
+            caption(words).fill(Role::Warning).tip("Near-silent until the controller moves; set where it starts")
         } else {
-            caption(format!("{} starts at {}", moving.join("/"), dynamics.iter().find(|&&(cc, _)| cc != 11).map_or(0, |d| d.1))).fill(secondary())
+            caption(words).fill(secondary())
         };
         items.push(row![badge.id(format!("perf-needs-{slot}")), segmented(tabs)].gap(SPACE).align(Align::Center));
     }
-    let mpe = cx.selection.parts[slot].mpe;
-    let (hit, mpe_el) = latch(ui, format!("mpe-{slot}"), "MPE", if mpe { "MPE on: each note on its own channel" } else { "MPE off" }, mpe);
-    if hit {
-        cx.selection.parts[slot].mpe = !mpe;
-    }
-    items.push(mpe_el);
     Some(row(items).gap(SPACE * 2.).align(Align::Center).pad((SPACE, TIGHT)).w(Len::Pct(100.)).shrink(0).id(format!("perf-{slot}")))
 }
 

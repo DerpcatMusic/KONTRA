@@ -393,15 +393,17 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     let mut h = Harness::new(&p, 1180., 780.);
     h.idle(4);
     let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
-    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0", "mpe-0"] {
+    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0"] {
         assert!(there(&h, id), "{id}");
     }
     assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1, "Kontakt's own start until picked");
     h.press("dyn-0-64");
     h.idle(2);
     assert_eq!(p.selection.read().unwrap().parts[0].dynamics, 64);
-    h.press("mpe-0");
-    h.idle(2);
-    assert!(p.selection.read().unwrap().parts[0].mpe);
+    use super::part::badge_text;
+    assert_eq!(badge_text("CC1", -1, 0, true), "Needs CC1");
+    assert_eq!(badge_text("CC1", 64, 0, true), "CC1 starts at 64", "a picked start replaces the warning");
+    assert_eq!(badge_text("CC1", -1, 100, false), "CC1 starts at 100");
+    assert!(!there(&h, "mpe-0"), "MPE stays in the header's MIDI menu");
     shoot(&h.ui, 1180, 780, "app/synthetic-performance.png");
 }
