@@ -7,7 +7,8 @@ use crate::{
     ControlValue, ControllerCondition, SlotKind, slot_control, Direction, Driver,
     Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
-    CompressorSettings, Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings,
+    CompressorSettings, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
+    ReverbSettings,
     SelectionPolicy,
     Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
     Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
@@ -887,6 +888,10 @@ impl Lowering<'_> {
                 makeup: c.makeup.linear(),
                 link: c.link,
             }),
+            ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
+                ir::Rectifier::Full => Rectifier::Full,
+                ir::Rectifier::Half => Rectifier::Half,
+            }),
             ir::Processor::Mix { .. } => return Err(unsupported(owner, Feature::Controls)),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
@@ -1044,6 +1049,7 @@ impl Lowering<'_> {
                     Processor::Gain(_)
                     | Processor::StereoMatrix(_)
                     | Processor::Compressor(_)
+                    | Processor::Rectify(_)
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
