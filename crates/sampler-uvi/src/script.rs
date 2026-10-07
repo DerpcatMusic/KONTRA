@@ -37,6 +37,12 @@ pub struct Scripts {
 }
 
 impl Scripts {
+    /// The paths of the scripts held, for surveys.
+    #[doc(hidden)]
+    pub fn names(&self) -> Vec<&str> {
+        self.files.iter().map(|(p, _)| p.as_str()).collect()
+    }
+
     pub fn insert(&mut self, path: &str, source: String) {
         self.files
             .push((path.to_lowercase().replace('\\', "/"), source));
@@ -383,6 +389,8 @@ fn element(
             tree.layers += 1;
             Some(Scope::Layer(tree.layers))
         }
+        // A keygroup's gain and pan reach the runtime through its layer.
+        "Keygroup" if tree.layers > 0 => Some(Scope::Layer(tree.layers)),
         _ => None,
     });
     table.raw_set("__id", id)?;
