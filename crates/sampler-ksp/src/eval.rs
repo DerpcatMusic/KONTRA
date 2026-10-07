@@ -342,7 +342,18 @@ impl Eval<'_> {
         };
         if v.len.is_none() {
             if let Some(saved) = self.env.persisted.get(&*v.name) {
-                let value = conv(saved);
+                let mut value = conv(saved);
+                // A menu is saved as its selected item's position; the
+                // variable holds that item's value (Una Corda's velocity
+                // menu stores 5 for "Linear", whose value is 0).
+                if let Home::Control(ui) = v.home
+                    && self.hir.uis[ui as usize].kind == WidgetKind::Menu
+                    && let Some(item) = usize::try_from(value.int())
+                        .ok()
+                        .and_then(|i| self.menu(ui as usize).get(i).cloned())
+                {
+                    value = V::I(item.value);
+                }
                 self.write_var(var, value);
             }
         } else if let Some(saved) = self.env.persisted_arrays.get(&*v.name) {

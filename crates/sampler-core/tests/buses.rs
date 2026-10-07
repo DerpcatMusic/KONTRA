@@ -629,7 +629,10 @@ fn mix_block_blends_bypasses_and_ramps_by_slot_controls() {
         set(&mut rt, SlotKind::Dry, 0.5);
         assert!((run(&mut rt, 20) - 3.5).abs() < 1e-9, "dry joins");
         set(&mut rt, SlotKind::Bypass, 1.);
-        assert!((run(&mut rt, 20) - 1.).abs() < 1e-9, "bypass is dry at unity");
+        assert!(
+            (run(&mut rt, 20) - 1.).abs() < 1e-9,
+            "bypass is dry at unity"
+        );
         set(&mut rt, SlotKind::Bypass, 0.);
         set(&mut rt, SlotKind::Output, 0.);
         assert!((run(&mut rt, 20) - 0.5).abs() < 1e-9, "silent wet");
@@ -645,7 +648,11 @@ fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_ta
         .with_impulses(vec![first])
         .with_buses(
             vec![Bus {
-                processors: vec![Processor::Convolution { impulse: 0, dry: 0., wet: 1. }],
+                processors: vec![Processor::Convolution {
+                    impulse: 0,
+                    dry: 0.,
+                    wet: 1.,
+                }],
                 sends: vec![send(None, 1.)],
                 tail_frames: 100,
             }],
@@ -670,7 +677,11 @@ fn a_bus_convolution_swaps_its_impulse_without_heap_use_and_rings_for_the_new_ta
     rt.render(&mut audio).unwrap();
     assert!((audio[10][0] - 0.25).abs() < 1e-5, "{}", audio[10][0]);
     assert!(audio[0][0].abs() < 1e-6, "the old impulse is gone");
-    assert!((audio[15_000][0] - 0.125).abs() < 1e-5, "the new tail rings: {}", audio[15_000][0]);
+    assert!(
+        (audio[15_000][0] - 0.125).abs() < 1e-5,
+        "the new tail rings: {}",
+        audio[15_000][0]
+    );
 }
 
 #[test]
@@ -683,7 +694,10 @@ fn a_voice_chain_mix_block_follows_slot_controls_per_voice() {
     };
     let definition = |kind: SlotKind, value| ControlDefinition {
         id: slot_control(kind, 7, 2, -1),
-        domain: ControlDomain::Real { min: 0., max: kind.max() },
+        domain: ControlDomain::Real {
+            min: 0.,
+            max: kind.max(),
+        },
         default: ControlValue::Real(value),
     };
     // One voice and two (the second makes a batch of lanes).
@@ -732,15 +746,24 @@ fn a_voice_chain_mix_block_follows_slot_controls_per_voice() {
             rt.edit_controls(
                 plan,
                 None,
-                &[ControlWrite { id: slot_control(kind, 7, 2, -1), value: ControlValue::Real(value) }],
+                &[ControlWrite {
+                    id: slot_control(kind, 7, 2, -1),
+                    value: ControlValue::Real(value),
+                }],
             )
             .unwrap();
         };
-        assert!((run(&mut rt, 20) - 3. * n).abs() < 1e-5, "wet only, {voices} voices");
+        assert!(
+            (run(&mut rt, 20) - 3. * n).abs() < 1e-5,
+            "wet only, {voices} voices"
+        );
         set(&mut rt, SlotKind::Dry, 0.5);
         assert!((run(&mut rt, 20) - 3.5 * n).abs() < 1e-5, "dry joins");
         set(&mut rt, SlotKind::Bypass, 1.);
-        assert!((run(&mut rt, 20) - n).abs() < 1e-5, "bypass is dry at unity");
+        assert!(
+            (run(&mut rt, 20) - n).abs() < 1e-5,
+            "bypass is dry at unity"
+        );
         set(&mut rt, SlotKind::Bypass, 0.);
         set(&mut rt, SlotKind::Output, 0.);
         assert!((run(&mut rt, 20) - 0.5 * n).abs() < 1e-5, "silent wet");

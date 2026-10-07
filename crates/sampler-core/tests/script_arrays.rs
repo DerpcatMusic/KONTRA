@@ -120,20 +120,26 @@ fn large_array_views_share_only_the_bound_instance_and_retained_generation() {
 }
 
 #[test]
-fn array_indices_cannot_escape_their_view_or_mutate_outputs_on_failure() {
+fn array_indices_cannot_escape_their_view_and_read_zero_or_drop_the_write() {
     let array = ScriptArray { offset: 1, len: 2 };
     for index in [-1, 2, i64::MAX, i64::from(u32::MAX) + 1] {
-        for operation in [
-            Instruction::ReadScriptArray {
-                array,
-                index: 0,
-                local: 1,
-            },
-            Instruction::WriteScriptArray {
-                array,
-                index: 0,
-                local: 1,
-            },
+        for (reads, operation) in [
+            (
+                true,
+                Instruction::ReadScriptArray {
+                    array,
+                    index: 0,
+                    local: 1,
+                },
+            ),
+            (
+                false,
+                Instruction::WriteScriptArray {
+                    array,
+                    index: 0,
+                    local: 1,
+                },
+            ),
         ] {
             let mut rt = Runtime::new(
                 prepared(
@@ -159,11 +165,12 @@ fn array_indices_cannot_escape_their_view_or_mutate_outputs_on_failure() {
             support::without_heap(|| {
                 let plan = rt.active_plan();
                 let callback = rt.start_plan_behavior(plan, 0).unwrap();
+                assert_eq!(rt.behavior_outcome(callback), Ok(Some(Outcome::Finished)));
+                // Kontakt reads outside the array as 0 and drops the write.
                 assert_eq!(
-                    rt.behavior_outcome(callback),
-                    Ok(Some(Outcome::Fault(Error::InvalidInput)))
+                    rt.behavior_local(callback, 1),
+                    Ok(if reads { 0 } else { 123 })
                 );
-                assert_eq!(rt.behavior_local(callback, 1), Ok(123));
                 for (cell, value) in [99, 10, 20, 88].into_iter().enumerate() {
                     assert_eq!(
                         rt.script_cell(plan, ScriptInstanceId(0), cell as u32),
