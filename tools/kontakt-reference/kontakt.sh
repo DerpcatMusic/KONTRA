@@ -34,14 +34,15 @@ start)
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
-  click 1089 440            # "What's new" popup
+  D=$(( (${RES#*x} - 1000) / 2 ))   # dialogs are centred in the desktop: taller desktops shift them down
+  click 1089 $((440+D))            # "What's new" popup
   click 20 57; click 60 86  # File > Options
-  click 388 553            # Audio tab: the device choice does not persist across launches
-  click 1088 318 0.5; xdotool mousemove 1060 480; for _ in 1 2 3 4 5 6; do xdotool click 5; done; sleep 0.5
-  click 1010 485 2          # "kontra_ref" output (list position as of 6 scroll clicks)
-  click 385 520             # MIDI tab
-  click 1075 414; click 1128 476  # Midi Through Port-0 -> Port A
-  click 1178 781            # Close
+  click 388 $((553+D))            # Audio tab: the device choice does not persist across launches
+  click 1088 $((318+D)) 0.5; xdotool mousemove 1060 $((480+D)); for _ in 1 2 3 4 5 6; do xdotool click 5; done; sleep 0.5
+  click 1010 $((485+D)) 2          # "kontra_ref" output (list position as of 6 scroll clicks)
+  click 385 $((520+D))            # MIDI tab
+  click 1075 $((414+D)); click 1128 $((476+D))  # Midi Through Port-0 -> Port A
+  click 1178 $((781+D))            # Close
   import -window root "$W/log/ready.png"
   ;;
 route)  # routing guard: Kontakt's output ports must be linked ONLY to kontra_ref (never the user's default sink)
