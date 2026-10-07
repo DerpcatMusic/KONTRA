@@ -26,7 +26,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Instant,
@@ -60,6 +60,8 @@ const VELOCITY: u8 = 64;
 enum Item {
     Kontakt(PathBuf),
     Multi(PathBuf),
+    /// One program of a multi (internal: a multi is checked program by program).
+    MultiProgram { path: PathBuf, index: usize },
     UviProgram { bank: PathBuf, program: String },
     UviLoose(PathBuf),
 }
@@ -69,12 +71,13 @@ impl Item {
         match self {
             Item::Kontakt(p) | Item::Multi(p) | Item::UviLoose(p) => p.to_string_lossy().into(),
             Item::UviProgram { bank, program } => format!("{}::{program}", bank.display()),
+            Item::MultiProgram { path, index } => format!("{}#{index}", path.display()),
         }
     }
     fn kind(&self) -> &'static str {
         match self {
             Item::Kontakt(_) => "kontakt",
-            Item::Multi(_) => "kontakt-multi",
+            Item::Multi(_) | Item::MultiProgram { .. } => "kontakt-multi",
             Item::UviProgram { .. } => "uvi-program",
             Item::UviLoose(_) => "uvi-loose",
         }
@@ -134,6 +137,58 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     }
 }
 
+type BankSlot = Arc<OnceLock<Result<Arc<sampler_uvi::Bank>, Arc<sampler_uvi::AccessError>>>>;
+static BANKS: Mutex<BTreeMap<PathBuf, BankSlot>> = Mutex::new(BTreeMap::new());
+
+/// A bank opened once per process and shared by every program of it: opening
+/// decodes the directory (and a content key), far dearer than one program.
+fn bank(path: &Path) -> Result<Arc<sampler_uvi::Bank>, Arc<sampler_uvi::AccessError>> {
+    let slot = BANKS.lock().unwrap().entry(path.to_owned()).or_default().clone();
+    slot.get_or_init(|| sampler_uvi::Bank::open(path).map(Arc::new).map_err(Arc::new))
+        .clone()
+}
+
+/// `items`, remembered for a day in `~/.cache/kontakto-corpus/items.tsv`
+/// (`kind<TAB>id` per line, the `list` format): opening every bank to list its
+/// programs costs a minute of CPU. Explicit roots and `CH_RESCAN=1` skip it.
+fn cached_items(explicit: &[String]) -> Vec<Item> {
+    let cache = dirs_home().join(".cache/kontakto-corpus/items.tsv");
+    let fresh = std::fs::metadata(&cache)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < 86400);
+    if explicit.is_empty() && fresh && std::env::var_os("CH_RESCAN").is_none() {
+        let text = std::fs::read_to_string(&cache).unwrap_or_default();
+        let items: Vec<Item> = text
+            .lines()
+            .filter_map(|l| {
+                let (kind, id) = l.split_once('\t')?;
+                Some(match kind {
+                    "kontakt" => Item::Kontakt(id.into()),
+                    "kontakt-multi" => Item::Multi(id.into()),
+                    "uvi-loose" => Item::UviLoose(id.into()),
+                    "uvi-program" => {
+                        let (bank, program) = id.split_once("::")?;
+                        Item::UviProgram { bank: bank.into(), program: program.into() }
+                    }
+                    _ => return None,
+                })
+            })
+            .collect();
+        if !items.is_empty() {
+            return items;
+        }
+    }
+    let items = items(&roots(explicit));
+    if explicit.is_empty() {
+        let text: String = items.iter().map(|i| format!("{}\t{}\n", i.kind(), i.id())).collect();
+        let _ = std::fs::write(&cache, text);
+    }
+    items
+}
+
+/// Every item under `roots`; banks open in parallel (and stay open for the run).
 fn items(roots: &[PathBuf]) -> Vec<Item> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -142,25 +197,35 @@ fn items(roots: &[PathBuf]) -> Vec<Item> {
     }
     files.sort();
     files.dedup();
-    let mut items = Vec::new();
-    for path in files {
-        let ext = path
-            .extension()
+    let ext = |p: &Path| {
+        p.extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        match ext.as_str() {
-            "nki" => items.push(Item::Kontakt(path)),
-            "nkm" => items.push(Item::Multi(path)),
-            "uvip" => items.push(Item::UviLoose(path)),
-            "ufs" => match sampler_uvi::Bank::open(&path) {
-                Ok(bank) => {
-                    items.extend(bank.programs().into_iter().map(|program| Item::UviProgram {
-                        bank: path.clone(),
-                        program,
-                    }))
+            .unwrap_or_default()
+    };
+    let banks: Vec<&PathBuf> = files.iter().filter(|p| ext(p) == "ufs").collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..8.min(banks.len()) {
+            s.spawn(|| {
+                while let Some(p) = banks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let _ = bank(p);
                 }
+            });
+        }
+    });
+    let mut items = Vec::new();
+    for path in &files {
+        match ext(path).as_str() {
+            "nki" => items.push(Item::Kontakt(path.clone())),
+            "nkm" => items.push(Item::Multi(path.clone())),
+            "uvip" => items.push(Item::UviLoose(path.clone())),
+            "ufs" => match bank(path) {
+                Ok(bank) => items.extend(bank.programs().into_iter().map(|program| Item::UviProgram {
+                    bank: path.clone(),
+                    program,
+                })),
                 // An unopenable bank is one failed item.
-                Err(_) => items.push(Item::UviLoose(path)),
+                Err(_) => items.push(Item::UviLoose(path.clone())),
             },
             _ => {}
         }
@@ -364,8 +429,21 @@ fn current_stage(worker: usize) -> &'static str {
 enum Tier {
     /// Parse, lower and bind with placeholder audio: no playing.
     Parse,
+    /// Stream, play one short note; the second (controller) pass only for a
+    /// silent item. No MPE probe, no selection diagnosis.
+    Quick,
     /// Stream, play, probe.
     Full,
+}
+
+impl Tier {
+    fn name(self) -> &'static str {
+        match self {
+            Tier::Parse => "parse",
+            Tier::Quick => "quick",
+            Tier::Full => "full",
+        }
+    }
 }
 
 struct Ctx {
@@ -388,6 +466,28 @@ fn stage_name(s: sampler_kontakt::Stage) -> &'static str {
 
 /// A failed load as a record: the typed stage, kind and source location when
 /// the error carries them.
+/// `crates/sampler-kontakt/src/load.rs` as `sampler_kontakt::load`.
+fn module_of(file: &str) -> String {
+    let (krate, rest) = file
+        .split_once("crates/")
+        .map_or(("", file), |(_, r)| r.split_once("/src/").unwrap_or(("", r)));
+    let module = rest.trim_end_matches(".rs").trim_end_matches("/mod").replace('/', "::");
+    format!("{}::{module}", krate.replace('-', "_"))
+}
+
+/// Where a failure with no source location surfaced: the entry point of its stage.
+fn stage_entry(stage: &str, kind: &str) -> &'static str {
+    match (stage, kind) {
+        ("container/decrypt", _) => "sampler_uvi::Bank::open",
+        ("translate-to-IR", _) => "sampler_uvi::translate_program",
+        ("parse", _) => "sampler_kontakt::read",
+        ("note-on/selection", _) => "corpus_health::pick_key",
+        ("prepare" | "bind" | "lower", _) => "sampler_kontakt::finish",
+        ("script-compile", _) => "sampler_kontakt::load",
+        _ => "sampler_kontakt::load_read_streamed",
+    }
+}
+
 fn load_failure(e: &(dyn std::error::Error + 'static), fallback: &'static str) -> Loading {
     let typed = e.downcast_ref::<sampler_kontakt::LoadError>();
     let (stage, kind, at) = match typed {
@@ -399,15 +499,19 @@ fn load_failure(e: &(dyn std::error::Error + 'static), fallback: &'static str) -
         None => (fallback, kind_of(&format!("{e:?}")), None),
     };
     let reason = e.to_string();
+    let location = typed
+        .and_then(|t| t.location())
+        .map(|l| format!("{}:{}", module_of(l.file()), l.line()))
+        .unwrap_or_else(|| stage_entry(stage, &kind).to_string());
     (
-        json!({"ok": false, "stage": stage, "kind": kind, "at": at, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
+        json!({"ok": false, "stage": stage, "kind": kind, "at": at, "where": location, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
         None,
     )
 }
 
 fn failed(stage: &str, kind: &str, reason: String) -> Loading {
     (
-        json!({"ok": false, "stage": stage, "kind": kind, "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
+        json!({"ok": false, "stage": stage, "kind": kind, "where": stage_entry(stage, kind), "error": normalize(&reason), "raw": reason.lines().next().unwrap_or("").chars().take(300).collect::<String>()}),
         None,
     )
 }
@@ -532,22 +636,35 @@ fn musical_ccs(ir: &sampler_ir::Instrument, dynamics: &[(u8, f64)]) -> Vec<(u8, 
     ccs
 }
 
+/// What the audio thread itself spent while the scripts ran inline.
+#[derive(Default)]
+struct AudioCost {
+    allocs: usize,
+    seconds: f64,
+}
+
 /// Wake the scripts exactly when they asked to run, serving streamed pages.
+/// The host runs Lua on a script thread; here it runs inline, so only the
+/// runtime's own calls (`service_streaming`, `render`) count as audio work.
 fn scripted_render(
     rt: &mut Runtime,
     driver: &mut sampler_uvi::scripted::Driver<sampler_uvi::script::ScriptHost>,
     horizon: Option<u32>,
     out: &mut [[f32; 2]],
+    cost: &mut AudioCost,
 ) -> Result<(), sampler_core::Error> {
     let mut done = 0;
     while done < out.len() {
         let left = out.len() - done;
         let due = driver.wake(rt)?;
         let step = due.map_or(left, |d| d.max(1).min(left));
+        let (t, a) = (Instant::now(), heap::calls());
         if let Some(h) = horizon {
             let _ = rt.service_streaming(h);
         }
         rt.render(&mut out[done..done + step])?;
+        cost.allocs += heap::calls() - a;
+        cost.seconds += t.elapsed().as_secs_f64();
         done += step;
     }
     Ok(())
@@ -667,6 +784,8 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     // release block, and every other block.
     let (mut allocs_on, mut allocs_off, mut allocs_steady) = (0usize, 0usize, 0usize);
     let mut peak_voices = 0usize;
+    // Lua on the audio thread's clock: the host runs it on a script thread.
+    let (mut script_allocs, mut script_seconds) = (0usize, 0.0f64);
     let (mut peak, mut tail_peak, mut finite) = (0.0f32, 0.0f32, true);
     let sw = u32::from(pick.switch.unwrap_or(0)) << 8;
     // Controllers first, then the switch key taps, then the note.
@@ -688,6 +807,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         let len = buffer.len().min(total - begin);
         let has_release = (begin..begin + len).contains(&release_at);
         let (t0, a0);
+        let mut audio_cost: Option<AudioCost> = None;
         match &mut rig {
             Rig::Midi {
                 rt,
@@ -781,20 +901,24 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     };
                 }
                 (t0, a0) = (Instant::now(), heap::calls());
+                let mut cost = AudioCost::default();
                 let cut = if has_release { release_at - begin } else { len };
-                scripted_render(rt, driver, *horizon, &mut buffer[..cut])
+                scripted_render(rt, driver, *horizon, &mut buffer[..cut], &mut cost)
                     .map_err(|e| format!("render: {e:?}"))?;
                 if cut < len {
                     driver
                         .note_off(rt, key)
                         .map_err(|e| format!("release: {e:?}"))?;
-                    scripted_render(rt, driver, *horizon, &mut buffer[cut..len])
+                    scripted_render(rt, driver, *horizon, &mut buffer[cut..len], &mut cost)
                         .map_err(|e| format!("render: {e:?}"))?;
                 }
+                script_allocs += (heap::calls() - a0).saturating_sub(cost.allocs);
+                script_seconds += t0.elapsed().as_secs_f64() - cost.seconds;
+                audio_cost = Some(cost);
             }
         }
-        block_times.push(t0.elapsed().as_secs_f64());
-        let used = heap::calls() - a0;
+        block_times.push(audio_cost.as_ref().map_or_else(|| t0.elapsed().as_secs_f64(), |c| c.seconds));
+        let used = audio_cost.as_ref().map_or_else(|| heap::calls() - a0, |c| c.allocs);
         if begin == 0 && matches!(rig, Rig::Midi { .. }) {
             note = if note_started {
                 "started".into()
@@ -856,6 +980,9 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "audio_allocs_note_on": allocs_on,
         "audio_allocs_release": allocs_off,
         "audio_allocs_steady": allocs_steady,
+        "audio_thread_allocs": allocs_on + allocs_off + allocs_steady,
+        "script_inline_allocs": script_allocs,
+        "script_inline_ms": script_seconds * 1e3,
         "stream_underruns": st.stream_underruns,
         "cold_starts": st.cold_starts,
         "voice_drops": st.voice_drops,
@@ -923,15 +1050,22 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
         )
     };
     match item {
-        Item::Kontakt(path) => {
+        Item::Kontakt(path) | Item::MultiProgram { path, .. } => {
             stage("parse");
-            let kontakt = match sampler_kontakt::read(path) {
+            let t = Instant::now();
+            let read = match item {
+                Item::MultiProgram { index, .. } => sampler_kontakt::read_program(path, *index),
+                _ => sampler_kontakt::read(path),
+            };
+            let kontakt = match read {
                 Ok(k) => k,
                 Err(e) => return load_failure(&e, "parse"),
             };
+            let read_ms = t.elapsed().as_millis() as u64;
             let Some(pick) = pick_key(&kontakt.instrument) else {
                 return no_zone();
             };
+            let pick_ms = t.elapsed().as_millis() as u64 - read_ms;
             let parse_only = ctx.tier == Tier::Parse;
             let options = sampler_kontakt::Options {
                 keys: if parse_only { 0..=127 } else { pick.key..=pick.key },
@@ -948,22 +1082,21 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                     ..
                 } = kontakt;
                 let kept = instrument.retain_zones(|_| true);
-                let pcm = kept
-                    .iter()
-                    .map(|_| {
-                        sampler_core::Pcm::new(48000, vec![[0.0f32; 2]; 8192].into_boxed_slice())
-                            .expect("placeholder audio")
-                    })
-                    .collect();
+                // One buffer, shared by every asset (clones share the samples).
+                let silence = sampler_core::Pcm::new(48000, vec![[0.0f32; 2]; 8192].into_boxed_slice())
+                    .expect("placeholder audio");
+                let pcm = kept.iter().map(|_| silence.clone()).collect();
                 let labels = kept
                     .iter()
                     .map(|&a| locations[a].display().to_string())
                     .collect();
                 return match sampler_kontakt::finish(instrument, pcm, labels, &options) {
-                    Ok(l) => (
-                        ok(pick, &l.instrument),
-                        Some((Subject::Plan(Box::new(l)), pick)),
-                    ),
+                    Ok(l) => {
+                        let mut record = ok(pick, &l.instrument);
+                        let lower_ms = t.elapsed().as_millis() as u64 - read_ms - pick_ms;
+                        record["phases_ms"] = json!({"read": read_ms, "pick": pick_ms, "lower": lower_ms});
+                        (record, Some((Subject::Plan(Box::new(l)), pick)))
+                    }
                     Err(e) => load_failure(&e, "prepare"),
                 };
             }
@@ -982,10 +1115,15 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => load_failure(&e, "load"),
             }
         }
-        Item::UviProgram { bank, program } => {
+        Item::UviProgram { bank: bank_path, program } => {
+            stage("container/decrypt");
+            let bank = match bank(bank_path) {
+                Ok(b) => b,
+                Err(e) => return load_failure(&*e, "container/decrypt"),
+            };
             stage("parse");
-            let ir = match sampler_uvi::translate_path(&bank.join(program)) {
-                Ok(t) => t.instrument,
+            let ir = match sampler_uvi::translate_program(&bank, program) {
+                Ok(i) => i,
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
             let Some(pick) = pick_key(&ir) else {
@@ -994,11 +1132,6 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
             if ctx.tier == Tier::Parse {
                 return (ok(pick, &ir), Some((Subject::Ir(Box::new(ir)), pick)));
             }
-            stage("container/decrypt");
-            let bank = match sampler_uvi::Bank::open(bank) {
-                Ok(b) => b,
-                Err(e) => return load_failure(&e, "container/decrypt"),
-            };
             stage("load");
             match sampler_uvi::load_program_scripted_streamed(&bank, program, 48000, &policy) {
                 Ok(p) => (
@@ -1047,10 +1180,9 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                     "EmptyMulti",
                     "no sample references in multi".into(),
                 ),
-                // A multi is a rack of programs, not one instrument: it parses,
-                // but there is no loader that plays it.
+                // `check` plays it program by program.
                 Ok(multi) => (
-                    json!({"ok": true, "playable": false, "programs": multi.programs.len(), "samples": multi.sample_names.len()}),
+                    json!({"ok": true, "programs": multi.programs.len(), "samples": multi.sample_names.len()}),
                     None,
                 ),
                 Err(e) => load_failure(&e, "parse"),
@@ -1084,6 +1216,9 @@ fn stage_of(r: &Value) -> &'static str {
     if r["scripts"]["compile_failed"].as_u64().unwrap_or(0) > 0 {
         return "script-compile";
     }
+    if r["tier"] == "parse" {
+        return "ok";
+    }
     let s = &r["sound"];
     if let Some(e) = s["error"].as_str() {
         return if e.starts_with("prepare") { "prepare" } else { "render" };
@@ -1106,7 +1241,65 @@ fn stage_of(r: &Value) -> &'static str {
     "ok"
 }
 
+/// A multi is a rack of programs: each is loaded and played as an instrument
+/// of its own (the first sixteen, four in the quick tier). The record is the
+/// loudest program's, with a `multi` section for them all; it is ok only if
+/// every program is.
+fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
+    let start = Instant::now();
+    let (load, _) = load_item(item, ctx);
+    let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
+    let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
+    if record["load"]["ok"] == true {
+        let cap = if ctx.tier == Tier::Full { 16 } else { 4 };
+        let subs: Vec<Value> = (0..programs.min(cap))
+            .map(|index| check_one(&Item::MultiProgram { path: path.into(), index }, ctx))
+            .collect();
+        let loudness = |r: &Value| r["sound"]["peak_db"].as_f64().unwrap_or(f64::NEG_INFINITY);
+        let best = subs
+            .iter()
+            .max_by(|a, b| loudness(a).total_cmp(&loudness(b)))
+            .cloned();
+        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller"));
+        let stage = subs.iter().find(|r| !ok(r)).map_or("ok", |r| r["stage"].as_str().unwrap_or("load")).to_string();
+        let load_ms: u64 = subs.iter().map(|r| r["load_ms"].as_u64().unwrap_or(0)).sum();
+        let summary = json!({
+            "programs": programs,
+            "checked": subs.len(),
+            "ok": subs.iter().filter(|r| ok(r)).count(),
+            "sounding": subs.iter().filter(|r| r["sound"]["sounds"] == true || r["musical"]["sounds"] == true).count(),
+            "finite": subs.iter().all(|r| r["sound"]["finite"] != false),
+            "results": subs.iter().enumerate().map(|(i, r)| json!({
+                "index": i, "stage": r["stage"], "peak_db": r["sound"]["peak_db"],
+                "finite": r["sound"]["finite"], "error": r["load"]["error"].as_str().or(r["sound"]["error"].as_str()),
+                "where": r["load"]["where"],
+            })).collect::<Vec<_>>(),
+        });
+        if let Some(mut best) = best {
+            best["id"] = record["id"].clone();
+            best["kind"] = record["kind"].clone();
+            best["load"]["programs"] = json!(programs);
+            best["load_ms"] = json!(load_ms);
+            best["perf"]["load_ms"] = json!(load_ms);
+            record = best;
+        }
+        record["multi"] = summary;
+        record["stage"] = json!(stage);
+    } else {
+        record["stage"] = json!(stage_of(&record));
+    }
+    record["ms"] = json!(start.elapsed().as_millis() as u64);
+    record
+}
+
 fn check(item: &Item, ctx: &Ctx) -> Value {
+    match item {
+        Item::Multi(path) => check_multi(item, path, ctx),
+        _ => check_one(item, ctx),
+    }
+}
+
+fn check_one(item: &Item, ctx: &Ctx) -> Value {
     heap::job_start();
     // Process-wide counters only mean something for one job at a time.
     let serial = ctx.workers == 1;
@@ -1124,7 +1317,7 @@ fn check(item: &Item, ctx: &Ctx) -> Value {
         "id": item.id(),
         "kind": item.kind(),
         "status": "done",
-        "tier": if ctx.tier == Tier::Parse { "parse" } else { "full" },
+        "tier": ctx.tier.name(),
         "load": load,
     });
     let mut play_ms = 0u64;
@@ -1159,7 +1352,7 @@ fn check(item: &Item, ctx: &Ctx) -> Value {
                 "unrecognised": m.unrecognised.iter().take(5).map(|u| normalize(u)).collect::<Vec<_>>(),
             });
         }
-        if ctx.tier == Tier::Full && !matches!(subject, Subject::Ir(_)) {
+        if ctx.tier != Tier::Parse && !matches!(subject, Subject::Ir(_)) {
             let played = Instant::now();
             let ccs = musical_ccs(subject.instrument(), &dynamics);
             let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
@@ -1169,7 +1362,7 @@ fn check(item: &Item, ctx: &Ctx) -> Value {
             };
             let first = play(subject, pick, false, &[]);
             let first = match first {
-                Ok(mut s) if silent(&s) && matches!(item, Item::Kontakt(_)) => {
+                Ok(mut s) if silent(&s) && ctx.tier == Tier::Full && matches!(item, Item::Kontakt(_)) => {
                     // Selection records allocate, so they only run on a second
                     // pass over an item that was silent.
                     if let Some(d) = reload(&[], true) {
@@ -1182,7 +1375,10 @@ fn check(item: &Item, ctx: &Ctx) -> Value {
             // The same note again with the controllers up; if only that
             // sounds, find the controller it needs.
             if let Ok(d) = &first {
-                if let Some(m) = reload(&ccs, false) {
+                // The quick tier only asks again of an item that was silent.
+                if (ctx.tier == Tier::Full || silent(d))
+                    && let Some(m) = reload(&ccs, false)
+                {
                     let mut musical = json!({
                         "ccs": ccs.iter().map(|c| json!([c.0, c.1])).collect::<Vec<_>>(),
                         "peak_db": if m.peak > 0.0 { json!(20.0 * f64::from(m.peak).log10()) } else { Value::Null },
@@ -1200,7 +1396,9 @@ fn check(item: &Item, ctx: &Ctx) -> Value {
                     }
                     record["musical"] = musical;
                 }
-                if let Item::Kontakt(path) = item {
+                if ctx.tier == Tier::Full
+                    && let Item::Kontakt(path) = item
+                {
                     record["mpe"] = mpe_probe(path, pick, &ccs);
                 }
             }
@@ -1319,6 +1517,7 @@ fn tree_hash() -> String {
 fn cache_key(item: &Item, tier: &str, tree: &str) -> String {
     let path = match item {
         Item::Kontakt(p) | Item::Multi(p) | Item::UviLoose(p) => p,
+        Item::MultiProgram { path, .. } => path,
         Item::UviProgram { bank, .. } => bank,
     };
     let (mtime, size) = std::fs::metadata(path).map_or((0, 0), |m| {
@@ -1337,25 +1536,52 @@ fn is_failure(r: &Value) -> bool {
     !matches!(r["stage"].as_str(), Some("ok" | "needs-controller"))
 }
 
-/// Memory the jobs in flight may hold, by their expected peak heap.
+/// Admission control for the worker pool: a job starts when its expected peak
+/// heap fits in MemAvailable minus a 12 GiB reserve (re-read every time, so
+/// other tenants of the machine count) and fewer jobs run than the load allows.
 struct Budget {
-    total: u64,
-    used: Mutex<u64>,
+    state: Mutex<(u64, usize)>, // reserved bytes, jobs running
     wake: Condvar,
+    workers: usize,
 }
 
+const RESERVE: u64 = 12 << 30;
+
 impl Budget {
+    /// Jobs allowed at once: all workers on an idle machine, falling toward two
+    /// as other tenants' load (the 1-minute average less our own jobs) reaches
+    /// one and a half runnable tasks per core.
+    fn allowed(&self, running: usize) -> usize {
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as f64;
+        let load = std::fs::read_to_string("/proc/loadavg")
+            .ok()
+            .and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let others = (load - running as f64).max(0.0);
+        let room = ((cores * 1.5 - others) / (cores * 1.5)).clamp(0.0, 1.0);
+        2.max((self.workers as f64 * room).round() as usize).min(self.workers)
+    }
+
     fn acquire(&self, need: u64) -> u64 {
-        let need = need.min(self.total);
-        let mut used = self.used.lock().unwrap();
-        while *used > 0 && *used + need > self.total {
-            used = self.wake.wait(used).unwrap();
+        let mut state = self.state.lock().unwrap();
+        loop {
+            let (reserved, running) = *state;
+            // Running jobs already show in MemAvailable, so their reservation
+            // is added back: this is the room for jobs that are yet to ramp up.
+            let room = mem_available().saturating_sub(RESERVE) + reserved;
+            let fits = reserved + need <= room;
+            if running == 0 || (running < self.allowed(running) && fits) {
+                state.0 += need;
+                state.1 += 1;
+                return need;
+            }
+            state = self.wake.wait_timeout(state, std::time::Duration::from_millis(500)).unwrap().0;
         }
-        *used += need;
-        need
     }
     fn release(&self, need: u64) {
-        *self.used.lock().unwrap() -= need;
+        let mut state = self.state.lock().unwrap();
+        state.0 = state.0.saturating_sub(need);
+        state.1 = state.1.saturating_sub(1);
         self.wake.notify_all();
     }
 }
@@ -1364,19 +1590,162 @@ fn mem_available() -> u64 {
     proc_field("/proc/meminfo", "MemAvailable:") * 1024
 }
 
+thread_local! {
+    /// Where the last panic on this thread came from: crate::module::fn.
+    static PANIC_AT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Panic hook: remember the first frame in our own crates (needs symbols; the
+/// `corpus` profile keeps them) and the panic location.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let trace = std::backtrace::Backtrace::force_capture().to_string();
+        let function = trace
+            .lines()
+            .filter_map(|l| l.trim().split_once(": ").map(|x| x.1))
+            .find(|f| (f.starts_with("sampler_") || f.starts_with("corpus_health")) && !f.contains("panic"))
+            .map(|f| f.rsplit_once("::h").map_or(f, |x| x.0).to_string());
+        let location = info.location().map(|l| format!("{}:{}", module_of(l.file()), l.line()));
+        let at = match (function, location) {
+            (Some(f), Some(l)) => format!("{f} ({l})"),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => "unknown".into(),
+        };
+        PANIC_AT.with(|p| *p.borrow_mut() = at);
+    }));
+}
+
+struct Job {
+    id: String,
+    since: Instant,
+    abandoned: Arc<AtomicBool>,
+    held: u64,
+}
+
+/// Everything the workers share. Workers are detached threads: one that hangs
+/// is abandoned (its item recorded as a timeout, its memory released, a
+/// replacement started) and dies with the process.
+struct Pool {
+    queue: Vec<(Item, String, u64)>,
+    next: AtomicUsize,
+    completed: AtomicUsize,
+    spawned: AtomicUsize,
+    running: Mutex<Vec<Option<Job>>>,
+    file: Mutex<std::fs::File>,
+    budget: Budget,
+    ctx: Ctx,
+    timeout: std::time::Duration,
+}
+
+impl Pool {
+    fn write(&self, v: &Value) {
+        let mut f = self.file.lock().unwrap();
+        writeln!(f, "{v}").unwrap();
+        f.flush().unwrap();
+    }
+}
+
+fn spawn_worker(pool: &Arc<Pool>) {
+    let w = pool.spawned.fetch_add(1, Ordering::Relaxed);
+    let pool = pool.clone();
+    std::thread::Builder::new()
+        .name(format!("worker-{w}"))
+        .stack_size(64 << 20)
+        .spawn(move || worker(&pool, w))
+        .expect("spawn worker");
+}
+
+fn worker(pool: &Pool, w: usize) {
+    WORKER.with(|c| c.set(w));
+    let total = pool.queue.len();
+    loop {
+        let i = pool.next.fetch_add(1, Ordering::Relaxed);
+        let Some((item, key, hint)) = pool.queue.get(i) else {
+            return;
+        };
+        let held = pool.budget.acquire(*hint);
+        let id = item.id();
+        pool.write(&json!({"id": id, "status": "started", "worker": w}));
+        let abandoned = Arc::new(AtomicBool::new(false));
+        pool.running.lock().unwrap()[w] = Some(Job {
+            id: id.clone(),
+            since: Instant::now(),
+            abandoned: abandoned.clone(),
+            held,
+        });
+        stage("start");
+        PANIC_AT.with(|p| p.borrow_mut().clear());
+        let mut record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(item, &pool.ctx)))
+            .unwrap_or_else(|payload| {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let at = current_stage(w);
+                let place = PANIC_AT.with(|p| p.borrow().clone());
+                json!({"id": id, "kind": item.kind(), "status": "panic", "stage": at,
+                    "load": {"ok": false, "stage": at, "kind": "Panic", "where": place,
+                    "error": normalize(&format!("panic: {message}")),
+                    "raw": message.lines().next().unwrap_or("").chars().take(300).collect::<String>()}})
+            });
+        if abandoned.load(Ordering::Relaxed) {
+            return; // the watchdog already recorded a timeout and replaced us
+        }
+        record["worker"] = json!(w);
+        record["cache_key"] = json!(key);
+        pool.running.lock().unwrap()[w] = None;
+        pool.budget.release(held);
+        pool.write(&record);
+        let n = pool.completed.fetch_add(1, Ordering::Relaxed) + 1;
+        eprintln!(
+            "[{n}/{total}] w{w} {} {}ms {id}",
+            record["stage"].as_str().unwrap_or("?"),
+            record["ms"]
+        );
+    }
+}
+
+fn watchdog(pool: &Arc<Pool>) {
+    let total = pool.queue.len();
+    while pool.completed.load(Ordering::Relaxed) < total {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let mut hung = Vec::new();
+        for (w, slot) in pool.running.lock().unwrap().iter_mut().enumerate() {
+            if slot.as_ref().is_some_and(|j| j.since.elapsed() > pool.timeout) {
+                hung.push((w, slot.take().unwrap()));
+            }
+        }
+        for (w, job) in hung {
+            job.abandoned.store(true, Ordering::Relaxed);
+            let at = current_stage(w);
+            pool.write(&json!({"id": job.id, "kind": "unknown", "status": "timeout", "worker": w,
+                "stage": at, "load": {"ok": false, "stage": at, "kind": "Timeout",
+                "where": format!("worker {w} stuck in stage {at}"),
+                "error": format!("no result after {} s", pool.timeout.as_secs())}}));
+            pool.budget.release(job.held);
+            let n = pool.completed.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!("[{n}/{total}] w{w} TIMEOUT in {at}: {}", job.id);
+            spawn_worker(pool);
+        }
+    }
+}
+
 fn run(out: &Path, opts: &Opts) -> i32 {
     let tier = match opts.tier.as_deref() {
         Some("parse") => Tier::Parse,
+        Some("quick") => Tier::Quick,
         _ => Tier::Full,
     };
-    let tier_name = opts.tier.clone().unwrap_or_else(|| "full".into());
-    let mut all = items(&roots(&opts.roots));
+    let tier_name = tier.name();
+    let mut all = cached_items(&opts.roots);
     if let Some((i, n)) = opts.shard {
         all = all.into_iter().skip(i).step_by(n).collect();
     }
-    if tier_name == "quick" {
-        let wanted: HashSet<&str> = QUICK.lines().filter(|l| !l.is_empty()).collect();
-        all.retain(|i| wanted.contains(i.id().as_str()));
+    if tier == Tier::Quick {
+        let wanted: HashSet<String> = quick_ids();
+        all.retain(|i| wanted.contains(&i.id()));
     }
     if !opts.only.is_empty() {
         all.retain(|i| opts.only.iter().any(|g| glob(g, &i.id())));
@@ -1405,28 +1774,34 @@ fn run(out: &Path, opts: &Opts) -> i32 {
             finished.insert(id);
         }
     }
-    let file = Mutex::new(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(out)
-            .expect("open output"),
-    );
-    let write = |v: &Value| {
-        let mut f = file.lock().unwrap();
-        writeln!(f, "{v}").unwrap();
-        f.flush().unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out)
+        .expect("open output");
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let workers = opts.workers.unwrap_or(cores.min(12)).clamp(1, 12);
+    let mut pool = Pool {
+        queue: Vec::new(),
+        next: AtomicUsize::new(0),
+        completed: AtomicUsize::new(0),
+        spawned: AtomicUsize::new(0),
+        running: Mutex::new((0..64).map(|_| None).collect()),
+        file: Mutex::new(file),
+        budget: Budget { state: Mutex::new((0, 0)), wake: Condvar::new(), workers },
+        ctx: Ctx { tier, workers },
+        timeout: std::time::Duration::from_secs(opts.timeout.unwrap_or(if tier == Tier::Parse { 300 } else { 600 })),
     };
     // An item that was started twice and never finished took the process down.
     for (id, n) in &starts {
         if !finished.contains(id) && *n >= 2 {
-            write(&json!({"id": id, "kind": "unknown", "status": "crash", "stage": "crash",
-                "load": {"ok": false, "error": "process died twice on this item (abort, OOM or hang)"}}));
+            pool.write(&json!({"id": id, "kind": "unknown", "status": "crash", "stage": "crash",
+                "load": {"ok": false, "stage": "crash", "kind": "Crash", "where": "process",
+                "error": "process died twice on this item (abort, OOM or hang)"}}));
             finished.insert(id.clone());
         }
     }
     let tree = tree_hash();
-    let key_tier = if tier == Tier::Parse { "parse" } else { "full" };
     let mut queue = Vec::new();
     let mut reused = 0;
     for item in all {
@@ -1434,128 +1809,60 @@ fn run(out: &Path, opts: &Opts) -> i32 {
         if finished.contains(&id) {
             continue;
         }
-        let key = cache_key(&item, key_tier, &tree);
-        if opts.reuse {
-            if let Some(p) = prior.get(&id) {
-                if p["cache_key"] == key && !is_failure(p) && p["status"] == "done" {
-                    let mut p = p.clone();
-                    p["reused"] = json!(true);
-                    write(&p);
-                    reused += 1;
-                    continue;
-                }
-            }
+        let key = cache_key(&item, tier_name, &tree);
+        if opts.reuse
+            && tier != Tier::Quick
+            && let Some(p) = prior.get(&id)
+            && p["cache_key"] == key
+            && !is_failure(p)
+            && p["status"] == "done"
+        {
+            let mut p = p.clone();
+            p["reused"] = json!(true);
+            pool.write(&p);
+            reused += 1;
+            continue;
         }
         let hint = prior
             .get(&id)
             .and_then(|p| p["perf"]["peak_heap_bytes"].as_u64())
-            .unwrap_or(1 << 30);
+            .unwrap_or(if tier == Tier::Parse { 256 << 20 } else { 1 << 30 })
+            .min(8 << 30);
         queue.push((item, key, hint));
     }
     // Biggest first, so the long jobs start early and the pool drains evenly.
     queue.sort_by_key(|q| std::cmp::Reverse(q.2));
-    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let workers = opts.workers.unwrap_or(cores.min(12)).max(1).min(63);
-    let budget = Budget {
-        total: mem_available().saturating_sub(12 << 30).max(4 << 30),
-        used: Mutex::new(0),
-        wake: Condvar::new(),
-    };
-    let timeout = std::time::Duration::from_secs(opts.timeout.unwrap_or(900));
-    std::panic::set_hook(Box::new(|_| {}));
-    let total = queue.len();
+    pool.queue = queue;
+    let total = pool.queue.len();
     eprintln!(
-        "{total} to run, {reused} reused, {workers} workers, budget {} MiB, tier {tier_name}",
-        budget.total >> 20
+        "{total} to run, {reused} reused, {workers} workers, {} MiB free beyond the {} GiB reserve, tier {tier_name}",
+        mem_available().saturating_sub(RESERVE) >> 20,
+        RESERVE >> 30
     );
-    let next = AtomicUsize::new(0);
-    let done = AtomicUsize::new(0);
-    let finished_all = AtomicBool::new(false);
-    let running: Mutex<Vec<Option<(String, Instant)>>> = Mutex::new(vec![None; workers]);
-    let ctx = Ctx { tier, workers };
-    let mut exit = 0;
-    std::thread::scope(|s| {
-        let dog = s.spawn(|| {
-            while !finished_all.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let hung = running
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                    .find_map(|(w, r)| {
-                        r.as_ref()
-                            .filter(|(_, t)| t.elapsed() > timeout)
-                            .map(|(id, _)| (w, id.clone()))
-                    });
-                if let Some((w, id)) = hung {
-                    // A thread cannot be stopped: record it, then restart the
-                    // process (the runner resumes; in-flight items retry once).
-                    write(&json!({"id": id, "kind": "unknown", "status": "timeout", "worker": w,
-                        "stage": current_stage(w), "load": {"ok": false, "stage": current_stage(w),
-                        "kind": "Timeout", "error": format!("no result after {} s", timeout.as_secs())}}));
-                    std::process::exit(75);
-                }
-            }
-        });
-        let handles: Vec<_> = (0..workers)
-            .map(|w| {
-                let (queue, next, done, running, write, budget, ctx) =
-                    (&queue, &next, &done, &running, &write, &budget, &ctx);
-                s.spawn(move || {
-                    WORKER.with(|c| c.set(w));
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some((item, key, hint)) = queue.get(i) else {
-                            break;
-                        };
-                        let held = budget.acquire(*hint);
-                        let id = item.id();
-                        write(&json!({"id": id, "status": "started", "worker": w}));
-                        running.lock().unwrap()[w] = Some((id.clone(), Instant::now()));
-                        stage("start");
-                        let mut record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            check(item, ctx)
-                        }))
-                        .unwrap_or_else(|payload| {
-                            let message = payload
-                                .downcast_ref::<String>()
-                                .cloned()
-                                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            let at = current_stage(w);
-                            json!({"id": id, "kind": item.kind(), "status": "panic", "stage": at,
-                                "load": {"ok": false, "stage": at, "kind": "Panic", "error": normalize(&format!("panic: {message}"))}})
-                        });
-                        record["worker"] = json!(w);
-                        record["cache_key"] = json!(key);
-                        running.lock().unwrap()[w] = None;
-                        budget.release(held);
-                        write(&record);
-                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        eprintln!(
-                            "[{n}/{total}] w{w} {} {}ms {id}",
-                            record["stage"].as_str().unwrap_or("?"),
-                            record["ms"]
-                        );
-                    }
-                })
-            })
-            .collect();
-        for h in handles {
-            if h.join().is_err() {
-                exit = 1;
-            }
-        }
-        finished_all.store(true, Ordering::Relaxed);
-        let _ = dog.join();
-    });
-    exit
+    install_panic_hook();
+    let pool = Arc::new(pool);
+    for _ in 0..workers.min(total) {
+        spawn_worker(&pool);
+        // Stagger the starts so the memory gate sees the first jobs ramp up.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    watchdog(&pool);
+    0
 }
 
-/// `quick`: run the fixed sample, keep it as `current.jsonl` (the last run
-/// becomes `previous.jsonl`), and print what changed.
+/// The ids of the quick sample: `CH_QUICK_FILE` or the embedded `quick.txt`.
+fn quick_ids() -> HashSet<String> {
+    let text = std::env::var_os("CH_QUICK_FILE")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| QUICK.to_string());
+    text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')).map(String::from).collect()
+}
+
+/// `quick [--workers N] [--baseline RUN]`: run the fixed sample, keep it as
+/// `current.jsonl` (the last run becomes `previous.jsonl`), and print what
+/// changed against the previous run (or `--baseline`).
 fn quick(extra: &[String]) -> i32 {
+    let flag = |name: &str| extra.iter().position(|a| a == name).and_then(|i| extra.get(i + 1));
     let dir = dirs_home().join(".cache/kontakto-corpus/quick");
     std::fs::create_dir_all(&dir).expect("quick dir");
     let (cur, prev) = (dir.join("current.jsonl"), dir.join("previous.jsonl"));
@@ -1564,17 +1871,26 @@ fn quick(extra: &[String]) -> i32 {
     }
     let opts = Opts {
         tier: Some("quick".into()),
-        from: prev.exists().then(|| prev.clone()),
-        workers: extra.iter().position(|a| a == "--workers").and_then(|i| extra.get(i + 1)?.parse().ok()),
+        workers: flag("--workers").and_then(|v| v.parse().ok()),
+        timeout: flag("--timeout").and_then(|v| v.parse().ok()),
         ..Default::default()
     };
     let started = Instant::now();
     let code = run(&cur, &opts);
-    println!("quick tier: {} s wall", started.elapsed().as_secs());
-    if prev.exists() {
-        diff(&prev, &cur);
-    } else {
-        println!("(no previous quick run to compare with)");
+    let wall = started.elapsed().as_secs();
+    let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    println!(
+        "quick tier: {} items, {wall} s wall (target 180 s), load average at end {}",
+        all_records(&cur).iter().filter(|r| r["status"] != "started").count(),
+        load.split_whitespace().next().unwrap_or("?")
+    );
+    let against = flag("--baseline").map(PathBuf::from).or_else(|| prev.exists().then(|| prev.clone()));
+    match against {
+        Some(old) => diff(&old, &cur),
+        None => {
+            println!("(no previous quick run to compare with)");
+            diff(&cur, &cur);
+        }
     }
     code
 }
@@ -1583,33 +1899,63 @@ fn dirs_home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-/// `quick-list RUN`: a fixed sample from a finished run, three per library
-/// plus every instrument that failed, plus two multis.
-fn quick_list(run_dir: &Path) {
-    let records = all_records(run_dir);
+/// `quick-list RUN...`: the fixed sample, from finished runs (oldest first).
+/// Per library: three instruments spread over its sorted ids. Then every
+/// distinct failure mode (library, stage, cause: two members each), everything
+/// that regressed between the runs, and four multis. Records of the old harness
+/// (no `tier`) say nothing about UVI audio, so their UVI failures are ignored.
+fn quick_list(runs: &[String]) {
     let library = |id: &str| {
         let rest = id.split("/Libraries/").nth(1).unwrap_or(id);
         rest.split('/').take(2).collect::<Vec<_>>().join("/")
     };
-    let mut by_lib = BTreeMap::<String, Vec<&Value>>::new();
-    for r in &records {
-        by_lib.entry(library(r["id"].as_str().unwrap_or_default())).or_default().push(r);
-    }
+    let id_of = |r: &Value| r["id"].as_str().unwrap_or_default().to_string();
+    let mut latest = BTreeMap::<String, Value>::new();
     let mut ids = std::collections::BTreeSet::new();
-    for (_, rs) in by_lib {
-        let mut rs = rs;
-        rs.sort_by_key(|r| r["id"].as_str().unwrap_or_default().to_string());
-        let kontakt_multi = rs.iter().filter(|r| r["kind"] == "kontakt-multi").count();
-        let take = if kontakt_multi == rs.len() { 2 } else { 3 };
-        let step = (rs.len() / take).max(1);
-        for r in rs.iter().step_by(step).take(take) {
-            ids.insert(r["id"].as_str().unwrap_or_default().to_string());
-        }
-        for r in &rs {
-            if is_failure(r) && r["kind"] != "kontakt-multi" && ids.len() < 400 {
-                ids.insert(r["id"].as_str().unwrap_or_default().to_string());
+    let mut ever_ok = HashSet::new();
+    for run in runs {
+        for r in all_records(Path::new(run)) {
+            if r["status"] == "started" || r["tier"] == "parse" {
+                continue;
             }
+            let id = id_of(&r);
+            let artefact = r["kind"] == "uvi-program" && r["tier"].is_null();
+            if artefact {
+                continue;
+            }
+            if !is_failure(&r) {
+                ever_ok.insert(id.clone());
+            } else if ever_ok.contains(&id) {
+                ids.insert(id.clone()); // regressed
+            }
+            latest.insert(id, r);
         }
+    }
+    let mut by_lib = BTreeMap::<String, Vec<String>>::new();
+    for id in latest.keys() {
+        by_lib.entry(library(id)).or_default().push(id.clone());
+    }
+    for (_, members) in &by_lib {
+        let plain: Vec<_> = members.iter().filter(|i| !i.ends_with(".nkm")).collect();
+        let take = plain.len().min(3);
+        for k in 0..take {
+            ids.insert(plain[k * plain.len() / take.max(1)].clone());
+        }
+    }
+    let mut modes = BTreeMap::<(String, String, String), Vec<String>>::new();
+    for (id, r) in &latest {
+        if is_failure(r) && !r["kind"].as_str().is_some_and(|k| k == "kontakt-multi") {
+            let why = r["load"]["error"].as_str().or(r["sound"]["error"].as_str()).unwrap_or("").chars().take(60).collect();
+            modes.entry((library(id), r["stage"].as_str().unwrap_or("").into(), why)).or_default().push(id.clone());
+        }
+    }
+    for members in modes.values() {
+        ids.insert(members[0].clone());
+        ids.insert(members[members.len() / 2].clone());
+    }
+    let multis: Vec<_> = latest.keys().filter(|i| i.ends_with(".nkm")).collect();
+    for k in 0..multis.len().min(4) {
+        ids.insert(multis[k * multis.len() / 4].clone());
     }
     for id in ids {
         println!("{id}");
@@ -1822,13 +2168,46 @@ fn summary(out: &Path, md: &Path) {
     std::fs::write(md, text).expect("write summary");
 }
 
-/// `diff OLD NEW`: what a change fixed, broke, or made slower. Each side is a
-/// `.jsonl` or a directory of shard files. Perf deltas above 25 % and above an
-/// absolute floor (50 ms load, 32 MiB RSS) are listed.
+/// Audio-thread allocation calls of a record (the old format had one counter).
+fn allocs(r: &Value) -> u64 {
+    let p = &r["perf"]["render"];
+    p["audio_thread_allocs"].as_u64().unwrap_or_else(|| {
+        ["audio_allocs_note_on", "audio_allocs_release", "audio_allocs_steady"]
+            .iter()
+            .map(|k| p[*k].as_u64().unwrap_or(0))
+            .sum()
+    })
+}
+
+fn misses(r: &Value) -> u64 {
+    r["perf"]["render"]["deadline_misses"].as_u64().unwrap_or(0)
+}
+
+fn finite_ok(r: &Value) -> bool {
+    r["sound"]["finite"] != false
+}
+
+fn sounds(r: &Value) -> bool {
+    r["sound"]["sounds"] == true || r["musical"]["sounds"] == true
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v.get(v.len() / 2).copied().unwrap_or(0.0)
+}
+
+fn pct(old: f64, new: f64) -> String {
+    if old > 0.0 { format!("{:+.0}%", (new / old - 1.0) * 100.0) } else { "n/a".into() }
+}
+
+/// `diff OLD NEW`: totals of NEW, then what a change fixed, broke or made
+/// slower. Each side is a `.jsonl` or a directory of shard files. Perf deltas
+/// above 25 % and above an absolute floor (50 ms load, 64 MiB heap) are listed.
 fn diff(old: &Path, new: &Path) {
     let index = |p: &Path| -> BTreeMap<String, Value> {
         all_records(p)
             .into_iter()
+            .filter(|r| r["status"] != "started")
             .map(|r| (r["id"].as_str().unwrap_or_default().to_string(), r))
             .collect()
     };
@@ -1837,53 +2216,111 @@ fn diff(old: &Path, new: &Path) {
         None if r["status"] != "done" => "crash".into(),
         None => stage_of(r).into(),
     };
+    let why = |r: &Value| {
+        let text = r["load"]["error"].as_str().or(r["sound"]["error"].as_str()).unwrap_or("");
+        let at = r["load"]["where"].as_str().unwrap_or("");
+        format!("{at} {text}").trim().chars().take(110).collect::<String>()
+    };
     let (old, new) = (index(old), index(new));
-    let (mut fixed, mut regressed, mut added, mut moved, mut slow, mut fat) =
-        (vec![], vec![], vec![], vec![], vec![], vec![]);
-    let mut ok = [0usize; 2];
+    let (mut fixed, mut regressed, mut added, mut moved, mut flags) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut slow, mut quick_load, mut fat) = (vec![], vec![], vec![]);
+    let mut common = vec![];
     for (id, n) in &new {
         let ns = stage(n);
-        ok[1] += usize::from(ns == "ok");
         match old.get(id) {
-            None if ns != "ok" => added.push(format!("{id}  [{ns}]")),
+            None if ns != "ok" => added.push(format!("{id}  [{ns}] {}", why(n))),
             None => {}
             Some(o) => {
+                common.push((o, n));
                 let os = stage(o);
                 match (os == "ok", ns == "ok") {
                     (false, true) => fixed.push(format!("{id}  [{os} -> ok]")),
-                    (true, false) => regressed.push(format!("{id}  [ok -> {ns}]")),
-                    _ if os != ns => moved.push(format!("{id}  [{os} -> {ns}]")),
+                    (true, false) => regressed.push(format!("{id}  [ok -> {ns}] {}", why(n))),
+                    _ if os != ns => moved.push(format!("{id}  [{os} -> {ns}] {}", why(n))),
                     _ => {}
                 }
-                let f = |r: &Value, a: &str, b: &str| r["perf"][a].as_f64().or(r[b].as_f64());
-                if let (Some(a), Some(b)) = (f(o, "load_ms", "load_ms"), f(n, "load_ms", "load_ms"))
-                    && b > a * 1.25 && b - a > 50.0 {
+                if finite_ok(o) && !finite_ok(n) {
+                    flags.push(format!("{id}  now produces non-finite samples"));
+                }
+                if sounds(o) && !sounds(n) {
+                    flags.push(format!("{id}  stopped sounding"));
+                }
+                if misses(o) == 0 && misses(n) > 0 {
+                    flags.push(format!("{id}  deadline misses 0 -> {}", misses(n)));
+                }
+                if allocs(o) == 0 && allocs(n) > 0 {
+                    flags.push(format!("{id}  audio-thread allocations 0 -> {}", allocs(n)));
+                }
+                let (a, b) = (o["perf"]["load_ms"].as_f64().or(o["load_ms"].as_f64()), n["perf"]["load_ms"].as_f64().or(n["load_ms"].as_f64()));
+                if let (Some(a), Some(b)) = (a, b) {
+                    if b > a * 1.25 && b - a > 50.0 {
                         slow.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
+                    } else if a > b * 1.25 && a - b > 50.0 {
+                        quick_load.push(format!("{id}  load {a:.0} -> {b:.0} ms"));
                     }
-                if let (Some(a), Some(b)) = (
-                    o["perf"]["peak_rss_kib"].as_f64(),
-                    n["perf"]["peak_rss_kib"].as_f64(),
-                )
-                    && b > a * 1.25 && b - a > 32768.0 {
-                        fat.push(format!("{id}  rss {:.0} -> {:.0} MiB", a / 1024.0, b / 1024.0));
+                }
+                if let (Some(a), Some(b)) = (o["perf"]["peak_heap_bytes"].as_f64(), n["perf"]["peak_heap_bytes"].as_f64())
+                    && b > a * 1.25 && b - a > 64.0 * 1048576.0 {
+                        fat.push(format!("{id}  heap {:.0} -> {:.0} MiB", a / 1048576.0, b / 1048576.0));
                     }
             }
         }
     }
-    ok[0] = old.iter().filter(|(_, r)| stage(r) == "ok").count();
-    println!("items: {} -> {}; ok: {} -> {}", old.len(), new.len(), ok[0], ok[1]);
+    let count = |m: &BTreeMap<String, Value>, f: &dyn Fn(&Value) -> bool| m.values().filter(|r| f(r)).count();
+    let line = |m: &BTreeMap<String, Value>| {
+        format!(
+            "{} items: ok {}, sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}",
+            m.len(),
+            count(m, &|r| stage(r) == "ok"),
+            count(m, &sounds),
+            count(m, &|r| !finite_ok(r)),
+            count(m, &|r| misses(r) > 0),
+            count(m, &|r| allocs(r) > 0),
+        )
+    };
+    println!("\nnow:      {}", line(&new));
+    if old.keys().ne(new.keys()) || old.values().ne(new.values()) {
+        println!("previous: {}", line(&old));
+    }
     for (name, list) in [
-        ("fixed", &fixed),
         ("regressed", &regressed),
+        ("fixed", &fixed),
         ("new failure", &added),
         ("failing stage changed", &moved),
-        ("load time up", &slow),
-        ("peak RSS up", &fat),
+        ("flags changed", &flags),
     ] {
         println!("\n{name}: {}", list.len());
-        for line in list.iter().take(40) {
-            println!("  {line}");
+        for l in list.iter().take(40) {
+            println!("  {l}");
         }
+    }
+    let load = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
+        common.iter().filter_map(|c| side(c)["perf"]["load_ms"].as_f64().or(side(c)["load_ms"].as_f64())).collect()
+    };
+    let heap = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
+        common.iter().filter_map(|c| side(c)["perf"]["peak_heap_bytes"].as_f64()).collect()
+    };
+    let p99 = |side: &dyn Fn(&(&Value, &Value)) -> Value| -> Vec<f64> {
+        common.iter().filter_map(|c| side(c)["perf"]["render"]["block_p99_ms"].as_f64()).collect()
+    };
+    let (o, n): (&dyn Fn(&(&Value, &Value)) -> Value, &dyn Fn(&(&Value, &Value)) -> Value) = (&|c| c.0.clone(), &|c| c.1.clone());
+    let (lo, ln) = (load(o), load(n));
+    println!("\nperf delta over {} items present in both:", common.len());
+    println!("  load ms     median {:.0} -> {:.0} ({}), total {:.1} -> {:.1} s", median(lo.clone()), median(ln.clone()), pct(median(lo.clone()), median(ln.clone())), lo.iter().sum::<f64>() / 1e3, ln.iter().sum::<f64>() / 1e3);
+    let (ho, hn) = (heap(o), heap(n));
+    println!("  peak heap   median {:.0} -> {:.0} MiB, max {:.0} -> {:.0} MiB", median(ho.clone()) / 1048576.0, median(hn.clone()) / 1048576.0, ho.iter().copied().fold(0.0, f64::max) / 1048576.0, hn.iter().copied().fold(0.0, f64::max) / 1048576.0);
+    let (po, pn) = (p99(o), p99(n));
+    println!("  block p99   median {:.3} -> {:.3} ms ({})", median(po.clone()), median(pn.clone()), pct(median(po), median(pn)));
+    for (name, list) in [("load time up", &slow), ("load time down", &quick_load), ("peak heap up", &fat)] {
+        println!("  {name}: {}", list.len());
+        for l in list.iter().take(10) {
+            println!("    {l}");
+        }
+    }
+    let failing: Vec<_> = new.iter().filter(|(_, r)| stage(r) != "ok").collect();
+    println!("\nfailing now: {}", failing.len());
+    for (id, r) in failing.iter().take(40) {
+        println!("  [{}] {}  {}", stage(r), id.rsplit('/').next().unwrap_or(id), why(r));
     }
 }
 
@@ -1917,13 +2354,13 @@ fn main() {
         }
         [cmd, rest @ ..] if cmd == "quick" => quick(rest),
         [cmd, rest @ ..] if cmd == "list" => {
-            for item in items(&roots(rest)) {
+            for item in cached_items(rest) {
                 println!("{}\t{}", item.kind(), item.id());
             }
             0
         }
-        [cmd, dir] if cmd == "quick-list" => {
-            quick_list(Path::new(dir));
+        [cmd, runs @ ..] if cmd == "quick-list" => {
+            quick_list(runs);
             0
         }
         [cmd, out, md] if cmd == "summary" => {
