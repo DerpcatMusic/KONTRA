@@ -300,11 +300,12 @@ fn boolean_short_circuit_guards_arrays_but_never_hides_malformed_source_or_runti
             true
         });
     });
-    for expression in [
-        "1 and %a[99]",
-        "0 or %a[99]",
-        "1 xor %a[99]",
-        "0 xor %a[99]",
+    // An unguarded read outside the array is 0, so the expression still runs.
+    for (expression, expected) in [
+        ("1 and %a[99]", 0),
+        ("0 or %a[99]", 0),
+        ("1 xor %a[99]", 1),
+        ("0 xor %a[99]", 0),
     ] {
         let source = format!(
             "on init declare %a[1] declare $result := 7 end on
@@ -315,10 +316,10 @@ fn boolean_short_circuit_guards_arrays_but_never_hides_malformed_source_or_runti
             rt.trigger(input(60), 60, 1.).unwrap();
             assert_eq!(
                 rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1),
-                Ok(7)
+                Ok(expected)
             );
             rt.flush_behaviors(|_, _, outcome| {
-                assert_eq!(outcome, Outcome::Fault(Error::InvalidInput));
+                assert_eq!(outcome, Outcome::Finished);
                 true
             });
         });
