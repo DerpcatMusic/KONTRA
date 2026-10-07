@@ -71,7 +71,6 @@ calibrate)  # gain through the whole chain: bare noise instrument at unity, reco
     echo "$(pactl list short modules | awk '/kontra_ref/{print $1}') $(pgrep -o wineserver) $(date +%s)" >"$W/calibrated"; rm -f "$W/wav/cal.wav"
   else rm -f "$W/calibrated"; echo "calibrate: FAILED, session aborted (no recordings allowed)" >&2; exit 1; fi ;;
 stop)
-  rm -f "$W/calibrated"
   click 20 57 || true; click 42 123 || true   # File > Exit
   sleep 3
   pkill -f '[K]ontakt 8.exe' || true
