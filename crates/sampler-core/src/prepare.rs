@@ -17,6 +17,8 @@ pub struct Pcm(std::sync::Arc<PcmData>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AssetId(u64);
 
+type StoreEntry = ([i32; super::STORE_KEY], i64);
+
 #[derive(Debug)]
 struct PcmData {
     id: AssetId,
@@ -436,7 +438,7 @@ pub struct Prepared {
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) signal_programs: Box<[super::SignalProgram]>,
-    pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
+    pub(super) shared_store: (Box<[StoreEntry]>, usize),
     pub(super) keyswitches: [Option<u32>; 128],
     articulated: bool,
     pub(super) switching: super::Switching,

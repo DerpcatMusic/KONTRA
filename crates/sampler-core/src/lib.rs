@@ -621,6 +621,7 @@ pub struct Runtime {
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
     voice_growths: u64,
     growth_failures: u64,
@@ -780,6 +781,7 @@ impl Runtime {
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            refused_starts: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,
