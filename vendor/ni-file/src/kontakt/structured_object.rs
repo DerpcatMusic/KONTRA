@@ -87,6 +87,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_structured_object_0x28() -> Result<(), Error> {
         let mut file = File::open("tests/patchdata/KontaktV42/StructuredObject/0x28")?;
         let obj = StructuredObject::read(&mut file)?;

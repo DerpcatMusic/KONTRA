@@ -178,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_filecontainer_nki() -> Result<(), Error> {
         let file = File::open("tests/data/Containers/FileContainer/files/000-default.nki")?;
         NIFileContainer::read(file)?;
@@ -185,6 +186,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_filecontainer_nkm() -> Result<(), Error> {
         let file = File::open("tests/data/Containers/FileContainer/files/001-multi.nkm")?;
         NIFileContainer::read(file)?;
