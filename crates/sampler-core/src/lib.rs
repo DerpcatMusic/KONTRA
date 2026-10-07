@@ -649,6 +649,9 @@ pub struct Runtime {
     /// Keys whose latest physical event was a note-on: one note-off clears the
     /// key however many presses stacked, as `%KEY_DOWN` does in Kontakt.
     input_keys: u128,
+    /// Notes a running callback played whose attack waits for it to yield:
+    /// (callback, note, selection stage). Never holds more than the note pool.
+    deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
     executing_due: bool,
@@ -802,6 +805,7 @@ impl Runtime {
                 .into_boxed_slice(),
             script_params: false,
             input_keys: 0,
+            deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
