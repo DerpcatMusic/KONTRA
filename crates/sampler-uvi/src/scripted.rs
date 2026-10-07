@@ -7,10 +7,11 @@
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
 mod thread;
-use crate::script::{Command, Play, ScriptHost};
+use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use crate::OscGroup;
 use sampler_core::{
-    Error, Expression, Frame, Inheritance, Input, Limits, NoteId, Prepared, Protocol, Runtime,
+    Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol, Runtime,
+    Stealing,
 };
 use std::collections::HashMap;
 pub use thread::{Loaded, ScriptThread};
@@ -24,9 +25,25 @@ pub trait Script {
     fn note_off(&mut self, id: u64, key: u8);
     fn advance(&mut self, ms: f64);
     fn next_due(&mut self) -> Option<f64>;
-    fn take_commands(&mut self) -> Vec<Command>;
+    /// Append the commands issued since the last call to `out`.
+    fn drain(&mut self, out: &mut Vec<Command>);
     /// The audio clock at the start of a block, in milliseconds.
     fn tick(&mut self, _now_ms: f64) {}
+    /// A host message other than a note.
+    fn input(&mut self, _input: HostInput) {}
+}
+
+/// What the host tells a script besides notes (channels are 0-based).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HostInput {
+    Controller { cc: u8, value: u8, channel: u8 },
+    /// -1..=1.
+    Bend { value: f64, channel: u8 },
+    Touch { value: u8, channel: u8 },
+    PolyTouch { key: u8, value: u8, channel: u8 },
+    Program { value: u8, channel: u8 },
+    Transport(bool),
+    Tempo(f64),
 }
 
 impl Script for ScriptHost {
@@ -48,8 +65,19 @@ impl Script for ScriptHost {
     fn next_due(&mut self) -> Option<f64> {
         ScriptHost::next_due(self)
     }
-    fn take_commands(&mut self) -> Vec<Command> {
-        ScriptHost::take_commands(self)
+    fn drain(&mut self, out: &mut Vec<Command>) {
+        out.extend(ScriptHost::take_commands(self));
+    }
+    fn input(&mut self, input: HostInput) {
+        match input {
+            HostInput::Controller { cc, value, channel } => self.controller(cc, value, channel),
+            HostInput::Bend { value, channel } => self.pitch_bend(value, channel),
+            HostInput::Touch { value, channel } => self.after_touch(value, channel),
+            HostInput::PolyTouch { key, value, channel } => self.poly_after_touch(key, value, channel),
+            HostInput::Program { value, channel } => self.program_change(value, channel),
+            HostInput::Transport(playing) => self.transport(playing),
+            HostInput::Tempo(bpm) => self.set_tempo(bpm),
+        }
     }
 }
 
@@ -61,6 +89,17 @@ pub struct Program {
     pub groups: Vec<OscGroup>,
     /// Where each insert element sits in the IR chains.
     pub inserts: Vec<crate::InsertNode>,
+    /// Present when the samples stream.
+    pub stream: Option<Stream>,
+}
+
+/// A streamed program's page cache, and what must outlive it.
+pub struct Stream {
+    /// Handed to the runtime that plays the program.
+    pub cache: Option<sampler_core::StreamCache>,
+    /// Frames each start keeps resident.
+    pub horizon: usize,
+    pub _keep: (sampler_kontakt::Streamer, Vec<sampler_core::Pcm>),
 }
 
 /// Plays made once their originating note was released sound at most this long.
@@ -98,7 +137,16 @@ pub struct Driver<S: Script> {
     glides: Vec<Glide>,
     /// Frame of the next glide step.
     glide_at: u64,
+    /// Commands being applied, and ids of notes found ended: kept so the
+    /// audio thread allocates nothing once warm.
+    inbox: Vec<Command>,
+    ended: Vec<u64>,
+    /// MIDI the scripts generated, for the host to play into the part.
+    midi: Vec<MidiOut>,
 }
+
+/// Notes and values the driver tracks at once; beyond it, plays are dropped.
+const TRACKED: usize = 1024;
 
 impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
@@ -107,15 +155,29 @@ impl<S: Script> Driver<S> {
             host,
             groups,
             rate: f64::from(rate),
-            notes: HashMap::new(),
-            held: HashMap::new(),
+            notes: HashMap::with_capacity(TRACKED),
+            held: HashMap::with_capacity(128),
             next: 1,
-            unmodeled: Vec::new(),
-            global: HashMap::new(),
-            voice_values: HashMap::new(),
-            glides: Vec::new(),
+            unmodeled: Vec::with_capacity(32),
+            global: HashMap::with_capacity(32),
+            voice_values: HashMap::with_capacity(TRACKED * 2),
+            glides: Vec::with_capacity(64),
             glide_at: 0,
+            inbox: Vec::with_capacity(256),
+            ended: Vec::with_capacity(TRACKED),
+            midi: Vec::with_capacity(256),
         }
+    }
+
+    /// A host message for the scripts.
+    pub fn input(&mut self, rt: &Runtime, input: HostInput) {
+        self.host.set_time(self.now_ms(rt));
+        self.host.input(input);
+    }
+
+    /// The MIDI the scripts generated since the last call.
+    pub fn drain_midi(&mut self, mut each: impl FnMut(MidiOut)) {
+        self.midi.drain(..).for_each(&mut each);
     }
 
     /// Whether the scripts take over note selection.
@@ -202,7 +264,24 @@ impl<S: Script> Driver<S> {
     }
 
     fn apply(&mut self, rt: &mut Runtime, closing: bool) -> Result<(), Error> {
-        for command in self.host.take_commands() {
+        let mut inbox = std::mem::take(&mut self.inbox);
+        self.host.drain(&mut inbox);
+        let result = self.apply_all(rt, closing, &mut inbox);
+        inbox.clear();
+        self.inbox = inbox;
+        result
+    }
+
+    fn apply_all(
+        &mut self,
+        rt: &mut Runtime,
+        closing: bool,
+        inbox: &mut Vec<Command>,
+    ) -> Result<(), Error> {
+        if !inbox.is_empty() && self.notes.len() >= TRACKED / 2 {
+            self.prune(rt);
+        }
+        for command in inbox.drain(..) {
             match command {
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
@@ -217,9 +296,90 @@ impl<S: Script> Driver<S> {
                     voice,
                     at_ms,
                 } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
+                Command::Change { id, what, value, relative, .. } => {
+                    if let Some(note) = self.notes.get(&id).copied() {
+                        let target = match what {
+                            Change::Decibels => ModTarget::Decibels,
+                            Change::Pan => ModTarget::Pan,
+                            Change::Tune => ModTarget::Pitch,
+                        };
+                        match rt.set_note_param(note, target, value, relative) {
+                            Err(Error::StaleHandle) => {
+                                self.notes.remove(&id);
+                            }
+                            other => other?,
+                        }
+                    }
+                }
+                Command::Fade { id, from, to, ms, kill, .. } => {
+                    if let Some(note) = self.notes.get(&id).copied() {
+                        let frames = self.frames(ms);
+                        match rt.fade_note(note, from, to, frames, kill && to <= 0.0) {
+                            Err(Error::StaleHandle) => {
+                                self.notes.remove(&id);
+                            }
+                            other => other?,
+                        }
+                    }
+                }
+                Command::Parameter { scope, param, value, authored } => {
+                    self.parameter(rt, scope, param, value, authored)?;
+                }
+                Command::Midi(out) => {
+                    if self.midi.len() < self.midi.capacity() {
+                        self.midi.push(out);
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// A script's `setParameter` on the program or one of its layers. The
+    /// runtime edits offsets of the authored gain and pan, so the written
+    /// value becomes its difference to the preset's.
+    fn parameter(
+        &mut self,
+        rt: &mut Runtime,
+        scope: Scope,
+        param: Param,
+        value: f64,
+        authored: f64,
+    ) -> Result<(), Error> {
+        let group = match scope {
+            Scope::Program => -1,
+            Scope::Layer(layer) => match self.groups.iter().find(|g| g.layer == layer && g.osc == 1) {
+                Some(g) => i64::from(g.group),
+                None => {
+                    if !self.unmodeled.contains(&"setParameter on a layer without a group") {
+                        self.unmodeled.push("setParameter on a layer without a group");
+                    }
+                    return Ok(());
+                }
+            },
+        };
+        match param {
+            Param::Gain => {
+                let db = 20.0 * (value.max(1e-6) / authored.max(1e-6)).log10();
+                rt.set_group_param(group, ModTarget::Decibels, db, false)
+            }
+            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, false),
+            Param::Polyphony => {
+                let slots = rt.voice_slots();
+                let wanted = (value.round().max(1.0) as usize).min(slots);
+                rt.set_voice_stealing(Some(Stealing {
+                    fade: (self.rate / 100.0) as u32,
+                    headroom: slots - wanted,
+                }))
+            }
+        }
+    }
+
+    /// Forget notes the runtime no longer holds.
+    fn prune(&mut self, rt: &Runtime) {
+        self.notes.retain(|_, note| rt.note(*note).is_ok());
+        let notes = &self.notes;
+        self.voice_values.retain(|(v, _), _| notes.contains_key(v));
     }
 
     fn modulate(
@@ -257,12 +417,17 @@ impl<S: Script> Driver<S> {
 
     fn step_glides(&mut self, rt: &mut Runtime) {
         let now = self.now_ms(rt);
-        let glides = std::mem::take(&mut self.glides);
-        for g in glides {
+        let mut i = 0;
+        while i < self.glides.len() {
+            let g = &self.glides[i];
+            let (id, voice) = (g.id, g.voice);
             let t = ((now - g.start_ms) / g.ms).clamp(0.0, 1.0);
-            let _ = self.set_value(rt, g.id, g.voice, g.from + (g.to - g.from) * t);
+            let value = g.from + (g.to - g.from) * t;
+            let _ = self.set_value(rt, id, voice, value);
             if t < 1.0 {
-                self.glides.push(g);
+                i += 1;
+            } else {
+                self.glides.swap_remove(i);
             }
         }
         self.glide_at = rt.now() + self.frames(GLIDE_STEP_MS).max(1);
@@ -276,26 +441,29 @@ impl<S: Script> Driver<S> {
         voice: Option<u64>,
         value: f64,
     ) -> Result<(), Error> {
-        let targets: Vec<u64> = match voice {
+        self.ended.clear();
+        match voice {
             Some(v) => {
                 self.voice_values.insert((v, id), value);
-                vec![v]
+                if let Some(note) = self.notes.get(&v).copied() {
+                    match rt.set_note_script_value(note, id, value) {
+                        Err(Error::StaleHandle) => self.ended.push(v),
+                        other => other?,
+                    }
+                }
             }
             None => {
                 self.global.insert(id, value);
-                self.notes.keys().copied().collect()
-            }
-        };
-        for v in targets {
-            let Some(note) = self.notes.get(&v).copied() else {
-                continue;
-            };
-            match rt.set_note_script_value(note, id, value) {
-                Err(Error::StaleHandle) => {
-                    self.notes.remove(&v);
+                for (v, note) in &self.notes {
+                    match rt.set_note_script_value(*note, id, value) {
+                        Err(Error::StaleHandle) => self.ended.push(*v),
+                        other => other?,
+                    }
                 }
-                other => other?,
             }
+        }
+        for v in self.ended.drain(..) {
+            self.notes.remove(&v);
         }
         Ok(())
     }
@@ -310,11 +478,14 @@ impl<S: Script> Driver<S> {
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
+        if self.notes.len() >= TRACKED {
+            return Ok(());
+        }
         let velocity = f64::from(play.velocity) / 127.0;
         let parent = play.parent.and_then(|p| self.notes.get(&p).copied());
         let open = parent.is_some() && !closing && play.duration_ms.is_none();
         let note = match parent {
-            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Independent),
+            Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
             None => {
                 let input = Input {
                     protocol: Protocol::Native,
@@ -338,15 +509,18 @@ impl<S: Script> Driver<S> {
         let expression = Expression {
             gain: play.vol.clamp(0.0, 4.0),
             pan: play.pan.clamp(-1.0, 1.0),
-            pitch_semitones: play.tune,
             ..Expression::default()
         };
+        // The script's tune is the note's own: bend follows the parent.
+        if play.tune != 0.0 {
+            rt.set_note_param(note, ModTarget::Pitch, play.tune, false)?;
+        }
         if expression != Expression::default() {
             let id = rt.expression_id(note)?;
             rt.set_expression(id, expression)?;
         }
-        for (id, value) in self.global.clone() {
-            rt.set_note_script_value(note, id, value)?;
+        for (id, value) in &self.global {
+            rt.set_note_script_value(note, *id, *value)?;
         }
         rt.forward_attack(note)?;
         let now = self.now_ms(rt);
@@ -365,15 +539,12 @@ impl<S: Script> Driver<S> {
             return Ok(());
         }
         rt.set_note_group(note, None, false)?;
-        let wanted: Vec<u32> = self
-            .groups
-            .iter()
-            .filter(|g| play.layers.is_empty() || play.layers.contains(&g.layer))
-            .filter(|g| play.osc.is_none_or(|o| o == g.osc))
-            .map(|g| g.group)
-            .collect();
-        for group in wanted {
-            rt.set_note_group(note, Some(group), true)?;
+        for g in &self.groups {
+            if (play.layers.is_empty() || play.layers.contains(g.layer))
+                && play.osc.is_none_or(|o| o == g.osc)
+            {
+                rt.set_note_group(note, Some(g.group), true)?;
+            }
         }
         Ok(())
     }
@@ -383,13 +554,28 @@ impl<S: Script> Driver<S> {
 pub struct Player {
     rt: Runtime,
     driver: Driver<ScriptHost>,
+    /// Frames ahead of the clock that streamed voices read, if any stream.
+    horizon: Option<u32>,
+    _stream: Option<Stream>,
 }
 
 impl Player {
     pub fn new(program: Program, limits: Limits, rate: u32) -> Result<Self, Error> {
+        let mut rt = Runtime::new(program.plan, limits)?;
+        let mut horizon = None;
+        let mut stream = program.stream;
+        if let Some(s) = stream.as_mut() {
+            // Heads bound only starts; running voices request a page ahead.
+            horizon = Some((s.horizon.max(sampler_core::PAGE_FRAMES) + 4096) as u32);
+            if let Some(cache) = s.cache.take() {
+                rt = rt.with_stream_cache(cache);
+            }
+        }
         Ok(Self {
-            rt: Runtime::new(program.plan, limits)?,
+            rt,
             driver: Driver::new(program.host, program.groups, rate),
+            horizon,
+            _stream: stream,
         })
     }
 
@@ -426,6 +612,10 @@ impl Player {
             let left = out.len() - done;
             let due = self.driver.wake(&mut self.rt)?;
             let step = due.map_or(left, |d| d.max(1).min(left));
+            if let Some(horizon) = self.horizon {
+                // Pending pages play silent and count as underruns.
+                let _ = self.rt.service_streaming(horizon);
+            }
             self.rt.render(&mut out[done..done + step])?;
             done += step;
         }
