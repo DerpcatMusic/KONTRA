@@ -811,6 +811,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ksp",
  "sampler-midi",
  "sampler-uvi",
  "serde_json",

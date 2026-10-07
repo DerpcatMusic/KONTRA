@@ -372,6 +372,7 @@ impl PartShared {
             ignored_input: f,
             stolen_voices: g,
             refused_starts: h,
+            ..Default::default()
         }
     }
 

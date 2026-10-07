@@ -939,9 +939,25 @@ impl Runtime {
         Ok(())
     }
 
+    /// [`Runtime::flush_behaviors`], also telling which program (in the plan's
+    /// program table) each behavior ran, so a fault can be named after its callback.
+    pub fn flush_behaviors_at(
+        &mut self,
+        mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, program| accept(id, owner, outcome, program));
+    }
+
     pub fn flush_behaviors(
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
+    ) {
+        self.flush_behaviors_inner(&mut |id, owner, outcome, _| accept(id, owner, outcome));
+    }
+
+    fn flush_behaviors_inner(
+        &mut self,
+        accept: &mut dyn FnMut(BehaviorId, BehaviorOwner, Outcome, usize) -> bool,
     ) {
         for i in 0..self.behaviors.slots.len() {
             let Some(c) = self.behaviors.slots[i].value else {
@@ -951,7 +967,7 @@ impl Runtime {
                 continue;
             };
             let id = BehaviorId(self.behaviors.id(i));
-            if !accept(id, c.owner, outcome) {
+            if !accept(id, c.owner, outcome, c.program) {
                 return;
             }
             self.release_controller_reserve(id);
