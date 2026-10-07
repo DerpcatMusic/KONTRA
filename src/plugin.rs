@@ -224,7 +224,7 @@ impl Selection {
 #[derive(Params)]
 #[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
 pub struct SamplerParams {
-    #[param(name = "Volume", range = "linear(-60, 6)", default = -12.0, unit = "dB", smooth = "exp(5)")]
+    #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
@@ -1721,6 +1721,17 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Matches Kontakt's matched-level reference: a fresh instance's master is
+    /// unity, so a full-scale neutral sample leaves at the level the core renders it.
+    #[test]
+    fn a_fresh_master_is_unity() {
+        let p = SamplerParams::new();
+        assert_eq!(p.volume.read(), 0.0, "master dB");
+        assert_eq!(db_to_linear(p.volume.read()), 1.0, "master gain");
+        let full_scale = 1.0_f32;
+        assert_eq!(full_scale * db_to_linear(p.volume.read()), full_scale);
+    }
     use std::{
         alloc::{GlobalAlloc, Layout, System},
         cell::Cell,

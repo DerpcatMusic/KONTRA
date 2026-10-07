@@ -54,7 +54,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             &mut db,
             -60.0..=6.0,
             Fader {
-                reset: -12.,
+                reset: 0.,
                 ..Fader::LEVEL
             }
             .length(TEXT * 8.),
