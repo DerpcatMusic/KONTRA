@@ -52,7 +52,7 @@ pub use behavior::{
 mod stages;
 pub use stages::Stage;
 mod diagnose;
-pub use diagnose::{ScriptFault, why_silent};
+pub use diagnose::{ScriptFault, SilentNote, why_silent};
 mod stream;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
@@ -161,6 +161,8 @@ pub enum EventInfo {
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
+    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    Source,
 }
 
 /// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
@@ -245,6 +247,24 @@ pub enum Error {
     RevisionConflict,
     /// Unbiased selection exceeded its fixed draw budget; no decision was committed.
     RandomBudget,
+}
+
+impl Error {
+    /// Every variant, so one can travel as its index.
+    pub const ALL: [Error; 12] = [
+        Self::Capacity,
+        Self::InvalidInput,
+        Self::NotReady,
+        Self::StaleHandle,
+        Self::DuplicateInput,
+        Self::ClosedNote,
+        Self::ClosedFamily,
+        Self::PastEvent,
+        Self::ClockOverflow,
+        Self::ArithmeticOverflow,
+        Self::RevisionConflict,
+        Self::RandomBudget,
+    ];
 }
 
 impl std::fmt::Display for Error {
@@ -674,6 +694,10 @@ pub struct Runtime {
     deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
+    /// The last attack that selected no region, until taken; see [`SilentNote`].
+    silent: Option<SilentNote>,
+    /// The last callback fault until taken: (plan program, error).
+    fault: Option<(usize, Error)>,
     /// Opt-in script parameter writes, see [`Runtime::record_script_writes`].
     write_log: Option<Vec<String>>,
     executing_due: bool,
@@ -833,6 +857,8 @@ impl Runtime {
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
+            silent: None,
+            fault: None,
             write_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]

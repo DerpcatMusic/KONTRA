@@ -124,12 +124,18 @@ pub struct RuntimeProblems {
     /// resident (cold starts off) or the pool could not admit them.
     #[serde(default)]
     pub refused_starts: u64,
-    /// Note-ons that rendered nothing for a quarter second, and the key of the
-    /// last one ([`LoadReport::why_silent`] explains it).
+    /// Attacks that selected no region, and the last one packed
+    /// ([`sampler_core::SilentNote::pack`]).
     #[serde(default)]
     pub silent_notes: u64,
     #[serde(default)]
-    pub silent_key: u8,
+    pub silent: [u64; 3],
+    /// The last script fault: plan program + 1 (0 for none) and the
+    /// [`sampler_core::Error::ALL`] index of its error.
+    #[serde(default)]
+    pub fault_program: u64,
+    #[serde(default)]
+    pub fault_error: u64,
 }
 
 /// A part's load report.
