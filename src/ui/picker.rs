@@ -159,7 +159,7 @@ fn show(ask: Ask) -> Option<Picked> {
                 .set_title("Save the rack as a multi")
                 .set_directory(from)
                 .set_file_name(format!("{name}.{}", crate::library::MULTI))
-                .add_filter("KONTRA 2 multi", &[crate::library::MULTI])
+                .add_filter("KONTRA multi", &[crate::library::MULTI])
                 .save_file()
                 .map(Picked::Multi)
         }
