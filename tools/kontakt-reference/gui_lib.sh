@@ -7,8 +7,9 @@ classic_group_editor() { clk 325 98; clk 128 579 5; clk 1000 700 1; clk 565 203 
 # addfx PLUSX PLUSY UTILITIES_Y DOWNS : add a Utilities-submenu entry (DOWNS=1 first item, 2 second)
 addfx() { clk 590 540 1; clk "$1" "$2" 3; xdotool mousemove 730 "$3"; sleep 1; xdotool key Right; sleep .5
   for _ in $(seq "$4"); do xdotool key Down; sleep .2; done; xdotool key Return; sleep 3; }
-edit_open() { for _ in 1 2 3; do import -window root -crop 900x120+540+620 /tmp/eo0.png; clk 562 598 3; import -window root -crop 900x120+540+620 /tmp/eo1.png
-  cmp -s /tmp/eo0.png /tmp/eo1.png || return 0; done; return 1; }
+# the open FX panel paints a tan background (R about 193) at (1000,650); closed it is darker (R about 134)
+panel_open() { import -window root -crop 40x20+1000+650 +repage /tmp/po.png; r=$(magick /tmp/po.png -scale 1x1 -format '%[fx:int(255*r)]' info:); [ "$r" -ge 185 ] && [ "$r" -le 200 ]; }
+edit_open() { for _ in 1 2 3 4; do panel_open && return 0; clk 562 598 3; done; panel_open; }
 # typef X Y VALUE : type into a value field without committing; commitf = Return
 typef() { xdotool mousemove "$1" "$2"; sleep .5; xdotool click --repeat 2 --delay 100 1; sleep .6; xdotool key ctrl+a; xdotool type --delay 40 -- "$3"; sleep .3; xdotool mousemove 1300 300; }
 setf() { typef "$1" "$2" "$3"; xdotool key Return; sleep 1.2; }
