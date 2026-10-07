@@ -204,6 +204,12 @@ impl Check<'_> {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::Rectify(_) => {}
+                Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
+                Processor::Daft(d) => {
+                    self.within(d.gain, 0.0..=1.0, "daft gain")?;
+                    self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
+                }
                 Processor::Reverb(r) => {
                     for (v, field) in [
                         (r.decay_seconds, "reverb decay"),

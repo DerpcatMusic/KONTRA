@@ -56,6 +56,8 @@ pub struct Instrument {
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
+    /// Independent nested selectors (see [`Axis`]), beside the articulation.
+    pub axes: Vec<Axis>,
     /// Which input selects among [`Instrument::articulations`].
     pub switching: Switching,
     pub modulators: Vec<Modulator>,
@@ -211,6 +213,8 @@ pub struct Zone {
     pub trigger: Trigger,
     pub selection: Option<Selection>,
     pub articulation: Option<ArticulationRef>,
+    /// Nested selector choices this zone sounds under, all of which must hold.
+    pub axes: Vec<AxisPick>,
     pub pitch: KeyTracking,
     pub tune: Pitch,
     pub gain: Gain,
@@ -351,6 +355,7 @@ impl Zone {
             trigger: Trigger::Attack,
             selection: None,
             articulation: None,
+            axes: Vec::new(),
             pitch: KeyTracking::Tracked { root: 60 },
             tune: Pitch::NONE,
             gain: Gain::UNITY,
@@ -432,6 +437,10 @@ pub enum Trigger {
     First,
     /// Only when another key is already held.
     Legato,
+    /// A recorded transition: only when this key minus the most recent
+    /// still-held key is `low..=high` semitones (negative: stepping down), so a
+    /// legato instrument can place one sample per interval.
+    Transition { low: i8, high: i8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,6 +490,31 @@ pub enum CounterScope {
     Key,
     Channel,
     ChannelKey,
+}
+
+/// One independent selector: exactly one choice is active, switched by the
+/// choices' keys, and it keeps its choice while other selectors change. A
+/// zone lists the choices it sounds under ([`Zone::axes`]), so a tree (outer
+/// articulation, inner variant) is a zone naming one choice per level.
+/// Choice 0 is active before any switch is played. At most four axes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Axis {
+    pub name: String,
+    pub choices: Vec<AxisChoice>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AxisChoice {
+    pub name: String,
+    /// Keys that select this choice.
+    pub switch_keys: Vec<u8>,
+}
+
+/// A zone's requirement that `axes[axis]` has `choice` active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AxisPick {
+    pub axis: usize,
+    pub choice: usize,
 }
 
 /// A selectable articulation, switched by keys and/or an alternative driver.
@@ -921,6 +955,18 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Kontakt's Daft filter: normalized controls, laws in the engine.
+    Daft(Daft),
+    /// One parallel branch of an effect rack. The next `count` processors (nested
+    /// ones included) run on the signal that entered the group's first branch;
+    /// `gain` times their output joins the sum, which the `last` branch leaves
+    /// as the signal. Branches of one rack follow each other directly.
+    Branch {
+        count: u16,
+        gain: Gain,
+        first: bool,
+        last: bool,
+    },
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
@@ -939,6 +985,16 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+}
+
+/// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
+/// the native engine owns the gain, cutoff and resonance laws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Daft {
+    pub gain: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub highpass: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
