@@ -923,6 +923,16 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
+    /// One parallel branch of an effect rack. The next `count` processors (nested
+    /// ones included) run on the signal that entered the group's first branch;
+    /// `gain` times their output joins the sum, which the `last` branch leaves
+    /// as the signal. Branches of one rack follow each other directly.
+    Branch {
+        count: u16,
+        gain: Gain,
+        first: bool,
+        last: bool,
+    },
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
