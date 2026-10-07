@@ -36,9 +36,23 @@ pub struct Bus {
     pub tail_frames: u32,
 }
 
+/// Where a group's fader lives (see [`crate::Prepared::with_group_faders`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupFader {
+    pub bus: usize,
+    /// Indices into the bus's sends (the bus's own output is send 0) that the
+    /// fader scales; later sends leave before it.
+    pub follows: Vec<usize>,
+    /// The fader's starting linear level.
+    pub initial: f64,
+}
+
 struct PreparedBus {
     processors: Box<[PreparedProcessor]>,
     sends: Box<[BusSend]>,
+    /// Which sends the runtime fader scales, and its starting level.
+    follows: Box<[bool]>,
+    fader: f64,
     states: std::ops::Range<usize>,
     tail_frames: u32,
 }
@@ -59,6 +73,20 @@ pub(super) struct PreparedBuses {
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
 impl PreparedBuses {
+    pub(super) fn set_fader(&mut self, fader: &GroupFader) -> Result<(), Error> {
+        let node = self.nodes.get_mut(fader.bus).ok_or(Error::InvalidInput)?;
+        let mut follows = vec![false; node.sends.len()];
+        for &n in &fader.follows {
+            *follows.get_mut(n).ok_or(Error::InvalidInput)? = true;
+        }
+        if !(fader.initial.is_finite() && fader.initial >= 0.0) {
+            return Err(Error::InvalidInput);
+        }
+        node.follows = follows.into_boxed_slice();
+        node.fader = fader.initial;
+        Ok(())
+    }
+
     pub fn new(
         rate: u32,
         buses: Vec<Bus>,
@@ -119,6 +147,8 @@ impl PreparedBuses {
                         Some(&mut reverbs),
                         Some(&mut convolutions),
                     )?,
+                    follows: Box::new([]),
+                    fader: 1.0,
                     sends: bus.sends.into_boxed_slice(),
                     states: begin..cells,
                     tail_frames: bus.tail_frames,
@@ -184,6 +214,8 @@ pub(super) struct BusState {
     pub parameters: Box<[ControlRamp]>,
     filters: crate::dsp::svf::FilterBank,
     pub mix: Box<[BusMix]>,
+    /// Per bus, the runtime level of the sends its fader scales.
+    pub fader: Box<[f64]>,
     /// Per bus, its post-mix peak since last taken.
     pub peaks: Box<[[f32; 2]]>,
 }
@@ -210,6 +242,7 @@ impl BusState {
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
             mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
+            fader: plan.buses.nodes.iter().map(|n| n.fader).collect(),
             peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
         })
     }
@@ -320,6 +353,7 @@ impl BusState {
             }
             buffer.dirty = true;
             let mix = self.mix[index];
+            let fader = self.fader[index];
             if mix.gain != [1.0; 2] {
                 for frame in &mut buffer.samples[..produced] {
                     frame[0] *= mix.gain[0];
@@ -343,9 +377,14 @@ impl BusState {
                 } else {
                     &mut output[..produced]
                 };
+                let gain = if node.follows.get(n).copied().unwrap_or(false) {
+                    send.gain * fader
+                } else {
+                    send.gain
+                };
                 for (input, frame) in samples.iter().zip(target) {
                     for channel in 0..2 {
-                        frame[channel] += (f64::from(input[channel]) * send.gain) as f32;
+                        frame[channel] += (f64::from(input[channel]) * gain) as f32;
                     }
                 }
             }
