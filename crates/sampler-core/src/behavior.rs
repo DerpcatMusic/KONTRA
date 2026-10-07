@@ -349,6 +349,13 @@ pub struct Program {
     pub(super) script_texts: usize,
 }
 impl Program {
+    /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
+    pub fn writes_slots(&self) -> bool {
+        self.code
+            .iter()
+            .any(|op| matches!(op, Instruction::WriteSlot { .. }))
+    }
+
     /// Text constants addressed by `TextPart::Constant`.
     pub fn with_texts(mut self, texts: &[&str]) -> Result<Self, Error> {
         if texts.len() < self.text_constants
