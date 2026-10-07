@@ -1001,6 +1001,7 @@ fn kontakt(
         rate: request.sample_rate as u32,
         library: Some(path.clone()),
         mpe: request.mpe.then(Default::default),
+        dynamics_start: request.dynamics_start,
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {
@@ -1016,6 +1017,8 @@ fn kontakt(
     let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
+    report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
+    report.decoded.needs_controller = loaded.needs_controller();
     // Loading adds what it found unplayable (samples, keys) and scripts that failed.
     report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
     report.decoded.zones = loaded.instrument.zones.len();
@@ -1125,10 +1128,12 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     })
 }
 
-impl CoreLoader for V2Loader {
-    type Core = V2Core;
+/// Stack for the loader worker: lowering moves large plans by value and the
+/// caller's thread (a UI or test thread) may only have 2 MB.
+const LOADER_STACK: usize = 16 << 20;
 
-    fn prepare(
+impl V2Loader {
+    fn prepare_on_worker(
         &self,
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
@@ -1194,6 +1199,35 @@ impl CoreLoader for V2Loader {
         }
         progress(Progress::DONE);
         Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument, scripts, stream })
+    }
+}
+
+impl CoreLoader for V2Loader {
+    type Core = V2Core;
+
+    /// Prepares on a worker with an explicit stack; progress is relayed to the
+    /// caller's (non-`Send`) callback over a channel.
+    fn prepare(
+        &self,
+        request: &LoadRequest,
+        progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("sampler-load".into())
+                .stack_size(LOADER_STACK)
+                .spawn_scoped(scope, move || {
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                })
+                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            // The sender drops when the worker ends, closing the channel.
+            for p in rx {
+                progress(p);
+            }
+            worker.join().unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
+        })
     }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
