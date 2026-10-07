@@ -19,8 +19,6 @@ use std::{
 mod ui;
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
-/// Instructions between two budget checks of the VM hook.
-
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;

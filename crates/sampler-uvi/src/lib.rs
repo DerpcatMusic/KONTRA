@@ -1151,7 +1151,6 @@ pub fn load_program_streamed(
 #[doc(hidden)]
 #[cfg(feature = "library-access")]
 pub fn check_stream(bank: &Bank, program_path: &str, path: &str) -> Result<usize, String> {
-    use sampler_kontakt::AssetSource;
     let full = audio::decode(&bank.resource(program_path, path).map_err(|e| e.to_string())?)?.0.frames;
     let mut reader = bank.stream_source(program_path, path)?.open().map_err(|e| e.to_string())?;
     if reader.frames() != full.len() {
@@ -1493,7 +1492,6 @@ mod survey {
                     continue;
                 }
                 let Ok((text, _)) = bank.program(&program) else { continue };
-                let name = format!("{}::{program}", f.display());
                 let Ok(doc) = crate::parse_program_xml(&text) else { continue };
                 let lib = f.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().replace(' ', "_")).unwrap_or_default();
                 let lib = lib.split("_-_").last().unwrap_or("").to_owned();
@@ -1648,15 +1646,15 @@ mod survey {
                     let mut rest = src.as_str();
                     while let Some(at) = rest.find("require") {
                         rest = &rest[at + 7..];
-                        let t = rest.trim_start_matches(|c: char| c == ' ' || c == '(');
-                        if let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'') {
-                            if let Some(end) = t[1..].find(q) {
-                                let m = &t[1..1 + end];
-                                if seen_modules.insert(m.to_owned()) {
-                                    if let Some(source) = lua.script(m) {
-                                        sources.push(source);
-                                    }
-                                }
+                        let t = rest.trim_start_matches([' ', '(']);
+                        if let Some(q) = t.chars().next().filter(|c| *c == '"' || *c == '\'')
+                            && let Some(end) = t[1..].find(q)
+                        {
+                            let m = &t[1..1 + end];
+                            if seen_modules.insert(m.to_owned())
+                                && let Some(source) = lua.script(m)
+                            {
+                                sources.push(source);
                             }
                         }
                     }
@@ -1836,7 +1834,6 @@ mod survey {
 
     #[cfg(feature = "library-access")]
     fn census_one(bank: &crate::Bank, program: &str) -> String {
-        use sampler_core::Limits;
         let Ok((text, _)) = bank.program(program) else { return "open-fail -".into() };
         let Ok((ir, _)) = crate::translate_bank(&text) else { return "translate-fail -".into() };
         if ir.zones.is_empty() {
