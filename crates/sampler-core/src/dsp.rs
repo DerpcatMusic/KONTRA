@@ -166,6 +166,7 @@ pub(super) mod svf;
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
+pub use convolution::ConvolutionUpload;
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
 pub(super) use reverb::Reverb;

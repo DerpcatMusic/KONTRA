@@ -161,6 +161,19 @@ fn svf(
     filters: &FilterBank,
     refs: [CacheRef; VOICES],
 ) {
+    if let Some(high) = filters.cache(refs[0]).one_pole_high() {
+        let caches = refs.map(|r| filters.cache(r));
+        let b = |i: usize, k: usize| {
+            let c = caches[k / 2];
+            c.coefficients[if c.uniform { 0 } else { i }].a3
+        };
+        if uniform {
+            one_pole::<false>(s, block, batch, high, b);
+        } else {
+            one_pole::<true>(s, block, batch, high, b);
+        }
+        return;
+    }
     let [m0, mk, m2] = filters.cache(refs[0]).mix();
     let splat = |c: super::svf::Coefficients| {
         [
@@ -195,6 +208,28 @@ fn svf(
             lanes
         });
     }
+}
+
+/// `y += (x - y) b` in `s[0]`, bit-identical to the scalar stage.
+#[inline(always)]
+fn one_pole<const MASK: bool>(
+    s: &mut [Lanes; 2],
+    block: &mut LaneBlock,
+    batch: &Batch,
+    high: bool,
+    b: impl Fn(usize, usize) -> f64,
+) {
+    let mut y = s[0];
+    for (i, x) in block[..batch.len].iter_mut().enumerate() {
+        for k in 0..LANES {
+            let next = y[k] + (x[k] - y[k]) * b(i, k);
+            if !MASK || i < batch.ends[k] {
+                y[k] = next;
+            }
+            x[k] = if high { x[k] - next } else { next };
+        }
+    }
+    s[0] = y;
 }
 
 #[inline(always)]
