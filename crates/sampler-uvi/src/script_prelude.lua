@@ -36,6 +36,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
+    if native.assigned(name) then return nil end
     report("global " .. name, "")
     local s = stub(name)
     rawset(_G, name, s)
@@ -192,10 +193,14 @@ function element.getParameter(self, name)
   end
   return v
 end
+__touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
   local overlay = rawget(self, "__set")
-  if not overlay then overlay = {}; rawset(self, "__set", overlay) end
+  if not overlay then
+    overlay = {}; rawset(self, "__set", overlay)
+    __touched[#__touched + 1] = self
+  end
   overlay[name] = value
   if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
