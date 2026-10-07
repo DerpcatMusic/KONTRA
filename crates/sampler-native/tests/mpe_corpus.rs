@@ -1,7 +1,8 @@
 //! Which installed instruments answer per-note MPE bend and pressure.
 //! Slow and read-only: `KONTRA_KONTAKT_LIBRARIES=... cargo test -p sampler-native
 //! --test mpe_corpus -- --ignored --nocapture`, then read the MPE lines.
-//! `KONTRA_MPE_LIMIT` caps instruments per library (default 1).
+//! `KONTRA_MPE_LIMIT` caps instruments per library (default 1);
+//! `KONTRA_MPE_SCRIPTS=0` loads without scripts.
 use sampler_core::{Limits, Runtime};
 use sampler_ir as ir;
 
@@ -79,6 +80,8 @@ fn decode(path: &std::path::Path) -> Option<(Decoded, u8)> {
             labels: kept.iter().map(|a| a.to_string()).collect(),
             options: sampler_kontakt::Options {
                 library: Some(path.to_owned()),
+                // KONTRA_MPE_SCRIPTS=0 plays the zones alone, to tell a script from the zones.
+                scripts: std::env::var_os("KONTRA_MPE_SCRIPTS").is_none_or(|v| v != "0"),
                 ..reference::options(key..=key)
             },
         },
@@ -105,6 +108,10 @@ fn mpe_response_across_the_corpus() {
         for library in libraries {
             let mut instruments = Vec::new();
             collect(&library.path().join("Instruments"), &mut instruments);
+            if instruments.is_empty() {
+                // A library with its instruments beside its resources.
+                collect(&library.path(), &mut instruments);
+            }
             instruments.sort();
             for path in instruments.iter().take(limit) {
                 let Some((d, key)) = decode(path) else {
