@@ -20,11 +20,14 @@
 //! without reloading.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use sampler_core::{
-    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, Playback, Prepared, Protocol,
-    Region, Runtime, Stealing, StreamCache,
+    BusMix, ChannelAddress, ControlContext, ControlDefinition, ControlDomain, ControlValue, ControlWrite, Envelope, Expression, Frame, Input, Limits, NoteId, PAGE_FRAMES, Pcm, PlanControl, Playback, Prepared, Protocol,
+    Region, Runtime, Stealing, StreamCache, Threads,
 };
 use sampler_ir as ir;
 use sampler_midi::{ApplyError, Articulator, Intercept, Mpe, Packets, Zone};
@@ -34,7 +37,7 @@ use super::mix::{Mix, PartControls, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadFailure, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
 };
 
@@ -81,6 +84,46 @@ pub struct Part {
     horizon: Option<u32>,
     /// Kept alive while the part plays; dropped with it, off the audio thread.
     _stream: Option<Arc<Stream>>,
+    /// Grows the voice pool off the audio thread; stopped when the part drops.
+    grower: Option<Grower>,
+    /// The program's Lua scripts: they choose which of its oscillators play.
+    script: Option<Box<ScriptDriver>>,
+}
+
+/// A thread that sleeps until the audio side reports a nearly full voice pool
+/// (or a growth coming back), then doubles the pool up to `ceiling`.
+struct Grower {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Grower {
+    fn start(runtime: &mut Runtime, mut control: PlanControl, ceiling: usize) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
+            let stop = stop.clone();
+            move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if control.voice_pressure() && control.voice_capacity() < ceiling {
+                        let _ = control.grow_voices((control.voice_capacity() * 2).min(ceiling));
+                    }
+                    std::thread::park();
+                }
+            }
+        })?;
+        runtime.set_growth_waker(thread.thread().clone());
+        Ok(Self { stop, thread: Some(thread) })
+    }
+}
+
+impl Drop for Grower {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Part {
@@ -109,6 +152,8 @@ impl Part {
             bend_range: 0,
             horizon: None,
             _stream: None,
+            grower: None,
+            script: None,
         })
     }
 
@@ -323,6 +368,22 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
                 return;
             }
             let input = host_input(note, part.mpe_zone);
+            if let Some(script) = part.script.as_mut() {
+                // The scripts play the part's notes: the physical one is silent.
+                let velocity = velocity.clamp(0.0, 1.0);
+                match part.runtime.note_on(input, note.key, velocity) {
+                    Ok(id) => {
+                        held.push(Held { part: index, note, input, id });
+                        match script.note_on(&mut part.runtime, id, note.key, velocity) {
+                            Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                            _ => {}
+                        }
+                    }
+                    Err(sampler_core::Error::Capacity) => part.problems.capacity_drops += 1,
+                    Err(_) => {}
+                }
+                return;
+            }
             let id = match part.mpe.trigger(&mut part.runtime, input.channel, input, velocity.clamp(0.0, 1.0)) {
                 Ok(id) => id,
                 Err(ApplyError::Core(sampler_core::Error::Capacity)) => {
@@ -338,6 +399,9 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
         }
         Event::NoteOff(pattern) | Event::Choke(pattern) => {
             for h in held.iter().filter(|h| h.part == index && pattern.matches(h.note)) {
+                if let Some(script) = part.script.as_mut() {
+                    let _ = script.note_off(&mut part.runtime, h.note.key);
+                }
                 let _ = part.runtime.note_off(h.input, None);
             }
         }
@@ -470,6 +534,9 @@ impl Core for V2Core {
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
+            }
+            if let Some(script) = part.script.as_mut() {
+                let _ = script.wake(&mut part.runtime);
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
@@ -687,9 +754,40 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Capacities of a part, sized for its plan's script state.
-fn limits(plan: &Prepared) -> Limits {
-    Limits::for_plan(plan, NOTES, 512)
+/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
+/// One (the audio thread alone) unless set.
+fn render_threads() -> Threads {
+    match std::env::var("KONTRA_THREADS").as_deref() {
+        Ok("auto") => Threads::Auto,
+        Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
+        Err(_) => Threads::Fixed(1),
+    }
+}
+
+/// Memory a part preallocates for per-voice state. Voices start sized to this,
+/// not to a fixed polyphony, and the pool doubles off the audio thread (see
+/// `Grower`) past three quarters full, up to `GROWTH` times as many. A note is
+/// refused only when that is exhausted too, and it is counted
+/// (`RuntimeStats::voice_drops`).
+const VOICE_BUDGET: usize = 256 << 20;
+const MIN_VOICES: usize = 512;
+const MAX_VOICES: usize = 16384;
+const GROWTH: usize = 4;
+
+/// Capacities of a part, sized for its plan's script state and voice cost, and
+/// the voice count the pool may grow to. Notes, families and decisions are
+/// sized for that ceiling so growing voices is not capped by them.
+fn limits(plan: &Prepared) -> (Limits, usize) {
+    let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
+    let ceiling = voices * GROWTH;
+    // Notes outlive their voices only in release, and each holds a few voices.
+    let notes = (ceiling / 4).max(NOTES);
+    let limits = Limits {
+        families: (ceiling / 2).max(256),
+        decisions: (ceiling / 2).max(256),
+        ..Limits::for_plan(plan, notes, voices)
+    };
+    (limits, ceiling)
 }
 
 fn is_wav(path: &Path) -> bool {
@@ -700,8 +798,13 @@ fn is_kontakt(path: &Path) -> bool {
     path.extension().is_some_and(|e| ["nki", "nkm", "nkb", "nksn"].iter().any(|k| e.eq_ignore_ascii_case(k)))
 }
 
+fn is_uvi(path: &Path) -> bool {
+    path.ancestors().any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
+        || path.extension().is_some_and(|e| e.eq_ignore_ascii_case("uvip"))
+}
+
 fn unsupported(path: &Path) -> CoreError {
-    if is_kontakt(path) || is_wav(path) {
+    if is_kontakt(path) || is_uvi(path) || is_wav(path) {
         CoreError::Invalid("unreadable instrument".into())
     } else {
         CoreError::Unsupported("translating this instrument format to sampler-core")
@@ -745,25 +848,54 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             sends: bus.sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect(),
         });
     }
+    // Microphone positions: a source bus the groups already play through, else
+    // a bus made for the position; groups play through their mic.
+    let mut mic_of = vec![None; instrument.groups.len()];
+    for (name, groups) in super::mics::infer(instrument) {
+        let existing = match instrument.groups[groups[0]].output {
+            ir::Output::Bus(b) if instrument.buses[b.0].name == name => Some(b.0 + 1),
+            _ => None,
+        };
+        let at = existing.unwrap_or_else(|| {
+            let output = instrument.groups[groups[0]].output;
+            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
+            tree.nodes.push(MixNode { name, kind: NodeKind::Mic, parent: Some(node(output)), inserts: Vec::new(), sends: Vec::new() });
+            instrument.buses.len()
+        });
+        tree.nodes[at].kind = NodeKind::Mic;
+        for g in groups {
+            mic_of[g] = Some(at);
+        }
+    }
     for index in 0..instrument.groups.len() {
         let group = &instrument.groups[index];
         let name = if group.name.is_empty() { format!("Group {}", index + 1) } else { group.name.clone() };
+        let output = match mic_of[index] {
+            Some(at) => ir::Output::Bus(ir::BusRef(at - 1)),
+            None => group.output,
+        };
         tree.nodes.push(MixNode {
             name: name.clone(),
             kind: NodeKind::Group,
-            parent: Some(node(group.output)),
+            parent: Some(node(output)),
             inserts: insert_names(instrument, group.chain),
             sends: Vec::new(),
         });
         let bus = ir::BusRef(instrument.buses.len());
-        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output: group.output });
+        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
         instrument.groups[index].output = ir::Output::Bus(bus);
+        instrument.tap_group(index, bus);
+        let sends = instrument.buses[bus.0].sends.iter().map(|s| (node(s.to), s.gain.linear() as f32)).collect();
+        tree.nodes.last_mut().expect("pushed above").sends = sends;
     }
     tree
 }
 
 /// A plan and, when its samples stream, the runtime's page cache.
-type Plan = (Prepared, Option<StreamCache>);
+type Plan = (Prepared, Option<StreamCache>, Option<ScriptDriver>);
+
+/// A UVI program's Lua scripts, driving the part's runtime from their own thread.
+pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>;
 
 fn kontakt(
     request: &LoadRequest,
@@ -772,7 +904,7 @@ fn kontakt(
 ) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: sampler_kontakt::LoadError| match e {
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
-        e => CoreError::Load(e.to_string()),
+        e => CoreError::Load((&e).into()),
     };
     let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
     let mut source = if multi {
@@ -808,7 +940,7 @@ fn kontakt(
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
     Ok(Loaded {
-        part: (loaded.plan, Some(cache)),
+        part: (loaded.plan, Some(cache), None),
         tree,
         report,
         interfaces: loaded.interfaces,
@@ -819,8 +951,40 @@ fn kontakt(
     })
 }
 
+/// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
+/// decode up front (no streaming yet).
+fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
+    let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
+    let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
+    let rate = request.sample_rate as u32;
+    let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
+    let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
+    let tree = nest(&mut t.instrument);
+    let mut loaded = sampler_uvi::assemble_translated(t, rate).map_err(|e| load(&*e))?;
+    let driver = attached.map(|a| {
+        // Loading reports a script it has no frontend for; this one runs.
+        loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
+        loaded.interfaces.push(a.interface);
+        a.driver
+    });
+    report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
+    report.decoded.zones = loaded.instrument.zones.len();
+    report.decoded.keys = super::report::key_bits(&loaded.instrument);
+    report.decoded.samples = loaded.plan.sample_count();
+    Ok(Loaded {
+        part: (loaded.plan, None, driver),
+        tree,
+        report,
+        interfaces: loaded.interfaces,
+        controls: Vec::new(),
+        instrument: Some(Arc::new(loaded.instrument)),
+        scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
+        stream: None,
+    })
+}
+
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
-    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     if channels == 0 {
@@ -833,7 +997,7 @@ fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
             reader.samples::<i32>().map(|s| s.map(|s| s as f32 * scale)).collect::<Result<_, _>>()
         }
     }
-    .map_err(|e| CoreError::Load(e.to_string()))?;
+    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let frames = samples.chunks_exact(channels).map(|f| [f[0], f[channels.min(2) - 1]]).collect();
     Ok((spec.sample_rate, frames))
 }
@@ -868,7 +1032,7 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     report.decoded.samples = 1;
     report.decoded.keys = super::report::range_bits(0, 108);
     Ok(Loaded {
-        part: (plan, None),
+        part: (plan, None, None),
         tree: MixTree::instrument(&name),
         report,
         interfaces: Vec::new(),
@@ -889,8 +1053,10 @@ impl CoreLoader for V2Loader {
         canceled: &(dyn Fn() -> bool + Sync),
     ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
-        let Loaded { part: (prepared, cache), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
+        let Loaded { part: (prepared, cache, script), tree, mut report, interfaces, instrument, scripts, stream, .. } = if is_kontakt(&request.path) {
             kontakt(request, progress, canceled)?
+        } else if is_uvi(&request.path) {
+            uvi(request)?
         } else if is_wav(&request.path) {
             wav(request)?
         } else {
@@ -904,10 +1070,11 @@ impl CoreLoader for V2Loader {
             .iter()
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
-        let limits = limits(&prepared);
+        let (limits, ceiling) = limits(&prepared);
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
-        let mut runtime = Runtime::new(prepared, limits).map_err(core)?;
+        let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
+        let mut runtime = runtime.with_threads(render_threads());
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
@@ -921,7 +1088,11 @@ impl CoreLoader for V2Loader {
                 runtime.bus_count()
             )));
         }
+        let grower = Grower::start(&mut runtime, control, ceiling)
+            .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.grower = Some(grower);
+        part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
@@ -939,7 +1110,7 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(e.to_string()))?.instrument;
+            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -950,7 +1121,7 @@ impl CoreLoader for V2Loader {
         if !is_wav(path) {
             return Err(unsupported(path));
         }
-        hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+        hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
         Ok(Description { name: stem(path), zones: 1, scripts: 0, missing: Vec::new() })
     }
 }
@@ -1143,7 +1314,7 @@ mod tests {
         };
         let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
         let plan = sampler_kontakt::prepare(instrument.clone(), pcm, &Default::default()).unwrap().plan;
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
         part.set_drivers(&instrument);
@@ -1196,7 +1367,7 @@ mod tests {
     #[test]
     fn groups_become_nodes_that_mix_and_route_to_their_own_pairs() {
         let mut instrument = ir::Instrument { name: "kit".into(), ..Default::default() };
-        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master });
+        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master, gain: ir::Gain::UNITY });
         instrument.groups.push(ir::Group { name: "kick".into(), output: ir::Output::Bus(ir::BusRef(0)), ..Default::default() });
         instrument.groups.push(ir::Group::default());
         let tree = nest(&mut instrument);
@@ -1222,7 +1393,7 @@ mod tests {
         let plan = plan.with_buses(vec![bus], vec![Some(0)]).unwrap();
         let mut tree = MixTree::instrument("one");
         tree.nodes.push(MixNode { name: "g".into(), kind: NodeKind::Group, parent: Some(0), inserts: vec![], sends: vec![] });
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Box::new(Part::new(Runtime::new(plan, limits).unwrap(), tree).unwrap());
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(part));
@@ -1256,7 +1427,7 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
@@ -1286,7 +1457,7 @@ mod tests {
             envelope: Envelope::default(), playback: Playback::default(),
         };
         let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
-        let limits = limits(&plan);
+        let limits = limits(&plan).0;
         let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, Some(Box::new(part)));
@@ -1317,7 +1488,7 @@ mod tests {
         let one = sampler_ksp::bind_modules(vec![script(0)], Prepared::new(48000, vec![pcm()], vec![region.clone()], 1).unwrap()).unwrap();
         let four = sampler_ksp::bind_modules((0..4).map(script).collect(), Prepared::new(48000, vec![pcm()], vec![region], 1).unwrap()).unwrap();
         assert_eq!((Limits::script_capacity(&one), Limits::script_capacity(&four)), (4 * Limits::SCRIPT_KEYS + 1, 16 * Limits::SCRIPT_KEYS + 4));
-        let limits = limits(&four);
+        let limits = limits(&four).0;
         assert!(Runtime::new(four, limits).is_ok());
     }
 
@@ -1407,6 +1578,185 @@ mod tests {
         assert_ne!(names[0], names[1]);
     }
 
+    /// A UVI bank program loads through the host and its layers are mixer nodes.
+    #[test]
+    fn real_uvi_layers_become_mixer_nodes() {
+        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
+        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let loaded = match V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                eprintln!("skipped: {e:?}");
+                return;
+            }
+        };
+        let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
+        assert!(groups > 0, "layers are nodes");
+    }
+
+    /// Peak of the last blocks after applying `mix` to a part with a held note.
+    fn settled(core: &mut V2Core, mix: &Mix) -> f32 {
+        core.set_mix(mix);
+        let mut peak = 0.0f32;
+        for block in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let r = core.render(128);
+            if block >= 390 {
+                peak = r.buses.iter().flat_map(|b| b[0][..128].iter().chain(&b[1][..128])).fold(peak, |p, x| p.max(x.abs()));
+            }
+        }
+        peak
+    }
+
+    /// Muting nodes silences the part and soloing one leaves only it. `kind`
+    /// picks the nodes the test drives; the instrument must play at `keys`.
+    fn mixer_nodes_pass_audio(path: std::path::PathBuf, kind: NodeKind) {
+        let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+        let nodes: Vec<usize> = (1..loaded.tree.nodes.len()).filter(|&n| loaded.tree.nodes[n].kind == kind).collect();
+        let count = loaded.tree.nodes.len() - 1;
+        // Try the middles of zones across the map until one key sounds.
+        let zones = &loaded.instrument.as_ref().unwrap().zones;
+        let mut keys: Vec<u8> = (0..8)
+            .filter_map(|n| zones.get(n * zones.len() / 8))
+            .map(|z| ((u16::from(z.keys.low) + u16::from(z.keys.high)) / 2) as u8)
+            .collect();
+        keys.dedup();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        let mut heard = false;
+        for (id, &key) in keys.iter().enumerate() {
+            core.event(0, on(HostNote { port: 0, channel: 0, key, id: id as i32 + 1, clap: true }));
+            heard = (0..150).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let r = core.render(128);
+                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
+            });
+            if heard {
+                break;
+            }
+        }
+        assert!(heard, "silent before any node is touched: keys {keys:?}, {:?}, samples {} zones {} missing {:?}", core.problems(0), loaded.report.decoded.samples, loaded.report.decoded.zones, loaded.report.missing.iter().take(6).collect::<Vec<_>>());
+        assert!(nodes.len() >= 2, "{kind:?} nodes: {}", nodes.len());
+        let mut mix = Mix::default();
+        mix.nodes[0] = vec![NodeMix::default(); count];
+        let open = settled(&mut core, &mix);
+        assert!(open > 1e-6, "audible with every node open");
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = true;
+        }
+        let muted = settled(&mut core, &mix);
+        let loose: Vec<_> = (1..loaded.tree.nodes.len()).filter(|&n| loaded.tree.nodes[n].kind == NodeKind::Group && loaded.tree.nodes[n].parent.is_some_and(|p| !nodes.contains(&p) && kind == NodeKind::Mic)).map(|n| loaded.tree.nodes[n].name.clone()).collect();
+        // An effect's tail may ring on after its input is muted.
+        assert!(muted < open * 0.05 + 1e-7, "muting every {kind:?} node leaves {muted} of {open}; groups outside: {loose:?}");
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = false;
+        }
+        // Soloing a node mutes the rest, so some solo is audible and the
+        // soloed set is quieter than or equal to everything.
+        let all = settled(&mut core, &mix);
+        let mut heard_solo = false;
+        for &n in &nodes {
+            mix.nodes[0][n - 1].solo = true;
+            let solo = settled(&mut core, &mix);
+            mix.nodes[0][n - 1].solo = false;
+            assert!(solo <= all * 1.01 + 1e-7, "solo {} louder than all: {solo} > {all}", loaded.tree.nodes[n].name);
+            heard_solo |= solo > 1e-6;
+        }
+        assert!(heard_solo, "no {kind:?} node is audible alone");
+        // A node with nothing soloed elsewhere: soloing one while every other
+        // is muted keeps exactly that one.
+        for &n in &nodes {
+            mix.nodes[0][n - 1].mute = true;
+        }
+        mix.nodes[0][nodes[0] - 1].mute = false;
+        mix.nodes[0][nodes[0] - 1].solo = true;
+        let one = settled(&mut core, &mix);
+        mix.nodes[0][nodes[0] - 1].solo = false;
+        mix.nodes[0][nodes[0] - 1].mute = true;
+        let none = settled(&mut core, &mix);
+        assert!(none < open * 0.05 + 1e-7 && one >= none, "one {one}, none {none}");
+    }
+
+    #[test]
+    fn real_kontakt_mic_nodes_pass_audio() {
+        let relative = "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccato.nki";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        mixer_nodes_pass_audio(path, NodeKind::Mic);
+    }
+
+    #[test]
+    fn real_uvi_layer_nodes_pass_audio() {
+        let relative = "UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs";
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let roots = std::env::split_paths(&roots).map(|r| r.parent().unwrap_or(&r).to_path_buf());
+        let Some(path) = roots.map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        mixer_nodes_pass_audio(path, NodeKind::Group);
+    }
+
+    #[test]
+    fn real_uvi_lua_program_sounds_through_the_trait() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.to_string_lossy().contains(".ufs") && p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| (), &|| false).unwrap();
+        assert!(
+            !loaded.report.missing.iter().any(|m| m.value.contains("no frontend")),
+            "the Lua script runs: {:?}",
+            loaded.report.missing
+        );
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
+        // The script runs on its own thread: its note arrives within a few blocks.
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard, "the scripted program is silent");
+    }
+
+    /// Idle cost of a loaded part: blocks with no note playing. Prints the
+    /// share of one core; `KONTRA_KONTAKT_LIBRARIES=… cargo test idle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn idle_cost_of_a_loaded_instrument() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        for relative in [
+            "Una Corda Library/Instruments/Una Corda Pure.nki",
+            "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+            "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+        ] {
+            let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else { continue };
+            let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+            let mut core = V2Core::with_parts(1, 48000.0);
+            core.install(0, loaded.part);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let blocks = 48000 / 128 * 20;
+            let start = std::time::Instant::now();
+            for _ in 0..blocks {
+                core.render(128);
+            }
+            let spent = start.elapsed().as_secs_f64();
+            println!("IDLE {relative}: {:.4}% of a core ({:.1} us per 128-frame block)", spent / 20.0 * 100.0, spent / blocks as f64 * 1e6);
+        }
+    }
+
     #[test]
     fn real_kontakt_instrument_plays_through_the_trait() {
         let relative = "Una Corda Library/Instruments/Una Corda Pure.nki";
@@ -1444,5 +1794,48 @@ mod tests {
             (0..4).any(|_| loud(&core.render(128), 0, 128))
         });
         assert!(again, "the purged sample reloads");
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+
+    fn instrument(fader: f64) -> ir::Instrument {
+        let mut i = ir::Instrument::default();
+        i.buses.push(ir::Bus { name: "aux".into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY });
+        let send = |gain, pre_fader| ir::GroupSend { to: ir::BusRef(0), gain: ir::Gain::Linear(gain), pre_fader };
+        i.groups.push(ir::Group { gain: ir::Gain::Linear(fader), sends: vec![send(0.5, true), send(0.5, false)], ..Default::default() });
+        i
+    }
+
+    fn tapped(fader: f64) -> (ir::Gain, Vec<f64>) {
+        let mut i = instrument(fader);
+        let tree = nest(&mut i);
+        let bus = &i.buses[1];
+        assert_eq!(i.groups[0].gain, ir::Gain::UNITY, "voices feed the tap unscaled");
+        assert_eq!(tree.nodes[2].sends.len(), 2);
+        (bus.gain, bus.sends.iter().map(|s| s.gain.linear()).collect())
+    }
+
+    #[test]
+    fn a_closed_fader_silences_the_output_but_not_the_pre_fader_send() {
+        let (out, sends) = tapped(0.0);
+        assert_eq!((out.linear(), sends), (0.0, vec![0.5, 0.0]));
+    }
+
+    #[test]
+    fn pre_and_post_sends_tap_either_side_of_a_minus_12_db_fader() {
+        let fader = 10f64.powf(-12.0 / 20.0);
+        let (out, sends) = tapped(fader);
+        assert_eq!(out.linear(), fader);
+        assert_eq!(sends, vec![0.5, 0.5 * fader]);
+    }
+
+    #[test]
+    fn lowering_hears_the_same_taps_without_a_host_mixer() {
+        let routed = instrument(0.25).with_group_taps();
+        assert_eq!(routed.buses[1].gain.linear(), 0.25);
+        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(1)));
     }
 }

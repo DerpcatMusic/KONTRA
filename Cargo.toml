@@ -13,7 +13,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [features]
 default = ["plugin", "clap", "vst3", "library-access"]
 # Opens encrypted library content with the library's own .nicnt access data.
-library-access = ["sampler-kontakt/library-access"]
+library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
 plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
@@ -26,6 +26,7 @@ sampler-core = { path = "crates/sampler-core" }
 sampler-ir = { path = "crates/sampler-ir" }
 sampler-kontakt = { path = "crates/sampler-kontakt", default-features = false }
 sampler-midi = { path = "crates/sampler-midi" }
+sampler-uvi = { path = "crates/sampler-uvi", default-features = false }
 sampler-ksp = { path = "crates/sampler-ksp" }
 sampler-ui-ir = { path = "crates/sampler-ui-ir" }
 rustc-hash = "=2.1.3"
@@ -145,7 +146,7 @@ vello = { path = "vendor/vello" }
 symphonia-format-riff = { path = "vendor/symphonia-format-riff" }
 
 [workspace]
-members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-uvi", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
+members = [".", "crates/sampler-core", "crates/sampler-native", "crates/sampler-midi", "crates/sampler-ksp", "crates/sampler-kontakt", "crates/sampler-ui-ir", "crates/sampler-ir", "crates/sampler-simd", "crates/sampler-pool", "crates/sampler-uvi", "tools/corpus-health", "vendor/moose-mui", "vendor/moose-params", "vendor/moose-derive", "vendor/moose-clap", "vendor/moose-vst3", "vendor/mui-baseview"]
 exclude = ["vendor/ni-file", "vendor/ncw", "vendor/vello", "vendor/moose-baseview", "vendor/xim-rs", "vendor/symphonia-format-riff", "vendor/derpcat-flight-recorder", "vendor/buffr-durable-file"]
 resolver = "3"
 

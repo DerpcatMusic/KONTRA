@@ -206,14 +206,15 @@ impl Polyphase {
             let mut padded = [[0.0; 2]; MAX_WIDTH];
             let taps = 2 * self.radius + 1;
             padded[..taps].copy_from_slice(&window[..taps]);
-            return self.dot(fraction, &padded[..self.width()]);
+            return self.dot::<false>(fraction, &padded[..self.width()]);
         }
-        self.dot(fraction, window)
+        self.dot::<false>(fraction, window)
     }
 
-    /// [`Self::sample`] for a window of at least `width()` frames.
+    /// [`Self::sample`] for a window of at least `width()` frames; `FUSED`
+    /// uses fused multiply-adds, which only a wide-target caller may.
     #[inline(always)]
-    pub(super) fn dot(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
+    pub(super) fn dot<const FUSED: bool>(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
         let position = fraction * PHASES as f64;
         // `position` is in [0, PHASES]: the u32 conversion is exact and
         // cheaper than a saturating usize one.
@@ -231,7 +232,7 @@ impl Polyphase {
             window.as_chunks::<CHUNK>().0,
         );
         for ((a, b), x) in a.iter().zip(b).zip(x) {
-            accumulate(&mut sum, t, a, b, x);
+            accumulate::<FUSED>(&mut sum, t, a, b, x);
         }
         // Fold in register order (lanes k and k + 4), then the stereo pairs.
         // The lanes leave through memory: otherwise SLP vectorization permutes
@@ -243,7 +244,7 @@ impl Polyphase {
 }
 
 #[inline(always)]
-fn accumulate(
+fn accumulate<const FUSED: bool>(
     sum: &mut [[f32; 4]; 2],
     t: f32,
     a: &[f32; CHUNK],
@@ -253,7 +254,12 @@ fn accumulate(
     for (half, sum) in sum.iter_mut().enumerate() {
         let (a, b, x) = (&a[4 * half..], &b[4 * half..], &x[4 * half..]);
         for k in 0..4 {
-            sum[k] += (a[k] + t * (b[k] - a[k])) * x[k];
+            if FUSED {
+                // One rounding per fused step, on the wide path only.
+                sum[k] = t.mul_add(b[k] - a[k], a[k]).mul_add(x[k], sum[k]);
+            } else {
+                sum[k] += (a[k] + t * (b[k] - a[k])) * x[k];
+            }
         }
     }
 }

@@ -126,6 +126,8 @@ pub struct StreamCache {
     /// Decoder threads to unpark after a service pushed requests.
     wake: Vec<std::thread::Thread>,
     pushed: bool,
+    /// Set by a start that found an asset cold; wakes the reloader.
+    cold: std::sync::atomic::AtomicBool,
     /// Where the eviction sweep resumes.
     hand: usize,
 }
@@ -185,6 +187,7 @@ impl StreamCache {
                 store,
                 wake: Vec::new(),
                 pushed: false,
+                cold: std::sync::atomic::AtomicBool::new(false),
                 hand: 0,
             },
             StreamWorker {
@@ -206,7 +209,7 @@ impl StreamCache {
     }
     /// Unpark the decoder threads if requests were queued since the last call.
     fn wake(&mut self) {
-        if std::mem::take(&mut self.pushed) {
+        if std::mem::take(&mut self.pushed) | self.cold.swap(false, std::sync::atomic::Ordering::Relaxed) {
             for thread in &self.wake {
                 thread.unpark();
             }
@@ -415,11 +418,36 @@ impl StreamCache {
             }
         }
     }
+    /// The read-only view rendering uses; shareable across render threads.
+    pub fn reader(&self) -> PageReader<'_> {
+        PageReader { entries: &self.entries, index: &self.index }
+    }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
-        self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
+        self.reader().frame(asset, frame)
     }
     /// Borrow only an entirely resident, contiguous range within one page.
     pub fn span(&self, asset: AssetId, frames: Range<usize>) -> Option<&[Frame]> {
+        self.reader().span(asset, frames)
+    }
+}
+
+/// Resident pages, read-only.
+#[derive(Clone, Copy)]
+pub struct PageReader<'a> {
+    entries: &'a [Option<Entry>],
+    index: &'a [(PageKey, usize)],
+}
+impl<'a> PageReader<'a> {
+    fn find(&self, key: PageKey) -> Option<usize> {
+        self.index
+            .binary_search_by_key(&key, |(key, _)| *key)
+            .ok()
+            .map(|i| self.index[i].1)
+    }
+    pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
+        self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
+    }
+    pub fn span(&self, asset: AssetId, frames: Range<usize>) -> Option<&'a [Frame]> {
         if frames.start > frames.end {
             return None;
         }
@@ -442,6 +470,7 @@ impl StreamCache {
         }
     }
 }
+
 impl StreamWorker {
     /// Recycle returned buffers, coalesce superseded slot requests, then choose
     /// the earliest deadline. All worker storage is bounded by cache capacity.
@@ -694,6 +723,7 @@ impl crate::Runtime {
             return Ok(false);
         }
         asset.mark_cold();
+        cache.cold.store(true, std::sync::atomic::Ordering::Relaxed);
         if self.cold_starts {
             Ok(true)
         } else {

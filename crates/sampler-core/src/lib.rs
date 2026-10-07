@@ -6,7 +6,10 @@
 //! supports resident stereo PCM with bounded rate conversion, native linear envelopes
 //! and sample-time commands; vendor fidelity requires separate conformance evidence.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 /// Internal, non-owning links are unlinked before a slot can be reused. Public
 /// identities remain generational handles. The niche keeps each optional link
@@ -92,6 +95,9 @@ mod plans;
 mod prepare;
 pub use packed::Packed;
 mod release;
+mod grow;
+mod parallel;
+pub use parallel::Threads;
 mod render;
 pub use release::{
     GateRelease, KeyRelease, ReleaseCause, ReleaseContext, ReleaseOptions, ReleaseReserve,
@@ -112,7 +118,8 @@ mod ops;
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
-    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, real, real_bits,
+    RealUnary, STORE_KEY, ScriptResources, TEXT_CAPACITY, Text, TextPart, TextRef, name_index,
+    real, real_bits,
 };
 pub use script::{ScriptArray, ScriptInstanceId};
 mod schedule;
@@ -140,6 +147,47 @@ pub struct NoteId(Handle);
 /// Process-local ownership domain. Remains stable across moves and plan changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeId(u64);
+
+/// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
+pub const USER_EVENT_PAR: u16 = 1001;
+
+/// Why a region mapped to a key did not sound for one selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    /// Belongs to another phase: a release-trigger region on an attack, or the reverse.
+    Trigger,
+    /// Needs a different articulation (keyswitch).
+    Articulation,
+    /// A controller condition (CC range) failed.
+    Condition,
+    /// Velocity outside the region's range.
+    Velocity,
+    /// The script disallowed the region's group.
+    Group,
+    /// Another round-robin take of the sequence was chosen.
+    Take,
+}
+
+/// One mapped region's outcome in a selection; `rejected` is `None` if it sounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RegionVerdict {
+    pub region: usize,
+    pub group: Option<u32>,
+    pub rejected: Option<Rejection>,
+}
+
+/// One selection's diagnostic: every region mapped to the key with its verdict.
+/// A key with no candidates has an empty list (nothing is mapped there); a
+/// script-suppressed attack has `suppressed` set and no candidates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectionRecord {
+    pub at: u64,
+    pub key: u8,
+    pub velocity: f64,
+    pub trigger: Trigger,
+    pub suppressed: bool,
+    pub candidates: Vec<RegionVerdict>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceId(Handle);
@@ -344,8 +392,6 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
-    /// Script-layer gains at the end of the last rendered chunk.
-    script_gains: Option<[f32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -386,6 +432,36 @@ impl<T> Arena<T> {
             .take(capacity)
             .collect(),
         }
+    }
+
+    /// Empty slots and an all-free bitmap for `capacity` entries.
+    fn blank(capacity: usize) -> (Box<[Slot<T>]>, Box<[u64]>) {
+        let mut free = vec![u64::MAX; capacity.div_ceil(64)].into_boxed_slice();
+        if !capacity.is_multiple_of(64) {
+            *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
+        }
+        let slots = std::iter::repeat_with(|| Slot { generation: 0, value: None })
+            .take(capacity)
+            .collect();
+        (slots, free)
+    }
+
+    /// Swap in larger storage from `blank`, moving every slot over at its
+    /// index so handles stay valid. The old storage ends up in the
+    /// arguments, to be freed off the audio thread. No allocation.
+    fn grow(&mut self, slots: &mut Box<[Slot<T>]>, free: &mut Box<[u64]>) {
+        let old = self.slots.len();
+        assert!(slots.len() > old);
+        slots[..old].swap_with_slice(&mut self.slots);
+        let words = old.div_ceil(64);
+        let kept = if old % 64 == 0 { u64::MAX } else { (1u64 << (old % 64)) - 1 };
+        for (w, &bits) in self.free.iter().enumerate() {
+            let mask = if w + 1 == words { kept } else { u64::MAX };
+            free[w] = (bits & mask) | (free[w] & !mask);
+        }
+        self.available += slots.len() - old;
+        std::mem::swap(&mut self.slots, slots);
+        std::mem::swap(&mut self.free, free);
     }
 
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
@@ -511,10 +587,20 @@ pub struct Runtime {
     /// Voices stolen since the runtime started.
     steals: u64,
     voice_order: u64,
+    /// Worker pool and scratch for multicore rendering; None renders on the audio thread.
+    parallel: Option<parallel::Parallel>,
+    /// Render lanes new plans size their filter caches for.
+    lanes: Arc<std::sync::atomic::AtomicUsize>,
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    /// Voice-pool growths adopted, and refused (see `grow`).
+    voice_growths: u64,
+    growth_failures: u64,
+    growth: Option<grow::GrowthQueues>,
+    /// Set on the audio side when the pool runs three quarters full.
+    voice_pressure: grow::Pressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
@@ -544,6 +630,11 @@ pub struct Runtime {
     /// Set once a script writes a voice parameter; voices then render in chunks.
     // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
     script_params: bool,
+    /// Keys whose latest physical event was a note-on: one note-off clears the
+    /// key however many presses stacked, as `%KEY_DOWN` does in Kontakt.
+    input_keys: u128,
+    /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
+    selection_log: Option<Vec<SelectionRecord>>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -575,6 +666,7 @@ impl Runtime {
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
+        let initial_controllers = plan.initial_controllers.clone();
         let note_stride = limits.note_cells / limits.notes;
         if plan.note_cells > note_stride {
             return Err(Error::Capacity);
@@ -623,7 +715,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
-            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions)?,
+            dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
             projections: note_event::NoteProjections::new(plan.stages.len(), limits.notes)?,
@@ -651,10 +743,16 @@ impl Runtime {
             stolen: 0,
             steals: 0,
             voice_order: 0,
+            parallel: None,
+            lanes: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            voice_growths: 0,
+            growth_failures: 0,
+            growth: None,
+            voice_pressure: Arc::default(),
             steal_releases: false,
             cold_starts: false,
             cold_started: 0,
@@ -687,15 +785,24 @@ impl Runtime {
             note_params: vec![script_params::NoteParams::default(); limits.notes]
                 .into_boxed_slice(),
             script_params: false,
+            input_keys: 0,
+            selection_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
             selections: vec![performance::NoteSelection::default(); limits.notes]
                 .into_boxed_slice(),
-            performance_state: performance::PerformanceState::new(
-                state_capacity,
-                limits.performances,
-            ),
+            performance_state: {
+                let mut state =
+                    performance::PerformanceState::new(state_capacity, limits.performances);
+                for &(controller, value) in &initial_controllers {
+                    state.states[0].controllers[usize::from(controller)] = value;
+                    for input in state.input_controllers.iter_mut() {
+                        input[usize::from(controller)] = value;
+                    }
+                }
+                state
+            },
         })
     }
 
@@ -946,6 +1053,9 @@ impl Runtime {
                 })?)
             }
         };
+        if let Some(input) = input {
+            self.input_keys |= 1 << (input.key & 127);
+        }
         let id = match self.notes.insert(Note {
             input,
             input_down: input.is_some(),
@@ -1081,6 +1191,7 @@ impl Runtime {
             .min_by_key(|(_, order)| *order)
             .map(|(i, _)| NoteId(self.notes.id(i)))
             .ok_or(Error::StaleHandle)?;
+        self.input_keys &= !(1 << (input.key & 127));
         self.key_up_now(id, velocity)?;
         Ok(id)
     }
@@ -1169,6 +1280,7 @@ impl Runtime {
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
         }
+        self.note_voice_pressure();
         if self.voices.available() == 0 {
             // ponytail: only silent voices waiting on the stream are taken; no
             // audible-voice stealing policy yet, so a full pool drops the start.
@@ -1208,7 +1320,6 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
-            script_gains: None,
         })?);
         self.cold_started += u64::from(cold);
         self.voice_order += 1;
