@@ -76,6 +76,9 @@ pub struct Part {
     /// The instrument's default articulation, when the runtime holds the
     /// articulation (it numbers that one 0).
     articulations: Option<usize>,
+    /// Behavior-owned switching: each articulation's first switch key. The
+    /// script holds the selection, so it is read from the key the driver tapped.
+    tap_keys: Option<Vec<Option<u8>>>,
     /// Notes keep their member channel ([`PartControls::mpe`]).
     mpe_zone: bool,
     /// The bend range last sent to the zone, 0 for its default.
@@ -173,6 +176,7 @@ impl Part {
             switching: 0,
             inherited: 0,
             articulations: None,
+            tap_keys: None,
             mpe_zone: false,
             bend_range: 0,
             horizon: None,
@@ -730,6 +734,11 @@ impl Core for V2Core {
     fn articulation(&self, part: usize) -> Option<usize> {
         let p = self.parts.get(part)?.as_ref()?;
         let default = p.articulations?;
+        if let Some(keys) = &p.tap_keys {
+            // A script holds the selection: the last switch key, tapped or pressed.
+            let tapped = p.articulator.as_ref().and_then(Articulator::selected);
+            return Some(tapped.and_then(|k| keys.iter().position(|&f| f == Some(k))).unwrap_or(default));
+        }
         let id = p.runtime.articulation(p.runtime.performance(0).ok()?).ok()? as usize;
         // Undo the runtime's numbering: the default is 0, those before it shift up.
         Some(match id {
@@ -1174,9 +1183,11 @@ impl CoreLoader for V2Loader {
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
-        part.articulations = instrument.as_deref().filter(|i| {
-            !i.articulations.is_empty() && i.switching.owner == ir::SwitchOwner::Native
-        }).map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
+        let articulated = instrument.as_deref().filter(|i| !i.articulations.is_empty());
+        part.articulations = articulated.map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
+        part.tap_keys = articulated
+            .filter(|i| i.switching.owner == ir::SwitchOwner::Behavior)
+            .map(|i| i.articulations.iter().map(|a| a.switch_keys.first().copied()).collect());
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
             part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
@@ -1375,6 +1386,15 @@ mod tests {
 
     #[test]
     fn a_velocity_driver_selects_and_reports_the_articulation() {
+        velocity_driver(ir::SwitchOwner::Native);
+    }
+
+    #[test]
+    fn a_velocity_driver_reports_what_it_tapped_into_a_script_owned_switch() {
+        velocity_driver(ir::SwitchOwner::Behavior);
+    }
+
+    fn velocity_driver(owner: ir::SwitchOwner) {
         // Key 60 in three articulations; keys 24..=26 switch; the second is the default.
         let zone = |asset, articulation| ir::Zone {
             keys: ir::KeyRange { low: 60, high: 60 },
@@ -1400,6 +1420,9 @@ mod tests {
         let limits = limits(&plan).0;
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
+        if owner == ir::SwitchOwner::Behavior {
+            part.tap_keys = Some(vec![Some(24), Some(25), Some(26)]);
+        }
         part.set_drivers(&instrument);
         let mut core = V2Core::with_parts(1, 48000.0);
         let mut mix = Mix::default();
@@ -1408,6 +1431,17 @@ mod tests {
         core.set_mix(&mix);
         core.install(0, Some(Box::new(part)));
         assert_eq!(core.articulation(0), Some(1), "the default plays first");
+        // A script-owned switch would tag no zones, so that plan is built native
+        // and only the readback is under test: it follows the last switch key.
+        if owner == ir::SwitchOwner::Behavior {
+            for key in [25u8, 24] {
+                let note = HostNote { port: 0, channel: 0, key, id: i32::from(key), clap: true };
+                core.event(0, Event::NoteOn { note, velocity: 0.5, tune: 0.0 });
+                core.render(64);
+                assert_eq!(core.articulation(0), Some(usize::from(key - 24)), "switch key {key}");
+            }
+            return;
+        }
         // Velocities split 1..=127 in three by lowest switch key.
         for (velocity, articulation) in [(10.0, 0), (120.0, 2), (64.0, 1)] {
             let note = HostNote { port: 0, channel: 0, key: 60, id: velocity as i32, clap: true };
@@ -1415,6 +1449,69 @@ mod tests {
             core.render(64);
             assert_eq!(core.articulation(0), Some(articulation), "velocity {velocity}");
         }
+    }
+
+    /// A real script-owned instrument (Afflatus Horns KS: its script reads the
+    /// switch keys and selects the groups): the readback follows a switch key
+    /// pressed directly and the key a velocity driver taps, and the selected
+    /// articulation sounds. Set `KONTRA_KONTAKT_LIBRARIES` to run.
+    #[test]
+    fn a_script_owned_switch_reads_back_direct_presses_and_driver_taps() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let relative = "Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki";
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let instrument = loaded.instrument.clone().expect("a Kontakt instrument");
+        assert_eq!(instrument.switching.owner, ir::SwitchOwner::Behavior, "script-owned");
+        let keys: Vec<u8> = instrument.articulations.iter().filter_map(|a| a.switch_keys.first().copied()).collect();
+        assert!(keys.len() >= 3, "{} switch keys", keys.len());
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        let sounds = |core: &mut V2Core| {
+            let note = HostNote { port: 0, channel: 0, key: 60, id: 60, clap: true };
+            core.event(0, on(note));
+            let heard = (0..300).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let r = core.render(128);
+                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
+            });
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            heard
+        };
+        // Direct presses: the keys driver (the instrument's own) selects.
+        for (index, article) in instrument.articulations.iter().enumerate() {
+            let Some(&key) = article.switch_keys.first() else { continue };
+            let note = HostNote { port: 0, channel: 0, key, id: 1000 + i32::from(key), clap: true };
+            core.event(0, on(note));
+            core.render(128);
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            core.render(128);
+            assert_eq!(core.articulation(0), Some(index), "pressed switch key {key}");
+            assert!(sounds(&mut core), "articulation {index} sounds after its key");
+        }
+        // A velocity driver taps the keys into the script: low to high velocity
+        // reaches different articulations, and each read back is one whose key
+        // exists and whose zones sound.
+        let mut mix = Mix::default();
+        mix.parts[0].switching = 0x80 | (ir::Driver::Velocity as u8) << 1;
+        core.set_mix(&mix);
+        let mut seen = std::collections::BTreeSet::new();
+        for velocity in [8.0, 30.0, 60.0, 90.0, 120.0] {
+            let note = HostNote { port: 0, channel: 0, key: 60, id: velocity as i32, clap: true };
+            core.event(0, Event::NoteOn { note, velocity: velocity / 127.0, tune: 0.0 });
+            for _ in 0..8 {
+                core.render(128);
+            }
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            let index = core.articulation(0).expect("a readback");
+            assert!(index < keys.len(), "velocity {velocity}: articulation {index}");
+            seen.insert(index);
+        }
+        assert!(seen.len() >= 2, "velocity reached articulations {seen:?}");
     }
 
     #[test]
