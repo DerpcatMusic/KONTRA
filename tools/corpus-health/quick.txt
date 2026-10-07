@@ -1,0 +1,91 @@
+# Quick-tier sample: regenerate with corpus-health quick-list RUN... (see docs/architecture-v2/CORPUS_HEALTH.md)
+/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/4 Horns/Stopped/4 Horns Stopped Rips.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/2. Solos/Single Instruments/Solo Tenor Trombone/Solo Mutes/Solo Tenor Trombone Carbon Mute Tenuto.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/01 Areia - 16 Violins - Core Techniques.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/04 Areia - 4 Double Basses - Core Techniques.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/02 10 Violas/Areia - 15 10 Violas - Bartok Pizzicato.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/04 4 Double Basses/Areia - 08 4 Double Basses - Marcato Long.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/03 Single Patches/01 Core Techniques/06 6Cll + 4DblBsss 8va/Areia - 03 6Cll + 4DblBsss 8va - Spiccato Fast.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/05 Measured Tremolo/Areia - 01 16 Violins - Measured Tremolo.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/05 Measured Tremolo/Areia - 02 6 Celli - Measured Tremolo.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/01 Multi Patches/01 Chorus - Women - Traditional Articulations.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/01 Multi Patches/02 Chorus - Women - Traditional Syllables.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/01 Multi Patches/06 Chorus - Men - Traditional Syllables.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/02 Single Patches/01 Men - Traditional Articulations/Chorus - 05 Men - Sustained Ooh.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Instruments/02 Single Patches/02 Women - Traditional Articulations/Chorus - 08 Women - Sustained Eeh.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 01 7 1st Violins - Legato.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 04 7 1st Violins - Harmonics.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/02 5 2nd Violins/Dolce - 13 5 2nd Violins - Tremolo Sul Pont.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/03 4 Violas/Dolce - 06 4 Violas - Staccato.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/04 3 Celli/Dolce - 12 3 Celli - Trill HT.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/05 3 Basses/Dolce - 01 3 Basses - Legato.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/A Forgotten Romance.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Adios Horner.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Airy Soul.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Alpha Flow.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Big Screen.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Blessed Emotions.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Cold Antarctica.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Collapse Mallet.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Conflux Arps.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Dance Temple.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Dark Context.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Different Places.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Fire Heat.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Mystic Chops.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/New Romantics.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Oak Ingnition.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Online Quote.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Other Worlds.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Perusing Wheels.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Planet Garden.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Pop Ivory.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Rainy Moondays.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Ray Line.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Royal Ride.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Sad Wolves.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Scape City.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Shadow Spaces.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Wind Scape.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Multis/Yield Mono.nkm
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - FX - Cluster Risers.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/10 Cellos/Pacific - Ens Strings - 10 Cellos - Tremolos.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/12 Violas/Pacific - Ens Strings - 12 Violas - Spiccatos.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/12 Violas/Pacific - Ens Strings - 12 Violas - Trills.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Pacific Ensemble Strings/Instruments/8 Basses/Pacific - Ens Strings - 8 Basses - Legato Sustains.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Bonus/Vista - 3 Violins FFF Overlay.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Bonus/Vista - Harp.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Vista - 3 Cellos.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/01 Multi Patches/Solo - 01 Solo Violin.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/03 Solo Cello/Solo - 03 Solo Cello - Legato Slurred.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/08 Solo Clarinet/Solo - 05 Solo Clarinet - Staccatissimo.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/12 Solo Soprano Angelic/Solo - 01 Solo Soprano Angelic - Legato Aah.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Solo/Instruments/02 Single Patches/13 Solo Soprano Operatic/Solo - 02 Solo Soprano Operatic - Legato Ooh.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Felt.nki
+/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Pure.nki
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/00 Orchestra/01 Strings/V Strings Bartok.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/01 Natural/Elden Lord.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/02 Action/Rain Season MW.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/03 Small Sections/Frozen Island.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/03 Small Sections/Small Two Big MW.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/10 Augmented Layers/FM Exploration/Rising FM Orchestra.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/10 Augmented Layers/Modeled/Perfect Pizz 2.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/UVI - Augmented Orchestra v1.1.2-R2R/Augmented Orchestra.ufs::Presets/11 Future/STR Soft And Arp.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-AClarinet.ufs::Presets/Clarinet A.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-BassClarinet_V2.ufs::Presets/Bass Clarinet.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-BbClarinet.ufs::Presets/Bb Clarinet 2.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Clarinets/VWinds-BbClarinet_V2.ufs::Presets/Bb Clarinet 2.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Double Reeds/VWinds-Bassoon.ufs::Presets/Bassoon.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Double Reeds/VWinds-Contrabassoon_V2.ufs::Presets/Contrabassoon.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Double Reeds/VWinds-EnglishHorn.ufs::Presets/English Horn.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Double Reeds/VWinds-Oboe.ufs::Presets/Oboe.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Flutes/VWinds-Alto_Flute.ufs::Presets/Alto Flute 2.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Flutes/VWinds-Bass_Flute.ufs::Presets/Bass Flute.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Flutes/VWinds-C_Flute.ufs::Presets/Flute.uvip
+/mnt/MAIN_STORAGE/Libraries/UVI/VWinds - Flutes/VWinds-Contrabass_Flute.ufs::Presets/Contrabass Flute.uvip
