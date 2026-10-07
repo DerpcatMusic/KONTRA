@@ -197,6 +197,7 @@ function element.setParameter(self, name, value)
   local overlay = rawget(self, "__set")
   if not overlay then overlay = {}; rawset(self, "__set", overlay) end
   overlay[name] = value
+  if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
 end
 -- Connections are not modeled: any index answers with one inert element.

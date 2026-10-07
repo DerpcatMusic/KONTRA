@@ -181,6 +181,32 @@ pub enum Command {
     },
     /// A MIDI message the script generated, for the host to play into the part.
     Midi(MidiOut),
+    /// `setParameter` on a program or layer: `value` is the new authored-unit
+    /// value, `authored` the one the preset carries (the runtime edits offsets).
+    Parameter {
+        scope: Scope,
+        param: Param,
+        value: f64,
+        authored: f64,
+    },
+}
+
+/// The element a `setParameter` reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Program,
+    /// The 1-based ordinal of the layer in document order.
+    Layer(u32),
+}
+
+/// The parameters the runtime follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Param {
+    /// Linear gain.
+    Gain,
+    Pan,
+    /// Program voice limit.
+    Polyphony,
 }
 
 /// What `changeVolume`/`changeVolumedB`, `changePan` and `changeTune` set.
@@ -228,6 +254,7 @@ struct Shared {
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
     params: RefCell<Vec<Vec<(String, String)>>>,
+    scopes: RefCell<Vec<Option<Scope>>>,
     /// The preset's saved widget values and table data (ScriptProcessor
     /// attributes and ScriptData), by widget name.
     saved: RefCell<BTreeMap<String, String>>,
@@ -323,6 +350,8 @@ fn lua_error(e: mlua::Error) -> String {
 /// The elements of a program the scripts can reach (`Program.layers[i]`...).
 struct Tree {
     params: Vec<Vec<(String, String)>>,
+    scopes: Vec<Option<Scope>>,
+    layers: u32,
 }
 
 fn element(
@@ -338,6 +367,14 @@ fn element(
             .map(|a| (a.name().to_owned(), a.value().to_owned()))
             .collect(),
     );
+    tree.scopes.push(match node.tag_name().name() {
+        "Program" => Some(Scope::Program),
+        "Layer" => {
+            tree.layers += 1;
+            Some(Scope::Layer(tree.layers))
+        }
+        _ => None,
+    });
     table.raw_set("__id", id)?;
     table.raw_set("type", node.tag_name().name())?;
     table.raw_set("name", node.attribute("Name").unwrap_or_default())?;
@@ -395,6 +432,7 @@ impl ScriptHost {
             waiting: RefCell::new(Vec::new()),
             deferred: RefCell::new(Vec::new()),
             params: RefCell::new(Vec::new()),
+            scopes: RefCell::new(Vec::new()),
             saved: RefCell::new(BTreeMap::new()),
             files: Box::new(files),
             config,
@@ -429,17 +467,19 @@ impl ScriptHost {
                 }
             }
         }
-        let mut tree = Tree { params: Vec::new() };
+        let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), layers: 0 };
         let root = element(&self.lua, &mut tree, program, None)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
         tree.params.push(Vec::new());
+        tree.scopes.push(None);
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
         part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
         root.raw_set("parent", part)?;
         *self.shared.params.borrow_mut() = tree.params;
+        *self.shared.scopes.borrow_mut() = tree.scopes;
         self.lua.globals().raw_set("Program", root)
     }
 
@@ -479,6 +519,33 @@ impl ScriptHost {
                     }
                 }
                 Ok(names)
+            })?,
+        )?;
+        let s = shared.clone();
+        native.set(
+            "setParam",
+            lua.create_function(move |_, (id, name, value): (usize, String, f64)| {
+                let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
+                    return Ok(false);
+                };
+                let (param, default) = match (scope, name.as_str()) {
+                    (_, "Gain") => (Param::Gain, 1.0),
+                    (_, "Pan") => (Param::Pan, 0.0),
+                    (Scope::Program, "Polyphony") => (Param::Polyphony, 16.0),
+                    _ => return Ok(false),
+                };
+                if !value.is_finite() {
+                    return Ok(false);
+                }
+                let authored = s
+                    .params
+                    .borrow()
+                    .get(id)
+                    .and_then(|p| p.iter().find(|(k, _)| *k == name))
+                    .and_then(|(_, v)| v.parse().ok())
+                    .unwrap_or(default);
+                s.command(Command::Parameter { scope, param, value, authored });
+                Ok(true)
             })?,
         )?;
         let s = shared.clone();
@@ -1297,6 +1364,28 @@ mod tests {
         assert_eq!(c[9], Command::Midi(MidiOut { status: 0xe0, a: 0, b: 64 }));
         assert_eq!(c[10], Command::Midi(MidiOut { status: 0xb0, a: 7, b: 90 }));
         assert!(h.findings().is_empty(), "{:?}", h.findings());
+    }
+
+    #[test]
+    fn set_parameter_on_program_and_layers_becomes_commands() {
+        let mut h = host(
+            "function onNote(e)\n\
+               Program:setParameter('Polyphony', 4)\n\
+               Program.layers[1]:setParameter('Gain', 0.5)\n\
+               Program.layers[1]:setParameter('Pan', 0.25)\n\
+               Program.layers[1]:setParameter('Mute', true)\n\
+               assert(Program.layers[1]:getParameter('Gain') == 0.5)\n\
+             end",
+        );
+        h.note_on(1, 60, 100, 0);
+        let c = h.take_commands();
+        assert_eq!(c[0], Command::Parameter { scope: Scope::Program, param: Param::Polyphony, value: 4.0, authored: 16.0 });
+        assert_eq!(c[1], Command::Parameter { scope: Scope::Layer(1), param: Param::Gain, value: 0.5, authored: 1.0 });
+        assert_eq!(c[2], Command::Parameter { scope: Scope::Layer(1), param: Param::Pan, value: 0.25, authored: 0.0 });
+        assert_eq!(c.len(), 3);
+        let found = h.findings();
+        let f: Vec<_> = found.iter().map(|f| f.feature.as_str()).collect();
+        assert_eq!(f, ["lua setParameter Layer.Mute"]);
     }
 
     #[test]
