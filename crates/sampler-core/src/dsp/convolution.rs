@@ -378,6 +378,37 @@ impl Convolution {
     }
 }
 
+/// A convolution built on the control side to replace a live one without
+/// allocating on the audio thread: [`crate::Runtime::swap_convolution`]
+/// exchanges it with the running processor, leaving the old one here to be
+/// dropped off the audio thread.
+pub struct ConvolutionUpload {
+    pub(crate) conv: Convolution,
+    pub(crate) tail: u32,
+}
+
+impl ConvolutionUpload {
+    /// An impulse already at the output rate, mixed `dry * x + wet * (x * impulse)`.
+    pub fn new(impulse: &Impulse, dry: f64, wet: f64) -> Self {
+        Self {
+            conv: Convolution::new(impulse, dry, wet),
+            tail: tail_frames(impulse) as u32,
+        }
+    }
+
+    /// An IR-level impulse at any rate, resampled to `rate` as lowering does.
+    pub fn from_ir(
+        impulse: &sampler_ir::Impulse,
+        rate: u32,
+        dry: f64,
+        wet: f64,
+    ) -> Result<Self, crate::Error> {
+        let resample = |x: &[f32]| crate::lower::resample(x, impulse.rate, rate);
+        let impulse = Impulse::new(resample(&impulse.left), resample(&impulse.right))?;
+        Ok(Self::new(&impulse, dry, wet))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

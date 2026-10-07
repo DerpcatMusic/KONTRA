@@ -762,8 +762,8 @@ impl Lowering<'_> {
             matches!(
                 p,
                 ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::LowPass { poles: 2 }
-                        | ir::FilterKind::HighPass { poles: 2 }
+                    kind: ir::FilterKind::LowPass { poles: 1 | 2 }
+                        | ir::FilterKind::HighPass { poles: 1 | 2 }
                         | ir::FilterKind::BandPass { poles: 2 }
                         | ir::FilterKind::Notch { poles: 2 }
                         | ir::FilterKind::AllPass,
@@ -916,6 +916,8 @@ impl Lowering<'_> {
                 .map_err(core(Stage::Filter, owner))
         };
         match filter.kind {
+            ir::FilterKind::LowPass { poles: 1 } => svf(SvfMode::OnePoleLowPass),
+            ir::FilterKind::HighPass { poles: 1 } => svf(SvfMode::OnePoleHighPass),
             ir::FilterKind::LowPass { poles: 2 } => svf(SvfMode::LowPass),
             ir::FilterKind::HighPass { poles: 2 } => svf(SvfMode::HighPass),
             ir::FilterKind::BandPass { poles: 2 } => svf(SvfMode::BandPass),
@@ -1333,7 +1335,7 @@ fn stereo(pan: ir::Pan) -> [[f64; 2]; 2] {
 
 /// `x` at `to` Hz instead of `from`: Blackman-windowed sinc, lowpassed below
 /// the lower Nyquist. Run at load, never on the audio thread.
-fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub(crate) fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to {
         return x.to_vec();
     }

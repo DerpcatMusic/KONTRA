@@ -18,6 +18,8 @@ mod audio;
 mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
+mod inserts;
+pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
@@ -180,7 +182,7 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
 }
 
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
-    translate_full(text, source).map(|(instrument, locations, _)| (instrument, locations))
+    translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
 
 /// [`translate_with`], plus the IR group of each (layer, oscillator) of a
@@ -188,7 +190,7 @@ fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<Str
 fn translate_full(
     text: &str,
     source: Source,
-) -> Result<(ir::Instrument, Vec<String>, Vec<OscGroup>), Translate> {
+) -> Result<(ir::Instrument, Vec<String>, Vec<OscGroup>, Vec<InsertNode>), Translate> {
     let doc = parse_program_xml(text)?;
     let root = doc.root_element();
     let program = match root.tag_name().name() {
@@ -234,6 +236,7 @@ fn translate_full(
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
         osc_groups: Vec::new(),
+        insert_nodes: Vec::new(),
         split: None,
     };
     out.program(program).map_err(Translate::Invalid)?;
@@ -262,7 +265,7 @@ fn translate_full(
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
-    Ok((out.ir, out.locations, out.osc_groups))
+    Ok((out.ir, out.locations, out.osc_groups, out.insert_nodes))
 }
 
 /// A node's own `SignalConnection`s.
@@ -353,6 +356,8 @@ struct Translation {
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
     osc_groups: Vec<OscGroup>,
+    /// Where each insert element's processors sit, for script writes.
+    insert_nodes: Vec<InsertNode>,
     /// The layer being translated, when a script may pick its oscillators.
     split: Option<(usize, ir::Group)>,
 }
@@ -396,7 +401,16 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let gain = number(program, "Gain", 1.0)?;
+        let mut gain = number(program, "Gain", 1.0)?;
+        for insert in program
+            .children()
+            .filter(|n| n.has_tag_name("Inserts"))
+            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
+            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+        {
+            gain *= number(insert, "Volume", 1.0)?;
+            self.used.push(insert.id());
+        }
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -427,14 +441,31 @@ impl Translation {
             .flat_map(|a| a.children().filter(|c| c.has_tag_name("AuxEffect")))
         {
             let name = aux.attribute("Name").unwrap_or_default().to_owned();
+            let bus = ir::BusRef(self.ir.buses.len());
+            let live = number(aux, "Bypass", 0.0)? == 0.0;
+            let (processors, placed) = if live {
+                self.inserts(aux, false, None)?
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            let chain = (!placed.is_empty()).then(|| {
+                self.ir.chains.push(ir::Chain {
+                    scope: ir::Scope::Bus(bus),
+                    pre_amplitude: processors,
+                    post_amplitude: Vec::new(),
+                });
+                let chain = ir::ChainRef(self.ir.chains.len() - 1);
+                self.place(chain, placed);
+                chain
+            });
             self.ir.buses.push(ir::Bus {
                 name: name.clone(),
-                chain: None,
+                chain,
                 sends: Vec::new(),
                 output: ir::Output::Master,
-                gain: ir::Gain::UNITY,
+                gain: ir::Gain::Linear(number(aux, "Gain", 1.0)?),
             });
-            auxes.push((name, ir::BusRef(self.ir.buses.len() - 1)));
+            auxes.push((name, bus));
         }
         for (ordinal, layer) in program
             .descendants()
@@ -597,6 +628,18 @@ impl Translation {
         };
         let gain = number(keygroup, "Gain", 1.0)?;
         let pan = number(keygroup, "Pan", 0.0)?;
+        let (processors, placed) =
+            self.inserts(keygroup, true, Some(((keys.0 as u16 + keys.1 as u16) / 2) as u8))?;
+        let chain = (!placed.is_empty()).then(|| {
+            self.ir.chains.push(ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: processors,
+                post_amplitude: Vec::new(),
+            });
+            let chain = ir::ChainRef(self.ir.chains.len() - 1);
+            self.place(chain, placed);
+            chain
+        });
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -682,6 +725,7 @@ impl Translation {
                     law: ir::PanLaw::Balance,
                 },
                 playback,
+                chain,
                 amplitude,
                 routes: modulation.routes,
                 ..ir::Zone::new(asset)
@@ -726,6 +770,7 @@ impl Translation {
         let kind = node.tag_name().name();
         let seconds =
             |name, max| number(node, name, 0.0).map(|t| ir::Time::Seconds(t.clamp(0.0, max)));
+        let ahd = kind == "AHD";
         let mut envelope = ir::Envelope {
             delay: if kind == "DAHDSR" {
                 seconds("DelayTime", 10.0)?
@@ -733,18 +778,23 @@ impl Translation {
                 ir::Time::ZERO
             },
             attack: seconds("AttackTime", 10.0)?,
-            hold: if kind == "DAHDSR" {
+            hold: if kind != "AnalogADSR" {
                 seconds("HoldTime", 10.0)?
             } else {
                 ir::Time::ZERO
             },
             decay: seconds("DecayTime", 30.0)?,
-            sustain: number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0),
+            // AHD has no sustain stage: it falls to zero after the decay.
+            sustain: if ahd { 0.0 } else { number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0) },
             release: number(node, "ReleaseTime", 0.05)
                 .map(|t| ir::Time::Seconds(t.clamp(0.0, 10.0)))?,
             ..Default::default()
         };
-        if kind == "DAHDSR" {
+        if ahd {
+            // Note-off behaviour of a running AHD is not measured; the default release applies.
+            self.unsupported(&at, "AHD note-off release (default release used)", "");
+        }
+        if kind != "AnalogADSR" {
             // The native envelope curve `expm1(k·t)/expm1(k)` is exactly v1's
             // `envelope_curve` (src/uvi/modulation.rs) at k = 2·ln((1+c)/(1-c)),
             // so a DAHDSR's per-stage curve translates without approximation.
@@ -905,6 +955,8 @@ pub struct Translated {
     bank: Option<(Bank, String)>,
     /// Where each (layer, oscillator) of the program plays, for its scripts.
     pub groups: Vec<OscGroup>,
+    /// Where each insert element sits in the IR chains, for parameter bindings.
+    pub inserts: Vec<InsertNode>,
     /// The program's XML and the bank's Lua members, for its scripts.
     text: String,
     lua: script::Scripts,
@@ -976,7 +1028,7 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             member
         };
         let (text, program_path) = bank.program(&member)?;
-        let (instrument, locations, groups) = translate_full(&text, Source::Bank)
+        let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
             .map_err(|e| describe(Path::new(&member), e))?;
         let lua = bank.scripts();
         return Ok(Translated {
@@ -984,15 +1036,16 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
             locations,
             bank: Some((bank, program_path)),
             groups,
+            inserts,
             text,
             lua,
         });
     }
     let text = read_text(path)?;
-    let (instrument, locations, groups) =
+    let (instrument, locations, groups, inserts) =
         translate_full(&text, Source::Disk(path.parent().unwrap_or(Path::new(".")).into()))
             .map_err(|e| describe(path, e))?;
-    Ok(Translated { instrument, locations, bank: None, groups, text, lua: Default::default() })
+    Ok(Translated { instrument, locations, bank: None, groups, inserts, text, lua: Default::default() })
 }
 
 /// Decode a [`translate_path`] result's samples and lower it.
@@ -1118,6 +1171,13 @@ fn assemble_streamed(
             });
         }
     }
+    inserts::fill_impulses(&mut instrument, &locations, |a| {
+        let source = sources[a].as_ref().map_err(Clone::clone)?;
+        let mut reader = source.open().map_err(|e| e.to_string())?;
+        let mut frames = vec![[0f32; 2]; reader.frames()];
+        reader.read(0, &mut frames).map_err(|e| e.to_string())?;
+        Ok((reader.rate(), frames))
+    });
     let usable: Vec<bool> = sources.iter().map(Result::is_ok).collect();
     let kept = instrument.retain_zones(|z| usable[z.asset.0]);
     let mut sources: Vec<_> = sources.into_iter().map(Result::ok).collect();
@@ -1194,7 +1254,7 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (mut instrument, locations, groups) = translate_full(&text, Source::Bank)
+    let (mut instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
         .map_err(|e| describe(Path::new(program), e))?;
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
@@ -1234,6 +1294,7 @@ pub fn load_program_scripted_with_options(
         plan: loaded.plan,
         host,
         groups,
+        inserts,
     })
 }
 
@@ -1291,6 +1352,10 @@ fn assemble(
             });
         }
     }
+    inserts::fill_impulses(&mut instrument, &locations, |a| match &decoded[a] {
+        Ok(d) => Ok((d.rate, d.frames.clone())),
+        Err(e) => Err(e.clone()),
+    });
     let kept = instrument.retain_zones(|z| decoded[z.asset.0].is_ok());
     let mut pcm = Vec::with_capacity(kept.len());
     let mut decoded: Vec<_> = decoded.into_iter().map(Some).collect();
@@ -1554,3 +1619,4 @@ mod survey {
         }
     }
 }
+

@@ -66,6 +66,8 @@ pub(super) struct PreparedBuses {
     reverbs: Box<[(crate::dsp::ReverbSettings, u32)]>,
     /// Impulse index, dry and wet gain, by `PreparedProcessor::Convolution` index.
     convolutions: Box<[(usize, f64, f64)]>,
+    /// The bus each convolution belongs to.
+    convolution_bus: Box<[usize]>,
     impulses: Box<[std::sync::Arc<crate::dsp::Impulse>]>,
     rate: u32,
     filters: Box<[crate::dsp::svf::PreparedFilter]>,
@@ -73,6 +75,10 @@ pub(super) struct PreparedBuses {
     pub controls: Box<[(crate::ControlId, usize)]>,
 }
 impl PreparedBuses {
+    /// Convolution processors across the buses, in bus then processor order.
+    pub(super) fn convolution_slots(&self) -> usize {
+        self.convolutions.len()
+    }
     pub(super) fn set_fader(&mut self, fader: &GroupFader) -> Result<(), Error> {
         let node = self.nodes.get_mut(fader.bus).ok_or(Error::InvalidInput)?;
         let mut follows = vec![false; node.sends.len()];
@@ -130,23 +136,27 @@ impl PreparedBuses {
         let mut filters = Vec::new();
         let mut reverbs = Vec::new();
         let mut convolutions = Vec::new();
+        let mut convolution_bus = Vec::new();
         let nodes = buses
             .into_iter()
-            .map(|bus| {
+            .enumerate()
+            .map(|(index, bus)| {
                 let begin = cells;
                 cells = cells
                     .checked_add(bus.processors.len())
                     .ok_or(Error::Capacity)?;
+                let processors = crate::dsp::compile_processors(
+                    bus.processors.into_boxed_slice(),
+                    rate,
+                    &mut parameters,
+                    &mut delay_frames,
+                    &mut filters,
+                    Some(&mut reverbs),
+                    Some(&mut convolutions),
+                )?;
+                convolution_bus.resize(convolutions.len(), index);
                 Ok(PreparedBus {
-                    processors: crate::dsp::compile_processors(
-                        bus.processors.into_boxed_slice(),
-                        rate,
-                        &mut parameters,
-                        &mut delay_frames,
-                        &mut filters,
-                        Some(&mut reverbs),
-                        Some(&mut convolutions),
-                    )?,
+                    processors,
                     follows: Box::new([]),
                     fader: 1.0,
                     sends: bus.sends.into_boxed_slice(),
@@ -174,6 +184,7 @@ impl PreparedBuses {
             delay_frames,
             reverbs: reverbs.into_boxed_slice(),
             convolutions: convolutions.into_boxed_slice(),
+            convolution_bus: convolution_bus.into_boxed_slice(),
             impulses: impulses.into(),
             rate,
             filters: filters.into_boxed_slice(),
@@ -211,6 +222,9 @@ pub(super) struct BusState {
     delay_samples: Box<[[f64; 2]]>,
     reverbs: Box<[crate::dsp::Reverb]>,
     convolutions: Box<[crate::dsp::Convolution]>,
+    /// Per bus, the frames its tail rings after input stops; a swapped-in
+    /// impulse may change it.
+    tail_frames: Box<[u32]>,
     pub parameters: Box<[ControlRamp]>,
     filters: crate::dsp::svf::FilterBank,
     pub mix: Box<[BusMix]>,
@@ -239,12 +253,26 @@ impl BusState {
                     crate::dsp::Convolution::new(&plan.buses.impulses[impulse], dry, wet)
                 })
                 .collect(),
+            tail_frames: plan.buses.nodes.iter().map(|n| n.tail_frames).collect(),
             filters: crate::dsp::svf::FilterBank::new(&plan.buses.filters, 0)?,
             parameters: crate::dsp::control::initial_parameters(plan, &plan.buses.parameters),
             mix: vec![BusMix::default(); plan.buses.len()].into_boxed_slice(),
             fader: plan.buses.nodes.iter().map(|n| n.fader).collect(),
             peaks: vec![[0.0; 2]; plan.buses.len()].into_boxed_slice(),
         })
+    }
+    /// Exchange convolution `slot` with `upload`: no allocation, state starts
+    /// empty (the old tail stops), and the bus rings for the new impulse's tail.
+    pub fn swap_convolution(
+        &mut self,
+        graph: &PreparedBuses,
+        slot: usize,
+        upload: &mut crate::ConvolutionUpload,
+    ) -> Result<(), Error> {
+        let bus = *graph.convolution_bus.get(slot).ok_or(Error::InvalidInput)?;
+        std::mem::swap(&mut self.convolutions[slot], &mut upload.conv);
+        self.tail_frames[bus] = upload.tail;
+        Ok(())
     }
     pub fn begin(&mut self) {
         for buffer in &mut self.buffers {
@@ -296,7 +324,7 @@ impl BusState {
             let len = output.len();
             let input = buffer.input_frames.min(len);
             let tail = if input > 0 {
-                node.tail_frames
+                self.tail_frames[index]
             } else {
                 buffer.remaining
             };
