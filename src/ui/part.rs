@@ -162,16 +162,85 @@ pub fn notices(cx: &Cx, slot: usize) -> Option<El> {
     (!out.is_empty()).then(|| col(out).gap(0).align(Align::Stretch).shrink(0))
 }
 
+/// The instrument volume as the part's volume: the saved level until CC7
+/// arrives, then CC7 cubed (`sampler_ir::HostVolume`).
+pub fn volume_text(inst: &sampler_ir::Instrument) -> Option<String> {
+    let v = inst.host_volume?;
+    let db = if v.saved > 0. { 20. * v.saved.log10() } else { f64::NEG_INFINITY };
+    Some(if db.is_finite() { format!("CC{} {db:+.1} dB", v.controller) } else { format!("CC{} off", v.controller) })
+}
+
+/// What the part plays and listens to, in one line under its header: the
+/// articulation (with its switch keys), the instrument volume, the dynamics
+/// controller it waits for (one click sets where it starts) and MPE.
+pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
+    let v = cx.view.parts.get(slot)?;
+    let (inst, report) = (v.instrument.clone(), v.report.clone());
+    if inst.is_none() && report.is_none() {
+        return None;
+    }
+    let mut items = Vec::new();
+    if let Some(inst) = inst.as_deref() {
+        if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
+            let a = &inst.articulations[n];
+            let keys = a.switch_keys.iter().map(|&k| note_name(k)).collect::<Vec<_>>().join(" ");
+            let text = if keys.is_empty() { a.name.clone() } else { format!("{} · {keys}", a.name) };
+            items.push(row![caption("Articulation").fill(secondary()), body(text).lines(1)].gap(SPACE).align(Align::Center).named("Articulation").id(format!("perf-art-{slot}")));
+        }
+        if let Some(text) = volume_text(inst) {
+            items.push(
+                row![caption("Volume").fill(secondary()), body(text).lines(1)]
+                    .gap(SPACE)
+                    .align(Align::Center)
+                    .tip("The instrument's saved volume until CC7 arrives; then CC7 cubed")
+                    .id(format!("perf-vol-{slot}")),
+            );
+        }
+    }
+    let dynamics = report.as_ref().map(|r| r.decoded.dynamics.clone()).unwrap_or_default();
+    let needs = report.as_ref().is_some_and(|r| r.decoded.needs_controller);
+    let moving: Vec<_> = dynamics.iter().filter(|&&(cc, _)| cc != 11).map(|&(cc, _)| format!("CC{cc}")).collect();
+    if !moving.is_empty() {
+        let now = cx.selection.parts[slot].dynamics;
+        let mut picked = now;
+        let tabs = [(-1, "Kontakt"), (64, "64"), (127, "127")]
+            .into_iter()
+            .map(|(value, label)| {
+                let (hit, el) = latch(ui, format!("dyn-{slot}-{value}"), label, &format!("Start {} at {label}", moving.join("/")), now == value);
+                if hit {
+                    picked = value;
+                }
+                el
+            })
+            .collect();
+        cx.selection.parts[slot].dynamics = picked;
+        let badge = if needs {
+            caption(format!("Needs {}", moving.join("/"))).fill(Role::Warning).tip("Near-silent until the controller moves; set where it starts")
+        } else {
+            caption(format!("{} starts at {}", moving.join("/"), dynamics.iter().find(|&&(cc, _)| cc != 11).map_or(0, |d| d.1))).fill(secondary())
+        };
+        items.push(row![badge.id(format!("perf-needs-{slot}")), segmented(tabs)].gap(SPACE).align(Align::Center));
+    }
+    let mpe = cx.selection.parts[slot].mpe;
+    let (hit, mpe_el) = latch(ui, format!("mpe-{slot}"), "MPE", if mpe { "MPE on: each note on its own channel" } else { "MPE off" }, mpe);
+    if hit {
+        cx.selection.parts[slot].mpe = !mpe;
+    }
+    items.push(mpe_el);
+    Some(row(items).gap(SPACE * 2.).align(Align::Center).pad((SPACE, TIGHT)).w(Len::Pct(100.)).shrink(0).id(format!("perf-{slot}")))
+}
+
 /// The part's view switch, then the view: its interface, articulations,
 /// mapping, sound or info.
 pub fn stage(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
     let (view, tabs) = inside::bar(ui, cx, slot);
+    let perf = performance(ui, cx, slot);
     if view == inside::View::Interface
         && let Some(face) = interface(ui, cx, slot, tabs.clone())
     {
-        return face;
+        return col(perf.into_iter().chain([face]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0);
     }
     let tabs = tabs.map(|t| row![t, spacer()].align(Align::Center).pad((TIGHT, INSET)).w(Len::Pct(100.)).shrink(0));
     let body = inside::view(ui, cx, slot, view).unwrap_or_else(|| spacer().h(0));
-    col(tabs.into_iter().chain([body]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"))
+    col(perf.into_iter().chain(tabs).chain([body]).collect::<Vec<_>>()).gap(0).align(Align::Stretch).w(Len::Pct(100.)).shrink(0).id(format!("stage-{slot}"))
 }
