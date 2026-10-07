@@ -588,7 +588,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             rt = rt.with_stream_cache(cache);
             // As the host does: a note whose pages are not resident yet starts
             // silent and fades in, instead of being refused.
-            rt.set_cold_starts(true);
+            rt.set_cold_starts(std::env::var_os("CH_NOCOLD").is_none());
         }
         if std::env::var_os("CH_STEAL").is_some() {
         rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
@@ -751,12 +751,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             } => {
                 if begin == 0 {
                     let mut cc_ingress = new_ingress();
-                    for word in &pre_words {
+                    for word in pre_words.iter().filter(|_| std::env::var_os("CH_NOPRE").is_none()) {
                         if let Some(Ok(packet)) = Packets::new(word).next() {
                             let _ = cc_ingress.apply(rt, packet);
                         }
                     }
-                    for &(cc, value) in ccs {
+                    for &(cc, value) in ccs.iter().filter(|_| std::env::var_os("CH_NODRV").is_none()) {
                         driver.input(
                             rt,
                             sampler_uvi::scripted::HostInput::Controller {
@@ -774,7 +774,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                         key,
                         external_id: None,
                     };
-                    let velocity = f64::from(pick.velocity) / 127.0;
+                    let velocity = std::env::var("CH_VEL").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(f64::from(pick.velocity)) / 127.0;
                     note = match rt
                         .note_on(input, key, velocity)
                         .and_then(|n| driver.note_on(rt, n, key, velocity))

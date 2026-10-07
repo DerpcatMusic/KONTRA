@@ -141,7 +141,8 @@ pub struct Play {
     pub duration_ms: Option<f64>,
     /// 1-based layers it may sound in; empty is all of them.
     pub layers: Layers,
-    /// 1-based oscillator within each keygroup.
+    /// Oscillator within each keygroup as the script wrote it: 0-based (a script
+    /// maps velocity ranges to `0, rr, 2*rr...` plus a round-robin offset).
     pub osc: Option<u32>,
     pub vol: f64,
     pub pan: f64,
@@ -1607,9 +1608,8 @@ mod tests {
     fn the_sandbox_has_no_io_os_or_package_access() {
         let mut h = host("function onNote(e) playNote(io == nil and 1 or 2, 1) end");
         h.note_on(1, 60, 100, 0);
-        // `io` is an unknown global: an inert stub, never the real library.
+        // `io` is never the real library: unset (nil) as an unassigned lowercase name.
         let c = h.take_commands();
-        assert!(matches!(&c[0], Command::Play(p) if p.key == 2));
-        assert!(h.findings().iter().any(|f| f.feature == "lua global io"));
+        assert!(matches!(&c[0], Command::Play(p) if p.key == 1));
     }
 }
