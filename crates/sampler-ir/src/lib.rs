@@ -1245,3 +1245,67 @@ pub enum Reason {
     /// (its scaling, curve or timing law) is not established.
     UnknownLaw,
 }
+
+/// A feature name with its numbers and paths removed, so equal causes group:
+/// `"Filter: filter type 12"` and `"... 13"` are one line in a report.
+pub fn normalized_feature(feature: &str) -> String {
+    let words: Vec<String> = feature
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(|word| {
+            if word.contains('/') || word.contains('\\') {
+                return "<path>".to_string();
+            }
+            let mut out = String::new();
+            let mut digits = false;
+            for c in word.chars() {
+                if c.is_ascii_digit() {
+                    if !digits {
+                        out.push('N');
+                    }
+                    digits = true;
+                } else {
+                    digits = false;
+                    out.push(c);
+                }
+            }
+            out
+        })
+        .collect();
+    words.join(" ").chars().take(140).collect()
+}
+
+/// Unsupported features grouped by [`normalized_feature`] and ranked by how
+/// often they occur (ties by name). One function for the plugin's load report
+/// and the corpus scoreboard, so both rank the same way.
+pub fn rank_features<'a>(features: impl IntoIterator<Item = &'a str>) -> Vec<(String, usize)> {
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    for f in features {
+        *counts.entry(normalized_feature(f)).or_default() += 1;
+    }
+    let mut ranked: Vec<_> = counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked
+}
+
+#[cfg(test)]
+mod ranking_tests {
+    use super::*;
+
+    #[test]
+    fn features_group_by_cause_and_rank_by_count() {
+        let ranked = rank_features([
+            "Filter: type 12",
+            "effect",
+            "Filter: type 13",
+            "Filter: type 7",
+            "effect",
+            "zero /mnt/a/b.wav",
+        ]);
+        assert_eq!(ranked[0], ("Filter: type N".to_string(), 3));
+        assert_eq!(ranked[1], ("effect".to_string(), 2));
+        assert_eq!(ranked[2], ("zero <path>".to_string(), 1));
+    }
+}

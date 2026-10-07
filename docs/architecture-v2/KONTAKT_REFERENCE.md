@@ -377,3 +377,30 @@ Release and attack time laws are in sections 5 and 9 (engine value -> seconds). 
 - A freshly added Gainer is a 50/50 dry/wet mix: plateau after typed -24 dB is -5.5 dB (= 0.5 + 0.5*10^(-24/20)), after -6 dB it is -2.5 dB (= 0.5 + 0.5*0.501). Fitted mix m = 0.50 on all four recordings (0.499-0.507). Typed 0 dB is unity. KONTRA must apply `(1-m) + m*g` with the module's own dry/wet, not `g`.
 - Smoothing shape (4 ms RMS windows of the noise, noise floor about 3% rms of the pre level, so shapes are only weakly separated): a one-pole in linear amplitude gives the same time constant at both step sizes: -24 dB step tau = 45 and 44 ms; -6 dB step tau = 43 and 49 ms. Linear-amplitude ramp: 111/111 vs 100/136 ms; linear-in-dB ramp 150/155 vs 98/133 ms; one-pole-in-dB 95/89 vs 50/58 ms: all inconsistent between step sizes, so one-pole in linear gain, tau about 45 ms (reaches 63% in 45 ms, 95% in 135 ms), is the best fit. The ramp is applied to the wet gain g only (the dry half is constant).
 - Caveat: the step is a GUI parameter commit, so any host-side parameter smoothing is included; script- or automation-driven steps were not measured.
+
+## 26. ANALOG STRINGS compressor (instrument insert slot 2), on vs bypassed
+
+Classic mode, threshold -14.2 dB, ratio 1:2.0, attack 26 ms, release 200.5 ms, output +9.0 dB, stereo link on.
+Notes: key C4/E4/G4, vel 100, held 3 s, CC1=0, CC7=127, CC10=64, CC11=127. dBFS; peak over the note, RMS over 1..3 s. Two independent launches (a,b / x,y). The instrument is randomised, so repeats agree only within 0.02-0.5 dB RMS (peaks within about 2 dB).
+
+Compressor ON (RMS L/R, a then b): C4 -17.84/-14.94, -18.11/-14.55. E4 -18.11/-14.05, -18.10/-14.43. G4 -19.30/-16.35, -19.32/-15.85.
+Bypassed (RMS L/R, x then y): C4 -26.54/-23.56, -26.36/-22.83. E4 -26.79/-22.72, -26.95/-22.59. G4 -27.96/-24.13, -27.91/-24.19.
+Peaks ON: C4 -4.2/-4.4, -5.9/-2.0; E4 -6.0/-2.3, -5.8/-2.4; G4 -6.3/-4.2, -6.6/-5.0. Bypassed: C4 -12.6/-11.8, -13.9/-10.4; E4 -14.1/-10.1, -14.5/-9.6; G4 -15.9/-12.3, -14.8/-11.0.
+Net: about +8.7 dB RMS (8.4-9.0) from the compressor, i.e. the +9.0 dB output with only about 0.3 dB of gain reduction.
+
+Same note twice in one recording (C4 at 0.5 s and 6.5 s) matches within 0.05 dB RMS. The earlier "second note 7.7 dB louder" did not reproduce; multi-note recordings are full length (record.sh now refuses short captures).
+
+## 27. Inverter output gain (stereo noise, key 60 vel 100)
+
+| Output | RMS L/R | peak L/R |
+|---|---|---|
+| no FX control, and 0 dB | -22.5/-22.4 | -9.6/-9.5 |
+| -6 dB | -28.5/-28.4 | -15.6/-15.5 |
+| +6 dB | -16.5/-16.4 | -3.6/-3.5 |
+
+Output is a plain dB gain; same law in instrument insert and group insert (inst run calibrated before and after; grp post-calibration not confirmed).
+
+## 28. Reverb displayed values (GUI display strings)
+
+Normalised x = 0, .25, .5, .75, 1.
+Time 500 / 1.3k / 3.2k / 8.0k / 20.2k ms (about 500*40.4^x). Size, Damping, Diffusion, Stereo, Mod 0/25/50/75/100 %. Predelay 0/62.5/125/187.5/250 ms. High Cut 21.0k/16.2k/11.5k/6.8k/2.0k Hz (linear, decreasing). Low Shelf -0/-3/-6/-9/-12 dB.

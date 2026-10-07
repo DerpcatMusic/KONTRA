@@ -169,7 +169,8 @@ impl FilterCache {
                 self.filter.q.value(parameters, frame, expression),
             ];
             if self.last_values != Some(values) {
-                self.last = Coefficients::new(self.filter.mode, self.filter.rate, values[0], values[1]);
+                self.last =
+                    Coefficients::new(self.filter.mode, self.filter.rate, values[0], values[1]);
                 self.last_values = Some(values);
             }
             self.uniform &= self.filled == 0 || self.last == self.coefficients[0];
@@ -196,7 +197,9 @@ impl FilterCache {
         if let Some(high) = self.filter.mode.one_pole_high() {
             let coefficients = &self.coefficients;
             let uniform = self.uniform;
-            one_pole(state, block, len, high, |i| coefficients[if uniform { 0 } else { i }].a3);
+            one_pole(state, block, len, high, |i| {
+                coefficients[if uniform { 0 } else { i }].a3
+            });
         } else if self.uniform {
             let c = self.coefficients[0];
             run(state, block, len, mix, |_| c);
@@ -484,7 +487,9 @@ mod tests {
                     SvfMode::BandPass => [0., 1., 0.],
                     SvfMode::Notch => [1., 0., 1.],
                     SvfMode::AllPass => [1.; 3],
-                    SvfMode::OnePoleLowPass | SvfMode::OnePoleHighPass => unreachable!("not in this list"),
+                    SvfMode::OnePoleLowPass | SvfMode::OnePoleHighPass => {
+                        unreachable!("not in this list")
+                    }
                 };
                 for (a, b) in response.into_iter().zip(expected) {
                     assert!(

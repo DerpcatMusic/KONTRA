@@ -29,7 +29,11 @@ fn source() -> Vec<[f32; 2]> {
     (0..FRAMES)
         .map(|i| {
             let x = ((i * 37 % 101) as f32 / 50. - 1.) * if i < 150 { 0.9 } else { 0.05 };
-            if (200..250).contains(&i) { [x, -x] } else { [x, x * 0.5 + 0.01] }
+            if (200..250).contains(&i) {
+                [x, -x]
+            } else {
+                [x, x * 0.5 + 0.01]
+            }
         })
         .collect()
 }
@@ -55,7 +59,11 @@ fn reference(input: &[[f32; 2]], s: CompressorSettings) -> Vec<[f64; 2]> {
         .iter()
         .map(|f| {
             let x = [f64::from(f[0]), f64::from(f[1])];
-            let det = if s.link { [((x[0] + x[1]) / 2.).abs(); 2] } else { [x[0].abs(), x[1].abs()] };
+            let det = if s.link {
+                [((x[0] + x[1]) / 2.).abs(); 2]
+            } else {
+                [x[0].abs(), x[1].abs()]
+            };
             let mut out = [0.; 2];
             for c in 0..2 {
                 let c_in = if s.link { 0 } else { c };
@@ -97,7 +105,14 @@ fn run(prepared: Prepared, block: usize) -> Vec<[f32; 2]> {
     let mut audio = vec![[0f32; 2]; FRAMES];
     support::without_heap(|| {
         rt.trigger(
-            Input { protocol: Protocol::Clap, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) },
+            Input {
+                protocol: Protocol::Clap,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: Some(1),
+            },
             60,
             1.,
         )
@@ -112,7 +127,10 @@ fn run(prepared: Prepared, block: usize) -> Vec<[f32; 2]> {
 fn close(actual: &[[f32; 2]], expected: &[[f64; 2]]) {
     for (i, (a, e)) in actual.iter().zip(expected).enumerate() {
         for c in 0..2 {
-            assert!((f64::from(a[c]) - e[c]).abs() < 3e-7, "frame {i}: {a:?} != {e:?}");
+            assert!(
+                (f64::from(a[c]) - e[c]).abs() < 3e-7,
+                "frame {i}: {a:?} != {e:?}"
+            );
         }
     }
 }
@@ -134,7 +152,10 @@ fn voice_and_bus_compressors_follow_the_recurrence_across_block_sizes() {
                 .with_buses(
                     vec![Bus {
                         processors: vec![stage()],
-                        sends: vec![BusSend { bus: None, gain: 1. }],
+                        sends: vec![BusSend {
+                            bus: None,
+                            gain: 1.,
+                        }],
                         tail_frames: 0,
                     }],
                     vec![Some(0)],

@@ -36,4 +36,8 @@ alive=no; kill -0 "$rec" 2>/dev/null && alive=yes
 kill -INT "$rec"; wait "$rec" 2>/dev/null || true
 { echo "time=$(date -Is)"; echo "midi_sha256=$(sha256sum "$mid" | cut -d' ' -f1) controller_state=$(cat "$mid.proto")"
   echo "midi_wall_s=$(echo "$t_m1 - $t_m0" | bc) recorder_alive_after_tail=$alive"; echo "load1_start=$load_start load1_end=$(load1) (max $maxload)"; echo "sample_rate=$(python3 -c "import struct,sys;print(struct.unpack('<I',open(sys.argv[1],'rb').read(28)[24:28])[0])" "$out") (protocol: 48000)"
+  exp=$(echo "1 + $t_m1 - $t_m0 + $tail" | bc); got=$(python3 -c "import os,sys;print((os.path.getsize(sys.argv[1])-44)/384000)" "$out")
+  echo "capture_expected_s=$exp (1 s lead + MIDI wall + tail) capture_actual_s=$got"
   echo "calibration=$(cat "$W/log/calibration.txt" 2>/dev/null | tail -1)"; cat "$W/log/state.txt" 2>/dev/null || echo "state=unchecked (calibration recording)"; } >"$out.log"
+# explicit capture length: a short WAV means the recorder stopped early (notes lost), so refuse the recording
+awk -v e="$exp" -v g="$got" 'BEGIN{exit !(g+0 >= e-0.5)}' || { echo "record: capture $got s < expected $exp s, recorder stopped early; $out is unusable" >&2; mv "$out" "$out.short"; exit 1; }
