@@ -98,21 +98,9 @@ local function widget(kind, name, value, min, max, integer)
       w.x, w.y, w.width, w.height = named.bounds[1], named.bounds[2], named.bounds[3], named.bounds[4]
     end
   end
-  -- The preset's saved value, unless the widget is not persistent.
+  -- The preset's saved value, applied once the scripts have initialised.
   local saved = name and named and named.persistent ~= false and native.saved(name)
-  if saved then
-    if kind == "OnOffButton" or kind == "Button" then
-      w.value = (saved == "1" or saved == "true")
-    elseif kind == "Table" then
-      local i = 0
-      for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
-        i = i + 1
-        if i <= w.length then w.values[i] = tonumber(number) or 0 end
-      end
-    elseif tonumber((string.gsub(saved, ",", "."))) then
-      w.value = tonumber((string.gsub(saved, ",", ".")))
-    end
-  end
+  if saved then rawset(w, "__saved", saved) end
   report("ui", kind)
   registry[#registry + 1] = w
   rawset(w, "id", #registry)
@@ -123,6 +111,31 @@ for _, kind in ipairs(kinds) do
     local first = ...
     -- Panel("name") or Kind("name", value, min, max, integer).
     return widget(kind, ...)
+  end
+end
+-- Persistent widgets take the preset's saved value after initialisation, and
+-- their `changed` runs, as when UVI reloads a state.
+function __restore()
+  for _, w in ipairs(registry) do
+    local saved = rawget(w, "__saved")
+    if saved then
+      local kind = w.kind
+      if kind == "OnOffButton" or kind == "Button" then
+        w.value = (saved == "1" or saved == "true")
+      elseif kind == "Table" then
+        local i = 0
+        for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
+          i = i + 1
+          if i <= w.length then w.values[i] = tonumber(number) or 0 end
+        end
+      elseif tonumber((string.gsub(saved, ",", "."))) then
+        w.value = tonumber((string.gsub(saved, ",", ".")))
+      end
+      if kind ~= "Table" and type(w.changed) == "function" then
+        local ok, err = pcall(w.changed, w)
+        if not ok then report("lua error", tostring(err)) end
+      end
+    end
   end
 end
 local methods = {}
