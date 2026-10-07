@@ -948,6 +948,11 @@ impl Runtime {
         self.flush_behaviors_inner(&mut |id, owner, outcome, program| accept(id, owner, outcome, program));
     }
 
+    /// The latest callback fault (plan program, error), once. Allocation-free.
+    pub fn take_fault(&mut self) -> Option<(usize, Error)> {
+        self.fault.take()
+    }
+
     pub fn flush_behaviors(
         &mut self,
         mut accept: impl FnMut(BehaviorId, BehaviorOwner, Outcome) -> bool,
@@ -2126,6 +2131,9 @@ impl Runtime {
     fn fail_behavior(&mut self, id: BehaviorId, outcome: Outcome) {
         let c = self.behaviors.get_mut(id.0).unwrap();
         c.outcome = Some(outcome);
+        if let Outcome::Fault(error) = outcome {
+            self.fault = Some((c.program, error));
+        }
         if let BehaviorOwner::Note(note) = c.owner {
             self.release_now(note, super::ReleaseCause::BehaviorFault)
                 .expect("continuation retains originating note");

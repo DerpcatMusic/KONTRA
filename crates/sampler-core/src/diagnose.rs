@@ -29,58 +29,105 @@ fn reason(r: Rejection) -> &'static str {
     }
 }
 
+/// A selection that chose no region, as plain counts: fixed size, so the
+/// audio thread can note it without allocating.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SilentNote {
+    pub key: u8,
+    /// The key's script suppressed the attack.
+    pub suppressed: bool,
+    /// Rejected regions per reason, in [`ORDER`].
+    pub counts: [u32; 6],
+}
+
+const ORDER: [Rejection; 6] = [
+    Rejection::Group,
+    Rejection::Velocity,
+    Rejection::Articulation,
+    Rejection::Condition,
+    Rejection::Trigger,
+    Rejection::Take,
+];
+
+impl SilentNote {
+    pub fn slot(r: Rejection) -> usize {
+        ORDER.iter().position(|o| *o == r).unwrap_or(0)
+    }
+
+    /// `None` if a region was accepted (the silence is not the selection's).
+    pub fn from_record(r: &SelectionRecord) -> Option<Self> {
+        let mut note = Self { key: r.key, suppressed: r.suppressed, ..Self::default() };
+        for c in &r.candidates {
+            match c.rejected {
+                Some(why) => note.counts[Self::slot(why)] += 1,
+                None => return None,
+            }
+        }
+        Some(note)
+    }
+
+    /// Three words for atomics; counts saturate at 65535.
+    pub fn pack(&self) -> [u64; 3] {
+        let c = |i: usize| u64::from(self.counts[i].min(0xffff));
+        [
+            u64::from(self.key) | u64::from(self.suppressed) << 8,
+            c(0) | c(1) << 16 | c(2) << 32 | c(3) << 48,
+            c(4) | c(5) << 16,
+        ]
+    }
+
+    pub fn unpack(w: [u64; 3]) -> Self {
+        let n = |word: u64, i: u32| ((word >> (16 * i)) & 0xffff) as u32;
+        Self {
+            key: w[0] as u8,
+            suppressed: w[0] >> 8 & 1 == 1,
+            counts: [n(w[1], 0), n(w[1], 1), n(w[1], 2), n(w[1], 3), n(w[2], 0), n(w[2], 1)],
+        }
+    }
+
+    /// One sentence, with the script faults seen, if any.
+    pub fn message(&self, faults: &[ScriptFault]) -> String {
+        let key = self.key;
+        let faults_text = || faults.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+        if self.suppressed {
+            return if faults.is_empty() {
+                format!("key {key}: note suppressed by its script")
+            } else {
+                format!("key {key}: note suppressed by script fault {}", faults_text())
+            };
+        }
+        let (top, n) = self.counts.iter().enumerate().max_by_key(|(_, n)| **n).map(|(i, n)| (ORDER[i], *n)).unwrap_or((Rejection::Group, 0));
+        if n == 0 {
+            return format!("key {key}: no zone is mapped to this key");
+        }
+        let mut text = format!("key {key}: {n} zones rejected by {}", reason(top));
+        let others: Vec<String> = ORDER
+            .iter()
+            .zip(self.counts)
+            .filter(|(r, n)| **r != top && *n > 0)
+            .map(|(r, n)| format!("{n} by {}", reason(*r)))
+            .collect();
+        if !others.is_empty() {
+            text += &format!(", {}", others.join(", "));
+        }
+        if !faults.is_empty() {
+            text += &format!("; script faults: {}", faults_text());
+        }
+        text
+    }
+}
+
 /// The reason a selection of `key` produced no sound, from the selection
 /// records of that note and the script faults seen. `None` if a region
 /// was accepted (the silence is not the selection's).
 pub fn why_silent(key: u8, records: &[SelectionRecord], faults: &[ScriptFault]) -> Option<String> {
-    let faults_text = || faults.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
-    let attack = records.iter().find(|r| r.key == key && !r.suppressed);
-    if records.iter().any(|r| r.key == key && r.suppressed) {
-        return Some(if faults.is_empty() {
-            format!("key {key}: note suppressed by its script")
-        } else {
-            format!("key {key}: note suppressed by script fault {}", faults_text())
-        });
+    if let Some(r) = records.iter().find(|r| r.key == key && r.suppressed) {
+        return SilentNote::from_record(r).map(|n| n.message(faults));
     }
-    let Some(record) = attack else {
+    let Some(record) = records.iter().find(|r| r.key == key) else {
         return Some(format!("key {key}: no selection was recorded"));
     };
-    if record.candidates.is_empty() {
-        return Some(format!("key {key}: no zone is mapped to this key"));
-    }
-    let accepted = record.candidates.iter().filter(|c| c.rejected.is_none()).count();
-    if accepted > 0 {
-        return None;
-    }
-    let mut counts = [0usize; 6];
-    let order = [
-        Rejection::Group,
-        Rejection::Velocity,
-        Rejection::Articulation,
-        Rejection::Condition,
-        Rejection::Trigger,
-        Rejection::Take,
-    ];
-    for c in &record.candidates {
-        if let Some(r) = c.rejected {
-            counts[order.iter().position(|o| *o == r).unwrap_or(0)] += 1;
-        }
-    }
-    let (top, n) = counts.iter().enumerate().max_by_key(|(_, n)| **n).map(|(i, n)| (order[i], *n)).unwrap_or((Rejection::Group, 0));
-    let mut text = format!("key {key}: {n} zones rejected by {}", reason(top));
-    let others: Vec<String> = order
-        .iter()
-        .zip(counts)
-        .filter(|(r, n)| **r != top && *n > 0)
-        .map(|(r, n)| format!("{n} by {}", reason(*r)))
-        .collect();
-    if !others.is_empty() {
-        text += &format!(", {}", others.join(", "));
-    }
-    if !faults.is_empty() {
-        text += &format!("; script faults: {}", faults_text());
-    }
-    Some(text)
+    SilentNote::from_record(record).map(|n| n.message(faults))
 }
 
 #[cfg(test)]
@@ -117,5 +164,8 @@ mod tests {
         );
         assert_eq!(why_silent(61, &[record(61, false, &[])], &[]).unwrap(), "key 61: no zone is mapped to this key");
         assert_eq!(why_silent(60, &[record(60, false, &[None, group])], &[]), None);
+        let note = SilentNote { key: 60, suppressed: false, counts: [1122, 3, 0, 0, 0, 7] };
+        assert_eq!(SilentNote::unpack(note.pack()), note);
+        assert_eq!(note.message(&[]), "key 60: 1122 zones rejected by group selection (script), 3 by velocity range, 7 by round-robin take");
     }
 }

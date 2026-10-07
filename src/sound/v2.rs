@@ -616,6 +616,14 @@ impl Core for V2Core {
             if part.runtime.render_split(out, &mut outs).is_err() {
                 continue;
             }
+            if let Some((program, error)) = part.runtime.take_fault() {
+                part.problems.fault_program = program as u64 + 1;
+                part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
+            }
+            if let Some(silent) = part.runtime.take_silent_note() {
+                part.problems.silent_notes += 1;
+                part.problems.silent = silent.pack();
+            }
             let c = self.mix.parts[index];
             if c.mute || solo && !c.solo {
                 continue;
