@@ -43,13 +43,19 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
 }
 
 /// [`read`] with a snapshot's saved native and script state applied.
-pub fn read_with_snapshot(path: &Path, snapshot: &crate::SnapshotState) -> Result<Kontakt, LoadError> {
+pub fn read_with_snapshot(
+    path: &Path,
+    snapshot: &crate::SnapshotState,
+) -> Result<Kontakt, LoadError> {
     let mut kontakt = read_overlaid(path, Some(snapshot))?;
     crate::apply_snapshot(&mut kontakt, snapshot);
     Ok(kontakt)
 }
 
-fn read_overlaid(path: &Path, snapshot: Option<&crate::SnapshotState>) -> Result<Kontakt, LoadError> {
+fn read_overlaid(
+    path: &Path,
+    snapshot: Option<&crate::SnapshotState>,
+) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
@@ -178,6 +184,7 @@ fn translate(
         start_criteria: Vec::new(),
         voice_groups: Vec::new(),
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
+        engine: Vec::new(),
     };
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
@@ -190,10 +197,6 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
-    let mut translated = Vec::new();
-    for (index, group) in groups.groups.iter().enumerate() {
-        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-    }
     for (slot, chunk) in program
         .0
         .children
@@ -242,6 +245,34 @@ fn translate(
             }
         }
     }
+    // Scripts first: what `on init` writes with set_engine_par (effect gains,
+    // bypass) is the rack's state, so racks are translated after it.
+    let group_names: Vec<String> = groups
+        .groups
+        .iter()
+        .filter_map(|g| g.params().ok())
+        .filter(|g| !g.muted)
+        .map(|g| g.name)
+        .collect();
+    let writes: Vec<_> = out
+        .ir
+        .behaviors
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.language == ir::Language::Ksp)
+        .filter_map(|(index, b)| {
+            let environment =
+                crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
+                .ok()
+        })
+        .flatten()
+        .collect();
+    out.engine = writes;
+    let mut translated = Vec::new();
+    for (index, group) in groups.groups.iter().enumerate() {
+        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+    }
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -250,7 +281,7 @@ fn translate(
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program);
+    let racks = crate::effects::program_racks(&program, &out.engine);
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -367,6 +398,8 @@ struct Translation {
     voice_groups: Vec<Option<usize>>,
     /// A snapshot's saved state per group, applied over the program's.
     snapshot_groups: Vec<crate::GroupState>,
+    /// What the scripts' `on init` wrote with `set_engine_par`.
+    engine: Vec<sampler_ksp::EnginePar>,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -557,13 +590,19 @@ impl Translation {
         let insert = match saved {
             Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
                 version: state.fx.0,
-                items: state.fx.1.into_iter().map(|slot| slot.map(|(id, data)| ni_file::kontakt::Chunk { id, data })).collect(),
+                items: state
+                    .fx
+                    .1
+                    .into_iter()
+                    .map(|slot| slot.map(|(id, data)| ni_file::kontakt::Chunk { id, data }))
+                    .collect(),
             }),
             None => group.insert_fx(),
         };
         if let Ok(array) = insert {
-            let c =
-                crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
+            let mut slots = crate::effects::rack(&array);
+            crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
+            let c = crate::effects::chain(&slots, crate::effects::Scope::Voice);
             let processors = c.processors;
             filter_slots = c.filter_slots;
             for (slot, feature, value, reason) in c.notes {
@@ -1450,6 +1489,7 @@ mod modulation {
             start_criteria: Vec::new(),
             voice_groups: Vec::new(),
             snapshot_groups: Vec::new(),
+            engine: Vec::new(),
         }
     }
 
