@@ -13,6 +13,10 @@ pub enum Inheritance {
     Linked,
     Snapshot,
     Independent,
+    /// Gain, pan and lifetime are the child's own; per-note pitch bend,
+    /// pressure and timbre follow the parent live (MPE movement carries to
+    /// notes a script plays).
+    Expression,
 }
 
 /// Largest note gain an expression carries: CLAP's note gain expression
@@ -73,6 +77,8 @@ pub(super) struct ExpressionOwner {
     pub rendered: super::RenderedExpression,
     pub program: Option<super::PlanId>,
     pub notes: usize,
+    /// The expression whose pitch, pressure, timbre and bend this one copies.
+    pub follows: Option<ExpressionId>,
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +150,7 @@ impl Runtime {
             owner.rendered = self.expression_changes[id.0.index].unwrap();
             owner.value = value;
         }
+        self.follow_expression();
         Ok(())
     }
 
@@ -198,6 +205,7 @@ impl Runtime {
                 owner.rendered = rendered;
             }
         }
+        self.follow_expression();
         Ok(changed)
     }
 
@@ -213,7 +221,39 @@ impl Runtime {
         let owner = self.expressions.get_mut(id.0).unwrap();
         owner.value = value;
         owner.rendered = rendered;
+        self.follow_expression();
         Ok(())
+    }
+
+    /// Copy each follower's pitch, pressure, timbre and bend from the owner it
+    /// follows. A follower whose new pitch cannot be projected keeps its last.
+    pub(super) fn follow_expression(&mut self) {
+        if !self.expression_followers {
+            return;
+        }
+        for index in 0..self.expressions.slots.len() {
+            let Some(owner) = self.expressions.slots[index].value else {
+                continue;
+            };
+            let Some(from) = owner.follows.and_then(|id| self.expressions.get(id.0)) else {
+                continue;
+            };
+            let value = Expression {
+                pitch_semitones: from.value.pitch_semitones,
+                pressure: from.value.pressure,
+                timbre: from.value.timbre,
+                bend: from.value.bend,
+                ..owner.value
+            };
+            if value == owner.value {
+                continue;
+            }
+            if let Ok(rendered) = self.project_expression(owner.program, value, Some(&owner)) {
+                let owner = self.expressions.slots[index].value.as_mut().unwrap();
+                owner.value = value;
+                owner.rendered = rendered;
+            }
+        }
     }
 
     /// Freeze a shared note at its current expression. Capacity failure leaves its
@@ -230,6 +270,7 @@ impl Runtime {
             rendered: owner.rendered,
             program: owner.program,
             notes: 1,
+            follows: owner.follows,
         })?);
         self.expressions.get_mut(old.0).unwrap().notes -= 1;
         self.notes.get_mut(note.0).unwrap().expression = new;
