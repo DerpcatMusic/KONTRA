@@ -194,8 +194,8 @@ impl Translation {
                 }
                 "TrackDelay" if number(node, "DelayTime", 0.0)? == 0.0 => {}
                 "EffectRack" => {
-                    // One live chain is a serial section at that chain's gain;
-                    // several are parallel branches, which a serial chain cannot hold.
+                    // Live chains are parallel branches summed at their own gains
+                    // (one is just a serial section at that gain).
                     let live: Vec<_> = node
                         .descendants()
                         .filter(|n| n.has_tag_name("Chains"))
@@ -205,22 +205,22 @@ impl Translation {
                                 && number(*c, "Gain", 1.0).is_ok_and(|g| g != 0.0)
                         })
                         .collect();
-                    match live[..] {
-                        [] => {}
-                        [chain] => {
-                            out.push(ir::Processor::Gain(ir::Gain::Linear(number(
-                                chain, "Gain", 1.0,
-                            )?)));
-                            let (inner, entries) = self.inserts(chain, voice, key)?;
-                            let base = out.len();
-                            placed.extend(entries.into_iter().map(|(n, f, c)| (n, base + f, c)));
-                            out.extend(inner);
+                    for (n, chain) in live.iter().enumerate() {
+                        let gain = ir::Gain::Linear(number(*chain, "Gain", 1.0)?);
+                        let (inner, entries) = self.inserts(*chain, voice, key)?;
+                        if let [_] = live[..] {
+                            out.push(ir::Processor::Gain(gain));
+                        } else {
+                            out.push(ir::Processor::Branch {
+                                count: inner.len() as u16,
+                                gain,
+                                first: n == 0,
+                                last: n + 1 == live.len(),
+                            });
                         }
-                        _ => {
-                            self.unsupported(&at, "EffectRack with parallel chains", live.len());
-                            placed.push((id, first, 0));
-                            continue;
-                        }
+                        let base = out.len();
+                        placed.extend(entries.into_iter().map(|(n, f, c)| (n, base + f, c)));
+                        out.extend(inner);
                     }
                 }
                 _ => {

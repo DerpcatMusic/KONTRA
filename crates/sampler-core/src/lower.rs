@@ -4,7 +4,7 @@
 //! approximated silently.
 use crate::{
     Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    CompressorSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
+    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
     FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
     ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
     Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
@@ -424,6 +424,7 @@ pub fn lower_with(
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
     plan = lowering.controllers(plan)?;
+    plan = lowering.axes(plan)?;
     // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
     // plain MIDI default range; without one, the MIDI default of 2 semitones.
     if let Some(range) = instrument
@@ -550,12 +551,8 @@ impl Lowering<'_> {
             {
                 return Err(unsupported(owner, Feature::VoiceReverb));
             }
-            for p in &chain.pre_amplitude {
-                pre.extend(self.processors(&owner, *p)?);
-            }
-            for p in &chain.post_amplitude {
-                post.extend(self.processors(&owner, *p)?);
-            }
+            pre.extend(self.lower_list(&owner, &chain.pre_amplitude)?);
+            post.extend(self.lower_list(&owner, &chain.post_amplitude)?);
         }
         let chain = if pre.is_empty() && post.is_empty() {
             None
@@ -911,6 +908,28 @@ impl Lowering<'_> {
         })
     }
 
+    /// `listed` in order. A rack branch counts IR processors, and a 4-pole
+    /// filter lowers to two stages, so branch lengths are remapped.
+    fn lower_list(&self, owner: &str, listed: &[ir::Processor]) -> Result<Vec<Processor>, LowerError> {
+        let mut out = Vec::new();
+        let mut starts = Vec::with_capacity(listed.len() + 1);
+        for p in listed {
+            starts.push(out.len());
+            out.extend(self.processors(owner, *p)?);
+        }
+        starts.push(out.len());
+        for (n, p) in listed.iter().enumerate() {
+            if let ir::Processor::Branch { count, .. } = *p {
+                let end = starts[(n + 1 + usize::from(count)).min(listed.len())];
+                if let Processor::Branch { count, .. } = &mut out[starts[n]] {
+                    *count = u16::try_from(end - starts[n] - 1)
+                        .map_err(|_| unsupported(owner, Feature::Controls))?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
     fn processors(
         &self,
@@ -963,6 +982,18 @@ impl Lowering<'_> {
                 release_seconds: c.release.seconds(),
                 makeup: c.makeup.linear(),
                 link: c.link,
+            }),
+            ir::Processor::Branch { gain, first, last, .. } => Processor::Branch {
+                count: 0,
+                gain: gain.linear(),
+                first,
+                last,
+            },
+            ir::Processor::Daft(d) => Processor::Daft(DaftSettings {
+                gain: Parameter::Constant(d.gain),
+                cutoff: Parameter::Constant(d.cutoff),
+                resonance: Parameter::Constant(d.resonance),
+                response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
@@ -1118,9 +1149,11 @@ impl Lowering<'_> {
                 }
                 starts.push(processors.len());
                 for (n, p) in listed.iter().enumerate() {
-                    if let ir::Processor::Mix { count, .. } = **p {
+                    if let ir::Processor::Mix { count, .. } | ir::Processor::Branch { count, .. } = **p {
                         let end = starts[(n + 1 + usize::from(count)).min(listed.len())];
-                        if let Processor::Mix { count, .. } = &mut processors[starts[n]] {
+                        if let Processor::Mix { count, .. } | Processor::Branch { count, .. } =
+                            &mut processors[starts[n]]
+                        {
                             *count = u16::try_from(end - starts[n] - 1)
                                 .map_err(|_| unsupported(&owner, Feature::Controls))?;
                         }
@@ -1153,6 +1186,7 @@ impl Lowering<'_> {
                     | Processor::StereoMatrix(_)
                     | Processor::Compressor(_)
                     | Processor::Rectify(_)
+                    | Processor::Branch { .. }
                     | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
@@ -1418,12 +1452,32 @@ impl Lowering<'_> {
         .map_err(core(Stage::Articulations, "articulations"))
     }
 
+    /// Keyswitches for the nested selectors' choices.
+    fn axes(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        let keys: Vec<_> = self
+            .ir
+            .axes
+            .iter()
+            .enumerate()
+            .flat_map(|(axis, a)| {
+                a.choices.iter().enumerate().flat_map(move |(choice, c)| {
+                    c.switch_keys.iter().map(move |&key| (key, axis, choice as u32))
+                })
+            })
+            .collect();
+        if keys.is_empty() {
+            return Ok(plan);
+        }
+        plan.with_axis_switches(keys)
+            .map_err(core(Stage::Articulations, "nested selector keys"))
+    }
+
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
         if self
             .ir
             .zones
             .iter()
-            .all(|z| z.conditions.is_empty() && previous_key(z.trigger).is_none())
+            .all(|z| z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none())
         {
             return Ok(plan);
         }
@@ -1441,6 +1495,14 @@ impl Lowering<'_> {
                         high: (u32::from(c.high) << 25) | 0x01ff_ffff,
                     })
                     .chain(previous_key(z.trigger))
+                    .chain(z.axes.iter().map(|p| {
+                        let value = p.choice as u32;
+                        ControllerCondition {
+                            controller: crate::AXIS_BASE.saturating_add(p.axis as u8),
+                            low: value,
+                            high: value,
+                        }
+                    }))
                     .collect()
             })
             .collect();
