@@ -124,7 +124,7 @@ fn authored_program_translates_loads_and_renders() {
     let features: Vec<&str> = ir.unsupported.iter().map(|u| u.feature.as_str()).collect();
     for expected in [
         "HighKeyFade",
-        "modulation source",
+        "AHD note-off release (default release used)",
         "sample outside the program's bank",
         "keygroup oscillators all play (the script may pick one per note)",
     ] {
@@ -135,7 +135,7 @@ fn authored_program_translates_loads_and_renders() {
     }
     // The vibrato is a route: +0.1 semitone per unit of a 5 Hz sine.
     let route = &ir.routes[zone.routes[0].0];
-    assert_eq!(zone.routes.len(), 1);
+    assert_eq!(zone.routes.len(), 2, "vibrato and the AHD gain route");
     assert_eq!(route.target, ir::Target::Pitch);
     assert_eq!(route.depth, ir::Depth::Pitch(ir::Pitch::Semitones(0.1)));
     assert!(matches!(
