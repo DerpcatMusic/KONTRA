@@ -37,7 +37,7 @@ use super::mix::{Mix, PartControls, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
 use super::{
-    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
+    BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadFailure, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
 };
 
@@ -880,7 +880,7 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
         };
         let at = existing.unwrap_or_else(|| {
             let output = instrument.groups[groups[0]].output;
-            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output });
+            instrument.buses.push(ir::Bus { name: name.clone(), chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
             tree.nodes.push(MixNode { name, kind: NodeKind::Mic, parent: Some(node(output)), inserts: Vec::new(), sends: Vec::new() });
             instrument.buses.len()
         });
@@ -904,8 +904,15 @@ fn nest(instrument: &mut ir::Instrument) -> MixTree {
             sends: Vec::new(),
         });
         let bus = ir::BusRef(instrument.buses.len());
-        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output });
+        instrument.buses.push(ir::Bus { name, chain: None, sends: Vec::new(), output, gain: ir::Gain::UNITY });
         instrument.groups[index].output = ir::Output::Bus(bus);
+        instrument.tap_group(index, bus);
+        let post = instrument.groups[index].tap.as_ref().map_or(&[][..], |t| &t.post[..]);
+        let fader = instrument.buses[bus.0].gain.linear();
+        let sends = (instrument.buses[bus.0].sends.iter().enumerate())
+            .map(|(n, s)| (node(s.to), (s.gain.linear() * if post.contains(&n) { fader } else { 1.0 }) as f32))
+            .collect();
+        tree.nodes.last_mut().expect("pushed above").sends = sends;
     }
     tree
 }
@@ -923,7 +930,7 @@ fn kontakt(
 ) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: sampler_kontakt::LoadError| match e {
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
-        e => CoreError::Load(e.to_string()),
+        e => CoreError::Load((&e).into()),
     };
     let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
     let mut source = if multi {
@@ -973,7 +980,7 @@ fn kontakt(
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
 /// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
-    let load = |e: &dyn std::fmt::Display| CoreError::Load(e.to_string());
+    let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
     let rate = request.sample_rate as u32;
     let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
@@ -1005,7 +1012,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
 }
 
 fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
-    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+    let mut reader = hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let spec = reader.spec();
     let channels = usize::from(spec.channels);
     if channels == 0 {
@@ -1018,7 +1025,7 @@ fn read_wav(path: &Path) -> Result<(u32, Box<[Frame]>), CoreError> {
             reader.samples::<i32>().map(|s| s.map(|s| s as f32 * scale)).collect::<Result<_, _>>()
         }
     }
-    .map_err(|e| CoreError::Load(e.to_string()))?;
+    .map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
     let frames = samples.chunks_exact(channels).map(|f| [f[0], f[channels.min(2) - 1]]).collect();
     Ok((spec.sample_rate, frames))
 }
@@ -1134,7 +1141,7 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(e.to_string()))?.instrument;
+            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -1145,7 +1152,7 @@ impl CoreLoader for V2Loader {
         if !is_wav(path) {
             return Err(unsupported(path));
         }
-        hound::WavReader::open(path).map_err(|e| CoreError::Load(e.to_string()))?;
+        hound::WavReader::open(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?;
         Ok(Description { name: stem(path), zones: 1, scripts: 0, missing: Vec::new() })
     }
 }
@@ -1391,7 +1398,7 @@ mod tests {
     #[test]
     fn groups_become_nodes_that_mix_and_route_to_their_own_pairs() {
         let mut instrument = ir::Instrument { name: "kit".into(), ..Default::default() };
-        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master });
+        instrument.buses.push(ir::Bus { name: "room".into(), chain: None, sends: vec![], output: ir::Output::Master, gain: ir::Gain::UNITY });
         instrument.groups.push(ir::Group { name: "kick".into(), output: ir::Output::Bus(ir::BusRef(0)), ..Default::default() });
         instrument.groups.push(ir::Group::default());
         let tree = nest(&mut instrument);
@@ -1758,6 +1765,32 @@ mod tests {
         assert!(heard, "the scripted program is silent");
     }
 
+    /// Idle cost of a loaded part: blocks with no note playing. Prints the
+    /// share of one core; `KONTRA_KONTAKT_LIBRARIES=… cargo test idle_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn idle_cost_of_a_loaded_instrument() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        for relative in [
+            "Una Corda Library/Instruments/Una Corda Pure.nki",
+            "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+            "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+        ] {
+            let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else { continue };
+            let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+            let mut core = V2Core::with_parts(1, 48000.0);
+            core.install(0, loaded.part);
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let blocks = 48000 / 128 * 20;
+            let start = std::time::Instant::now();
+            for _ in 0..blocks {
+                core.render(128);
+            }
+            let spent = start.elapsed().as_secs_f64();
+            println!("IDLE {relative}: {:.4}% of a core ({:.1} us per 128-frame block)", spent / 20.0 * 100.0, spent / blocks as f64 * 1e6);
+        }
+    }
+
     #[test]
     fn real_uvi_lua_program_plays_without_audio_thread_allocation() {
         let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
@@ -1874,5 +1907,49 @@ mod tests {
             (0..4).any(|_| loud(&core.render(128), 0, 128))
         });
         assert!(again, "the purged sample reloads");
+    }
+}
+
+#[cfg(test)]
+mod send_tests {
+    use super::*;
+
+    fn instrument(fader: f64) -> ir::Instrument {
+        let mut i = ir::Instrument::default();
+        i.buses.push(ir::Bus { name: "aux".into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY });
+        let send = |gain, pre_fader| ir::GroupSend { to: ir::BusRef(0), gain: ir::Gain::Linear(gain), pre_fader };
+        i.groups.push(ir::Group { gain: ir::Gain::Linear(fader), sends: vec![send(0.5, true), send(0.5, false)], ..Default::default() });
+        i
+    }
+
+    fn tapped(fader: f64) -> (ir::Gain, Vec<f64>) {
+        let mut i = instrument(fader);
+        let tree = nest(&mut i);
+        let bus = &i.buses[1];
+        assert_eq!(i.groups[0].gain, ir::Gain::UNITY, "voices feed the tap unscaled");
+        assert_eq!(tree.nodes[2].sends.len(), 2);
+        (bus.gain, tree.nodes[2].sends.iter().map(|s| f64::from(s.1)).collect())
+    }
+
+    #[test]
+    fn a_closed_fader_silences_the_output_but_not_the_pre_fader_send() {
+        let (out, sends) = tapped(0.0);
+        assert_eq!((out.linear(), sends), (0.0, vec![0.5, 0.0]));
+        assert_eq!(instrument(0.0).groups[0].sends.len(), 2);
+    }
+
+    #[test]
+    fn pre_and_post_sends_tap_either_side_of_a_minus_12_db_fader() {
+        let fader = 10f64.powf(-12.0 / 20.0);
+        let (out, sends) = tapped(fader);
+        assert_eq!(out.linear(), fader);
+        assert!((sends[0] - 0.5).abs() < 1e-6 && (sends[1] - 0.5 * fader).abs() < 1e-6, "{sends:?}");
+    }
+
+    #[test]
+    fn lowering_hears_the_same_taps_without_a_host_mixer() {
+        let routed = instrument(0.25).with_group_taps();
+        assert_eq!(routed.buses[1].gain.linear(), 0.25);
+        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(1)));
     }
 }

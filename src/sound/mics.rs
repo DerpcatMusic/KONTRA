@@ -137,7 +137,7 @@ mod tests {
     fn groups_on_separate_buses_are_mics() {
         let mut i = named(&["a", "b", "c"]);
         for (n, name) in ["Close", "Room"].into_iter().enumerate() {
-            i.buses.push(ir::Bus { name: name.into(), chain: None, sends: Vec::new(), output: ir::Output::Master });
+            i.buses.push(ir::Bus { name: name.into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY });
             i.groups[n].output = ir::Output::Bus(ir::BusRef(n));
         }
         let mics = infer(&i);

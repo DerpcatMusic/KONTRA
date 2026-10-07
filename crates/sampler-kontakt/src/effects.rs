@@ -412,10 +412,38 @@ fn sv_q(r: f32) -> f64 {
 /// Formant I (not a low pass), and 106 "AR LP2/4" has a cutoff law that
 /// differs from SV (stored 0.5135 reads 603 Hz, SV would give 774 Hz).
 const FILTER_TYPES: &[(i32, FilterType)] = &[
-    (52, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 2 }, hertz: sv_hertz, q: sv_q }),
-    (54, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 2 }, hertz: sv_hertz, q: sv_q }),
-    (55, FilterType { kind: sampler_ir::FilterKind::LowPass { poles: 4 }, hertz: sv_hertz, q: sv_q }),
-    (57, FilterType { kind: sampler_ir::FilterKind::HighPass { poles: 4 }, hertz: sv_hertz, q: sv_q }),
+    (
+        52,
+        FilterType {
+            kind: sampler_ir::FilterKind::LowPass { poles: 2 },
+            hertz: sv_hertz,
+            q: sv_q,
+        },
+    ),
+    (
+        54,
+        FilterType {
+            kind: sampler_ir::FilterKind::HighPass { poles: 2 },
+            hertz: sv_hertz,
+            q: sv_q,
+        },
+    ),
+    (
+        55,
+        FilterType {
+            kind: sampler_ir::FilterKind::LowPass { poles: 4 },
+            hertz: sv_hertz,
+            q: sv_q,
+        },
+    ),
+    (
+        57,
+        FilterType {
+            kind: sampler_ir::FilterKind::HighPass { poles: 4 },
+            hertz: sv_hertz,
+            q: sv_q,
+        },
+    ),
 ];
 
 fn filter_type(kind: i32) -> Option<&'static FilterType> {
@@ -442,6 +470,9 @@ pub(crate) struct Chain {
     pub processors: Vec<sampler_ir::Processor>,
     pub sends: Vec<f32>,
     pub notes: Vec<Note>,
+    /// Each translated SV filter slot and its index in `processors`, for
+    /// modulation targets that name a module slot.
+    pub filter_slots: Vec<(usize, usize)>,
 }
 
 /// Translate one rack. Each slot scales its output by its output gain. The
@@ -509,6 +540,8 @@ pub(crate) fn chain_with(
                 ..
             }) => match filter(*kind, *cutoff, *resonance) {
                 Some(f) => {
+                    out.filter_slots
+                        .push((fx.slot, out.processors.len() + filters.len()));
                     filters.push(f);
                     combined = product(gain, combined);
                 }
@@ -759,6 +792,7 @@ pub(crate) fn instrument_buses(
             chain,
             sends,
             output,
+            gain: sampler_ir::Gain::UNITY,
         });
     };
     let feeds = sends
@@ -826,11 +860,20 @@ fn eq_band(
 mod tests {
     #[test]
     fn sv_filters_follow_the_measured_laws() {
-        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else { panic!() };
-        let sampler_ir::Frequency::Hertz(hz) = f.cutoff else { panic!() };
+        let sampler_ir::Processor::Filter(f) = filter(52, 0.293, 0.0).unwrap() else {
+            panic!()
+        };
+        let sampler_ir::Frequency::Hertz(hz) = f.cutoff else {
+            panic!()
+        };
         assert!((hz / 25.0 / 800f64.powf(0.293) - 1.0).abs() < 1e-6);
-        let sampler_ir::Resonance::Q(q) = f.resonance else { panic!() };
-        assert!((q - 1.0 / 2.0).abs() < 1e-9, "r = 0 is k = 1.987 + 0.013 = 2");
+        let sampler_ir::Resonance::Q(q) = f.resonance else {
+            panic!()
+        };
+        assert!(
+            (q - 1.0 / 2.0).abs() < 1e-9,
+            "r = 0 is k = 1.987 + 0.013 = 2"
+        );
         assert!(filter(3, 0.0, 0.0).is_none() && filter(106, 0.5, 0.5).is_none());
     }
 
@@ -920,6 +963,8 @@ mod tests {
                 output: ir::Output::Master,
                 voice_limit: None,
                 monophonic_release: false,
+                sends: Vec::new(),
+                tap: None,
             }],
             ..Default::default()
         };
