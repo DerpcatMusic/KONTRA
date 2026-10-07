@@ -1189,3 +1189,6 @@ impl Cx<'_> {
         self.state.analyser.update(&self.p.shared.scope, source, rate)
     }
 }
+
+#[cfg(feature = "shots")]
+pub use ir_view::uvi_ui_health;
