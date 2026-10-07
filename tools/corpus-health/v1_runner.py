@@ -5,8 +5,8 @@ write corpus-health records, so `corpus_health summary|diff` compares v1 and v2.
     v1_runner.py --bin PATH/kontakto --ids V2.jsonl --out V1.jsonl [--shard I/N]
                  [--timeout 300] [--audit-every K]
 
-Items come from the `id`/`kind` fields of a v2 corpus-health run (the same
-list). One process per item, so a crash only costs that item. Resumable: a
+Items come from `corpus-health list` output or the `id`/`kind` fields of a v2
+corpus-health run (the same list). One process per item, so a crash only costs that item. Resumable: a
 `started` line without a result is recorded as a crash on the next run.
 
 Per kind:
@@ -162,7 +162,8 @@ def main():
     items, seen = [], set()
     with open(args.ids) as f:
         for line in f:
-            r = json.loads(line)
+            # Either a corpus-health JSONL record or a `corpus-health list` line (kind TAB id).
+            r = json.loads(line) if line.lstrip().startswith("{") else dict(zip(("kind", "id"), line.rstrip("\n").split("\t", 1)))
             if r.get("status") == "started" or r["id"] in seen or "kind" not in r:
                 continue
             seen.add(r["id"])
