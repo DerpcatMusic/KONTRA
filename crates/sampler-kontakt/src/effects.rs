@@ -905,8 +905,9 @@ fn convolution(
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
-/// Kontakt's normalized Reverb values as physical settings. Laws are v1's
-/// fits, not verified against Kontakt's own rendering.
+/// Kontakt's normalized Reverb values as physical settings. Time, predelay,
+/// high cut and low shelf follow the reference display; size, damping and
+/// diffusion are still v1's fits.
 fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
     let [
         room,
@@ -926,14 +927,18 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
         sampler_ir::Reason::UnknownLaw,
     ));
     sampler_ir::Reverb {
-        decay_seconds: 0.2 * 100f64.powf(time),
+        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
+        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
+        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
         size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
         damping_hz: 18_000.0 * 0.05f64.powf(damping),
         modulation_seconds: modulation * 0.0015,
         diffusion: 0.75 * diffusion,
         predelay_seconds: predelay * 0.25,
-        input_cutoff_hz: 20_000.0 * 0.025f64.powf(high_cut),
-        low_shelf_db: -18.0 * low_shelf,
+        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
+        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
+        // Low Shelf shows 0 to -12 dB, linear.
+        low_shelf_db: -12.0 * low_shelf,
         width: stereo,
     }
 }
@@ -1100,6 +1105,19 @@ mod tests {
             output_set: true,
             public,
         }
+    }
+
+    #[test]
+    fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
+        let r = |time: f32, cut: f32, shelf: f32| {
+            reverb(&[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0], &mut Vec::new())
+        };
+        // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
+        assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
+        assert!((r(1.0, 0.0, 0.0).decay_seconds - 16.16).abs() < 0.5);
+        let end = r(0.0, 1.0, 1.0);
+        assert!((end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9);
+        assert_eq!(r(0.0, 0.0, 0.0).input_cutoff_hz, 21_000.0);
     }
 
     #[test]
