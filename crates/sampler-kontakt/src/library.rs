@@ -1419,6 +1419,32 @@ mod modulation {
         }
     }
 
+    /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
+    /// envelope minus sustain falls 0.51, 0.23, 0.085, 0.02 at 0.25 s steps
+    /// from the 2 s peak (1 - 0.25 = 0.75 of travel, so ratios .67/.30/.11/.026).
+    #[test]
+    fn ahdsr_decay_is_exponential_like_the_measurement() {
+        let (attack, ir::Curve::Exponential(k)) = ahdsr_curves(0.0) else {
+            panic!("exponential decay")
+        };
+        let remaining = |t: f64| 1.0 - ((k * t).exp() - 1.0) / (k.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.67), (0.375, 0.30), (0.625, 0.11), (0.875, 0.026)] {
+            assert!(
+                (remaining(t) - measured).abs() < 0.04,
+                "t {t}: {} vs {measured}",
+                remaining(t)
+            );
+        }
+        // Curve 0 attack is near-linear: env 0.12/0.35/0.59/0.84 at 1/8, 3/8, 5/8, 7/8.
+        let ir::Curve::Exponential(a) = attack else {
+            panic!("attack curve")
+        };
+        let rise = |t: f64| ((a * t).exp() - 1.0) / (a.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.12), (0.375, 0.35), (0.625, 0.59), (0.875, 0.84)] {
+            assert!((rise(t) - measured).abs() < 0.04, "t {t}: {}", rise(t));
+        }
+    }
+
     #[test]
     fn filter_cutoff_modulation_is_ten_octaves_per_full_amount() {
         let mut t = translation();
