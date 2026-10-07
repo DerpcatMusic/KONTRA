@@ -564,16 +564,15 @@ pub(crate) struct Impulses<'a> {
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
-/// With `dynamic` (a bus rack's `generic` address) every slot a script may
-/// write at runtime becomes a [`sampler_ir::Processor::Mix`] block, bypassed
-/// ones included.
+/// With `dynamic` (the rack's `(group, generic)` address) every slot a script
+/// may write at runtime becomes a [`sampler_ir::Processor::Mix`] block,
+/// bypassed ones included.
 pub(crate) fn chain_with(
     slots: &[Slot],
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
-    dynamic: Option<i32>,
+    dynamic: Option<(i32, i32)>,
 ) -> Chain {
-    let dynamic = dynamic.filter(|_| scope == Scope::Bus);
     let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
@@ -720,7 +719,7 @@ pub(crate) fn chain_with(
             },
             None => modelled = false,
         }
-        if let Some(generic) = mix {
+        if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
             let count = out.processors.len() - begin;
             if count > 0 {
@@ -735,7 +734,7 @@ pub(crate) fn chain_with(
                     sampler_ir::Processor::Mix {
                         count: count as u16,
                         address: sampler_ir::SlotAddress {
-                            group: -1,
+                            group,
                             slot: fx.slot as i32,
                             generic,
                         },
@@ -922,7 +921,7 @@ pub(crate) fn instrument_buses(
         load,
     };
     // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
-    let generic = |n| dynamic.then_some(n);
+    let generic = |n| dynamic.then_some((-1, n));
     let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source), generic(1));
     take("instrument insert", &insert);
     let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source), generic(2));
@@ -1066,7 +1065,7 @@ mod tests {
         gainer.bypass = true;
         let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
         assert!(plain.processors.is_empty());
-        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some(1));
+        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some((-1, 1)));
         assert!(matches!(
             c.processors[..],
             [

@@ -137,7 +137,7 @@ pub enum Processor {
     },
     /// The next `count` processors run in parallel with the unprocessed
     /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
-    /// bypass control (0..=1). All three are ramped controls. Bus scope only.
+    /// bypass control (0..=1). All three are ramped controls.
     Mix {
         count: u16,
         dry: ControlRange,
@@ -338,10 +338,6 @@ pub(super) fn compile_processors(
                     wet,
                     bypass,
                 } => {
-                    // Only buses (which have reverbs) can run a parallel block.
-                    if reverbs.is_none() {
-                        return Err(Error::InvalidInput);
-                    }
                     let lanes = [dry, wet, bypass].map(|binding| {
                         bindings.push(binding);
                         bindings.len() - 1
