@@ -1227,6 +1227,38 @@ pub fn arc(cx: f64, cy: f64, r: f64, from: f64, sweep: f64) -> DrawPath {
     )
 }
 
+/// The shared KONTRA control face, fitted by its caller.
+pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
+    canvas(move |s| {
+        let (cx, cy) = (s.width / 2., s.height / 2.);
+        let weight = TIGHT * 0.75;
+        let r = s.width.min(s.height) / 2. - weight;
+        let (start, sweep) = (0.75 * PI, 1.5 * PI);
+        let mut draw = vec![
+            Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
+            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.14 + 0.06 * lift), weight),
+        ];
+        let (a, b) = if at < from { (at, from) } else { (from, at) };
+        if b - a > 0.002 {
+            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), value_ink(0.), weight));
+        }
+        let angle = start + sweep * at;
+        let (inner, outer) = (r * 0.2, r - weight * 2.);
+        draw.push(Draw::stroke(
+            DrawPath::polyline(
+                [Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner), Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer)],
+                false,
+            ),
+            value_ink(lift),
+            weight,
+        ));
+        if focused {
+            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1263,37 +1295,5 @@ mod tests {
         assert_eq!(meter_unit(1.), 60. / 66.);
         assert_eq!(meter_unit(1e-4), 0., "-80 dB sits at the foot");
     }
-}
-
-/// The shared KONTRA control face, fitted by its caller.
-pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
-    canvas(move |s| {
-        let (cx, cy) = (s.width / 2., s.height / 2.);
-        let weight = TIGHT * 0.75;
-        let r = s.width.min(s.height) / 2. - weight;
-        let (start, sweep) = (0.75 * PI, 1.5 * PI);
-        let mut draw = vec![
-            Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
-            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.14 + 0.06 * lift), weight),
-        ];
-        let (a, b) = if at < from { (at, from) } else { (from, at) };
-        if b - a > 0.002 {
-            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), value_ink(0.), weight));
-        }
-        let angle = start + sweep * at;
-        let (inner, outer) = (r * 0.2, r - weight * 2.);
-        draw.push(Draw::stroke(
-            DrawPath::polyline(
-                [Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner), Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer)],
-                false,
-            ),
-            value_ink(lift),
-            weight,
-        ));
-        if focused {
-            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
-        }
-        draw
-    })
 }
 

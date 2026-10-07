@@ -342,6 +342,17 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         outputs.push(el);
     }
     items.extend([caption("Output").fill(secondary()).lines(1).shrink(0), segmented(outputs)]);
+    use crate::library::ThreadSetting as T;
+    let threads = cx.settings.threads;
+    let mut choices = Vec::new();
+    for (id, label, to) in [("auto", "Auto", T::Auto), ("1", "1", T::Single), ("2", "2", T::Fixed(2)), ("4", "4", T::Fixed(4)), ("8", "8", T::Fixed(8))] {
+        let (hit, el) = action(ui, format!("threads-{id}"), label, threads == to);
+        if hit {
+            libraries.edit(|s| s.threads = to);
+        }
+        choices.push(el);
+    }
+    items.extend([caption("Threads (next load)").fill(secondary()).lines(1).shrink(0), segmented(choices)]);
     if let Some(bus) = output {
         let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::sound::BUSES);
         if let Some(n) = to {
