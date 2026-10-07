@@ -19,7 +19,7 @@
 //! Not yet: per-note controllers and program changes (counted), a sample-rate change
 //! without reloading.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -933,6 +933,32 @@ type Plan = (Prepared, Option<StreamCache>, Option<ScriptDriver>);
 /// A UVI program's Lua scripts, driving the part's runtime from their own thread.
 pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>;
 
+/// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
+/// folder above the snapshot, named by its metadata or by the snapshot's folder.
+fn snapshot_parent(snapshot: &Path, name: &str) -> Option<PathBuf> {
+    fn find(dir: &Path, wanted: &[String], depth: usize) -> Option<PathBuf> {
+        let mut folders = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+                && path.file_stem().is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
+            {
+                return Some(path);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        folders.sort();
+        folders.iter().find_map(|d| find(d, wanted, depth - 1))
+    }
+    let folder = snapshot.parent()?.file_name()?.to_string_lossy().into_owned();
+    let wanted: Vec<String> = [name.to_owned(), folder].into_iter().filter(|n| !n.is_empty()).collect();
+    snapshot.ancestors().skip(1).take(4).find_map(|dir| find(dir, &wanted, 3))
+}
+
 fn kontakt(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
@@ -942,18 +968,32 @@ fn kontakt(
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load((&e).into()),
     };
-    let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
-    let mut source = if multi {
-        sampler_kontakt::read_program(&request.path, request.program as usize)
+    let extension = |e: &str| request.path.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+    // A snapshot is the saved state of an instrument found beside it in the library.
+    let snapshot = if extension("nksn") {
+        let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
+        let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
+            CoreError::Load(LoadFailure::message(format!("no instrument \"{}\" found for snapshot", state.instrument)))
+        })?;
+        Some((parent, state))
     } else {
-        sampler_kontakt::read(&request.path)
+        None
+    };
+    let path = snapshot.as_ref().map_or(&request.path, |(parent, _)| parent);
+    let mut source = if extension("nkm") {
+        sampler_kontakt::read_program(path, request.program as usize)
+    } else {
+        sampler_kontakt::read(path)
     }
     .map_err(load)?;
+    if let Some((_, state)) = &snapshot {
+        sampler_kontakt::apply_snapshot(&mut source, state);
+    }
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
         rate: request.sample_rate as u32,
-        library: Some(request.path.clone()),
+        library: Some(path.clone()),
         mpe: request.mpe.then(Default::default),
         ..Default::default()
     };
@@ -1147,7 +1187,12 @@ impl CoreLoader for V2Loader {
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
+            let parent = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")).then(|| {
+                let state = sampler_kontakt::read_snapshot(path).ok()?;
+                snapshot_parent(path, &state.instrument)
+            });
+            let path = parent.flatten().unwrap_or_else(|| path.to_path_buf());
+            let instrument = sampler_kontakt::read(&path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -1717,6 +1762,36 @@ mod tests {
         mix.nodes[0][nodes[0] - 1].mute = true;
         let none = settled(&mut core, &mix);
         assert!(none < open * 0.05 + 1e-7 && one >= none, "one {one}, none {none}");
+    }
+
+    #[test]
+    fn real_snapshots_read_find_their_instrument_and_load() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(library) = std::env::split_paths(&roots).map(|r| r.join("Una Corda Library")).find(|p| p.is_dir()) else {
+            eprintln!("skipped: Una Corda Library is not installed");
+            return;
+        };
+        let files: Vec<_> = walkdir::WalkDir::new(library.join("Snapshots"))
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "nksn"))
+            .map(|e| e.into_path())
+            .collect();
+        assert!(!files.is_empty());
+        let mut changed = 0;
+        for file in &files {
+            let state = sampler_kontakt::read_snapshot(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let parent = snapshot_parent(file, &state.instrument).unwrap_or_else(|| panic!("no instrument for {}", file.display()));
+            let plain = sampler_kontakt::read(&parent).unwrap();
+            let mut applied = sampler_kontakt::read(&parent).unwrap();
+            sampler_kontakt::apply_snapshot(&mut applied, &state);
+            let states = |k: &sampler_kontakt::Kontakt| k.instrument.behaviors.iter().map(|b| b.state.clone()).collect::<Vec<_>>();
+            changed += usize::from(states(&plain) != states(&applied));
+        }
+        assert!(changed > 0, "no snapshot changed any script state across {} files", files.len());
+        let request = LoadRequest { path: files[0].clone(), sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        assert!(loaded.instrument.is_some_and(|i| !i.zones.is_empty()));
     }
 
     #[test]
