@@ -586,6 +586,11 @@ impl Player {
         self.driver.unmodeled()
     }
 
+    /// A host message (controller, bend...) for the scripts.
+    pub fn input(&mut self, input: HostInput) {
+        self.driver.input(&self.rt, input);
+    }
+
     pub fn note_on(&mut self, key: u8, velocity: f64) -> Result<(), Error> {
         let input = Input {
             protocol: Protocol::Native,

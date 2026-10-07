@@ -114,11 +114,12 @@ for _, kind in ipairs(kinds) do
   end
 end
 -- Persistent widgets take the preset's saved value after initialisation, and
--- their `changed` runs, as when UVI reloads a state.
+-- their `changed` runs, between the script body and onInit.
 function __restore()
   for _, w in ipairs(registry) do
     local saved = rawget(w, "__saved")
     if saved then
+      rawset(w, "__saved", nil)
       local kind = w.kind
       if kind == "OnOffButton" or kind == "Button" then
         w.value = (saved == "1" or saved == "true")
