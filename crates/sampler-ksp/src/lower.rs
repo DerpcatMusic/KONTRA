@@ -1657,6 +1657,38 @@ impl Gen<'_, '_> {
                 self.write_param(ParamScope::Note, target, dst, args, Some(2))?;
                 true
             }
+            // Group selection of a note this callback just played.
+            SetEventParArr
+                if self.const_int(args, 1) == Some(b::event_par::ALLOW_GROUP)
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 2, t)?;
+                let group = reg(dst, 2)?;
+                self.arg(args, 3, group)?;
+                let all = reg(dst, 3)?;
+                self.set(all, i64::from(b::ALL_GROUPS))?;
+                self.emit(I::CompareLocal {
+                    lhs: all,
+                    rhs: group,
+                    comparison: Cmp::Equal,
+                })?;
+                let one = self.jump_if_zero(all)?;
+                self.emit(I::WriteEventGroup {
+                    event: dst,
+                    group: None,
+                    allowed: t,
+                })?;
+                let end = self.jump()?;
+                self.land(one);
+                self.emit(I::WriteEventGroup {
+                    event: dst,
+                    group: Some(group),
+                    allowed: t,
+                })?;
+                self.land(end);
+                true
+            }
             // "From script" modulator values (Kontakt 6.6+), per source event.
             SetEventParArr | GetEventParArr
                 if self.const_int(args, 1) == Some(b::event_par::MOD_VALUE_ID)
