@@ -867,6 +867,7 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
             ir::Processor::Delay { .. } => "Delay",
+            ir::Processor::Mix { .. } => "Mix",
         })
         .map(String::from)
         .collect()
