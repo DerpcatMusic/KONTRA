@@ -667,3 +667,37 @@ fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
     assert_eq!(inside.stream_underruns(), 0);
     assert_eq!(at(100).trigger(input(), 60, 1.), Err(Error::NotReady));
 }
+
+#[test]
+fn a_start_refused_after_preflight_is_counted_not_a_panic() {
+    let asset = Pcm::new(48000, vec![[0.5; 2]; PAGE_FRAMES]).unwrap();
+    let plan = Prepared::new(48000, vec![asset], vec![region(0, Playback::default())], 8).unwrap();
+    let limits = Limits {
+        notes: 4,
+        channels: 0,
+        performances: 1,
+        families: 4,
+        voices: 2,
+        expressions: 4,
+        decisions: 0,
+        commands: 8,
+        behaviors: 0,
+        behavior_cells: 0,
+        behavior_fuel: 0,
+        note_cells: 0,
+    };
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let mut output = [[0.; 2]; 64];
+    // Every voice audible, so the third start cannot be admitted.
+    for id in 1..=3 {
+        let held = Input {
+            external_id: Some(id),
+            ..input()
+        };
+        let _ = rt.trigger(held, 60, 1.);
+    }
+    rt.render(&mut output).unwrap();
+    let stats = rt.stats();
+    assert_eq!(stats.voices, 2);
+    assert_eq!(stats.voice_drops + stats.refused_starts, 2);
+}
