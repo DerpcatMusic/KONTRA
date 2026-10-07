@@ -9,6 +9,8 @@ pub struct RuntimeStats {
     pub stream_underruns: u64,
     /// Voice starts rejected because every voice was busy and audible.
     pub voice_drops: u64,
+    /// Voice starts refused after preflight (source not resident, pool full).
+    pub refused_starts: u64,
     /// Voices started silent because their first frames were not resident
     /// (`set_cold_starts`); they fade in when their pages arrive.
     pub cold_starts: u64,
@@ -34,6 +36,7 @@ impl Runtime {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
             voice_drops: self.voice_drops,
+            refused_starts: self.refused_starts,
             cold_starts: self.cold_started,
             nonfinite_frames: self.nonfinite_frames,
             voices: self.voices.count(),

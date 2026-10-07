@@ -1,0 +1,12 @@
+# Barbarian Brass, script bypassed: does CC1 (and CC11) matter? note 55 vel 100, 3 s each
+0 note 55 100 3
+6 cc 11 127
+6.1 cc 1 0
+6.5 note 55 100 3
+12 cc 1 48
+12.5 note 55 100 3
+18 cc 1 127
+18.5 note 55 100 3
+24 cc 11 0
+24.5 note 55 100 3
+30 end

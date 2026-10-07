@@ -22,6 +22,10 @@ pub struct Options {
     /// Native per-note pressure/timbre routing added to every zone; `None`
     /// leaves expression to authored modulation (pitch bend stays native).
     pub mpe: Option<sampler_core::lower::MpeDefaults>,
+    /// Value (0..=127) the dynamics controllers other than CC11 start at when
+    /// the host has not sent them; `None` is Kontakt's power-on state (CC11
+    /// full, the rest 0, so a CC1 instrument is near-silent until it moves).
+    pub dynamics_start: Option<u8>,
 }
 
 impl Default for Options {
@@ -32,6 +36,7 @@ impl Default for Options {
             scripts: true,
             library: None,
             mpe: Some(Default::default()),
+            dynamics_start: None,
         }
     }
 }
@@ -64,6 +69,7 @@ pub struct Loaded {
     pub scripts: Vec<sampler_ksp::ScriptView>,
     /// The library's pictures and resources, when [`Options::library`] is known.
     pub resources: Option<Resources>,
+    dynamics: Vec<(u8, f64)>,
 }
 
 /// How well an instrument's keyswitches reached the articulation map.
@@ -108,15 +114,24 @@ pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
 }
 
 impl Loaded {
+    /// The instrument volume's controller and its starting linear gain (the
+    /// saved volume until the controller arrives; then `(cc/127)^3`).
+    pub fn host_volume(&self) -> Option<ir::HostVolume> {
+        self.instrument.host_volume
+    }
+
     /// The controllers that drive loudness, most used first, each with its
     /// value before any is received (CC11 full, the rest 0; Kontakt's
     /// power-on state). A host can show "dynamics: CC1 (now 0)" on load.
     pub fn dynamics(&self) -> Vec<(u8, f64)> {
-        self.instrument
-            .amplitude_controllers()
-            .into_iter()
-            .map(|cc| (cc, if cc == 11 { 1.0 } else { 0.0 }))
-            .collect()
+        self.dynamics.clone()
+    }
+
+    /// Whether the instrument is near-silent until a host sends a dynamics
+    /// controller: one drives loudness and starts at 0. Velocity- or
+    /// script-driven loudness is not covered.
+    pub fn needs_controller(&self) -> bool {
+        self.dynamics.iter().any(|&(_, v)| v == 0.0)
     }
 }
 
@@ -332,6 +347,74 @@ fn finish_kept(
     Ok((prepare(instrument, pcm, options)?, kept))
 }
 
+/// The instrument volume as a host parameter: zones lose the saved volume and
+/// gain a route `(cc/127)^3` from the controller, which starts at
+/// `saved^(1/3)` so the unsent state plays the saved value exactly.
+fn host_volume(instrument: &mut ir::Instrument) {
+    let Some(volume) = instrument.host_volume.filter(|v| v.saved > 0.0) else {
+        return;
+    };
+    if instrument.zones.is_empty() {
+        return;
+    }
+    instrument.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Controller(volume.controller),
+    });
+    instrument.shapes.push(ir::Shape {
+        points: (0..128)
+            .map(|i| {
+                let x = f64::from(i) / 127.0;
+                (x, x * x * x)
+            })
+            .collect(),
+    });
+    let mut route = ir::Route::new(
+        ir::ModulatorRef(instrument.modulators.len() - 1),
+        ir::Target::Amplitude,
+        ir::Depth::Normalized(1.0),
+    );
+    route.shape = Some(ir::ShapeRef(instrument.shapes.len() - 1));
+    instrument.routes.push(route);
+    let route = ir::RouteRef(instrument.routes.len() - 1);
+    for zone in &mut instrument.zones {
+        zone.gain = ir::Gain::Linear(zone.gain.linear() / volume.saved);
+        zone.routes.push(route);
+    }
+}
+
+/// Dynamics controllers with their power-on value: Kontakt's (CC11 full, the
+/// rest 0) unless the host asked for `start` on those other than CC11.
+fn power_on(instrument: &ir::Instrument, start: Option<u8>) -> Vec<(u8, f64)> {
+    let volume = instrument.host_volume.map(|v| v.controller);
+    instrument
+        .amplitude_controllers()
+        .into_iter()
+        .filter(|&cc| Some(cc) != volume)
+        .map(|cc| {
+            let value = match (cc, start) {
+                (11, _) => 1.0,
+                (_, Some(v)) => f64::from(v.min(127)) / 127.0,
+                _ => 0.0,
+            };
+            (cc, value)
+        })
+        .collect()
+}
+
+fn powered(plan: Prepared, instrument: &ir::Instrument, dynamics: &[(u8, f64)]) -> Prepared {
+    let plan = dynamics
+        .iter()
+        .filter(|&&(cc, v)| cc != 11 && v != 0.0)
+        .fold(plan, |plan, &(cc, v)| plan.with_initial_level(cc, v));
+    match instrument.host_volume.filter(|v| v.saved > 0.0) {
+        Some(v) if !instrument.zones.is_empty() => {
+            plan.with_initial_level(v.controller, v.saved.cbrt())
+        }
+        _ => plan,
+    }
+}
+
 /// Narrow a tracked zone to the keys the runtime can pitch its audio to
 /// (`ratio` is the asset rate over the output rate). `false` when none remain.
 fn fit_keys(
@@ -441,12 +524,52 @@ pub fn prepare(
     prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
+/// What a script may query while its `on init` runs.
+pub(crate) fn script_environment(
+    behavior: &ir::Behavior,
+    index: usize,
+    groups: Vec<String>,
+    performance_view: sampler_ksp::model::PerformanceView,
+) -> sampler_ksp::Environment {
+    sampler_ksp::Environment {
+        groups,
+        slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
+        persisted: behavior
+            .state
+            .iter()
+            .filter_map(|(name, saved)| {
+                let value = match saved {
+                    ir::Saved::Int(n) => Value::Int(*n as i32),
+                    ir::Saved::Real(r) => Value::Real(*r),
+                    ir::Saved::Text(t) => Value::Text(t.clone()),
+                    _ => return None,
+                };
+                Some((name.clone(), value))
+            })
+            .collect(),
+        persisted_arrays: behavior
+            .state
+            .iter()
+            .filter_map(|(name, saved)| {
+                let values = match saved {
+                    ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
+                    ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
+                    _ => return None,
+                };
+                Some((name.clone(), values))
+            })
+            .collect(),
+        performance_view,
+    }
+}
+
 fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
     let (rate, scripts) = (options.rate, options.scripts);
+    host_volume(&mut instrument);
     let resources = options.library.as_deref().map(Resources::of);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
     let limits = sampler_ksp::Limits::LIBRARY;
@@ -481,36 +604,7 @@ fn prepare_inner(
                 }),
             }
         }
-        let environment = sampler_ksp::Environment {
-            groups: groups.clone(),
-            slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
-            persisted: behavior
-                .state
-                .iter()
-                .filter_map(|(name, saved)| {
-                    let value = match saved {
-                        ir::Saved::Int(n) => Value::Int(*n as i32),
-                        ir::Saved::Real(r) => Value::Real(*r),
-                        ir::Saved::Text(t) => Value::Text(t.clone()),
-                        _ => return None,
-                    };
-                    Some((name.clone(), value))
-                })
-                .collect(),
-            persisted_arrays: behavior
-                .state
-                .iter()
-                .filter_map(|(name, saved)| {
-                    let values = match saved {
-                        ir::Saved::Ints(v) => v.iter().map(|n| Value::Int(*n as i32)).collect(),
-                        ir::Saved::Reals(v) => v.iter().map(|r| Value::Real(*r)).collect(),
-                        _ => return None,
-                    };
-                    Some((name.clone(), values))
-                })
-                .collect(),
-            performance_view,
-        };
+        let environment = script_environment(behavior, index, groups.clone(), performance_view);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
@@ -581,8 +675,10 @@ fn prepare_inner(
             instrument.articulations = articulations;
             instrument.switching = switching;
         }
+        let dynamics = power_on(&instrument, options.dynamics_start);
         return Ok(Loaded {
-            plan: lowered.map_err(LoadError::Lower)?,
+            plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
+            dynamics,
             instrument,
             interfaces,
             scripts: Vec::new(),
@@ -597,8 +693,10 @@ fn prepare_inner(
                 message: e.to_string(),
             })
         });
+    let dynamics = power_on(&instrument, options.dynamics_start);
     Ok(Loaded {
-        plan: lowered.map_err(LoadError::Lower)?,
+        plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
+        dynamics,
         instrument,
         interfaces,
         scripts,
@@ -624,5 +722,117 @@ mod migration_tests {
         ir.zones.push(zone);
         let m = articulation_migration(&ir);
         assert_eq!((m.switches_found, m.migrated), (2, 1));
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+    use sampler_core::{Input, Limits, Protocol, Runtime};
+
+    /// Peak in dB of a full-scale constant sample, instrument volume saved as
+    /// `saved`, CC7 `cc` (`None`: never sent).
+    fn peak_db(saved: f64, cc: Option<u8>) -> f64 {
+        let mut ir = ir::Instrument::default();
+        ir.assets.push(ir::Asset {
+            location: ir::AssetLocation::Path("x".into()),
+            encoding: ir::Encoding::Wav,
+            root_key: None,
+            loops: Vec::new(),
+        });
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.keys = ir::KeyRange { low: 60, high: 60 };
+        zone.pitch = ir::KeyTracking::Fixed;
+        zone.velocity = ir::VelocityResponse::None;
+        zone.gain = ir::Gain::Linear(saved);
+        ir.zones.push(zone);
+        ir.host_volume = Some(ir::HostVolume {
+            controller: 7,
+            saved,
+        });
+        let pcm = Pcm::new(48000, vec![[1.0f32; 2]; 48000].into_boxed_slice()).unwrap();
+        let loaded = finish(ir, vec![pcm], vec!["x".into()], &Options::default()).unwrap();
+        assert_eq!(loaded.host_volume().map(|v| v.controller), Some(7));
+        let limits = Limits {
+            notes: 16,
+            channels: 16,
+            performances: 1,
+            expressions: 16,
+            families: 16,
+            decisions: 16,
+            voices: 16,
+            commands: 16,
+            behaviors: 1,
+            behavior_fuel: 1 << 10,
+            behavior_cells: 0,
+            note_cells: 0,
+        };
+        let mut rt = Runtime::new(loaded.plan, limits).unwrap();
+        if let Some(cc) = cc {
+            let id = rt.performance(0).unwrap();
+            let value = (u64::from(cc) * u64::from(u32::MAX) / 127) as u32;
+            rt.set_controller(id, 7, value).unwrap();
+        }
+        let input = Input {
+            protocol: Protocol::Clap,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: Some(1),
+        };
+        rt.trigger(input, 60, 1.0).unwrap();
+        let mut out = vec![[0.0f32; 2]; 4800];
+        rt.render(&mut out).unwrap();
+        let peak = out[2400..]
+            .iter()
+            .flatten()
+            .fold(0f32, |p, x| p.max(x.abs()));
+        20.0 * f64::from(peak).max(1e-9).log10()
+    }
+
+    #[test]
+    fn cc7_replaces_the_saved_volume_with_its_cube() {
+        let near = |got: f64, want: f64| assert!((got - want).abs() < 0.15, "{got} against {want}");
+        // Saved -6 dB (the noise instrument): unsent -6.02, CC7 replaces it.
+        near(peak_db(0.5, None), -6.021);
+        near(peak_db(0.5, Some(127)), 0.0);
+        near(peak_db(0.5, Some(100)), -6.23);
+        near(peak_db(0.5, Some(64)), -17.95);
+        assert!(peak_db(0.5, Some(0)) < -120.0);
+        // Saved 0 dB (Una): unsent and 127 agree.
+        near(peak_db(1.0, None), 0.0);
+        near(peak_db(1.0, Some(127)), 0.0);
+        near(peak_db(1.0, Some(64)), -17.95);
+    }
+}
+
+#[cfg(test)]
+mod dynamics_tests {
+    use super::*;
+
+    fn cc1_instrument() -> ir::Instrument {
+        let mut ir = ir::Instrument::default();
+        ir.modulators.push(ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Controller(1),
+        });
+        ir.routes.push(ir::Route::new(
+            ir::ModulatorRef(0),
+            ir::Target::Amplitude,
+            ir::Depth::Normalized(1.0),
+        ));
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.routes.push(ir::RouteRef(0));
+        ir.zones.push(zone);
+        ir
+    }
+
+    #[test]
+    fn the_dynamics_controller_starts_at_zero_unless_the_host_says_otherwise() {
+        let ir = cc1_instrument();
+        assert_eq!(power_on(&ir, None), vec![(1, 0.0)]);
+        assert_eq!(power_on(&ir, Some(127)), vec![(1, 1.0)]);
+        assert!(power_on(&ir, Some(64))[0].1 > 0.5);
     }
 }
