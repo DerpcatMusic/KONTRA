@@ -4,10 +4,10 @@
 //! approximated silently.
 use crate::{
     Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
+    CompressorSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
     FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
     ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
+    Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
     SlotKind, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy,
     Trigger, VelocityCurve, VoiceChain, ZoneFades, slot_control,
 };
@@ -959,6 +959,18 @@ impl Lowering<'_> {
                 low_shelf_db: r.low_shelf_db,
                 width: r.width,
             }),
+            ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
+                threshold_db: c.threshold_db,
+                ratio: c.ratio,
+                attack_seconds: c.attack.seconds(),
+                release_seconds: c.release.seconds(),
+                makeup: c.makeup.linear(),
+                link: c.link,
+            }),
+            ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
+                ir::Rectifier::Full => Rectifier::Full,
+                ir::Rectifier::Half => Rectifier::Half,
+            }),
             ir::Processor::Mix { .. } => return Err(unsupported(owner, Feature::Controls)),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
@@ -1140,7 +1152,11 @@ impl Lowering<'_> {
             let tail_frames = processors
                 .iter()
                 .map(|p| match p {
-                    Processor::Gain(_) | Processor::StereoMatrix(_) | Processor::Mix { .. } => 0,
+                    Processor::Gain(_)
+                    | Processor::StereoMatrix(_)
+                    | Processor::Compressor(_)
+                    | Processor::Rectify(_)
+                    | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
                         crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32

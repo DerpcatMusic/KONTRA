@@ -203,6 +203,7 @@ impl Check<'_> {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::Rectify(_) => {}
                 Processor::Reverb(r) => {
                     for (v, field) in [
                         (r.decay_seconds, "reverb decay"),
@@ -217,6 +218,13 @@ impl Check<'_> {
                     ] {
                         self.finite(v, field)?;
                     }
+                }
+                Processor::Compressor(c) => {
+                    self.finite(c.threshold_db, "compressor threshold")?;
+                    self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;
+                    self.time(c.attack, "compressor attack")?;
+                    self.time(c.release, "compressor release")?;
+                    self.gain(c.makeup, "compressor makeup")?;
                 }
                 Processor::Convolution { impulse, dry, wet } => {
                     self.exists(Reference::Impulse(impulse.0))?;
