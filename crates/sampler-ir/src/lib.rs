@@ -142,6 +142,29 @@ pub struct Group {
     /// release samples still sounding (Kontakt manual, Release Trigger
     /// "Monophonic").
     pub monophonic_release: bool,
+    /// Extra routes of the group's sound to buses (aux sends), beside `output`.
+    pub sends: Vec<GroupSend>,
+    /// Set by [`Instrument::tap_group`]: the bus that carries this group's
+    /// fader and sends.
+    pub tap: Option<GroupTap>,
+}
+
+/// Where a group's fader lives once it is tapped: `bus` outputs at the bus's
+/// `gain`, and so do its `sends` listed in `post` (the post-fader ones); the
+/// rest leave the bus before the fader.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupTap {
+    pub bus: BusRef,
+    pub post: Vec<usize>,
+}
+
+/// A group's send to a bus.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupSend {
+    pub to: BusRef,
+    pub gain: Gain,
+    /// Taken before the group's own gain (fader), else after it.
+    pub pre_fader: bool,
 }
 
 /// Past `voices` sounding voices, starting another fades one out over
@@ -181,6 +204,8 @@ pub struct Zone {
     pub gain: Gain,
     /// How note velocity scales this zone's amplitude.
     pub velocity: VelocityResponse,
+    /// Linear ramps at the edges of the key and velocity ranges.
+    pub fades: Fades,
     pub pan: Pan,
     pub playback: Playback,
     /// Voice-scope processing for this zone, before group/bus processing.
@@ -192,6 +217,83 @@ pub struct Zone {
 }
 
 impl Instrument {
+    /// The controllers that scale zone amplitude, most zones first (ties by
+    /// number): the instrument's dynamics or volume sources, so a host can
+    /// show "dynamics: CC1" and an expression layer can target it. Counts zones
+    /// carrying a route from `Controller(cc)` to [`Target::Amplitude`] with a
+    /// nonzero depth.
+    pub fn amplitude_controllers(&self) -> Vec<u8> {
+        let mut zones = [0usize; 128];
+        for zone in &self.zones {
+            let mut seen = [false; 128];
+            for route in zone.routes.iter().map(|r| &self.routes[r.0]) {
+                let ModulationSource::Controller(cc) = self.modulators[route.source.0].source
+                else {
+                    continue;
+                };
+                let live = match route.depth {
+                    Depth::Normalized(d) => d != 0.0,
+                    Depth::Gain(_) | Depth::Pitch(_) => true,
+                };
+                if route.target == Target::Amplitude && live && cc < 128 {
+                    seen[usize::from(cc)] = true;
+                }
+            }
+            for (n, seen) in seen.iter().enumerate() {
+                zones[n] += usize::from(*seen);
+            }
+        }
+        let mut ccs: Vec<u8> = (0..128u8).filter(|&n| zones[usize::from(n)] > 0).collect();
+        ccs.sort_by_key(|&n| std::cmp::Reverse(zones[usize::from(n)]));
+        ccs
+    }
+
+    /// Make `bus` the tap point of group `index`: the group's fader moves onto
+    /// the bus's output and its sends leave from the signal before it (pre-fader)
+    /// or scaled by it (post-fader, see [`GroupTap`]). The group's voices then
+    /// feed `bus` unscaled.
+    pub fn tap_group(&mut self, index: usize, bus: BusRef) {
+        let group = &mut self.groups[index];
+        let target = &mut self.buses[bus.0];
+        target.gain = group.gain;
+        let mut post = Vec::new();
+        for send in group.sends.drain(..) {
+            if !send.pre_fader {
+                post.push(target.sends.len());
+            }
+            target.sends.push(Send {
+                to: Output::Bus(send.to),
+                gain: send.gain,
+                position: SendPosition::PostChain,
+            });
+        }
+        group.tap = Some(GroupTap { bus, post });
+        group.gain = Gain::UNITY;
+    }
+
+    /// Give every group that has sends a bus of its own to tap (what a host's
+    /// mixer already does for every group), so lowering hears the same mix.
+    pub fn with_group_taps(&self) -> Self {
+        let mut routed = self.clone();
+        for index in 0..routed.groups.len() {
+            if routed.groups[index].sends.is_empty() {
+                continue;
+            }
+            let group = &routed.groups[index];
+            let bus = BusRef(routed.buses.len());
+            routed.buses.push(Bus {
+                name: group.name.clone(),
+                chain: None,
+                sends: Vec::new(),
+                output: group.output,
+                gain: Gain::UNITY,
+            });
+            routed.groups[index].output = Output::Bus(bus);
+            routed.tap_group(index, bus);
+        }
+        routed
+    }
+
     /// Keep only the zones `keep` accepts and the assets they use, renumbering
     /// assets in their original order. Returns the original index of each
     /// remaining asset, so a caller can load just those.
@@ -241,6 +343,7 @@ impl Zone {
             tune: Pitch::NONE,
             gain: Gain::UNITY,
             velocity: VelocityResponse::Linear,
+            fades: Fades::default(),
             pan: Pan::CENTER,
             playback: Playback::default(),
             chain: None,
@@ -260,6 +363,19 @@ pub enum VelocityResponse {
     Linear,
     /// Amplitude is (velocity / 127) ^ exponent.
     Power(f64),
+}
+
+/// Zone crossfades, in key and velocity steps inside the zone's own ranges.
+/// A fade-in of `F` over a low edge `L` has gain `(v - L + 1) / (F + 1)` for
+/// `L <= v <= L + F`; a fade-out over a high edge `H` mirrors it,
+/// `(H - v + 1) / (F + 1)`. Zero is no fade. The key and velocity gains
+/// multiply.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fades {
+    pub velocity_in: u8,
+    pub velocity_out: u8,
+    pub key_in: u8,
+    pub key_out: u8,
 }
 
 /// Inclusive MIDI key range.
@@ -863,6 +979,9 @@ pub struct Bus {
     pub chain: Option<ChainRef>,
     pub sends: Vec<Send>,
     pub output: Output,
+    /// Level of the bus's own output; its `sends` are tapped before it, except
+    /// a group tap's post-fader ones, which it scales too.
+    pub gain: Gain,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

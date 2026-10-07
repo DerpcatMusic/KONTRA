@@ -66,6 +66,60 @@ pub struct Loaded {
     pub resources: Option<Resources>,
 }
 
+/// How well an instrument's keyswitches reached the articulation map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArticulationMigration {
+    /// Articulations the source defined through switch keys.
+    pub switches_found: usize,
+    /// Articulations that select zones, so a velocity, channel, CC or program
+    /// driver can stand in for the keys.
+    pub migrated: usize,
+    /// Why the rest did not translate, from the load report.
+    pub unrecognised: Vec<String>,
+}
+
+/// Count keyswitch articulations that carry zones, and list the report
+/// entries that name what was not recognised.
+pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
+    let tagged = |i: usize| {
+        ir.zones
+            .iter()
+            .any(|z| z.articulation.is_some_and(|a| a.0 == i))
+    };
+    let switched = |a: &&ir::Articulation| !a.switch_keys.is_empty();
+    ArticulationMigration {
+        switches_found: ir.articulations.iter().filter(switched).count(),
+        migrated: ir
+            .articulations
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| switched(a) && tagged(*i))
+            .count(),
+        unrecognised: ir
+            .unsupported
+            .iter()
+            .filter(|u| {
+                let f = u.feature.to_lowercase();
+                f.contains("keyswitch") || f.contains("start") || f.contains("articulation")
+            })
+            .map(|u| format!("{}: {} {}", u.location, u.feature, u.value))
+            .collect(),
+    }
+}
+
+impl Loaded {
+    /// The controllers that drive loudness, most used first, each with its
+    /// value before any is received (CC11 full, the rest 0; Kontakt's
+    /// power-on state). A host can show "dynamics: CC1 (now 0)" on load.
+    pub fn dynamics(&self) -> Vec<(u8, f64)> {
+        self.instrument
+            .amplitude_controllers()
+            .into_iter()
+            .map(|cc| (cc, if cc == 11 { 1.0 } else { 0.0 }))
+            .collect()
+    }
+}
+
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
 pub fn load(
     path: &Path,
@@ -120,13 +174,17 @@ pub fn load_read(
             total: kept.len(),
             sample,
         });
-        let decoded = samples.decode(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
+        let decoded = samples
+            .decode(sample)
+            .map_err(|e| e.at(crate::Stage::SampleResolve))?;
         let frames = decoded.frames.into_boxed_slice();
-        pcm.push(
-            Pcm::new(decoded.rate, frames).map_err(|e| {
-                LoadError::Invalid { path: sample.clone(), reason: e.to_string() }.at(crate::Stage::SampleResolve)
-            })?,
-        );
+        pcm.push(Pcm::new(decoded.rate, frames).map_err(|e| {
+            LoadError::Invalid {
+                path: sample.clone(),
+                reason: e.to_string(),
+            }
+            .at(crate::Stage::SampleResolve)
+        })?);
     }
     if canceled() {
         return Err(LoadError::Canceled);
@@ -178,7 +236,11 @@ pub fn load_read_streamed(
     for &asset in &kept {
         let location = &locations[asset];
         sources.push((
-            std::sync::Arc::new(samples.source(location).map_err(|e| e.at(crate::Stage::SampleResolve))?) as std::sync::Arc<dyn crate::AssetSource>,
+            std::sync::Arc::new(
+                samples
+                    .source(location)
+                    .map_err(|e| e.at(crate::Stage::SampleResolve))?,
+            ) as std::sync::Arc<dyn crate::AssetSource>,
             location.as_path(),
         ));
     }
@@ -542,4 +604,25 @@ fn prepare_inner(
         scripts,
         resources: resources.map(std::cell::RefCell::into_inner),
     })
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn a_switch_without_zones_is_found_but_not_migrated() {
+        let mut ir = ir::Instrument::default();
+        let a = |name: &str, keys: Vec<u8>| ir::Articulation {
+            name: name.into(),
+            switch_keys: keys,
+            ..Default::default()
+        };
+        ir.articulations = vec![a("sus", vec![12]), a("stac", vec![13]), a("none", vec![])];
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.articulation = Some(ir::ArticulationRef(0));
+        ir.zones.push(zone);
+        let m = articulation_migration(&ir);
+        assert_eq!((m.switches_found, m.migrated), (2, 1));
+    }
 }

@@ -4,9 +4,11 @@
 mod articulation;
 mod ingress;
 mod mpe;
+mod probe;
 pub use articulation::{Articulator, Intercept};
 pub use ingress::{Applied, ApplyError, BlockError, Ingress, TimedPacket};
 pub use mpe::{Mpe, Zone};
+pub use probe::{MpeResponse, mpe_response};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {
