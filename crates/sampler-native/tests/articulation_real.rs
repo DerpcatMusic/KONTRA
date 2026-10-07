@@ -794,6 +794,11 @@ fn barbarian_cc1_sweep_probe() {
         .join("Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki");
     for cc1 in [None, Some(0u32), Some(48), Some(127)] {
         let d = decoded(&path, 55);
+        if cc1.is_none() {
+            for u in &d.instrument.unsupported {
+                eprintln!("PROBE unsupported {u:?}");
+            }
+        }
         let loaded = sampler_kontakt::finish(
             d.instrument.clone(),
             d.pcm.clone(),
@@ -823,7 +828,20 @@ fn full_note_runtime_trace_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    for &(relative, key, vel, _, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
+    // KONTRA_TRACE="relative path|key" traces one instrument instead of the table.
+    let one = std::env::var("KONTRA_TRACE").ok().map(|t| {
+        let (path, key) = t.rsplit_once('|').unwrap();
+        (path.to_owned(), key.parse::<u8>().unwrap())
+    });
+    let list: Vec<(String, u8, u8)> = match one {
+        Some((p, k)) => vec![(p, k, 100)],
+        None => REFERENCE
+            .iter()
+            .filter(|r| !r.0.contains("Vista"))
+            .map(|r| (r.0.to_owned(), r.1, r.2))
+            .collect(),
+    };
+    for (relative, key, vel) in list.iter().map(|(r, k, v)| (r.as_str(), *k, *v)) {
         if vel != 100 {
             continue;
         }

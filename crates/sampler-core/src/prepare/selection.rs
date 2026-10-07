@@ -785,16 +785,14 @@ impl Runtime {
                     .unwrap()
                     .script
                     .envelope(group, r.envelope);
-                let admitted = self
-                    .admit_voice(
-                        family,
-                        r.sample,
-                        self.now,
-                        r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
-                        envelope,
-                        cursor.with_step(step),
-                    )
-                    ;
+                let admitted = self.admit_voice(
+                    family,
+                    r.sample,
+                    self.now,
+                    r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
+                    envelope,
+                    cursor.with_step(step),
+                );
                 // Preflight reserved this start, but a page can be evicted or
                 // the pool fill between then and now. Never panic on the audio
                 // thread: refuse this voice, count it, carry on.

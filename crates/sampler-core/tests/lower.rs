@@ -433,7 +433,9 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
         });
         ir.zones[0].chain = Some(ir::ChainRef(0));
         // 6 kHz square-ish tone: alternating pairs of frames.
-        let wave = (0..4800).map(|i| [if (i / 4) % 2 == 0 { 0.5 } else { -0.5 }; 2]).collect::<Vec<_>>();
+        let wave = (0..4800)
+            .map(|i| [if (i / 4) % 2 == 0 { 0.5 } else { -0.5 }; 2])
+            .collect::<Vec<_>>();
         let pcm = vec![
             Pcm::new(48000, wave.into_boxed_slice()).unwrap(),
             constant(0.2),
@@ -451,7 +453,6 @@ fn four_pole_filters_lower_to_two_cascaded_sections() {
     assert!(two.is_finite() && four.is_finite());
     assert!(four < two * 0.5, "two {two}, four {four}");
 }
-
 
 #[test]
 fn one_pole_filters_follow_the_6_db_per_octave_law() {
@@ -494,8 +495,14 @@ fn one_pole_filters_follow_the_6_db_per_octave_law() {
     let low = f64::from(energy(Some(ir::FilterKind::LowPass { poles: 1 })) / plain);
     let high = f64::from(energy(Some(ir::FilterKind::HighPass { poles: 1 })) / plain);
     let (want_low, want_high) = (h.0 * h.0 + h.1 * h.1, (1.0 - h.0).powi(2) + h.1 * h.1);
-    assert!((low - want_low).abs() < want_low * 0.03, "low {low}, want {want_low}");
-    assert!((high - want_high).abs() < want_high * 0.03, "high {high}, want {want_high}");
+    assert!(
+        (low - want_low).abs() < want_low * 0.03,
+        "low {low}, want {want_low}"
+    );
+    assert!(
+        (high - want_high).abs() < want_high * 0.03,
+        "high {high}, want {want_high}"
+    );
 }
 
 /// Minimal complex arithmetic for the one-pole response.
@@ -520,7 +527,10 @@ impl std::ops::Div for C {
     type Output = (f64, f64);
     fn div(self, o: C) -> (f64, f64) {
         let d = o.0 * o.0 + o.1 * o.1;
-        ((self.0 * o.0 + self.1 * o.1) / d, (self.1 * o.0 - self.0 * o.1) / d)
+        (
+            (self.0 * o.0 + self.1 * o.1) / d,
+            (self.1 * o.0 - self.0 * o.1) / d,
+        )
     }
 }
 

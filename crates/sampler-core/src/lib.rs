@@ -40,7 +40,9 @@ pub use control::{
 };
 mod controller_event;
 mod performance;
-pub use performance::{Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{
+    Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot, previous_key_value,
+};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -63,8 +65,9 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Decimator, Delay, FilterKind,
+    Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -108,8 +111,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
-    service_mipmaps,
+    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning,
+    VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
@@ -322,8 +325,8 @@ impl Limits {
     /// release voices of every stage on top, which its release phase reserves.
     pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
         let behaviors = Self::script_capacity(plan);
-        let voices = voices
-            + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
+        let voices =
+            voices + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
         Self {
             notes,
             channels: 16,
@@ -896,7 +899,9 @@ impl Runtime {
             .plans
             .get_mut(self.active_plan.0)
             .ok_or(Error::StaleHandle)?;
-        g.dsp.buses.swap_convolution(&g.prepared.buses, slot, upload)
+        g.dsp
+            .buses
+            .swap_convolution(&g.prepared.buses, slot, upload)
     }
 
     /// Each bus of the active plan's peak level since the last call, after
