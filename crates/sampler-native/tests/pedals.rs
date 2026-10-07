@@ -94,6 +94,9 @@ struct Setup {
     /// reserves its release voices up front (24 on Vista), so a pool below
     /// that never admits one.
     pool_pad: usize,
+    /// Exactly `voices` voice slots, without the release headroom
+    /// `Limits::for_plan` adds: a pool that really fills, to test stealing.
+    fixed: bool,
     voices: usize,
     block: usize,
     /// Replace the instrument's own scripts with this KSP.
@@ -109,6 +112,7 @@ impl Setup {
             gated: false,
             port: Port::Channel,
             pool_pad: 0,
+            fixed: false,
             voices: 1024,
             block: BLOCK,
             script: None,
@@ -185,8 +189,9 @@ impl Run {
     }
 }
 
-fn limits(plan: &sampler_core::Prepared, voices: usize) -> Limits {
-    Limits::for_plan(plan, 64, voices)
+fn limits(plan: &sampler_core::Prepared, voices: usize, fixed: bool) -> Limits {
+    let limits = Limits::for_plan(plan, 64, voices);
+    if fixed { Limits { voices, ..limits } } else { limits }
 }
 
 /// `sampler_kontakt::load` with the instrument's scripts replaced by `source`.
@@ -264,7 +269,7 @@ fn play(setup: Setup, events: &[(f64, Msg)]) -> Option<Run> {
         .zones
         .iter()
         .any(|z| z.trigger != sampler_ir::Trigger::Attack);
-    let limits = limits(&loaded.plan, setup.voices);
+    let limits = limits(&loaded.plan, setup.voices, setup.fixed);
     let mut rt = Runtime::new(loaded.plan, limits).unwrap();
     // As a host plays instruments: steal at capacity rather than reject.
     rt.set_voice_stealing(Some(Stealing::for_limits(RATE as u32, setup.voices)))
@@ -998,7 +1003,7 @@ fn voice_limit(setup: Setup) {
     } else {
         2 * two.peak_voices.max(2)
     };
-    let setup = Setup { voices, ..setup };
+    let setup = Setup { voices, fixed: true, ..setup };
     let keys = [a, a + 2, a + 4, a + 7];
     let mut events = vec![(0.0, Cc(0, 64, 127))];
     for (i, &key) in keys.iter().enumerate() {
