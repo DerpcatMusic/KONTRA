@@ -111,7 +111,9 @@ pub(crate) fn process(
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }
-            PreparedProcessor::Delay { .. } => unreachable!("delay chains render per voice"),
+            PreparedProcessor::Delay { .. } | PreparedProcessor::Compressor(_) => {
+                unreachable!("delay and compressor chains render per voice")
+            }
             PreparedProcessor::Reverb(_)
             | PreparedProcessor::Convolution(_)
             | PreparedProcessor::Mix { .. } => {

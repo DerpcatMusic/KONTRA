@@ -7,7 +7,8 @@ use crate::{
     ControlValue, ControllerCondition, SlotKind, slot_control, Direction, Driver,
     Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
-    Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
+    CompressorSettings, Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings,
+    SelectionPolicy,
     Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
     Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
 };
@@ -878,6 +879,14 @@ impl Lowering<'_> {
                 low_shelf_db: r.low_shelf_db,
                 width: r.width,
             }),
+            ir::Processor::Compressor(c) => Processor::Compressor(CompressorSettings {
+                threshold_db: c.threshold_db,
+                ratio: c.ratio,
+                attack_seconds: c.attack.seconds(),
+                release_seconds: c.release.seconds(),
+                makeup: c.makeup.linear(),
+                link: c.link,
+            }),
             ir::Processor::Mix { .. } => return Err(unsupported(owner, Feature::Controls)),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
@@ -1032,7 +1041,10 @@ impl Lowering<'_> {
             let tail_frames = processors
                 .iter()
                 .map(|p| match p {
-                    Processor::Gain(_) | Processor::StereoMatrix(_) | Processor::Mix { .. } => 0,
+                    Processor::Gain(_)
+                    | Processor::StereoMatrix(_)
+                    | Processor::Compressor(_)
+                    | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
                         crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32

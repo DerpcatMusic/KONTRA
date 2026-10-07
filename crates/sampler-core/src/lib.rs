@@ -63,7 +63,7 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, ConvolutionUpload, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
     ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
