@@ -823,7 +823,7 @@ fn full_note_runtime_trace_probe() {
     let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
         return;
     };
-    for &(relative, key, vel, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
+    for &(relative, key, vel, _, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
         if vel != 100 {
             continue;
         }
