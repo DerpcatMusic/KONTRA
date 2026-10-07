@@ -41,6 +41,8 @@ pub struct Samples {
     archives: HashMap<PathBuf, Arc<Archive>>,
     keys: HashMap<PathBuf, Arc<dyn LibraryKey>>,
     handles: HashMap<PathBuf, Arc<File>>,
+    /// Virtual `<instrument>/<member>` paths to bounded FileContainer samples.
+    embedded: HashMap<PathBuf, Source>,
     /// Numeric headers only; repeated zone trims need no additional disk reads.
     frame_counts: HashMap<PathBuf, u64>,
     /// Lower-case basename to loose files under `root`, built on first miss.
@@ -59,11 +61,49 @@ impl Samples {
             archives: HashMap::new(),
             keys: HashMap::new(),
             handles: HashMap::new(),
+            embedded: HashMap::new(),
             frame_counts: HashMap::new(),
             loose: None,
             #[cfg(feature = "library-access")]
             content_roots: content_roots(),
         }
+    }
+
+    pub(crate) fn instrument(root: &Path, path: &Path) -> Result<Self, LoadError> {
+        use std::io::{Read, Seek};
+        let mut samples = Self::new(root);
+        let mut file = File::open(path).map_err(|e| LoadError::io(path, e))?;
+        let mut magic = [0; 16];
+        file.read_exact(&mut magic)
+            .map_err(|e| LoadError::io(path, e))?;
+        if &magic == b"/\\ NI FC MTD  /\\" {
+            file.rewind().map_err(|e| LoadError::io(path, e))?;
+            let container = ni_file::file_container::NIFileContainer::read(file)
+                .map_err(|e| LoadError::decode(path, "monolith sample directory", e))?;
+            for item in container.items {
+                let name = item.filename.replace(['|', '\\'], "/");
+                if Path::new(&name).is_absolute() || name.split('/').any(|p| p == "..") {
+                    return Err(LoadError::Invalid {
+                        path: path.into(),
+                        reason: "invalid monolith member path".into(),
+                    });
+                }
+                let location = path.join(name);
+                let source = Source {
+                    path: path.into(),
+                    offset: container.file_section_offset + item.file_start_offset,
+                    size: item.file_size,
+                    key: None,
+                };
+                if samples.embedded.insert(location, source).is_some() {
+                    return Err(LoadError::Invalid {
+                        path: path.into(),
+                        reason: "duplicate monolith member path".into(),
+                    });
+                }
+            }
+        }
+        Ok(samples)
     }
 
     fn archive_member(&mut self, path: &Path) -> Option<(PathBuf, String)> {
@@ -83,6 +123,29 @@ impl Samples {
     /// a file, or `<archive>/<member>` for an archive member. `None` when absent.
     pub fn resolve(&mut self, parent: &Path, name: &str) -> Result<Option<PathBuf>, LoadError> {
         let name = name.replace('\\', "/");
+        // Saved paths can include the old external sample folder. Prefer an
+        // exact suffix, then a unique basename; never choose a duplicate.
+        // ponytail: linear member lookup; index names if large monoliths load slowly.
+        if !self.embedded.is_empty() {
+            let normalized = name.replace('|', "/").to_lowercase();
+            let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
+            for suffix in [normalized.as_str(), basename] {
+                let suffix = format!("/{suffix}");
+                let mut matches = self
+                    .embedded
+                    .keys()
+                    .filter(|p| p.to_string_lossy().to_lowercase().ends_with(&suffix));
+                if let Some(found) = matches.next() {
+                    if matches.next().is_some() {
+                        return Err(LoadError::Invalid {
+                            path: parent.join(&name),
+                            reason: "ambiguous monolith sample name".into(),
+                        });
+                    }
+                    return Ok(Some(found.clone()));
+                }
+            }
+        }
         // Kontakt resolves relative names from the instrument folder, and
         // monolith paths also from the library folders above it.
         let mut bases = vec![parent.to_path_buf()];
@@ -170,6 +233,27 @@ impl Samples {
 
     /// Decode a sample [`Samples::resolve`] returned.
     pub fn decode(&mut self, location: &Path) -> Result<Decoded, LoadError> {
+        if self.embedded.contains_key(location) {
+            use std::io::{Read, Seek, SeekFrom};
+            let source = self.source(location)?;
+            let size = usize::try_from(source.size)
+                .ok()
+                .filter(|n| *n <= 1 << 30)
+                .ok_or_else(|| LoadError::Invalid {
+                    path: location.into(),
+                    reason: "monolith sample exceeds 1 GiB".into(),
+                })?;
+            let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+            file.seek(SeekFrom::Start(source.offset))
+                .map_err(|e| LoadError::io(location, e))?;
+            let mut bytes = vec![0; size];
+            file.read_exact(&mut bytes)
+                .map_err(|e| LoadError::io(location, e))?;
+            return decode(&bytes).map_err(|reason| LoadError::Invalid {
+                path: location.into(),
+                reason,
+            });
+        }
         let bytes = match self.archive_member(location) {
             Some((archive, member)) => {
                 let key = match self.keys.get(&archive) {
@@ -191,6 +275,9 @@ impl Samples {
 
     /// Where a resolved sample's bytes live, for random-access streaming.
     pub fn source(&mut self, location: &Path) -> Result<Source, LoadError> {
+        if let Some(source) = self.embedded.get(location) {
+            return Ok(source.clone());
+        }
         let Some((archive, member)) = self.archive_member(location) else {
             let size = std::fs::metadata(location)
                 .map_err(|e| LoadError::io(location, e))?
@@ -351,47 +438,28 @@ impl Samples {
             return Ok(count);
         }
         let mut head = Vec::new();
-        match self.archive_member(location) {
-            Some((archive, member)) => {
-                let key = match self.keys.get(&archive) {
-                    Some(key) => Some(key.clone()),
-                    None => self.encrypted(&archive, &member)?,
-                };
-                let mut file = File::open(&archive).map_err(|e| LoadError::io(&archive, e))?;
-                let entry = self
-                    .archive(&archive)?
-                    .member(&mut file, &member)
-                    .map_err(|e| LoadError::decode(&archive, "archive member header", e))?;
-                let entry = entry
-                    .filter(|e| e.valid)
-                    .ok_or_else(|| LoadError::Invalid {
-                        path: location.into(),
-                        reason: "invalid archive member".into(),
-                    })?;
-                file.seek(SeekFrom::Start(entry.offset))
-                    .and_then(|_| file.take(entry.size.min(1 << 16)).read_to_end(&mut head))
-                    .map_err(|e| LoadError::io(&archive, e))?;
-                if entry.encoded
-                    && entry.key_index != 0xff
-                    && let Some(key) = key
-                {
-                    key.apply(&mut head);
-                }
-            }
-            None => {
-                let file = File::open(location).map_err(|e| LoadError::io(location, e))?;
-                file.take(1 << 16)
-                    .read_to_end(&mut head)
-                    .map_err(|e| LoadError::io(location, e))?;
-            }
+        let source = self.source(location)?;
+        let mut file = File::open(&source.path).map_err(|e| LoadError::io(location, e))?;
+        file.seek(SeekFrom::Start(source.offset))
+            .and_then(|_| file.take(source.size.min(1 << 16)).read_to_end(&mut head))
+            .map_err(|e| LoadError::io(location, e))?;
+        if let Some(key) = &source.key {
+            key.apply(&mut head);
         }
-        let count = if head.starts_with(b"FORM") {
-            let source = self.source(location)?;
-            crate::SampleReader::open(&source).ok().map(|r| r.frames() as u64)
-        } else { frames(&head) }.ok_or_else(|| LoadError::Invalid {
-            path: location.into(),
-            reason: "unreadable sample header".into(),
-        })?;
+        let count = frames(&head)
+            .or_else(|| {
+                head.starts_with(b"FORM")
+                    .then(|| {
+                        crate::SampleReader::open(&source)
+                            .ok()
+                            .map(|r| r.frames() as u64)
+                    })
+                    .flatten()
+            })
+            .ok_or_else(|| LoadError::Invalid {
+                path: location.into(),
+                reason: "unreadable sample header".into(),
+            })?;
         self.frame_counts.insert(location.into(), count);
         Ok(count)
     }
@@ -596,8 +664,12 @@ fn walk(dir: &Path, found: &mut impl FnMut(PathBuf)) {
     }
 }
 
-/// Frame count from the start of a WAV or NCW file.
+/// Frame count from the start of a WAV, AIFF or NCW file.
 fn frames(head: &[u8]) -> Option<u64> {
+    if head.starts_with(b"FORM") {
+        let layout = aiff_layout(head).ok()?;
+        return Some((layout.data.len() / (layout.width * layout.channels)) as u64);
+    }
     if !head.starts_with(b"RIFF") {
         return ncw::NcwHeader::read(&mut &head[..])
             .ok()
@@ -623,7 +695,7 @@ fn frames(head: &[u8]) -> Option<u64> {
     None
 }
 
-/// WAV, AIFF or NCW bytes to stereo frames.
+/// WAV, AIFF/AIFC PCM or NCW bytes to stereo frames.
 pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
     if bytes.starts_with(b"FORM") {
         let mut reader = crate::pcm::Reader::open(Box::new(Cursor::new(bytes.to_vec()))).map_err(|e| format!("AIFF: {e:#}"))?;
@@ -668,13 +740,15 @@ pub(crate) fn ncw_sample(format: ncw::SampleFormat, bits: u16) -> impl Fn(i32) -
     }
 }
 
-/// A WAV's sample layout: `data` is the declared data chunk, which may extend
+/// A WAV/AIFF PCM layout: `data` is the declared data chunk, which may extend
 /// past the bytes parsed.
 pub(crate) struct Wav {
     pub rate: u32,
     pub channels: usize,
     pub width: usize,
     tag: u16,
+    big_endian: bool,
+    signed8: bool,
     pub data: std::ops::Range<usize>,
 }
 
@@ -683,12 +757,25 @@ impl Wav {
     pub fn frame(&self, frame: &[u8]) -> [f32; 2] {
         let width = self.width;
         let sample = |s: &[u8]| match (self.tag, width) {
-            (3, _) => f32::from_le_bytes([s[0], s[1], s[2], s[3]]),
-            (_, 1) => (f32::from(s[0]) - 128.0) / 128.0,
+            (3, _) => {
+                let b = [s[0], s[1], s[2], s[3]];
+                if self.big_endian {
+                    f32::from_be_bytes(b)
+                } else {
+                    f32::from_le_bytes(b)
+                }
+            }
+            (_, 1) if !self.signed8 => (f32::from(s[0]) - 128.0) / 128.0,
             _ => {
                 let mut word = [0u8; 4];
-                word[4 - width..].copy_from_slice(s);
-                i32::from_le_bytes(word) as f32 / 2_147_483_648.0
+                let value = if self.big_endian {
+                    word[..width].copy_from_slice(s);
+                    i32::from_be_bytes(word)
+                } else {
+                    word[4 - width..].copy_from_slice(s);
+                    i32::from_le_bytes(word)
+                };
+                value as f32 / 2_147_483_648.0
             }
         };
         [
@@ -699,7 +786,19 @@ impl Wav {
 }
 
 fn wav(bytes: &[u8]) -> Result<Decoded, String> {
+    if bytes.starts_with(b"FORM") {
+        let end = bytes
+            .get(4..8)
+            .map(|b| 8u64 + u64::from(u32::from_be_bytes(b.try_into().unwrap())))
+            .ok_or("truncated AIFF FORM")?;
+        if end > bytes.len() as u64 {
+            return Err("truncated AIFF FORM".into());
+        }
+    }
     let layout = wav_layout(bytes)?;
+    if layout.data.end > bytes.len() {
+        return Err("truncated PCM sample data".into());
+    }
     let data = layout.data.start.min(bytes.len())..layout.data.end.min(bytes.len());
     let frames = bytes[data]
         .chunks_exact(layout.width * layout.channels)
@@ -712,6 +811,9 @@ fn wav(bytes: &[u8]) -> Result<Decoded, String> {
 }
 
 pub(crate) fn wav_layout(bytes: &[u8]) -> Result<Wav, String> {
+    if bytes.starts_with(b"FORM") {
+        return aiff_layout(bytes);
+    }
     let u16le = |at: usize| {
         bytes
             .get(at..at + 2)
@@ -759,6 +861,122 @@ pub(crate) fn wav_layout(bytes: &[u8]) -> Result<Wav, String> {
         channels,
         width,
         tag,
+        big_endian: false,
+        signed8: false,
+        data,
+    })
+}
+
+/// AIFF/AIFC PCM uses the same random-access interleaved frames as WAV.
+/// FORM/COMM/SSND follow the public AIFF spec; unsupported codecs are refused.
+fn aiff_layout(bytes: &[u8]) -> Result<Wav, String> {
+    aiff_reader(&mut Cursor::new(bytes))
+}
+
+pub(crate) fn aiff_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Wav, String> {
+    use std::io::SeekFrom;
+    let base = reader.stream_position().map_err(|e| e.to_string())?;
+    let mut head = [0; 12];
+    reader.read_exact(&mut head).map_err(|e| e.to_string())?;
+    if &head[..4] != b"FORM" {
+        return Err("invalid AIFF FORM".into());
+    }
+    let aifc = match &head[8..12] {
+        b"AIFF" => false,
+        b"AIFC" => true,
+        _ => return Err("FORM without AIFF/AIFC".into()),
+    };
+    let form_end = 8u64 + u64::from(u32::from_be_bytes(head[4..8].try_into().unwrap()));
+    let (mut format, mut data, mut at) = (None, None, 12u64);
+    // Bound metadata traversal; sample bytes are skipped even when COMM follows SSND.
+    for _ in 0..10_000 {
+        if at + 8 > form_end {
+            break;
+        }
+        reader
+            .seek(SeekFrom::Start(
+                base.checked_add(at).ok_or("AIFF offset overflow")?,
+            ))
+            .map_err(|e| e.to_string())?;
+        let mut chunk = [0; 8];
+        reader.read_exact(&mut chunk).map_err(|e| e.to_string())?;
+        let len = u64::from(u32::from_be_bytes(chunk[4..].try_into().unwrap()));
+        let end = at + 8 + len;
+        if end > form_end {
+            return Err("invalid AIFF chunk length".into());
+        }
+        match &chunk[..4] {
+            b"COMM" => {
+                let size = if aifc { 22 } else { 18 };
+                if len < size as u64 {
+                    return Err("truncated AIFF COMM".into());
+                }
+                let mut bytes = vec![0; size];
+                reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+                if format.replace(bytes).is_some() {
+                    return Err("duplicate AIFF COMM".into());
+                }
+            }
+            b"SSND" => {
+                if len < 8 {
+                    return Err("truncated AIFF SSND".into());
+                }
+                let mut fields = [0; 8];
+                reader.read_exact(&mut fields).map_err(|e| e.to_string())?;
+                let offset = u64::from(u32::from_be_bytes(fields[..4].try_into().unwrap()));
+                let start = at + 16 + offset;
+                if start > end {
+                    return Err("invalid AIFF offset".into());
+                }
+                data = Some(
+                    usize::try_from(start).map_err(|_| "AIFF offset too large")?
+                        ..usize::try_from(end).map_err(|_| "AIFF offset too large")?,
+                );
+            }
+            _ => {}
+        }
+        if format.is_some() && data.is_some() {
+            break;
+        }
+        at = end + (len & 1);
+    }
+    let fmt = format.ok_or("AIFF without COMM")?;
+    let channels = u16::from_be_bytes(fmt[..2].try_into().unwrap()) as usize;
+    let count = u32::from_be_bytes(fmt[2..6].try_into().unwrap()) as usize;
+    let bits = u16::from_be_bytes(fmt[6..8].try_into().unwrap()) as usize;
+    let exponent = u16::from_be_bytes(fmt[8..10].try_into().unwrap());
+    let mantissa = u64::from_be_bytes(fmt[10..18].try_into().unwrap());
+    let rate = mantissa as f64 * 2f64.powi(i32::from(exponent & 0x7fff) - 16383 - 63);
+    if exponent & 0x8000 != 0 || !rate.is_finite() || rate < 1.0 || rate > u32::MAX as f64 {
+        return Err("invalid AIFF sample rate".into());
+    }
+    let codec = if aifc { &fmt[18..22] } else { b"NONE" };
+    let (tag, big_endian) = match codec {
+        b"NONE" | b"twos" => (1, true),
+        b"sowt" => (1, false),
+        b"fl32" | b"FL32" => (3, true),
+        _ => return Err("unsupported AIFC codec".into()),
+    };
+    if channels == 0 || !matches!((tag, bits), (1, 1..=32) | (3, 32)) {
+        return Err("unsupported AIFF PCM format".into());
+    }
+    let width = bits.div_ceil(8);
+    let mut data = data.ok_or("AIFF without SSND")?;
+    let length = count
+        .checked_mul(channels)
+        .and_then(|n| n.checked_mul(width))
+        .ok_or("AIFF frame count overflow")?;
+    if length > data.len() {
+        return Err("AIFF frames exceed SSND".into());
+    }
+    data.end = data.start + length;
+    Ok(Wav {
+        rate: rate.round() as u32,
+        channels,
+        width,
+        tag,
+        big_endian,
+        signed8: true,
         data,
     })
 }

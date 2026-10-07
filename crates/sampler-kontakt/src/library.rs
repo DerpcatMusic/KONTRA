@@ -375,7 +375,7 @@ fn translate(
         .ancestors()
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
-    let mut samples = Samples::new(root);
+    let mut samples = Samples::instrument(root, &path)?;
     let mut rack_errors = Vec::new();
     let racks = crate::effects::program_racks(&program, &out.engine, |at, error| {
         rack_errors.push((at, error));
@@ -1478,7 +1478,7 @@ impl Translation {
                 {
                     Some("ncw") => ir::Encoding::Ncw,
                     Some("wav") => ir::Encoding::Wav,
-                    Some("aif" | "aiff") => ir::Encoding::Aiff,
+                    Some("aif" | "aiff" | "aifc") => ir::Encoding::Aiff,
                     _ => ir::Encoding::Unknown,
                 };
                 self.ir.assets.push(ir::Asset {
