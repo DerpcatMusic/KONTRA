@@ -69,6 +69,9 @@ pub struct Part {
     /// MPE: each note on its own member channel with its own bend,
     /// pressure and timbre (lower zone, manager channel 1).
     pub mpe: bool,
+    /// Where the dynamics controllers (CC1/CC11...) start before the host
+    /// moves them, 0..=127; -1 keeps Kontakt's own power-on state.
+    pub dynamics: i16,
     /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
     pub bend_range: u8,
     /// How articulations are selected, as `sampler_ir::Switching::to_bits`
@@ -97,6 +100,7 @@ impl Default for Part {
             output_manual: false,
             nodes: Vec::new(),
             mpe: false,
+            dynamics: -1,
             bend_range: 0,
             switching: 0,
         }
@@ -468,7 +472,7 @@ pub struct Shared {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64, bool)>,
+    pub(crate) attempted: Option<(String, u32, u64, bool, i16)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -1100,7 +1104,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     let atoms = shared.part(slot).unwrap();
     let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe);
+    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe, part.dynamics);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1140,6 +1144,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         program: part.program,
         sample_rate: rate,
         mpe: part.mpe,
+        dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
         threads: match shared.libraries.settings().threads {
             crate::library::ThreadSetting::Single => None,
             crate::library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),

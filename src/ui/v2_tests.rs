@@ -363,3 +363,45 @@ fn articulations_switch_by_their_keys() {
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-mapping.png");
 }
+
+/// The part's performance line: the playing articulation with its keys, the
+/// instrument volume, the dynamics controller it waits for (one click picks
+/// where it starts, saved on the part for the next load) and MPE.
+#[test]
+fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+    }
+    inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
+    assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
+    let mut report = crate::sound::report::LoadReport::default();
+    report.decoded.dynamics = vec![(1, 0), (11, 127)];
+    report.decoded.needs_controller = true;
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Strings.nki".into(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        v.parts[0].active = "Strings".into();
+        v.parts[0].instrument = Some(Arc::new(inst));
+        v.parts[0].report = Some(Arc::new(report));
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(4);
+    let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0", "mpe-0"] {
+        assert!(there(&h, id), "{id}");
+    }
+    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1, "Kontakt's own start until picked");
+    h.press("dyn-0-64");
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, 64);
+    h.press("mpe-0");
+    h.idle(2);
+    assert!(p.selection.read().unwrap().parts[0].mpe);
+    shoot(&h.ui, 1180, 780, "app/synthetic-performance.png");
+}
