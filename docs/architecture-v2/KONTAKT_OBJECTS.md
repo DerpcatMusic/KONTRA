@@ -1,6 +1,6 @@
 # Kontakt program, group and zone object research
 
-Work in progress on `v2/gpt-format-objects`. This family owns program `0x28`,
+Research and readers on `v2/gpt-format-objects`. This family owns program `0x28`,
 voice groups `0x32`, group list `0x33`, zone list `0x34`, loop array `0x39`,
 source mode `0x0e` and group start criteria `0x38/0x0f`. It does not own the
 master gap map, script resource resolution, save settings or quick browse.
@@ -23,7 +23,7 @@ serialization order; no decompiled implementation is copied here.
 A decoded number is not proof of its display scale, selection semantics or
 DSP law. Unknown fields remain explicitly unknown. Existing reference tables
 are read from branch `v2/kontakt-reference`; no Wine UI is available to this
-agent. Corpus measurements and reader validation will be added below.
+agent. Corpus measurements and reader validation are recorded below.
 
 ## Framing
 
@@ -311,3 +311,66 @@ loop mode/count/tune and multiple-loop behavior; historical group-private
 versions preceding the fixed modern locator. Raw framing retains these
 areas, but a raw blob is not a decoded field. The master gap-map lead should
 carry these as open, not mark this family complete.
+
+## Corpus coverage and validation plan
+
+The gap lead's baseline census covers 1,937 instrument, multi and snapshot
+files with no framing failures. Its `census/fields.tsv` distinguishes record
+counts from distinct source-file counts. This family surveys the 834 NKI/NKM
+files containing full objects; compact snapshot `0x50` group state is owned by
+the persistence reader and does not acquire invented full-group fields.
+
+| Object | Observed version | Files | Records | Decoder coverage |
+|---|---|---:|---:|---|
+| Program 0x28 | 0xa8 | 3 | 3 | Common public base; bounded extension retained |
+| Program 0x28 | 0xab | 8 | 8 | Common public base; bounded extension retained |
+| Program 0x28 | 0xae | 729 | 729 | Common public base; bounded extension retained |
+| Program 0x28 | 0xb1 | 42 | 48 | Common public base; bounded extension retained |
+| Program 0x28 | 0xb3 | 31 | 61 | Common public base; bounded extension retained |
+| Program 0x28 | 0xb5 | 21 | 41 | Common public base; bounded extension retained |
+| Group 0x33 / 0x04 | 0x95 | 782 | 226,278 | Public fields and start criteria; modern private source locator |
+| Group 0x33 / 0x04 | 0x96 | 52 | 5,675 | Same common public base; extension retained |
+| Zone 0x34 / 0x2c | 0x98 | 4 | 108,830 | Public metadata without six-byte reference prefix |
+| Zone 0x34 / 0x2c | 0x99 | 7 | 47,780 | Public metadata without six-byte reference prefix |
+| Zone 0x34 / 0x2c | 0x9a | 771 | 13,236,102 | Public metadata with six-byte reference prefix |
+| Loop 0x39 / 0x05 | 0x60 | 787 | 2,703,129 | Seven controls plus original slot ID |
+| Voice groups 0x32 | 0x60 | 834 | 890 | Program limit and 128-bit mask with complete occupied limits |
+
+A file may contain several programs and object versions; sum-of-version file
+counts is not a corpus total. The three zone-version counts total 782 files:
+52 zero-zone Conflux instruments still have group/source objects. Files with
+loop arrays can contain empty masks, so array-presence and occupied-loop
+record counts differ.
+
+The family survey example accepts `items.tsv cache-dir start count`. It reads
+all groups and zones before playback selection, writes only per-item numeric
+aggregate TSVs plus completion status, and resumes by skipping cached items.
+Run each shard as a separate `kontakto-heavy timeout 240` invocation; the
+current census runner uses ten files per shard. A failed item retains its
+successfully decoded prefix and is counted separately; field presence does
+not silently assert that every sibling field decoded. `files_nondefault`
+compares against explicit neutral baselines in the example, **not** measured
+Kontakt factory defaults. The master census uses its own baselines, so its
+nonbaseline counts must not be mixed with this family's neutral counts.
+
+The source record tests independently specify 21/30-byte common lengths and
+mode/version extension lengths, test all seven versions and ten stored modes,
+and check every truncation boundary without consuming the following group
+trailer. Zone tests cover 0x95/96/98/99/9a reference offsets, metadata lengths,
+opaque-byte retention and truncation. Voice tests exercise slots 0, 64 and 127,
+signed sentinels, malformed flags and trailing bytes. Program and group tests
+check the six observed modern program versions, both group versions and
+bounded extensions. Existing borrowed mapping checks retain unknown enums,
+nonfinite floats and sparse structured/unstructured loop records.
+
+Readers expose authored settings through `sampler_ir::kontakt`. Program/group
+public extensions and the trailer after a decoded source record are retained
+in memory; these bytes have no guessed KSP/DSP behavior. A source parameter
+decode failure is explicit in `Group::source_error` and the instrument's
+unsupported report. Other unknown serialization IDs, including 0x65/66/68/69/
+6a/72/74, remain unknown to this family.
+
+Borrowed `Group::parse` now admits both observed group versions (0x95/96),
+and `Zone::parse` admits observed 0x98/99/9a plus the independently authored
+0x95 layout. Their bounded metadata/extension spans stay unchanged. Unknown
+versions still return an explicit unsupported-version error.
