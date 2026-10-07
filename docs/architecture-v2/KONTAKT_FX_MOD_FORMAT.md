@@ -178,3 +178,87 @@ frequent value, distinct signatures and that baseline. Float arrays and opaque
 regions use lengths/fingerprints; these are variation evidence, not decoded
 laws. Per-item cached `VALUE` rows retain scalar metadata frequencies.
 Run `python3 tools/fx-mod-survey.py --check` for the aggregation check.
+
+## Corpus validation table
+
+Master structural census, 2026-10-08: **1937/1937 containers parsed**
+(instruments, multis and snapshots). Source: the format-gaps agent's read-only
+`~/.cache/kontakto-gpt-format-gaps/census/{fields,files,byte-profile,errors}.tsv`.
+The following counts select its Kontakt `structure` rows, not NIS chunk IDs.
+Records include compact snapshot state, muted groups and bypassed effects.
+A file can appear in multiple version rows; affected-file counts are not additive.
+These are **structural counts**, not yet full field-decoder or audible validation.
+The master's reported field error is save settings (831 files/940 records),
+which belongs to the gaps agent.
+
+| Object | Version | Files | Records |
+| --- | --- | ---: | ---: |
+| `0x07` Envelope wrapper | `0x90` | 1,736 | 1,633,242 |
+| `0x08` LFO | `0x71` | 702 | 1,684,800 |
+| `0x08` LFO | `0x73` | 153 | 377,706 |
+| `0x0c` External assignment | `0x100` | 812 | 5,962,119 |
+| `0x0c` External assignment | `0x101` | 100 | 115,236 |
+| `0x0c` External assignment | `0x102` | 667 | 1,256,463 |
+| `0x0c` External assignment | `0x103` | 31 | 116,372 |
+| `0x0c` External assignment | `0x104` | 122 | 218,554 |
+| `0x0d` Internal assignment | `0x80` | 812 | 2,708,938 |
+| `0x0d` Internal assignment | `0x81` | 924 | 986,810 |
+| `0x10` Delay (legacy) | `0x51` | 705 | 5,619 |
+| `0x11` Chorus (legacy) | `0x51` | 705 | 705 |
+| `0x12` Flanger (legacy) | `0x51` | 3 | 3 |
+| `0x13` Gainer | `0x50` | 296 | 602 |
+| `0x14` Phaser (legacy) | `0x51` | 705 | 705 |
+| `0x15` Reverb (legacy) | `0x50` | 702 | 2,808 |
+| `0x16` Convolution | `0x70` | 1,251 | 2,236 |
+| `0x17` Send Levels | `0x51` | 1,715 | 2,027 |
+| `0x18` Filter | `0x92` | 1,228 | 719,272 |
+| `0x18` Filter | `0x95` | 102 | 92,317 |
+| `0x19` Compressor | `0x70` | 808 | 3,719 |
+| `0x1a` Inverter | `0x60` | 832 | 191,503 |
+| `0x1c` Limiter | `0x60` | 702 | 702 |
+| `0x1d` Surround Panner | `0x80` | 810 | 339,428 |
+| `0x1e` Distortion | `0x60` | 706 | 339,070 |
+| `0x1f` Stereo Modeller | `0x70` | 1,265 | 26,135 |
+| `0x20` Lo-Fi | `0x70` | 705 | 339,069 |
+| `0x21` Skreamer | `0x50` | 104 | 286 |
+| `0x22` Rotator | `0x50` | 3 | 3 |
+| `0x25` FX wrapper | `0x50` | 1,736 | 2,072,739 |
+| `0x3a` FX array | `0x12` | 1,583 | 29,379 |
+| `0x3a` FX array | `0x13` | 153 | 3,857 |
+| `0x3b` Internal array | `0x12` | 782 | 226,278 |
+| `0x3b` Internal array | `0x13` | 52 | 5,675 |
+| `0x3c` External array | `0x12` | 782 | 226,278 |
+| `0x3c` External array | `0x13` | 52 | 5,675 |
+| `0x3f` AHDSR | `0x11` | 1,736 | 1,626,358 |
+| `0x40` Flex | `0x11` | 170 | 5,876 |
+| `0x40` Flex | `0x12` | 6 | 1,008 |
+| `0x42` Tape Saturator | `0x10` | 211 | 525 |
+| `0x43` Transient Master | `0x10` | 103 | 103 |
+| `0x44` Solid G-EQ | `0x10` | 103 | 2,287 |
+| `0x44` Solid G-EQ | `0x11` | 12 | 12 |
+| `0x45` Insert bus | `0x11` | 1,541 | 24,656 |
+| `0x45` Insert bus | `0x12` | 195 | 4,016 |
+| `0x46` Solid Bus Comp | `0x12` | 109 | 109 |
+| `0x4c` Feedback Compressor | `0x10` | 103 | 103 |
+| `0x4d` Jump | `0x10` | 702 | 2,808 |
+| `0x56` DStortion | `0x10` | 2 | 2 |
+| `0x59` Reverb | `0x10` | 374 | 377 |
+| `0x5a` Replika | `0x12` | 72 | 74 |
+| `0x5b` Phasis | `0x51` | 10 | 10 |
+| `0x5c` Flair | `0x51` | 11 | 11 |
+| `0x5d` Choral | `0x51` | 17 | 18 |
+| `0x60` Supercharger | `0x51` | 8 | 8 |
+| `0x63` Psyche Delay | `0x10` | 19 | 19 |
+| `0x65` Unknown; retained opaque | `0x10` | 13 | 13 |
+| `0x66` Unknown; retained opaque | `0x10` | 7 | 7 |
+| `0x68` Unknown; retained opaque | `0x10` | 17 | 21 |
+| `0x69` Unknown; retained opaque | `0x10` | 7 | 7 |
+| `0x6a` Unknown; retained opaque | `0x10` | 9 | 9 |
+| `0x72` Unknown; retained opaque | `0x1` | 5 | 5 |
+| `0x74` Unknown; retained opaque | `0x1` | 2 | 2 |
+
+No DBD (`0x41`) or glide (`0x0b`) source appeared in these structural rows.
+No `0x09`/`0x0a` source appeared; step-source identity/layout remains unverified.
+Absence does not establish support. New `0x65/66/68/69/6a/72/74` objects remain
+unknown, with no names or normalization invented. Older missing FX types and
+versions likewise need independent native or controlled-saved fixtures.
