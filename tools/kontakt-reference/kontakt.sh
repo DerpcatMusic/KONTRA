@@ -66,7 +66,7 @@ state)  # pinned-state check: master 0.00 dB / 440 Hz, instrument volume 0 dB, p
 calibrate)  # gain through the whole chain: bare noise instrument at unity, recorded level must be the file level x the master law
   here=$(cd "$(dirname "$0")" && pwd)
   [ -f /tmp/noise.wav ] || python3 "$here/make_noise.py" /tmp/noise.wav noise
-  ok=; for _ in $(seq 12); do "$0" state >"$W/log/state.txt" 2>&1 && { ok=1; break; }; sleep 5; done   # the instrument may still be loading under load
+  ok=; for _ in $(seq 12); do "$0" state >"$W/log/state.txt" 2>&1 && { ok=1; break; }; grep -q 'MISMATCH master' "$W/log/state.txt" && { click 325 98; click 128 579 3; }; sleep 5; done   # the instrument may still be loading under load
   [ -n "$ok" ] || { cat "$W/log/state.txt" >&2; echo "calibrate: state not pinned, abort" >&2; exit 1; }; cat "$W/log/state.txt"
   python3 "$here/scenario.py" "$here/scenarios/calibration.txt" "$W/cal.mid"
   KONTRA_NO_STAMP_CHECK=1 "$here/record.sh" "$W/cal.mid" "$W/wav/cal.wav" 3 || exit 1
