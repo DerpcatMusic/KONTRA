@@ -539,7 +539,7 @@ pub(crate) struct Chain {
 /// Linear stereo stages fold into one matrix; EQ bands act alike on both
 /// channels, so they commute with it.
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
-    chain_with(slots, scope, None)
+    chain_with(slots, scope, None, None)
 }
 
 /// A decoded impulse response: its sample rate and frames.
@@ -553,11 +553,16 @@ pub(crate) struct Impulses<'a> {
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
+/// With `dynamic` (a bus rack's `generic` address) every slot a script may
+/// write at runtime becomes a [`sampler_ir::Processor::Mix`] block, bypassed
+/// ones included.
 pub(crate) fn chain_with(
     slots: &[Slot],
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
+    dynamic: Option<i32>,
 ) -> Chain {
+    let dynamic = dynamic.filter(|_| scope == Scope::Bus);
     let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
@@ -570,10 +575,19 @@ pub(crate) fn chain_with(
                 *combined = IDENTITY;
             }
         };
-    for fx in slots.iter().filter(|fx| !fx.bypass) {
+    for fx in slots.iter().filter(|fx| dynamic.is_some() || !fx.bypass) {
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
+        // Send Levels feed buses, not the signal; everything else a script
+        // may bypass or trim at runtime runs inside its own Mix block.
+        let mix = dynamic.filter(|_| !matches!(params, Some(Params::SendLevels { .. })));
+        let begin = if mix.is_some() {
+            flush(&mut combined, &mut filters, &mut out);
+            out.processors.len()
+        } else {
+            0
+        };
         // The Inverter's Output knob does not reach the signal: Una g39 and g94
         // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
         // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
@@ -583,17 +597,18 @@ pub(crate) fn chain_with(
         } else {
             f64::from(fx.output_gain)
         };
-        let gain = [[wet, 0.0], [0.0, wet]];
+        let gain = if mix.is_some() {
+            IDENTITY
+        } else {
+            [[wet, 0.0], [0.0, wet]]
+        };
         // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
         // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
         // audible in Kontakt and its script never writes the slot's output gain. So
         // the stored value counts for an EQ only when a script wrote it.
         // ponytail: a guess from that corpus count; confirm against Kontakt output.
-        let eq_gain = if fx.output_gain == 0.0 && !fx.output_set {
-            IDENTITY
-        } else {
-            gain
-        };
+        let eq_unset = fx.output_gain == 0.0 && !fx.output_set;
+        let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
@@ -642,8 +657,8 @@ pub(crate) fn chain_with(
                         flush(&mut combined, &mut filters, &mut out);
                         out.processors.push(sampler_ir::Processor::Convolution {
                             impulse,
-                            dry: f64::from(fx.dry_level),
-                            wet,
+                            dry: if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                            wet: if mix.is_some() { 1.0 } else { wet },
                         });
                     }
                     Err(why) => {
@@ -661,6 +676,37 @@ pub(crate) fn chain_with(
                 None => modelled = false,
             },
             None => modelled = false,
+        }
+        if let Some(generic) = mix {
+            flush(&mut combined, &mut filters, &mut out);
+            let count = out.processors.len() - begin;
+            if count > 0 {
+                let convolution = matches!(params, Some(Params::Convolution(_)));
+                let wet = if matches!(params, Some(Params::Eq { .. })) && eq_unset {
+                    1.0
+                } else {
+                    wet
+                };
+                out.processors.insert(
+                    begin,
+                    sampler_ir::Processor::Mix {
+                        count: count as u16,
+                        address: sampler_ir::SlotAddress {
+                            group: -1,
+                            slot: fx.slot as i32,
+                            generic,
+                        },
+                        dry: if convolution { f64::from(fx.dry_level) } else { 0.0 },
+                        wet,
+                        bypass: fx.bypass,
+                    },
+                );
+                for (_, at) in &mut out.filter_slots {
+                    if *at >= begin {
+                        *at += 1;
+                    }
+                }
+            }
         }
         if !modelled {
             out.notes.push((
@@ -813,6 +859,7 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
 pub(crate) fn instrument_buses(
     ir: &mut sampler_ir::Instrument,
     racks: &[(String, Vec<Slot>)],
+    dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> Vec<(String, Note)> {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
@@ -831,14 +878,16 @@ pub(crate) fn instrument_buses(
         store: &mut store,
         load,
     };
-    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source));
+    // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
+    let generic = |n| dynamic.then_some(n);
+    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source), generic(1));
     take("instrument insert", &insert);
-    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source));
+    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source), generic(2));
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
     let mut sends = Vec::new();
-    for slot in rack("instrument send").iter().filter(|s| !s.bypass) {
-        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source));
+    for slot in rack("instrument send").iter().filter(|s| dynamic || !s.bypass) {
+        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source), generic(0));
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
         if !c.processors.is_empty() && level > 0.0 {
@@ -963,7 +1012,30 @@ mod tests {
             output_gain: gain,
             dry_level: 1.0,
             public,
+            output_set: true,
         }
+    }
+
+    #[test]
+    fn dynamic_slots_run_in_mix_blocks_bypassed_ones_included() {
+        let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        gainer.slot = 3;
+        gainer.bypass = true;
+        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
+        assert!(plain.processors.is_empty());
+        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some(1));
+        assert!(matches!(
+            c.processors[..],
+            [
+                sampler_ir::Processor::Mix {
+                    count: 1,
+                    bypass: true,
+                    address: sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 },
+                    ..
+                },
+                sampler_ir::Processor::StereoMatrix(_)
+            ]
+        ), "{:?}", c.processors);
     }
 
     #[test]
@@ -1085,7 +1157,7 @@ mod tests {
             ),
             ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
         ];
-        let report = instrument_buses(&mut instrument, &racks, &mut |_| Err("none".into()));
+        let report = instrument_buses(&mut instrument, &racks, false, &mut |_| Err("none".into()));
         assert_eq!(instrument.buses.len(), 2, "{report:?}");
         assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         let feed = &instrument.buses[0].sends[0];
@@ -1099,7 +1171,7 @@ mod tests {
         instrument.validate().unwrap();
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
-        instrument_buses(&mut plain, &[], &mut |_| Err("none".into()));
+        instrument_buses(&mut plain, &[], false, &mut |_| Err("none".into()));
         assert!(plain.buses.is_empty());
     }
 }

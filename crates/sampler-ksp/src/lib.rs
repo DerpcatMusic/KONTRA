@@ -452,6 +452,14 @@ pub struct EnginePar {
     pub generic: i32,
 }
 
+impl Script {
+    /// Whether a callback sets effect slot bypass, output gain or dry level
+    /// while playing, so the host must build slots those writes can reach.
+    pub fn writes_effect_slots(&self) -> bool {
+        self.programs.iter().any(Program::writes_slots)
+    }
+}
+
 /// The `set_engine_par` values `on init` leaves, in parameter order, without
 /// compiling the callbacks. Hosts apply them to what they translated before
 /// the script runs (effect racks, buses).
