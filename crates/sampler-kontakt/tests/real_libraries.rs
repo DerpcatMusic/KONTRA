@@ -131,6 +131,24 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
     used.sort();
     assert_eq!(used, [0, 1]);
     assert_eq!(ir.voice_limit.map(|l| l.voices), Some(240));
+    let authored = ir.kontakt_objects.as_ref().unwrap();
+    let voices = authored.voice_groups.as_ref().unwrap();
+    assert_eq!(voices.program.max_num_voices, 240);
+    assert_eq!(voices.groups.len(), 128);
+    assert_eq!(voices.groups.iter().flatten().count(), 2);
+    for slot in 0..2 {
+        let limit = voices.groups[slot].as_ref().unwrap();
+        assert_eq!((limit.max_num_voices, limit.ms_fade_time), (20, 50));
+    }
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 1));
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 2));
+    assert!(authored.zones.len() >= ir.zones.len());
+    println!(
+        "Una Corda: authored_groups={} authored_zones={} active_zones={} peak={peak}",
+        authored.groups.len(),
+        authored.zones.len(),
+        ir.zones.len()
+    );
     assert!(peak > 0.01, "audible: peak {peak}");
 }
 
@@ -171,6 +189,7 @@ fn vista_cellos_render_from_loose_ncw_samples() {
     // -38.6 dBFS (KONTAKT_REFERENCE.md s.13; the older -45.0 is a (L+R)/2
     // mono mix). KONTRA measures +0.9 dB; the open residual is under 1 dB.
     let db = reference::levels(&out, 0.3, 3.0).max_peak();
+    println!("Vista: max_channel_peak_dbfs={db:.3} native_reference_dbfs=-38.6");
     assert!(
         (db + 38.6).abs() < 1.0,
         "{db:.1} dBFS max-channel peak against Kontakt's -38.6"
