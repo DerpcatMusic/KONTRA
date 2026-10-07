@@ -80,16 +80,36 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
         reason: reason.into(),
     };
     let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
-    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
-        .map_err(|e| decode("multi bank", e))?;
-    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
+    let bank = Bank::try_from(
+        chunks
+            .find_first(3)
+            .ok_or_else(|| invalid("missing multi bank"))?,
+    )
+    .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank
+        .slot_list()
+        .map_err(|e| decode("multi slots", e))?
+        .slots
+        .into_iter()
+        .collect();
     slots.sort_by_key(|(slot, _)| *slot);
     let mut programs = Vec::new();
     for (_, container) in slots {
-        programs.extend(container.program_list().map_err(|e| decode("multi programs", e))?.programs);
+        programs.extend(
+            container
+                .program_list()
+                .map_err(|e| decode("multi programs", e))?
+                .programs,
+        );
     }
-    let program = programs.into_iter().nth(index).ok_or_else(|| invalid("the multi has no such program"))?;
-    let (table, others) = match chunks.filename_tables().map_err(|e| decode("multi file table", e))? {
+    let program = programs
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| invalid("the multi has no such program"))?;
+    let (table, others) = match chunks
+        .filename_tables()
+        .map_err(|e| decode("multi file table", e))?
+    {
         Some(t) => (t.sample_filetable, t.other_filetable),
         None => (
             chunks
@@ -493,10 +513,12 @@ impl Translation {
             Err(error) => self.unsupported(&at, "source module", error, ir::Reason::Unknown),
         }
         let mut chain = None;
+        let mut filter_slots = Vec::new();
         if let Ok(array) = group.insert_fx() {
             let c =
                 crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
             let processors = c.processors;
+            filter_slots = c.filter_slots;
             for (slot, feature, value, reason) in c.notes {
                 self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
             }
@@ -550,16 +572,10 @@ impl Translation {
                     Modulator::Flex(flex) => {
                         // Point times are deltas from the previous point and
                         // levels linear gain (audits/MODULATION.md, medium).
-                        // The curve parameter's law is not established: 0.5
-                        // is linear, other values play linear and are reported.
-                        if flex.points.iter().any(|p| p.curve != 0.5) {
-                            self.unsupported(
-                                &at,
-                                "flex envelope segment curve (linear used)",
-                                &params.name,
-                                ir::Reason::UnknownLaw,
-                            );
-                        }
+                        // Segment curve s (0..1, 0.5 linear), c = s - 0.5:
+                        // measured on Kontakt 8 flex envelopes, k = BOW_K * |c|
+                        // with positive c starting fast and negative slowly
+                        // (docs/architecture-v2/KONTAKT_REFERENCE.md s.10).
                         let sustain = flex.sustain as usize;
                         if volume {
                             // Held until the release segments end.
@@ -578,7 +594,10 @@ impl Translation {
                                 .map(|p| ir::Breakpoint {
                                     time: ir::Time::Milliseconds(f64::from(p.time_ms.max(0.0))),
                                     level: f64::from(p.level.clamp(0.0, 1.0)),
-                                    shape: ir::Curve::Linear,
+                                    shape: match f64::from(p.curve) - 0.5 {
+                                        c if c.abs() < 1e-4 => ir::Curve::Linear,
+                                        c => ir::Curve::Exponential(-BOW_K * c),
+                                    },
                                 })
                                 .collect(),
                             sustain: Some(sustain),
@@ -605,7 +624,13 @@ impl Translation {
                     continue;
                 }
                 for target in &params.targets {
-                    routes.extend(self.route(&at, modulator, envelope_source, target));
+                    routes.extend(self.route(
+                        &at,
+                        modulator,
+                        envelope_source,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    ));
                 }
             }
         }
@@ -689,7 +714,13 @@ impl Translation {
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
                 for target in &params.targets {
-                    routes.extend(self.route(&at, modulator, !bipolar, target));
+                    routes.extend(self.route(
+                        &at,
+                        modulator,
+                        !bipolar,
+                        target,
+                        chain.zip(Some(&filter_slots[..])),
+                    ));
                 }
             }
         }
@@ -733,6 +764,7 @@ impl Translation {
         source: ir::ModulatorRef,
         unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
+        filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
         let i = f64::from(target.intensity);
         let report = |this: &mut Self, feature: &str, reason| {
@@ -744,7 +776,23 @@ impl Translation {
             );
             None
         };
-        if target.slot.is_some() {
+        // Filter cutoff of an insert slot: octaves, linear in the modulator,
+        // 10 octaves per 100 % (KONTAKT_REFERENCE.md section 17).
+        let cutoff = match (target.slot, target.param.as_str()) {
+            (None, _) => None,
+            (Some(slot), "filterCutoff") => filters.and_then(|(chain, slots)| {
+                slots
+                    .iter()
+                    .find(|(s, _)| *s == usize::from(slot))
+                    .map(|&(_, index)| ir::Target::Processor {
+                        chain,
+                        index,
+                        parameter: ir::ProcessorParameter::Cutoff,
+                    })
+            }),
+            _ => None,
+        };
+        if target.slot.is_some() && cutoff.is_none() {
             return report(
                 self,
                 "modulation of a module parameter",
@@ -757,6 +805,10 @@ impl Translation {
             return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
+            _ if cutoff.is_some() => (
+                cutoff.unwrap_or(ir::Target::Amplitude),
+                ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)),
+            ),
             "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
             "pitch" => (
                 ir::Target::Pitch,
@@ -785,21 +837,7 @@ impl Translation {
                             .map(|(n, y)| (n as f64 / last, f64::from(*y)))
                             .collect()
                     }
-                    ShaperCurve::Breakpoints(points) if !points.is_empty() => {
-                        if points.iter().any(|p| p.curve != 0.0) {
-                            // Segment curvature (-1..1) has no known law.
-                            self.unsupported(
-                                at,
-                                "curved modulation shaper segment (linear used)",
-                                &target.param,
-                                ir::Reason::UnknownLaw,
-                            );
-                        }
-                        points
-                            .iter()
-                            .map(|p| (f64::from(p.x), f64::from(p.y)))
-                            .collect()
-                    }
+                    ShaperCurve::Breakpoints(points) if !points.is_empty() => curved_shaper(points),
                     _ => return report(self, "empty modulation shaper", ir::Reason::UnknownLaw),
                 };
                 self.ir.shapes.push(ir::Shape { points });
@@ -922,14 +960,6 @@ impl Translation {
                 asset
             }
         };
-        if z.fades != [0; 4] {
-            self.unsupported(
-                &at,
-                "crossfades (low/high velocity, low/high key)",
-                format!("{:?}", z.fades),
-                not_modeled,
-            );
-        }
         if end.is_some_and(|end| end <= z.start) {
             self.unsupported(
                 &at,
@@ -1008,6 +1038,21 @@ impl Translation {
             tune: ir::Pitch::Semitones(semitones),
             gain: ir::Gain::Linear(f64::from(z.gain * program.volume)),
             velocity: group.velocity,
+            // Mapping Editor crossfades: widths in key and velocity steps
+            // inside the zone; the gain law is measured (Kontakt 8,
+            // KONTAKT_REFERENCE.md s.11). Field order low velocity, high
+            // velocity, low key, high key (v1 importer); the velocity pair is
+            // confirmed by ANALOG STRINGS' zone 1..40 fading out (f1 = 21) and
+            // Afflatus zones fading in (f0), no library here uses the key pair.
+            fades: {
+                let step = |w: i16| w.clamp(0, 127) as u8;
+                ir::Fades {
+                    velocity_in: step(z.fades[0]),
+                    velocity_out: step(z.fades[1]),
+                    key_in: step(z.fades[2]),
+                    key_out: step(z.fades[3]),
+                }
+            },
             pan: ir::Pan {
                 position: f64::from((z.pan + program.pan).clamp(-1.0, 1.0)),
                 law: ir::PanLaw::Balance,
@@ -1156,7 +1201,9 @@ mod survey {
         files.sort();
         let mut seen = std::collections::BTreeMap::<String, (usize, String)>::new();
         for f in &files {
-            let Ok(chunks) = crate::read_chunks(f) else { continue };
+            let Ok(chunks) = crate::read_chunks(f) else {
+                continue;
+            };
             let Some(program) = chunks.find_first(PROGRAM) else {
                 continue;
             };
@@ -1276,10 +1323,14 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
                 b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
                 b'@' => ir::Saved::Text(rest.to_owned()),
                 b'%' => ir::Saved::Ints(
-                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
                 ),
                 b'?' => ir::Saved::Reals(
-                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                    rest.split_whitespace()
+                        .map(|n| n.parse().ok())
+                        .collect::<Option<_>>()?,
                 ),
                 _ => return None,
             };
@@ -1368,6 +1419,62 @@ mod modulation {
         }
     }
 
+    /// KONTAKT_REFERENCE.md section 17: with a 2 s decay to sustain 0.25 the
+    /// envelope minus sustain falls 0.51, 0.23, 0.085, 0.02 at 0.25 s steps
+    /// from the 2 s peak (1 - 0.25 = 0.75 of travel, so ratios .67/.30/.11/.026).
+    #[test]
+    fn ahdsr_decay_is_exponential_like_the_measurement() {
+        let (attack, ir::Curve::Exponential(k)) = ahdsr_curves(0.0) else {
+            panic!("exponential decay")
+        };
+        let remaining = |t: f64| 1.0 - ((k * t).exp() - 1.0) / (k.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.67), (0.375, 0.30), (0.625, 0.11), (0.875, 0.026)] {
+            assert!(
+                (remaining(t) - measured).abs() < 0.04,
+                "t {t}: {} vs {measured}",
+                remaining(t)
+            );
+        }
+        // Curve 0 attack is near-linear: env 0.12/0.35/0.59/0.84 at 1/8, 3/8, 5/8, 7/8.
+        let ir::Curve::Exponential(a) = attack else {
+            panic!("attack curve")
+        };
+        let rise = |t: f64| ((a * t).exp() - 1.0) / (a.exp() - 1.0);
+        for (t, measured) in [(0.125, 0.12), (0.375, 0.35), (0.625, 0.59), (0.875, 0.84)] {
+            assert!((rise(t) - measured).abs() < 0.04, "t {t}: {}", rise(t));
+        }
+    }
+
+    #[test]
+    fn filter_cutoff_modulation_is_ten_octaves_per_full_amount() {
+        let mut t = translation();
+        let source = ir::ModulatorRef(0);
+        let cutoff = ModTarget {
+            slot: Some(2),
+            ..target("filterCutoff", 0.444)
+        };
+        let chain = ir::ChainRef(3);
+        t.route("g", source, true, &cutoff, Some((chain, &[(2, 1)])))
+            .unwrap();
+        assert_eq!(
+            t.ir.routes[0].target,
+            ir::Target::Processor {
+                chain,
+                index: 1,
+                parameter: ir::ProcessorParameter::Cutoff
+            }
+        );
+        let ir::Depth::Pitch(p) = t.ir.routes[0].depth else {
+            panic!("pitch depth")
+        };
+        assert!((p.semitones() / 12.0 - 4.44 * 1.0).abs() < 1e-6);
+        // A slot with no translated filter stays reported.
+        assert!(
+            t.route("g", source, true, &cutoff, Some((chain, &[])))
+                .is_none()
+        );
+    }
+
     #[test]
     fn targets_translate_with_kontakt_laws_or_are_reported() {
         let mut t = translation();
@@ -1377,7 +1484,7 @@ mod modulation {
             invert: true,
             ..target("pitch", 0.5)
         };
-        t.route("g", source, true, &lagged).unwrap();
+        t.route("g", source, true, &lagged, None).unwrap();
         assert_eq!(
             t.ir.routes[0],
             ir::Route {
@@ -1390,9 +1497,11 @@ mod modulation {
                 scale: None,
             }
         );
-        t.route("g", source, true, &target("volume", 0.25)).unwrap();
+        t.route("g", source, true, &target("volume", 0.25), None)
+            .unwrap();
         assert_eq!(t.ir.routes[1].depth, ir::Depth::Normalized(0.25));
-        t.route("g", source, true, &target("playPos", 1.0)).unwrap();
+        t.route("g", source, true, &target("playPos", 1.0), None)
+            .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
         for unknown in [
             target("pan", 1.0),
@@ -1406,7 +1515,7 @@ mod modulation {
                 ..target("cutoff", 1.0)
             },
         ] {
-            assert!(t.route("g", source, true, &unknown).is_none());
+            assert!(t.route("g", source, true, &unknown, None).is_none());
         }
         assert_eq!(t.ir.routes.len(), 3);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
@@ -1472,7 +1581,9 @@ mod modulation {
 mod multi_tests {
     #[test]
     fn a_multi_program_translates() {
-        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else { return };
+        let Ok(root) = std::env::var("KONTRA_KONTAKT_LIBRARIES") else {
+            return;
+        };
         let path = std::path::Path::new(&root)
             .join("Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm");
         if !path.exists() {
@@ -1481,6 +1592,93 @@ mod multi_tests {
         let k = super::read_program(&path, 0).expect("first program");
         assert!(!k.instrument.groups.is_empty());
         assert!(super::read_program(&path, 999).is_err());
+    }
+}
+
+/// Exponential bow constant for a shaper or flex-envelope segment:
+/// `k = BOW_K * |curvature|`.
+/// Measured, not in the manual: fitted to Kontakt 8 renders of Vista 3 Cellos
+/// group 37 swept over CC100 (0..96), 0.08 dB RMS residual with K = 18; the
+/// Una Corda Cotton "Depth" shaper GUI reading (curvature 0.118, mid value
+/// 0.29) implies K about 15. docs/architecture-v2/KONTAKT_REFERENCE.md.
+const BOW_K: f64 = 17.0;
+const BOW_STEPS: usize = 16;
+
+/// A breakpoint shaper as plain points: each segment's stored curvature
+/// (positive bows below the chord, negative above) expands into `BOW_STEPS`
+/// linear pieces of `y0 + (y1 - y0) f(t)`, with `e(t) = (e^kt - 1)/(e^k - 1)`
+/// and `f = e(t)` when the curvature's sign matches the segment's rise (a
+/// rising positive or falling negative segment), else `1 - e(1 - t)`.
+fn curved_shaper(points: &[ni_file::kontakt::objects::Breakpoint]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (n, p) in points.iter().enumerate() {
+        let (x0, y0, c) = (f64::from(p.x), f64::from(p.y), f64::from(p.curve));
+        out.push((x0, y0));
+        let Some(next) = points.get(n + 1) else {
+            continue;
+        };
+        let (x1, y1) = (f64::from(next.x), f64::from(next.y));
+        let k = BOW_K * c.abs();
+        if k < 1e-6 || x1 <= x0 {
+            continue;
+        }
+        let e = |t: f64| ((k * t).exp() - 1.0) / (k.exp() - 1.0);
+        let same = (c > 0.0) == (y1 > y0);
+        for i in 1..BOW_STEPS {
+            let t = i as f64 / BOW_STEPS as f64;
+            let f = if same { e(t) } else { 1.0 - e(1.0 - t) };
+            out.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * f));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod curved_shaper_tests {
+    use super::curved_shaper;
+    use ni_file::kontakt::objects::Breakpoint;
+
+    fn at(points: &[(f64, f64)], x: f64) -> f64 {
+        let i = points.iter().position(|p| p.0 >= x).unwrap();
+        if i == 0 {
+            return points[0].1;
+        }
+        let (a, b) = (points[i - 1], points[i]);
+        a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0)
+    }
+
+    fn seg(y0: f32, y1: f32, c: f32) -> Vec<(f64, f64)> {
+        curved_shaper(&[
+            Breakpoint {
+                x: 0.0,
+                y: y0,
+                curve: c,
+            },
+            Breakpoint {
+                x: 1.0,
+                y: y1,
+                curve: 0.0,
+            },
+        ])
+    }
+
+    #[test]
+    fn a_positive_rising_segment_bows_below_the_chord_like_unas_depth_shaper() {
+        // Una Corda Cotton "Depth": curvature 0.118, GUI mid value 0.29-0.30.
+        let p = seg(0.0, 1.0, 0.11824325);
+        assert!((at(&p, 0.5) - 0.28).abs() < 0.03, "{}", at(&p, 0.5));
+    }
+
+    #[test]
+    fn curvature_sign_is_geometric_not_directional() {
+        // Vista CC100 shaper: a falling segment with negative curvature
+        // bows above the chord, and mirrors the rising positive one.
+        let up = seg(0.0, 1.0, 0.15);
+        let down = seg(1.0, 0.0, -0.15);
+        assert!(at(&down, 0.5) > 0.5);
+        assert!((at(&up, 0.5) + at(&down, 0.5) - 1.0).abs() < 1e-9);
+        let flat = seg(0.0, 1.0, 0.0);
+        assert_eq!(flat.len(), 2);
     }
 }
 
@@ -1510,7 +1708,8 @@ mod census {
             for g in &i.groups {
                 outs.insert(format!("{:?}", g.output));
             }
-            let names: std::collections::BTreeSet<_> = i.groups.iter().map(|g| g.name.as_str()).collect();
+            let names: std::collections::BTreeSet<_> =
+                i.groups.iter().map(|g| g.name.as_str()).collect();
             let buses: Vec<_> = i.buses.iter().map(|b| b.name.as_str()).collect();
             println!(
                 "CENSUS\t{}\tgroups={}\tdistinct_names={}\touts={}\tbuses={:?}\tnames={:?}",

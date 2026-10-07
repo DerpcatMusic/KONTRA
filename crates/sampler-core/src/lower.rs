@@ -8,7 +8,7 @@ use crate::{
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
     Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
     Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
-    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain,
+    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -219,6 +219,13 @@ pub fn lower_with(
     bind_behaviors: impl FnOnce(&[ir::Behavior], Prepared) -> Result<Prepared, LowerError>,
 ) -> Result<Prepared, LowerError> {
     instrument.validate().map_err(LowerError::Invalid)?;
+    let tapped;
+    let instrument = if instrument.groups.iter().any(|g| !g.sends.is_empty()) {
+        tapped = instrument.with_group_taps();
+        &tapped
+    } else {
+        instrument
+    };
     if pcm.len() != instrument.assets.len() {
         return Err(LowerError::AssetCount {
             assets: instrument.assets.len(),
@@ -270,7 +277,13 @@ pub fn lower_with(
             .groups
             .iter()
             .map(|g| GroupParams {
-                decibels: 20.0 * g.gain.linear().max(1e-9).log10(),
+                decibels: 20.0
+                    * g.tap
+                        .as_ref()
+                        .map_or(g.gain, |t| instrument.buses[t.bus.0].gain)
+                        .linear()
+                        .max(1e-9)
+                        .log10(),
                 pan: g.pan.position,
                 semitones: g.tune.semitones(),
             })
@@ -334,6 +347,25 @@ pub fn lower_with(
         plan = plan
             .with_velocity_curves(curves)
             .map_err(core(Stage::Regions, "velocity responses"))?;
+    }
+    if instrument
+        .zones
+        .iter()
+        .any(|z| z.fades != ir::Fades::default())
+    {
+        let fades = instrument
+            .zones
+            .iter()
+            .map(|z| ZoneFades {
+                velocity_in: z.fades.velocity_in,
+                velocity_out: z.fades.velocity_out,
+                key_in: z.fades.key_in,
+                key_out: z.fades.key_out,
+            })
+            .collect();
+        plan = plan
+            .with_zone_fades(fades)
+            .map_err(core(Stage::Regions, "zone crossfades"))?;
     }
     plan = lowering.buses(plan)?;
     plan = lowering.modulation(plan)?;
@@ -921,9 +953,10 @@ impl Lowering<'_> {
                     processors.push(self.processor(&owner, *p)?);
                 }
             }
+            let tapped = self.ir.groups.iter().any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
             let mut sends = vec![BusSend {
                 bus: target(bus.output),
-                gain: 1.0,
+                gain: if tapped { 1.0 } else { bus.gain.linear() },
             }];
             for send in &bus.sends {
                 if send.position == ir::SendPosition::PreChain {
@@ -959,9 +992,27 @@ impl Lowering<'_> {
             .iter()
             .map(|z| self.group(z).and_then(|g| target(g.output)))
             .collect();
-        plan.with_impulses(impulses)
+        let faders: Vec<_> = self
+            .ir
+            .groups
+            .iter()
+            .map(|g| {
+                g.tap.as_ref().map(|t| crate::GroupFader {
+                    bus: t.bus.0,
+                    follows: std::iter::once(0).chain(t.post.iter().map(|n| n + 1)).collect(),
+                    initial: self.ir.buses[t.bus.0].gain.linear(),
+                })
+            })
+            .collect();
+        let plan = plan
+            .with_impulses(impulses)
             .with_buses(buses, bindings)
-            .map_err(core(Stage::Buses, "buses"))
+            .map_err(core(Stage::Buses, "buses"))?;
+        if faders.iter().all(Option::is_none) {
+            return Ok(plan);
+        }
+        plan.with_group_faders(faders)
+            .map_err(core(Stage::Buses, "group faders"))
     }
 
     fn variation(&self, plan: Prepared) -> Result<Prepared, LowerError> {

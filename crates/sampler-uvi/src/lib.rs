@@ -432,6 +432,7 @@ impl Translation {
                 chain: None,
                 sends: Vec::new(),
                 output: ir::Output::Master,
+                gain: ir::Gain::UNITY,
             });
             auxes.push((name, ir::BusRef(self.ir.buses.len() - 1)));
         }
@@ -454,29 +455,26 @@ impl Translation {
                 },
                 ..Default::default()
             };
-            // A closed fader with a pre-fader send: the sound is the send's.
-            // (The IR has one output per group: the first such send is used.)
-            if number(layer, "Gain", 1.0)? == 0.0 {
-                let send = layer
-                    .children()
-                    .filter(|n| n.has_tag_name("BusRouters"))
-                    .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
-                    .filter(|r| number(*r, "PreFader", 0.0).is_ok_and(|p| p != 0.0))
-                    .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-                    .find_map(|r| {
-                        let to = r.attribute("Destination")?.rsplit('/').next()?;
-                        let bus = auxes.iter().find(|(n, _)| n == to)?.1;
-                        Some((bus, number(r, "Gain", 1.0).ok()?))
-                    });
-                if let Some((bus, send_gain)) = send.filter(|s| s.1 > 0.0) {
-                    base.gain = ir::Gain::Linear(gain * send_gain);
-                    base.output = ir::Output::Bus(bus);
-                    self.unsupported(
-                        &path(layer),
-                        "closed layer fader: its pre-fader send is played as the layer output",
-                        send_gain,
-                    );
-                }
+            // The layer's sends to aux buses, either side of its fader.
+            for router in layer
+                .children()
+                .filter(|n| n.has_tag_name("BusRouters"))
+                .flat_map(|r| r.children().filter(|c| c.has_tag_name("BusRouter")))
+                .filter(|r| number(*r, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
+            {
+                let Some(bus) = router
+                    .attribute("Destination")
+                    .and_then(|d| d.rsplit('/').next())
+                    .and_then(|to| auxes.iter().find(|(n, _)| n == to))
+                    .map(|a| a.1)
+                else {
+                    continue;
+                };
+                base.sends.push(ir::GroupSend {
+                    to: bus,
+                    gain: ir::Gain::Linear(number(router, "Gain", 1.0)?),
+                    pre_fader: number(router, "PreFader", 0.0)? != 0.0,
+                });
             }
             // Oscillators get groups of their own only where a keygroup stacks
             // several; otherwise the layer's group is oscillator 1.

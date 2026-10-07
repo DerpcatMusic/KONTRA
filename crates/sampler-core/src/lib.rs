@@ -59,7 +59,7 @@ pub use stream::{
 mod source;
 pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
 mod bus;
-pub use bus::{Bus, BusMix, BusSend};
+pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
@@ -108,7 +108,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve,
+    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
     service_mipmaps,
 };
 mod integer;
@@ -147,6 +147,9 @@ pub struct NoteId(Handle);
 /// Process-local ownership domain. Remains stable across moves and plan changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeId(u64);
+
+/// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).
+pub const USER_EVENT_PAR: u16 = 1001;
 
 /// Why a region mapped to a key did not sound for one selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
