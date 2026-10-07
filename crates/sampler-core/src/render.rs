@@ -401,15 +401,7 @@ impl Runtime {
                     None => &mut *output,
                 };
                 let states = &mut cells[lane].as_mut().expect("batch voice")[..chain.stages()];
-                let fault = chain.finish(
-                    v,
-                    b,
-                    &planar,
-                    false,
-                    states,
-                    gains[lane],
-                    destination,
-                );
+                let fault = chain.finish(v, b, &planar, false, states, gains[lane], destination);
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(u64::from(fault));
                 produced = b.len;
             }
