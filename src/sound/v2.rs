@@ -1219,6 +1219,11 @@ impl V2Loader {
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
         runtime.set_cold_starts(true);
+        // A chord's script work spreads over blocks: 30 notes of a 14k-instruction
+        // callback measured 8.0 ms in one block unlimited, 0.70 ms at this cap
+        // (sampler-perf dense-strings, 64-frame blocks).
+        // ponytail: fixed cap; make it follow the device buffer if latency shows.
+        runtime.set_behavior_block_fuel(8192);
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
