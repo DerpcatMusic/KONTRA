@@ -147,7 +147,7 @@ pub(crate) fn program_racks(
                 {
                     let mut slots = rack(&array);
                     // `$NI_BUS_OFFSET` + the bus number.
-                    apply_writes(&mut slots, writes, -1, 1000 + index as i32);
+                    apply_writes(&mut slots, writes, -1, 1000 + index);
                     out.push((format!("bus {index}"), slots));
                 }
             }
