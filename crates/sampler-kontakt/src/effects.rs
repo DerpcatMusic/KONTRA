@@ -324,7 +324,7 @@ impl Slot {
                         .collect::<Option<_>>()?;
                     Params::Eq { bands }
                 } else {
-                    // Ladder (70, 71) stores a leading value first.
+                    // Daft (70, 71) stores a leading value first.
                     let leading = if matches!(kind, 70 | 71) {
                         Some(r.f32()?)
                     } else {
@@ -441,6 +441,13 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
         _ => return None,
     })
 }
+
+/// Whether a Kontakt render has confirmed the compressor's level laws and the
+/// +output-gain interaction (Analog Strings: threshold -14.2 dB, ratio 0.501,
+/// output +9 dB peaks at 3.35 against 1.24 without it). Until then a 0x19 slot
+/// is reported as unmodelled (`UnknownLaw`) and the chain is left as before.
+// ponytail: flip once a Kontakt render of ANALOG STRINGS C4..G4 confirms the level.
+const KONTAKT_COMPRESSOR_VERIFIED: bool = false;
 
 /// Where a rack's processors will run.
 #[derive(Clone, Copy, PartialEq)]
@@ -564,16 +571,15 @@ pub(crate) struct Impulses<'a> {
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
-/// With `dynamic` (a bus rack's `generic` address) every slot a script may
-/// write at runtime becomes a [`sampler_ir::Processor::Mix`] block, bypassed
-/// ones included.
+/// With `dynamic` (the rack's `(group, generic)` address) every slot a script
+/// may write at runtime becomes a [`sampler_ir::Processor::Mix`] block,
+/// bypassed ones included.
 pub(crate) fn chain_with(
     slots: &[Slot],
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
-    dynamic: Option<i32>,
+    dynamic: Option<(i32, i32)>,
 ) -> Chain {
-    let dynamic = dynamic.filter(|_| scope == Scope::Bus);
     let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
@@ -638,6 +644,25 @@ pub(crate) fn chain_with(
                 kind,
                 cutoff,
                 resonance,
+                extra,
+            }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
+                // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
+                // "Daft parameter laws and scheduling". The leading value is the
+                // Gain control. No filter_slots entry: modulation routes do not
+                // reach it.
+                // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
+                filters.push(sampler_ir::Processor::Daft(sampler_ir::Daft {
+                    gain: f64::from(extra[0]).clamp(0.0, 1.0),
+                    cutoff: f64::from(*cutoff).clamp(0.0, 1.0),
+                    resonance: f64::from(*resonance).clamp(0.0, 1.0),
+                    highpass: *kind == 71,
+                }));
+                combined = product(gain, combined);
+            }
+            Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
                 ..
             }) => match filter(*kind, *cutoff, *resonance) {
                 Some(f) => {
@@ -662,7 +687,28 @@ pub(crate) fn chain_with(
                 attack_ms,
                 release_ms,
                 link,
-            }) => {
+            }) if scope == Scope::Bus && !KONTAKT_COMPRESSOR_VERIFIED => {
+                notes.push((
+                    "compressor level law".into(),
+                    format!(
+                        "threshold {threshold_db} dB ratio {ratio} attack {attack_ms} ms release {release_ms} ms link {link} mode {mode}"
+                    ),
+                    sampler_ir::Reason::UnknownLaw,
+                ));
+                modelled = false;
+            }
+            Some(Params::Compressor {
+                mode,
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                link,
+            }) if scope == Scope::Bus => {
+                // Bus scope only: a group insert sees the group's summed signal in
+                // Kontakt, but a voice chain sees one voice, whose level is far
+                // lower (Analog Strings' compressor, threshold -14 dB, would
+                // never act while its +9 dB output gain applied).
                 // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
                 // the linked detector is the signed channel mean. The level law
                 // is the textbook one (ir::Compressor); the stored units are the
@@ -679,7 +725,10 @@ pub(crate) fn chain_with(
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors.push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
                     threshold_db: f64::from(*threshold_db),
-                    ratio: f64::from(*ratio).max(1.0),
+                    // Stored as the inverse ratio (Analog Strings: 0.501 beside a
+                    // -14.2 dB threshold reads 2:1). ponytail: unverified; a stored
+                    // slope 1 - 1/ratio would read the same here.
+                    ratio: (1.0 / f64::from(*ratio).clamp(0.01, 1.0)),
                     attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
                     release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
                     makeup: sampler_ir::Gain::UNITY,
@@ -720,7 +769,7 @@ pub(crate) fn chain_with(
             },
             None => modelled = false,
         }
-        if let Some(generic) = mix {
+        if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
             let count = out.processors.len() - begin;
             if count > 0 {
@@ -735,7 +784,7 @@ pub(crate) fn chain_with(
                     sampler_ir::Processor::Mix {
                         count: count as u16,
                         address: sampler_ir::SlotAddress {
-                            group: -1,
+                            group,
                             slot: fx.slot as i32,
                             generic,
                         },
@@ -922,7 +971,7 @@ pub(crate) fn instrument_buses(
         load,
     };
     // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
-    let generic = |n| dynamic.then_some(n);
+    let generic = |n| dynamic.then_some((-1, n));
     let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source), generic(1));
     take("instrument insert", &insert);
     let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source), generic(2));
@@ -1066,7 +1115,7 @@ mod tests {
         gainer.bypass = true;
         let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
         assert!(plain.processors.is_empty());
-        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some(1));
+        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some((-1, 1)));
         assert!(matches!(
             c.processors[..],
             [
@@ -1120,17 +1169,38 @@ mod tests {
     #[test]
     fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
         let mut bytes = Vec::new();
-        for x in [0.0f32, -18.0, 4.0, 10.0, 120.0] {
+        for x in [0.0f32, -18.0, 0.25, 10.0, 120.0] {
             bytes.extend(x.to_le_bytes());
         }
         bytes.push(1);
-        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Voice);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
+        if !KONTAKT_COMPRESSOR_VERIFIED {
+            assert!(built.processors.is_empty());
+            assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLaw));
+            return;
+        }
         let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
         assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
         assert_eq!(c.attack.seconds(), 0.01);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn daft_filter_slot_keeps_its_normalized_controls() {
+        let mut bytes = Vec::new();
+        for _ in 0..2 {
+            bytes.extend(71i32.to_le_bytes());
+        }
+        for x in [0.25f32, 0.5, 0.75] {
+            bytes.extend(x.to_le_bytes());
+        }
+        let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+        let [sampler_ir::Processor::Daft(d), ..] = built.processors[..] else {
+            panic!("{:?} {:?}", built.processors, built.notes)
+        };
+        assert_eq!((d.gain, d.cutoff, d.resonance, d.highpass), (0.25, 0.5, 0.75, true));
     }
 
     #[test]

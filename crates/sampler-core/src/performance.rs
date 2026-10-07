@@ -95,7 +95,31 @@ impl Runtime {
 pub(super) struct State {
     pub articulation: u32,
     pub controllers: [u32; 128],
+    /// The virtual controller [`crate::PREVIOUS_KEY`]: see [`previous_key_value`].
+    pub previous: u32,
+    /// The virtual controllers [`crate::AXIS_BASE`]`..` : the active choice of each axis.
+    pub axes: [u32; crate::MAX_AXES],
     owners: usize,
+}
+
+impl State {
+    /// A controller's value, including the virtual previous-key one.
+    pub fn value(&self, controller: u8) -> u32 {
+        self.controllers
+            .get(usize::from(controller))
+            .copied()
+            .unwrap_or_else(|| match usize::from(controller) - 128 {
+                0 => self.previous,
+                n => self.axes[n - 1],
+            })
+    }
+}
+
+/// Value of the virtual previous-key controller: 0 with no other key held,
+/// else the interval from the most recent held key (this key minus that one,
+/// in -127..=127) offset into 1..=255.
+pub fn previous_key_value(interval: Option<i16>) -> u32 {
+    interval.map_or(0, |i| (i.clamp(-127, 127) + 128) as u32)
 }
 
 pub(super) struct PerformanceState {
@@ -119,6 +143,8 @@ impl PerformanceState {
             State {
                 articulation: 0,
                 controllers: RESET_CONTROLLERS,
+                previous: 0,
+                axes: [0; crate::MAX_AXES],
                 owners: 0
             };
             capacity
@@ -209,11 +235,21 @@ impl Runtime {
     }
 
     pub(super) fn articulation_now(&mut self, performance: usize, value: u32) {
-        if self.performance_state.current(performance).articulation != value {
+        let axis = (value >> 16) as usize & 0xff;
+        if value >> 24 == AXIS_SWITCH >> 24 && axis < crate::MAX_AXES {
+            let choice = value & 0xffff;
+            if self.performance_state.current(performance).axes[axis] != choice {
+                self.performance_state.edit(performance).axes[axis] = choice;
+            }
+        } else if self.performance_state.current(performance).articulation != value {
             self.performance_state.edit(performance).articulation = value;
         }
     }
 }
+
+/// Tag in the top byte of a keyswitch's value: it sets nested selector `axis` to `choice`
+/// (`AXIS_SWITCH | axis << 16 | choice`) instead of the articulation.
+pub const AXIS_SWITCH: u32 = 0xA5 << 24;
 
 /// Controller values before any are received: MIDI's reset state (RP-015), in
 /// which expression (CC11) is full and everything else is zero. Instruments
