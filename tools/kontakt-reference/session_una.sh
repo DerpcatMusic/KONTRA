@@ -6,9 +6,10 @@ OUT=$W/log/session_una.txt; : >"$OUT"; say() { echo "$@" | tee -a "$OUT"; }
 CAL=/mnt/MAIN_STORAGE/kontra_ref_src/calibration.nki
 UNA="/mnt/MAIN_STORAGE/Libraries/Kontakt/Una Corda Library/Instruments/Una Corda Cotton.nki"
 # persistent wineserver so the calibration stamp (sink + wineserver pid) survives Kontakt restarts; killed by PID at the end
-before=$(pgrep -x wineserver | sort); wineserver -p; sleep 1
+wine_pids() { pgrep -x "wineserver|services.exe|winedevice.exe|explorer.exe|plugplay.exe|svchost.exe|rpcss.exe|Kontakt 8.exe|start.exe|Xvfb" | sort; }
+allb=$(wine_pids); before=$(pgrep -x wineserver | sort); wineserver -p; sleep 1
 WS=$(comm -13 <(echo "$before") <(pgrep -x wineserver | sort) | head -1); say "persistent wineserver pid ${WS:-existing}"
-trap '[ -n "${WS:-}" ] && kill "$WS"' EXIT
+trap 'sleep 2; for p in $(comm -13 <(echo "$allb") <(wine_pids)); do kill $p 2>/dev/null; done; true' EXIT
 say "load at start: $(cat /proc/loadavg)"
 "$here/kontakt.sh" start "$CAL" && "$here/kontakt.sh" calibrate | tail -2 | tee -a "$OUT" || { say "PRE-CALIBRATION FAILED"; "$here/kontakt.sh" stop; exit 1; }
 "$here/kontakt.sh" stop; sleep 3
