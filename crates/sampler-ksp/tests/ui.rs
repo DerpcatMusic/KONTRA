@@ -229,3 +229,33 @@ fn vendor_control_pars_keep_their_names() {
         ["$CONTROL_PAR_NKS_TYPE", "$CONTROL_PAR_NKS_STR_VALUES[]"]
     );
 }
+
+#[test]
+fn a_saved_menu_is_the_item_position_not_its_value() {
+    let source = r#"on init
+        declare ui_menu $M
+        add_menu_item($M, "kk", 4)
+        add_menu_item($M, "soft", -3)
+        add_menu_item($M, "linear", 0)
+        make_instr_persistent($M)
+        read_persistent_var($M)
+        end on"#;
+    let limits = sampler_ksp::Limits {
+        source_bytes: 4096,
+        instructions: 256,
+        variables: 16,
+        array_cells: 16,
+    };
+    let env = sampler_ksp::Environment {
+        persisted: [("$M".into(), sampler_ksp::model::Value::Int(2))].into(),
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(source, 48000, limits, &[], &env).unwrap();
+    let widget = &script.model().interface.widgets[0];
+    assert_eq!(
+        format!("{:?}", widget.value),
+        "Int(0)",
+        "{:?}",
+        widget.value
+    );
+}
