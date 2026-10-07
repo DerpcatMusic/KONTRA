@@ -122,7 +122,8 @@ impl PlanControl {
         let parallel = self.lanes.load(std::sync::atomic::Ordering::Relaxed) > 1;
         let growth = super::grow::Growth::build(voices, &self.live, parallel)
             .map_err(|_| PlanError::Capacity)?;
-        self.pressure.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.pressure
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         self.growth.push(growth).map_err(|_| PlanError::Capacity)?;
         self.growing = true;
         self.voices = voices;
@@ -431,7 +432,9 @@ impl Runtime {
         );
         self.collect_retired_plans();
         if let Some(queues) = &self.plan_queues {
-            queues.installed.store(request, std::sync::atomic::Ordering::Release);
+            queues
+                .installed
+                .store(request, std::sync::atomic::Ordering::Release);
         }
         Ok(Some(request))
     }
