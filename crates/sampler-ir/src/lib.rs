@@ -921,6 +921,8 @@ pub enum Processor {
     Compressor(Compressor),
     /// Memoryless rectification of both channels.
     Rectify(Rectifier),
+    /// Kontakt's Daft filter: normalized controls, laws in the engine.
+    Daft(Daft),
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
@@ -939,6 +941,16 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+}
+
+/// Kontakt's Daft low or high pass. Every value is the stored 0..=1 control;
+/// the native engine owns the gain, cutoff and resonance laws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Daft {
+    pub gain: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub highpass: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
