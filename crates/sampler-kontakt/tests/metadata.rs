@@ -124,8 +124,8 @@ fn filename_versions_retain_segments_metadata_and_extensions() {
 #[test]
 fn settings_and_quick_browse_reject_invalid_flags_and_preserve_extensions() {
     let mut settings = vec![0, 0x10, 0];
-    settings.extend(filename());
-    settings.extend(0i32.to_le_bytes());
+    settings.extend(42u32.to_le_bytes());
+    settings.extend((-1i32).to_le_bytes());
     settings.extend((-1i32).to_le_bytes());
     settings.extend([1, 0, 1]);
     let required = settings.len();
@@ -141,6 +141,8 @@ fn settings_and_quick_browse_reject_invalid_flags_and_preserve_extensions() {
     )
     .unwrap();
     assert_eq!(parsed.flags, [true, false, true]);
+    assert_eq!(parsed.translated, 42);
+    assert_eq!(parsed.original, -1);
     assert_eq!(parsed.unknown, -1);
     assert_eq!(parsed.extension.data(), [0xab]);
     for end in 0..required {
@@ -189,16 +191,20 @@ fn bank_lists_preserve_program_numbers_and_sparse_slot_identity() {
     public.extend(1.0f32.to_le_bytes());
     public.extend(120i32.to_le_bytes());
     public.extend(wide("Bank"));
-    let bytes = chunk(3, &object(0x73, &public));
-    let bank = Bank::parse(
-        Chunks::parse(&bytes, LIMITS)
-            .unwrap()
-            .iter()
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!((bank.volume, bank.tune, bank.tempo), (0.5, 1.0, 120));
+    public.extend([8, 9]);
+    for version in [0x73, 0x76] {
+        let bytes = chunk(3, &object(version, &public));
+        let bank = Bank::parse(
+            Chunks::parse(&bytes, LIMITS)
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!((bank.volume, bank.tune, bank.tempo), (0.5, 1.0, 120));
+        assert_eq!(bank.extension.data(), [8, 9]);
+    }
     let mut programs = 2i16.to_le_bytes().to_vec();
     for number in [3i16, 127] {
         programs.extend(number.to_le_bytes());
@@ -261,4 +267,53 @@ fn bank_lists_preserve_program_numbers_and_sparse_slot_identity() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn program_resource_references_follow_variable_length_metadata() {
+    let mut public = wide("𝄞 Piano");
+    public.extend([0; 48]);
+    for text in ["Credits", "Author", "https://example.test"] {
+        public.extend(wide(text));
+    }
+    public.extend([0; 6]);
+    for reference in [3u32, u32::MAX, 7, 11] {
+        public.extend(reference.to_le_bytes());
+    }
+    let required = public.len();
+    public.extend([9, 8]);
+    for version in [0xa8, 0xab, 0xae, 0xb1, 0xb3, 0xb5] {
+        let bytes = chunk(0x28, &object(version, &public));
+        let program = sampler_kontakt::ProgramResources::parse(
+            Chunks::parse(&bytes, LIMITS)
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                program.container,
+                program.snapshot_directory,
+                program.full_path,
+                program.wallpaper
+            ),
+            (3, u32::MAX, 7, 11)
+        );
+        assert_eq!(program.extension.data(), [9, 8]);
+    }
+    for end in 0..required {
+        let bytes = chunk(0x28, &object(0xae, &public[..end]));
+        assert!(
+            sampler_kontakt::ProgramResources::parse(
+                Chunks::parse(&bytes, LIMITS)
+                    .unwrap()
+                    .iter()
+                    .next()
+                    .unwrap()
+            )
+            .is_err()
+        );
+    }
 }
