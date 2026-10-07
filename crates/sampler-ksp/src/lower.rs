@@ -1826,7 +1826,9 @@ impl Gen<'_, '_> {
                 })?;
                 let other = self.jump_if_zero(slot)?;
                 self.arg(args, 1, value)?;
-                if stage == EnvelopeStage::Sustain {
+                if stage == EnvelopeStage::AttackCurve {
+                    self.clamp(value, 0, 1_000_000)?;
+                } else if stage == EnvelopeStage::Sustain {
                     self.envelope_sustain(value)?;
                 } else {
                     self.envelope_frames(stage, value)?;
@@ -2122,6 +2124,7 @@ impl Gen<'_, '_> {
             "ENGINE_PAR_DECAY" => Some(EnvelopeStage::Decay),
             "ENGINE_PAR_RELEASE" => Some(EnvelopeStage::Release),
             "ENGINE_PAR_SUSTAIN" => Some(EnvelopeStage::Sustain),
+            "ENGINE_PAR_ATK_CURVE" => Some(EnvelopeStage::AttackCurve),
             _ => None,
         }
     }
