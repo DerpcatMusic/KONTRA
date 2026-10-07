@@ -24,3 +24,6 @@ Failures carry `stage`, `where` (crate::module::fn) and `error`. Perf: `load_ms`
 
 ## Env
 `CH_RESCAN` rescan instead of `~/.cache/kontakto-corpus/items.tsv` (24 h); `CH_QUICK_FILE` alternate list; `CH_MPE` MPE probe on all; `CH_NOMPE` none; `CH_STEAL`, `CH_NOSTREAM` runtime variants.
+
+## Plays correctly (suspect column)
+After the measured pass, the probed note is repeated four times with selection recording on (outside the audio counters). `sound.selection` then holds, per take, the selected groups and each voice's zone, group, sample start, start modulation range, reverse, loop mode and velocity layer, plus `patch`, `articulation` and `suspect`. `suspect` lists heuristic flags and never fails an item: name says long but voices come from short groups (or the reverse), a nonzero start offset or reverse on a patch not named reverse/swell/offset/rise, different articulations across round-robin repeats (the first note may differ). The quick and diff totals lines print `suspect N`; a new flag on an item that had none is listed under "flags changed".

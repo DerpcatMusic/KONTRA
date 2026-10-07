@@ -671,6 +671,101 @@ fn scripted_render(
     Ok(())
 }
 
+/// What one probed voice plays, from its zone.
+#[derive(Clone, Debug, PartialEq)]
+struct VoiceInfo {
+    zone: usize,
+    group: String,
+    start: u64,
+    start_range: u64,
+    reverse: bool,
+    looping: &'static str,
+    velocity_layer: usize,
+}
+
+/// The voices of one probed note-on.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Take {
+    voices: Vec<VoiceInfo>,
+}
+
+impl Take {
+    fn groups(&self) -> Vec<String> {
+        let mut g: Vec<String> = self.voices.iter().map(|v| v.group.clone()).collect();
+        g.sort();
+        g.dedup();
+        g
+    }
+}
+
+fn has_word(text: &str, words: &[&str]) -> bool {
+    let t = text.to_lowercase();
+    words.iter().any(|w| t.contains(w))
+}
+
+/// "Rr2" / digits out of a group name, so round-robin repeats compare equal.
+fn without_repeat(name: &str) -> String {
+    let t = name.to_lowercase();
+    let t = t.replace("rr", "");
+    t.chars().filter(|c| !c.is_ascii_digit()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Heuristic "this probably does not play the way its name says": the name
+/// says long but the voices come from short groups (or the reverse), a start
+/// offset or reverse playback on a patch not named for it, different
+/// articulations across round-robin repeats. Lists, never fails.
+fn suspect(patch: &str, articulation: &str, takes: &[Take]) -> Vec<String> {
+    const LONG: &[&str] = &["sustain", "legato", "long", " sus"];
+    const SHORT: &[&str] = &["staccato", "marcato", "spiccato", "short", "stacc", "spicc", "pizz"];
+    const OFFSET: &[&str] = &["reverse", "swell", "offset", "rise", "rev ", "backward"];
+    let name = format!("{patch} {articulation}");
+    let (name_long, name_short) = (has_word(&name, LONG), has_word(&name, SHORT));
+    let mut out = Vec::new();
+    // A repeat that selected nothing is silence, not another articulation.
+    let takes: Vec<&Take> = takes.iter().filter(|t| !t.voices.is_empty()).collect();
+    let Some(first) = takes.first().copied() else { return out };
+    let groups = first.groups();
+    let group_short = |g: &String| has_word(g, SHORT) || has_word(g, &["rev"]);
+    if name_long && !name_short && groups.iter().any(group_short) {
+        out.push(format!("name says long, voices from short groups: {}", groups.iter().filter(|g| group_short(g)).cloned().collect::<Vec<_>>().join(", ")));
+    }
+    if name_short && !name_long && !groups.is_empty() && groups.iter().all(|g| has_word(g, LONG)) {
+        out.push(format!("name says short, voices from long groups: {}", groups.join(", ")));
+    }
+    if !has_word(&name, OFFSET) {
+        if let Some(v) = first.voices.iter().find(|v| v.reverse) {
+            out.push(format!("reverse playback in group {} of a patch not named reverse", v.group));
+        }
+        if let Some(v) = first.voices.iter().find(|v| v.start > 0) {
+            out.push(format!("sample start offset {} (+{} modulated) in group {} of a patch not named for it", v.start, v.start_range, v.group));
+        }
+    }
+    let norm = |t: &Take| {
+        let mut g: Vec<String> = t.groups().iter().map(|g| without_repeat(g)).collect();
+        g.sort();
+        g.dedup();
+        g
+    };
+    // The first note of a phrase is allowed to differ (first-note vs repeat,
+    // legato after a held note); the repeats after it should agree.
+    if let Some(second) = takes.get(1).copied()
+        && takes.iter().skip(2).any(|t| norm(t) != norm(second))
+    {
+        out.push("different articulations across round-robin repeats".to_owned());
+    }
+    out
+}
+
+fn take_json(t: &Take) -> Value {
+    json!({
+        "groups": t.groups(),
+        "voices": t.voices.iter().map(|v| json!({
+            "zone": v.zone, "group": v.group, "start": v.start, "start_range": v.start_range,
+            "reverse": v.reverse, "loop": v.looping, "velocity_layer": v.velocity_layer,
+        })).collect::<Vec<_>>(),
+    })
+}
+
 fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Result<Sound, String> {
     stage("prepare");
     let (rate, locals, cells) = match &subject {
@@ -719,6 +814,32 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         .map_err(|e| format!("prepare: runtime: {e}"))?;
         }
         Ok(Box::new(rt))
+    };
+    // The probed key's zones as the IR describes them, for "what did it play".
+    let (patch_name, default_articulation, zone_table) = {
+        let ir = subject.instrument();
+        let key = pick.key;
+        let at_key: Vec<(usize, &sampler_ir::Zone)> =
+            ir.zones.iter().enumerate().filter(|(_, z)| z.keys.low <= key && key <= z.keys.high).collect();
+        let mut layers: Vec<(u8, u8)> = at_key.iter().map(|(_, z)| (z.velocities.low, z.velocities.high)).collect();
+        layers.sort_unstable();
+        layers.dedup();
+        let table: Vec<(usize, VoiceInfo)> = at_key
+            .iter()
+            .map(|(i, z)| {
+                let looping = match z.playback.looping {
+                    sampler_ir::Looping::None => "none",
+                    sampler_ir::Looping::OneShot => "one-shot",
+                    sampler_ir::Looping::Continuous(_) => "continuous",
+                    sampler_ir::Looping::UntilRelease(_) => "until-release",
+                };
+                let group = z.group.and_then(|g| ir.groups.get(g.0)).map_or_else(String::new, |g| g.name.clone());
+                let layer = layers.iter().position(|l| *l == (z.velocities.low, z.velocities.high)).unwrap_or(0);
+                (*i, VoiceInfo { zone: *i, group, start: z.playback.start, start_range: z.playback.start_range, reverse: z.playback.reverse, looping, velocity_layer: layer })
+            })
+            .collect();
+        let articulation = ir.articulations.iter().find(|a| a.default).map(|a| a.name.clone()).unwrap_or_default();
+        (ir.name.clone(), articulation, table)
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
     let mut rig = match subject {
@@ -1006,14 +1127,56 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         "stream_cache_bytes": st.stream_cache_bytes,
         "stream": stream_info,
     });
+    let (stuck_voices, stuck_notes) = (rt.voice_count(), rt.note_count());
+    // "Plays correctly": repeat the note with selection recording on, after the
+    // measured pass so its allocations stay out of the audio counters.
+    let mut selection = selection;
+    if !diagnose && let Rig::Midi { rt, ingress, horizon, .. } = &mut rig {
+        rt.record_selections(true);
+        let mut block = [[0.0f32; 2]; 64];
+        for _ in 0..4 {
+            for (packet, blocks) in [(on, 6), (off, 6)] {
+                let batch = [TimedPacket { offset: 0, packet }];
+                for i in 0..blocks {
+                    let batch: &[TimedPacket] = if i == 0 { &batch } else { &[] };
+                    if let Some(h) = horizon {
+                        let _ = rt.service_streaming(*h);
+                    }
+                    let _ = ingress.render(rt, &mut block, batch, batch.len(), |_, _| {});
+                }
+            }
+        }
+        let takes: Vec<Take> = rt
+            .take_selection_records()
+            .iter()
+            .filter(|r| r.trigger == sampler_core::Trigger::Attack && !r.suppressed)
+            .map(|r| Take {
+                voices: r
+                    .candidates
+                    .iter()
+                    .filter(|c| c.rejected.is_none())
+                    .filter_map(|c| zone_table.iter().find(|(i, _)| *i == c.region).map(|(_, v)| v.clone()))
+                    .collect(),
+            })
+            .collect();
+        rt.record_selections(false);
+        if !takes.is_empty() {
+            selection = json!({
+                "patch": patch_name,
+                "articulation": default_articulation,
+                "played": takes.iter().map(take_json).collect::<Vec<_>>(),
+                "suspect": suspect(&patch_name, &default_articulation, &takes),
+            });
+        }
+    }
     Ok(Sound {
         selection,
         perf,
         note,
         peak,
         finite,
-        stuck_voices: rt.voice_count(),
-        stuck_notes: rt.note_count(),
+        stuck_voices,
+        stuck_notes,
         tail_peak,
         faults,
         why_silent,
@@ -2253,6 +2416,11 @@ fn misses(r: &Value) -> u64 {
     r["perf"]["render"]["deadline_misses"].as_u64().unwrap_or(0)
 }
 
+/// Heuristic flags on how the probed note played (see [`suspect`]).
+fn suspects(r: &Value) -> usize {
+    r["sound"]["selection"]["suspect"].as_array().map_or(0, Vec::len)
+}
+
 fn finite_ok(r: &Value) -> bool {
     r["sound"]["finite"] != false
 }
@@ -2322,6 +2490,9 @@ fn diff(old: &Path, new: &Path) {
                 if sounds(o) && !sounds(n) {
                     flags.push(format!("{id}  stopped sounding"));
                 }
+                if suspects(o) == 0 && suspects(n) > 0 {
+                    flags.push(format!("{id}  suspect: {}", n["sound"]["selection"]["suspect"][0].as_str().unwrap_or("")));
+                }
                 if misses(o) == 0 && misses(n) > 0 {
                     flags.push(format!("{id}  deadline misses 0 -> {}", misses(n)));
                 }
@@ -2346,13 +2517,14 @@ fn diff(old: &Path, new: &Path) {
     let count = |m: &BTreeMap<String, Value>, f: &dyn Fn(&Value) -> bool| m.values().filter(|r| f(r)).count();
     let line = |m: &BTreeMap<String, Value>| {
         format!(
-            "{} items: ok {} (incl. needs-controller), sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}",
+            "{} items: ok {} (incl. needs-controller), sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}, suspect {}",
             m.len(),
             count(m, &|r| good(&stage(r))),
             count(m, &sounds),
             count(m, &|r| !finite_ok(r)),
             count(m, &|r| misses(r) > 0),
             count(m, &|r| allocs(r) > 0),
+            count(m, &|r| suspects(r) > 0),
         )
     };
     println!("\nnow:      {}", line(&new));
@@ -2458,4 +2630,29 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn voice(group: &str, start: u64, reverse: bool) -> VoiceInfo {
+        VoiceInfo { zone: 0, group: group.into(), start, start_range: 0, reverse, looping: "none", velocity_layer: 0 }
+    }
+
+    #[test]
+    fn flags_a_sustain_that_plays_short_samples_and_stray_offsets() {
+        let sus = Take { voices: vec![voice("Violins Sustain RR1", 0, false)] };
+        assert!(suspect("Areia - Violins - Sustain", "Sustain", &[sus.clone()]).is_empty());
+        let marcato = Take { voices: vec![voice("Marcato Attack", 0, false)] };
+        assert_eq!(suspect("Areia - Violins - Sustain", "Sustain", &[marcato]).len(), 1);
+        let rev = Take { voices: vec![voice("Violins Sustain", 900, true)] };
+        assert_eq!(suspect("Violins - Sustain", "", &[rev.clone()]).len(), 2);
+        assert!(suspect("Violins - Reverse Swell", "", &[rev]).is_empty());
+        let rr2 = Take { voices: vec![voice("Violins Sustain RR2", 0, false)] };
+        assert!(suspect("Violins - Sustain", "", &[sus.clone(), rr2]).is_empty(), "round robins are not a different articulation");
+        let other = Take { voices: vec![voice("Violins Tremolo", 0, false)] };
+        assert!(suspect("Violins - Sustain", "", &[sus.clone(), other.clone()]).is_empty(), "the first note may differ");
+        assert_eq!(suspect("Violins - Sustain", "", &[sus.clone(), sus, other]).len(), 1);
+    }
 }
