@@ -8,6 +8,7 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod kontakt;
 pub mod units;
 mod validate;
 
@@ -76,6 +77,8 @@ pub struct Instrument {
     pub voice_limits: Vec<VoiceLimit>,
     /// A host controller that sets the instrument volume once it arrives.
     pub host_volume: Option<HostVolume>,
+    /// Original Kontakt settings, including values not yet admitted by playback.
+    pub kontakt_objects: Option<Box<kontakt::Objects>>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,

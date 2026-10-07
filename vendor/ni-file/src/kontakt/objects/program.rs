@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
+    Error,
     kontakt::{chunk::Chunk, error::KontaktError, structured_object::StructuredObject},
     read_bytes::ReadBytesExt,
-    Error,
 };
 
 use super::zone_list::ZoneList;
@@ -17,7 +17,7 @@ const CHUNK_ID: u16 = 0x28;
 #[derive(Debug)]
 pub struct Program(pub StructuredObject);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ProgramPublicParams {
     pub name: String,
     pub num_bytes_samples_total: f64,
@@ -44,6 +44,7 @@ pub struct ProgramPublicParams {
     pub instrument_cat3: i16,
     pub resource_container_filename: Option<i32>,
     pub wallpaper_filename: Option<i32>,
+    pub unknown_tail: Vec<u8>,
 }
 
 impl ProgramPublicParams {
@@ -72,12 +73,9 @@ impl ProgramPublicParams {
             instrument_cat1: reader.read_i16_le()?,
             instrument_cat2: reader.read_i16_le()?,
             instrument_cat3: reader.read_i16_le()?,
-            resource_container_filename: {
-                None
-            },
-            wallpaper_filename: {
-                None
-            },
+            resource_container_filename: { None },
+            wallpaper_filename: { None },
+            unknown_tail: reader.read_all()?,
         })
     }
 }
@@ -107,9 +105,7 @@ impl Program {
     }
 
     pub fn zone_list(&self) -> Option<Result<ZoneList, Error>> {
-        self.0
-            .find_first(0x34)
-            .map(ZoneList::try_from)
+        self.0.find_first(0x34).map(ZoneList::try_from)
     }
 
     pub fn children(&self) -> &Vec<Chunk> {

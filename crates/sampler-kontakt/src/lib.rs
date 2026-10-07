@@ -13,6 +13,7 @@ pub mod keyswitch;
 mod library;
 mod load;
 mod mapping;
+mod objects;
 pub mod nis;
 mod nks;
 mod resource_container;

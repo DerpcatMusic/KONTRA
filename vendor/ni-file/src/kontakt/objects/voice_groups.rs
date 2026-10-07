@@ -1,9 +1,9 @@
 use std::io::Cursor;
 
 use crate::{
-    kontakt::{objects::voice_limit::VoiceLimit, Chunk, KontaktError},
-    read_bytes::ReadBytesExt,
     Error,
+    kontakt::{Chunk, KontaktError, objects::voice_limit::VoiceLimit},
+    read_bytes::ReadBytesExt,
 };
 
 use super::VoiceGroup;
@@ -17,7 +17,7 @@ const MAX_VOICE_GROUPS: usize = 128;
 /// - Kontakt 7:      BProgram::readVoiceGroups()
 /// - KontaktIO:      VoiceGroups
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceGroups {
     pub voice_limit: VoiceLimit,
     pub groups: Vec<Option<VoiceGroup>>,
@@ -25,28 +25,20 @@ pub struct VoiceGroups {
 
 impl VoiceGroups {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let is_structured = reader.read_bool()?;
-        let version = reader.read_u16_le()?;
-
-        assert!(!is_structured);
-
-        let voice_limit = match version {
-            0x60 => VoiceLimit::read(&mut reader)?,
-            _ => unimplemented!("Unsupported VoiceGroups version: 0x{:x}", version),
-        };
-
-        let indexes = reader.read_bytes(8)?;
-
-        // let mut groups: [Option<VoiceGroup>; MAX_VOICE_GROUPS] = [None; MAX_VOICE_GROUPS];
-        let groups = Vec::new();
-        for i in 0..8 {
-            if indexes[i >> 3] & (1 << (i & 7)) != 0 {
-                // groups[i] = None;
-                println!("{}: {:?}", i + 1, reader.read_u8()?);
-            }
+        // The first record is the program's voice limit, not an array header.
+        let voice_limit = VoiceGroup::read(&mut reader)?.0;
+        let indexes = reader.read_bytes(MAX_VOICE_GROUPS / 8)?;
+        let mut groups = Vec::with_capacity(MAX_VOICE_GROUPS);
+        for i in 0..MAX_VOICE_GROUPS {
+            groups.push(if indexes[i / 8] & (1 << (i % 8)) != 0 {
+                Some(VoiceGroup::read(&mut reader)?)
+            } else {
+                None
+            });
         }
-
-        // next
+        if !reader.read_all()?.is_empty() {
+            return Err(Error::Static("Trailing voice group data"));
+        }
 
         Ok(Self {
             voice_limit,
