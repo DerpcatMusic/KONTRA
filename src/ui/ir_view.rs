@@ -146,7 +146,9 @@ pub fn resolved(face: &Interface) -> Interface {
             w.placement = ir::Placement::Pixels;
         }
         if w.auto_size {
-            (w.rect.width, w.rect.height) = default_size(&w.kind);
+            let (width, height) = default_size(&w.kind);
+            if w.rect.width == 0 { w.rect.width = width; }
+            if w.rect.height == 0 { w.rect.height = height; }
             w.auto_size = false;
         }
     }
@@ -171,7 +173,7 @@ pub fn resolved(face: &Interface) -> Interface {
 }
 
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
-pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+pub fn view(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
@@ -188,9 +190,9 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
         }
         let r = face.page_rect(n);
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        layers.push(widget(ui, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
+        layers.push(widget(ui, namespace, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
     }
-    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view")
+    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id(format!("{namespace}ir-view"))
 }
 
 /// The page's height, reaching down to its lowest visible control: a control
@@ -203,6 +205,7 @@ pub fn height(face: &Interface, page: PageRef) -> u32 {
 #[allow(clippy::too_many_arguments)]
 fn widget(
     ui: &mut Ui,
+    namespace: &str,
     face: &Interface,
     n: WidgetRef,
     assets: &Assets,
@@ -213,7 +216,7 @@ fn widget(
     h: f64,
 ) -> El {
     let wd = &face.widgets[n.0];
-    let id = format!("ir-{}", n.0);
+    let id = format!("{namespace}ir-{}", n.0);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
@@ -305,16 +308,13 @@ fn widget(
         }
         Kind::Menu { items } => {
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            // A value no entry has shows the first, as Kontakt does.
-            let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
-            if let Some(a) = at {
-                v = f64::from(shown[a].value);
-            }
-            // ponytail: click steps to the next entry; a floating list belongs with the shared menu once it leaves v1 targets.
+            let at = shown.iter().position(|i| f64::from(i.value) == v);
+            // Displaying an unmatched value must not change the script variable.
+            // ponytail: click cycles entries; use a popup when direct menu selection is needed.
             if ui.get(id.as_str()).activated() && !shown.is_empty() {
                 v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
             }
-            let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
+            let label = items.iter().find(|i| f64::from(i.value) == v).or_else(|| shown.first().copied()).map(|i| i.text.clone()).unwrap_or_default();
             match strip {
                 Some(p) => stack![block(w, h).radius(0).fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))), row![words(label)].align(Align::Center).pad((TIGHT * scale, 0.)).w(w).h(h)],
                 None => row![words(label).flex(1).min_w(0), glyph(Icon::Down, TIGHT * 2. * scale, secondary())]

@@ -19,3 +19,6 @@ pub use plugin::Plugin;
 pub fn library_roots() -> Vec<std::path::PathBuf> {
     library::Settings::path().and_then(|p| library::Settings::load(&p)).map(|s| s.roots.into_iter().map(|r| r.path.into()).collect()).unwrap_or_default()
 }
+
+#[cfg(feature = "shots")]
+pub use ui::health::survey as ui_health;
