@@ -52,7 +52,7 @@ pub use behavior::{
 mod stages;
 pub use stages::Stage;
 mod diagnose;
-pub use diagnose::{ScriptFault, why_silent};
+pub use diagnose::{ScriptFault, SilentNote, why_silent};
 mod stream;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
@@ -674,6 +674,8 @@ pub struct Runtime {
     deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
+    /// The last attack that selected no region, until taken; see [`SilentNote`].
+    silent: Option<SilentNote>,
     /// Opt-in script parameter writes, see [`Runtime::record_script_writes`].
     write_log: Option<Vec<String>>,
     executing_due: bool,
@@ -833,6 +835,7 @@ impl Runtime {
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
+            silent: None,
             write_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
