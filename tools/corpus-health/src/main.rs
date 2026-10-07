@@ -228,6 +228,13 @@ impl Pick {
 /// the articulation switch keys. Falls back to the velocity nearest 64 that
 /// any zone covers, then to playing a switch key first.
 fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
+    pick_key_with(ir, false)
+}
+
+/// `near`: the covered key closest to middle C, not the one with most zones. A
+/// scripted program only answers keys inside the range its script accepts, and
+/// the zone count says nothing about that range.
+fn pick_key_with(ir: &sampler_ir::Instrument, near: bool) -> Option<Pick> {
     let switch: HashSet<u8> = ir
         .articulations
         .iter()
@@ -245,7 +252,7 @@ fn pick_key(ir: &sampler_ir::Instrument) -> Option<Pick> {
                             && (z.velocities.low..=z.velocities.high).contains(&v)
                     })
                     .count();
-                (count, std::cmp::Reverse(k.abs_diff(60)), k)
+                (if near { 1 } else { count }, std::cmp::Reverse(k.abs_diff(60)), k)
             })
             .filter(|(count, ..)| *count > 0)
             .max()
@@ -651,7 +658,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let frame = |seconds: f64| (seconds * f64::from(rate)).round() as usize;
     let release_at = frame(HOLD_SECONDS);
     let total = release_at + frame(TAIL_SECONDS);
-    let key = pick.key;
+    let key = std::env::var("CH_KEY").ok().and_then(|v| v.parse().ok()).unwrap_or(pick.key);
     let on = [0x2090_0000 | u32::from(key) << 8 | u32::from(pick.velocity)];
     let off = [0x2080_0000 | u32::from(key) << 8];
     let on = Packets::new(&on)
@@ -991,7 +998,7 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Ok(t) => t.instrument,
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
-            let Some(pick) = pick_key(&ir) else {
+            let Some(pick) = pick_key_with(&ir, true) else {
                 return no_zone();
             };
             if ctx.tier == Tier::Parse {
