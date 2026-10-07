@@ -1036,7 +1036,7 @@ fn kontakt(
     let options = sampler_kontakt::Options {
         rate: request.sample_rate as u32,
         library: Some(path.clone()),
-        mpe: request.mpe.then(Default::default),
+        mpe: request.mpe.then(|| sampler_core::lower::MpeDefaults::for_instrument(&source.instrument)),
         dynamics_start: request.dynamics_start,
         ..Default::default()
     };
@@ -1190,8 +1190,16 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let mut timbre = None;
         if request.mpe {
-            report.decoded.mpe = super::report::mpe_summary(&sampler_core::lower::MpeDefaults::default());
+            let defaults = match &instrument {
+                Some(i) if is_kontakt(&request.path) => sampler_core::lower::MpeDefaults::for_instrument(i),
+                _ => Default::default(),
+            };
+            if let sampler_core::lower::TimbreTarget::Controller(cc) = defaults.timbre {
+                timbre = Some(cc);
+            }
+            report.decoded.mpe = super::report::mpe_summary(&defaults);
         }
         let controls = prepared
             .controls()
@@ -1223,6 +1231,7 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
