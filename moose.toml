@@ -5,16 +5,11 @@ url = "https://github.com/Matari-Audio"
 au_manufacturer = "Mtri"
 
 [[plugin]]
-# Bundles are KONTRA2.clap/.vst3 so v1 (KONTRA) installs alongside;
-# hosts show "KONTRA 2".
-name = "KONTRA2"
-clap_name = "KONTRA 2"
-vst3_name = "KONTRA 2"
-au_name = "KONTRA 2"
-bundle_id = "kontra2"
+name = "KONTRA"
+bundle_id = "kontra"
 crate = "kontakto"
 category = "instrument"
-fourcc = "Knt2"
+fourcc = "Kntr"
 vst3_subcategory = "Sampler"
 
 midi_input = true

@@ -1,4 +1,4 @@
-# KONTRA 2.0 architecture workbench
+# KONTRA v2 architecture workbench
 
 Status: independent native ownership, scheduling, resident/paged DSP, behavior and MIDI services,
 2026-10-06. Production playback has not been replaced or certified.

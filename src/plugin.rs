@@ -962,16 +962,17 @@ impl Shared {
     }
 }
 
-/// A rack KONTRA 2 saved: a `.kontra2-multi` file, JSON, naming the
+/// A rack KONTRA saved: a `.kontra-multi` file, JSON, naming the
 /// instruments with every part setting:
 ///
 /// ```json
-/// { "format": "kontra2-multi", "version": 1, "name": "Evening",
+/// { "format": "kontra-multi", "version": 2, "name": "Evening",
 ///   "parts": [ { "path": "/…/Piano.nki", "program": 0, "channel": -1,
 ///                "port": 0, "output": 0, "gain": 0.0, "nodes": [] } ] }
 /// ```
 ///
-/// Parts are in rack order; a missing field takes its default.
+/// Parts are in rack order; a missing field takes its default. Version 1 is
+/// KONTRA v1's format, which this engine does not read.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SavedMulti {
     pub format: String,
@@ -985,7 +986,7 @@ impl SavedMulti {
     pub fn of(name: &str, selection: &Selection) -> Self {
         Self {
             format: library::MULTI.into(),
-            version: 1,
+            version: 2,
             name: name.into(),
             parts: (selection.order.iter())
                 .filter_map(|n| selection.parts.get(*n as usize))
@@ -1005,8 +1006,9 @@ impl SavedMulti {
 
     pub fn read(path: &Path) -> anyhow::Result<Self> {
         let multi: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        anyhow::ensure!(multi.format == library::MULTI, "Not a KONTRA 2 multi");
-        anyhow::ensure!(multi.version <= 1, "Saved by a newer KONTRA");
+        anyhow::ensure!(multi.format == library::MULTI, "Not a KONTRA multi");
+        anyhow::ensure!(multi.version >= 2, "Saved by KONTRA v1, which this version cannot open");
+        anyhow::ensure!(multi.version <= 2, "Saved by a newer KONTRA");
         Ok(multi)
     }
 }
@@ -1809,7 +1811,7 @@ pub(crate) mod tests {
     #[test]
     fn saved_multi_round_trips_and_refuses_other_formats() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rack.kontra2-multi");
+        let path = dir.path().join("rack.kontra-multi");
         let selection = Selection {
             parts: vec![Part { path: "a.nki".into(), ..Default::default() }, Part::default()],
             order: vec![0, 1],
