@@ -15,7 +15,7 @@ if [ -z "${KONTRA_NO_STAMP_CHECK:-}" ]; then
   [ -n "$ok" ] || { cat "$W/log/state.txt" >&2; echo "record: Kontakt state is not pinned ($(grep MISMATCH "$W/log/state.txt" | tr '\n' ';')), no MIDI sent" >&2; exit 1; }
 fi
 load1() { cut -d' ' -f1 /proc/loadavg; }
-maxload=${KONTRA_MAX_LOAD:-8}; load_start=$(load1)
+maxload=${KONTRA_MAX_LOAD:-8}; for _ in $(seq 12); do load_start=$(load1); awk -v l="$load_start" -v m="$maxload" 'BEGIN{exit !(l<m)}' && break; sleep 5; done   # wait up to 60 s for the load to drop
 [ -n "${KONTRA_NO_LOAD_CHECK:-}" ] || awk -v l="$load_start" -v m="$maxload" 'BEGIN{exit !(l<m)}' || { echo "record: load average $load_start >= $maxload, Kontakt drops voices under load; wait or run inside a kontakto-heavy slot" >&2; exit 1; }
 [ -f "$mid.proto" ] || { echo "record: $mid has no .proto sidecar, build it with scenario.py" >&2; exit 1; }
 "$here/kontakt.sh" route || { echo "record: routing guard failed, no MIDI sent" >&2; exit 1; }
