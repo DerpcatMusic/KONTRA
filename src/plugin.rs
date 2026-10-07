@@ -299,7 +299,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 8],
+    problems: [AtomicU64; 14],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
@@ -362,7 +362,7 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [a, b, c, d, e, f, g, h] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
+        let [a, b, c, d, e, f, g, h, silent_notes, s0, s1, s2, fault_program, fault_error] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
             underruns: b,
@@ -372,13 +372,16 @@ impl PartShared {
             ignored_input: f,
             stolen_voices: g,
             refused_starts: h,
-            ..Default::default()
+            silent_notes,
+            silent: [s0, s1, s2],
+            fault_program,
+            fault_error,
         }
     }
 
     fn store_problems(&self, p: RuntimeProblems) {
         let values =
-            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts];
+            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts, p.silent_notes, p.silent[0], p.silent[1], p.silent[2], p.fault_program, p.fault_error];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
         }
@@ -1219,11 +1222,33 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
 
 /// Copy the audio thread's problem counters into the parts' load reports.
 fn refresh_problems(shared: &Shared) {
-    let problems = shared.with_parts(|parts| parts.iter().map(|p| p.problems()).collect::<Vec<_>>());
+    let problems = shared.with_parts(|parts| {
+        parts
+            .iter()
+            .map(|p| {
+                // The fault's callback resolves to text here, off the audio thread.
+                let faults: Vec<sampler_core::ScriptFault> = match p.problems().fault_program.checked_sub(1) {
+                    Some(program) => {
+                        let rt = p.problems();
+                        vec![sampler_core::ScriptFault {
+                            callback: sampler_ksp::callback_of(&p.scripts.lock().unwrap().views, program as usize),
+                            error: format!("{:?}", sampler_core::Error::ALL[(rt.fault_error as usize).min(11)]),
+                        }]
+                    }
+                    None => Vec::new(),
+                };
+                (p.problems(), faults)
+            })
+            .collect::<Vec<_>>()
+    });
     let mut view = shared.view.lock().unwrap();
-    for (v, problems) in view.parts.iter_mut().zip(problems) {
+    for (v, (problems, faults)) in view.parts.iter_mut().zip(problems) {
         if let Some(report) = v.report.as_mut().filter(|r| r.runtime != problems) {
-            Arc::make_mut(report).runtime = problems;
+            let report = Arc::make_mut(report);
+            report.runtime = problems;
+            report.faults = faults.iter().map(ToString::to_string).collect();
+            report.why_silent = (problems.silent_notes > 0)
+                .then(|| sampler_core::SilentNote::unpack(problems.silent).message(&faults));
         }
     }
 }
