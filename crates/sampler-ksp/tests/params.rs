@@ -29,6 +29,14 @@ fn authored(source: &str, group0: GroupParams) -> Runtime {
 }
 
 fn modules(scripts: Vec<sampler_ksp::Script>, group0: GroupParams) -> Runtime {
+    modules_with(scripts, group0, Ok)
+}
+
+fn modules_with(
+    scripts: Vec<sampler_ksp::Script>,
+    group0: GroupParams,
+    shape: impl FnOnce(Prepared) -> Result<Prepared, sampler_core::Error>,
+) -> Runtime {
     let note_cells = scripts.iter().map(|s| s.note_cells()).sum::<usize>() * 8;
     let pcm = [0.5, 0.25].map(|v| Pcm::new(48000, Box::from([[v; 2]; 48000])).unwrap());
     let regions = (0..2)
@@ -48,15 +56,13 @@ fn modules(scripts: Vec<sampler_ksp::Script>, group0: GroupParams) -> Runtime {
             playback: Playback::default(),
         })
         .collect();
-    let plan = sampler_ksp::bind_modules(
-        scripts,
-        Prepared::new(48000, pcm.into(), regions, 2)
-            .unwrap()
-            .with_groups(2, vec![Some(0), Some(1)])
-            .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
-            .unwrap(),
-    )
-    .unwrap();
+    let prepared = Prepared::new(48000, pcm.into(), regions, 2)
+        .unwrap()
+        .with_groups(2, vec![Some(0), Some(1)])
+        .and_then(|p| p.with_group_params(vec![group0, GroupParams::default()]))
+        .and_then(shape)
+        .unwrap();
+    let plan = sampler_ksp::bind_modules(scripts, prepared).unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
     Runtime::new(
         plan,
@@ -348,4 +354,71 @@ fn a_script_fade_renders_identically_for_every_block_size() {
     for block in [7, 61] {
         assert!(render(block) == reference, "block {block} differs");
     }
+}
+
+#[test]
+fn effect_slot_writes_drive_a_bus_mix_block() {
+    use sampler_core::{
+        Bus, BusSend, ControlDefinition, ControlDomain, ControlRange, ControlValue, Processor,
+        SlotKind, slot_control,
+    };
+    let range = |kind: SlotKind| ControlRange {
+        control: slot_control(kind, -1, 2, 1),
+        low: 0.,
+        high: kind.max(),
+        ramp_frames: 4,
+    };
+    let definition = |kind: SlotKind, value| ControlDefinition {
+        id: slot_control(kind, -1, 2, 1),
+        domain: ControlDomain::Real {
+            min: 0.,
+            max: kind.max(),
+        },
+        default: ControlValue::Real(value),
+    };
+    let mut rt = modules_with(
+        vec![compile(
+            "on note
+               if ($EVENT_NOTE = 60)
+                 set_engine_par($ENGINE_PAR_SEND_EFFECT_DRY_LEVEL, 396851, -1, 2, 1)
+                 set_engine_par($ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN, 0, -1, 2, 1)
+               end if
+               if ($EVENT_NOTE = 61)
+                 set_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, 2, 1)
+               end if
+             end on",
+        )],
+        GroupParams::default(),
+        |p| {
+            p.with_controls(vec![
+                definition(SlotKind::Dry, 0.),
+                definition(SlotKind::Output, 1.),
+                definition(SlotKind::Bypass, 0.),
+            ])?
+            .with_buses(
+                vec![Bus {
+                    processors: vec![
+                        Processor::Mix {
+                            count: 1,
+                            dry: range(SlotKind::Dry),
+                            wet: range(SlotKind::Output),
+                            bypass: range(SlotKind::Bypass),
+                        },
+                        Processor::Gain(2.),
+                    ],
+                    sends: vec![BusSend { bus: None, gain: 1. }],
+                    tail_frames: 0,
+                }],
+                vec![Some(0), Some(0)],
+            )
+        },
+    );
+    // Note 60 is 0.5 through the block: wet 2.0 at first.
+    rt.trigger(input(61), 61, 1.).unwrap();
+    // Bypassed: the dry 0.25 only.
+    assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
+    rt.trigger(input(60), 60, 1.).unwrap();
+    // Dry level 1.0 (unity), output gain 0: the dry 0.5 plus the still bypassed 0.25.
+    let [l, _] = level(&mut rt);
+    assert!((l - 0.75).abs() < 1e-3, "{l}");
 }

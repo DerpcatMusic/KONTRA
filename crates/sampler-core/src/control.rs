@@ -455,6 +455,12 @@ impl SlotKind {
     }
 }
 
+/// Whether `id` came from [`slot_control`]: a plan owns these, so a script
+/// binding that replaces the control schema keeps them.
+pub fn is_slot_control(id: ControlId) -> bool {
+    id.0 >> 104 == 0x4d_4958
+}
+
 /// The control behind one slot parameter. The identity encodes the address,
 /// so a script's runtime write finds it without a table.
 pub fn slot_control(kind: SlotKind, group: i32, slot: i32, generic: i32) -> ControlId {
