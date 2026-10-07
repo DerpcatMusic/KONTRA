@@ -264,6 +264,20 @@ Scenario: `tools/kontakt-reference/scenarios/una_solo_g39_g94.txt` plus `solo_gr
 - g39 is the velocity-sensitive note group: about 9 dB per step from 64 to 100 and 5.4 dB from 100 to 127; R is 2.4-2.8 dB louder than L.
 - g94 is velocity-independent (identical to 0.1 dB at 64, 100 and 127), nearly centred and 20 dB louder in RMS than g39 at vel 64 (a sustained layer, not a struck note).
 
+### 19a. Una g39/g94 re-record under REFERENCE_PROTOCOL (fresh Kontakt process)
+
+Fresh Kontakt process, calibration PASS (0.0000 dB), master 0.00 dB, instrument volume/pan/tune pinned, CC1/7/10/11/64 explicit (or CC7 unsent, see below), scripts 1-4 bypassed, `solo_group.ksp` in slot 5, key 60 vel 100, 3 s note. Level over the whole note (peak includes the first 0.3 s, RMS 0.5-2 s after onset), identical to 0.1 dB on 3 repeats:
+
+| group | L peak | R peak | L rms | R rms |
+|---|---|---|---|---|
+| g39 | -15.8 | -15.8 | -54.4 | -54.4 |
+| g94 | -17.7 | -17.7 | -30.0 | -30.0 |
+
+- Una Cotton's saved instrument volume is 0 dB, so CC7 unsent and CC7=127 give the same level here (-15.8 / -54.4 both); the 0.5x of section 18 applies to instruments whose saved volume is the Kontakt default of -6 dB (the noise instrument), not to Una.
+- g39 decays 30 dB in 0.2 s (struck, the sample is short); L=R exactly.
+- These do NOT reproduce section 19 (g39 v100 L/R peak -17.2/-14.4 after 0.3 s, rms -45.3/-42.5; g94 rms -25.2): g39 sustain is ~9 dB lower and the 2.4-2.8 dB L/R asymmetry is absent. Section 19 was recorded in a Kontakt process in which I had also opened the Group Editor and read module values; a state change there is the likely cause, but it is unproven. Treat 19a (fresh, unmodified instrument) as the protocol reference and section 19 as suspect until re-recorded.
+- Multi-note sequences in one recording were not stable (later groups silent in `una_solo_g39_g94.txt`, only 1 of 7 groups sounding in a CC20 36-42 sweep), so use one note per recording until the cause (script/CC20 timing or streaming under heavy host load, load average 11-18 during the session) is found.
+
 ## 20. Stereo Modeller law
 
 Rig: `noise_instrument.sh stereo` (independent noise A in L, B in R) as a group Insert FX, then `sm_sweep.sh TAG FIELDX FIELDY VALUE...`, which types each value, records a 3.5 s key-60 note at vel 100 and runs `matrix_report.py` (least-squares 2x2 fit out = M [A,B], lag, residual). Base gain g = 0.3838 (-8.3 dB at vel 100); residual -119 dB, so the module is a pure memoryless matrix (unity at defaults).
