@@ -177,7 +177,7 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
                 library: Some(path.clone()),
                 ..Default::default()
             };
-            let streamed = sampler_kontakt::load_streamed(&path, &options, &Default::default(), |_| {}).map_err(fail)?;
+            let streamed = sampler_kontakt::load_streamed(&path, &options, &sampler_kontakt::StreamPolicy { voices: 2048, ..Default::default() }, |_| {}).map_err(fail)?;
             let sampler_kontakt::Streamed { loaded, cache, report, streamer, assets } = streamed;
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
@@ -284,7 +284,7 @@ fn render(p: &mut Player, buffer: &mut [Frame], batch: &[TimedPacket<'_>], _: &[
     match p {
         Player::Midi { rt, ingress, horizon } => {
             if let Some(h) = horizon {
-                let _ = rt.service_streaming(*h);
+                match rt.service_streaming(*h) { Err(e) if std::env::var_os("PERF_DEBUG").is_some() => eprintln!("service_streaming: {e:?} voices {}", rt.voice_count()), _ => {} }
             }
             let mut errors = 0;
             let _ = ingress.render(rt, buffer, batch, batch.len().max(64), |i, r| { if let Err(e) = r { errors += 1; if std::env::var_os("PERF_DEBUG").is_some() && errors < 4 && batch.len() > 0 { eprintln!("event {i} of block ({} events): {e:?}", batch.len()); } } });
