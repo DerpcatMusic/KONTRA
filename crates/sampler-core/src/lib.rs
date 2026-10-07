@@ -159,6 +159,8 @@ pub enum EventInfo {
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
+    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    Source,
 }
 
 /// First mod-value id of a note's four user event parameters (`$EVENT_PAR_0..3`).

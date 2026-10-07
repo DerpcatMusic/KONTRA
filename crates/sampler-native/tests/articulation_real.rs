@@ -883,6 +883,10 @@ fn full_note_runtime_trace_probe() {
         println!("=== {relative} key {key} vel {vel}");
         let mut words = vec![0x2000_0000, 0x2090_0000 | u32::from(key) << 8 | u32::from(vel)];
         words.resize(1500, 0x2000_0000);
+        if let Some(off) = std::env::var("KONTRA_TRACE_OFF").ok().and_then(|v| v.parse::<usize>().ok()) {
+            words[off] = 0x2080_0000 | u32::from(key) << 8;
+        }
+        let trace_steps: usize = std::env::var("KONTRA_TRACE_STEPS").ok().map_or(200, |v| v.parse().unwrap());
         let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
         for (i, &word) in words.iter().enumerate() {
             let w = [word];
@@ -919,7 +923,7 @@ fn full_note_runtime_trace_probe() {
                 );
             }
             for w in rt.take_script_writes() {
-                if i < 200 {
+                if i < trace_steps {
                     println!("step {i} WRITE {w}");
                 }
             }
@@ -935,7 +939,7 @@ fn full_note_runtime_trace_probe() {
                     _ => format!("{args:?}"),
                 };
                 let line = format!("{name} {shown}");
-                if i < 200 {
+                if i < trace_steps {
                     println!("step {i} EFFECT {line}");
                 }
                 *counts.entry(name.to_string()).or_default() += 1;

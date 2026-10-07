@@ -1521,6 +1521,26 @@ impl Gen<'_, '_> {
                 true
             }
             GetEventPar
+                if self.const_int(args, 1) == Some(b::event_par::SOURCE)
+                    && !self.selects_many(builtin, args, 0) =>
+            {
+                // -1 for a host event, else the creating script's slot (ponytail:
+                // the reading script's own slot; notes carry no creator slot).
+                self.arg(args, 0, dst)?;
+                self.emit(I::ReadEventInfo {
+                    event: dst,
+                    info: sampler_core::EventInfo::Source,
+                    local: dst,
+                })?;
+                let host = self.jump_if_zero(dst)?;
+                self.set(dst, i64::from(self.u.slot))?;
+                let end = self.jump()?;
+                self.land(host);
+                self.set(dst, -1)?;
+                self.land(end);
+                true
+            }
+            GetEventPar
                 if matches!(
                     self.const_int(args, 1),
                     Some(
