@@ -635,6 +635,8 @@ pub struct Runtime {
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
+    /// Some expression follows another, so changes must propagate.
+    expression_followers: bool,
     expression_changes: Box<[Option<RenderedExpression>]>,
     commands: Vec<Scheduled>,
     behaviors: Arena<Continuation>,
@@ -789,6 +791,7 @@ impl Runtime {
             families: Arena::new(id, limits.families),
             decisions: Arena::new(id, limits.decisions),
             expressions: Arena::new(id, limits.expressions),
+            expression_followers: false,
             expression_changes: vec![None; limits.expressions].into_boxed_slice(),
             commands: Vec::with_capacity(limits.commands),
             behaviors: Arena::new(id, limits.behaviors),
@@ -1068,18 +1071,32 @@ impl Runtime {
             }
             (policy, parent) => {
                 let program = self.modulation_plan(plan);
+                let mut follows = None;
                 let (value, rendered) =
-                    if let (Inheritance::Snapshot, Some(parent)) = (policy, parent) {
+                    if let (Inheritance::Expression, Some(parent)) = (policy, parent) {
+                        let owner = *self.expressions.get(parent.0).unwrap();
+                        follows = Some(owner.follows.unwrap_or(parent));
+                        let value = Expression {
+                            pitch_semitones: owner.value.pitch_semitones,
+                            pressure: owner.value.pressure,
+                            timbre: owner.value.timbre,
+                            bend: owner.value.bend,
+                            ..initial
+                        };
+                        (value, self.project_expression(program, value, None)?)
+                    } else if let (Inheritance::Snapshot, Some(parent)) = (policy, parent) {
                         let owner = self.expressions.get(parent.0).unwrap();
                         (owner.value, owner.rendered)
                     } else {
                         (initial, self.project_expression(program, initial, None)?)
                     };
+                self.expression_followers |= follows.is_some();
                 ExpressionId(self.expressions.insert(ExpressionOwner {
                     value,
                     rendered,
                     program,
                     notes: 1,
+                    follows,
                 })?)
             }
         };

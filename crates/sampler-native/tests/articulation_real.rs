@@ -395,6 +395,8 @@ fn probe_instrument() {
         "DYNAMICS amplitude controllers {:?}",
         d.instrument.amplitude_controllers()
     );
+    eprintln!("BUSES {:?}", d.instrument.buses);
+    for b in &d.instrument.buses { if let Some(c) = b.chain { eprintln!("BUSCHAIN {:?}", d.instrument.chains[c.0]); } }
     eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),

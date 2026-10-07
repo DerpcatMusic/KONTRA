@@ -2633,7 +2633,7 @@ impl Gen<'_, '_> {
             offset
         };
         let scratch = reg(frames, 1)?;
-        let inheritance = Inheritance::Independent;
+        let inheritance = Inheritance::Expression;
         let play = |duration| I::PlayMidi {
             key: dst,
             velocity,
