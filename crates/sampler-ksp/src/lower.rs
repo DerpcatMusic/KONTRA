@@ -1826,7 +1826,11 @@ impl Gen<'_, '_> {
                 })?;
                 let other = self.jump_if_zero(slot)?;
                 self.arg(args, 1, value)?;
-                self.envelope_frames(stage, value)?;
+                if stage == EnvelopeStage::Sustain {
+                    self.envelope_sustain(value)?;
+                } else {
+                    self.envelope_frames(stage, value)?;
+                }
                 self.arg(args, 2, dst)?;
                 self.emit(I::WriteEnvelope {
                     group: dst,
@@ -2117,8 +2121,39 @@ impl Gen<'_, '_> {
             "ENGINE_PAR_ATTACK" => Some(EnvelopeStage::Attack),
             "ENGINE_PAR_DECAY" => Some(EnvelopeStage::Decay),
             "ENGINE_PAR_RELEASE" => Some(EnvelopeStage::Release),
+            "ENGINE_PAR_SUSTAIN" => Some(EnvelopeStage::Sustain),
             _ => None,
         }
+    }
+
+    /// Sustain engine units (0..=1000000, shown in dB with 1000000 at 0 dB) to
+    /// the core's 0..=1000 amplitude factor in place.
+    /// ponytail: cubic amplitude like the volume and effect-gain knobs; only
+    /// 1000000 (unity) is confirmed against shipping scripts. Measure the rest.
+    fn envelope_sustain(&mut self, local: u16) -> Result<()> {
+        self.clamp(local, 0, 1_000_000)?;
+        let t = reg(local, 1)?;
+        self.emit(I::Op(Op::IntegerToReal { local }))?;
+        let real = |s: &mut Self, value: f64, operation| -> Result<()> {
+            s.set(t, real_bits(value))?;
+            s.emit(I::Op(Op::Real {
+                lhs: local,
+                rhs: t,
+                operation,
+            }))
+        };
+        real(self, 1e-6, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Ln,
+        }))?;
+        real(self, 3.0, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealUnary {
+            local,
+            operation: RealUnary::Exp,
+        }))?;
+        real(self, 1000.0, RealBinary::Multiply)?;
+        self.emit(I::Op(Op::RealToInteger { local }))
     }
 
     /// Engine units to frames in place: ms = 2^(v·(log2(max + 2) − 1)/10^6 + 1) − 2,
