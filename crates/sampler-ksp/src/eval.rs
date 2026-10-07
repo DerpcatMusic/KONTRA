@@ -13,6 +13,9 @@ pub struct Environment {
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
     pub persisted: BTreeMap<String, Value>,
+    /// Host-saved semantic control values. Unlike Kontakt's menu persistence,
+    /// these are values, never menu-item positions.
+    pub control_values: BTreeMap<sampler_core::ControlId, Value>,
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
@@ -177,7 +180,9 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
-        if var.persistence != Persistence::None {
+        if var.persistence != Persistence::None
+            || matches!(var.home, Home::Control(_)) && e.env.control_values.contains_key(&crate::derived_control_id(e.env.slot, &var.name))
+        {
             e.restore(VarId(i as u32));
         }
     }
@@ -343,12 +348,14 @@ impl Eval<'_> {
             Value::Text(s) => V::S(s.clone()),
         };
         if v.len.is_none() {
-            if let Some(saved) = self.env.persisted.get(&*v.name) {
+            let host = matches!(v.home, Home::Control(_)).then(|| self.env.control_values.get(&crate::derived_control_id(self.env.slot, &v.name))).flatten();
+            if let Some(saved) = host.or_else(|| self.env.persisted.get(&*v.name)) {
                 let mut value = conv(saved);
                 // A menu is saved as its selected item's position; the
                 // variable holds that item's value (Una Corda's velocity
                 // menu stores 5 for "Linear", whose value is 0).
-                if let Home::Control(ui) = v.home
+                if host.is_none()
+                    && let Home::Control(ui) = v.home
                     && self.hir.uis[ui as usize].kind == WidgetKind::Menu
                     && let Some(item) = usize::try_from(value.int())
                         .ok()
