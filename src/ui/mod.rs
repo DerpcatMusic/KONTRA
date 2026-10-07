@@ -34,6 +34,8 @@ mod ir_view;
 mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
+#[cfg(feature = "shots")]
+pub(crate) mod health;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;

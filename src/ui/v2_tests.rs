@@ -2527,3 +2527,46 @@ fn v1_effects_list_includes_native_zone_chains_once_per_group() {
     assert_eq!(text.iter().filter(|s|s.starts_with("Ladder low-pass")).count(),1,
         "a chain referenced by both zones and group is shown once");
 }
+
+#[test]
+fn menus_show_a_fallback_without_editing_the_script_value() {
+    let control = ir::ControlId(7);
+    let mut menu = ir::Widget::new("$menu", ir::PageRef(0), ir::Rect::new(0, 0, 120, 20), ir::Kind::Menu {
+        items: vec![ir::MenuItem { text: "First".into(), value: 10, visible: true }, ir::MenuItem { text: "Second".into(), value: 30, visible: true }],
+    });
+    menu.binding = ir::Binding::Control(control);
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 160, height: 60 }, ..Default::default() }], widgets: vec![menu], ..Default::default() };
+    let assets = ir_view::Assets::default();
+    for value in [0., 10., 30., -1.] {
+        let mut values: ir_view::Values = [(control, value)].into();
+        settle(160., 60., |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
+        assert_eq!(values[&control], value, "drawing a menu must not submit an edit");
+    }
+}
+
+#[test]
+fn an_unsized_axis_does_not_discard_the_authored_other_axis() {
+    let mut control = ir::Widget::new("$slider", ir::PageRef(0), ir::Rect::new(0, 0, 220, 0), ir::Kind::Slider { range: Default::default(), orientation: ir::Orientation::Horizontal });
+    control.auto_size = true;
+    control.default_axes = [false, true];
+    let face = ir::Interface { pages: vec![ir::Page::default()], widgets: vec![control], ..Default::default() };
+    let resolved = ir_view::resolved(&face);
+    assert_eq!((resolved.widgets[0].rect.width, resolved.widgets[0].rect.height), (220, 18));
+}
+
+#[test]
+fn rack_interfaces_have_independent_input_identities() {
+    let mut widget = ir::Widget::new("$switch", ir::PageRef(0), ir::Rect::new(0,0,85,18), ir::Kind::Switch);
+    let id = ir::ControlId(7);
+    widget.binding = ir::Binding::Control(id);
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 100, height: 30 }, ..Default::default() }], widgets: vec![widget], ..Default::default() };
+    let assets = ir_view::Assets::default();
+    let mut a: ir_view::Values = [(id, 0.)].into();
+    let mut b: ir_view::Values = [(id, 1.)].into();
+    let mut input_a = ir_view::InputState::default();
+    let mut input_b = ir_view::InputState::default();
+    let ui = settle(100., 80., |ui| col![ir_view::view_state(ui, "part-0-", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut a, &mut input_a), ir_view::view_state(ui, "part-1-", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut b, &mut input_b)]);
+    assert!(ui.scene().unwrap().surface("part-0-ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("part-1-ir-0").is_some());
+    assert_eq!((a[&id], b[&id]), (0., 1.));
+}
