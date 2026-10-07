@@ -580,7 +580,11 @@ impl Drop for Streamer {
 /// (each holds a 16 KiB read buffer).
 const OPEN_READERS: usize = 16;
 
-fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Arc<dyn AssetSource>>, stop: &AtomicBool) {
+fn decode(
+    worker: &Mutex<StreamWorker>,
+    sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
+    stop: &AtomicBool,
+) {
     let worker = || {
         worker
             .lock()
@@ -601,17 +605,14 @@ fn decode(worker: &Mutex<StreamWorker>, sources: &HashMap<AssetId, Arc<dyn Asset
         let asset = job.key().asset;
         let index = match readers.iter().position(|(id, ..)| *id == asset) {
             Some(i) => Some(i),
-            None => sources
-                .get(&asset)
-                .and_then(|s| s.open().ok())
-                .map(|r| {
-                    if readers.len() == OPEN_READERS {
-                        let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
-                        readers.swap_remove(oldest);
-                    }
-                    readers.push((asset, r, tick));
-                    readers.len() - 1
-                }),
+            None => sources.get(&asset).and_then(|s| s.open().ok()).map(|r| {
+                if readers.len() == OPEN_READERS {
+                    let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
+                    readers.swap_remove(oldest);
+                }
+                readers.push((asset, r, tick));
+                readers.len() - 1
+            }),
         };
         let result = match index {
             Some(i) => {
