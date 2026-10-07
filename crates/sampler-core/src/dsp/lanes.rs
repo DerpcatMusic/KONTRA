@@ -49,9 +49,45 @@ pub(crate) fn process(
 ) {
     let len = batch.len;
     let uniform = batch.uniform();
-    for (index, stage) in stages.iter().enumerate() {
-        let cell = first + index;
+    let mut index = 0;
+    while index < stages.len() {
+        let (stage, cell) = (&stages[index], first + index);
+        index += 1;
         match stage {
+            PreparedProcessor::Mix { count, lanes } => {
+                let inner = index..index + usize::from(*count);
+                index = inner.end;
+                let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
+                let last = at + len.saturating_sub(1) as u64;
+                // As the scalar stage: a fully bypassed block skips the inner
+                // processors, whose state rests.
+                // ponytail: a voice shorter than the batch decides this over the batch's
+                // frames, so a bypass ramp ending inside it can advance state the scalar
+                // stage would hold; the output is the same.
+                let off = bypass.value(at) >= 1. && bypass.value(last) >= 1.;
+                let dry_block = *block;
+                if !off {
+                    process(
+                        &stages[inner.clone()],
+                        first + inner.start,
+                        cells,
+                        batch,
+                        block,
+                        parameters,
+                        at,
+                        filters,
+                    );
+                }
+                for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
+                    let t = at + i as u64;
+                    let b = bypass.value(t);
+                    let (direct, through) = (dry.value(t) * (1. - b) + b, wet.value(t) * (1. - b));
+                    for (v, d) in x.iter_mut().zip(d) {
+                        let wet_part = if off { 0. } else { through * *v };
+                        *v = direct * d + wet_part;
+                    }
+                }
+            }
             PreparedProcessor::Gain(gain) => {
                 for x in &mut block[..len] {
                     x.iter_mut().for_each(|v| *v *= gain);
@@ -121,9 +157,7 @@ pub(crate) fn process(
             | PreparedProcessor::Decimate(_) => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
-            PreparedProcessor::Reverb(_)
-            | PreparedProcessor::Convolution(_)
-            | PreparedProcessor::Mix { .. } => {
+            PreparedProcessor::Reverb(_) | PreparedProcessor::Convolution(_) => {
                 unreachable!("reverbs and convolutions are bus processors")
             }
         }
