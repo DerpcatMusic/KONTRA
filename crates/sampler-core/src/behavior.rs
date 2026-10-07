@@ -1099,7 +1099,10 @@ impl Runtime {
             let ran = self.run_straight(id, fuel.min(self.block_fuel_left));
             if ran > 0 {
                 self.block_fuel_left = self.block_fuel_left.saturating_sub(ran);
-                self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - ran };
+                self.behavior_ready[index] = Ready::Resume {
+                    id,
+                    fuel: fuel - ran,
+                };
                 continue;
             }
             self.behavior_ready[index] = Ready::Resume { id, fuel: fuel - 1 };
@@ -1648,8 +1651,13 @@ impl Runtime {
                 index,
                 local,
             } => {
-                let cell = array.cell(*self.local_cell_mut(id, index)?)?;
-                let value = *self.behavior_script_cell_mut(id, cell)?;
+                // Kontakt reads an index outside the array as 0 and drops a write
+                // there instead of failing the callback (Dolce's rr table is read
+                // one past its end).
+                let value = match array.cell(*self.local_cell_mut(id, index)?) {
+                    Ok(cell) => *self.behavior_script_cell_mut(id, cell)?,
+                    Err(_) => 0,
+                };
                 *self.local_cell_mut(id, local)? = value;
             }
             Instruction::WriteScriptArray {
@@ -1657,9 +1665,10 @@ impl Runtime {
                 index,
                 local,
             } => {
-                let cell = array.cell(*self.local_cell_mut(id, index)?)?;
-                let value = *self.local_cell_mut(id, local)?;
-                *self.behavior_script_cell_mut(id, cell)? = value;
+                if let Ok(cell) = array.cell(*self.local_cell_mut(id, index)?) {
+                    let value = *self.local_cell_mut(id, local)?;
+                    *self.behavior_script_cell_mut(id, cell)? = value;
+                }
             }
             Instruction::ReadControl { local, control } => {
                 let plan = self.behavior_plan(owner)?;
@@ -1793,7 +1802,11 @@ impl Runtime {
                     f64::from(raw != 0)
                 } else {
                     let value = crate::ops::real(raw);
-                    if value.is_nan() { 0. } else { value.clamp(0., kind.max()) }
+                    if value.is_nan() {
+                        0.
+                    } else {
+                        value.clamp(0., kind.max())
+                    }
                 };
                 let known = self
                     .plans
@@ -1804,7 +1817,11 @@ impl Runtime {
                     .is_ok();
                 if known {
                     let value = super::ControlValue::Real(value);
-                    self.edit_controls_now(plan, None, &[super::ControlWrite { id: control, value }])?;
+                    self.edit_controls_now(
+                        plan,
+                        None,
+                        &[super::ControlWrite { id: control, value }],
+                    )?;
                 }
             }
             Instruction::Jump { target } => {
