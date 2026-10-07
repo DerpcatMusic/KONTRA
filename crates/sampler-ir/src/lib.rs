@@ -924,6 +924,26 @@ pub enum Processor {
         dry: f64,
         wet: f64,
     },
+    /// The next `count` processors of the chain run beside the unprocessed
+    /// signal: `dry` of it passes around them, `wet` of their output follows,
+    /// and `bypass` swaps both for the dry signal alone. A script can change
+    /// all three at runtime through `address`. Bus scope only.
+    Mix {
+        count: u16,
+        address: SlotAddress,
+        dry: f64,
+        wet: f64,
+        bypass: bool,
+    },
+}
+
+/// Where a script finds an effect slot: `set_engine_par`'s group, slot and
+/// generic arguments (-1 where they do not apply).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotAddress {
+    pub group: i32,
+    pub slot: i32,
+    pub generic: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -937,6 +957,10 @@ pub struct Impulse {
     pub rate: u32,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+    /// A source whose loader decodes this impulse's audio from `asset` (a
+    /// file of the program) and clears the field; `rate`/`left`/`right` hold a
+    /// unit-impulse placeholder until then.
+    pub asset: Option<AssetRef>,
 }
 
 /// Physical reverb settings; an importing profile maps its own controls

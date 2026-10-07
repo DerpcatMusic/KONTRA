@@ -54,12 +54,16 @@ impl Bank {
         let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
-        let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
-        let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
         let ufs = Ufs::open(path).map_err(bank_error)?;
-        let directory = ufs
-            .decode_directory(&namespaces.metadata)
-            .map_err(bank_error)?;
+        let (directory, program_namespace) = match ufs.decode_directory(&[]) {
+            Ok(directory) => (directory, Vec::new()),
+            Err(error) if error.is::<crate::ufs::NeedsMetadataNamespace>() => {
+                let reader = access::reader_path(configured_reader().as_deref()).map_err(reader_error)?;
+                let namespaces = ReaderNamespaces::open(&reader).map_err(reader_error)?;
+                (ufs.decode_directory(&namespaces.metadata).map_err(bank_error)?, namespaces.program)
+            }
+            Err(error) => return Err(bank_error(error)),
+        };
         // Only banks with encrypted members need a content state prepared.
         let content_key = if directory
             .files
@@ -83,7 +87,7 @@ impl Bank {
             ufs: Arc::new(ufs),
             directory,
             content_key,
-            program_namespace: namespaces.program,
+            program_namespace,
             paths,
         })
     }
@@ -147,7 +151,11 @@ impl Bank {
             "UVI program exceeds 32 MiB"
         );
         let bytes = self.read(member)?;
-        let text = crypto::decode_program_bytes(&bytes, &self.program_namespace)?;
+        let text = if self.program_namespace.is_empty() {
+            program_text(&bytes)?
+        } else {
+            crypto::decode_program_bytes(&bytes, &self.program_namespace)?
+        };
         let path = member
             .path
             .clone()
@@ -332,6 +340,59 @@ fn resources<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_bank_and_program_load_without_an_installed_reader() {
+        fn append(bytes: &mut Vec<u8>, payload: &[u8]) -> u64 {
+            let pointer = bytes.len() as u64 + 8;
+            bytes.extend((payload.len() as u64).to_le_bytes());
+            bytes.extend(payload);
+            pointer
+        }
+        fn point(bytes: &mut [u8], at: u64, value: u64) {
+            bytes[at as usize..at as usize + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        let xml = b"<UVI4><Program Name=\"Our clear fixture\"/></UVI4>";
+        let mut bytes = vec![0; 320];
+        bytes[..4].copy_from_slice(b"UFS2");
+        bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        bytes[48..56].copy_from_slice(b"Authored");
+        // +32 stays opaque, not an asserted physical size.
+        point(&mut bytes, 32, 123);
+        let mut folder = vec![0; 272];
+        folder[..4].copy_from_slice(&0x2fba3632u32.to_le_bytes());
+        folder[4..8].copy_from_slice(b"Root");
+        let root = append(&mut bytes, &folder);
+        point(&mut bytes, 40, root);
+        let mut file = vec![0; 289];
+        file[..4].copy_from_slice(&0x675850e4u32.to_le_bytes());
+        file[4..15].copy_from_slice(b"preset.uvip");
+        let member = append(&mut bytes, &file);
+        let mut descriptor = vec![0; 34];
+        descriptor[..4].copy_from_slice(&0x1847b398u32.to_le_bytes());
+        let tree = append(&mut bytes, &descriptor);
+        point(&mut bytes, root + 260, tree);
+        let mut leaf = vec![0; 288];
+        leaf[..4].copy_from_slice(&0x3ca86aafu32.to_le_bytes());
+        leaf[4..8].copy_from_slice(&1u32.to_le_bytes());
+        leaf[8..19].copy_from_slice(b"preset.uvip");
+        point(&mut leaf, 264, member);
+        leaf[272..288].fill(255);
+        let table = append(&mut bytes, &leaf);
+        for offset in [4, 12, 20] { point(&mut bytes, tree + offset, table); }
+        let payload = append(&mut bytes, xml);
+        point(&mut bytes, member + 260, xml.len() as u64);
+        point(&mut bytes, member + 268, payload);
+        let path = std::env::temp_dir().join(format!("kontra-clear-bank-{}.ufs", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let bank = Bank::open(&path).unwrap();
+        assert!(bank.program_namespace.is_empty());
+        assert_eq!(bank.programs(), ["preset.uvip"]);
+        assert_eq!(bank.program("preset.uvip").unwrap(),
+            (std::str::from_utf8(xml).unwrap().to_owned(), "preset.uvip".to_owned()));
+        assert!(bank.directory.warnings.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn explicit_bank_volumes_are_rooted_and_cannot_cross_banks() {

@@ -276,8 +276,23 @@ Fresh Kontakt process, calibration PASS (0.0000 dB), master 0.00 dB, instrument 
 - Una Cotton's saved instrument volume is 0 dB, so CC7 unsent and CC7=127 give the same level here (-15.8 / -54.4 both); the 0.5x of section 18 applies to instruments whose saved volume is the Kontakt default of -6 dB (the noise instrument), not to Una.
 - g39 decays 30 dB in 0.2 s (struck, the sample is short); L=R exactly.
 - These do NOT reproduce section 19 (g39 v100 L/R peak -17.2/-14.4 after 0.3 s, rms -45.3/-42.5; g94 rms -25.2): g39 sustain is ~9 dB lower and the 2.4-2.8 dB L/R asymmetry is absent. Section 19 was recorded in a Kontakt process in which I had also opened the Group Editor and read module values; a state change there is the likely cause, but it is unproven. Treat 19a (fresh, unmodified instrument) as the protocol reference and section 19 as suspect until re-recorded.
-- The failures below and the mismatch happened at load average 11-18; treat those runs as invalid. record.sh now refuses to run above load 4 (KONTRA_MAX_LOAD) and logs the load.
+- The failures below and the mismatch happened at load average 11-18; treat those runs as invalid. record.sh now refuses to run above load 8 (KONTRA_MAX_LOAD) and logs the load.
 - Multi-note sequences in one recording were not stable (later groups silent in `una_solo_g39_g94.txt`, only 1 of 7 groups sounding in a CC20 36-42 sweep), so use one note per recording until the cause (script/CC20 timing or streaming under heavy host load, load average 11-18 during the session) is found.
+
+### 19b. Quiet-load repeats (load 3-5, calibration PASS before and after, two repeats identical to 0.1 dB)
+
+Single note, key 60, vel 100, 3 s (peak over the whole note, RMS 0.5-2 s after onset):
+
+| case | L pk | R pk | L rms | R rms |
+|---|---|---|---|---|
+| g39, CC7=127 | -15.8 | -15.8 | -54.4 | -54.4 |
+| g94, CC7=127 | -17.7 | -17.7 | -30.0 | -30.0 |
+| g39, CC7=64 | -33.7 | -33.7 | -72.2 | -72.2 |
+
+- 19a is reproducible at quiet load, so load did not cause the 19 vs 19a mismatch.
+- CC7 overrides the saved volume: CC7=64 is -17.9 dB (peak) and -17.8 dB (rms) against CC7=127, the cubic law.
+- Sequence g39 v64 at 1 s, v100 at 7 s, v127 at 13 s: in one recording the v100 note (second) reads peak -8.1, rms -50.0, which is louder by 7.7 dB peak and 4.4 dB rms than the same note alone, while the first note reads peak -15.8 / rms -63.6 at v64. So level depends on the previous notes in the process (history), or the multi-note recording is not time-linear (below).
+- Multi-note recordings are still broken at quiet load: the 20 s MIDI file (record.sh logs `midi_wall_s=20.0`, recorder alive after the tail) produced a 12.0 s WAV that has only the first two notes; the third note is missing. A silent keep-alive stream did not change it. Cause unknown (the capture stream seems to drop the idle periods). Do not trust per-note windows at a fixed spacing in any recording with silent gaps; section 19 used exactly that.
 
 ## 20. Stereo Modeller law
 

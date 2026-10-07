@@ -282,6 +282,19 @@ fn translate(
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
     let racks = crate::effects::program_racks(&program, &out.engine);
+    // Scripts that set slot bypass or levels while playing get runtime blocks.
+    let dynamic = out
+        .ir
+        .behaviors
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.language == ir::Language::Ksp)
+        .any(|(index, b)| {
+            let environment =
+                crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            sampler_ksp::compile_with(&b.source, 48_000, sampler_ksp::Limits::LIBRARY, &[], &environment)
+                .is_ok_and(|script| script.writes_effect_slots())
+        });
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -297,7 +310,7 @@ fn translate(
             Ok((decoded.rate, decoded.frames))
         };
         for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &mut load)
+            crate::effects::instrument_buses(&mut out.ir, &racks, dynamic, &mut load)
         {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }

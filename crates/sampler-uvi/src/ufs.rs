@@ -23,10 +23,22 @@ pub const MAX_MEMBER_SIZE: u64 = 512 << 20;
 pub struct Header {
     pub version: u32,
     pub uuid: [u8; 16],
+    /// Historical API name for the opaque word at +32; it is not a verified file size.
     pub expected_size: u64,
     pub physical_size: u64,
     pub bank_name: String,
+    pub root_entry_offset: u64,
+    pub encoded_names: bool,
 }
+
+#[derive(Debug)]
+pub(crate) struct NeedsMetadataNamespace;
+impl std::fmt::Display for NeedsMetadataNamespace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Encoded UFS names or metadata-protected members require a reader metadata namespace")
+    }
+}
+impl std::error::Error for NeedsMetadataNamespace {}
 
 #[derive(Debug, Clone)]
 pub struct Record {
@@ -216,6 +228,8 @@ impl Ufs {
                 expected_size: u64_le(&bytes[32..40]),
                 physical_size,
                 bank_name: text(&bytes[48..304])?,
+                root_entry_offset: u64_le(&bytes[40..48]),
+                encoded_names: bytes[304] != 0,
             },
             snapshot,
             header_bytes: bytes,
@@ -284,10 +298,9 @@ impl Ufs {
     }
 
     pub fn decode_directory(&self, namespace: &[u8]) -> Result<Directory> {
-        ensure!(
-            !namespace.is_empty(),
-            "UFS names require a local reader metadata namespace"
-        );
+        if self.header.encoded_names && namespace.is_empty() {
+            return Err(NeedsMetadataNamespace.into());
+        }
         let records = self.records()?;
         let key = crypto::metadata_key(namespace, &self.header.bank_name);
         let mut directory = Directory {
@@ -297,12 +310,6 @@ impl Ufs {
             warnings: Vec::new(),
             metadata_key: key,
         };
-        if self.header.expected_size != self.header.physical_size {
-            directory.warnings.push(format!(
-                "Header reports {} bytes; {} physically available",
-                self.header.expected_size, self.header.physical_size
-            ));
-        }
         let mut file = self.open_snapshot()?;
         for record in &directory.records {
             if record.available < record.length {
@@ -326,7 +333,9 @@ impl Ufs {
                 );
                 let mut bytes =
                     read_at(&mut file, record.payload_offset, record.available as usize)?;
-                crypto::transform(&mut bytes[4..260], key, record.payload_offset + 4);
+                if self.header.encoded_names {
+                    crypto::transform(&mut bytes[4..260], key, record.payload_offset + 4);
+                }
                 let name = text(&bytes[4..260])
                     .with_context(|| format!("UFS metadata record {}", record.offset))?;
                 if is_file {
@@ -443,7 +452,9 @@ impl Ufs {
                 let mut bytes = read_at(&mut file, pointer, used as usize)?;
                 for i in 0..count as usize {
                     let at = 8 + i * 264;
-                    crypto::transform(&mut bytes[at..at + 256], key, pointer + at as u64);
+                    if self.header.encoded_names {
+                        crypto::transform(&mut bytes[at..at + 256], key, pointer + at as u64);
+                    }
                     let name = text(&bytes[at..at + 256])?;
                     let child_pointer = u64_le(&bytes[at + 256..at + 264]);
                     let Some(child) = by_payload.get(&child_pointer) else {
@@ -480,7 +491,7 @@ impl Ufs {
         let root = directory
             .directories
             .iter()
-            .find(|d| d.record_offset == HEADER_SIZE)
+            .find(|d| d.record_offset + 8 == self.header.root_entry_offset)
             .map(|d| d.record_offset);
         let paths: HashMap<u64, Option<String>> = names
             .keys()
@@ -507,6 +518,9 @@ impl Ufs {
             directory.warnings.push(format!(
                 "{unresolved} member paths could not be linked to the container root"
             ));
+        }
+        if namespace.is_empty() && directory.files.iter().any(|m| m.mode == Protection::Metadata) {
+            return Err(NeedsMetadataNamespace.into());
         }
         self.check_snapshot(&file)?;
         Ok(directory)
@@ -578,6 +592,28 @@ impl Ufs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the user's local UFS corpus and pinned reader image"]
+    fn reference_directories_match_independent_numeric_index() {
+        let corpus = std::env::var_os("KONTRA_UFS_CORPUS").expect("KONTRA_UFS_CORPUS");
+        let reader = std::env::var_os("KONTRA_UVI_REFERENCE_READER").expect("KONTRA_UVI_REFERENCE_READER");
+        let namespaces = super::super::access::ReaderNamespaces::open(Path::new(&reader)).unwrap();
+        let corpus: serde_json::Value = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+        let mut files = 0;
+        let mut folders = 0;
+        for bank in corpus["corpus"].as_array().unwrap() {
+            let ufs = Ufs::open(Path::new(bank["path"].as_str().unwrap())).unwrap();
+            let directory = ufs.decode_directory(&namespaces.metadata).unwrap();
+            assert_eq!(directory.files.len() as u64, bank["counts"]["file"].as_u64().unwrap());
+            assert_eq!(directory.directories.len() as u64, bank["counts"]["folder"].as_u64().unwrap());
+            assert!(directory.files.iter().all(|member| member.path.is_some()));
+            assert!(directory.directories.iter().all(|folder| folder.path.is_some()));
+            files += directory.files.len();
+            folders += directory.directories.len();
+        }
+        assert_eq!((files, folders), (127828, 1409));
+    }
     use std::io::Write;
 
     #[cfg(unix)]
@@ -670,6 +706,7 @@ mod tests {
         bytes[..4].copy_from_slice(b"UFS2");
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         bytes[48..57].copy_from_slice(b"Synthetic");
+        bytes[304] = 1;
         let plain: Vec<u8> = (0..1031).map(|i| i as u8).collect();
         let mut encrypted = plain.clone();
         crypto::transform_blocks(&mut encrypted, key, 328);
@@ -758,7 +795,10 @@ mod tests {
         bytes[..4].copy_from_slice(b"UFS2");
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         bytes[48..57].copy_from_slice(b"Synthetic");
+        bytes[304] = 1;
+        append(&mut bytes, b"uninterpreted preceding record", 30);
         let root = named(&mut bytes, DIRECTORY_TAG, "Root", key);
+        bytes[40..48].copy_from_slice(&root.to_le_bytes());
         let a = named(&mut bytes, DIRECTORY_TAG, "A", key);
         let b = named(&mut bytes, DIRECTORY_TAG, "B", key);
         let a_file = named(&mut bytes, FILE_TAG, "same.wav", key);
@@ -795,7 +835,27 @@ mod tests {
         );
         assert_eq!(directory.directories[1].child_count, Some(2));
         assert_eq!(directory.records.last().unwrap().available, 288);
-        assert_eq!(directory.warnings.len(), 2);
+        assert_eq!(directory.warnings.len(), 1);
+        // Clear directory names use the same framing and need no reader namespace.
+        let mut clear = bytes.clone();
+        clear[304] = 0;
+        for pointer in [root, a, b, a_file, a_other, b_file] {
+            let at = pointer as usize + 4;
+            crypto::transform(&mut clear[at..at + 256], key, pointer + 4);
+        }
+        for pointer in [root_table, first, last, short] {
+            let count = u32_le(&clear[pointer as usize + 4..pointer as usize + 8]);
+            for i in 0..count as usize {
+                let at = pointer as usize + 8 + i * 264;
+                crypto::transform(&mut clear[at..at + 256], key, at as u64);
+            }
+        }
+        File::create(&path).unwrap().write_all(&clear).unwrap();
+        let clear_bank = Ufs::open(&path).unwrap();
+        assert!(!clear_bank.header.encoded_names);
+        let clear_directory = clear_bank.decode_directory(&[]).unwrap();
+        assert_eq!(clear_directory.files.iter().map(|m| m.path.as_deref().unwrap()).collect::<Vec<_>>(),
+            ["A/same.wav", "A/other.wav", "B/same.wav"]);
         bytes[first as usize + 280..first as usize + 288].copy_from_slice(&first.to_le_bytes());
         File::create(&path).unwrap().write_all(&bytes).unwrap();
         assert!(

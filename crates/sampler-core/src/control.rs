@@ -433,3 +433,42 @@ mod tests {
         assert_eq!(rt.pending_commands(), 0);
     }
 }
+
+/// What a runtime-writable effect slot parameter does; see
+/// [`Processor::Mix`](crate::Processor::Mix).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SlotKind {
+    /// Nonzero routes the dry signal around the slot.
+    Bypass,
+    /// Linear gain of the slot's processed signal, 0..=16.
+    Output,
+    /// Linear gain of the signal that passes around the slot, 0..=16.
+    Dry,
+}
+impl SlotKind {
+    /// Largest value the control takes.
+    pub const fn max(self) -> f64 {
+        match self {
+            Self::Bypass => 1.,
+            Self::Output | Self::Dry => 16.,
+        }
+    }
+}
+
+/// Whether `id` came from [`slot_control`]: a plan owns these, so a script
+/// binding that replaces the control schema keeps them.
+pub fn is_slot_control(id: ControlId) -> bool {
+    id.0 >> 104 == 0x4d_4958
+}
+
+/// The control behind one slot parameter. The identity encodes the address,
+/// so a script's runtime write finds it without a table.
+pub fn slot_control(kind: SlotKind, group: i32, slot: i32, generic: i32) -> ControlId {
+    ControlId(
+        (0x004d_4958_u128 << 104)
+            | (u128::from(kind as u8) << 96)
+            | (u128::from(group as u32) << 64)
+            | (u128::from(slot as u32) << 32)
+            | u128::from(generic as u32),
+    )
+}

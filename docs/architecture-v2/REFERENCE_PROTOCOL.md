@@ -41,4 +41,5 @@ The volume of Output channels and instrument buses is not read; the calibration 
 
 ## Host load
 
-Kontakt under Wine drops or underruns voices when the host is busy (observed at load average 11-18: silent notes, wrong sustain). `record.sh` refuses to send MIDI while the 1-minute load average is >= 4 (`KONTRA_MAX_LOAD`), and logs `load1_start` and `load1_end` in each recording's `.log`. Recordings made above that load are invalid. Never use `wineserver -k` on ~/.wine (shared with other sessions); kill only the PIDs you started.
+Kontakt under Wine drops or underruns voices when the host is busy (observed at load average 11-18 (above 8 refuse): silent notes, wrong sustain). `record.sh` refuses to send MIDI while the 1-minute load average is >= 8 (`KONTRA_MAX_LOAD`, 16-CPU machine), and logs `load1_start` and `load1_end` in each recording's `.log`. Recordings made above that load are invalid. Never use `wineserver -k` on ~/.wine (shared with other sessions); kill only the PIDs you started.
+A session is valid only if run as `~/.cache/kontakto-quiet <session script>` (takes all heavy slots so no cargo or survey job starts), the calibration gate passes before and after the session, and two repeats of each recording agree within 0.1 dB. Keep sessions to about 15 minutes.

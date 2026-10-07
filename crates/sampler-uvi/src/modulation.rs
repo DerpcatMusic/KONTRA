@@ -768,7 +768,7 @@ impl Translation {
                     shared: None,
                 }))
             }
-            "DAHDSR" => {
+            "DAHDSR" | "AHD" => {
                 if number(node, "Retrigger", 1.0)? != 1.0 {
                     return Ok(Err(gap("DAHDSR Retrigger", "shared envelope", UnknownLaw)));
                 }
@@ -1424,9 +1424,24 @@ mod tests {
     }
 
     #[test]
+    fn ahd_is_an_envelope_that_falls_to_zero_after_its_decay() {
+        // Corpus attributes: Attack/Hold/Decay times and curves, no sustain.
+        let ir = translate(
+            r#"<AHD Name="E" AttackTime="0.01" HoldTime="0.02" DecayTime="0.03" DecayCurve="0.5"/>"#,
+            "",
+            r#"<SignalConnection Source="$Program/E" Destination="Pitch" Ratio="12"/>"#,
+        );
+        let (_, source) = only_route(&ir);
+        let ir::ModulationSource::Envelope(e) = source else { panic!("not an envelope: {source:?}") };
+        assert_eq!(e.sustain, 0.0);
+        assert_eq!(e.hold, ir::Time::Seconds(0.02));
+        assert_eq!(e.decay, ir::Time::Seconds(0.03));
+    }
+
+    #[test]
     fn untranslatable_connections_are_reported() {
         let ir = translate(
-            r#"<AHD Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
+            r#"<Drunk Name="S"/><LFO Name="W" WaveFormType="7"/><LFO Name="V"/>"#,
             r#"<SignalConnection Source="$Program/S" Destination="Gain" Ratio="1"/>
                <SignalConnection Source="$Program/W" Destination="Pan" Ratio="1"/>
                <SignalConnection Source="@PitchBend" Destination="Gain" Ratio="1"/>"#,
@@ -1451,7 +1466,7 @@ mod tests {
                 ("Program-level LFO", ir::Reason::UnknownLaw),
             ]
         );
-        assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: AHD");
+        assert_eq!(ir.unsupported[0].value, "$Program/S -> Gain: Drunk");
         assert_eq!(ir.zones[0].routes.len(), 1);
         // LFO pitch depth × (1 − key position): a modulator × modulator product.
         let route = &ir.routes[ir.zones[0].routes[0].0];
