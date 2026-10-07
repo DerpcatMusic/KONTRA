@@ -670,7 +670,7 @@ fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
 
 #[test]
 fn a_start_refused_after_preflight_is_counted_not_a_panic() {
-    let asset = Pcm::new(48000, vec![[0.5; 2]; PAGE_FRAMES]).unwrap();
+    let asset = Pcm::new(48000, vec![[0.5; 2]; PAGE_FRAMES].into()).unwrap();
     let plan = Prepared::new(48000, vec![asset], vec![region(0, Playback::default())], 8).unwrap();
     let limits = Limits {
         notes: 4,
