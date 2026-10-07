@@ -422,3 +422,24 @@ fn effect_slot_writes_drive_a_bus_mix_block() {
     let [l, _] = level(&mut rt);
     assert!((l - 0.75).abs() < 1e-3, "{l}");
 }
+
+#[test]
+fn block_fuel_spreads_callbacks_over_blocks_without_changing_the_result() {
+    let source = "on init
+                    declare $i
+                  end on
+                  on note
+                    while ($i < 40)
+                      inc($i)
+                    end while
+                  end on";
+    let mut rt = runtime(source);
+    rt.set_behavior_block_fuel(16);
+    rt.trigger(input(60), 60, 1.).unwrap();
+    // 40 loop iterations at 16 instructions a block take several blocks.
+    assert_eq!(level(&mut rt), [0.; 2], "the note waits for its callback");
+    for _ in 0..40 {
+        level(&mut rt);
+    }
+    assert!(close(level(&mut rt), [0.5; 2]));
+}
