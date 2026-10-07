@@ -2043,7 +2043,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             loud(&core.render(128), 0, 128)
         });
-        assert!(heard, "the scripted program is silent");
+        assert!(heard, "the scripted program is silent: {:?} / {:?}", core.problems(0), core.voices());
     }
 
     /// Idle cost of a loaded part: blocks with no note playing. Prints the
@@ -2095,7 +2095,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             loud(&core.render(128), 0, 128)
         });
-        assert!(heard, "the scripted program is silent");
+        assert!(heard, "the scripted program is silent: {:?} / {:?}", core.problems(0), core.voices());
         // Warm: the first notes sized the driver's tables. Now play more
         // scripted notes and release them; the audio thread allocates nothing.
         core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 36, id: -1, clap: true }));

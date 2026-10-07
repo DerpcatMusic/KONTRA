@@ -649,6 +649,7 @@ fn scripted_render(
     rt: &mut Runtime,
     driver: &mut sampler_uvi::scripted::Driver<sampler_uvi::script::ScriptHost>,
     horizon: Option<u32>,
+    feed: &mut sampler_uvi::scripted::MidiFeed,
     out: &mut [[f32; 2]],
     cost: &mut AudioCost,
 ) -> Result<(), sampler_core::Error> {
@@ -656,6 +657,7 @@ fn scripted_render(
     while done < out.len() {
         let left = out.len() - done;
         let due = driver.wake(rt)?;
+        feed.pump(driver, rt);
         let step = due.map_or(left, |d| d.max(1).min(left));
         let (t, a) = (Instant::now(), heap::calls());
         if let Some(h) = horizon {
@@ -707,7 +709,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             rt = rt.with_stream_cache(cache);
             // As the host does: a note whose pages are not resident yet starts
             // silent and fades in, instead of being refused.
-            rt.set_cold_starts(true);
+            rt.set_cold_starts(std::env::var_os("CH_NOCOLD").is_none());
         }
         if std::env::var_os("CH_STEAL").is_some() {
         rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
@@ -783,6 +785,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         .map_err(|e| format!("{e:?}"))?;
     let mut buffer = [[0.0f32; 2]; 64];
     let deadline = buffer.len() as f64 / f64::from(rate);
+    let mut feed = sampler_uvi::scripted::MidiFeed::default();
     let mut block_times: Vec<f64> = Vec::with_capacity(total / buffer.len() + 1);
     // Allocation calls on this (the render) thread: the note-on block, the
     // release block, and every other block.
@@ -873,12 +876,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             } => {
                 if begin == 0 {
                     let mut cc_ingress = new_ingress();
-                    for word in &pre_words {
+                    for word in pre_words.iter().filter(|_| std::env::var_os("CH_NOPRE").is_none()) {
                         if let Some(Ok(packet)) = Packets::new(word).next() {
                             let _ = cc_ingress.apply(rt, packet);
                         }
                     }
-                    for &(cc, value) in ccs {
+                    for &(cc, value) in ccs.iter().filter(|_| std::env::var_os("CH_NODRV").is_none()) {
                         driver.input(
                             rt,
                             sampler_uvi::scripted::HostInput::Controller {
@@ -896,7 +899,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                         key,
                         external_id: None,
                     };
-                    let velocity = f64::from(pick.velocity) / 127.0;
+                    let velocity = std::env::var("CH_VEL").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(f64::from(pick.velocity)) / 127.0;
                     note = match rt
                         .note_on(input, key, velocity)
                         .and_then(|n| driver.note_on(rt, n, key, velocity))
@@ -908,13 +911,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 (t0, a0) = (Instant::now(), heap::calls());
                 let mut cost = AudioCost::default();
                 let cut = if has_release { release_at - begin } else { len };
-                scripted_render(rt, driver, *horizon, &mut buffer[..cut], &mut cost)
+                scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[..cut], &mut cost)
                     .map_err(|e| format!("render: {e:?}"))?;
                 if cut < len {
                     driver
                         .note_off(rt, key)
                         .map_err(|e| format!("release: {e:?}"))?;
-                    scripted_render(rt, driver, *horizon, &mut buffer[cut..len], &mut cost)
+                    scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[cut..len], &mut cost)
                         .map_err(|e| format!("render: {e:?}"))?;
                 }
                 script_allocs += (heap::calls() - a0).saturating_sub(cost.allocs);
