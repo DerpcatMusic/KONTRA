@@ -669,7 +669,7 @@ fn a_resident_range_at_a_zone_start_admits_that_zone_only() {
 }
 
 #[test]
-fn a_start_refused_after_preflight_is_counted_not_a_panic() {
+fn a_full_pool_steals_instead_of_refusing_or_panicking() {
     let asset = Pcm::new(48000, vec![[0.5; 2]; PAGE_FRAMES].into()).unwrap();
     let plan = Prepared::new(48000, vec![asset], vec![region(0, Playback::default())], 8).unwrap();
     let limits = Limits {
@@ -688,7 +688,7 @@ fn a_start_refused_after_preflight_is_counted_not_a_panic() {
     };
     let mut rt = Runtime::new(plan, limits).unwrap();
     let mut output = [[0.; 2]; 64];
-    // Every voice audible, so the third start cannot be admitted.
+    // Every voice audible: the third start steals one rather than failing.
     for id in 1..=3 {
         let held = Input {
             external_id: Some(id),
@@ -699,5 +699,5 @@ fn a_start_refused_after_preflight_is_counted_not_a_panic() {
     rt.render(&mut output).unwrap();
     let stats = rt.stats();
     assert_eq!(stats.voices, 2);
-    assert_eq!(stats.voice_drops + stats.refused_starts, 2);
+    assert_eq!(stats.voice_drops + stats.refused_starts, 0);
 }
