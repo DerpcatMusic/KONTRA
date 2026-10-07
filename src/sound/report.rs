@@ -90,6 +90,10 @@ pub struct RuntimeProblems {
     /// Voices faded out to make room at full polyphony.
     #[serde(default)]
     pub stolen_voices: u64,
+    /// Starts refused after selection because their first frames were not
+    /// resident (cold starts off) or the pool could not admit them.
+    #[serde(default)]
+    pub refused_starts: u64,
 }
 
 /// A part's load report.
