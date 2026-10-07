@@ -226,7 +226,7 @@ fn condition_validation_and_zero_match_do_not_consume_sequence_or_source_ownersh
     ));
     for invalid in [
         ControllerCondition {
-            controller: 128,
+            controller: 200,
             ..condition
         },
         ControllerCondition {
