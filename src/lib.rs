@@ -34,3 +34,5 @@ pub fn library_roots() -> Vec<std::path::PathBuf> {
 /// Metadata-only UVI UI render check; assets and pixels remain in memory.
 #[cfg(feature = "shots")]
 pub use ui::uvi_ui_health;
+#[cfg(feature = "shots")]
+pub use ui::health::survey as ui_health;

@@ -403,6 +403,7 @@ pub fn root(cx: &Cx) -> String {
 /// so the browser lists it.
 pub fn save_multi_as(cx: &mut Cx, path: &std::path::Path) -> anyhow::Result<()> {
     let name = stem(&path.to_string_lossy());
+    cx.p.shared.capture_ui_controls(&mut cx.selection);
     crate::plugin::SavedMulti::of(&name, &cx.selection).save(path)?;
     cx.selection.multi = path.to_string_lossy().into_owned();
     cx.p.shared.libraries.rescan();
