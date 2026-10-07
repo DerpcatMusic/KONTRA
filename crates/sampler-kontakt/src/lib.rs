@@ -24,7 +24,7 @@ mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
-pub use library::{Kontakt, read, read_program};
+pub use library::{Kontakt, read, read_program, read_with_snapshot};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
@@ -36,7 +36,7 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
-pub use snapshot::{SnapshotState, apply_snapshot, read_snapshot};
+pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
 pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
