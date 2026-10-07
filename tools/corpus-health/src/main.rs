@@ -537,12 +537,14 @@ fn scripted_render(
     rt: &mut Runtime,
     driver: &mut sampler_uvi::scripted::Driver<sampler_uvi::script::ScriptHost>,
     horizon: Option<u32>,
+    feed: &mut sampler_uvi::scripted::MidiFeed,
     out: &mut [[f32; 2]],
 ) -> Result<(), sampler_core::Error> {
     let mut done = 0;
     while done < out.len() {
         let left = out.len() - done;
         let due = driver.wake(rt)?;
+        feed.pump(driver, rt);
         let step = due.map_or(left, |d| d.max(1).min(left));
         if let Some(h) = horizon {
             let _ = rt.service_streaming(h);
@@ -662,6 +664,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         .map_err(|e| format!("{e:?}"))?;
     let mut buffer = [[0.0f32; 2]; 64];
     let deadline = buffer.len() as f64 / f64::from(rate);
+    let mut feed = sampler_uvi::scripted::MidiFeed::default();
     let mut block_times: Vec<f64> = Vec::with_capacity(total / buffer.len() + 1);
     // Allocation calls on this (the render) thread: the note-on block, the
     // release block, and every other block.
@@ -782,13 +785,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 }
                 (t0, a0) = (Instant::now(), heap::calls());
                 let cut = if has_release { release_at - begin } else { len };
-                scripted_render(rt, driver, *horizon, &mut buffer[..cut])
+                scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[..cut])
                     .map_err(|e| format!("render: {e:?}"))?;
                 if cut < len {
                     driver
                         .note_off(rt, key)
                         .map_err(|e| format!("release: {e:?}"))?;
-                    scripted_render(rt, driver, *horizon, &mut buffer[cut..len])
+                    scripted_render(rt, driver, *horizon, &mut feed, &mut buffer[cut..len])
                         .map_err(|e| format!("render: {e:?}"))?;
                 }
             }
