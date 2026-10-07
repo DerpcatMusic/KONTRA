@@ -392,11 +392,63 @@ def solid_splines():
     return rows
 
 
+def ahdsr_lifecycle():
+    rows=[]
+    for curve in [-1.0,0.0,1.0]:
+        for lengths in [(7,3,11,13),(0,3,11,13),(0,0,11,13),(0,0,0,13),(7,0,0,0)]:
+            for release_tick in [0,5,25]:
+                for blocks in [[70],[0,1,3,4,5,31,26]]:
+                    clear(); a,h,d,release=lengths;sustain=f32(.125)
+                    b=f32(math.exp(f32(1-abs(f32(curve)))*math.log(500000)-math.log(20000)))
+                    start=f32(b+1) if curve>0 else b
+                    ratio=f32(b/start) if curve>0 else f32(f32(b+1)/b)
+                    starts=[start,f32(1.075),f32(1.075),f32(sustain+f32(.075)),f32(1.075),f32(.075)]
+                    durations=[a,h,d,0x7fffffff,release,0x7fffffff]
+                    multipliers=[f32(ratio**(1/a)) if a else 0,1,f32((3/43)**(1/d)) if d else 0,1,f32((3/43)**(1/release)) if release else 0,1]
+                    for i in range(6):
+                        put(0xc4+i*4,'i',durations[i]);put(0xf4+i*4,'f',starts[i]);put(0xdc+i*4,'f',multipliers[i])
+                    put(0x120,'f',curve);call(0x140ae5820)
+                    stage=next(i for i,n in enumerate(durations) if n)
+                    state=starts[stage];remaining=durations[stage];scale=f32(-1 if stage==0 and curve>0 else 1)
+                    bias=f32(start-f32(.075)) if stage==0 and curve>0 else f32(f32(.075)-start) if stage==0 else sustain if stage==2 else 0
+                    if stage==2:scale=f32(1-sustain)
+                    assert get(0xc0,'i')==stage and get(0xb8,'f')==state and get(0x110,'f')==scale and get(0x114,'f')==bias
+                    put(0x10c,'i',release_tick);left=release_tick;output=[];position=0
+                    for frames in blocks:
+                        expected=[]
+                        for _ in range(frames):
+                            if left==0 and stage<4:
+                                old=f32(f32(f32(state-f32(.075))*scale)+bias);stage=4;state=starts[stage];remaining=durations[stage];scale=old;bias=0;left=0x7fffffff
+                            while remaining==0 and stage<5:
+                                stage+=1
+                                old=f32(f32(f32(state-f32(.075))*scale)+bias)
+                                state=starts[stage];remaining=durations[stage];scale=1;bias=0
+                                if stage==2:scale=f32(1-sustain);bias=sustain
+                                if stage==4:scale=old
+                                if stage==5:scale=0
+                            expected.append(f32(f32(f32(state-f32(.075))*scale)+bias));state=f32(state*multipliers[stage]);remaining-=1;left-=1
+                            if remaining==0 and stage<5:
+                                stage+=1
+                                while durations[stage]==0 and stage<5:stage+=1
+                                old=f32(f32(f32(state-f32(.075))*scale)+bias);state=starts[stage];remaining=durations[stage];scale=1;bias=0
+                                if stage==2:scale=f32(1-sustain);bias=sustain
+                                if stage==4:scale=old
+                                if stage==5:scale=0
+                        CPU.mem_write(INPUT,b'\x55'*(4*(frames+1)));call(0x140ae40f0,[INPUT,frames])
+                        actual=struct.unpack('<'+'f'*frames,CPU.mem_read(INPUT,frames*4))
+                        assert actual==tuple(expected),(curve,lengths,release_tick,blocks,frames,actual,expected)
+                        assert bytes(CPU.mem_read(INPUT+frames*4,4))==b'\x55'*4
+                        output.extend(actual);position+=frames
+                    assert get(0xc0,'i')==stage and get(0xb8,'f')==state
+                    rows.append({'curve':curve,'lengths':lengths,'release_tick':release_tick,'blocks':blocks,'samples':output,'final_stage':stage,'final_state':state})
+    return rows
+
+
 if __name__=='__main__':
     result={'image_sha256':r.META['sha256'],'image_kind':'standalone EXE; not payload',
             'mxcsr':'0x1f80','helper_substitutions':EXTRA,
             'ahdsr_controls':ahdsr_controls(),'ahdsr_kernel':ahdsr_kernel(),
             'galois_parameters':galois_parameters(),'eq_saved_conversion':eq_saved_conversion(),
-            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing()}
+            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing(),'ahdsr_lifecycle':ahdsr_lifecycle()}
     Path(sys.argv[2]).write_text(json.dumps(result,indent=2)+'\n')
     print({k:len(v) for k,v in result.items() if isinstance(v,list)})

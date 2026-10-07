@@ -21,7 +21,7 @@ Run `python tools/dsp-research/verify_laws.py ARTIFACT_ROOT OUTPUT_JSON`.
 Already-installed Unicorn and pefile map the hash-checked original image;
 each call has a two-second/two-million-instruction bound. No host launches,
 activation changes, library dumps, decoded presets or samples are involved.
-[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,042 result records,
+[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,132 result records,
 including 480 individual spline evaluations in 24 table records.
 
 Every arithmetic operation marked F rounds to IEEE binary32, ties to even.
@@ -57,9 +57,10 @@ using route signs. Parse/IR errors must be reported with the census denominator.
 ## AHDSR timing, attack curve and control kernel
 
 **Verified:** control conversion `0x140ae46d0` (125 cases), uninterrupted
-control kernel `0x140ae40f0` (54 cases). **Open:** stage transition/retrigger,
-note-off/reset, curve-only update invalidation, resampling cadence, latency
-and complete release termination. The object rate is a **control rate** R;
+control kernel `0x140ae40f0` (54 uninterrupted cases), retrigger/setup
+`0x140ae5820` and stage-transition helper `0x140ae5e40` (90 lifecycle cases).
+**Open:** external note-off scheduling, voice reset/allocation, one-shot flags,
+curve-only update invalidation, resampling cadence and host latency. The object rate is a **control rate** R;
 these checks do not prove R = sample rate / 32.
 
 For clamped normalized time x, attack/hold milliseconds are
@@ -95,6 +96,40 @@ At R = 1,500 and c = 0:
 Curve 0 has start 25 and ratio `1.0399999618530273`. This geometric
 state and affine output require preserving the native floor; substituting
 a generic normalized exponential envelope is not supported by the evidence.
+
+
+### Stage initialization and release termination
+
+The six tested stages are attack, hold, decay, sustain, release and inactive.
+Durations occupy six consecutive signed counters. Sustain and inactive use
+`INT_MAX`; stage multipliers for hold/sustain/inactive are 1. Stage starts are
+attack b (or b+1), hold/decay/release `F(1.075)`, sustain storage, and inactive
+`F(.075)`. The floor is `F(.075)`. Stage entry snaps state to its start and
+counter to its duration. Zero-length stages are skipped.
+
+Retrigger selects the first nonzero-duration stage. Attack affine output has
+scale +1 and bias `F(floor−start)` for c <= 0, or scale −1 and bias
+`F(start−floor)` for c > 0. Hold and sustain have scale 1/bias 0. Decay has
+scale `F(1−sustain_level)` and bias sustain_level, where sustain_level is
+`F(sustain_storage−floor)`; the special flag at +0x118 is zero in these checks.
+Release captures the preceding affine output as its new scale, sets bias 0,
+and restarts geometric state at `F(1.075)`. Inactive sets scale/bias to zero.
+
+A separate release countdown is decremented on control ticks. Expiry moves
+any stage before release into release, before producing the next tick.
+The tested countdown is installed directly, so no MIDI-to-countdown law is
+claimed. Exactly N release ticks are produced for a positive release length N;
+the following ticks are zero. A zero release length skips to inactive.
+Ordinary stage transitions and release expiry use the persistent state and
+counters across blocks. For these checked paths, whole-block and split-block
+output agree exactly, including empty blocks.
+
+The lifecycle vectors cover curves −1,0,+1; attack/hold/decay/release lengths
+(7,3,11,13), (0,3,11,13), (0,0,11,13), (0,0,0,13), (7,0,0,0);
+release countdowns 0,5,25; and partitions [70] versus [0,1,3,4,5,31,26].
+Each vector includes all 70 output ticks and final stage/state. Sustain is
+.125. All finish inactive with exact zero output. These finite synthetic
+counter cases establish state transitions, not the host's audio tail metadata.
 
 ## Legacy parametric EQ
 
