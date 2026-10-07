@@ -957,6 +957,10 @@ pub struct Impulse {
     pub rate: u32,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+    /// A source whose loader decodes this impulse's audio from `asset` (a
+    /// file of the program) and clears the field; `rate`/`left`/`right` hold a
+    /// unit-impulse placeholder until then.
+    pub asset: Option<AssetRef>,
 }
 
 /// Physical reverb settings; an importing profile maps its own controls
