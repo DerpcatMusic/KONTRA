@@ -1743,7 +1743,7 @@ fn run(out: &Path, opts: &Opts) -> i32 {
     if let Some((i, n)) = opts.shard {
         all = all.into_iter().skip(i).step_by(n).collect();
     }
-    if tier == Tier::Quick {
+    if tier == Tier::Quick && opts.only.is_empty() {
         let wanted: HashSet<String> = quick_ids();
         all.retain(|i| wanted.contains(&i.id()));
     }
