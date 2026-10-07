@@ -274,3 +274,41 @@ fn script_played_notes_follow_the_parents_expression() {
     assert!(worst < 1e-4, "child differs from the bent parent by {worst}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `setParameter` on the program reaches the runtime: Polyphony limits the
+/// voices, Gain moves the instrument's level.
+#[test]
+fn set_parameter_reaches_the_runtime() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-param-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &vec![8000i16; 4800])).unwrap();
+    let xml = PROGRAM.replace(
+        "function onNote(e) playNote(e.note, e.velocity) end",
+        "function onNote(e) Program:setParameter('Polyphony', 3); Program:setParameter('Gain', 0.25); playNote(e.note, e.velocity) end",
+    );
+    let program = dir.join("Fixture.uvip");
+    std::fs::write(&program, &xml).unwrap();
+    let limits = Limits {
+        notes: 4,
+        channels: 1,
+        performances: 1,
+        families: 4,
+        expressions: 4,
+        voices: 8,
+        decisions: 16,
+        commands: 16,
+        behaviors: 0,
+        behavior_fuel: 0,
+        behavior_cells: 0,
+        note_cells: 0,
+    };
+    let mut rt = Runtime::new(sampler_uvi::load(&program, 48000).unwrap().plan, limits).unwrap();
+    let host = sampler_uvi::script::ScriptHost::new(&xml, NoFiles, Default::default()).unwrap();
+    let mut driver = sampler_uvi::scripted::Driver::new(host, Vec::new(), 48000);
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    let note = rt.note_on(input, 60, 1.0).unwrap();
+    driver.note_on(&mut rt, note, 60, 1.0).unwrap();
+    // 8 slots, 3 voices: 5 are headroom for fading stolen voices.
+    assert_eq!(rt.voice_stealing().map(|s| s.headroom), Some(5));
+    std::fs::remove_dir_all(&dir).ok();
+}

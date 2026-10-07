@@ -7,10 +7,11 @@
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
 mod thread;
-use crate::script::{Change, Command, MidiOut, Play, ScriptHost};
+use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use crate::OscGroup;
 use sampler_core::{
     Error, Expression, Frame, Inheritance, Input, Limits, ModTarget, NoteId, Prepared, Protocol, Runtime,
+    Stealing,
 };
 use std::collections::HashMap;
 pub use thread::{Loaded, ScriptThread};
@@ -319,6 +320,9 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
+                Command::Parameter { scope, param, value, authored } => {
+                    self.parameter(rt, scope, param, value, authored)?;
+                }
                 Command::Midi(out) => {
                     if self.midi.len() < self.midi.capacity() {
                         self.midi.push(out);
@@ -327,6 +331,46 @@ impl<S: Script> Driver<S> {
             }
         }
         Ok(())
+    }
+
+    /// A script's `setParameter` on the program or one of its layers. The
+    /// runtime edits offsets of the authored gain and pan, so the written
+    /// value becomes its difference to the preset's.
+    fn parameter(
+        &mut self,
+        rt: &mut Runtime,
+        scope: Scope,
+        param: Param,
+        value: f64,
+        authored: f64,
+    ) -> Result<(), Error> {
+        let group = match scope {
+            Scope::Program => -1,
+            Scope::Layer(layer) => match self.groups.iter().find(|g| g.layer == layer && g.osc == 1) {
+                Some(g) => i64::from(g.group),
+                None => {
+                    if !self.unmodeled.contains(&"setParameter on a layer without a group") {
+                        self.unmodeled.push("setParameter on a layer without a group");
+                    }
+                    return Ok(());
+                }
+            },
+        };
+        match param {
+            Param::Gain => {
+                let db = 20.0 * (value.max(1e-6) / authored.max(1e-6)).log10();
+                rt.set_group_param(group, ModTarget::Decibels, db, false)
+            }
+            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, false),
+            Param::Polyphony => {
+                let slots = rt.voice_slots();
+                let wanted = (value.round().max(1.0) as usize).min(slots);
+                rt.set_voice_stealing(Some(Stealing {
+                    fade: (self.rate / 100.0) as u32,
+                    headroom: slots - wanted,
+                }))
+            }
+        }
     }
 
     /// Forget notes the runtime no longer holds.

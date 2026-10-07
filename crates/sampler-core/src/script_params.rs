@@ -361,6 +361,28 @@ impl Runtime {
             .write(target, (value * scale).round() as i64, relative)
     }
 
+    /// As [`Runtime::set_note_param`] for a group of the active plan (a
+    /// negative `group` is the whole instrument): a frontend writing a layer's
+    /// or program's Gain (decibels) or Pan (-1..=1), as Falcon's
+    /// `setParameter` does.
+    pub fn set_group_param(
+        &mut self,
+        group: i64,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+    ) -> Result<(), Error> {
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        let plan = self.active_plan();
+        self.write_param(plan, ParamScope::Group, group, target, (value * scale).round() as i64, relative)
+    }
+
     /// Fade a note's gain linearly from `from` (its current level when
     /// `None`) to `to` over `frames`; `stop` ends it when the fade completes
     /// at silence.
