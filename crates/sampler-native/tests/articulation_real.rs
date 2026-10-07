@@ -787,3 +787,97 @@ fn barbarian_cc1_sweep_probe() {
         eprintln!("PROBE cc1 {cc1:?}: {:.1}", 20.0 * f64::from(peak).log10());
     }
 }
+
+/// Runtime trace of a full note: every selection with its group verdicts and
+/// every effect the scripts emitted (set_engine_par and friends, by name).
+#[test]
+#[ignore = "probe"]
+fn full_note_runtime_trace_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    for &(relative, key, vel, _) in REFERENCE.iter().filter(|r| !r.0.contains("Vista")) {
+        if vel != 100 {
+            continue;
+        }
+        let path = std::path::Path::new(&root).join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let d = decoded(&path, key);
+        let loaded =
+            sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options)
+                .unwrap();
+        let names: Vec<String> = loaded.instrument.groups.iter().map(|g| g.name.clone()).collect();
+        let scripts = loaded.scripts.clone();
+        let plan = loaded.plan;
+        let limits = Limits {
+            notes: 64,
+            channels: 16,
+            performances: 1,
+            expressions: 64,
+            families: 64,
+            decisions: 256,
+            voices: 512,
+            commands: 256,
+            behaviors: 16,
+            behavior_fuel: 1 << 20,
+            behavior_cells: plan.behavior_local_count().saturating_mul(16),
+            note_cells: plan.note_cell_count().saturating_mul(64),
+        };
+        let mut rt = Runtime::new(plan, limits).unwrap();
+        rt.record_selections(true);
+        let mut groups = [None; 16];
+        groups[0] = Some(Version::Midi1);
+        let mut ingress = Ingress::new(0, groups);
+        let mut articulator = Articulator::new(&rt, rt.performance(0).unwrap(), 0).unwrap();
+        let mut out = vec![[0.0; 2]; 64];
+        println!("=== {relative} key {key} vel {vel}");
+        let mut words = vec![0x2000_0000, 0x2090_0000 | u32::from(key) << 8 | u32::from(vel)];
+        words.resize(1500, 0x2000_0000);
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for (i, &word) in words.iter().enumerate() {
+            let w = [word];
+            let packet = Packets::new(&w).next().unwrap().unwrap();
+            if articulator.intercept(&mut rt, packet).unwrap() == Intercept::Forward {
+                let _ = ingress.apply(&mut rt, packet);
+            }
+            rt.render(&mut out).unwrap();
+            for r in rt.take_selection_records() {
+                let sounded: Vec<String> = r
+                    .candidates
+                    .iter()
+                    .filter(|c| c.rejected.is_none())
+                    .map(|c| {
+                        c.group.map_or("?".into(), |g| {
+                            format!("{g}:{}", names.get(g as usize).map_or("", |n| n.as_str()))
+                        })
+                    })
+                    .collect();
+                println!(
+                    "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {:?}",
+                    r.key, r.velocity, r.trigger, r.suppressed, r.candidates.len(), sounded
+                );
+            }
+            rt.drain_effects(|e| {
+                let view = e.instance.and_then(|id| scripts.get(usize::from(id.0)));
+                let name = view.and_then(|v| v.service(e.service)).unwrap_or("?");
+                let args = e.args();
+                let shown = match (name, view) {
+                    ("set_engine_par", Some(v)) => {
+                        let par = args.first().and_then(|&a| v.symbol(a as i32)).unwrap_or_default();
+                        format!("{par} {:?}", &args[1.min(args.len())..])
+                    }
+                    _ => format!("{args:?}"),
+                };
+                let line = format!("{name} {shown}");
+                if i < 200 {
+                    println!("step {i} EFFECT {line}");
+                }
+                *counts.entry(name.to_string()).or_default() += 1;
+                true
+            });
+        }
+        println!("effect totals {counts:?} dropped {}", rt.dropped_effects());
+    }
+}

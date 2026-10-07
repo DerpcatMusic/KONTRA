@@ -218,6 +218,14 @@ pub struct ScriptView {
 }
 
 impl ScriptView {
+    /// Builtin name of an effect service id (`sampler_core::Effect::service`).
+    pub fn service(&self, id: u16) -> Option<&'static str> {
+        self.services.get(usize::from(id)).copied()
+    }
+    /// Symbolic name of an opaque vendor constant (`ENGINE_PAR_*`, `NI_*`).
+    pub fn symbol(&self, value: i32) -> Option<String> {
+        eval::symbol_in(&self.symbols, value)
+    }
     /// The model as runtime effects have left it (keys, widgets).
     pub fn model(&self) -> &model::Model {
         &self.model
