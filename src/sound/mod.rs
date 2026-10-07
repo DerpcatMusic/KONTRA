@@ -142,6 +142,7 @@ impl Progress {
 /// What to prepare for one part.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LoadRequest {
+    pub uvi_state: Option<sampler_uvi::script::UiState>,
     /// Instrument or sample file.
     pub path: std::path::PathBuf,
     /// Program index inside a bank/multi file.
@@ -221,6 +222,9 @@ pub struct KeyLook {
 /// A part's script interfaces as its scripts change them at run time.
 #[derive(Default)]
 pub struct ScriptUi {
+    pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
+    pub uvi_revision: u64,
+    pub uvi_source: Option<(String, u32)>,
     /// By script instance ([`sampler_core::ScriptInstanceId`]).
     pub views: Vec<sampler_ksp::ScriptView>,
     pub resources: Option<sampler_kontakt::Resources>,
@@ -254,6 +258,9 @@ impl ScriptUi {
 
     /// The interfaces as they stand, like [`Loaded::interfaces`].
     pub fn interfaces(&mut self) -> Vec<sampler_ui_ir::Interface> {
+        if let Some(uvi) = &self.uvi {
+            return vec![(*uvi.interface()).clone()];
+        }
         let resources = std::cell::RefCell::new(&mut self.resources);
         let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
         self.views.iter().filter_map(|v| v.ui(&picture).ok()).collect()
