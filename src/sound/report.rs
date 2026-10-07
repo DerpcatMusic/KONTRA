@@ -130,6 +130,12 @@ pub struct RuntimeProblems {
     pub silent_notes: u64,
     #[serde(default)]
     pub silent: [u64; 3],
+    /// The last script fault: plan program + 1 (0 for none) and the
+    /// [`sampler_core::Error::ALL`] index of its error.
+    #[serde(default)]
+    pub fault_program: u64,
+    #[serde(default)]
+    pub fault_error: u64,
 }
 
 /// A part's load report.
