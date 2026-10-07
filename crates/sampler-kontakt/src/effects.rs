@@ -962,6 +962,7 @@ mod tests {
             bypass: false,
             output_gain: gain,
             dry_level: 1.0,
+            output_set: true,
             public,
         }
     }
