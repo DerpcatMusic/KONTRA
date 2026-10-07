@@ -328,7 +328,7 @@ Rig: `noise_instrument.sh noise` (continuous noise), Group Editor, scrolled to t
 
 So hold = the displayed ms, linear, within about 2% (10 ms measurement window).
 
-**Decay**: with sustain -24 dB the level falls linearly in dB and reaches the sustain level at exactly the displayed Decay time. Time to -20 dB (fraction 20/24 = 0.833 of the decay): D=100 ms: 0.094 s; 250: 0.216; 500: 0.427; 1000: 0.844; 2000: 1.647 (0.84-0.94 x D). Decay 500 ms: -1/-3/-6/-10/-20 dB at 0.031/0.072/0.130/0.216/0.427 s, i.e. about 46 dB/s (24 dB over 0.5 s). So the decay is exponential in amplitude (a straight line in dB). Decay 2000: 20 dB at 1.647 s (49 ... 12 dB/s). The time to reach the sustain level scales linearly with the Decay setting (this measurement does not depend on the sustain depth at constant D: dB/s = depth / D).
+**Decay**: with sustain -24 dB the level falls linearly in dB and reaches the sustain level at exactly the displayed Decay time. Time to -20 dB (fraction 20/24 = 0.833 of the decay): D=100 ms: 0.094 s; 250: 0.216; 500: 0.427; 1000: 0.844; 2000: 1.647 (0.84-0.94 x D). Decay 500 ms: -1/-3/-6/-10/-20 dB at 0.031/0.072/0.130/0.216/0.427 s, i.e. about 46 dB/s (24 dB over 0.5 s). So the decay is exponential in amplitude (a straight line in dB). The time to reach the sustain level scales linearly with the Decay setting (Decay 2000: 20 dB at 1.647 s, 12 dB/s), and the slope in dB/s is depth / D.
 
 The Curve field (-100, -33, 0, 50, 100%) did not change the decay timings at all; it shapes only the attack segment.
 
