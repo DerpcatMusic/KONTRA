@@ -1,6 +1,6 @@
 //! Performance harness for the native core on real instruments.
 //!
-//! `sampler-perf run [--out FILE] [--only NAME,..] [--seconds S]` plays fixed
+//! `sampler-perf run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S]` plays fixed
 //! note schedules through each scenario at 64, 128 and 512-frame blocks and at
 //! 1, 2, 4 and N render threads, timing every block against its deadline and
 //! counting hardware events (`perf stat`), memory, disk reads, audio-thread
@@ -179,9 +179,10 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
-            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, ..Limits::for_plan(&plan, 2048, 2048) };
+            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), ..Limits::for_plan(&plan, 2048, 2048) };
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
             let mut rt = Runtime::new(plan, limits).map_err(fail)?.with_stream_cache(cache);
+            rt.set_cold_starts(true);
             rt.set_voice_stealing(Some(Stealing::for_limits(RATE, limits.voices))).map_err(fail)?;
             let mut groups = [None; 16];
             groups[0] = Some(Version::Midi1);
@@ -333,7 +334,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, Value) {
     (out, Value::Object(counters))
 }
 
-fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize) -> Result<(Vec<Value>, Value), String> {
+fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Option<(usize, usize)>) -> Result<(Vec<Value>, Value), String> {
     let messages = {
         let mut m = (s.notes)();
         m.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.1[0] & 0xf0 == 0x90).cmp(&(b.1[0] & 0xf0 == 0x90))));
@@ -362,6 +363,9 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize) -> Result<(Vec
     let mut cells = Vec::new();
     for &t in &threads {
         for &block in &BLOCKS {
+            if only_cell.is_some_and(|(b, n)| (b, n) != (block, t)) {
+                continue;
+            }
             // UVI plays on one thread; scaling is measured on the Kontakt scenarios.
             if matches!(s.source, Source::Uvi(..)) && t > 1 {
                 continue;
@@ -446,13 +450,17 @@ fn play_uvi(p: &mut Player, messages: &[Message], block: usize, frames: usize) -
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    let (mut out, mut only, mut seconds) = (None, None, None);
+    let (mut out, mut only, mut seconds, mut cell) = (None, None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let v = it.next().ok_or(format!("{a} needs a value"))?;
         match a.as_str() {
             "--out" => out = Some(PathBuf::from(v)),
             "--only" => only = Some(v.split(',').map(String::from).collect::<Vec<_>>()),
+            "--cell" => {
+                let (b, t) = v.split_once(',').ok_or("--cell BLOCK,THREADS")?;
+                cell = Some((b.parse::<usize>().map_err(fail)?, t.parse::<usize>().map_err(fail)?));
+            }
             "--seconds" => seconds = Some(v.parse::<f64>().map_err(fail)?),
             _ => return Err(format!("unknown option {a}")),
         }
@@ -460,7 +468,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     let (mut cells, mut extra, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
     for s in SCENARIOS.iter().filter(|s| only.as_ref().is_none_or(|o| o.iter().any(|n| n == s.name))) {
-        match run_scenario(s, seconds, cores) {
+        match run_scenario(s, seconds, cores, cell) {
             Ok((c, e)) => {
                 cells.extend(c);
                 extra.push(e);
@@ -546,7 +554,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("run") => run(&args[1..]).map(|()| true),
         Some("compare") => compare(&args[1..]),
-        _ => Err("usage: sampler-perf run [--out FILE] [--only NAME,..] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
+        _ => Err("usage: sampler-perf run [--out FILE] [--only NAME,..] [--cell BLOCK,THREADS] [--seconds S] | compare BASE.json NEW.json [--threshold PERCENT]".into()),
     };
     match result {
         Ok(true) => {}

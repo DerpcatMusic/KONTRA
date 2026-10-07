@@ -6,6 +6,9 @@
 use sampler_core::{Input, Limits, Protocol, Runtime, Stealing};
 use std::path::{Path, PathBuf};
 
+#[path = "../../sampler-native/tests/support/reference.rs"]
+mod reference;
+
 fn roots() -> Vec<PathBuf> {
     if let Some(paths) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") {
         return std::env::split_paths(&paths).collect();
@@ -78,11 +81,11 @@ fn render_frames(
 ) -> Option<(sampler_ir::Instrument, Vec<[f32; 2]>)> {
     let path = find(relative)?;
     let options = sampler_kontakt::Options {
-        keys: keys.clone(),
         scripts: false,
-        ..Default::default()
+        ..reference::options(keys.clone())
     };
     let loaded = sampler_kontakt::load(&path, &options, |_| {}).unwrap();
+    reference::assert_matched(&loaded.plan);
     let mut rt = Runtime::new(loaded.plan, limits()).unwrap();
     let key = (keys.start() + keys.end()) / 2;
     rt.trigger(input(key), key, velocity).unwrap();
@@ -167,11 +170,7 @@ fn vista_cellos_render_from_loose_ncw_samples() {
     // nothing KONTRA changes here: max(|L|, |R|) peak over 0.3-3 s is
     // -38.6 dBFS (KONTAKT_REFERENCE.md s.13; the older -45.0 is a (L+R)/2
     // mono mix). KONTRA measures +0.9 dB; the open residual is under 1 dB.
-    let peak = out[14_400..]
-        .iter()
-        .flatten()
-        .fold(0f32, |p, x| p.max(x.abs()));
-    let db = 20.0 * f64::from(peak).log10();
+    let db = reference::levels(&out, 0.3, 3.0).max_peak();
     assert!(
         (db + 38.6).abs() < 1.0,
         "{db:.1} dBFS max-channel peak against Kontakt's -38.6"

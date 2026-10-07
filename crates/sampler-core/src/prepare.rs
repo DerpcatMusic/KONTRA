@@ -17,6 +17,8 @@ pub struct Pcm(std::sync::Arc<PcmData>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AssetId(u64);
 
+type StoreEntry = ([i32; super::STORE_KEY], i64);
+
 #[derive(Debug)]
 struct PcmData {
     id: AssetId,
@@ -423,10 +425,12 @@ pub struct Prepared {
     pub(super) monophonic_release: Box<[bool]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
-    offsets: [usize; 129],
-    phase_offsets: [[usize; 2]; 128],
+    // Boxed: a Prepared moves by value through every builder, and inline
+    // tables of this size made each debug frame hundreds of kilobytes.
+    offsets: Box<[usize; 129]>,
+    phase_offsets: Box<[[usize; 2]; 128]>,
     pub(super) release_options: [super::ReleaseOptions; 2],
-    pub(super) release_reserves: [[super::ReleaseReserve; 2]; 128],
+    pub(super) release_reserves: Box<[[super::ReleaseReserve; 2]; 128]>,
     candidates: Box<[Candidate]>,
     pub(super) programs: Box<[super::Program]>,
     pub(super) script_initial: Box<[super::ops::ScriptBank]>,
@@ -436,8 +440,8 @@ pub struct Prepared {
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
     pub(super) signal_programs: Box<[super::SignalProgram]>,
-    pub(super) shared_store: (Box<[([i32; super::STORE_KEY], i64)]>, usize),
-    pub(super) keyswitches: [Option<u32>; 128],
+    pub(super) shared_store: (Box<[StoreEntry]>, usize),
+    pub(super) keyswitches: Box<[Option<u32>; 128]>,
     articulated: bool,
     pub(super) switching: super::Switching,
     bend_range: f64,
@@ -606,10 +610,10 @@ impl Prepared {
             monophonic_release: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
-            phase_offsets: std::array::from_fn(|key| [offsets[key + 1]; 2]),
+            phase_offsets: Box::new(std::array::from_fn(|key| [offsets[key + 1]; 2])),
             release_options: [super::ReleaseOptions::default(); 2],
-            release_reserves: [[super::ReleaseReserve::default(); 2]; 128],
-            offsets,
+            release_reserves: Box::new([[super::ReleaseReserve::default(); 2]; 128]),
+            offsets: Box::new(offsets),
             candidates: candidates.into_boxed_slice(),
             programs: Box::new([]),
             script_initial: Box::new([]),
@@ -620,7 +624,7 @@ impl Prepared {
             plan_programs: Box::new([]),
             signal_programs: Box::new([]),
             shared_store: (Box::new([]), 0),
-            keyswitches: [None; 128],
+            keyswitches: Box::new([None; 128]),
             articulated: false,
             switching: Default::default(),
             bend_range: 2.0,
@@ -911,7 +915,7 @@ impl Prepared {
         for (region, value) in self.regions.iter_mut().zip(regions) {
             region.articulation = value;
         }
-        self.keyswitches = keyswitches;
+        self.keyswitches = Box::new(keyswitches);
         self.release_selection = [key_release, gate_release];
         self.compile_selection();
         Ok(self)
