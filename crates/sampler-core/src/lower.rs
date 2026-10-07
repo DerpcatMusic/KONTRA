@@ -3,7 +3,8 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControllerCondition, Direction, Driver,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
+    ControlValue, ControllerCondition, SlotKind, slot_control, Direction, Driver,
     Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
     LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
     Parameter, Pcm, Playback, Prepared, Processor, Region, ReverbSettings, SelectionPolicy,
@@ -469,7 +470,9 @@ impl Lowering<'_> {
                 .any(|p| {
                     matches!(
                         p,
-                        ir::Processor::Reverb(_) | ir::Processor::Convolution { .. }
+                        ir::Processor::Reverb(_)
+                            | ir::Processor::Convolution { .. }
+                            | ir::Processor::Mix { .. }
                     )
                 })
             {
@@ -875,6 +878,7 @@ impl Lowering<'_> {
                 low_shelf_db: r.low_shelf_db,
                 width: r.width,
             }),
+            ir::Processor::Mix { .. } => return Err(unsupported(owner, Feature::Controls)),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
                 dry,
@@ -961,6 +965,7 @@ impl Lowering<'_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut buses = Vec::with_capacity(self.ir.buses.len());
+        let mut mixes = Vec::new();
         for (i, bus) in self.ir.buses.iter().enumerate() {
             let owner = format!("bus {i}");
             let mut processors = Vec::new();
@@ -969,8 +974,42 @@ impl Lowering<'_> {
                 if chain.scope != ir::Scope::Bus(ir::BusRef(i)) {
                     return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
                 }
-                for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
-                    processors.extend(self.processors(&owner, *p)?);
+                let listed: Vec<_> = chain.pre_amplitude.iter().chain(&chain.post_amplitude).collect();
+                // Core index of each listed processor: a 4-pole filter lowers to two.
+                let mut starts = Vec::with_capacity(listed.len() + 1);
+                for p in &listed {
+                    starts.push(processors.len());
+                    match **p {
+                        ir::Processor::Mix { address, dry, wet, bypass, .. } => {
+                            let ramp_frames = self.rate / 100;
+                            let mut bind = |kind: SlotKind, initial: f64| {
+                                let control = slot_control(kind, address.group, address.slot, address.generic);
+                                mixes.push(ControlDefinition {
+                                    id: control,
+                                    domain: ControlDomain::Real { min: 0.0, max: kind.max() },
+                                    default: ControlValue::Real(initial),
+                                });
+                                ControlRange { control, low: 0.0, high: kind.max(), ramp_frames }
+                            };
+                            processors.push(Processor::Mix {
+                                count: 0,
+                                dry: bind(SlotKind::Dry, dry),
+                                wet: bind(SlotKind::Output, wet),
+                                bypass: bind(SlotKind::Bypass, f64::from(bypass)),
+                            });
+                        }
+                        p => processors.extend(self.processors(&owner, p)?),
+                    }
+                }
+                starts.push(processors.len());
+                for (n, p) in listed.iter().enumerate() {
+                    if let ir::Processor::Mix { count, .. } = **p {
+                        let end = starts[(n + 1 + usize::from(count)).min(listed.len())];
+                        if let Processor::Mix { count, .. } = &mut processors[starts[n]] {
+                            *count = u16::try_from(end - starts[n] - 1)
+                                .map_err(|_| unsupported(&owner, Feature::Controls))?;
+                        }
+                    }
                 }
             }
             let tapped = self.ir.groups.iter().any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
@@ -991,7 +1030,7 @@ impl Lowering<'_> {
             let tail_frames = processors
                 .iter()
                 .map(|p| match p {
-                    Processor::Gain(_) | Processor::StereoMatrix(_) => 0,
+                    Processor::Gain(_) | Processor::StereoMatrix(_) | Processor::Mix { .. } => 0,
                     Processor::Reverb(r) => r.tail_frames(self.rate),
                     Processor::Convolution { impulse, .. } => {
                         crate::dsp::impulse_tail_frames(&impulses[*impulse]) as u32
@@ -1024,6 +1063,11 @@ impl Lowering<'_> {
                 })
             })
             .collect();
+        let plan = if mixes.is_empty() {
+            plan
+        } else {
+            plan.with_controls(mixes).map_err(core(Stage::Buses, "slot controls"))?
+        };
         let plan = plan
             .with_impulses(impulses)
             .with_buses(buses, bindings)
