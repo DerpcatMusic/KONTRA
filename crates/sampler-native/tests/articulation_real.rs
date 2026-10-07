@@ -747,7 +747,7 @@ fn full_notes_match_kontakt_within_a_decibel() {
         words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
         words.resize(1500, 0x2000_0000);
         let out = render(loaded, &words);
-        let db = reference::levels(&out, 0.3, 3.0).max_peak();
+        let db = reference::levels(&out, 0.0, 3.0).max_peak();
         if (db - kontakt).abs() >= 1.0 {
             off.push(format!(
                 "{relative} key {key} vel {vel}: {db:.1} against {kontakt}"
@@ -972,5 +972,44 @@ fn una_script_vs_native_probe() {
         .unwrap();
         let out = render(loaded, &words);
         println!("scripts {scripts}: {}", windows(&out));
+    }
+}
+
+/// Una Cotton group solos played natively (scripts off) against
+/// KONTAKT_REFERENCE.md s.19a: g39 v64/100/127 L pk -26.5/-17.3/-9.5, R pk
+/// -24.0/-14.4/-6.8, rms L -54.5/-45.3/-39.7, R -51.6/-42.4/-37.2; g94 flat L -14.7 R -15.8.
+#[test]
+#[ignore = "probe"]
+fn una_solo_probe() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let path = std::path::Path::new(&root).join("Una Corda Library/Instruments/Una Corda Cotton.nki");
+    for name in ["DRY_C3", "RESONANCE f"] {
+        for vel in [64u32, 100, 127] {
+            let mut d = decoded(&path, 60);
+            let keep: Vec<_> = d
+                .instrument
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.name == name)
+                .map(|(i, _)| i)
+                .collect();
+            let kept = d.instrument.retain_zones(|z| z.group.is_some_and(|g| keep.contains(&g.0)));
+            d.pcm = kept.iter().map(|&i| d.pcm[i].clone()).collect();
+            d.labels = kept.iter().map(|&i| d.labels[i].clone()).collect();
+            d.options.scripts = false;
+            let zones = d.instrument.zones.len();
+            let loaded = sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options).unwrap();
+            let mut words = vec![0x2000_0000, 0x2090_0000 | 60 << 8 | vel];
+            words.resize(3000, 0x2000_0000);
+            let out = render(loaded, &words);
+            let l = reference::levels(&out, 0.0, 3.0);
+            let r = reference::levels(&out, 0.5, 2.0);
+            let wins: Vec<String> = (0..12).map(|w| { let seg = &out[w * 4800..(w + 1) * 4800]; let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs())); format!("{:.0}", 20.0 * f64::from(p).log10()) }).collect();
+            eprintln!("PROBE windows {}", wins.join(" "));
+            eprintln!("PROBE {name} zones {zones} vel {vel}: pk {:.1}/{:.1} rms {:.1}/{:.1}", l.peak[0], l.peak[1], r.rms[0], r.rms[1]);
+        }
     }
 }
