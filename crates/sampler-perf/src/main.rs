@@ -182,8 +182,9 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let impulses = loaded.instrument.impulses.len();
             let plan = loaded.plan;
             // Generous fixed capacities, so no event is refused for room.
-            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), behaviors: std::env::var("PERF_BEHAVIORS").ok().and_then(|v| v.parse().ok()).unwrap_or(0), ..Limits::for_plan(&plan, 2048, 2048) };
-            let limits = if limits.behaviors == 0 { Limits { behaviors: Limits::script_capacity(&plan), ..limits } } else { Limits { behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors), ..limits } };
+            let limits = Limits { families: 4096, decisions: 4096, commands: 4096, behavior_fuel: std::env::var("PERF_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 20), behaviors: std::env::var("PERF_BEHAVIORS").ok().and_then(|v| v.parse().ok()).unwrap_or(2048), ..Limits::for_plan(&plan, 2048, 2048) };
+            // Dense chords re-trigger scripts faster than their release tails end: Limits::script_capacity (about 4 per stage per key) is too small for 30 notes every half beat.
+            let limits = Limits { behavior_cells: plan.behavior_local_count().saturating_mul(limits.behaviors), ..limits };
             if std::env::var_os("PERF_DEBUG").is_some() {
                 eprintln!("limits: behaviors {} behavior_cells {} voices {} (stages {}, locals {})", limits.behaviors, limits.behavior_cells, limits.voices, plan.stage_count(), plan.behavior_local_count());
             }
@@ -239,6 +240,7 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
     let (mut buffer, mut next) = (vec![[0.0f32; 2]; block], 0);
     let mut batch: Vec<TimedPacket<'_>> = Vec::with_capacity(64);
     let start = Instant::now();
+    let mut last_underruns = 0;
     for begin in (0..frames).step_by(block) {
         batch.clear();
         while next < packets.len() && packets[next].0 < begin + block {
@@ -251,6 +253,13 @@ fn play(p: &mut Player, messages: &[Message], block: usize, frames: usize) -> Ce
         render(p, &mut buffer, &batch, messages, begin, &mut next);
         let took = t.elapsed();
         COUNTING.set(false);
+        if std::env::var_os("PERF_DEBUG").is_some() {
+            let now = stats(p).stream_underruns;
+            if now != last_underruns {
+                eprintln!("underruns {last_underruns} -> {now} at {:.3}s ({} events in block)", begin as f64 / f64::from(RATE), batch.len());
+                last_underruns = now;
+            }
+        }
         cell.allocations += CALLS.get() - before;
         cell.times.push(took.as_nanos() as u64);
         let top = buffer.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
