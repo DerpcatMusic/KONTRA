@@ -392,6 +392,10 @@ fn probe_instrument() {
         d.instrument.behaviors.clear();
     }
     eprintln!(
+        "DYNAMICS amplitude controllers {:?}",
+        d.instrument.amplitude_controllers()
+    );
+    eprintln!(
         "zones at {key}: {} behaviors {}",
         d.instrument.zones.len(),
         d.instrument.behaviors.len()
@@ -432,6 +436,49 @@ fn probe_instrument() {
             &b.state[..b.state.len().min(40)]
         );
     }
+    if std::env::var_os("KONTRA_PROBE_FULL").is_some() {
+        // Whole instrument, scripts on, power-on controllers: L pk / R pk /
+        // mono pk (peak 0.3-3 s) and sqrt((L2+R2)/2) RMS (0.5-2 s), dBFS.
+        let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let mut words = vec![
+            0x2000_0000,
+            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+        ];
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let sr = 48000;
+        let db = |x: f64| 20.0 * (x + 1e-12).log10();
+        let pk = |f: &dyn Fn(&[f32; 2]) -> f32| {
+            out[sr * 3 / 10..(3 * sr).min(out.len())]
+                .iter()
+                .fold(0f32, |p, x| p.max(f(x).abs()))
+        };
+        let seg = &out[sr / 2..2 * sr];
+        let rms = (seg
+            .iter()
+            .map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2))
+            .sum::<f64>()
+            / (2.0 * seg.len() as f64))
+            .sqrt();
+        eprintln!(
+            "FULL key {key} vel {vel}: L {:.1} R {:.1} max {:.1} mono {:.1} rms {:.1}",
+            db(f64::from(pk(&|f| f[0]))),
+            db(f64::from(pk(&|f| f[1]))),
+            db(f64::from(pk(&|f| f[0].max(f[1])))),
+            db(f64::from(pk(&|f| (f[0] + f[1]) / 2.0))),
+            db(rms)
+        );
+    }
     if std::env::var_os("KONTRA_PROBE_GAINS").is_some() {
         let vel: u8 = std::env::var("KONTRA_PROBE_VEL")
             .ok()
@@ -449,6 +496,18 @@ fn probe_instrument() {
             .filter(|(_, z)| (z.velocities.low..=z.velocities.high).contains(&vel))
         {
             let g = z.group.map(|g| &ir.groups[g.0]);
+            for r in &z.routes {
+                let r = &ir.routes[r.0];
+                eprintln!(
+                    "GROUTE zone {i} {:?} <- {:?} depth {:?} invert {} shape {:?} smooth {:?}",
+                    r.target,
+                    ir.modulators[r.source.0].source,
+                    r.depth,
+                    r.invert,
+                    r.shape.map(|s| &ir.shapes[s.0]),
+                    r.smoothing
+                );
+            }
             eprintln!(
                 "GAIN zone {i} grp {:?} zone gain {:?} pan {:?} group gain {:?} group pan {:?} vel {:?} keys {:?}-{:?} trig {:?}",
                 z.group,
@@ -494,10 +553,19 @@ fn probe_instrument() {
             let labels: Vec<_> = kept.iter().map(|&a| d.labels[a].clone()).collect();
             let zones = ir.zones.len();
             let loaded = sampler_kontakt::finish(ir, pcm, labels, &d.options).unwrap();
-            let mut words = vec![
-                0x2000_0000,
-                0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
-            ];
+            let mut words = vec![0x2000_0000];
+            // KONTRA_PROBE_CC="100=64;11=127": controllers sent before the note.
+            for cc in std::env::var("KONTRA_PROBE_CC")
+                .unwrap_or_default()
+                .split(';')
+            {
+                if let Some((n, v)) = cc.split_once('=')
+                    && let (Ok(n), Ok(v)) = (n.parse::<u32>(), v.parse::<u32>())
+                {
+                    words.push(0x20B0_0000 | n << 8 | v);
+                }
+            }
+            words.push(0x2090_0000 | u32::from(key) << 8 | u32::from(vel));
             words.resize(1500, 0x2000_0000);
             let out = render(loaded, &words);
             let sr = 48000;
@@ -509,10 +577,13 @@ fn probe_instrument() {
                 / (2.0 * seg.len() as f64))
                 .sqrt();
             let pk = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+            let lr = |c: usize| out.iter().fold(0f32, |p, f| p.max(f[c].abs()));
             eprintln!(
-                "SOLO group {g} zones {zones} peak {:.1} rms {:.1}",
+                "SOLO group {g} zones {zones} peak {:.1} rms {:.1} L {:.1} R {:.1}",
                 db(f64::from(pk)),
-                db(rms)
+                db(rms),
+                db(f64::from(lr(0))),
+                db(f64::from(lr(1)))
             );
         }
     }
@@ -594,4 +665,82 @@ fn probe_instrument() {
             rt.note_count()
         );
     }
+}
+
+/// Kontakt 8 reference levels (KONTAKT_REFERENCE.md s.13): scripts on, nothing
+/// sent, 3 s held; max(|L|, |R|) peak over 0.3-3 s in dBFS.
+const REFERENCE: &[(&str, u8, u8, f64)] = &[
+    (
+        "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+        48,
+        100,
+        -38.6,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        64,
+        -24.7,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        100,
+        -14.7,
+    ),
+    (
+        "Una Corda Library/Instruments/Una Corda Cotton.nki",
+        60,
+        127,
+        -8.6,
+    ),
+    (
+        "Afflatus Chapter II Brass/Instruments/3. Curated Ensembles/Barbarian Brass.nki",
+        55,
+        100,
+        -15.9,
+    ),
+];
+
+/// Every reference note within 1 dB of Kontakt. Known gaps while it fails: Una
+/// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
+/// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
+#[test]
+#[ignore = "known gaps: Una Cotton vel 100/127, Barbarian CC1 default"]
+fn full_notes_match_kontakt_within_a_decibel() {
+    let Some(root) = std::env::var_os("KONTRA_KONTAKT_LIBRARIES") else {
+        return;
+    };
+    let mut off = Vec::new();
+    for &(relative, key, vel, kontakt) in REFERENCE {
+        let path = std::path::Path::new(&root).join(relative);
+        if !path.exists() {
+            continue;
+        }
+        let d = decoded(&path, key);
+        let loaded = sampler_kontakt::finish(
+            d.instrument.clone(),
+            d.pcm.clone(),
+            d.labels.clone(),
+            &d.options,
+        )
+        .unwrap();
+        let mut words = vec![
+            0x2000_0000,
+            0x2090_0000 | u32::from(key) << 8 | u32::from(vel),
+        ];
+        words.resize(1500, 0x2000_0000);
+        let out = render(loaded, &words);
+        let peak = out[14_400..144_000.min(out.len())]
+            .iter()
+            .flatten()
+            .fold(0f32, |p, x| p.max(x.abs()));
+        let db = 20.0 * f64::from(peak).log10();
+        if (db - kontakt).abs() >= 1.0 {
+            off.push(format!(
+                "{relative} key {key} vel {vel}: {db:.1} against {kontakt}"
+            ));
+        }
+    }
+    assert!(off.is_empty(), "{off:#?}");
 }
