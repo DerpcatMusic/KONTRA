@@ -182,7 +182,11 @@ impl SubtreeItem {
     }
 
     pub fn item(&self) -> Result<ItemContainer, Error> {
-        let container = ItemContainer::read_cursor(&mut Cursor::new(self.inner_data.as_slice()))?;
+        let mut reader = Cursor::new(self.inner_data.as_slice());
+        let container = ItemContainer::read_cursor(&mut reader)?;
+        if reader.position() != self.inner_data.len() as u64 {
+            return Err(Error::Static("Trailing data after subtree item"));
+        }
         Ok(container)
     }
 }

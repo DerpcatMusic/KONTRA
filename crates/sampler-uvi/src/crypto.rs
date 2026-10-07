@@ -262,7 +262,27 @@ fn unpack_program_zip(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(decoded)
 }
 
-/// Decode either UTF-8 XML or the observed single-entry plain ZIP UVIP wrapper.
+/// Decode the binary state frame emitted by the UVI4 native state writer.
+/// This identifies framing, not a particular UVIP/UVIM file-extension variant.
+fn unpack_binary_state(bytes: &[u8]) -> Result<Vec<u8>> {
+    use flate2::{Decompress, FlushDecompress, Status};
+    ensure!(bytes.len() >= 12, "Truncated UVI4 binary state header");
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    ensure!(version == 1, "Unsupported UVI4 binary state version {version}");
+    let expected = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    ensure!(expected <= PROGRAM_XML_LIMIT, "UVI4 binary state exceeds XML resource limit");
+    let mut decoded = Vec::new();
+    decoded.try_reserve_exact(expected + 1).context("Allocating UVI4 binary state")?;
+    let mut decoder = Decompress::new(true);
+    let status = decoder.decompress_vec(&bytes[12..], &mut decoded, FlushDecompress::Finish)
+        .context("Invalid UVI4 binary state zlib stream")?;
+    ensure!(status == Status::StreamEnd && decoder.total_in() == (bytes.len() - 12) as u64,
+        "Incomplete or trailing UVI4 binary state zlib stream");
+    ensure!(decoded.len() == expected, "UVI4 binary state XML length mismatch");
+    Ok(decoded)
+}
+
+/// Decode UTF-8 XML, the single-entry ZIP wrapper or the native binary state frame.
 pub fn decode_program_bytes(bytes: &[u8], namespace: &[u8]) -> Result<String> {
     ensure!(
         bytes.len() <= PROGRAM_XML_LIMIT,
@@ -272,11 +292,48 @@ pub fn decode_program_bytes(bytes: &[u8], namespace: &[u8]) -> Result<String> {
     let bytes = if bytes.starts_with(b"PK\x03\x04") {
         decoded = unpack_program_zip(bytes)?;
         decoded.as_slice()
+    } else if bytes.starts_with(b"UVI4") {
+        decoded = unpack_binary_state(bytes)?;
+        decoded.as_slice()
     } else {
         bytes
     };
     let text = std::str::from_utf8(bytes).context("Decoded UVI program is not UTF-8")?;
     decode_program(text, namespace)
+}
+
+#[cfg(test)]
+#[test]
+fn native_binary_state_framing_is_bounded_and_exact() {
+    use std::io::Write;
+    fn frame(xml: &[u8], declared: u32) -> Vec<u8> {
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(xml).unwrap();
+        let mut frame = b"UVI4".to_vec();
+        frame.extend(1u32.to_le_bytes());
+        frame.extend(declared.to_le_bytes());
+        frame.extend(encoder.finish().unwrap());
+        frame
+    }
+    let xml = b"<UVI4><Program Name=\"Authored state\"/></UVI4>";
+    let valid = frame(xml, xml.len() as u32);
+    assert_eq!(decode_program_bytes(&valid, &[]).unwrap(), std::str::from_utf8(xml).unwrap());
+    for end in 0..valid.len() {
+        assert!(decode_program_bytes(&valid[..end], &[]).is_err(), "truncated at {end}");
+    }
+    for declared in [0, xml.len() as u32 - 1, xml.len() as u32 + 1, u32::MAX] {
+        assert!(decode_program_bytes(&frame(xml, declared), &[]).is_err());
+    }
+    let mut bad = valid.clone(); bad[4] = 2;
+    assert!(decode_program_bytes(&bad, &[]).is_err());
+    let mut bad = valid.clone(); *bad.last_mut().unwrap() ^= 1;
+    assert!(decode_program_bytes(&bad, &[]).is_err());
+    let mut bad = valid.clone(); bad.push(0);
+    assert!(decode_program_bytes(&bad, &[]).is_err());
+    let mut bad = valid.clone(); bad.extend(&valid[12..]);
+    assert!(decode_program_bytes(&bad, &[]).is_err());
+    assert!(decode_program_bytes(&frame(&[b'x'; 4096], 1), &[]).is_err());
+    assert!(decode_program_bytes(&frame(b"not XML", 7), &[]).is_err());
 }
 
 fn decode_base64(text: &str, limit: usize) -> Result<Vec<u8>> {
