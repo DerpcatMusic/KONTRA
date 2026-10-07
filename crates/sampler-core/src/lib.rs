@@ -51,6 +51,8 @@ pub use behavior::{
 };
 mod stages;
 pub use stages::Stage;
+mod diagnose;
+pub use diagnose::{ScriptFault, why_silent};
 mod stream;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
