@@ -1754,15 +1754,16 @@ mod survey {
                 for f in host.findings() {
                     println!("UA {}|{}|{}", f.feature, f.value.chars().take(200).collect::<String>().replace(' ', "_"), name);
                 }
-                if let Ok(spec) = std::env::var("KONTRA_LINE") {
+                if let Ok(specs) = std::env::var("KONTRA_LINE") {
                     // transient debugging aid, prints to the terminal only
-                    if let Some((m, l)) = spec.split_once(':') {
+                    for spec in specs.split(',') {
+                        let Some((m, l)) = spec.split_once(':') else { continue };
                         use crate::script::Files;
                         let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
                         let l: usize = l.parse().unwrap();
                         for (i, line) in src.lines().enumerate() {
-                            if i + 3 >= l && i < l + 2 {
-                                println!("UX {}: {}", i + 1, line);
+                            if i + 3 >= l && i < l + 1 {
+                                println!("UX {m}:{}: {}", i + 1, line);
                             }
                         }
                     }
