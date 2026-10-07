@@ -1333,6 +1333,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         "load": load,
     });
     let mut play_ms = 0u64;
+    let mut peak_heap = 0;
     if let Some((subject, pick)) = loaded {
         record["scripts"] = scripts(&subject);
         record["unsupported"] = json!(categories(&subject.instrument().unsupported));
@@ -1416,9 +1417,12 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                     || item.id().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 8 == 0;
                 if ctx.tier == Tier::Full
                     && sampled
+                    && std::env::var_os("CH_NOMPE").is_none()
                     && let Item::Kontakt(path) = item
                 {
                     let t = Instant::now();
+                    // The probe decodes fully: keep it out of the peak memory.
+                    peak_heap = heap::peak();
                     record["mpe"] = mpe_probe(path, pick, &ccs);
                     record["perf_mpe_ms"] = json!(t.elapsed().as_millis() as u64);
                 }
@@ -1454,7 +1458,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
     record["perf"] = json!({
         "load_ms": load_ms,
         "play_ms": play_ms,
-        "peak_heap_bytes": heap::peak(),
+        "peak_heap_bytes": if peak_heap > 0 { peak_heap } else { heap::peak() },
         "heap_bytes_after_load": heap_after_load,
         "workers": ctx.workers,
         // Timing is evidence only when the machine was otherwise idle: judge it

@@ -30,18 +30,19 @@ start)
   # KONTAKT_NOAUDIO=1: read the GUI only (larger desktop); no audio device setup, never send MIDI
   [ -n "${KONTAKT_NOAUDIO:-}" ] || { "$0" setup; sleep 3; "$0" setup; "$0" route || { "$0" stop; exit 1; }; }
   # a killed/restarted Kontakt may come up in the new view; the GUI coordinates need Classic View (menu > Switch to Classic View)
-  "$0" state 2>&1 | grep -q 'MISMATCH master' && { click 325 98; click 128 579 3; }   # only when the master editor itself is not found (instrument-header mismatches mean "still loading")
+  [ -z "${KONTAKT_NO_VIEW_FIX:-}" ] && "$0" state 2>&1 | grep -q 'MISMATCH master' && { click 325 98; click 128 579 3; }   # only when the master editor itself is not found (instrument-header mismatches mean "still loading")
   import -window root "$W/log/ready.png"
   ;;
 setup)  # GUI-script the audio device and MIDI port once the instrument has loaded
-  click 1089 440            # "What's new" popup
+  D=$(( (${RES#*x} - 1000) / 2 ))   # dialogs are centred in the desktop: taller desktops shift them down
+  click 1089 $((440+D))            # "What's new" popup
   click 20 57; click 60 86  # File > Options
-  click 388 553            # Audio tab: the device choice does not persist across launches
-  click 1088 318 0.5; xdotool mousemove 1060 480; for _ in 1 2 3 4 5 6; do xdotool click 5; done; sleep 0.5
-  click 1010 485 2          # "kontra_ref" output (list position as of 6 scroll clicks)
-  click 385 520             # MIDI tab
-  click 1075 414; click 1128 476  # Midi Through Port-0 -> Port A
-  click 1178 781            # Close
+  click 388 $((553+D))            # Audio tab: the device choice does not persist across launches
+  click 1088 $((318+D)) 0.5; xdotool mousemove 1060 $((480+D)); for _ in 1 2 3 4 5 6; do xdotool click 5; done; sleep 0.5
+  click 1010 $((485+D)) 2          # "kontra_ref" output (list position as of 6 scroll clicks)
+  click 385 $((520+D))            # MIDI tab
+  click 1075 $((414+D)); click 1128 $((476+D))  # Midi Through Port-0 -> Port A
+  click 1178 $((781+D))            # Close
   import -window root "$W/log/ready.png"
   ;;
 route)  # routing guard: Kontakt's output ports must be linked ONLY to kontra_ref (never the user's default sink)
@@ -66,7 +67,8 @@ state)  # pinned-state check: master 0.00 dB / 440 Hz, instrument volume 0 dB, p
 calibrate)  # gain through the whole chain: bare noise instrument at unity, recorded level must be the file level x the master law
   here=$(cd "$(dirname "$0")" && pwd)
   [ -f /tmp/noise.wav ] || python3 "$here/make_noise.py" /tmp/noise.wav noise
-  "$0" state || { echo "calibrate: state not pinned, abort" >&2; exit 1; }
+  ok=; for _ in $(seq 12); do "$0" state >"$W/log/state.txt" 2>&1 && { ok=1; break; }; grep -q 'MISMATCH master' "$W/log/state.txt" && { click 325 98; click 128 579 3; }; sleep 5; done   # the instrument may still be loading under load
+  [ -n "$ok" ] || { cat "$W/log/state.txt" >&2; echo "calibrate: state not pinned, abort" >&2; exit 1; }; cat "$W/log/state.txt"
   python3 "$here/scenario.py" "$here/scenarios/calibration.txt" "$W/cal.mid"
   KONTRA_NO_STAMP_CHECK=1 "$here/record.sh" "$W/cal.mid" "$W/wav/cal.wav" 3 || exit 1
   if python3 "$here/calibrate.py" "$W/wav/cal.wav" /tmp/noise.wav 0.0 | tee "$W/log/calibration.txt"; then
