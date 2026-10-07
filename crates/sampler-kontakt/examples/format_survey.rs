@@ -462,7 +462,7 @@ impl Survey {
         {
             let mut file = std::fs::File::open(path)?;
             let mut head = Vec::new();
-            file.by_ref().take(4 << 20).read_to_end(&mut head)?;
+            std::io::Read::by_ref(&mut file).take(4 << 20).read_to_end(&mut head)?;
             let marker = b"/\\ NI FC MTD  /\\";
             let start = head
                 .windows(marker.len())
@@ -897,7 +897,7 @@ fn scalar_fields(s: &mut Survey, id: &str, v: &str, chunk: &OwnedChunk) {
                 s.field(id, v, "reserved2", p.reserved2.is_some_and(|n| n != 0));
                 s.field(id, v, "root_note", p.root_note != 0);
                 s.field(id, v, "tuning", p.tuning != 0.0);
-                s.field(id, v, "reserved3", p.reserved3);
+                s.field(id, v, "reserved3", p.reserved3 != 0);
                 s.field(id, v, "reserved4", p.reserved4 != 0);
             }
         }
