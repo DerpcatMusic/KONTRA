@@ -41,6 +41,10 @@ impl Resources {
         let (mut files, mut containers) = (HashMap::new(), Vec::new());
         // Up to four folders up, further only while nothing was found.
         for (depth, folder) in instrument.ancestors().skip(1).take(8).enumerate() {
+            // The corpus/library root is a boundary, not a fallback asset pool.
+            if named(folder, "Kontakt") {
+                break;
+            }
             if depth >= 4 && !(files.is_empty() && containers.is_empty()) {
                 break;
             }
