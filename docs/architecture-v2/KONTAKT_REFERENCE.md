@@ -247,3 +247,19 @@ Rig: `noise_instrument.sh` loads the noise sample, then Group Editor > Group Ins
 | g36 (control) | -61.8 / -56.5 | -50.1 / -44.8 | silent |
 
 So g1/g4/g5 are not gated: they sound at CC100 0 and 64, but 16-35 dB under g37 (-37 R at CC100 56, section 12), so section 4 (taken at an unspecified CC100) read them as silent. All five groups are silent at CC100 = 127, as g36 (section 12: silent from 88). Left-right differences are constant per group (g1 0, g4 +1.8, g5 +0.4, g33 -1.5, g36 -5.3 dB) as in section 12; the 64 level is 12-19 dB above the 0 level.
+
+## 19. Una Corda Cotton g39 and g94 solos (all four scripts bypassed)
+
+Scenario: `tools/kontakt-reference/scenarios/una_solo_g39_g94.txt` plus `solo_group.ksp` in free slot 5 (MAIN, RESONANCE, RELEASE, REPEDAL all bypassed). Key 60, 3 s notes, 6 s apart; CC20 selects the group. dBFS, RMS 0.5-2 s, peak 0.3-3 s after onset.
+
+| group | vel | L rms | R rms | L peak | R peak |
+|---|---|---|---|---|---|
+| g39 | 64 | -54.5 | -51.6 | -26.4 | -24.0 |
+| g39 | 100 | -45.3 | -42.5 | -17.2 | -14.4 |
+| g39 | 127 | -39.9 | -37.4 | -9.5 | -6.8 |
+| g94 | 64 | -25.1 | -25.3 | -14.6 | -15.8 |
+| g94 | 100 | -25.2 | -25.3 | -14.6 | -15.8 |
+| g94 | 127 | -25.2 | -25.3 | -14.6 | -15.8 |
+
+- g39 is the velocity-sensitive note group: about 9 dB per step from 64 to 100 and 5.4 dB from 100 to 127; R is 2.4-2.8 dB louder than L.
+- g94 is velocity-independent (identical to 0.1 dB at 64, 100 and 127), nearly centred and 20 dB louder in RMS than g39 at vel 64 (a sustained layer, not a struck note).
