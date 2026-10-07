@@ -38,17 +38,17 @@ source/assets; **decoded-unused** means readable but ignored by playback;
 **unread** means the active importer does not enter that region. Presence is
 not activation. Unknown bytes use a **nonzero** baseline only; this is not a
 Kontakt factory default. Numeric neutral baselines are stated in the census
-source (gain/tune 1, high key/velocity 127, absent group/channel/keyswitch -1,
+source (gain/tune 1, high key/velocity 127, absent channel/keyswitch and sample-start range -1, absent voice-group 0,
 other scalar 0); they are not asserted to be every native factory default.
 
 ## Family ownership
 
 | Family | Owner | Detailed field/version evidence |
 |---|---|---|
-| Scripts and persistence; snapshots 0x4f–0x51 | `gpt-decipher-persist` | [KONTAKT_SCRIPT_PERSISTENCE.md](KONTAKT_SCRIPT_PERSISTENCE.md) (confirm final family filename when integrating) |
+| Scripts and persistence; snapshots 0x4f–0x51 | `gpt-decipher-persist` | [KSP_PERSISTENCE_FORMAT.md](KSP_PERSISTENCE_FORMAT.md) |
 | Program/group/zone, voice groups, loops, source and criteria | `gpt-format-objects` | [KONTAKT_OBJECTS.md](KONTAKT_OBJECTS.md) |
 | FX wrappers/payloads, internal/external modulation, buses | `gpt-format-fxmod` | [KONTAKT_FX_MOD_FORMAT.md](KONTAKT_FX_MOD_FORMAT.md) |
-| NKS versions, old XML envelopes, monoliths and sample framing | `gpt-format-legacy` | [KONTAKT_LEGACY_FORMAT.md](KONTAKT_LEGACY_FORMAT.md) (confirm final family filename when integrating) |
+| NKS versions, old XML envelopes, monoliths and sample framing | `gpt-format-legacy` | [KONTAKT_LEGACY_FORMATS.md](KONTAKT_LEGACY_FORMATS.md) |
 | Filename/resource metadata, save settings, quick browse, banks; master map | `gpt-format-gaps` | This document; [metadata reader](../../crates/sampler-kontakt/src/metadata.rs) |
 | Library UI and resource use | `gpt-kontakt-ui` | [KONTAKT_UI_HEALTH.md](KONTAKT_UI_HEALTH.md) |
 | Native parameter laws / DSP consumption | `gpt-decipher-dsp` | Coordinator's DSP evidence; format decoding alone is insufficient |
@@ -112,7 +112,7 @@ written by the census; only aggregate counts and ordinary library paths.
 | 0x06 | Optional source/name/link, editor flags, bypass, password hash, persistence strings | Source and saved persistence; linked file reload | Source/state used; linked resources now reloaded; editor/password are decoded-unused; family owns state grammar |
 | 0x04 / 0x33 | Group name, gain/pan/tune, key tracking, reverse, release, monophony/counter, MIDI channel, voice index, amp split, mute/solo, interpolation, source/criteria; private rack | Many used; source metadata not equivalent to native source DSP | Gain/pan/tune, reverse, release, mute, routing/mods used; MIDI filter/source modes have explicit caveats; private unknown records remain raw |
 | 0x05 / 0x39 | Loop mode/start/length/count/alternating/tune/crossfade; mask; source reader preserves holes | Loop playback/alternating support | Loop region used; unsupported modes surfaced; compare loop tune/count/crossfade to lowering in objects doc |
-| 0x28 | Full common public prefix through credits/categories; later resource/wallpaper references set `None`; private bytes raw | Common params, gain, ranges and metadata; verify individual uses in objects doc | Host volume used; many program scalars/metadata still unused; later fields raw/unknown |
+| 0x28 | Full common public prefix through credits/categories; later resource/wallpaper references set `None`; private bytes raw | Common params, gain, ranges and metadata; verify individual uses in objects doc | Volume/pan/tune/transpose used; program ranges/metadata still unused; later fields raw/unknown |
 | 0x32 | Vendored voice-group decoder incomplete and unsafe on unsupported versions | Own decoder: 128-bit mask and one-based assignment | Own decoder used; source wrapper completeness belongs to objects agent |
 | 0x2c / 0x34 | Zone trim/ranges/fades/root/gain/pan/tune/sample reference and metadata/reserved fields | Mapping/loops used | Playback uses mapping prefix, sample identity and trim; additional sample metadata and private bytes raw/unknown |
 | 0x0e, 0x0f, 0x38 | Source identity, bounded wavetable v0x106 and criteria rows; remaining source body partly raw | Source identity/wavetable metadata; criteria used | Source modes can fall back to sampler with caveat; no claim that wavetable metadata implements wavetable DSP |

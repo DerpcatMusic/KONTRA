@@ -210,8 +210,13 @@ fn translate(
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
         if !script.bypass {
-            if let Some(link) = script.textfile_name.as_deref().filter(|n| !n.trim().is_empty()) {
-                if let Some(text) = resources.get_or_insert_with(|| crate::Resources::of(&path))
+            if let Some(link) = script
+                .textfile_name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+            {
+                if let Some(text) = resources
+                    .get_or_insert_with(|| crate::Resources::of(&path))
                     .linked_script(link)
                 {
                     script.text = Some(text);
@@ -1448,6 +1453,62 @@ pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 
 #[cfg(test)]
 mod saved_tests {
+    #[test]
+    fn translated_script_prefers_the_link_then_falls_back_to_saved_source() {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let root =
+            std::env::temp_dir().join(format!("kontakt-linked-translation-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Resources/scripts")).unwrap();
+        let linked = "on init\nmessage(\"linked\")\nend on";
+        let saved = "on init\nmessage(\"saved\")\nend on";
+        let file = root.join("Resources/scripts/Source.txt");
+        std::fs::write(&file, linked).unwrap();
+        for expected in [linked, saved] {
+            let mut public = (saved.len() as u32).to_le_bytes().to_vec();
+            public.extend(saved.as_bytes());
+            public.extend([0; 3]);
+            public.extend(0u32.to_le_bytes());
+            public.extend(u32::MAX.to_le_bytes());
+            let name = r"C:\old\source.TXT";
+            public.extend((name.len() as u32).to_le_bytes());
+            public.extend(name.as_bytes());
+            let mut script = vec![0, 0x50, 0];
+            script.extend(public);
+            let program = Program(StructuredObject {
+                version: 0xaf,
+                public_data: vec![0; 70],
+                private_data: Vec::new(),
+                children: vec![
+                    Chunk {
+                        id: 0x33,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 0x34,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 6,
+                        data: script,
+                    },
+                ],
+            });
+            let translated = super::translate(
+                root.join("Piano.nki"),
+                program,
+                Default::default(),
+                Default::default(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(translated.instrument.behaviors[0].source, expected);
+            if expected == linked {
+                std::fs::remove_file(&file).unwrap();
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn saved_values_keep_their_types_and_arrays() {
         let entries = [

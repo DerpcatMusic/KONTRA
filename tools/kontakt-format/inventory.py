@@ -17,11 +17,15 @@ def definitions(path):
             end = text.find("\n}", start)
             body = text[start:end]
             fields = [(f[1], f[2].strip(), text[:start + f.start()].count("\n") + 1)
-                      for f in re.finditer(r"^\s*pub (\w+): ([^\n]+?)(?:,\s*(?://.*)?)?$", body, re.M)]
+                      for f in re.finditer(r"^\s*(?:pub(?:\([^)]*\))? )?(\w+): ([^\n]+?)(?:,\s*(?://.*)?)?$", body, re.M)]
         else:
             fields = [("raw", "tuple/unit (see source)", line)]
         versions = re.findall(r"(?:Known Versions|Versions):\s*([^\n]+)", text[:match.start()])
         yield name, fields, versions[-1] if versions else "see dispatch; not declared"
+    # Read/discard operations are format gaps too, even without a struct field.
+    for match in re.finditer(r"^\s*let (_\w*|_)\s*=\s*([^;\n]*(?:read_\w+|read_bytes)[^;\n]*);", text, re.M):
+        line = text[:match.start()].count("\n") + 1
+        yield "discarded_wire_field", [(f"{path.stem}.{match[1]}@{line}", match[2].strip(), line)], "see enclosing version dispatch"
 
 
 def generate(repo, v1, destination):
