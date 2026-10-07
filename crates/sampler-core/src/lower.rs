@@ -4,14 +4,12 @@
 //! approximated silently.
 use crate::{
     Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    ControlValue, ControllerCondition, SlotKind, slot_control, Direction, Driver,
-    Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate,
-    LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource, ModTarget,
-    CompressorSettings, DaftSettings, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region,
-    ReverbSettings,
-    SelectionPolicy,
-    Selector, Sequence, SequenceScope, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching,
-    Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
+    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
+    FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
+    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
+    Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
+    SlotKind, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy,
+    Trigger, VelocityCurve, VoiceChain, ZoneFades, slot_control,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -157,6 +155,55 @@ pub struct MpeDefaults {
     /// How far a per-voice low-pass closes, in semitones below fully open, as
     /// timbre falls from centre (CC74 64) to 0; 0 disables.
     pub timbre_semitones: f64,
+    /// What per-note timbre moves.
+    pub timbre: TimbreTarget,
+}
+
+/// What an MPE note's timbre (Y, CC74) drives. Kontakt gives CC74 no meaning
+/// of its own, so the choice is ours: the instrument's own loudness-by-dynamics
+/// position when it has one, else its filter's cutoff, else a plain tone filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TimbreTarget {
+    /// A per-voice low-pass that closes below centre.
+    #[default]
+    Tone,
+    /// The cutoff of the zone's own filter, both ways from centre; zones
+    /// without a modulable filter fall back to [`Self::Tone`].
+    Cutoff,
+    /// The note's own value of this dynamics controller (the host side writes
+    /// it per member channel); lowering adds no route.
+    Controller(u8),
+}
+
+/// Semitones the cutoff moves each way from centre when timbre drives it.
+const TIMBRE_CUTOFF_SEMITONES: f64 = 36.0;
+
+impl MpeDefaults {
+    /// The defaults with timbre aimed at `instrument`'s dynamics controller if
+    /// it has one (the host volume's own controller excluded), else its filter
+    /// cutoff, else the tone filter.
+    pub fn for_instrument(instrument: &ir::Instrument) -> Self {
+        let volume = instrument.host_volume.map(|v| v.controller);
+        let timbre = if let Some(cc) = instrument
+            .amplitude_controllers()
+            .into_iter()
+            .find(|&cc| Some(cc) != volume)
+        {
+            TimbreTarget::Controller(cc)
+        } else if instrument.zones.iter().filter_map(|z| z.chain).any(|c| {
+            let chain = &instrument.chains[c.0];
+            (0..chain.pre_amplitude.len() + chain.post_amplitude.len())
+                .any(|i| modulable_filter(instrument, c, i))
+        }) {
+            TimbreTarget::Cutoff
+        } else {
+            TimbreTarget::Tone
+        };
+        Self {
+            timbre,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for MpeDefaults {
@@ -164,6 +211,7 @@ impl Default for MpeDefaults {
         Self {
             pressure_db: 6.0,
             timbre_semitones: 60.0,
+            timbre: TimbreTarget::Tone,
         }
     }
 }
@@ -402,6 +450,31 @@ pub fn lower_with(
     }
 }
 
+/// Voice cutoff/Q modulation scales every state-variable filter in the
+/// chain, so it is exact only when the addressed filter is the only one.
+fn modulable_filter(ir: &ir::Instrument, chain: ir::ChainRef, index: usize) -> bool {
+    let chain = &ir.chains[chain.0];
+    let processors: Vec<_> = chain
+        .pre_amplitude
+        .iter()
+        .chain(&chain.post_amplitude)
+        .collect();
+    let svf = |p: &ir::Processor| {
+        matches!(
+            p,
+            ir::Processor::Filter(ir::Filter {
+                kind: ir::FilterKind::LowPass { poles: 1 | 2 }
+                    | ir::FilterKind::HighPass { poles: 1 | 2 }
+                    | ir::FilterKind::BandPass { poles: 2 }
+                    | ir::FilterKind::Notch { poles: 2 }
+                    | ir::FilterKind::AllPass,
+                ..
+            })
+        )
+    };
+    svf(processors[index]) && processors.iter().filter(|p| svf(p)).count() == 1
+}
+
 struct Lowering<'a> {
     ir: &'a ir::Instrument,
     rate: u32,
@@ -422,9 +495,6 @@ impl Lowering<'_> {
 
     fn zone(&self, i: usize, zone: &ir::Zone) -> Result<(Region, Option<VoiceChain>), LowerError> {
         let owner = format!("zone {i}");
-        if let ir::Trigger::First | ir::Trigger::Legato = zone.trigger {
-            return Err(unsupported(owner, Feature::Trigger(zone.trigger)));
-        }
         let root_key = match zone.pitch {
             ir::KeyTracking::Tracked { root }
             | ir::KeyTracking::Scaled {
@@ -649,7 +719,7 @@ impl Lowering<'_> {
                         parameter,
                     },
                     depth,
-                ) if Some(chain) == zone.chain && self.modulable_filter(chain, index) => {
+                ) if Some(chain) == zone.chain && modulable_filter(self.ir, chain, index) => {
                     match (parameter, depth) {
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::Cutoff, p.semitones())
@@ -728,7 +798,29 @@ impl Lowering<'_> {
                     mpe.pressure_db,
                 ));
             }
-            if mpe.timbre_semitones != 0.0 {
+            let cutoff = mpe.timbre == TimbreTarget::Cutoff
+                && zone.chain.is_some_and(|c| {
+                    let chain = &self.ir.chains[c.0];
+                    (0..chain.pre_amplitude.len() + chain.post_amplitude.len())
+                        .any(|i| modulable_filter(self.ir, c, i))
+                });
+            if cutoff {
+                // Both ways from centre: -1 at timbre 0, +1 at 1.
+                program
+                    .shapes
+                    .push(vec![(0.0, -1.0), (0.5, 0.0), (1.0, 1.0)]);
+                program.sources.push(ModSource::Timbre);
+                program.routes.push(ModRoute {
+                    shape: Some(program.shapes.len() - 1),
+                    ..ModRoute::new(
+                        program.sources.len() - 1,
+                        ModTarget::Cutoff,
+                        TIMBRE_CUTOFF_SEMITONES,
+                    )
+                });
+            } else if matches!(mpe.timbre, TimbreTarget::Tone | TimbreTarget::Cutoff)
+                && mpe.timbre_semitones != 0.0
+            {
                 // -1 at timbre 0, 0 from centre up: only darker than centre.
                 program
                     .shapes
@@ -745,31 +837,6 @@ impl Lowering<'_> {
             }
         }
         Ok(program)
-    }
-
-    /// Voice cutoff/Q modulation scales every state-variable filter in the
-    /// chain, so it is exact only when the addressed filter is the only one.
-    fn modulable_filter(&self, chain: ir::ChainRef, index: usize) -> bool {
-        let chain = &self.ir.chains[chain.0];
-        let processors: Vec<_> = chain
-            .pre_amplitude
-            .iter()
-            .chain(&chain.post_amplitude)
-            .collect();
-        let svf = |p: &ir::Processor| {
-            matches!(
-                p,
-                ir::Processor::Filter(ir::Filter {
-                    kind: ir::FilterKind::LowPass { poles: 1 | 2 }
-                        | ir::FilterKind::HighPass { poles: 1 | 2 }
-                        | ir::FilterKind::BandPass { poles: 2 }
-                        | ir::FilterKind::Notch { poles: 2 }
-                        | ir::FilterKind::AllPass,
-                    ..
-                })
-            )
-        };
-        svf(processors[index]) && processors.iter().filter(|p| svf(p)).count() == 1
     }
 
     fn mod_source(
@@ -863,11 +930,17 @@ impl Lowering<'_> {
     }
 
     /// One or more runtime stages: a 4-pole filter is two cascaded 2-pole sections.
-    fn processors(&self, owner: &str, processor: ir::Processor) -> Result<Vec<Processor>, LowerError> {
-        let two = |kind| ir::Processor::Filter(match processor {
-            ir::Processor::Filter(f) => ir::Filter { kind, ..f },
-            _ => unreachable!(),
-        });
+    fn processors(
+        &self,
+        owner: &str,
+        processor: ir::Processor,
+    ) -> Result<Vec<Processor>, LowerError> {
+        let two = |kind| {
+            ir::Processor::Filter(match processor {
+                ir::Processor::Filter(f) => ir::Filter { kind, ..f },
+                _ => unreachable!(),
+            })
+        };
         let kind = match processor {
             ir::Processor::Filter(f) => f.kind,
             _ => return Ok(vec![self.processor(owner, processor)?]),
@@ -879,7 +952,10 @@ impl Lowering<'_> {
             ir::FilterKind::Notch { poles: 4 } => ir::FilterKind::Notch { poles: 2 },
             _ => return Ok(vec![self.processor(owner, processor)?]),
         };
-        Ok(vec![self.processor(owner, two(half))?, self.processor(owner, two(half))?])
+        Ok(vec![
+            self.processor(owner, two(half))?,
+            self.processor(owner, two(half))?,
+        ])
     }
 
     fn processor(&self, owner: &str, processor: ir::Processor) -> Result<Processor, LowerError> {
@@ -1020,22 +1096,45 @@ impl Lowering<'_> {
                 if chain.scope != ir::Scope::Bus(ir::BusRef(i)) {
                     return Err(unsupported(owner, Feature::ChainScope(chain.scope)));
                 }
-                let listed: Vec<_> = chain.pre_amplitude.iter().chain(&chain.post_amplitude).collect();
+                let listed: Vec<_> = chain
+                    .pre_amplitude
+                    .iter()
+                    .chain(&chain.post_amplitude)
+                    .collect();
                 // Core index of each listed processor: a 4-pole filter lowers to two.
                 let mut starts = Vec::with_capacity(listed.len() + 1);
                 for p in &listed {
                     starts.push(processors.len());
                     match **p {
-                        ir::Processor::Mix { address, dry, wet, bypass, .. } => {
+                        ir::Processor::Mix {
+                            address,
+                            dry,
+                            wet,
+                            bypass,
+                            ..
+                        } => {
                             let ramp_frames = self.rate / 100;
                             let mut bind = |kind: SlotKind, initial: f64| {
-                                let control = slot_control(kind, address.group, address.slot, address.generic);
+                                let control = slot_control(
+                                    kind,
+                                    address.group,
+                                    address.slot,
+                                    address.generic,
+                                );
                                 mixes.push(ControlDefinition {
                                     id: control,
-                                    domain: ControlDomain::Real { min: 0.0, max: kind.max() },
+                                    domain: ControlDomain::Real {
+                                        min: 0.0,
+                                        max: kind.max(),
+                                    },
                                     default: ControlValue::Real(initial),
                                 });
-                                ControlRange { control, low: 0.0, high: kind.max(), ramp_frames }
+                                ControlRange {
+                                    control,
+                                    low: 0.0,
+                                    high: kind.max(),
+                                    ramp_frames,
+                                }
                             };
                             processors.push(Processor::Mix {
                                 count: 0,
@@ -1060,7 +1159,11 @@ impl Lowering<'_> {
                     }
                 }
             }
-            let tapped = self.ir.groups.iter().any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
+            let tapped = self
+                .ir
+                .groups
+                .iter()
+                .any(|g| g.tap.as_ref().is_some_and(|t| t.bus.0 == i));
             let mut sends = vec![BusSend {
                 bus: target(bus.output),
                 gain: if tapped { 1.0 } else { bus.gain.linear() },
@@ -1111,7 +1214,9 @@ impl Lowering<'_> {
             .map(|g| {
                 g.tap.as_ref().map(|t| crate::GroupFader {
                     bus: t.bus.0,
-                    follows: std::iter::once(0).chain(t.post.iter().map(|n| n + 1)).collect(),
+                    follows: std::iter::once(0)
+                        .chain(t.post.iter().map(|n| n + 1))
+                        .collect(),
                     initial: self.ir.buses[t.bus.0].gain.linear(),
                 })
             })
@@ -1119,7 +1224,8 @@ impl Lowering<'_> {
         let plan = if mixes.is_empty() {
             plan
         } else {
-            plan.with_controls(mixes).map_err(core(Stage::Buses, "slot controls"))?
+            plan.with_controls(mixes)
+                .map_err(core(Stage::Buses, "slot controls"))?
         };
         let plan = plan
             .with_impulses(impulses)
@@ -1346,7 +1452,12 @@ impl Lowering<'_> {
     }
 
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self.ir.zones.iter().all(|z| z.conditions.is_empty()) {
+        if self
+            .ir
+            .zones
+            .iter()
+            .all(|z| z.conditions.is_empty() && previous_key(z.trigger).is_none())
+        {
             return Ok(plan);
         }
         // A 7-bit value covers every 32-bit value that scales down to it.
@@ -1362,6 +1473,7 @@ impl Lowering<'_> {
                         low: u32::from(c.low) << 25,
                         high: (u32::from(c.high) << 25) | 0x01ff_ffff,
                     })
+                    .chain(previous_key(z.trigger))
                     .collect()
             })
             .collect();
@@ -1369,6 +1481,22 @@ impl Lowering<'_> {
         plan.with_controllers(conditions, count)
             .map_err(core(Stage::Controllers, "controller ranges"))
     }
+}
+
+/// The previous-key condition a trigger kind stands for: no other key held
+/// (first), any other held (legato), or a recorded interval (transition).
+fn previous_key(trigger: ir::Trigger) -> Option<ControllerCondition> {
+    let (low, high) = match trigger {
+        ir::Trigger::First => (None, None),
+        ir::Trigger::Legato => (Some(-127), Some(127)),
+        ir::Trigger::Transition { low, high } => (Some(low.into()), Some(high.into())),
+        _ => return None,
+    };
+    Some(ControllerCondition {
+        controller: crate::PREVIOUS_KEY,
+        low: crate::previous_key_value(low),
+        high: crate::previous_key_value(high),
+    })
 }
 
 /// Per-channel gains for a stereo source.
