@@ -1036,7 +1036,7 @@ impl Translation {
                 ir::KeyTracking::Fixed
             },
             tune: ir::Pitch::Semitones(semitones),
-            gain: ir::Gain::Linear(f64::from(z.gain * program.volume)),
+            gain: ir::Gain::Linear(output_gain(z.gain, program.volume)),
             velocity: group.velocity,
             // Mapping Editor crossfades: widths in key and velocity steps
             // inside the zone; the gain law is measured (Kontakt 8,
@@ -1592,6 +1592,26 @@ mod multi_tests {
         let k = super::read_program(&path, 0).expect("first program");
         assert!(!k.instrument.groups.is_empty());
         assert!(super::read_program(&path, 999).is_err());
+    }
+}
+
+/// Kontakt's master volume at its displayed 0.00 dB is 0.5 linear against
+/// file level (-6.021 dB bit-exact on a bare noise instrument at velocity 127;
+/// +6.00 dB is unity; KONTAKT_REFERENCE.md). Applied with the zone gain, so it
+/// is exact for linear signal paths (ponytail: nonlinear inserts see the
+/// halved level; a master-scope stage if one ever matters).
+pub const MASTER_UNITY: f64 = 0.5;
+
+fn output_gain(zone: f32, program: f32) -> f64 {
+    f64::from(zone * program) * MASTER_UNITY
+}
+
+#[cfg(test)]
+mod master_tests {
+    #[test]
+    fn neutral_zone_is_six_db_below_file_level() {
+        let db = 20.0 * super::output_gain(1.0, 1.0).log10();
+        assert!((db + 6.0206).abs() < 1e-3, "{db}");
     }
 }
 
