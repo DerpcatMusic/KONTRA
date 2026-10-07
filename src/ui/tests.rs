@@ -487,7 +487,7 @@ fn rack_interactions() {
         v.files = Arc::new(vec![
             "/virtual/Library/Piano.nki".into(),
             "/virtual/Library/Strings.nki".into(),
-            "/virtual/Library/Ensemble.kontra2-multi".into(),
+            "/virtual/Library/Ensemble.kontra-multi".into(),
         ]);
         v.shelf = Arc::new(crate::library::Shelf::under("/virtual", &v.files));
     }
@@ -523,7 +523,7 @@ fn rack_interactions() {
             .unwrap()
             .take()
             .unwrap()
-            .ends_with("Ensemble.kontra2-multi")
+            .ends_with("Ensemble.kontra-multi")
     );
     assert_eq!(parts(&p).len(), 2, "the rack stays until the multi loads");
     h.press("picker-instruments");
@@ -717,14 +717,14 @@ fn rack_interactions() {
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
-    let multi = [PathBuf::from("/external/Multi.kontra2-multi")];
+    let multi = [PathBuf::from("/external/Multi.kontra-multi")];
     let before = p.selection.read().unwrap().clone();
     assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
     assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
-        "/external/Multi.kontra2-multi"
+        "/external/Multi.kontra-multi"
     );
     assert!(*p.selection.read().unwrap() == before);
 }

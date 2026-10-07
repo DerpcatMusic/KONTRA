@@ -324,8 +324,8 @@ impl Limits {
     /// release voices of every stage on top, which its release phase reserves.
     pub fn for_plan(plan: &Prepared, notes: usize, voices: usize) -> Self {
         let behaviors = Self::script_capacity(plan);
-        let voices = voices
-            + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
+        let voices =
+            voices + plan.stage_count() * plan.release_voices() * Self::SCRIPT_KEYS.min(notes);
         Self {
             notes,
             channels: 16,
@@ -901,7 +901,9 @@ impl Runtime {
             .plans
             .get_mut(self.active_plan.0)
             .ok_or(Error::StaleHandle)?;
-        g.dsp.buses.swap_convolution(&g.prepared.buses, slot, upload)
+        g.dsp
+            .buses
+            .swap_convolution(&g.prepared.buses, slot, upload)
     }
 
     /// Each bus of the active plan's peak level since the last call, after
