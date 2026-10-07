@@ -198,6 +198,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_read_subtree() -> Result<(), Error> {
         let mut data = File::open("tests/data/Containers/NIS/objects/SubtreeItem/SubtreeItem-000")?;
         let subtree = SubtreeItem::read(&mut data)?;

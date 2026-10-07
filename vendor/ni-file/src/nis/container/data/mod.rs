@@ -110,6 +110,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_frame_read_000() -> Result<(), Error> {
         let file = File::open("tests/patchdata/NISD/ItemFrame/RepositoryRoot-000")?;
         let item = ItemData::read(file)?;
@@ -125,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_frame_read_001() -> Result<(), Error> {
         let file = File::open("tests/patchdata/NISD/ItemFrame/RepositoryRoot-001")?;
         let item = ItemData::read(file)?;
