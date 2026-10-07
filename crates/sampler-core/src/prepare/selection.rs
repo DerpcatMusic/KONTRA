@@ -369,6 +369,7 @@ impl Runtime {
         }
         n.attack = crate::AttackStatus::Suppressed;
         let key = n.pitch.key();
+        self.silent = Some(crate::SilentNote { key, suppressed: true, ..Default::default() });
         if let Some(log) = &mut self.selection_log {
             log.push(crate::SelectionRecord {
                 at: self.now,
@@ -596,6 +597,12 @@ impl Runtime {
         self.selection_log = on.then(Vec::new);
     }
 
+    /// The latest attack that selected nothing (audio-thread safe, no
+    /// allocation), once.
+    pub fn take_silent_note(&mut self) -> Option<crate::SilentNote> {
+        self.silent.take()
+    }
+
     /// Records gathered since the last call, oldest first.
     pub fn take_selection_records(&mut self) -> Vec<crate::SelectionRecord> {
         self.selection_log
@@ -604,17 +611,18 @@ impl Runtime {
             .unwrap_or_default()
     }
 
-    /// Verdict for every region mapped to the note's key, mirroring the checks
-    /// `commit_selection` applies in order: phase, articulation, controller
-    /// condition, velocity, script group, then the round-robin take.
-    fn diagnose(
+    /// Walk every region mapped to the note's key and report its verdict, in the
+    /// order `commit_selection` checks: phase, articulation, controller
+    /// condition, velocity, script group. Allocation-free.
+    fn each_verdict(
         &self,
         note: NoteId,
         trigger: Trigger,
         velocity: f64,
         snapshot: usize,
-    ) -> crate::SelectionRecord {
-        use crate::{RegionVerdict, Rejection};
+        mut each: impl FnMut(usize, Option<u32>, Option<crate::Rejection>),
+    ) {
+        use crate::Rejection;
         let n = self.notes.get(note.0).unwrap();
         let (plan, key) = (n.plan, n.pitch.key());
         let generation = self.plans.get(plan.0).unwrap();
@@ -625,7 +633,6 @@ impl Runtime {
             .view(note.0.index, crate::groups::GroupView::Committed);
         let phase = prepared.range(key, trigger);
         let all = prepared.offsets[usize::from(key)]..prepared.offsets[usize::from(key) + 1];
-        let mut candidates = Vec::new();
         for index in all {
             let c = prepared.candidates[index];
             let r = prepared.regions[c.region];
@@ -650,8 +657,27 @@ impl Runtime {
             } else {
                 None
             };
-            candidates.push((index, c, group, verdict));
+            each(index, group, verdict);
         }
+    }
+
+    /// Verdict for every region mapped to the note's key, then the round-robin take.
+    fn diagnose(
+        &self,
+        note: NoteId,
+        trigger: Trigger,
+        velocity: f64,
+        snapshot: usize,
+    ) -> crate::SelectionRecord {
+        use crate::{RegionVerdict, Rejection};
+        let n = self.notes.get(note.0).unwrap();
+        let (plan, key) = (n.plan, n.pitch.key());
+        let generation = self.plans.get(plan.0).unwrap();
+        let prepared = &generation.prepared;
+        let mut candidates = Vec::new();
+        self.each_verdict(note, trigger, velocity, snapshot, |index, group, verdict| {
+            candidates.push((index, prepared.candidates[index], group, verdict));
+        });
         // The take actually chosen per sequence is the first survivor's; others
         // of the same sequence lose to the round robin.
         let mut chosen = std::collections::BTreeMap::new();
@@ -693,6 +719,18 @@ impl Runtime {
         let key = note_pitch.key();
         let range = self.plans.get(plan.0).unwrap().prepared.range(key, trigger);
         let (begin, end) = (range.start, range.end);
+        if trigger == Trigger::Attack {
+            // Always on and allocation-free: the plugin's "why silent" line.
+            let mut silent = crate::SilentNote { key, ..Default::default() };
+            let mut accepted = false;
+            self.each_verdict(note, trigger, velocity, snapshot, |_, _, v| match v {
+                Some(r) => silent.counts[crate::SilentNote::slot(r)] += 1,
+                None => accepted = true,
+            });
+            if !accepted {
+                self.silent = Some(silent);
+            }
+        }
         if self.selection_log.is_some() {
             let record = self.diagnose(note, trigger, velocity, snapshot);
             if let Some(log) = self.selection_log.as_mut() {
@@ -785,16 +823,14 @@ impl Runtime {
                     .unwrap()
                     .script
                     .envelope(group, r.envelope);
-                let admitted = self
-                    .admit_voice(
-                        family,
-                        r.sample,
-                        self.now,
-                        r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
-                        envelope,
-                        cursor.with_step(step),
-                    )
-                    ;
+                let admitted = self.admit_voice(
+                    family,
+                    r.sample,
+                    self.now,
+                    r.gain * r.velocity_curve.amplitude(velocity) * r.fade_gain(key, velocity),
+                    envelope,
+                    cursor.with_step(step),
+                );
                 // Preflight reserved this start, but a page can be evicted or
                 // the pool fill between then and now. Never panic on the audio
                 // thread: refuse this voice, count it, carry on.

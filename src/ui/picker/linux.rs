@@ -235,7 +235,7 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
                 file_name: Some(format!("{name}.{}", crate::library::MULTI)),
             },
             Some(from.clone()),
-            Some(("KONTRA 2 multi", vec![crate::library::MULTI.into()])),
+            Some(("KONTRA multi", vec![crate::library::MULTI.into()])),
         ),
         Ask::Reveal(_) => return Err("Reveal does not use a file dialog.".into()),
     };

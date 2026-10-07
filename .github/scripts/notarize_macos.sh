@@ -26,21 +26,21 @@ phase() {
     return "$status"
   fi
 }
-for product in KONTRA2.clap KONTRA2.vst3 KONTRA2.app; do
-  binary="$STAGE/$product/Contents/MacOS/KONTRA2"
+for product in KONTRA.clap KONTRA.vst3 KONTRA.app; do
+  binary="$STAGE/$product/Contents/MacOS/KONTRA"
   lipo "$binary" -verify_arch "$arch"
   codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" \
     --options runtime --timestamp "$STAGE/$product"
   chmod -R a+rX "$STAGE/$product"
   codesign --verify --deep --strict "$STAGE/$product"
 done
-phase "Native bundle/factory verification" xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA2.app" "$STAGE/KONTRA2.clap" "$STAGE/KONTRA2.vst3"
+phase "Native bundle/factory verification" xcrun swift .github/scripts/check_macos_bundles.swift --register "$STAGE/KONTRA.app" "$STAGE/KONTRA.clap" "$STAGE/KONTRA.vst3"
 # ZIP containers cannot carry stapled tickets. A DMG holds
 # these same signed products plus the legal/build metadata for offline delivery.
-phase "DMG creation" hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA2.dmg"
-phase "DMG signing" codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA2.dmg"
-phase "DMG signature verification" codesign --verify --strict "$work/KONTRA2.dmg"
-if phase "Apple notarization submission" xcrun notarytool submit "$work/KONTRA2.dmg" --apple-id "$APPLE_ID" \
+phase "DMG creation" hdiutil create -format UDZO -volname KONTRA -srcfolder "$STAGE" "$work/KONTRA.dmg"
+phase "DMG signing" codesign --force --sign "$APPLE_DEVELOPER_ID_APPLICATION" --keychain "$keychain" --timestamp "$work/KONTRA.dmg"
+phase "DMG signature verification" codesign --verify --strict "$work/KONTRA.dmg"
+if phase "Apple notarization submission" xcrun notarytool submit "$work/KONTRA.dmg" --apple-id "$APPLE_ID" \
   --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" \
   --wait --timeout 30m --output-format json > "$work/notary.json"; then
   :
@@ -73,18 +73,18 @@ info = json.load(open(sys.argv[1]))
 assert info['status'] == 'Accepted', 'Apple did not accept the notarization submission'
 uuid.UUID(info['id'])
 PY
-xcrun stapler staple "$work/KONTRA2.dmg"
-xcrun stapler validate "$work/KONTRA2.dmg"
-hdiutil verify -quiet "$work/KONTRA2.dmg"
-spctl --assess --type open --context context:primary-signature "$work/KONTRA2.dmg"
-mv "$work/KONTRA2.dmg" "$STAGE/KONTRA2.dmg"
+xcrun stapler staple "$work/KONTRA.dmg"
+xcrun stapler validate "$work/KONTRA.dmg"
+hdiutil verify -quiet "$work/KONTRA.dmg"
+spctl --assess --type open --context context:primary-signature "$work/KONTRA.dmg"
+mv "$work/KONTRA.dmg" "$STAGE/KONTRA.dmg"
 python3 - "$work/notary.json" <<'PY'
 import hashlib, json, os, pathlib, sys
 stage = pathlib.Path(os.environ['STAGE'])
 info = json.load(open(sys.argv[1]))
 identity = json.loads((stage / 'build-info.json').read_text())
 assert identity['target'] == os.environ['KONTRA_TARGET'] and identity['revision'] == os.environ['GITHUB_SHA']
-files = ['KONTRA2.dmg', 'KONTRA2.clap/Contents/MacOS/KONTRA2', 'KONTRA2.vst3/Contents/MacOS/KONTRA2', 'KONTRA2.app/Contents/MacOS/KONTRA2']
+files = ['KONTRA.dmg', 'KONTRA.clap/Contents/MacOS/KONTRA', 'KONTRA.vst3/Contents/MacOS/KONTRA', 'KONTRA.app/Contents/MacOS/KONTRA']
 receipt = dict(version=identity['version'], revision=identity['revision'], target=identity['target'],
     id=info['id'], status=info['status'], stapled=True, signatures_verified=True,
     sha256={name: hashlib.sha256((stage / name).read_bytes()).hexdigest() for name in files})

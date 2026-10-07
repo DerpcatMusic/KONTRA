@@ -811,6 +811,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-ksp",
  "sampler-midi",
  "sampler-uvi",
  "serde_json",
@@ -1393,7 +1394,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.56.0",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1856,7 +1857,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kontakto"
-version = "0.3.148"
+version = "0.3.203"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3813,6 +3814,7 @@ dependencies = [
  "sampler-core",
  "sampler-ir",
  "sampler-kontakt",
+ "sampler-midi",
  "sampler-ui-ir",
  "serde_json",
  "sha2",

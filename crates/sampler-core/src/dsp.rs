@@ -154,7 +154,7 @@ pub enum Processor {
     },
     /// The next `count` processors run in parallel with the unprocessed
     /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
-    /// bypass control (0..=1). All three are ramped controls. Bus scope only.
+    /// bypass control (0..=1). All three are ramped controls.
     Mix {
         count: u16,
         dry: ControlRange,
@@ -192,8 +192,8 @@ impl Processor {
 /// at two step sizes; the engine's per-sample k = 1/1800 is 41 ms at 44.1 kHz.
 pub const GAINER_TAU: f64 = 0.045;
 
-pub(super) mod control;
 mod compressor;
+pub(super) mod control;
 mod convolution;
 mod daft;
 mod delay;
@@ -206,8 +206,8 @@ pub use daft::DaftSettings;
 pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
-pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::ConvolutionUpload;
+pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
@@ -398,10 +398,6 @@ pub(super) fn compile_processors(
                     wet,
                     bypass,
                 } => {
-                    // Only buses (which have reverbs) can run a parallel block.
-                    if reverbs.is_none() {
-                        return Err(Error::InvalidInput);
-                    }
                     let lanes = [dry, wet, bypass].map(|binding| {
                         bindings.push(binding);
                         bindings.len() - 1
@@ -672,7 +668,11 @@ pub(super) struct ProcessorState {
 }
 impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
-        self.z.iter().flatten().chain(&self.aux).all(|v| v.is_finite())
+        self.z
+            .iter()
+            .flatten()
+            .chain(&self.aux)
+            .all(|v| v.is_finite())
     }
 }
 
@@ -756,7 +756,11 @@ pub(super) fn process(
                     for i in 0..len {
                         let t = at + i as u64;
                         let b = bypass.value(t);
-                        let wet_part = if off { 0. } else { wet.value(t) * (1. - b) * block[c][i] };
+                        let wet_part = if off {
+                            0.
+                        } else {
+                            wet.value(t) * (1. - b) * block[c][i]
+                        };
                         block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
                     }
                 }

@@ -1027,6 +1027,20 @@ pub fn translate_path(path: &Path) -> Result<Translated, Box<dyn std::error::Err
     translate_untagged(path).map_err(|e| staged(e, path, sampler_kontakt::Stage::Translate))
 }
 
+/// Translate one program of an already opened `bank` to the IR, without its
+/// scripts or samples: what a census needs, with no per-program bank open.
+#[cfg(feature = "library-access")]
+#[track_caller]
+pub fn translate_program(bank: &Bank, program: &str) -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+    let translate = || -> Result<ir::Instrument, Box<dyn std::error::Error>> {
+        let (text, _) = bank.program(program)?;
+        let (instrument, ..) = translate_full(&text, Source::Bank)
+            .map_err(|e| describe(Path::new(program), e))?;
+        Ok(instrument)
+    };
+    translate().map_err(|e| staged(e, Path::new(program), sampler_kontakt::Stage::Translate))
+}
+
 /// Tag `error` with the load `stage` and the caller's location, as the other
 /// loaders do ([`sampler_kontakt::LoadError::at`]); reading failures are the
 /// container's.
@@ -1322,7 +1336,9 @@ pub fn load_program_scripted_with_options(
     options: &sampler_kontakt::Options,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (mut instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
+    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let patched = apply_overrides(&text, &host.insert_overrides());
+    let (mut instrument, locations, groups, inserts) = translate_full(&patched, Source::Bank)
         .map_err(|e| describe(Path::new(program), e))?;
     let kept = instrument.retain_zones(|zone| {
         zone.keys.high >= *options.keys.start() && zone.keys.low <= *options.keys.end()
@@ -1337,7 +1353,6 @@ pub fn load_program_scripted_with_options(
         })
         .collect();
     let loaded = assemble(instrument, locations, decoded, options)?;
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
     Ok(scripted::Program {
@@ -1348,6 +1363,34 @@ pub fn load_program_scripted_with_options(
         inserts,
         stream: None,
     })
+}
+
+/// `text` with the insert values the scripts set while loading written into
+/// its attributes, so the translation starts from the state the scripts leave.
+#[cfg(feature = "library-access")]
+fn apply_overrides(text: &str, overrides: &[(usize, String, String)]) -> String {
+    let Ok(doc) = roxmltree::Document::parse(text) else { return text.to_owned() };
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        for (_, name, value) in overrides.iter().filter(|(id, ..)| *id == node.id().get_usize()) {
+            match node.attribute_node(name.as_str()) {
+                Some(a) => {
+                    let r = a.range_value();
+                    edits.push((r.start, r.end, value.clone()));
+                }
+                None => {
+                    let at = node.range().start + 1 + node.tag_name().name().len();
+                    edits.push((at, at, format!(" {name}=\"{value}\"")));
+                }
+            }
+        }
+    }
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = text.to_owned();
+    for (start, end, value) in edits {
+        out.replace_range(start..end, &value);
+    }
+    out
 }
 
 /// What the scripts replace is no longer reported; what they use that is not
@@ -1383,14 +1426,15 @@ pub fn load_program_scripted_streamed(
     policy: &sampler_kontakt::StreamPolicy,
 ) -> Result<scripted::Program, Box<dyn std::error::Error>> {
     let (text, program_path) = bank.program(program)?;
-    let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
+    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
+    let patched = apply_overrides(&text, &host.insert_overrides());
+    let (instrument, locations, groups, inserts) = translate_full(&patched, Source::Bank)
         .map_err(|e| describe(Path::new(program), e))?;
     let sources = locations
         .iter()
         .map(|authored| bank.stream_source(&program_path, authored))
         .collect();
     let streamed = assemble_streamed(instrument, locations, sources, rate, policy)?;
-    let host = script::ScriptHost::new(&text, bank.scripts(), script::Config::default())?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report } = streamed;
     let mut instrument = loaded.instrument;
     note_script(&host, &mut instrument);
@@ -1763,6 +1807,36 @@ mod survey {
     /// What the corpus scripts use that the host leaves inert, and whether their
     /// widgets export: prints `UA` lines (feature, first value; counts only) and
     /// one `UI` line per program. Shard with `KONTRA_SHARD=i/n`.
+    /// Survey aid: scripts with trace markers when KONTRA_TRACE is set.
+    struct Marked(crate::script::Scripts);
+    impl crate::script::Files for Marked {
+        fn script(&self, module: &str) -> Option<String> {
+            let text = self.0.script(module)?;
+            if let Some(dir) = std::env::var_os("KONTRA_DUMP") {
+                let _ = std::fs::write(std::path::Path::new(&dir).join(module.replace('/', "_")), &text);
+            }
+            if std::env::var_os("KONTRA_TRACE").is_none() {
+                return Some(text);
+            }
+            let mut out = String::new();
+            for line in text.lines() {
+                let t = line.trim_start();
+                let tag = if t.starts_with("function theOnNote") { "A" }
+                    else if t.starts_with("if enote >= minNote") { "B" }
+                    else if t.starts_with("local isLegato = false") { "D" }
+                    else if t.starts_with("if ccVel > 0 then") { "E" }
+                    else if t.starts_with("function startNote(") { "S" }
+                    else if t.starts_with("function onNote") { "N" }
+                    else if t.starts_with("ids[enote] = playNote") { "P" }
+                    else { "" };
+                if tag.is_empty() { out.push_str(line); out.push('\n'); continue; }
+                if t.starts_with("function") { out.push_str(line); out.push_str(&format!(" t_{tag} = (t_{tag} or 0) + 1\n")); }
+                else { out.push_str(&format!("t_{tag} = (t_{tag} or 0) + 1\n{line}\n")); }
+            }
+            Some(out)
+        }
+    }
+
     #[test]
     #[ignore]
     #[cfg(feature = "library-access")]
@@ -1789,6 +1863,9 @@ mod survey {
         }
         files.sort();
         for f in files {
+            if std::env::var("KONTRA_ONLY").is_ok_and(|o| o.split_once("::").is_some_and(|(file, _)| !f.to_string_lossy().contains(file))) {
+                continue;
+            }
             let Ok(bank) = crate::Bank::open(&f) else { continue };
             let scripts = bank.scripts();
             for program in bank.programs() {
@@ -1796,12 +1873,15 @@ mod survey {
                 if index % shards != shard {
                     continue;
                 }
-                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
+                    let (file, member) = o.split_once("::").unwrap_or(("", &o));
+                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                }) {
                     continue;
                 }
                 let Ok((text, _)) = bank.program(&program) else { continue };
                 let name = format!("{}::{program}", f.display());
-                let mut host = match crate::script::ScriptHost::new(&text, scripts.clone(), crate::script::Config::default()) {
+                let mut host = match crate::script::ScriptHost::new(&text, Marked(scripts.clone()), crate::script::Config::default()) {
                     Ok(h) => h,
                     Err(e) => {
                         println!("UL compile-fail {} {name}", e.chars().take(90).collect::<String>().replace(' ', "_"));
@@ -1815,9 +1895,53 @@ mod survey {
                 for f in host.findings() {
                     println!("UA {}|{}|{}", f.feature, f.value.chars().take(200).collect::<String>().replace(' ', "_"), name);
                 }
+                if std::env::var_os("KONTRA_TRACE").is_some() {
+                    host.take_commands();
+                    host.controller(1, 100, 0);
+                    host.advance(500.0);
+                    let mut clock = 500.0;
+                    for key in [24u8, 36, 48, 59, 60, 72, 84] {
+                        host.note_on(1000 + u64::from(key), key, std::env::var("KONTRA_VEL").ok().and_then(|v| v.parse().ok()).unwrap_or(100), 0);
+                        clock += 2000.0;
+                        host.advance(clock);
+                        let c = host.take_commands();
+                        let plays = c.iter().filter(|c| matches!(c, crate::script::Command::Play(_))).count();
+                        let globals = ["t_P", "t_A", "t_B", "t_D", "t_E", "t_S", "t_N", "latestNoteIdIncr", "lastNote", "lastKeyboardNote", "tuneOutAttackValueNote", "lastVelocityAnyNote", "MIDItransposeValue", "KEYSWtransposeValue", "hornModel", "ccVel", "minNote", "maxNote", "windCCValue", "isNoteOn"]
+                            .iter()
+                            .map(|g| format!("{g}={}", host.global_text(g)))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        println!("UT key {key}: {} commands, {plays} plays; {globals}", c.len());
+                        for command in c.iter().filter(|c| matches!(c, crate::script::Command::Play(_) | crate::script::Command::Parameter { .. })).take(8) {
+                            println!("UT   {}", format!("{command:?}").chars().take(160).collect::<String>());
+                        }
+                        host.note_off(1000 + u64::from(key), key, 64, 0);
+                        clock += 4000.0;
+                        host.advance(clock);
+                        host.take_commands();
+                    }
+                    for f in host.findings() {
+                        println!("UF {}|{}", f.feature, f.value.chars().take(300).collect::<String>().replace(' ', "_"));
+                    }
+                }
+                if std::env::var_os("KONTRA_INSERTS").is_some() {
+                    // survey aid: the inserts of the program with their main values
+                    let doc = roxmltree::Document::parse(&text).unwrap();
+                    for n in doc.descendants().filter(|n| n.parent().is_some_and(|p| p.has_tag_name("Inserts"))) {
+                        let keep = ["Name", "Bypass", "SamplePath", "Dry", "Wet", "Gain_1_1", "Gain_1_2", "Gain_2_1", "Gain_2_2", "Time", "Freq", "Mode", "Volume", "OverallGain", "Gain"];
+                        let attrs: Vec<String> = n.attributes().filter(|a| keep.contains(&a.name())).map(|a| format!("{}={}", a.name(), a.value())).collect();
+                        println!("UN {} {}", n.tag_name().name(), attrs.join(" "));
+                    }
+                }
                 if let Ok(specs) = std::env::var("KONTRA_LINE") {
                     // transient debugging aid, prints to the terminal only
                     for spec in specs.split(',') {
+                        if spec == "ls" {
+                            for n in scripts.names() {
+                                println!("UX ls {n}");
+                            }
+                            continue;
+                        }
                         let Some((m, l)) = spec.split_once(':') else { continue };
                         use crate::script::Files;
                         let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
@@ -1829,9 +1953,12 @@ mod survey {
                             }
                             continue;
                         }
-                        let l: usize = l.parse().unwrap();
+                        let (l, to) = match l.split_once('-') {
+                            Some((a, b)) => (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap()),
+                            None => (l.parse::<usize>().unwrap(), l.parse::<usize>().unwrap() - 2),
+                        };
                         for (i, line) in src.lines().enumerate() {
-                            if i + 3 >= l && i < l + 1 {
+                            if (to < l && i + 3 >= l && i < l + 1) || (to >= l && i + 1 >= l && i < to) {
                                 println!("UX {m}:{}: {}", i + 1, line);
                             }
                         }
@@ -1882,7 +2009,10 @@ mod survey {
                 if index % shards != shard {
                     continue;
                 }
-                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
+                    let (file, member) = o.split_once("::").unwrap_or(("", &o));
+                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                }) {
                     continue;
                 }
                 let name = format!("{}::{program}", f.display());
@@ -1925,7 +2055,11 @@ mod survey {
         candidates.dedup();
         let mut last = String::new();
         for key in candidates {
-            last = census_play(bank, program, key);
+            last = census_play(bank, program, key, false);
+            if last.starts_with("silent") {
+                // Expressive instruments wait for the mod wheel.
+                last = census_play(bank, program, key, true);
+            }
             if last.starts_with("sounds") {
                 break;
             }
@@ -1934,12 +2068,32 @@ mod survey {
     }
 
     #[cfg(feature = "library-access")]
-    fn census_play(bank: &crate::Bank, program: &str, key: u8) -> String {
+    fn census_play(bank: &crate::Bank, program: &str, key: u8, cc1: bool) -> String {
         use sampler_core::Limits;
         let program = match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default()) {
             Ok(p) => p,
             Err(e) => return format!("load-fail {}", e.to_string().chars().take(160).collect::<String>().replace(' ', "_")),
         };
+        if std::env::var_os("KONTRA_CHAINS").is_some() {
+            // survey aid: the chain of the zone covering `key`, and the buses' and groups' chains
+            let ins = &program.instrument;
+            let show = |label: &str, c: Option<sampler_ir::ChainRef>| {
+                if let Some(c) = c {
+                    let ch = &ins.chains[c.0];
+                    println!("UK {label} {:?} pre={} post={}", ch.scope, format!("{:?}", ch.pre_amplitude).chars().take(400).collect::<String>(), format!("{:?}", ch.post_amplitude).chars().take(400).collect::<String>());
+                }
+            };
+            for z in ins.zones.iter().filter(|z| z.keys.low <= key && key <= z.keys.high).take(2) {
+                show("zone", z.chain);
+            }
+            for g in &ins.groups {
+                show(&format!("group {}", g.name), g.chain);
+            }
+            for b in &ins.buses {
+                show(&format!("bus {}", b.name), b.chain);
+            }
+            println!("UK zones={} chains={} impulses={:?}", ins.zones.len(), ins.chains.len(), ins.impulses.iter().map(|i| (i.rate, i.left.len())).collect::<Vec<_>>());
+        }
         let errors = program
             .instrument
             .unsupported
@@ -1971,8 +2125,12 @@ mod survey {
             }
             Ok::<(), sampler_core::Error>(())
         };
-        let result = player
-            .note_on(key, 100.0 / 127.0)
+        if cc1 {
+            player.input(crate::scripted::HostInput::Controller { cc: 1, value: 100, channel: 0 });
+        }
+        let result = Ok::<(), sampler_core::Error>(())
+            .and_then(|()| if cc1 { run(&mut player, 20) } else { Ok(()) })
+            .and_then(|_| player.note_on(key, 100.0 / 127.0))
             .and_then(|_| run(&mut player, 188))
             .and_then(|_| player.note_off(key))
             .and_then(|_| run(&mut player, 188));
@@ -1986,6 +2144,7 @@ mod survey {
             Some(e) => e.to_string().chars().take(60).collect::<String>().replace(' ', "_"),
             None => first,
         };
+        let state = if cc1 && state == "sounds" { "sounds-with-cc1" } else { state };
         format!("{state} peak={peak:.3} key={key} lua={} errs={errors} {first}", u8::from(scripted))
     }
 

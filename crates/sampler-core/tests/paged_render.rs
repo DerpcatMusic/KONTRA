@@ -716,12 +716,17 @@ fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_col
         routes: vec![ModRoute::new(0, ModTarget::SampleStart, 1.)],
         shapes: vec![],
     };
-    let plan = Prepared::new(48000, vec![asset.clone()], vec![region(0, Playback::default())], 8)
-        .unwrap()
-        .with_velocity_curves(vec![VelocityCurve::Constant])
-        .unwrap()
-        .with_voice_modulation(vec![program], vec![Some(0)], vec![PAGE_FRAMES as u32 * 2])
-        .unwrap();
+    let plan = Prepared::new(
+        48000,
+        vec![asset.clone()],
+        vec![region(0, Playback::default())],
+        8,
+    )
+    .unwrap()
+    .with_velocity_curves(vec![VelocityCurve::Constant])
+    .unwrap()
+    .with_voice_modulation(vec![program], vec![Some(0)], vec![PAGE_FRAMES as u32 * 2])
+    .unwrap();
     let mut rt = from_plan(plan).with_stream_cache(cache);
     rt.set_cold_starts(false);
     assert!(!asset.take_cold());
@@ -731,5 +736,8 @@ fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_col
     let stats = rt.stats();
     assert_eq!((stats.refused_starts, stats.voices), (1, 0));
     assert!(output.iter().all(|f| f == &[0.; 2]));
-    assert!(asset.take_cold(), "the refusal asks for the page to be loaded");
+    assert!(
+        asset.take_cold(),
+        "the refusal asks for the page to be loaded"
+    );
 }

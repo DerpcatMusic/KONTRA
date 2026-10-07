@@ -22,6 +22,8 @@ fn main() {
     let mut coverage = BTreeMap::<(&str, Coverage), usize>::new();
     let mut symbols = BTreeMap::<String, usize>::new();
     let mut warnings = 0;
+    // Warning text with digits blanked, so one gap counts once per script set.
+    let mut kinds = BTreeMap::<String, BTreeMap<String, usize>>::new();
     let (mut ui_ok, mut widgets, mut unsupported) = (0, 0, BTreeMap::<String, usize>::new());
     for path in &paths {
         let bytes = std::fs::read(path).unwrap();
@@ -50,6 +52,17 @@ fn main() {
             *symbols.entry(s.clone()).or_default() += 1;
         }
         warnings += script.warnings().len();
+        for w in script.warnings() {
+            let kind: String = format!("{}: {}", w.builtin.unwrap_or("-"), w.message)
+                .chars()
+                .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                .collect();
+            *kinds
+                .entry(kind)
+                .or_default()
+                .entry(file.to_string())
+                .or_default() += 1;
+        }
         match script.ui(&|_| None) {
             Ok(ui) => {
                 ui_ok += 1;
@@ -83,6 +96,14 @@ fn main() {
         println!("coverage (builtin, how, call sites):");
         for ((name, c), n) in &coverage {
             println!("  {name} {c:?} {n}");
+        }
+        println!("warning kinds ({}):", kinds.len());
+        for (k, files) in &kinds {
+            let files: Vec<_> = files
+                .iter()
+                .map(|(f, n)| format!("{}:{n}", &f[..8]))
+                .collect();
+            println!("  KIND {k} @@ {}", files.join(","));
         }
         println!("opaque vendor symbols: {}", symbols.len());
         let mut top: Vec<_> = unsupported.iter().collect();
