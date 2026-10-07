@@ -200,12 +200,32 @@ pub fn survey(
     let authored = instrument.behaviors.iter().any(|b| {
         b.source.contains("make_perfview")
             || b.source.contains("load_performance_view")
+            || b.source.contains("load_komplete_ui")
             || b.source.contains("ui_")
     });
-    let expected: Vec<_> = instrument.behaviors.iter().enumerate().filter(|(_,b)| b.source.contains("make_perfview") || b.source.contains("load_performance_view") || b.source.contains("ui_")).map(|(i,b)| {
+    let expected: Vec<_> = instrument.behaviors.iter().enumerate().filter(|(_,b)| b.source.contains("make_perfview") || b.source.contains("load_performance_view") || b.source.contains("load_komplete_ui") || b.source.contains("ui_")).map(|(i,b)| {
         let slot = b.slot.unwrap_or(i as u8);
         let frontend = if b.source.contains("load_komplete_ui") { "komplete_ui" } else if sampler_ksp::nckp::view_name(&b.source).is_some() { "creator_tools" } else if b.source.contains("CONTROL_PAR_PICTURE") || b.source.contains("set_skin_offset") { "bitmap_ksp" } else { "stock_ksp" };
         json!({"slot":slot,"frontend":frontend,"loaded":views.iter().any(|v| v["slot"] == slot)})
     }).collect();
     json!({"resource_locations":resource_locations,"expected_frontends":expected,"authored":authored,"loaded":!faces.is_empty(),"usable":errors.is_empty() && (!authored || views.iter().any(|v| v["widgets"].as_u64().unwrap_or(0)>0)) && views.iter().all(|v| v["usable"] == true),"views":views,"errors":errors,"recall":"source persistent state applied before UI; host recall not probed"})
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn komplete_ui_load_is_an_authored_frontend_even_without_stock_declarations() {
+        let mut instrument = sampler_ir::Instrument {
+            behaviors: vec![sampler_ir::Behavior {
+                name: "Komplete".into(), language: sampler_ir::Language::Ksp,
+                source: "on init\nload_komplete_ui(\"Main\")\nend on".into(),
+                slot: Some(0), state: vec![], requires: vec![],
+            }], ..Default::default()
+        };
+        let report = super::survey(&mut instrument, &sampler_kontakt::Options {
+            library: Some(std::env::temp_dir().join("komplete-ui-survey.nki")), ..Default::default()
+        }, None);
+        assert_eq!(report["authored"], true);
+        assert_eq!(report["expected_frontends"][0]["frontend"], "komplete_ui");
+    }
 }
