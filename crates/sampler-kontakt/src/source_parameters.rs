@@ -94,8 +94,8 @@ pub(crate) fn internal(
     )];
     let source = object
         .0
-        .children
-        .first()
+        .find_first(7)
+        .or_else(|| object.0.children.first())
         .ok_or(ni_file::Error::Static("Missing internal source"))?;
     let envelope;
     let source = if source.id == 7 {
@@ -290,8 +290,19 @@ pub(crate) fn rack(
         if !object.private_data.is_empty() {
             fields.push(opaque("undecoded_private", &object.private_data));
         }
-        for child in &object.children {
-            fields.push(opaque("undecoded_child", &child.data));
+        if !object.children.is_empty() {
+            fields.push(field(
+                "undecoded_children",
+                Value::Records(
+                    object
+                        .children
+                        .iter()
+                        .map(|child| {
+                            vec![integer("object_id", child.id), opaque("data", &child.data)]
+                        })
+                        .collect(),
+                ),
+            ));
         }
         out.push(record(
             &format!("{location}/module"),
@@ -327,6 +338,7 @@ pub(crate) fn program(program: &Program) -> Result<Vec<Record>, ni_file::Error> 
                         number("volume_linear", params.volume),
                         number("pan", params.pan),
                         integer("output", params.output),
+                        opaque("unknown_tail", &params.unknown_tail),
                         opaque("private", &bus.0.private_data),
                     ],
                 ));
@@ -386,6 +398,22 @@ mod tests {
                 b
             },
         };
+        let child = Chunk {
+            id: 0x72,
+            data: vec![0, 1, 0, 0xa5],
+        };
+        let mut children = Vec::new();
+        child.write(&mut children).unwrap();
+        let mut framed = vec![1, 0x50, 0];
+        framed.extend(0u32.to_le_bytes());
+        framed.extend(((module.data.len() - 3) as u32).to_le_bytes());
+        framed.extend(&module.data[3..]);
+        framed.extend((children.len() as u32).to_le_bytes());
+        framed.extend(children);
+        let module = Chunk {
+            id: module.id,
+            data: framed,
+        };
         let mut private = 10u32.to_le_bytes().to_vec();
         private.extend([0, 0, 0, 0, 0, 1]);
         private.extend(0.5f32.to_le_bytes());
@@ -416,5 +444,10 @@ mod tests {
         assert_eq!(records[1].fields[1].value, Value::Number(22050.0));
         assert_eq!(records[1].fields[3].value, Value::Integer(1));
         assert_eq!(records[1].fields[4].value, Value::Number(0.75));
+        let Value::Records(children) = &records[1].fields[5].value else {
+            panic!("child identities")
+        };
+        assert_eq!(children[0][0].value, Value::Integer(0x72));
+        assert_eq!(children[0][1].value, Value::Opaque(vec![0, 1, 0, 0xa5]));
     }
 }
