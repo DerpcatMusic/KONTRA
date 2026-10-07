@@ -218,6 +218,13 @@ impl Check<'_> {
                         self.finite(v, field)?;
                     }
                 }
+                Processor::Compressor(c) => {
+                    self.finite(c.threshold_db, "compressor threshold")?;
+                    self.within(c.ratio, 1.0..=f64::MAX, "compressor ratio")?;
+                    self.time(c.attack, "compressor attack")?;
+                    self.time(c.release, "compressor release")?;
+                    self.gain(c.makeup, "compressor makeup")?;
+                }
                 Processor::Convolution { impulse, dry, wet } => {
                     self.exists(Reference::Impulse(impulse.0))?;
                     self.finite(dry, "convolution dry")?;
