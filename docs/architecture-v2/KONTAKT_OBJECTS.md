@@ -333,14 +333,16 @@ the persistence reader and does not acquire invented full-group fields.
 | Zone 0x34 / 0x2c | 0x98 | 4 | 108,830 | Public metadata without six-byte reference prefix |
 | Zone 0x34 / 0x2c | 0x99 | 7 | 47,780 | Public metadata without six-byte reference prefix |
 | Zone 0x34 / 0x2c | 0x9a | 771 | 13,236,102 | Public metadata with six-byte reference prefix |
+| Zone 0x34 / 0x2c | 0x9c | 52 | 104,760 | Common public fields retained; extension semantics require inspection |
 | Loop 0x39 / 0x05 | 0x60 | 787 | 2,703,129 | Seven controls plus original slot ID |
 | Voice groups 0x32 | 0x60 | 834 | 890 | Program limit and 128-bit mask with complete occupied limits |
 
 A file may contain several programs and object versions; sum-of-version file
-counts is not a corpus total. The three zone-version counts total 782 files:
-52 zero-zone Conflux instruments still have group/source objects. Files with
-loop arrays can contain empty masks, so array-presence and occupied-loop
-record counts differ.
+counts is not a corpus total. Version 0x9c contributes 52 files and 104,760
+full-zone records from 0x34 lists. It is not compact snapshot state, and its
+library membership cannot be inferred from the file count. Files with loop
+arrays can contain empty masks, so array-presence and occupied-loop record
+counts differ.
 
 The family survey example accepts `items.tsv cache-dir start count`. It reads
 all groups and zones before playback selection, writes only per-item numeric
@@ -356,7 +358,7 @@ nonbaseline counts must not be mixed with this family's neutral counts.
 The source record tests independently specify 21/30-byte common lengths and
 mode/version extension lengths, test all seven versions and ten stored modes,
 and check every truncation boundary without consuming the following group
-trailer. Zone tests cover 0x95/96/98/99/9a reference offsets, metadata lengths,
+trailer. Zone tests cover 0x95/96/98/99/9a/9c reference offsets, metadata lengths,
 opaque-byte retention and truncation. Voice tests exercise slots 0, 64 and 127,
 signed sentinels, malformed flags and trailing bytes. Program and group tests
 check the six observed modern program versions, both group versions and
@@ -371,6 +373,6 @@ unsupported report. Other unknown serialization IDs, including 0x65/66/68/69/
 6a/72/74, remain unknown to this family.
 
 Borrowed `Group::parse` now admits both observed group versions (0x95/96),
-and `Zone::parse` admits observed 0x98/99/9a plus the independently authored
+and `Zone::parse` admits observed 0x98/99/9a/9c plus the independently authored
 0x95 layout. Their bounded metadata/extension spans stay unchanged. Unknown
 versions still return an explicit unsupported-version error.
