@@ -1750,6 +1750,26 @@ mod survey {
                 for f in host.findings() {
                     println!("UA {}|{}|{}", f.feature, f.value.chars().take(200).collect::<String>().replace(' ', "_"), name);
                 }
+                if std::env::var_os("KONTRA_TRACE").is_some() {
+                    host.take_commands();
+                    host.controller(1, 100, 0);
+                    host.advance(500.0);
+                    for key in [24u8, 36, 48, 59, 60, 72, 84] {
+                        host.note_on(1000 + u64::from(key), key, 100, 0);
+                        host.advance(2000.0);
+                        let c = host.take_commands();
+                        let plays = c.iter().filter(|c| matches!(c, crate::script::Command::Play(_))).count();
+                        let globals = ["latestNoteIdIncr", "lastNote", "lastKeyboardNote", "tuneOutAttackValueNote", "lastVelocityAnyNote", "MIDItransposeValue", "KEYSWtransposeValue", "hornModel", "ccVel", "minNote", "maxNote", "windCCValue", "isNoteOn"]
+                            .iter()
+                            .map(|g| format!("{g}={}", host.global_text(g)))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        println!("UT key {key}: {} commands, {plays} plays; {globals}", c.len());
+                        host.note_off(1000 + u64::from(key), key, 64, 0);
+                        host.advance(4000.0);
+                        host.take_commands();
+                    }
+                }
                 if let Ok(specs) = std::env::var("KONTRA_LINE") {
                     // transient debugging aid, prints to the terminal only
                     for spec in specs.split(',') {
@@ -1764,9 +1784,12 @@ mod survey {
                             }
                             continue;
                         }
-                        let l: usize = l.parse().unwrap();
+                        let (l, to) = match l.split_once('-') {
+                            Some((a, b)) => (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap()),
+                            None => (l.parse::<usize>().unwrap(), l.parse::<usize>().unwrap() - 2),
+                        };
                         for (i, line) in src.lines().enumerate() {
-                            if i + 3 >= l && i < l + 1 {
+                            if (to < l && i + 3 >= l && i < l + 1) || (to >= l && i + 1 >= l && i < to) {
                                 println!("UX {m}:{}: {}", i + 1, line);
                             }
                         }
@@ -1860,7 +1883,11 @@ mod survey {
         candidates.dedup();
         let mut last = String::new();
         for key in candidates {
-            last = census_play(bank, program, key);
+            last = census_play(bank, program, key, false);
+            if last.starts_with("silent") {
+                // Expressive instruments wait for the mod wheel.
+                last = census_play(bank, program, key, true);
+            }
             if last.starts_with("sounds") {
                 break;
             }
@@ -1869,7 +1896,7 @@ mod survey {
     }
 
     #[cfg(feature = "library-access")]
-    fn census_play(bank: &crate::Bank, program: &str, key: u8) -> String {
+    fn census_play(bank: &crate::Bank, program: &str, key: u8, cc1: bool) -> String {
         use sampler_core::Limits;
         let program = match crate::load_program_scripted_streamed(bank, program, 48_000, &Default::default()) {
             Ok(p) => p,
@@ -1906,8 +1933,12 @@ mod survey {
             }
             Ok::<(), sampler_core::Error>(())
         };
-        let result = player
-            .note_on(key, 100.0 / 127.0)
+        if cc1 {
+            player.input(crate::scripted::HostInput::Controller { cc: 1, value: 100, channel: 0 });
+        }
+        let result = Ok::<(), sampler_core::Error>(())
+            .and_then(|()| if cc1 { run(&mut player, 20) } else { Ok(()) })
+            .and_then(|_| player.note_on(key, 100.0 / 127.0))
             .and_then(|_| run(&mut player, 188))
             .and_then(|_| player.note_off(key))
             .and_then(|_| run(&mut player, 188));
@@ -1921,6 +1952,7 @@ mod survey {
             Some(e) => e.to_string().chars().take(60).collect::<String>().replace(' ', "_"),
             None => first,
         };
+        let state = if cc1 && state == "sounds" { "sounds-with-cc1" } else { state };
         format!("{state} peak={peak:.3} key={key} lua={} errs={errors} {first}", u8::from(scripted))
     }
 

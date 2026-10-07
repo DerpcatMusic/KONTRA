@@ -866,15 +866,16 @@ impl ScriptHost {
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             resume(&self.shared, thread, MultiValue::new(), None);
             self.cycle();
-            self.call("onInit", None);
-        }
-        // The saved widget values and their `changed` callbacks, with the load budget.
-        if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
-            self.shared.arm(self.shared.config.load);
-            if let Ok(thread) = self.lua.create_thread(f) {
-                resume(&self.shared, thread, MultiValue::new(), None);
-                self.cycle();
+            // Saved widget values and their `changed` callbacks come after the script body
+            // and before onInit, which is why scripts test for a restored zero there.
+            if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
+                self.shared.arm(self.shared.config.load);
+                if let Ok(thread) = self.lua.create_thread(f) {
+                    resume(&self.shared, thread, MultiValue::new(), None);
+                    self.cycle();
+                }
             }
+            self.call("onInit", None);
         }
         Ok(())
     }
@@ -1084,6 +1085,19 @@ impl ScriptHost {
     }
 
     /// The commands issued since the last call.
+    /// A global of the scripts as text, for debugging surveys.
+    #[doc(hidden)]
+    pub fn global_text(&self, name: &str) -> String {
+        match self.lua.globals().raw_get::<Value>(name) {
+            Ok(Value::Nil) | Err(_) => "nil".into(),
+            Ok(Value::Boolean(b)) => b.to_string(),
+            Ok(Value::Integer(i)) => i.to_string(),
+            Ok(Value::Number(n)) => n.to_string(),
+            Ok(Value::String(s)) => s.to_string_lossy(),
+            Ok(other) => other.type_name().into(),
+        }
+    }
+
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut *self.shared.commands.borrow_mut())
     }
