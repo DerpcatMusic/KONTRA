@@ -19,6 +19,11 @@ maxload=${KONTRA_MAX_LOAD:-8}; for _ in $(seq 12); do load_start=$(load1); awk -
 [ -n "${KONTRA_NO_LOAD_CHECK:-}" ] || awk -v l="$load_start" -v m="$maxload" 'BEGIN{exit !(l<m)}' || { echo "record: load average $load_start >= $maxload, Kontakt drops voices under load; wait or run inside a kontakto-heavy slot" >&2; exit 1; }
 [ -f "$mid.proto" ] || { echo "record: $mid has no .proto sidecar, build it with scenario.py" >&2; exit 1; }
 "$here/kontakt.sh" route || { echo "record: routing guard failed, no MIDI sent" >&2; exit 1; }
+# keep-alive: the null sink suspends after a few idle seconds and pw-record then stops capturing (notes after a long silence were lost);
+# a silent playback stream keeps the graph running and adds exact zeros
+pactl list short sinks | grep -q kontra_ref || { echo "record: no kontra_ref sink" >&2; exit 1; }
+pw-cat -p --raw --rate 48000 --channels 2 --format f32 --target kontra_ref /dev/zero & ka=$!
+trap 'kill $ka 2>/dev/null' EXIT
 pw-record --target kontra_ref -P '{ stream.capture.sink=true }' --rate 48000 --format f32 --channels 2 "$out" &
 rec=$!
 sleep 1
