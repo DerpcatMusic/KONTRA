@@ -155,33 +155,12 @@ impl<'a> FileTable<'a> {
     }
 }
 
-/// SaveSettings BFN references may be serialized as segments or a negative
-/// string reference. Preserve both encodings; do not reinterpret either.
-#[derive(Clone, Copy, Debug)]
-pub enum SavedFilename<'a> {
-    Segments(Filename<'a>),
-    Reference { marker: i32, text: Bytes<'a> },
-}
-
-fn saved_filename<'a>(r: &mut Reader<'a>, limits: Limits) -> Result<SavedFilename<'a>, Error> {
-    let start = r.0;
-    let marker = r.i32()?;
-    if marker < 0 {
-        Ok(SavedFilename::Reference {
-            marker,
-            text: wide(r)?,
-        })
-    } else {
-        *r = Reader(start);
-        Ok(SavedFilename::Segments(Filename::read(r, limits)?))
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct SaveSettings<'a> {
     pub object: Structured<'a>,
-    pub translated: SavedFilename<'a>,
-    pub original: SavedFilename<'a>,
+    /// Native BFNTrns/BFNOrig references, not inline filenames. Keep sentinels.
+    pub translated: u32,
+    pub original: i32,
     pub unknown: i32,
     pub flags: [bool; 3],
     pub extension: Bytes<'a>,
@@ -200,8 +179,8 @@ impl<'a> SaveSettings<'a> {
         let mut r = Reader(object.public);
         Ok(Self {
             object,
-            translated: saved_filename(&mut r, limits)?,
-            original: saved_filename(&mut r, limits)?,
+            translated: r.u32()?,
+            original: r.i32()?,
             unknown: r.i32()?,
             flags: [r.boolean()?, r.boolean()?, r.boolean()?],
             extension: r.0,
@@ -214,6 +193,46 @@ pub struct QuickBrowse<'a> {
     pub object: Structured<'a>,
     pub unknown: i32,
     pub extension: Bytes<'a>,
+}
+
+/// Four translated BFN references after the common program public prefix.
+/// Names follow the independent ProgramVA8PublicParams layout; the namespace
+/// and all later version extensions remain separate from host resource lookup.
+#[derive(Clone, Copy, Debug)]
+pub struct ProgramResources<'a> {
+    pub object: Structured<'a>,
+    pub container: u32,
+    pub snapshot_directory: u32,
+    pub full_path: u32,
+    pub wallpaper: u32,
+    pub extension: Bytes<'a>,
+}
+
+impl<'a> ProgramResources<'a> {
+    pub fn parse(chunk: Chunk<'a>) -> Result<Self, Error> {
+        chunk.expect_id(0x28)?;
+        let object = chunk.structured()?;
+        if !matches!(object.version, 0xa8 | 0xab | 0xae | 0xb1 | 0xb3 | 0xb5) {
+            return Err(object
+                .raw
+                .error(ErrorKind::UnsupportedVersion(u32::from(object.version))));
+        }
+        let mut r = Reader(object.public);
+        wide(&mut r)?; // instrument name
+        r.take(48)?; // common numeric fields through icon index
+        for _ in 0..3 {
+            wide(&mut r)?;
+        } // credits, author, URL
+        r.take(6)?; // category IDs
+        Ok(Self {
+            object,
+            container: r.u32()?,
+            snapshot_directory: r.u32()?,
+            full_path: r.u32()?,
+            wallpaper: r.u32()?,
+            extension: r.0,
+        })
+    }
 }
 
 impl<'a> QuickBrowse<'a> {
@@ -248,7 +267,7 @@ impl<'a> Bank<'a> {
     pub fn parse(chunk: Chunk<'a>) -> Result<Self, Error> {
         chunk.expect_id(3)?;
         let object = chunk.structured()?;
-        if !matches!(object.version, 0x60 | 0x71 | 0x72 | 0x73) {
+        if !matches!(object.version, 0x60 | 0x71 | 0x72 | 0x73 | 0x76) {
             return Err(object
                 .raw
                 .error(ErrorKind::UnsupportedVersion(u32::from(object.version))));

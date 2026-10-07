@@ -57,8 +57,11 @@ other scalar 0); they are not asserted to be every native factory default.
 
 [ID registry](KONTAKT_ID_REGISTRY.tsv) enumerates every dispatch slot from
 Kontakt `0x00` through `0x64`, including holes `0x31`, `0x48`, `0x49`, `0x62`,
-and every NISD/NIK4/RKTR item recognized by the local enum. IDs beyond this
-range are unknown and must still be retained when observed.
+and every NISD/NIK4/RKTR item recognized by the local enum. The census also
+found Kontakt IDs `0x65`, `0x66`, `0x68`, `0x69`, `0x6a`, `0x72`, `0x74`;
+these are registered as observed unknowns owned by FX/mod until identified.
+An apparent structured version is a candidate until its schema is established;
+`0x48` yields `0xff00` from a framing attempt, not a certified version.
 
 [Field registry](KONTAKT_FIELD_REGISTRY.tsv) lists each public source/view
 record field, its type, declared versions, exact source line and presence of
@@ -112,13 +115,13 @@ written by the census; only aggregate counts and ordinary library paths.
 | 0x06 | Optional source/name/link, editor flags, bypass, password hash, persistence strings | Source and saved persistence; linked file reload | Source/state used; linked resources now reloaded; editor/password are decoded-unused; family owns state grammar |
 | 0x04 / 0x33 | Group name, gain/pan/tune, key tracking, reverse, release, monophony/counter, MIDI channel, voice index, amp split, mute/solo, interpolation, source/criteria; private rack | Many used; source metadata not equivalent to native source DSP | Gain/pan/tune, reverse, release, mute, routing/mods used; MIDI filter/source modes have explicit caveats; private unknown records remain raw |
 | 0x05 / 0x39 | Loop mode/start/length/count/alternating/tune/crossfade; mask; source reader preserves holes | Loop playback/alternating support | Loop region used; unsupported modes surfaced; compare loop tune/count/crossfade to lowering in objects doc |
-| 0x28 | Full common public prefix through credits/categories; later resource/wallpaper references set `None`; private bytes raw | Common params, gain, ranges and metadata; verify individual uses in objects doc | Volume/pan/tune/transpose used; program ranges/metadata still unused; later fields raw/unknown |
+| 0x28 | Full common public prefix through credits/categories; later resource/wallpaper references set `None`; private bytes raw | Common params, gain, ranges and metadata; verify individual uses in objects doc | Volume/pan/tune/transpose used; program ranges/metadata unused; new borrowed resource view retains four references and later bytes |
 | 0x32 | Vendored voice-group decoder incomplete and unsafe on unsupported versions | Own decoder: 128-bit mask and one-based assignment | Own decoder used; source wrapper completeness belongs to objects agent |
 | 0x2c / 0x34 | Zone trim/ranges/fades/root/gain/pan/tune/sample reference and metadata/reserved fields | Mapping/loops used | Playback uses mapping prefix, sample identity and trim; additional sample metadata and private bytes raw/unknown |
 | 0x0e, 0x0f, 0x38 | Source identity, bounded wavetable v0x106 and criteria rows; remaining source body partly raw | Source identity/wavetable metadata; criteria used | Source modes can fall back to sampler with caveat; no claim that wavetable metadata implements wavetable DSP |
 | 0x25, 0x3a, 0x45 | FX wrapper type/bypass/wet/dry; slot flags/count; bus metadata | Group/instrument/send/main/bus FX paths | Decoder coverage ≠ effect/kernel coverage; bypassed values retained; malformed-wrapper reporting belongs to fxmod |
 | 0x0c, 0x0d, 0x3b, 0x3c | Physical slots, source/target/intensity/lag/invert/name/shaper, unknown flags and sentinels | Modulation and curves used selectively | Supported routes used, module/source gaps and some unknown flags report unsupported; exact non-default ranking in fxmod doc |
-| 0x47 | Upstream-style vendored stub only reads structured flag | Unread | New bounded source decoder; paths/scalar/three flags decoded-unused, meanings unknown |
+| 0x47 | Upstream-style vendored stub only reads structured flag | Unread | New bounded source decoder; two filename references/scalar/three flags retained, meanings unknown |
 | 0x4e | i32 unknown after structured header | Unread | New bounded source decoder; no audio consequence established |
 | 0x3d / 0x4b | Legacy/modern special/sample/other tables; timestamps converted to Date; v2 u32 sample word discarded in convenience decoder; v3 prefix/suffix skipped | Samples used; NKR and IR names used; legacy IR table dropped | Samples and IRs used; resource names discovered heuristically; new borrowed v2/v3 table preserves metadata |
 | 0x4f–51 | Snapshot/group-snapshot fields, metadata partial | Overlay native/script state with identity guard | Overlay supported; full family state/profile evidence owned by persistence |
@@ -151,6 +154,15 @@ legacy Latin-1 fallback are supported; Windows-1252 control-range punctuation
 remains a stated limitation. Resource reads are bounded at 32 MiB, matching
 `ResourceContainer`'s existing limit. No script/sample data is extracted.
 
+`ProgramResources::parse` reads four translated BFN references after the
+common public prefix/categories: resource container, snapshot factory
+subdirectory, full preset path and wallpaper. The independent
+`ProgramVA8PublicParams.tcl` establishes their order. It explicitly admits
+six corpus versions `0xa8`, `0xab`, `0xae`, `0xb1`, `0xb3`, `0xb5` and
+preserves later bytes. The convenience reader previously returned `None`
+for container/wallpaper. These views are decoded-unused by playback; target
+namespace and authored container binding remain open.
+
 NKR directory/resource headers and NICNT embedded FileContainer resources
 are already read by `nkr::Archive` and `ResourceContainer`. Metadata and
 access discovery are distinct: NICNT access fields are private, never census
@@ -160,13 +172,21 @@ reading a nearby NKR does not establish that it is the authored one.
 
 ### Save settings and quick browse
 
-New `SaveSettings::parse` validates unstructured v0x10, retains two native
-filename encodings, an i32 and three exact boolean bytes, then preserves
-extensions. Segment filenames and negative marker + UTF-16 reference
-encodings are preserved separately. Native semantic names for the i32/flags
-are **unestablished**; these values must not change playback based on guesses.
-The author's SaveSettings template supports the field widths, while corpus
-acceptance determines which encodings actually occur here.
+`SaveSettings::parse` validates unstructured v0x10. Its public prefix is
+**15 bytes**: `u32 BFNTrns`, `i32 BFNOrig`, `i32 unknown`, then three exact
+boolean bytes. These are filename **references**, not inline BFileName records
+or a negative marker followed by a string. The first synthetic implementation
+made that incorrect assumption; the census rejected it in all 831 observed
+files, so it was replaced before claiming corpus support. Extensions remain
+bounded and preserved. References use an all-ones/negative-one absent census
+baseline, without assigning their target namespace.
+
+Evidence: independent `SaveSettings.tcl` field widths; native reader
+`0x140d052d0` and writer `0x140d13870` in the read-only engine inventory,
+which call translated/original BFN helpers before the scalar and three flags;
+and the measured public region, exactly 15 bytes in all 940 records in 831
+files. Native semantic names for the scalar/flags remain **unestablished**;
+they must not affect playback based on guesses.
 
 `QuickBrowse::parse` reads v1's i32 and retains any extension/private/child
 state. Its meaning and playback relevance are unknown. Zero is a census
@@ -174,7 +194,8 @@ baseline, not evidence of a native setting default.
 
 ### Banks and old XML
 
-New bank views retain master gain/tune/tempo/name and extensions; lists retain
+New bank views retain master gain/tune/tempo/name and extensions, including
+observed v0x76 in 50 NKM files and v0x73 in three NKM files; lists retain
 signed program numbers and original 64-bit slot-mask identities. This is a
 metadata reader, not MIDI program-switch playback. V1 rejected slots with
 multiple programs; baseline v2 flattens programs and loses program numbers.
@@ -206,7 +227,12 @@ regions. Failures are counted, not silently turned into absent structures.
 Only aggregate metadata is written; decrypted buffers stay in memory.
 
 Run builds/tests and corpus work through `kontakto-heavy`, one heavy job at a
-time. The shared installed-tree inventory has 781 NKI, 53 NKM, 1103 NKSN,
+time. Reproductions should shard inputs into 100 files or fewer, use a
+separate output directory/completion marker per shard, and release the wrapper
+slot before the next shard. Targeted updates use `--metadata-only`; they do
+not retraverse the group/zone/DSP regions already measured. Join disjoint
+shards using `python3 tools/kontakt-format/report.py <baseline census>
+--shards <shard directory>`; never add overlapping surveys. The installed-tree inventory has 781 NKI, 53 NKM, 1103 NKSN,
 270 NKX, 12 NKR and 9 NICNT; recovery backups under Pacific Ensemble Strings
 are excluded consistently with the family corpus inventory. The 1,494-line
 harness manifest also contains UVI, so it is not the denominator for Kontakt
@@ -214,14 +240,67 @@ structures. Snapshot-only counts must not be mistaken for playable presets.
 
 ## Measured impact ranking
 
-Pending the full field census and final family reports. The checked-in census
-will state denominators, decoder failures and each non-neutral baseline;
-no estimated percentages or presence-as-activation claims are used.
+The baseline census completed with **1,937/1,937 parsed files**: 781 NKI,
+53 NKM and 1,103 NKSN. It observed 641 structure/version/field rows and
+34,382 byte-offset rows. This checks framing/decoder coverage, not sound,
+sample resolution, script execution or activation. Targeted corrected
+metadata/resource measurements are recorded separately below.
+
+The checked-in [field counts](kontakt-census/fields.tsv),
+[annotated impact](kontakt-census/field-impact.tsv),
+[unknown byte lanes](kontakt-census/byte-profile.tsv) and
+[decoder errors](kontakt-census/errors.tsv) are numeric aggregate evidence.
+They retain per-version denominators; do not add file counts across versions
+that may coexist in one file. A `structure` row counts presence, not a
+non-default setting. NIK4 header magic is labelled `BPatchHeaderV42`, not
+falsely called version 2141753362.
+
+| Gap / field family | Files present / non-neutral evidence | Status and likely consequence | Owner |
+|---|---|---|---|
+| NIS ControllerAssignments `0x79` | 1,937 present; properties unmeasured | unread; host assignment/automation admission unknown, not proof that scripts or all MIDI CC are broken | gap map; KSP/host runtime for application |
+| Modern filename metadata `0x4b` v2 | 1,583; tail nonzero in 1,583; sample u32 nonzero in 775 of 782 sample-bearing files | raw/unknown tail and sample word; identity/cache/search consequences need semantic evidence | `gpt-format-gaps` |
+| AHDSR `0x3f` v0x11 | 1,736 present, including snapshots | decoded core stages; remaining sync/tail fields raw, possible envelope timing differences | `gpt-format-fxmod`, then DSP |
+| Group-private/source data | v0x95: 782/782 nonzero private; v0x96: 52/52 | partially decoded; machine/source controls, private masks and policies can change rendering; region count is not the number of active source modes | `gpt-format-objects`, then DSP |
+| Program-private policy and resource extension | six versions: 3, 8, 729, 42, 31, 21 files (834 total); every private region nonzero | raw/unknown; controller/voice/HQ policies need field-level evidence | objects owns private policy; gaps owns resource references |
+| Saved native compact source snapshot | v2: 801/801 nonzero source; v4: 101/101, eight-byte trailing state nonzero in 101 | partial overlay; unassigned source/selection state can change preset sound | persistence, objects and FX/mod |
+| Snapshot-to-instrument binding | 1,103 snapshots; 1,003 unique metadata candidates; 100 unresolved, 0 ambiguous | unresolved Una Corda identity must remain explicit; a guessed base can receive the wrong state | persistence/core loader |
+| Linked script filename | 833 of 834 instrument/multi files nonempty | decoded+used after this port; presence does not prove an external file exists or reload changes sound | `gpt-format-gaps`; UI owns shared NICNT discovery |
+| Save settings `0x47` v0x10 | 831 files / 940 records; all public regions nonzero | newly decoded references/flags; meanings unknown, no established audio consequence | `gpt-format-gaps` |
+| Amp split point | group v0x95: 782/782 nonzero; v0x96: 52/52 | decoded-unused at baseline; moving inserts across the amplitude stage can change dynamics/order | FX/mod and DSP |
+| Program DFD preload override | all 834 program-bearing files nonzero against zero baseline | decoded-unused; streaming policy/startup cost impact | objects/streaming owner |
+| Release counter | group v0x95: 97/782 nonzero; v0x96: 0/52 | decoded, source law not fully modeled; release age/dynamics need native comparison | objects/DSP |
+| Banks / containers / program numbers | 53 NKM; no NKB; bank gain/tune unit in all 53; tempo nonzero in all 53 | decoded-unused scalar state and preserved lists; MIDI program selection unmodeled | `gpt-format-gaps`, then core |
+| Quick browse `0x4e` v1 | 834 files; 0 nonzero known integers | raw/unknown meaning, low measured non-neutral impact | `gpt-format-gaps` |
+| Counted/tuned loops | 787 loop-bearing files; 0 non-neutral counts/tunes; 733 nonzero crossfades, 3 alternating | count/tune unsupported with zero local activation evidence; crossfade/alternating used | objects/core |
+| Old XML / standalone NKS / NKB | 0 installed fixtures | unvalidated; legacy fixes envelope safety, XML-to-IR and true bank playback remain open | legacy; gaps/core for banks |
+
+The unknown-offset profile has a 4,096-byte ceiling per region. Bytes past
+that ceiling have aggregate nonzero counts only. Variable-size offsets are
+not semantic fields. Family surveys supply named fields, finer versions,
+missing-source modes and exact payload laws; a full parse does not mean every
+proprietary field is deciphered.
+
+Snapshot candidate counts: ANALOG STRINGS 701, Conflux 201, Morphology Evolved
+101. The remaining 100 are in Una Corda Library and fail the metadata-only
+match. These are **candidate identity** counts, not validated overlays;
+installed names can differ from saved template identity. The private cache
+contains per-path bindings; the checked-in report contains aggregate totals.
+
+FX/mod handoff: `v2/gpt-format-fxmod` commits `775d0f84`, `a490f7be` were pushed
+after package no-run validation. They correct signed target flag 0x02, Ladder
+offsets/v0x92 byte, malformed occupied-slot handling, 20 fixed FX layouts and
+counted convolution/send/filter fields; retain authored FX/mod IR including
+bypassed/muted state; and overlay snapshot modulation. Unit checks passed;
+real-library and named-field census evidence is still pending. New IDs above
+0x64 stay opaque. Remaining laws include newer FX/filter controls, envelope
+sync/loop state, unknown LFO sync/type 6, unsupported destinations and external
+source laws. DBD/glide are absent from this baseline census, not certified.
 
 ## Tests and integration handoff
 
 Synthetic tests exercise complete/truncated filename v2 records, v3 metadata,
-unknown versions, invalid settings flags, preserved tails, sparse slot 63,
+unknown versions, invalid settings flags, preserved tails, all six program
+resource-reference versions with variable metadata and every truncated prefix, sparse slot 63,
 program numbers and negative list counts. Resource tests cover linked script
 reload, case-insensitive Windows path basenames, saved encodings, absent/empty
 links and no host-path following. Corpus checks establish observed layouts
