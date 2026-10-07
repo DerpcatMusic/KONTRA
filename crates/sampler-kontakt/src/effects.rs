@@ -1013,7 +1013,6 @@ mod tests {
             dry_level: 1.0,
             output_set: true,
             public,
-            output_set: true,
         }
     }
 
