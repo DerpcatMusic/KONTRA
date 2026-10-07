@@ -4,7 +4,11 @@
 //! no allocation, and sends the old storage back to be freed.
 
 use super::*;
-use crate::{dsp::DspState, parallel, voice_mod::{ModShape, VoiceModState}};
+use crate::{
+    dsp::DspState,
+    parallel,
+    voice_mod::{ModShape, VoiceModState},
+};
 use rtrb::{Consumer, Producer};
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -18,7 +22,11 @@ pub(crate) struct Dims {
 
 impl Dims {
     pub fn of(request: u64, plan: &Prepared) -> Self {
-        Self { request, chain: DspState::shape(plan), modulation: plan.voice_modulation.shape() }
+        Self {
+            request,
+            chain: DspState::shape(plan),
+            modulation: plan.voice_modulation.shape(),
+        }
     }
 }
 
@@ -93,8 +101,12 @@ impl Runtime {
 
     /// Adopt a queued growth, if any. Audio thread: no allocation.
     pub(super) fn apply_growth(&mut self) {
-        let Some(queues) = &mut self.growth else { return };
-        let Ok(mut growth) = queues.incoming.pop() else { return };
+        let Some(queues) = &mut self.growth else {
+            return;
+        };
+        let Ok(mut growth) = queues.incoming.pop() else {
+            return;
+        };
         if self.grow_with(&mut growth) {
             self.voice_growths += 1;
         } else {
@@ -120,9 +132,14 @@ impl Runtime {
             None => true,
         };
         // Every plan generation still sized for fewer voices needs its storage.
-        let covered = self.plans.slots.iter().filter_map(|s| s.value.as_ref()).all(|gen_| {
-            gen_.dsp.voices >= g.voices || g.plans.iter().any(|p| p.request == gen_.request)
-        });
+        let covered = self
+            .plans
+            .slots
+            .iter()
+            .filter_map(|s| s.value.as_ref())
+            .all(|gen_| {
+                gen_.dsp.voices >= g.voices || g.plans.iter().any(|p| p.request == gen_.request)
+            });
         if !parallel_ready || !covered {
             return false;
         }
@@ -130,7 +147,11 @@ impl Runtime {
             if gen_.dsp.voices >= g.voices {
                 continue;
             }
-            let p = g.plans.iter_mut().find(|p| p.request == gen_.request).unwrap();
+            let p = g
+                .plans
+                .iter_mut()
+                .find(|p| p.request == gen_.request)
+                .unwrap();
             gen_.dsp.adopt(g.voices, &mut p.cells, &mut p.delays);
             gen_.modulation.adopt(&mut p.modulation);
         }

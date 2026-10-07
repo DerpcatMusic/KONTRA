@@ -81,7 +81,6 @@ fn input() -> Input {
 /// expression (an MPE bend or pressure on the member channel): with the
 /// parent muted, the child sounds exactly like the parent played directly.
 #[test]
-#[ignore = "play_note children are Inheritance::Independent by design (compile.rs asserts a parent's gain is not inherited); inheriting pitch/pressure/timbre only needs a core policy"]
 fn script_played_notes_follow_the_parents_expression() {
     let source = "on note ignore_event($EVENT_ID)
                   play_note(60, 127, 0, 0) end on";
@@ -108,4 +107,28 @@ fn script_played_notes_follow_the_parents_expression() {
         rt.render(&mut audio).unwrap();
         assert_eq!(audio, expected, "{expression:?}");
     }
+}
+
+/// The link is live: a bend after the child started moves it too, and the
+/// parent's own gain does not.
+#[test]
+fn script_played_notes_follow_later_expression_changes() {
+    let source = "on note ignore_event($EVENT_ID)
+                  play_note(60, 127, 0, 0) end on";
+    let run = |source: Option<&str>| {
+        let mut rt = runtime(source);
+        let note = rt.trigger(input(), 60, 1.).unwrap();
+        let id = rt.expression_id(note).unwrap();
+        let mut audio = [[0.; 2]; 96];
+        rt.render(&mut audio[..48]).unwrap();
+        let bent = Expression {
+            pitch_semitones: 12.0,
+            gain: if source.is_some() { 0.0 } else { 1.0 },
+            ..Expression::default()
+        };
+        rt.set_expression(id, bent).unwrap();
+        rt.render(&mut audio[48..]).unwrap();
+        audio
+    };
+    assert_eq!(run(Some(source)), run(None));
 }
