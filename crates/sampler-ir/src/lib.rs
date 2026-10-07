@@ -72,9 +72,21 @@ pub struct Instrument {
     pub voice_limit: Option<VoiceLimit>,
     /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
     pub voice_limits: Vec<VoiceLimit>,
+    /// A host controller that sets the instrument volume once it arrives.
+    pub host_volume: Option<HostVolume>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+}
+
+/// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
+/// saved value and, when `controller` is received, becomes `(cc/127)^3`,
+/// replacing the saved value (measured, not multiplied in).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostVolume {
+    pub controller: u8,
+    /// Linear gain saved with the instrument, before any controller.
+    pub saved: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

@@ -1,0 +1,15 @@
+# Una Cotton: scripts bypassed, solo_group.ksp in slot 5; CC20 selects the group
+0 cc 1 0
+0 cc 7 127
+0 cc 10 64
+0 cc 11 127
+0 cc 64 0
+0.5 cc 20 39
+1 note 60 64 3
+7 note 60 100 3
+13 note 60 127 3
+18.5 cc 20 94
+19 note 60 64 3
+25 note 60 100 3
+31 note 60 127 3
+37 end

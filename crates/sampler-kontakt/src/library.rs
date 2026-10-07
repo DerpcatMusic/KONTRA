@@ -39,6 +39,23 @@ pub struct Kontakt {
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
 /// and reported; a malformed container or zone table is an error.
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
+    read_overlaid(path, None)
+}
+
+/// [`read`] with a snapshot's saved native and script state applied.
+pub fn read_with_snapshot(
+    path: &Path,
+    snapshot: &crate::SnapshotState,
+) -> Result<Kontakt, LoadError> {
+    let mut kontakt = read_overlaid(path, Some(snapshot))?;
+    crate::apply_snapshot(&mut kontakt, snapshot);
+    Ok(kontakt)
+}
+
+fn read_overlaid(
+    path: &Path,
+    snapshot: Option<&crate::SnapshotState>,
+) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
@@ -66,7 +83,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             (t.sample_filetable, t.other_filetable)
         }
     };
-    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
@@ -119,15 +136,29 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
-    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
+    translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
     path: PathBuf,
-    program: Program,
+    mut program: Program,
     table: HashMap<u32, String>,
     others: HashMap<u32, String>,
+    snapshot: Option<&crate::SnapshotState>,
 ) -> Result<Kontakt, LoadError> {
+    if let Some(snapshot) = snapshot {
+        // The snapshot's racks and buses are the program's own, in the same order.
+        let mut saved = snapshot.effects.iter();
+        for kind in [crate::effects::RACK, crate::effects::BUS] {
+            let mut theirs = saved.clone().filter(|(id, _)| *id == kind);
+            for child in program.0.children.iter_mut().filter(|c| c.id == kind) {
+                if let Some((_, data)) = theirs.next() {
+                    child.data = data.clone();
+                }
+            }
+        }
+        let _ = saved.next();
+    }
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -142,12 +173,18 @@ fn translate(
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
+            host_volume: Some(ir::HostVolume {
+                controller: 7,
+                saved: f64::from(params.volume),
+            }),
             ..Default::default()
         },
         assets: HashMap::new(),
         locations: Vec::new(),
         start_criteria: Vec::new(),
         voice_groups: Vec::new(),
+        snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
+        engine: Vec::new(),
     };
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
@@ -160,10 +197,6 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
-    let mut translated = Vec::new();
-    for (index, group) in groups.groups.iter().enumerate() {
-        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
-    }
     for (slot, chunk) in program
         .0
         .children
@@ -212,6 +245,34 @@ fn translate(
             }
         }
     }
+    // Scripts first: what `on init` writes with set_engine_par (effect gains,
+    // bypass) is the rack's state, so racks are translated after it.
+    let group_names: Vec<String> = groups
+        .groups
+        .iter()
+        .filter_map(|g| g.params().ok())
+        .filter(|g| !g.muted)
+        .map(|g| g.name)
+        .collect();
+    let writes: Vec<_> = out
+        .ir
+        .behaviors
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.language == ir::Language::Ksp)
+        .filter_map(|(index, b)| {
+            let environment =
+                crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
+                .ok()
+        })
+        .flatten()
+        .collect();
+    out.engine = writes;
+    let mut translated = Vec::new();
+    for (index, group) in groups.groups.iter().enumerate() {
+        translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+    }
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -220,7 +281,7 @@ fn translate(
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program);
+    let racks = crate::effects::program_racks(&program, &out.engine);
     {
         // Convolution impulse responses are named by the other-files table.
         let mut load = |index: i32| -> Result<crate::effects::Decoded, String> {
@@ -335,6 +396,10 @@ struct Translation {
     )>,
     /// Kontakt voice group index -> `ir.voice_limits` index.
     voice_groups: Vec<Option<usize>>,
+    /// A snapshot's saved state per group, applied over the program's.
+    snapshot_groups: Vec<crate::GroupState>,
+    /// What the scripts' `on init` wrote with `set_engine_par`.
+    engine: Vec<sampler_ksp::EnginePar>,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -473,7 +538,15 @@ impl Translation {
 
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
-        let v = group.params()?;
+        let mut v = group.params()?;
+        let saved = self.snapshot_groups.get(index).cloned();
+        if let Some(state) = &saved {
+            v.volume = state.volume;
+            v.pan = state.pan;
+            v.tune = state.octaves.exp2();
+            v.key_tracking = state.key_tracking;
+            v.reverse = state.reverse;
+        }
         let at = format!("group {index} {:?}", v.name);
         if v.muted {
             return Ok(None);
@@ -514,9 +587,22 @@ impl Translation {
         }
         let mut chain = None;
         let mut filter_slots = Vec::new();
-        if let Ok(array) = group.insert_fx() {
-            let c =
-                crate::effects::chain(&crate::effects::rack(&array), crate::effects::Scope::Voice);
+        let insert = match saved {
+            Some(state) => Ok(ni_file::kontakt::objects::BParamArrayBParFX8 {
+                version: state.fx.0,
+                items: state
+                    .fx
+                    .1
+                    .into_iter()
+                    .map(|slot| slot.map(|(id, data)| ni_file::kontakt::Chunk { id, data }))
+                    .collect(),
+            }),
+            None => group.insert_fx(),
+        };
+        if let Ok(array) = insert {
+            let mut slots = crate::effects::rack(&array);
+            crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
+            let c = crate::effects::chain(&slots, crate::effects::Scope::Voice);
             let processors = c.processors;
             filter_slots = c.filter_slots;
             for (slot, feature, value, reason) in c.notes {
@@ -1402,6 +1488,8 @@ mod modulation {
             locations: Vec::new(),
             start_criteria: Vec::new(),
             voice_groups: Vec::new(),
+            snapshot_groups: Vec::new(),
+            engine: Vec::new(),
         }
     }
 
@@ -1435,6 +1523,14 @@ mod modulation {
                 remaining(t)
             );
         }
+        // Section 22: a 500 ms decay to sustain -24 dB reaches -3/-6/-10/-20 dB
+        // at 0.072/0.130/0.216/0.427 s (within 0.5 dB), and sustain at 0.5 s.
+        let level = |t: f64| 1.0 - (1.0 - 0.063_1) * (1.0 - remaining(t / 0.5));
+        for (t, db) in [(0.072, -3.0), (0.130, -6.0), (0.216, -10.0), (0.427, -20.0)] {
+            let got = 20.0 * level(t).log10();
+            assert!((got - db).abs() < 0.5, "t {t}: {got} dB vs {db}");
+        }
+        assert!((level(0.5) - 0.063_1).abs() < 1e-9);
         // Curve 0 attack is near-linear: env 0.12/0.35/0.59/0.84 at 1/8, 3/8, 5/8, 7/8.
         let ir::Curve::Exponential(a) = attack else {
             panic!("attack curve")
