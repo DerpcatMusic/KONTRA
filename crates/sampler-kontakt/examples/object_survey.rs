@@ -127,13 +127,20 @@ impl Survey {
                 let q = g.params()?;
                 self.field(
                     file,
-                    "0x33",
+                    "0x33/0x04",
                     v,
                     "unknown_tail_bytes",
                     q.unknown_tail.len(),
                     0,
                 );
-                self.field(file, "0x33", v, "name_nonempty", !q.name.is_empty(), false);
+                self.field(
+                    file,
+                    "0x33/0x04",
+                    v,
+                    "name_nonempty",
+                    !q.name.is_empty(),
+                    false,
+                );
                 self.field(file, "0x38", 0, "mask", q.start_criteria.mask, 0);
                 self.field(
                     file,
@@ -143,9 +150,23 @@ impl Survey {
                     q.start_criteria.unknown_tail.len(),
                     0,
                 );
-                self.field(file, "0x33", v, "public_bytes", g.0.public_data.len(), 0);
-                self.field(file, "0x33", v, "private_bytes", g.0.private_data.len(), 0);
-                macro_rules! gf { ($($field:ident = $default:expr),* $(,)?) => { $(self.field(file,"0x33",v,stringify!($field),q.$field,$default);)* }; }
+                self.field(
+                    file,
+                    "0x33/0x04",
+                    v,
+                    "public_bytes",
+                    g.0.public_data.len(),
+                    0,
+                );
+                self.field(
+                    file,
+                    "0x33/0x04",
+                    v,
+                    "private_bytes",
+                    g.0.private_data.len(),
+                    0,
+                );
+                macro_rules! gf { ($($field:ident = $default:expr),* $(,)?) => { $(self.field(file,"0x33/0x04",v,stringify!($field),q.$field,$default);)* }; }
                 gf!(
                     volume = 1.0,
                     pan = 0.0,
@@ -221,38 +242,45 @@ impl Survey {
             for zone in z.zones() {
                 let v = zone.0.version;
                 let q = zone.params()?;
-                self.field(file, "0x34", v, "filename_id", q.filename_id, -1);
+                self.field(file, "0x34/0x2c", v, "filename_id", q.filename_id, -1);
                 self.field(
                     file,
-                    "0x34",
+                    "0x34/0x2c",
                     v,
                     "unknown_tail_bytes",
                     q.unknown_tail.len(),
                     0,
                 );
                 if let Some(value) = q.reserved2 {
-                    self.field(file, "0x34", v, "reserved2", value, 0);
+                    self.field(file, "0x34/0x2c", v, "reserved2", value, 0);
                 }
                 if let Some(prefix) = q.filename_prefix {
                     self.field(
                         file,
-                        "0x34",
+                        "0x34/0x2c",
                         v,
                         "filename_prefix_nonzero",
                         prefix.iter().any(|b| *b != 0),
                         false,
                     );
                 }
-                self.field(file, "0x34", v, "public_bytes", zone.0.public_data.len(), 0);
                 self.field(
                     file,
-                    "0x34",
+                    "0x34/0x2c",
+                    v,
+                    "public_bytes",
+                    zone.0.public_data.len(),
+                    0,
+                );
+                self.field(
+                    file,
+                    "0x34/0x2c",
                     v,
                     "private_bytes",
                     zone.0.private_data.len(),
                     0,
                 );
-                macro_rules! zf { ($($field:ident = $default:expr),* $(,)?) => { $(self.field(file,"0x34",v,stringify!($field),q.$field,$default);)* }; }
+                macro_rules! zf { ($($field:ident = $default:expr),* $(,)?) => { $(self.field(file,"0x34/0x2c",v,stringify!($field),q.$field,$default);)* }; }
                 zf!(
                     sample_start = 0,
                     sample_end = 0,
@@ -330,13 +358,19 @@ fn main() {
     std::fs::create_dir_all(cache).unwrap();
     // No parser panic text/preset bytes are logged; only corpus IDs and status.
     std::panic::set_hook(Box::new(|_| {}));
+    let began = std::time::Instant::now();
     let list = std::fs::read_to_string(list).unwrap();
     let items: Vec<_> = list
         .lines()
         .enumerate()
         .filter_map(|(i, line)| {
             let (kind, path) = line.split_once('\t')?;
-            (kind == "kontakt" && path.to_lowercase().ends_with(".nki")).then_some((i, path))
+            (kind == "kontakt"
+                && matches!(
+                    Path::new(path).extension().and_then(|s| s.to_str()),
+                    Some("nki" | "nkm")
+                ))
+            .then_some((i, path))
         })
         .collect();
     for &(i, path) in items.iter().skip(start).take(count) {
@@ -348,9 +382,19 @@ fn main() {
         let mut survey = Survey::default();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let chunks = sampler_kontakt::read_chunks(Path::new(path)).map_err(|_| ())?;
-            let c = chunks.find_first(0x28).ok_or(())?;
-            let p = Program::try_from(c).map_err(|_| ())?;
-            survey.program(i, &p).map_err(|_| ())
+            if let Some(c) = chunks.find_first(0x28) {
+                let p = Program::try_from(c).map_err(|_| ())?;
+                survey.program(i, &p).map_err(|_| ())
+            } else {
+                let bank = Bank::try_from(chunks.find_first(3).ok_or(())?).map_err(|_| ())?;
+                let slots = bank.slot_list().map_err(|_| ())?;
+                for container in slots.slots.values() {
+                    for p in container.program_list().map_err(|_| ())?.programs {
+                        survey.program(i, &p).map_err(|_| ())?;
+                    }
+                }
+                Ok(())
+            }
         }));
         let ok = matches!(result, Ok(Ok(())));
         // Retain counts for the successfully read prefix of a failed item.
@@ -360,4 +404,5 @@ fn main() {
         std::fs::write(status, if ok { "ok\n" } else { "failed\n" }).unwrap();
         println!("item={i} status={}", if ok { "ok" } else { "failed" });
     }
+    println!("shard_seconds={:.3}", began.elapsed().as_secs_f64());
 }
