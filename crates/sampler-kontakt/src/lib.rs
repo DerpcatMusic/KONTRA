@@ -18,8 +18,8 @@ mod nks;
 mod resource_container;
 mod resources;
 mod samples;
-mod snapshot;
 mod script;
+mod snapshot;
 mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
