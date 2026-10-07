@@ -120,13 +120,17 @@ pub fn load_read(
             total: kept.len(),
             sample,
         });
-        let decoded = samples.decode(sample).map_err(|e| e.at(crate::Stage::SampleResolve))?;
+        let decoded = samples
+            .decode(sample)
+            .map_err(|e| e.at(crate::Stage::SampleResolve))?;
         let frames = decoded.frames.into_boxed_slice();
-        pcm.push(
-            Pcm::new(decoded.rate, frames).map_err(|e| {
-                LoadError::Invalid { path: sample.clone(), reason: e.to_string() }.at(crate::Stage::SampleResolve)
-            })?,
-        );
+        pcm.push(Pcm::new(decoded.rate, frames).map_err(|e| {
+            LoadError::Invalid {
+                path: sample.clone(),
+                reason: e.to_string(),
+            }
+            .at(crate::Stage::SampleResolve)
+        })?);
     }
     if canceled() {
         return Err(LoadError::Canceled);
@@ -178,7 +182,11 @@ pub fn load_read_streamed(
     for &asset in &kept {
         let location = &locations[asset];
         sources.push((
-            std::sync::Arc::new(samples.source(location).map_err(|e| e.at(crate::Stage::SampleResolve))?) as std::sync::Arc<dyn crate::AssetSource>,
+            std::sync::Arc::new(
+                samples
+                    .source(location)
+                    .map_err(|e| e.at(crate::Stage::SampleResolve))?,
+            ) as std::sync::Arc<dyn crate::AssetSource>,
             location.as_path(),
         ));
     }

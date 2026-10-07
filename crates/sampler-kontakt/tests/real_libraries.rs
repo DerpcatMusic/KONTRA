@@ -68,11 +68,14 @@ fn limits() -> Limits {
     }
 }
 
-/// Load `keys` of an installed instrument without scripts and play its middle key.
-fn render(
+/// Load `keys` of an installed instrument without scripts, play its middle key
+/// at `velocity` and return `frames` stereo frames.
+fn render_frames(
     relative: &str,
     keys: std::ops::RangeInclusive<u8>,
-) -> Option<(sampler_ir::Instrument, f32)> {
+    velocity: f64,
+    frames: usize,
+) -> Option<(sampler_ir::Instrument, Vec<[f32; 2]>)> {
     let path = find(relative)?;
     let options = sampler_kontakt::Options {
         keys: keys.clone(),
@@ -82,11 +85,20 @@ fn render(
     let loaded = sampler_kontakt::load(&path, &options, |_| {}).unwrap();
     let mut rt = Runtime::new(loaded.plan, limits()).unwrap();
     let key = (keys.start() + keys.end()) / 2;
-    rt.trigger(input(key), key, 0.8).unwrap();
-    let mut out = vec![[0.0; 2]; 24000];
+    rt.trigger(input(key), key, velocity).unwrap();
+    let mut out = vec![[0.0; 2]; frames];
     rt.render(&mut out).unwrap();
+    Some((loaded.instrument, out))
+}
+
+/// [`render_frames`] for half a second at velocity 0.8: the instrument and its peak.
+fn render(
+    relative: &str,
+    keys: std::ops::RangeInclusive<u8>,
+) -> Option<(sampler_ir::Instrument, f32)> {
+    let (ir, out) = render_frames(relative, keys, 0.8, 24000)?;
     let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-    Some((loaded.instrument, peak))
+    Some((ir, peak))
 }
 
 #[test]
@@ -137,9 +149,11 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
 
 #[test]
 fn vista_cellos_render_from_loose_ncw_samples() {
-    let Some((ir, peak)) = render(
+    let Some((ir, out)) = render_frames(
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
         48..=48,
+        100.0 / 127.0,
+        144_000,
     ) else {
         return;
     };
@@ -149,11 +163,19 @@ fn vista_cellos_render_from_loose_ncw_samples() {
         .filter(|a| a.encoding == sampler_ir::Encoding::Ncw)
         .count();
     assert_eq!(ncw, ir.assets.len());
-    // Kontakt 8 plays this note at -45.0 dBFS peak (KONTAKT_REFERENCE.md,
-    // dynamics at their default); vista is quiet by design. The measured
-    // offset of this render is under +5 dB, so hold it to within 6 dB.
+    // Kontakt 8, scripts on, nothing sent, key 48 vel 100, scripts decide
+    // nothing KONTRA changes here: max(|L|, |R|) peak over 0.3-3 s is
+    // -38.6 dBFS (KONTAKT_REFERENCE.md s.13; the older -45.0 is a (L+R)/2
+    // mono mix). KONTRA measures +0.9 dB; the open residual is under 1 dB.
+    let peak = out[14_400..]
+        .iter()
+        .flatten()
+        .fold(0f32, |p, x| p.max(x.abs()));
     let db = 20.0 * f64::from(peak).log10();
-    assert!((db + 45.0).abs() < 6.0, "{db:.1} dBFS peak against Kontakt's -45.0");
+    assert!(
+        (db + 38.6).abs() < 1.0,
+        "{db:.1} dBFS max-channel peak against Kontakt's -38.6"
+    );
 }
 
 /// The first instrument of every installed library translates, or

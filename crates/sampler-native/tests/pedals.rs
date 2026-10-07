@@ -544,9 +544,9 @@ fn assert_audible(run: &Run, name: &str, key: u8, nth: usize, key_up: f64, gate:
     assert!(
         !run.gated
             || gates
-            .iter()
-            .flatten()
-            .any(|&g| (g as usize).abs_diff(gate) <= tolerance),
+                .iter()
+                .flatten()
+                .any(|&g| (g as usize).abs_diff(gate) <= tolerance),
         "{name}: note {key}#{nth}: no generated note released near frame {gate}; gates {gates:?}"
     );
     if gate > key_up + at(0.1) {
@@ -1017,7 +1017,11 @@ fn voice_limit(setup: Setup) {
     assert!(run.peak_voices <= voices);
     assert_eq!(run.other, [], "{name}: no admission is rejected");
     let admitted: Vec<u8> = run.played.iter().map(|p| p.key).collect();
-    assert_eq!(admitted, [a, a + 2, a + 4, a + 7, a], "{name}: admitted keys");
+    assert_eq!(
+        admitted,
+        [a, a + 2, a + 4, a + 7, a],
+        "{name}: admitted keys"
+    );
     // Stolen voices fade: they outlive the stealing block, and every one is
     // gone within the fade (plus the block it started in and the next).
     let fade = Stealing::for_limits(RATE as u32, voices).fade as usize;
