@@ -32,6 +32,15 @@ pub struct RuntimeStats {
 }
 
 impl Runtime {
+    /// Cap the callback instructions run per rendered block across all
+    /// callbacks (default unlimited). Callbacks over it resume next block in
+    /// order, so notes they play start a few blocks later but no block runs
+    /// long.
+    pub fn set_behavior_block_fuel(&mut self, fuel: usize) {
+        self.block_fuel = fuel;
+        self.block_fuel_left = fuel;
+    }
+
     pub fn stats(&self) -> RuntimeStats {
         RuntimeStats {
             stream_underruns: self.stream_underruns,
@@ -176,6 +185,11 @@ impl Runtime {
             offset += len;
         }
         debug_assert_eq!(self.now, end);
+        // The next block's events draw on a full allowance; the empty renders
+        // a host makes between events are not blocks.
+        if !output.is_empty() {
+            self.block_fuel_left = self.block_fuel;
+        }
         Ok(())
     }
 
