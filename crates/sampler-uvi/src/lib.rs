@@ -1758,6 +1758,14 @@ mod survey {
                         let Some((m, l)) = spec.split_once(':') else { continue };
                         use crate::script::Files;
                         let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
+                        if let Some(pattern) = l.strip_prefix('~') {
+                            for (i, line) in src.lines().enumerate() {
+                                if line.contains(pattern) {
+                                    println!("UX {m}:{}: {}", i + 1, line);
+                                }
+                            }
+                            continue;
+                        }
                         let l: usize = l.parse().unwrap();
                         for (i, line) in src.lines().enumerate() {
                             if i + 3 >= l && i < l + 1 {
