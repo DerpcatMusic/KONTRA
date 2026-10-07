@@ -165,7 +165,7 @@ fn root() -> PathBuf {
     {
         std::env::var_os("KONTRA_LOG_DIR")
             .map(PathBuf::from)
-            .or_else(|| dirs::cache_dir().map(|p| p.join("kontra2").join("logs")))
+            .or_else(|| dirs::cache_dir().map(|p| p.join("kontra").join("logs")))
             .unwrap_or_else(|| std::env::temp_dir().join("kontra-logs"))
     }
     #[cfg(test)]

@@ -157,6 +157,17 @@ impl Group {
         Ok(Cursor::new(&data[records + PRIVATE_TRAILER..]))
     }
 
+    /// The instrument bus (0-based) the group is routed to, or `None` for the
+    /// default route. Read from the fixed tail of the private data: every one of
+    /// 195 sampled local instruments stores 0..=15 or 255 there, Una Corda
+    /// routes its tone groups to bus 0 and its noise groups to bus 1 (its script
+    /// toggles those buses' racks), Areia its five mic positions to 0..=4.
+    pub fn bus_route(&self) -> Option<u8> {
+        let data = &self.0.private_data;
+        let at = data.len().checked_sub(20)?;
+        data.get(at).copied().filter(|&bus| bus < 16)
+    }
+
     fn source_reader(&self) -> Result<(Cursor<&[u8]>, u8), Error> {
         let mut reader = self.private_rack_reader()?;
         super::BParamArrayBParFX8::read(&mut reader, 8)?;

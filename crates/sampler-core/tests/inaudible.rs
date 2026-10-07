@@ -28,7 +28,13 @@ fn runtime() -> Runtime {
         envelope: Envelope::new(4, 0, 8, 1.0, RELEASE).unwrap(),
         playback: Playback::default(),
     };
-    let plan = Prepared::new(48000, vec![Pcm::new(48000, frames).unwrap()], vec![region], 64).unwrap();
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, frames).unwrap()],
+        vec![region],
+        64,
+    )
+    .unwrap();
     Runtime::new(
         plan,
         Limits {
@@ -50,7 +56,14 @@ fn runtime() -> Runtime {
 }
 
 fn input(key: u8) -> Input {
-    Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key, external_id: None }
+    Input {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+        key,
+        external_id: None,
+    }
 }
 
 /// Play `(key, gain)` notes, release after 1000 frames, render 4000 more.
@@ -61,7 +74,10 @@ fn play(notes: &[(u8, f64)]) -> (Runtime, Vec<Frame>) {
             input(key),
             key,
             1.,
-            Expression { gain, ..Expression::default() },
+            Expression {
+                gain,
+                ..Expression::default()
+            },
         )
         .unwrap();
     }
@@ -85,10 +101,17 @@ fn play(notes: &[(u8, f64)]) -> (Runtime, Vec<Frame>) {
 fn only_inaudible_releasing_voices_are_freed() {
     // The first note is -180 dB, the second full level; both release for ten seconds.
     let (rt, mixed) = play(&[(50, 1e-9), (51, 1.0)]);
-    assert_eq!(rt.voice_count(), 1, "the loud voice stays, the inaudible one is freed");
+    assert_eq!(
+        rt.voice_count(),
+        1,
+        "the loud voice stays, the inaudible one is freed"
+    );
     let (alone, reference) = play(&[(51, 1.0)]);
     assert_eq!(alone.voice_count(), 1);
-    assert!(mixed.iter().any(|f| f[0].abs() > 1e-3), "the loud voice sounds");
+    assert!(
+        mixed.iter().any(|f| f[0].abs() > 1e-3),
+        "the loud voice sounds"
+    );
     let worst = mixed
         .iter()
         .zip(&reference)
@@ -97,7 +120,16 @@ fn only_inaudible_releasing_voices_are_freed() {
     assert!(worst < 1e-6, "freeing moved the mix by {worst}");
     // Held voices are never freed, however quiet.
     let mut rt = runtime();
-    rt.trigger_with_expression(input(50), 50, 1., Expression { gain: 1e-9, ..Expression::default() }).unwrap();
+    rt.trigger_with_expression(
+        input(50),
+        50,
+        1.,
+        Expression {
+            gain: 1e-9,
+            ..Expression::default()
+        },
+    )
+    .unwrap();
     for _ in 0..100 {
         rt.render(&mut [[0.; 2]; 64]).unwrap();
     }

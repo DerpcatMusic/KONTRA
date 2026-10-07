@@ -186,7 +186,7 @@ fn indexed_state_and_nested_reads_drive_overlapping_notes_and_release_callbacks(
 }
 
 #[test]
-fn array_bounds_fault_without_overwriting_adjacent_state_or_assignment_destination() {
+fn array_bounds_read_zero_and_drop_writes_without_touching_adjacent_state() {
     for statement in [
         "%array[-1] := 7",
         "%array[2] := 7",
@@ -200,17 +200,23 @@ fn array_bounds_fault_without_overwriting_adjacent_state_or_assignment_destinati
         let mut rt = runtime(&source, 2);
         support::without_heap(|| {
             rt.trigger(input(1, 60), 60, 1.).unwrap();
-            for (cell, expected) in [(0, 10), (1, 20), (2, 99)] {
+            // Kontakt reads outside the array as 0 and drops the write.
+            let result = if statement.starts_with("$result") {
+                0
+            } else {
+                99
+            };
+            for (cell, expected) in [(0, 10), (1, 20), (2, result)] {
                 assert_eq!(
                     rt.script_cell(rt.active_plan(), ScriptInstanceId(0), cell),
                     Ok(expected)
                 );
             }
             rt.flush_behaviors(|_, _, outcome| {
-                assert_eq!(outcome, Outcome::Fault(Error::InvalidInput));
+                assert_eq!(outcome, Outcome::Finished);
                 true
             });
-            rt.flush_ended(|_| panic!("faults preserve input pairing"));
+            rt.flush_ended(|_| true);
             rt.note_off(input(1, 60), None).unwrap();
             rt.flush_ended(|_| true);
             assert_eq!(

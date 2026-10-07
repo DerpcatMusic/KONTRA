@@ -18,7 +18,11 @@ impl Rectifier {
         match self {
             Self::Full => x.abs(),
             Self::Half => {
-                if x > 0. { x } else { 0. }
+                if x > 0. {
+                    x
+                } else {
+                    0.
+                }
             }
         }
     }

@@ -52,7 +52,10 @@ impl Prepared {
     /// group, after [`Prepared::with_buses`]): script volume writes then set
     /// the fader at run time, scaling the bus's output and the sends in
     /// `follows` but not the others.
-    pub fn with_group_faders(mut self, faders: Vec<Option<crate::GroupFader>>) -> Result<Self, Error> {
+    pub fn with_group_faders(
+        mut self,
+        faders: Vec<Option<crate::GroupFader>>,
+    ) -> Result<Self, Error> {
         if faders.len() != self.group_count as usize {
             return Err(Error::InvalidInput);
         }
@@ -234,7 +237,12 @@ impl EngineLayers {
             instrument: Layer::default(),
             groups: authored.clone(),
             fader: (0..count)
-                .map(|g| prepared.group_faders.get(g).and_then(|f| f.as_ref().map(|f| f.bus)))
+                .map(|g| {
+                    prepared
+                        .group_faders
+                        .get(g)
+                        .and_then(|f| f.as_ref().map(|f| f.bus))
+                })
                 .collect(),
             authored,
             envelopes: vec![[None; 6]; count].into_boxed_slice(),
@@ -263,7 +271,13 @@ impl EngineLayers {
 
     pub fn layer(&self, group: Option<u32>) -> Layer {
         group
-            .and_then(|g| Some((g as usize, self.groups.get(g as usize)?, self.authored[g as usize])))
+            .and_then(|g| {
+                Some((
+                    g as usize,
+                    self.groups.get(g as usize)?,
+                    self.authored[g as usize],
+                ))
+            })
             .map_or(self.instrument, |(index, g, base)| {
                 let mut group = g.since(base);
                 if self.fader[index].is_some() {
@@ -276,7 +290,10 @@ impl EngineLayers {
     /// The bus fader level (linear) group `group`'s script volume sets, if
     /// its volume lives on a bus fader.
     fn fader(&self, group: usize) -> Option<(usize, f64)> {
-        Some((self.fader[group]?, 10f64.powf(self.groups[group].decibels / 20.0)))
+        Some((
+            self.fader[group]?,
+            10f64.powf(self.groups[group].decibels / 20.0),
+        ))
     }
 }
 
@@ -332,7 +349,10 @@ impl Runtime {
 
     /// Writes logged since the last call, oldest first.
     pub fn take_script_writes(&mut self) -> Vec<String> {
-        self.write_log.as_mut().map(std::mem::take).unwrap_or_default()
+        self.write_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     /// Set a note's "from script" modulator `id` for a frontend that drives
@@ -395,7 +415,14 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let plan = self.active_plan();
-        self.write_param(plan, ParamScope::Group, group, target, (value * scale).round() as i64, relative)
+        self.write_param(
+            plan,
+            ParamScope::Group,
+            group,
+            target,
+            (value * scale).round() as i64,
+            relative,
+        )
     }
 
     /// Fade a note's gain linearly from `from` (its current level when
@@ -414,7 +441,13 @@ impl Runtime {
         let now = self.now;
         let params = &mut self.note_params[note.0.index];
         let from = from.unwrap_or_else(|| params.fade.map_or(1.0, |f| f.at(now)));
-        params.fade = Some(Fade { from, to, start: now, frames, stop });
+        params.fade = Some(Fade {
+            from,
+            to,
+            start: now,
+            frames,
+            stop,
+        });
         Ok(())
     }
 
@@ -464,7 +497,9 @@ impl Runtime {
             return Ok(());
         };
         layer.write(target, value, relative)?;
-        if let (ParamScope::Group, ModTarget::Decibels, Ok(group)) = (scope, target, usize::try_from(index)) {
+        if let (ParamScope::Group, ModTarget::Decibels, Ok(group)) =
+            (scope, target, usize::try_from(index))
+        {
             let generation = self.plans.get_mut(plan.0).unwrap();
             if let Some((bus, level)) = generation.script.fader(group) {
                 generation.dsp.buses.fader[bus] = level;
@@ -663,12 +698,31 @@ mod tests {
     #[test]
     fn script_volume_moves_the_tapped_fader_not_the_pre_fader_send() {
         use sampler_ir as ir;
-        let send = |to, pre_fader| ir::GroupSend { to: ir::BusRef(to), gain: ir::Gain::UNITY, pre_fader };
-        let aux = |name: &str| ir::Bus { name: name.into(), chain: None, sends: Vec::new(), output: ir::Output::Master, gain: ir::Gain::UNITY };
+        let send = |to, pre_fader| ir::GroupSend {
+            to: ir::BusRef(to),
+            gain: ir::Gain::UNITY,
+            pre_fader,
+        };
+        let aux = |name: &str| ir::Bus {
+            name: name.into(),
+            chain: None,
+            sends: Vec::new(),
+            output: ir::Output::Master,
+            gain: ir::Gain::UNITY,
+        };
         let instrument = ir::Instrument {
-            assets: vec![ir::Asset { location: ir::AssetLocation::Path("a".into()), encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() }],
+            assets: vec![ir::Asset {
+                location: ir::AssetLocation::Path("a".into()),
+                encoding: ir::Encoding::Wav,
+                root_key: None,
+                loops: Vec::new(),
+            }],
             buses: vec![aux("pre"), aux("post")],
-            groups: vec![ir::Group { gain: ir::Gain::Linear(0.5), sends: vec![send(0, true), send(1, false)], ..Default::default() }],
+            groups: vec![ir::Group {
+                gain: ir::Gain::Linear(0.5),
+                sends: vec![send(0, true), send(1, false)],
+                ..Default::default()
+            }],
             zones: vec![ir::Zone {
                 keys: ir::KeyRange { low: 0, high: 127 },
                 pitch: ir::KeyTracking::Fixed,
@@ -681,11 +735,33 @@ mod tests {
         let pcm = vec![crate::Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()];
         let plan = crate::lower::lower(&instrument, 48000, pcm, |_, p| Ok(p)).unwrap();
         let limits = crate::Limits {
-            notes: 16, channels: 1, performances: 1, families: 16, expressions: 16, voices: 32,
-            decisions: 32, commands: 16, behaviors: 0, behavior_fuel: 0, behavior_cells: 0, note_cells: 0,
+            notes: 16,
+            channels: 1,
+            performances: 1,
+            families: 16,
+            expressions: 16,
+            voices: 32,
+            decisions: 32,
+            commands: 16,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
         };
         let mut rt = Runtime::new(plan, limits).unwrap();
-        rt.trigger(crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
+        rt.trigger(
+            crate::Input {
+                protocol: crate::Protocol::Native,
+                port: 0,
+                group: 0,
+                channel: 0,
+                key: 60,
+                external_id: None,
+            },
+            60,
+            1.,
+        )
+        .unwrap();
         let peaks = |rt: &mut Runtime| {
             let mut out = [[0.0; 2]; 64];
             rt.render(&mut out).unwrap();
@@ -696,18 +772,43 @@ mod tests {
         let ([pre, post, tap], master) = peaks(&mut rt);
         // The tap hears the voice before the fader (0.5); at -6 dB the fader
         // gives the direct output and the post-fader send 0.25 each.
-        assert!((tap - 0.5).abs() < 1e-3 && (pre - 0.5).abs() < 1e-3 && (post - 0.25).abs() < 1e-3, "{pre} {post} {tap}");
+        assert!(
+            (tap - 0.5).abs() < 1e-3 && (pre - 0.5).abs() < 1e-3 && (post - 0.25).abs() < 1e-3,
+            "{pre} {post} {tap}"
+        );
         assert!((master - (0.25 + 0.5 + 0.25)).abs() < 1e-3, "{master}");
         let plan = rt.active_plan;
-        rt.write_param(plan, ParamScope::Group, 0, ModTarget::Decibels, -12000, false).unwrap();
+        rt.write_param(
+            plan,
+            ParamScope::Group,
+            0,
+            ModTarget::Decibels,
+            -12000,
+            false,
+        )
+        .unwrap();
         let ([pre, post, _], master) = peaks(&mut rt);
         let fader = 10f32.powf(-12.0 / 20.0);
         assert!((pre - 0.5).abs() < 1e-3, "pre-fader send moved: {pre}");
         assert!((post - 0.5 * fader).abs() < 1e-3, "{post}");
-        assert!((master - (0.5 * fader + 0.5 + 0.5 * fader)).abs() < 2e-3, "{master}");
+        assert!(
+            (master - (0.5 * fader + 0.5 + 0.5 * fader)).abs() < 2e-3,
+            "{master}"
+        );
         // Closed: only the pre-fader send is heard.
-        rt.write_param(plan, ParamScope::Group, 0, ModTarget::Decibels, -150000, false).unwrap();
+        rt.write_param(
+            plan,
+            ParamScope::Group,
+            0,
+            ModTarget::Decibels,
+            -150000,
+            false,
+        )
+        .unwrap();
         let ([pre, post, _], master) = peaks(&mut rt);
-        assert!((pre - 0.5).abs() < 1e-3 && post < 1e-4 && (master - 0.5).abs() < 1e-3, "{pre} {post} {master}");
+        assert!(
+            (pre - 0.5).abs() < 1e-3 && post < 1e-4 && (master - 0.5).abs() < 1e-3,
+            "{pre} {post} {master}"
+        );
     }
 }
