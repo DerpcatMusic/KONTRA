@@ -121,6 +121,10 @@ pub enum Processor {
     Delay(Delay),
     /// Stereo compressor; the smoothed reduction lives in the stage's state.
     Compressor(CompressorSettings),
+    /// WaveShaper rectification (stateless).
+    Rectify(Rectifier),
+    /// Formant Crusher decimation; per-voice scalar path.
+    Decimate(Decimator),
     StateVariable(StateVariableFilter),
     /// Stereo reverb; bus scope only (it owns megabytes of state).
     Reverb(ReverbSettings),
@@ -155,6 +159,8 @@ impl Processor {
                 dry, wet, bypass, ..
             } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Compressor(settings) => settings.valid(),
+            Processor::Decimate(decimator) => decimator.valid(),
+            Processor::Rectify(_) => true,
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -166,8 +172,10 @@ mod convolution;
 mod delay;
 pub(super) mod lanes;
 mod reverb;
+mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
+pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
@@ -188,6 +196,8 @@ pub(super) enum PreparedProcessor {
         offset: usize,
     },
     Compressor(compressor::Compressor),
+    Rectify(Rectifier),
+    Decimate(Decimator),
     StateVariable(usize),
     /// Index into the bus graph's reverbs.
     Reverb(usize),
@@ -310,6 +320,8 @@ pub(super) fn compile_processors(
                 Processor::Compressor(settings) => {
                     PreparedProcessor::Compressor(settings.prepare(rate))
                 }
+                Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
+                Processor::Decimate(decimator) => PreparedProcessor::Decimate(decimator),
                 Processor::Reverb(settings) => {
                     let reverbs = reverbs.as_deref_mut().ok_or(Error::InvalidInput)?;
                     reverbs.push((settings, 0));
@@ -528,7 +540,9 @@ impl PreparedVoiceChain {
             .any(|stage| {
                 matches!(
                     stage,
-                    PreparedProcessor::Delay { .. } | PreparedProcessor::Compressor(_)
+                    PreparedProcessor::Delay { .. }
+                        | PreparedProcessor::Compressor(_)
+                        | PreparedProcessor::Decimate(_)
                 )
             })
     }
@@ -588,12 +602,14 @@ fn flush32(v: f32) -> f32 {
 #[derive(Clone, Copy, Default)]
 pub(super) struct ProcessorState {
     z: [[f64; 2]; 2],
+    /// Further state for stages that need more than `z` (the decimator).
+    aux: [f64; 3],
     delay_position: u32,
     delay_filled: u32,
 }
 impl ProcessorState {
     pub(super) fn finite(&self) -> bool {
-        self.z.iter().flatten().all(|v| v.is_finite())
+        self.z.iter().flatten().chain(&self.aux).all(|v| v.is_finite())
     }
 }
 
@@ -693,6 +709,12 @@ pub(super) fn process(
                 );
             }
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
+            PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
+            PreparedProcessor::Rectify(mode) => {
+                for channel in block.iter_mut() {
+                    channel[..len].iter_mut().for_each(|v| *v = mode.apply(*v));
+                }
+            }
             PreparedProcessor::Gain(gain) => {
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v *= gain);

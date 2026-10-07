@@ -88,6 +88,36 @@ impl Translation {
                     }
                 }
                 "DigitalEq" => self.digital_eq(node, &at, &mut out)?,
+                "WaveShaper" => {
+                    // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
+                    // internal modes 6 (full) and 7 (half). Public numbering
+                    // through the saved Mode is assumed equal to them.
+                    // ponytail: unverified mapping; other modes, the pre/post
+                    // filters, Amount, Knee and oversampling are not modelled.
+                    let mode = number(node, "Mode", 0.0)?;
+                    let rectifier = match mode {
+                        6.0 => ir::Rectifier::Full,
+                        7.0 => ir::Rectifier::Half,
+                        _ => {
+                            self.unsupported(&at, "WaveShaper mode", mode);
+                            placed.push((id, first, 0));
+                            continue;
+                        }
+                    };
+                    for (name, why, off) in [
+                        ("Mix", "WaveShaper mix", 1.0),
+                        ("PreFreq", "WaveShaper pre filter", 20000.0),
+                        ("PostFreq", "WaveShaper post filter", 20.0),
+                    ] {
+                        let v = number(node, name, off)?;
+                        if v != off {
+                            self.unsupported(&at, why, v);
+                        }
+                    }
+                    out.push(ir::Processor::Gain(db(number(node, "InputGain", 0.0)?)));
+                    out.push(ir::Processor::Rectify(rectifier));
+                    out.push(ir::Processor::Gain(db(number(node, "OutputGain", 0.0)?)));
+                }
                 "CompExp" => {
                     // Falcon manual, Compressor Expander: threshold dB, ratio,
                     // attack/release ms, manual makeup dB. The compressor law is

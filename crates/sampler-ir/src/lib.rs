@@ -919,6 +919,8 @@ pub enum Processor {
     Reverb(Reverb),
     /// Feed-forward compressor on the stereo pair.
     Compressor(Compressor),
+    /// Memoryless rectification of both channels.
+    Rectify(Rectifier),
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
@@ -937,6 +939,14 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rectifier {
+    /// `|x|`.
+    Full,
+    /// `max(x, 0)`.
+    Half,
 }
 
 /// A feed-forward compressor. The level law is the textbook hard-knee one;

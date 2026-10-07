@@ -203,6 +203,7 @@ impl Check<'_> {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
+                Processor::Rectify(_) => {}
                 Processor::Reverb(r) => {
                     for (v, field) in [
                         (r.decay_seconds, "reverb decay"),
