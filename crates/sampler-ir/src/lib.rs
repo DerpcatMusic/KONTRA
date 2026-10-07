@@ -921,6 +921,10 @@ pub enum Processor {
     StereoMatrix([[f64; 2]; 2]),
     /// Algorithmic stereo reverb over a summed signal: bus and master scope.
     Reverb(Reverb),
+    /// Feed-forward compressor on the stereo pair.
+    Compressor(Compressor),
+    /// Memoryless rectification of both channels.
+    Rectify(Rectifier),
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
@@ -939,6 +943,29 @@ pub enum Processor {
         wet: f64,
         bypass: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rectifier {
+    /// `|x|`.
+    Full,
+    /// `max(x, 0)`.
+    Half,
+}
+
+/// A feed-forward compressor. The level law is the textbook hard-knee one;
+/// only the linked detector (signed channel mean) is recovered from Kontakt.
+// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Compressor {
+    pub threshold_db: f64,
+    /// At least 1.
+    pub ratio: f64,
+    pub attack: Time,
+    pub release: Time,
+    pub makeup: Gain,
+    /// Detect on the signed mean of both channels and apply one gain to both.
+    pub link: bool,
 }
 
 /// Where a script finds an effect slot: `set_engine_par`'s group, slot and

@@ -382,3 +382,57 @@ fn set_parameter_reaches_the_runtime() {
     assert_eq!(rt.voice_stealing().map(|s| s.headroom), Some(5));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// One note of the sine through `inserts` on an aux bus, 4800 frames.
+fn through(inserts: &str, name: &str) -> Vec<[f32; 2]> {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    let sine: Vec<i16> = (0..48000)
+        .map(|i| ((i as f64 * 440.0 * std::f64::consts::TAU / 48000.0).sin() * 16000.0) as i16)
+        .collect();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &sine)).unwrap();
+    let program = dir.join("Inserts.uvip");
+    std::fs::write(&program, insert_program(Some(inserts))).unwrap();
+    let loaded = sampler_uvi::load(&program, 48000).unwrap();
+    let mut rt = Runtime::new(
+        loaded.plan,
+        Limits {
+            notes: 4,
+            channels: 1,
+            performances: 1,
+            families: 4,
+            expressions: 4,
+            voices: 8,
+            decisions: 16,
+            commands: 16,
+            behaviors: 0,
+            behavior_fuel: 0,
+            behavior_cells: 0,
+            note_cells: 0,
+        },
+    )
+    .unwrap();
+    let input = Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None };
+    rt.trigger(input, 60, 1.0).unwrap();
+    let mut out = vec![[0.0f32; 2]; 4800];
+    rt.render(&mut out).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    out
+}
+
+#[test]
+fn wave_shaper_rectifies_and_comp_exp_compresses() {
+    let peak = |out: &[[f32; 2]]| out[1000..].iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
+    let plain = through(r#"<Gain Volume="1"/>"#, "plain");
+    let full = through(r#"<WaveShaper Mode="6"/>"#, "full");
+    let half = through(r#"<WaveShaper Mode="7"/>"#, "half");
+    assert!(full.iter().flatten().all(|x| *x >= 0.0));
+    assert!(half.iter().flatten().all(|x| *x >= 0.0));
+    assert!((peak(&full) / peak(&plain) - 1.0).abs() < 0.01);
+    assert!(full[1000..].iter().flatten().sum::<f32>() > half[1000..].iter().flatten().sum::<f32>());
+    let squashed = through(
+        r#"<CompExp CompThreshold="-30" CompRatio="30" CompAttack="0" CompRelease="100"/>"#,
+        "comp",
+    );
+    assert!(peak(&squashed) < peak(&plain) * 0.2, "{} vs {}", peak(&squashed), peak(&plain));
+}
