@@ -181,7 +181,12 @@ fn attack_curve_bends_the_attack_ramp() {
         level(&mut rt)[0]
     };
     // Full curve starts fast, zero curve starts slow.
-    assert!(first(1_000_000) > first(0) * 2., "{} {}", first(1_000_000), first(0));
+    assert!(
+        first(1_000_000) > first(0) * 2.,
+        "{} {}",
+        first(1_000_000),
+        first(0)
+    );
 }
 
 #[test]
@@ -406,7 +411,10 @@ fn effect_slot_writes_drive_a_bus_mix_block() {
                         },
                         Processor::Gain(2.),
                     ],
-                    sends: vec![BusSend { bus: None, gain: 1. }],
+                    sends: vec![BusSend {
+                        bus: None,
+                        gain: 1.,
+                    }],
                     tail_frames: 0,
                 }],
                 vec![Some(0), Some(0)],
