@@ -344,6 +344,60 @@ fn selection_summary(records: Vec<sampler_core::SelectionRecord>) -> Value {
     json!({"records": records.len(), "suppressed": suppressed, "key_unmapped": unmapped, "verdicts": counts, "first": first})
 }
 
+/// A fresh runtime for `item` with `ccs` already applied, for the MPE probe.
+fn fresh_runtime(item: &Item, ccs: &[(u8, u8)]) -> Option<Runtime> {
+    let (_, Some((Subject::Plan(loaded), _))) = load_item(item) else {
+        return None;
+    };
+    let limits = Limits {
+        notes: 64,
+        channels: 16,
+        performances: 1,
+        expressions: 64,
+        families: 64,
+        decisions: 256,
+        voices: 512,
+        commands: 256,
+        behaviors: 16,
+        behavior_fuel: 1 << 20,
+        behavior_cells: loaded.plan.behavior_local_count().saturating_mul(16),
+        note_cells: loaded.plan.note_cell_count().saturating_mul(64),
+    };
+    let mut rt = Runtime::new(loaded.plan, limits).ok()?;
+    let mut groups = [None; 16];
+    groups[0] = Some(Version::Midi1);
+    let mut ingress = Ingress::new(0, groups);
+    for &(cc, v) in ccs {
+        let word = [0x20B0_0000 | u32::from(cc) << 8 | u32::from(v)];
+        let packet = Packets::new(&word).next()?.ok()?;
+        ingress.apply(&mut rt, packet).ok()?;
+    }
+    Some(rt)
+}
+
+/// Does a note on an MPE member channel follow per-note bend and pressure?
+fn mpe_probe(item: &Item, pick: Pick, ccs: &[(u8, u8)]) -> Value {
+    if fresh_runtime(item, ccs).is_none() {
+        return json!({"error": "no runtime"});
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sampler_midi::mpe_response(
+            || fresh_runtime(item, ccs).expect("runtime built once already"),
+            pick.key,
+        )
+    }));
+    match result {
+        Ok(Ok(r)) => json!({
+            "pitch_ratio": r.pitch_ratio,
+            "pressure_db": r.pressure_db,
+            "pitch_responds": r.pitch_responds(),
+            "pressure_responds": r.pressure_responds(),
+        }),
+        Ok(Err(e)) => json!({"error": normalize(&format!("{e:?}"))}),
+        Err(_) => json!({"error": "panic"}),
+    }
+}
+
 /// Controllers a player would have up: mod wheel, expression and CC2 high,
 /// plus every plain controller the instrument's modulators read. (Controllers
 /// scripts read directly are not listed in the IR, so they are not covered.)
@@ -694,6 +748,12 @@ fn load_item(item: &Item) -> (Value, Option<(Subject, Pick)>) {
 /// The pipeline stage a record ended in: the failing stage, or the last one
 /// reached. Stages inside `sampler_kontakt::load` are not separable until its
 /// errors carry them, so those report as `load`.
+/// The tail is measured 4 to 5 s after release: a stored release that long
+/// explains it.
+fn long_release(r: &Value) -> bool {
+    r["stored_release_s"].as_f64().is_some_and(|s| s >= 4.0)
+}
+
 fn stage_of(r: &Value) -> &'static str {
     if r["load"]["ok"] != true {
         return match r["load"]["stage"].as_str() {
@@ -723,7 +783,10 @@ fn stage_of(r: &Value) -> &'static str {
     if s["finite"] == false || !s["script_faults"].as_array().is_none_or(Vec::is_empty) {
         return "render";
     }
-    if s["stuck_voices"].as_u64().unwrap_or(0) > 0 && s["tail_peak_db"].as_f64().is_some_and(|d| d > -60.0) {
+    if s["stuck_voices"].as_u64().unwrap_or(0) > 0
+        && s["tail_peak_db"].as_f64().is_some_and(|d| d > -60.0)
+        && !long_release(r)
+    {
         return "release";
     }
     "ok"
@@ -746,7 +809,29 @@ fn check(item: &Item) -> Value {
         record["scripts"] = scripts(&loaded);
         record["unsupported"] = json!(categories(&loaded.instrument().unsupported));
         record["unsupported_total"] = json!(loaded.instrument().unsupported.len());
+        // Longest release any envelope stores: a tail up to that long is data.
+        record["stored_release_s"] = json!(
+            loaded
+                .instrument()
+                .modulators
+                .iter()
+                .filter_map(|m| match &m.source {
+                    sampler_ir::ModulationSource::Envelope(e) if !e.one_shot => {
+                        Some(e.release.seconds())
+                    }
+                    _ => None,
+                })
+                .fold(0.0f64, f64::max)
+        );
         let ccs = musical_ccs(loaded.instrument());
+        {
+            let m = sampler_kontakt::articulation_migration(loaded.instrument());
+            record["articulation"] = json!({
+                "switches_found": m.switches_found,
+                "migrated": m.migrated,
+                "unrecognised": m.unrecognised.iter().take(5).map(|u| normalize(u)).collect::<Vec<_>>(),
+            });
+        }
         let silent = |s: &Sound| s.peak <= 1e-4 || s.note != "started";
         let first = play(loaded, pick, false, &[]);
         let first = match first {
@@ -787,6 +872,7 @@ fn check(item: &Item) -> Value {
                         };
                     }
                     record["musical"] = musical;
+                    record["mpe"] = mpe_probe(item, pick, &ccs);
                 }
             }
         }
@@ -1022,7 +1108,11 @@ fn summary(out: &Path, md: &Path) {
                 if sound["stuck_voices"].as_u64().unwrap_or(0) > 0
                     && sound["tail_peak_db"].as_f64().is_some_and(|d| d > -60.0)
                 {
-                    reason_set.insert("audible output 5 s after release (> -60 dBFS)".into());
+                    reason_set.insert(if long_release(r) {
+                        "long release (stored), not a fault".into()
+                    } else {
+                        "audible output 5 s after release (> -60 dBFS)".into()
+                    });
                 }
                 for f in sound["script_faults"]
                     .as_array()
@@ -1084,7 +1174,35 @@ fn summary(out: &Path, md: &Path) {
     text += &top(&unsupported, 25);
     text += "\n\n## Script diagnostics (instruments with at least one)\n\n| instruments | kind |\n|---|---|\n";
     text += &top(&warnings, 10);
-    text += "\n";
+    text += "\n\n## By pipeline stage (where each record ended)\n\n| instruments | stage |\n|---|---|\n";
+    let mut stages = BTreeMap::<String, usize>::new();
+    let (mut sw, mut mig, mut mpe_n, mut pitch, mut press) = (0, 0, 0, 0, 0);
+    let (mut misses, mut allocs, mut loads) = (0, 0, Vec::<f64>::new());
+    for r in &records {
+        *stages.entry(r["stage"].as_str().unwrap_or("(none)").to_string()).or_default() += 1;
+        sw += r["articulation"]["switches_found"].as_u64().unwrap_or(0);
+        mig += r["articulation"]["migrated"].as_u64().unwrap_or(0);
+        if r["mpe"]["pitch_ratio"].is_number() {
+            mpe_n += 1;
+            pitch += usize::from(r["mpe"]["pitch_responds"] == true);
+            press += usize::from(r["mpe"]["pressure_responds"] == true);
+        }
+        let p = &r["perf"];
+        misses += usize::from(p["render"]["deadline_misses"].as_u64().unwrap_or(0) > 0);
+        allocs += usize::from(p["render"]["audio_thread_allocs"].as_u64().unwrap_or(0) > 0);
+        if let Some(ms) = p["load_ms"].as_f64() {
+            loads.push(ms);
+        }
+    }
+    text += &top(&stages, 20);
+    loads.sort_by(f64::total_cmp);
+    let q = |f: f64| loads.get(((loads.len().max(1) - 1) as f64 * f) as usize).copied().unwrap_or(0.0);
+    text += &format!(
+        "\n\n## Probes and performance\n\n- keyswitch articulations found {sw}, migrated to zone selectors {mig}\n- MPE (instruments probed {mpe_n}): pitch responds {pitch}, pressure responds {press}\n- instruments with at least one 64-frame deadline miss: {misses} (timing is only evidence when `loadavg1` is low)\n- instruments allocating on the audio thread: {allocs}\n- load time p50 {:.0} ms, p99 {:.0} ms, max {:.0} ms\n",
+        q(0.5),
+        q(0.99),
+        q(1.0)
+    );
     std::fs::write(md, text).expect("write summary");
 }
 
