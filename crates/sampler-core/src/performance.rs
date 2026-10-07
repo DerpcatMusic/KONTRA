@@ -97,6 +97,8 @@ pub(super) struct State {
     pub controllers: [u32; 128],
     /// The virtual controller [`crate::PREVIOUS_KEY`]: see [`previous_key_value`].
     pub previous: u32,
+    /// The virtual controllers [`crate::AXIS_BASE`]`..` : the active choice of each axis.
+    pub axes: [u32; crate::MAX_AXES],
     owners: usize,
 }
 
@@ -106,7 +108,10 @@ impl State {
         self.controllers
             .get(usize::from(controller))
             .copied()
-            .unwrap_or(self.previous)
+            .unwrap_or_else(|| match usize::from(controller) - 128 {
+                0 => self.previous,
+                n => self.axes[n - 1],
+            })
     }
 }
 
@@ -139,6 +144,7 @@ impl PerformanceState {
                 articulation: 0,
                 controllers: RESET_CONTROLLERS,
                 previous: 0,
+                axes: [0; crate::MAX_AXES],
                 owners: 0
             };
             capacity
@@ -229,11 +235,21 @@ impl Runtime {
     }
 
     pub(super) fn articulation_now(&mut self, performance: usize, value: u32) {
-        if self.performance_state.current(performance).articulation != value {
+        let axis = (value >> 16) as usize & 0xff;
+        if value >> 24 == AXIS_SWITCH >> 24 && axis < crate::MAX_AXES {
+            let choice = value & 0xffff;
+            if self.performance_state.current(performance).axes[axis] != choice {
+                self.performance_state.edit(performance).axes[axis] = choice;
+            }
+        } else if self.performance_state.current(performance).articulation != value {
             self.performance_state.edit(performance).articulation = value;
         }
     }
 }
+
+/// Tag in the top byte of a keyswitch's value: it sets nested selector `axis` to `choice`
+/// (`AXIS_SWITCH | axis << 16 | choice`) instead of the articulation.
+pub const AXIS_SWITCH: u32 = 0xA5 << 24;
 
 /// Controller values before any are received: MIDI's reset state (RP-015), in
 /// which expression (CC11) is full and everything else is zero. Instruments

@@ -46,7 +46,7 @@ infoProcess.arguments = ["python3", "-c", "import json,sys; sys.path.insert(0,'.
 let infoPipe = Pipe(); infoProcess.standardOutput = infoPipe
 try infoProcess.run(); infoProcess.waitUntilExit(); require(infoProcess.terminationStatus == 0, "Production package declaration generation failed")
 let appInfo = try JSONSerialization.jsonObject(with: infoPipe.fileHandleForReading.readDataToEndOfFile()) as! [String: Any]
-let registrar = try bundle("KONTRA2.app", "APPL", ["UTImportedTypeDeclarations": appInfo["UTImportedTypeDeclarations"]!, "CFBundleDocumentTypes": appInfo["CFBundleDocumentTypes"]!])
+let registrar = try bundle("KONTRA.app", "APPL", ["UTImportedTypeDeclarations": appInfo["UTImportedTypeDeclarations"]!, "CFBundleDocumentTypes": appInfo["CFBundleDocumentTypes"]!])
 
 require(LSRegisterURL(registrar as CFURL, true) == noErr, "Owned application registration failed")
 for url in plugins {

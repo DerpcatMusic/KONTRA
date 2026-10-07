@@ -270,7 +270,7 @@ fn cache_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return Some(std::env::temp_dir().join(format!("kontra-test-{}", std::process::id())).join("covers"));
     }
-    Some(dirs::cache_dir()?.join("kontra2").join("covers"))
+    Some(dirs::cache_dir()?.join("kontra").join("covers"))
 }
 
 /// [`render`], from the app's cache when drawn before; drawn, it is kept there.

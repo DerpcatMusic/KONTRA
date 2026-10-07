@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.148"
+version = "0.3.203"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -87,6 +87,12 @@ required-features = ["standalone"]
 panic = "unwind"
 lto = "thin"
 strip = "symbols"
+
+# The corpus-health scoreboard: release code, with function names kept so a
+# panic is recorded as crate::module::fn (cargo build --profile corpus).
+[profile.corpus]
+inherits = "release"
+strip = "none"
 
 [profile.dev]
 debug = "line-tables-only"
