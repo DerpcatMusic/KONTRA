@@ -1233,6 +1233,13 @@ impl Lowering<'_> {
             .with_impulses(impulses)
             .with_buses(buses, bindings)
             .map_err(core(Stage::Buses, "buses"))?;
+        let plan = plan.with_bus_addresses(
+            self.ir
+                .bus_addresses
+                .iter()
+                .map(|&(address, bus)| (address, bus.0))
+                .collect(),
+        );
         if faders.iter().all(Option::is_none) {
             return Ok(plan);
         }

@@ -805,8 +805,9 @@ impl Runtime {
                 state.chain = r.chain;
                 state.group = group;
                 self.enforce_voice_limits(plan, group, voice);
+                let routed = self.plans.get(plan.0).unwrap().script.bus(group, r.bus);
                 let state = self.voices.get_mut(voice.0).unwrap();
-                state.bus = r.bus;
+                state.bus = routed;
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
