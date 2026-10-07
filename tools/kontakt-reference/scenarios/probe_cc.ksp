@@ -6,6 +6,6 @@ declare ui_label $m(6,2)
 set_text($l, "waiting")
 end on
 on note
-set_text($l, "1:" & %CC[1] & " 2:" & %CC[2] & " 4:" & %CC[4] & " 7:" & %CC[7] & " 10:" & %CC[10])
-set_text($m, "11:" & %CC[11] & " 64:" & %CC[64] & " pb:" & %CC[$VCC_PITCH_BEND] & " at:" & %CC[$VCC_MONO_AT])
+set_text($l, "1:" & %CC[1] & " 2:" & %CC[2] & " 7:" & %CC[7] & " 10:" & %CC[10] & " 11:" & %CC[11])
+set_text($m, "64:" & %CC[64] & " pb:" & %CC[$VCC_PITCH_BEND] & " at:" & %CC[$VCC_MONO_AT])
 end on
