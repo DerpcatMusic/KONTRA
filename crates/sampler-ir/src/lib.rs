@@ -432,6 +432,10 @@ pub enum Trigger {
     First,
     /// Only when another key is already held.
     Legato,
+    /// A recorded transition: only when this key minus the most recent
+    /// still-held key is `low..=high` semitones (negative: stepping down), so a
+    /// legato instrument can place one sample per interval.
+    Transition { low: i8, high: i8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

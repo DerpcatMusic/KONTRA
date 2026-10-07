@@ -201,15 +201,6 @@ fn amplitude_envelope_converts_source_time_to_frames() {
 fn unexecutable_meaning_is_rejected_with_its_owner() {
     let pcm = || vec![constant(0.1), constant(0.2), constant(0.3), constant(0.05)];
     let mut ir = instrument();
-    ir.zones[1].trigger = ir::Trigger::Legato;
-    assert_eq!(
-        rejected(&ir, pcm()),
-        LowerError::Unsupported {
-            owner: "zone 1".into(),
-            feature: Feature::Trigger(ir::Trigger::Legato)
-        }
-    );
-    let mut ir = instrument();
     ir.zones[2].selection = Some(ir::Selection {
         sequence: ir::SequenceRef(0),
         take: ir::Take::Probability {
@@ -566,4 +557,49 @@ fn monophonic_release_groups_cut_the_same_notes_earlier_voices_only() {
     assert_eq!(voices(&mut rt, 60), 3);
     // Another key leaves both alone.
     assert_eq!(voices(&mut rt, 72), 5);
+}
+
+/// A recorded-legato layout: a plain attack on a first note, and one transition
+/// sample per interval (a step up, a step down) when another key is held.
+#[test]
+fn transition_zones_follow_the_interval_from_the_held_key() {
+    let zone = |asset, trigger| ir::Zone {
+        keys: ir::KeyRange { low: 0, high: 127 },
+        pitch: ir::KeyTracking::Fixed,
+        velocity: ir::VelocityResponse::None,
+        trigger,
+        ..ir::Zone::new(ir::AssetRef(asset))
+    };
+    let ir = ir::Instrument {
+        assets: ["first", "up", "down"].map(asset).to_vec(),
+        zones: vec![
+            zone(0, ir::Trigger::First),
+            zone(1, ir::Trigger::Transition { low: 1, high: 12 }),
+            zone(2, ir::Trigger::Transition { low: -12, high: -1 }),
+        ],
+        ..Default::default()
+    };
+    let plan = lower(
+        &ir,
+        48000,
+        vec![constant(0.1), constant(0.2), constant(0.4)],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let mut out = [[0.0; 2]; 64];
+    let mut start = |rt: &mut Runtime, key| {
+        rt.trigger(input(key), key, 1.0).unwrap();
+        rt.render(&mut out).unwrap();
+        out[32][0]
+    };
+    // Nothing held: the first-note sample.
+    assert!((start(&mut rt, 60) - 0.1).abs() < 1e-6);
+    rt.note_off(input(60), None).unwrap();
+    // A fresh first note again after release (the old note is no longer held).
+    assert!((start(&mut rt, 64) - 0.1).abs() < 1e-6);
+    // 64 held: 67 is a step up (+3) and sounds with the held note.
+    assert!((start(&mut rt, 67) - (0.1 + 0.2)).abs() < 1e-6);
+    // 67 is the most recent held key: 62 is 5 below it.
+    assert!((start(&mut rt, 62) - (0.1 + 0.2 + 0.4)).abs() < 1e-6);
 }

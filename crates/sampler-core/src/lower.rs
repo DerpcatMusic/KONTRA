@@ -495,9 +495,6 @@ impl Lowering<'_> {
 
     fn zone(&self, i: usize, zone: &ir::Zone) -> Result<(Region, Option<VoiceChain>), LowerError> {
         let owner = format!("zone {i}");
-        if let ir::Trigger::First | ir::Trigger::Legato = zone.trigger {
-            return Err(unsupported(owner, Feature::Trigger(zone.trigger)));
-        }
         let root_key = match zone.pitch {
             ir::KeyTracking::Tracked { root }
             | ir::KeyTracking::Scaled {
@@ -1406,7 +1403,12 @@ impl Lowering<'_> {
     }
 
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self.ir.zones.iter().all(|z| z.conditions.is_empty()) {
+        if self
+            .ir
+            .zones
+            .iter()
+            .all(|z| z.conditions.is_empty() && previous_key(z.trigger).is_none())
+        {
             return Ok(plan);
         }
         // A 7-bit value covers every 32-bit value that scales down to it.
@@ -1422,6 +1424,7 @@ impl Lowering<'_> {
                         low: u32::from(c.low) << 25,
                         high: (u32::from(c.high) << 25) | 0x01ff_ffff,
                     })
+                    .chain(previous_key(z.trigger))
                     .collect()
             })
             .collect();
@@ -1429,6 +1432,22 @@ impl Lowering<'_> {
         plan.with_controllers(conditions, count)
             .map_err(core(Stage::Controllers, "controller ranges"))
     }
+}
+
+/// The previous-key condition a trigger kind stands for: no other key held
+/// (first), any other held (legato), or a recorded interval (transition).
+fn previous_key(trigger: ir::Trigger) -> Option<ControllerCondition> {
+    let (low, high) = match trigger {
+        ir::Trigger::First => (None, None),
+        ir::Trigger::Legato => (Some(-127), Some(127)),
+        ir::Trigger::Transition { low, high } => (Some(low.into()), Some(high.into())),
+        _ => return None,
+    };
+    Some(ControllerCondition {
+        controller: crate::PREVIOUS_KEY,
+        low: crate::previous_key_value(low),
+        high: crate::previous_key_value(high),
+    })
 }
 
 /// Per-channel gains for a stereo source.
