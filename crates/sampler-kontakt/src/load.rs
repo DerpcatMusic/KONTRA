@@ -66,6 +66,19 @@ pub struct Loaded {
     pub resources: Option<Resources>,
 }
 
+impl Loaded {
+    /// The controllers that drive loudness, most used first, each with its
+    /// value before any is received (CC11 full, the rest 0; Kontakt's
+    /// power-on state). A host can show "dynamics: CC1 (now 0)" on load.
+    pub fn dynamics(&self) -> Vec<(u8, f64)> {
+        self.instrument
+            .amplitude_controllers()
+            .into_iter()
+            .map(|cc| (cc, if cc == 11 { 1.0 } else { 0.0 }))
+            .collect()
+    }
+}
+
 /// Load the Kontakt instrument at `path` as a plan at `options.rate`.
 pub fn load(
     path: &Path,
