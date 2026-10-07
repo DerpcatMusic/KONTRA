@@ -770,6 +770,7 @@ impl Translation {
         let kind = node.tag_name().name();
         let seconds =
             |name, max| number(node, name, 0.0).map(|t| ir::Time::Seconds(t.clamp(0.0, max)));
+        let ahd = kind == "AHD";
         let mut envelope = ir::Envelope {
             delay: if kind == "DAHDSR" {
                 seconds("DelayTime", 10.0)?
@@ -777,18 +778,23 @@ impl Translation {
                 ir::Time::ZERO
             },
             attack: seconds("AttackTime", 10.0)?,
-            hold: if kind == "DAHDSR" {
+            hold: if kind != "AnalogADSR" {
                 seconds("HoldTime", 10.0)?
             } else {
                 ir::Time::ZERO
             },
             decay: seconds("DecayTime", 30.0)?,
-            sustain: number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0),
+            // AHD has no sustain stage: it falls to zero after the decay.
+            sustain: if ahd { 0.0 } else { number(node, "SustainLevel", 1.0)?.clamp(0.0, 1.0) },
             release: number(node, "ReleaseTime", 0.05)
                 .map(|t| ir::Time::Seconds(t.clamp(0.0, 10.0)))?,
             ..Default::default()
         };
-        if kind == "DAHDSR" {
+        if ahd {
+            // Note-off behaviour of a running AHD is not measured; the default release applies.
+            self.unsupported(&at, "AHD note-off release (default release used)", "");
+        }
+        if kind != "AnalogADSR" {
             // The native envelope curve `expm1(k·t)/expm1(k)` is exactly v1's
             // `envelope_curve` (src/uvi/modulation.rs) at k = 2·ln((1+c)/(1-c)),
             // so a DAHDSR's per-stage curve translates without approximation.
