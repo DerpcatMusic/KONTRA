@@ -424,6 +424,7 @@ pub fn lower_with(
     plan = lowering.releases(plan)?;
     plan = lowering.articulations(plan)?;
     plan = lowering.controllers(plan)?;
+    plan = lowering.axes(plan)?;
     // The instrument's own bend depth (Kontakt's pitch-bend modulator) is the
     // plain MIDI default range; without one, the MIDI default of 2 semitones.
     if let Some(range) = instrument
@@ -1418,12 +1419,32 @@ impl Lowering<'_> {
         .map_err(core(Stage::Articulations, "articulations"))
     }
 
+    /// Keyswitches for the nested selectors' choices.
+    fn axes(&self, plan: Prepared) -> Result<Prepared, LowerError> {
+        let keys: Vec<_> = self
+            .ir
+            .axes
+            .iter()
+            .enumerate()
+            .flat_map(|(axis, a)| {
+                a.choices.iter().enumerate().flat_map(move |(choice, c)| {
+                    c.switch_keys.iter().map(move |&key| (key, axis, choice as u32))
+                })
+            })
+            .collect();
+        if keys.is_empty() {
+            return Ok(plan);
+        }
+        plan.with_axis_switches(keys)
+            .map_err(core(Stage::Articulations, "nested selector keys"))
+    }
+
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
         if self
             .ir
             .zones
             .iter()
-            .all(|z| z.conditions.is_empty() && previous_key(z.trigger).is_none())
+            .all(|z| z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none())
         {
             return Ok(plan);
         }
@@ -1441,6 +1462,14 @@ impl Lowering<'_> {
                         high: (u32::from(c.high) << 25) | 0x01ff_ffff,
                     })
                     .chain(previous_key(z.trigger))
+                    .chain(z.axes.iter().map(|p| {
+                        let value = p.choice as u32;
+                        ControllerCondition {
+                            controller: crate::AXIS_BASE.saturating_add(p.axis as u8),
+                            low: value,
+                            high: value,
+                        }
+                    }))
                     .collect()
             })
             .collect();

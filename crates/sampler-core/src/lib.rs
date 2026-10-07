@@ -40,7 +40,7 @@ pub use control::{
 };
 mod controller_event;
 mod performance;
-pub use performance::{Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -108,7 +108,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
+    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
     service_mipmaps,
 };
 mod integer;
