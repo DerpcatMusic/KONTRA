@@ -318,7 +318,7 @@ impl BPatchHeaderV42 {
             pcm_data_len,
             is_monolith,
             min_supported_version,
-            /// Almost always 0, 1 in Rise and Hit Library
+            // Almost always 0, 1 in Rise and Hit Library
             u_c,
             cat_icon_idx,
             instrument_author,
@@ -412,6 +412,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_header_v1_read() -> Result<(), NKSError> {
         let file = File::open("tests/data/Objects/Kontakt/BPatchHeaderV1/BPatchHeaderV1-000")?;
         println!("{:?}", BPatchHeader::read_le(file)?);
@@ -419,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_header_v2_read() -> Result<(), NKSError> {
         let file = File::open("tests/data/Objects/Kontakt/BPatchHeaderV2/BPatchHeaderV2-000")?;
         println!("{:?}", BPatchHeader::read_le(file)?);
@@ -426,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_header_v42_read() -> Result<(), NKSError> {
         let file = File::open("tests/data/Objects/Kontakt/BPatchHeaderV42/BPatchHeaderV42-000")?;
         println!("{:?}", BPatchHeader::read_le(file)?);

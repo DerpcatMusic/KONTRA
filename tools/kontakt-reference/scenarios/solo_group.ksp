@@ -1,0 +1,9 @@
+on init
+declare $g
+end on
+on note
+ignore_event($EVENT_ID)
+disallow_group($ALL_GROUPS)
+allow_group(%CC[20])
+play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, -1)
+end on

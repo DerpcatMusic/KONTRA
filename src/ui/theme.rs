@@ -306,8 +306,6 @@ pub enum Icon {
     Fork,
     /// A tick: a set check box.
     Check,
-    /// A framed landscape: a library's own pictures.
-    Picture,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -403,11 +401,6 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(8., 10.8), (8., 14.8)]),
             ],
             Icon::Check => vec![line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
-            Icon::Picture => vec![
-                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
-                line(&[(2.5, 11.), (6., 7.5), (8.5, 10.), (10., 8.5), (13.5, 11.5)]),
-                dot(10.5, 6.),
-            ],
             Icon::Recent => vec![
                 Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),
@@ -516,41 +509,6 @@ pub fn dropdown(ui: &mut Ui, id: impl Into<Id>, text: &str, name: &str) -> (bool
     (hit, interactive(el, false))
 }
 
-/// A labelled number to drag, type or step. Boxes share one width, so
-/// they line up down a column.
-pub fn number(
-    ui: &mut Ui,
-    id: impl Into<Id>,
-    label: &str,
-    value: &mut f64,
-    range: RangeInclusive<f64>,
-    display: String,
-) -> El {
-    let id: Id = id.into();
-    let reserve = display.clone();
-    // MUI's box drags sideways; ours goes up and down like a knob (up
-    // raises, Shift for fine): its sideways step is undone, ours applied.
-    let before = *value;
-    let c = drag_value(ui, id.clone(), label, value, range.clone()).size(S);
-    if ui.get(id.clone()).dragged {
-        *value = before;
-    }
-    drag(ui, id.as_str(), value, &range, TRAVEL, true);
-    row![
-        caption(label).fill(secondary()).lines(1).flex(1).min_w(0),
-        c.el.value_text(display)
-            .el()
-            .cursor(Cursor::ResizeV)
-            .h(CONTROL)
-            .reserve(reserve)
-            .min_w(CONTROL * 2.)
-            .shrink(0)
-    ]
-    .gap(SPACE)
-    .align(Align::Center)
-    .shrink(0)
-}
-
 /// How a slider maps, marks and reads its value.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Fader {
@@ -579,28 +537,6 @@ impl Fader {
         length: None,
     };
 
-    /// A plain slider over `range`, filled from its low end.
-    pub const fn over(range: &RangeInclusive<f64>, reset: f64, widest: &'static str) -> Self {
-        Self {
-            origin: *range.start(),
-            detent: None,
-            reset,
-            widest,
-            vertical: false,
-            length: None,
-        }
-    }
-
-    /// The same, bipolar: filled from and marked at the range's middle.
-    pub fn bipolar(range: &RangeInclusive<f64>, reset: f64, widest: &'static str) -> Self {
-        let mid = (range.start() + range.end()) / 2.;
-        Self {
-            origin: mid,
-            detent: Some(mid),
-            ..Self::over(range, reset, widest)
-        }
-    }
-
     /// A track `length` long.
     pub const fn length(self, length: f64) -> Self {
         Self {
@@ -609,13 +545,6 @@ impl Fader {
         }
     }
 
-    /// Up and down.
-    pub const fn vertical(self) -> Self {
-        Self {
-            vertical: true,
-            ..self
-        }
-    }
 }
 
 thread_local! {
@@ -927,82 +856,6 @@ pub fn fader(
     (value.to_bits() != before.to_bits(), el)
 }
 
-/// The shared KONTRA control face, fitted by its caller.
-pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
-    canvas(move |s| {
-        let (cx, cy) = (s.width / 2., s.height / 2.);
-        let weight = TIGHT * 0.75;
-        let r = s.width.min(s.height) / 2. - weight;
-        let (start, sweep) = (0.75 * PI, 1.5 * PI);
-        let mut draw = vec![
-            Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
-            Draw::stroke(
-                arc(cx, cy, r, start, sweep),
-                Role::Ink.alpha(0.14 + 0.06 * lift),
-                weight,
-            ),
-        ];
-        let (a, b) = if at < from { (at, from) } else { (from, at) };
-        if b - a > 0.002 {
-            draw.push(Draw::stroke(
-                arc(cx, cy, r, start + sweep * a, sweep * (b - a)),
-                value_ink(0.),
-                weight,
-            ));
-        }
-        let angle = start + sweep * at;
-        let (inner, outer) = (r * 0.2, r - weight * 2.);
-        draw.push(Draw::stroke(
-            DrawPath::polyline(
-                [
-                    Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner),
-                    Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer),
-                ],
-                false,
-            ),
-            value_ink(lift),
-            weight,
-        ));
-        if focused {
-            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
-        }
-        draw
-    })
-}
-
-/// A flat knob: a 270° track, a neutral arc from the origin to the value and
-/// a pointer. Drags vertically; wheel, arrows, double-click as a fader.
-pub fn dial(
-    ui: &mut Ui,
-    id: &str,
-    name: &str,
-    value: &mut f64,
-    range: RangeInclusive<f64>,
-    kind: Fader,
-) -> (bool, El) {
-    let (lo, hi) = (*range.start(), *range.end());
-    let before = *value;
-    let held = drive(ui, id, value, &range, TRAVEL, true, kind.reset);
-    let lift = ui.state(id).hover.max(if held { 1. } else { 0. }) as f32;
-    let unit = |v: f64| ((v - lo) / (hi - lo)).clamp(0., 1.);
-    let (at, from) = (unit(*value), unit(kind.origin));
-    let focused = ui.focus_visible(id);
-    let el = dial_face(at, from, lift, focused)
-    .square(KNOB)
-    .shrink(0)
-    .cursor(Cursor::ResizeV)
-    .focusable()
-    .a11y(A11y::Slider {
-        value: *value,
-        min: lo,
-        max: hi,
-    })
-    .named(name.to_owned())
-    .tip(format!("{name}: drag up or down, Shift for fine, double-click to reset"))
-    .id(id.to_owned());
-    (value.to_bits() != before.to_bits(), el)
-}
-
 // Strip controls, after Koda's part strip: small, dense, each one readable
 // at a glance. The mixer uses them too; keep their signatures.
 
@@ -1021,18 +874,6 @@ fn hot() -> Color {
 }
 fn clip() -> Color {
     Color::oklch(0.64, 0.21, 27.)
-}
-
-/// A keyswitch's red, on a key and on the badge that names it: crisp, not
-/// salmon.
-pub fn keyswitch() -> Color {
-    Color::oklch(0.6, 0.2, 25.)
-}
-
-/// A keyswitch the library leaves uncolored, or one moved to another key:
-/// violet, apart from the keys that play (green) and the library's own red.
-pub fn keyswitch_mark() -> Color {
-    Color::oklch(0.62, 0.14, 300.)
 }
 
 /// A compact check box: a tick on the accent when set, an outline when
@@ -1306,18 +1147,6 @@ pub fn pan_text(pan: f64) -> String {
     }
 }
 
-/// Semitones, signed, with cents when there are any: "0 st", "+3 st", "-1.25 st".
-pub fn tune_text(semitones: f64) -> String {
-    let cents = (semitones * 100.).round();
-    if cents == 0. {
-        "0 st".into()
-    } else if cents % 100. == 0. {
-        format!("{:+.0} st", cents / 100.)
-    } else {
-        format!("{:+.2} st", cents / 100.)
-    }
-}
-
 pub fn db_text(db: f64) -> String {
     if db <= -59.95 {
         "-inf dB".into()
@@ -1375,10 +1204,6 @@ pub fn library_label(name: &str) -> String {
     crate::library::label(name)
 }
 
-pub fn megabytes(bytes: usize) -> String {
-    format!("{:.0} MB", bytes as f64 / 1_048_576.)
-}
-
 pub fn rect(x: f64, y: f64, w: f64, h: f64) -> DrawPath {
     DrawPath::polyline(
         [(x, y), (x + w, y), (x + w, y + h), (x, y + h)].map(|(x, y)| Point::new(x, y)),
@@ -1400,6 +1225,38 @@ pub fn arc(cx: f64, cy: f64, r: f64, from: f64, sweep: f64) -> DrawPath {
         }),
         closed,
     )
+}
+
+/// The shared KONTRA control face, fitted by its caller.
+pub fn dial_face(at: f64, from: f64, lift: f32, focused: bool) -> El {
+    canvas(move |s| {
+        let (cx, cy) = (s.width / 2., s.height / 2.);
+        let weight = TIGHT * 0.75;
+        let r = s.width.min(s.height) / 2. - weight;
+        let (start, sweep) = (0.75 * PI, 1.5 * PI);
+        let mut draw = vec![
+            Draw::fill(circle(cx, cy, r - weight * 1.5), Role::Raised.alpha(1.)),
+            Draw::stroke(arc(cx, cy, r, start, sweep), Role::Ink.alpha(0.14 + 0.06 * lift), weight),
+        ];
+        let (a, b) = if at < from { (at, from) } else { (from, at) };
+        if b - a > 0.002 {
+            draw.push(Draw::stroke(arc(cx, cy, r, start + sweep * a, sweep * (b - a)), value_ink(0.), weight));
+        }
+        let angle = start + sweep * at;
+        let (inner, outer) = (r * 0.2, r - weight * 2.);
+        draw.push(Draw::stroke(
+            DrawPath::polyline(
+                [Point::new(cx + angle.cos() * inner, cy + angle.sin() * inner), Point::new(cx + angle.cos() * outer, cy + angle.sin() * outer)],
+                false,
+            ),
+            value_ink(lift),
+            weight,
+        ));
+        if focused {
+            draw.push(Draw::stroke(circle(cx, cy, r + weight), Role::Primary.alpha(0.9), 1.));
+        }
+        draw
+    })
 }
 
 #[cfg(test)]
@@ -1432,9 +1289,6 @@ mod tests {
         assert_eq!(pan_text(0.4), "R 40");
         assert_eq!(db_text(-60.), "-inf dB");
         assert_eq!(db_text(-3.04), "-3.0 dB");
-        assert_eq!(tune_text(0.001), "0 st");
-        assert_eq!(tune_text(-12.), "-12 st");
-        assert_eq!(tune_text(1.25), "+1.25 st");
         assert_eq!(pan_short(-0.23), "L23");
         assert_eq!(pan_short(0.), "C");
         assert_eq!(meter_unit(0.), 0.);
@@ -1442,3 +1296,4 @@ mod tests {
         assert_eq!(meter_unit(1e-4), 0., "-80 dB sits at the foot");
     }
 }
+

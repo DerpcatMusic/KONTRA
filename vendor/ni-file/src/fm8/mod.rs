@@ -17,14 +17,14 @@ pub struct FM8Preset;
 
 impl FM8Preset {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
-        let magic: u32 = reader.read_le()?;
+        let magic: u32 = ReadBytesExt::read_le(&mut reader)?;
         assert_eq!(
             &magic.to_be_bytes(),
             FM8_MAGIC,
             "Stream does not appear to be an FM8 Ensemble",
         );
 
-        let major_version: u32 = reader.read_le()?;
+        let major_version: u32 = ReadBytesExt::read_le(&mut reader)?;
         println!("major version {:?}", major_version);
 
         // FM8Program
@@ -936,6 +936,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_fm8_preset_read() -> Result<(), Error> {
         let file = File::open("tests/patchdata/fm8/1.2.0.1010/000")?;
         FM8Preset::read(file)?;

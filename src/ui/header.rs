@@ -11,12 +11,8 @@ use std::time::Instant;
 pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> El {
     let p = cx.p;
     let cpu = f32::from_bits(cx.state.meters.cpu.load(Ordering::Relaxed));
-    let disk = f32::from_bits(cx.state.meters.disk.load(Ordering::Relaxed));
     let voices = p.shared.voices.load(Ordering::Relaxed);
     let audible = p.shared.audible.load(Ordering::Relaxed);
-    // Samples in RAM for the whole process: parts and instances sharing them count once.
-    let memory = crate::engine::resident_bytes();
-    let freed: u64 = cx.view.parts.iter().map(|v| v.freed).sum();
 
     let loading: Vec<_> = cx
         .view
@@ -28,10 +24,10 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         .collect();
     let activity = match loading.as_slice() {
         [] if cx.view.multi_status.starts_with("Loading") => cx.view.multi_status.clone(),
-        // Streamed audio played late or script calls lost; zero when all is well.
+        // Notes refused for lack of room; zero when all is well.
         [] => match p.shared.dropouts.load(Ordering::Relaxed) {
             0 => String::new(),
-            n => format!("{n} audio dropouts"),
+            n => format!("{n} notes dropped"),
         },
         [one] => format!("Loading {one}…"),
         many => format!("Loading {} instruments…", many.len()),
@@ -58,7 +54,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             &mut db,
             -60.0..=6.0,
             Fader {
-                reset: -12.,
+                reset: 0.,
                 ..Fader::LEVEL
             }
             .length(TEXT * 8.),
@@ -126,19 +122,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .when(!activity.is_empty(), |e| e.tip(activity))
             .id("activity"),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        // Heard voices; scripts start and mute crossfade layers and mic
-        // positions too, which cost next to nothing.
-        stat("Voices", audible.to_string(), "000").tip(format!(
-            "{voices} running, {} muted by the script",
-            voices.saturating_sub(audible)
-        )),
-        // Sample heads sized by use and idle stream rings handed back.
-        stat("RAM", megabytes(memory), "00000 MB").tip(format!(
-            "Smart memory: {} of samples resident, shared ones once · {} freed",
-            megabytes(memory),
-            megabytes(freed as usize)
-        )),
-        stat("Disk", format!("{disk:.1} MB/s"), "000.0 MB/s"),
+        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running")),
         vrule().h(CONTROL - TIGHT),
         cluster(vec![section("Master"), master, meter_bar(level)]).gap(SPACE),
         vrule().h(CONTROL - TIGHT),
@@ -358,8 +342,19 @@ fn new_part_settings(ui: &mut Ui, cx: &mut Cx) -> El {
         outputs.push(el);
     }
     items.extend([caption("Output").fill(secondary()).lines(1).shrink(0), segmented(outputs)]);
+    use crate::library::ThreadSetting as T;
+    let threads = cx.settings.threads;
+    let mut choices = Vec::new();
+    for (id, label, to) in [("auto", "Auto", T::Auto), ("1", "1", T::Single), ("2", "2", T::Fixed(2)), ("4", "4", T::Fixed(4)), ("8", "8", T::Fixed(8))] {
+        let (hit, el) = action(ui, format!("threads-{id}"), label, threads == to);
+        if hit {
+            libraries.edit(|s| s.threads = to);
+        }
+        choices.push(el);
+    }
+    items.extend([caption("Threads (next load)").fill(secondary()).lines(1).shrink(0), segmented(choices)]);
     if let Some(bus) = output {
-        let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::engine::BUSES);
+        let (to, down, up) = step(ui, "new-bus", usize::from(bus), crate::sound::BUSES);
         if let Some(n) = to {
             libraries.edit(|s| s.new_output = Some(n as u8));
         }
@@ -385,7 +380,7 @@ pub fn add_folder(cx: &mut Cx, single: bool) {
 pub fn multi_path(root: &str, name: &str) -> std::path::PathBuf {
     std::path::Path::new(root)
         .join("Multis")
-        .join(format!("{name}.{}", crate::import::SAVED_MULTI))
+        .join(format!("{name}.{}", crate::library::MULTI))
 }
 
 /// The folder whose `Multis` saved multis go in: the first folder of
@@ -493,7 +488,7 @@ pub fn load_fraction(view: &View, p: &SamplerParams) -> f64 {
         .filter(|(_, v)| v.loading)
         .map(|(n, _)| {
             let done = p.shared.part(n).map_or(0, |part| part.load_progress.load(Ordering::Relaxed));
-            f64::from(done) / f64::from(crate::engine::LOAD_DONE)
+            f64::from(done) / f64::from(crate::sound::Progress::DONE.0)
         })
         .collect();
     fractions.iter().sum::<f64>() / fractions.len().max(1) as f64
