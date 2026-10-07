@@ -171,11 +171,7 @@ fn vista_cellos_render_from_loose_ncw_samples() {
         .iter()
         .flatten()
         .fold(0f32, |p, x| p.max(x.abs()));
-    // KONTRA renders at Kontakt's master 0 dB (0.5 gain). The -38.6 reference
-    // matches KONTRA only with the master at +6 dB (unity): UNCONFIRMED, asked
-    // of the reference agent; the level here is matched to that assumption.
-    const REFERENCE_MASTER_DB: f64 = 6.0;
-    let db = 20.0 * f64::from(peak).log10() + REFERENCE_MASTER_DB;
+    let db = 20.0 * f64::from(peak).log10();
     assert!(
         (db + 38.6).abs() < 1.0,
         "{db:.1} dBFS max-channel peak against Kontakt's -38.6"
