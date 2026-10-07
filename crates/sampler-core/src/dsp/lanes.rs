@@ -65,6 +65,11 @@ pub(crate) fn process(
                     }
                 }
             }
+            PreparedProcessor::Rectify(mode) => {
+                for x in &mut block[..len] {
+                    x.iter_mut().for_each(|v| *v = mode.apply(*v));
+                }
+            }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
                 for (i, x) in block[..len].iter_mut().enumerate() {
@@ -111,8 +116,10 @@ pub(crate) fn process(
                         std::array::from_fn(|i| [s[i][2 * v], s[i][2 * v + 1]].map(flush));
                 }
             }
-            PreparedProcessor::Delay { .. } | PreparedProcessor::Compressor(_) => {
-                unreachable!("delay and compressor chains render per voice")
+            PreparedProcessor::Delay { .. }
+            | PreparedProcessor::Compressor(_)
+            | PreparedProcessor::Decimate(_) => {
+                unreachable!("delay, compressor and decimator chains render per voice")
             }
             PreparedProcessor::Reverb(_)
             | PreparedProcessor::Convolution(_)
