@@ -163,6 +163,22 @@ fn volume_envelope_attack_applies_to_voices_that_start_after_it() {
 }
 
 #[test]
+fn attack_curve_bends_the_attack_ramp() {
+    let first = |curve: i32| {
+        let mut rt = runtime(&format!(
+            "on note
+               set_engine_par($ENGINE_PAR_ATTACK, 200809, 0, find_mod(0, \"ENV_AHDSR\"), -1)
+               set_engine_par($ENGINE_PAR_ATK_CURVE, {curve}, 0, find_mod(0, \"ENV_AHDSR\"), -1)
+             end on"
+        ));
+        rt.trigger(input(60), 60, 1.).unwrap();
+        level(&mut rt)[0]
+    };
+    // Full curve starts fast, zero curve starts slow.
+    assert!(first(1_000_000) > first(0) * 2., "{} {}", first(1_000_000), first(0));
+}
+
+#[test]
 fn engine_volume_reads_the_authored_value_and_sets_it_absolutely() {
     let mut rt = authored(
         "on note

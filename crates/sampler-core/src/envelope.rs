@@ -164,6 +164,15 @@ impl Envelope {
                 self.curves[1] = recurve(self.curves[1], value);
             }
             S::Sustain => self.sustain = (value.min(1000) as f32) / 1000.0,
+            S::AttackCurve => {
+                // Authored curve c = 2v/1e6 - 1 (Barbarian's 700195 is the
+                // 10-bit quantised 0.7, c = 0.4); the law is the one
+                // sampler-kontakt `ahdsr_curves` decodes for stored curves.
+                let c = (f64::from(value.min(1_000_000)) / 500_000.0 - 1.0).clamp(-1.0, 1.0);
+                let b = f64::from(((1.0 - c.abs()) * 500_000f64.ln() - 20_000f64.ln()).exp() as f32);
+                let k = if c > 0.0 { (b / (1.0 + b)).ln() } else { ((1.0 + b) / b).ln() };
+                self.curves[0] = Curve::new(EnvelopeCurve(k), self.attack);
+            }
             S::Release => {
                 self.release = value;
                 self.curves[2] = recurve(self.curves[2], value);
