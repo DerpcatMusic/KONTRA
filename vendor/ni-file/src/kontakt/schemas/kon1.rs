@@ -14,7 +14,8 @@ impl KontaktV1 {
         reader.read_to_end(&mut data)?;
 
         Ok(KontaktV1 {
-            preset: XMLDocument::from_utf8(&data).expect("xml error"),
+            preset: XMLDocument::from_utf8(&data)
+                .map_err(|_| Error::Static("Invalid Kontakt XML UTF-8"))?,
         })
     }
 }

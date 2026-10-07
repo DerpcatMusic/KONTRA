@@ -125,15 +125,27 @@ impl SampleReader {
         let mut bytes = Bytes::open(source)?;
         let mut head = Vec::new();
         (&mut bytes).take(1 << 12).read_to_end(&mut head)?;
-        if head.starts_with(b"RIFF") && crate::samples::wav_layout(&head).is_err() {
+        let pcm = head.starts_with(b"RIFF") || head.starts_with(b"FORM");
+        if pcm && crate::samples::wav_layout(&head).is_err() {
             // A WAV header past 4 KiB: read up to 64 KiB.
             bytes.seek(SeekFrom::Start(0))?;
             head.clear();
             (&mut bytes).take(1 << 16).read_to_end(&mut head)?;
         }
-        if head.starts_with(b"RIFF") {
-            let wav = crate::samples::wav_layout(&head).map_err(invalid)?;
+        if pcm {
+            let wav = if head.starts_with(b"FORM") {
+                bytes.seek(SeekFrom::Start(0))?;
+                crate::samples::aiff_reader(&mut bytes).map_err(invalid)?
+            } else {
+                crate::samples::wav_layout(&head).map_err(invalid)?
+            };
             let align = wav.width * wav.channels;
+            if head.starts_with(b"FORM") {
+                let form_end = 8 + u64::from(u32::from_be_bytes(head[4..8].try_into().unwrap()));
+                if form_end > source.size || wav.data.end as u64 > source.size {
+                    return Err(invalid("truncated AIFF sample data".into()));
+                }
+            }
             let end = wav
                 .data
                 .end
