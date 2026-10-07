@@ -142,6 +142,10 @@ fn translate(
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
+            host_volume: Some(ir::HostVolume {
+                controller: 7,
+                saved: f64::from(params.volume),
+            }),
             ..Default::default()
         },
         assets: HashMap::new(),
