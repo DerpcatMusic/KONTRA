@@ -248,7 +248,7 @@ Rig: `noise_instrument.sh` loads the noise sample, then Group Editor > Group Ins
 
 So g1/g4/g5 are not gated: they sound at CC100 0 and 64, but 16-35 dB under g37 (-37 R at CC100 56, section 12), so section 4 (taken at an unspecified CC100) read them as silent. All five groups are silent at CC100 = 127, as g36 (section 12: silent from 88). Left-right differences are constant per group (g1 0, g4 +1.8, g5 +0.4, g33 -1.5, g36 -5.3 dB) as in section 12; the 64 level is 12-19 dB above the 0 level.
 
-## 19. Una Corda Cotton g39 and g94 solos (all four scripts bypassed)
+## 19. Una Corda Cotton g39 and g94 solos (all four scripts bypassed) - SUSPECT, see 19a
 
 Scenario: `tools/kontakt-reference/scenarios/una_solo_g39_g94.txt` plus `solo_group.ksp` in free slot 5 (MAIN, RESONANCE, RELEASE, REPEDAL all bypassed). Key 60, 3 s notes, 6 s apart; CC20 selects the group. dBFS, RMS 0.5-2 s, peak 0.3-3 s after onset.
 
@@ -276,6 +276,7 @@ Fresh Kontakt process, calibration PASS (0.0000 dB), master 0.00 dB, instrument 
 - Una Cotton's saved instrument volume is 0 dB, so CC7 unsent and CC7=127 give the same level here (-15.8 / -54.4 both); the 0.5x of section 18 applies to instruments whose saved volume is the Kontakt default of -6 dB (the noise instrument), not to Una.
 - g39 decays 30 dB in 0.2 s (struck, the sample is short); L=R exactly.
 - These do NOT reproduce section 19 (g39 v100 L/R peak -17.2/-14.4 after 0.3 s, rms -45.3/-42.5; g94 rms -25.2): g39 sustain is ~9 dB lower and the 2.4-2.8 dB L/R asymmetry is absent. Section 19 was recorded in a Kontakt process in which I had also opened the Group Editor and read module values; a state change there is the likely cause, but it is unproven. Treat 19a (fresh, unmodified instrument) as the protocol reference and section 19 as suspect until re-recorded.
+- The failures below and the mismatch happened at load average 11-18; treat those runs as invalid. record.sh now refuses to run above load 4 (KONTRA_MAX_LOAD) and logs the load.
 - Multi-note sequences in one recording were not stable (later groups silent in `una_solo_g39_g94.txt`, only 1 of 7 groups sounding in a CC20 36-42 sweep), so use one note per recording until the cause (script/CC20 timing or streaming under heavy host load, load average 11-18 during the session) is found.
 
 ## 20. Stereo Modeller law
