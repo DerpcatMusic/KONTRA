@@ -33,6 +33,8 @@ fn main() {
     files.sort();
     let (mut read, mut with_fx, mut with_ir) = (0, 0, 0);
     let mut caveats = BTreeMap::<String, BTreeSet<usize>>::new();
+    // ALL=1: every unsupported feature, by name, with instruments and entries.
+    let mut features = BTreeMap::<String, (BTreeSet<usize>, usize)>::new();
     // module -> (instruments, slots by rack kind)
     let mut modules = BTreeMap::<String, (BTreeSet<usize>, BTreeMap<&str, usize>)>::new();
     for (i, path) in files.iter().enumerate() {
@@ -43,6 +45,9 @@ fn main() {
         let mut any = false;
         with_ir += usize::from(!kontakt.instrument.impulses.is_empty());
         for u in &kontakt.instrument.unsupported {
+            let f = features.entry(u.feature.clone()).or_default();
+            f.0.insert(i);
+            f.1 += 1;
             if std::env::var_os("LOOPS").is_some() && (u.feature.contains("loop")) {
                 println!("LOOP\t{i}\t{}\t{}\t{}", u.feature, u.value, path.display());
             }
@@ -98,6 +103,13 @@ fn main() {
     println!("{with_ir} instruments with a translated impulse response");
     for (feature, set) in caveats {
         println!("{:5} instruments  caveat: {feature}", set.len());
+    }
+    if std::env::var_os("ALL").is_some() {
+        let mut rows: Vec<_> = features.iter().collect();
+        rows.sort_by_key(|(_, (n, _))| std::cmp::Reverse(n.len()));
+        for (feature, (n, entries)) in rows {
+            println!("FEATURE\t{}\t{entries}\t{feature}", n.len());
+        }
     }
     let mut rows: Vec<_> = modules.into_iter().collect();
     rows.sort_by_key(|(_, (instruments, _))| std::cmp::Reverse(instruments.len()));
