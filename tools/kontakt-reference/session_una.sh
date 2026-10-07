@@ -20,7 +20,7 @@ rec() { # name scenario spacing n
   say "$1 [$(grep load1 "$W/wav/$1.wav.log")]"; python3 "$here/note_levels.py" "$W/wav/$1.wav" "$3" "$4" | tee -a "$OUT"; }
 for r in a b; do
   rec g39_v100_$r una_g39_v100 6 1; rec g94_v100_$r una_g94_v100 6 1
-  rec g39_cc64_$r una_g39_v100_cc64 6 1; rec g39_multi_$r una_g39_multi 6 3
+  rec g39_multi_$r una_g39_multi 6 3; rec g39_cc64_$r una_g39_v100_cc64 6 1   # cc64 last: it restores CC7=127
 done
 "$here/kontakt.sh" stop; sleep 3
 "$here/kontakt.sh" start "$CAL" && "$here/kontakt.sh" calibrate | tail -2 | tee -a "$OUT" || say "POST-CALIBRATION FAILED"
