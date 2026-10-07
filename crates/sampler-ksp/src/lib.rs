@@ -218,6 +218,14 @@ pub struct ScriptView {
 }
 
 impl ScriptView {
+    /// Builtin name of an effect service id (`sampler_core::Effect::service`).
+    pub fn service(&self, id: u16) -> Option<&'static str> {
+        self.services.get(usize::from(id)).copied()
+    }
+    /// Symbolic name of an opaque vendor constant (`ENGINE_PAR_*`, `NI_*`).
+    pub fn symbol(&self, value: i32) -> Option<String> {
+        eval::symbol_in(&self.symbols, value)
+    }
     /// The model as runtime effects have left it (keys, widgets).
     pub fn model(&self) -> &model::Model {
         &self.model
@@ -329,7 +337,13 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut programs = Vec::new();
     let mut instances = Vec::new();
     let mut resources = Vec::new();
-    let mut controls = Vec::new();
+    // The plan's effect slot controls stay beside the scripts' own.
+    let mut controls: Vec<_> = plan
+        .controls()
+        .iter()
+        .filter(|c| sampler_core::is_slot_control(c.id))
+        .copied()
+        .collect();
     let mut callbacks = Vec::new();
     let mut stages = Vec::new();
     let mut starts = Vec::new();
@@ -436,6 +450,14 @@ pub struct EnginePar {
     pub group: i32,
     pub slot: i32,
     pub generic: i32,
+}
+
+impl Script {
+    /// Whether a callback sets effect slot bypass, output gain or dry level
+    /// while playing, so the host must build slots those writes can reach.
+    pub fn writes_effect_slots(&self) -> bool {
+        self.programs.iter().any(Program::writes_slots)
+    }
 }
 
 /// The `set_engine_par` values `on init` leaves, in parameter order, without

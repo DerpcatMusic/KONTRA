@@ -63,6 +63,7 @@ mod tests {
     use crate::Error;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_zone_list_001() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/0x34-ZoneList/old/ZoneList-001.kon")?;
         let zonelist = ZoneList::read(file)?;
@@ -71,6 +72,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_zone_list_002() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/0x34-ZoneList/old/ZoneList-002.kon")?;
         let zonelist = ZoneList::read(file)?;
@@ -79,6 +81,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_zone_list_003() -> Result<(), Error> {
         let file = File::open("tests/data/Objects/Kontakt/0x34-ZoneList/old/ZoneList-003.kon")?;
         let zonelist = ZoneList::read(file)?;

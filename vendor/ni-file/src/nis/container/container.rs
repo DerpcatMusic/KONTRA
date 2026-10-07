@@ -175,6 +175,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_read() -> Result<(), Error> {
         let data = File::open("test-data/NIS/Item/BNISoundPreset/BNISoundPreset-000")?;
         let item = ItemContainer::read(data)?;
@@ -183,6 +184,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_with_children_read() -> Result<(), Error> {
         let data = File::open("tests/filetype/NISD/kontakt/7.1.3.0/000-default.nki")?;
         let item = ItemContainer::read(data)?;

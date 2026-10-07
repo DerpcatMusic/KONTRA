@@ -18,6 +18,40 @@ pub enum NIFile {
     FM8Preset,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nis::{ItemData, ItemDataHeader, ItemHeader, SubtreeItem};
+
+    #[test]
+    fn decoded_subtrees_are_exact_and_nested_extraction_is_bounded() {
+        fn layer(id: u32, data: Vec<u8>, inner: Option<ItemData>) -> ItemData {
+            ItemData { header: ItemDataHeader { length: 0, domain_id: *b"NISD", item_id: id, version: 1 },
+                inner: inner.map(Box::new), data }
+        }
+        fn item(data: ItemData) -> ItemContainer {
+            ItemContainer { header: ItemHeader { length: 0, magic: b"hsin".to_vec(), header_flags: 0,
+                reserved: 0, uuid: vec![0;16] }, data, children: vec![], child_headers: vec![], trailing_data: vec![] }
+        }
+        let base = || layer(1, 1u32.to_le_bytes().to_vec(), None);
+        let mut nested = item(base());
+        let mut bytes = Vec::new(); nested.write(&mut bytes).unwrap();
+        let subtree = SubtreeItem { inner_data: bytes.clone() };
+        assert!(subtree.item().is_ok());
+        bytes.push(0xff);
+        assert!(SubtreeItem { inner_data: bytes }.item().unwrap_err().to_string().contains("Trailing data"));
+        for depth in 1..=64 {
+            let mut encoded = Vec::new(); nested.write(&mut encoded).unwrap();
+            let mut frame = 1u32.to_le_bytes().to_vec(); frame.push(0); frame.extend(encoded);
+            let mut properties = 1u32.to_le_bytes().to_vec();
+            properties.extend(0u32.to_le_bytes()); properties.extend(0u32.to_le_bytes());
+            nested = item(layer(0x75, properties, Some(layer(0x73, frame, Some(base())))));
+            let error = NIFile::NISoundContainer(nested.clone()).inner_preset().unwrap_err().to_string();
+            assert_eq!(error.contains("Too many nested"), depth == 64, "depth {depth}: {error}");
+        }
+    }
+}
+
 pub enum NIPreset {
     KontaktInstrument,
 }
@@ -70,6 +104,17 @@ impl NIFile {
         &self,
         key: Option<&dyn crate::nis::LibraryKey>,
     ) -> Result<Vec<u8>, Error> {
+        self.inner_preset_at_depth(key, 0)
+    }
+
+    fn inner_preset_at_depth(
+        &self,
+        key: Option<&dyn crate::nis::LibraryKey>,
+        depth: usize,
+    ) -> Result<Vec<u8>, Error> {
+        if depth >= 64 {
+            return Err(Error::Static("Too many nested NIS preset wrappers"));
+        }
         match self {
             Self::NKSContainer(nks) => nks.decompressed_preset(),
             Self::NISoundContainer(nis) => {
@@ -85,7 +130,7 @@ impl NIFile {
                 }
                 if let Some(app) = nis.find_item::<AppSpecificProperties>(&ItemType::AppSpecific) {
                     return Self::NISoundContainer(app?.subtree_item.item()?)
-                        .inner_preset_with_key(key);
+                        .inner_preset_at_depth(key, depth + 1);
                 }
                 Err(Error::Static("No supported Kontakt preset detected"))
             }

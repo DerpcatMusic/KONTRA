@@ -56,6 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_private_parameters() -> Result<(), Error> {
         // Version 0x80
         let file = File::open("tests/patchdata/KontaktV42/priv_params/4.2.2.4504/000")?;

@@ -223,6 +223,10 @@ impl Check<'_> {
                     self.finite(dry, "convolution dry")?;
                     self.finite(wet, "convolution wet")?;
                 }
+                Processor::Mix { dry, wet, .. } => {
+                    self.within(dry, 0.0..=16.0, "mix dry")?;
+                    self.within(wet, 0.0..=16.0, "mix wet")?;
+                }
                 Processor::StereoMatrix(matrix) => {
                     for x in matrix.as_flattened() {
                         self.finite(*x, "stereo matrix")?;
