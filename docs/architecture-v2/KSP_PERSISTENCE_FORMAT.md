@@ -9,8 +9,9 @@ Evidence labels used below:
 
 - **Corpus**: in-memory inspection of installed library files. No decrypted
   payloads, script exports, samples or keys were saved. Counts include every path
-  reached by the recursive reader, including library symlinks; they are path
-  counts, not unique-content counts.
+  reached by the recursive reader, including recovery saves under Pacific
+  Ensemble Strings/KONTRA project recovery and library symlinks. The master
+  corpus excludes recovery saves; its denominator is reported separately.
 - **Engine**: inspection of the existing read-only Kontakt 8.13.1 analysis,
   engine SHA-256
   `0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8`.
@@ -210,13 +211,18 @@ across all measured snapshots:
 | Version | Prefix before the script tables | Script tables |
 |---|---|---|
 | 1 | chunk 0x33 compact groups; two instrument FX arrays; 16 bus objects (v0x11) | exactly five tables, one per script slot |
+| 2 (engine only; absent from corpus) | chunk 0x33; two FX arrays; 16 buses | five tables, **then** the main FX array |
 | 3, flags 0 | u32 flags; chunk 0x33 compact groups; two FX arrays; 16 bus objects (v0x12); main FX array | exactly five tables |
 | 3, flags 3 | u32 flags only (script-only snapshot) | exactly five tables |
 
 Each slot table is `u32 count; count × (u32 entry_bytes; entry[entry_bytes])`.
 The grammar is the same as in script 0x06. Empty slots remain present; slot
 indices must not be compacted. Other v3 flags remain unsupported by the existing
-reader and were not observed. The flags express which native state is present,
+reader and were not observed. Engine reader `0x140d04600` also accepts v2,
+which places its main FX array **after** the five tables. In v3 the engine
+reads native state for flags below 2 and omits it for flags 2 or greater;
+writer `0x140d13070` follows the same boundary. Flags 1/2 and v2 lack corpus
+validation and are not admitted by the current snapshot container reader. The flags express which native state is present,
 not whether a particular variable is instrument-persistent. Snapshot metadata
 0x51 provides names used to locate the base instrument; resolution belongs to
 the owning loader.
@@ -252,9 +258,10 @@ still needs a live reference-host differential test.
 | 3 | no | no | restore saved KSP state; persistence callback |
 
 Types 1 and 3 preserve the running script/control setup and instrument-persistent
-values. The on-disk v3 flags 0/3 must not be used as a replacement for the script's
-four-valued recall policy: both policies 0/1 can save native state, and 2/3 can
-save only KSP state. NI documents an audio-engine reset on every snapshot load.
+values. A consumer must retain the four-valued recall policy as well as whether the
+snapshot contains native state: policies 0/1 save native state and differ in
+whether init runs; policies 2/3 omit native state and also differ in init.
+The measured flags 0/3 alone do not exercise the other two policies. NI documents an audio-engine reset on every snapshot load.
 [NI general commands manual](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/general-commands#set_snapshot_type--).
 
 NKA is an external array file, not a special saved-entry tag or automatic
@@ -303,13 +310,18 @@ menu index resolution and array-tail handling, and implement the lifecycle above
 
 ## Corpus validation
 
-Initial full-tree scan: 2,741 `.nki`, 94 `.nkm`, 1,103 `.nksn`, no `.nkb`;
+Initial full-tree scan, **including recovery saves**: 2,741 `.nki`, 94 `.nkm`, 1,103 `.nksn`, no `.nkb`;
 3,938 file paths, 15,540 script records, 801 v1 and 302 v3 snapshots. No container
 or saved-table framing failures. Every script was v0x60 with no trailing
 extension. Populated entries: 732,145 `$`, 69,173 `%`, 102 `?`, 6,414 `@`, 2,707
 `!`; total 810,541. All were UTF-8. Every `$` payload was one integer token;
 all `%` payloads were numeric token lists; every `?` was a two-cell real list.
 String arrays used LF separators with empty cells preserved.
+
+The master census excludes project recovery: **1,937 paths = 781 NKI +
+53 NKM + 1,103 NKSN**, with 834 instrument/multi paths. The 810,541 entries
+above belong to the 3,938-path scan and must not be divided by the master
+834-path instrument/multi denominator.
 
 The declaration-aware second-pass table and focused library measurements are
 recorded below. A “0 present” row is a coverage gap, not proof that the format
@@ -319,17 +331,27 @@ cannot contain that type.
 
 ### Reproduction
 
-The census exports aggregate shapes, counts and errors, never decrypted source
+The census exports aggregate shapes, counts, completed paths and errors, never decrypted source
 or a raw saved-table dump. `--probe` is limited to derived integer velocity/mute
-state and menu item-value lists for the targeted instruments.
+state and menu item-value lists for the targeted instruments. Increment `--start`
+by 250 between calls, retain each shard's output in the agent cache, and sum
+its `COUNT`, `FILES` and `LIBRARY` rows. `ITEM_DONE` records make completed paths
+reviewable; `ITEM_COUNT` stores per-path counter deltas for filtering against
+the master path set without mixing denominators. `--files` selects a
+`path\tstatus` TSV (such as the master census's `files.tsv`); omitting it
+selects the full tree including recovery saves. The declaration-aware second
+pass uses the master list. Snapshot shards inspect a matched base NKI for declaration context
+without adding that base's records to the shard totals. The wrapper's target
+override is removed for Cargo to use this machine's shared target directory.
 
 ```sh
-KONTAKTO_HEAVY_SLOTS=1 ~/.cache/kontakto-heavy \
+~/.cache/kontakto-heavy env -u CARGO_TARGET_DIR \
   cargo build --locked -p sampler-kontakt --example persistence_census
-KONTAKTO_HEAVY_SLOTS=1 ~/.cache/kontakto-heavy \
-  /mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-gpt-decipher-persist/debug/examples/persistence_census \
-  /mnt/MAIN_STORAGE/Libraries/Kontakt
-KONTAKTO_HEAVY_SLOTS=1 ~/.cache/kontakto-heavy \
+~/.cache/kontakto-heavy env -u CARGO_TARGET_DIR \
+  /mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/debug/examples/persistence_census \
+  /mnt/MAIN_STORAGE/Libraries/Kontakt \
+  --files ~/.cache/kontakto-gpt-format-gaps/census/files.tsv --start 0 --count 250
+~/.cache/kontakto-heavy env -u CARGO_TARGET_DIR \
   cargo test --locked -p sampler-kontakt --test persistence
 ```
 
