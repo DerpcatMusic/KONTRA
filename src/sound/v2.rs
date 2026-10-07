@@ -616,6 +616,14 @@ impl Core for V2Core {
             if part.runtime.render_split(out, &mut outs).is_err() {
                 continue;
             }
+            if let Some((program, error)) = part.runtime.take_fault() {
+                part.problems.fault_program = program as u64 + 1;
+                part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
+            }
+            if let Some(silent) = part.runtime.take_silent_note() {
+                part.problems.silent_notes += 1;
+                part.problems.silent = silent.pack();
+            }
             let c = self.mix.parts[index];
             if c.mute || solo && !c.solo {
                 continue;
@@ -2043,7 +2051,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             loud(&core.render(128), 0, 128)
         });
-        assert!(heard, "the scripted program is silent");
+        assert!(heard, "the scripted program is silent: {:?} / {:?}", core.problems(0), core.voices());
     }
 
     /// Idle cost of a loaded part: blocks with no note playing. Prints the
@@ -2095,7 +2103,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
             loud(&core.render(128), 0, 128)
         });
-        assert!(heard, "the scripted program is silent");
+        assert!(heard, "the scripted program is silent: {:?} / {:?}", core.problems(0), core.voices());
         // Warm: the first notes sized the driver's tables. Now play more
         // scripted notes and release them; the audio thread allocates nothing.
         core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 36, id: -1, clap: true }));
