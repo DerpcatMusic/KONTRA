@@ -78,10 +78,9 @@ pub(crate) struct Slot {
     pub bypass: bool,
     pub output_gain: f32,
     pub dry_level: f32,
+    /// A script wrote the output gain with `set_engine_par`.
+    pub output_set: bool,
     pub public: Vec<u8>,
-    /// Kept for the slot's opaque state; no law reads it yet.
-    #[allow(dead_code)]
-    pub private: Vec<u8>,
 }
 
 pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
@@ -101,10 +100,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
                 bypass: state.bypass,
                 output_gain: state.output_gain,
                 dry_level: state.dry_level,
+                output_set: false,
                 public: object
                     .as_ref()
                     .map_or_else(Vec::new, |o| o.public_data.clone()),
-                private: object.map_or_else(Vec::new, |o| o.private_data),
             })
         })
         .collect()
@@ -112,7 +111,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
 
 /// The program's racks with their locations: instrument insert, send and
 /// main, then each bus.
-pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
+pub(crate) fn program_racks(
+    program: &Program,
+    writes: &[sampler_ksp::EnginePar],
+) -> Vec<(String, Vec<Slot>)> {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut out = Vec::new();
     let mut racks = 0;
@@ -125,7 +127,13 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                     .map_or_else(|| format!("rack {racks}"), |n| (*n).into());
                 racks += 1;
                 if let Ok(array) = BParamArrayBParFX8::try_from(child) {
-                    out.push((name, rack(&array)));
+                    let mut slots = rack(&array);
+                    // File order insert, send, main; `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0,
+                    // `$NI_MAIN_BUS` 2.
+                    if let Some(&generic) = [1, 0, 2].get(racks - 1) {
+                        apply_writes(&mut slots, writes, -1, generic);
+                    }
+                    out.push((name, slots));
                 }
             }
             BUS => {
@@ -137,13 +145,61 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                         .find_first(RACK)
                         .and_then(|c| BParamArrayBParFX8::try_from(c).ok())
                 {
-                    out.push((format!("bus {index}"), rack(&array)));
+                    let mut slots = rack(&array);
+                    // `$NI_BUS_OFFSET` + the bus number.
+                    apply_writes(&mut slots, writes, -1, 1000 + index as i32);
+                    out.push((format!("bus {index}"), slots));
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// Engine value (0..1000000) of an effect level as a linear gain: cubic about
+/// 396851 (2^(-4/3)) = unity, so 1000000 is +24 dB. Fitted to stored slots whose
+/// saved output gain and dry level follow the script's init writes (396280 ->
+/// 0.99570, 303068 -> 0.44539, 560434 -> 2.8164, 3305 -> 5.776e-7).
+pub(crate) fn engine_gain(value: i32) -> f32 {
+    if value <= 0 {
+        return 0.0;
+    }
+    (f64::from(value) / 396_851.0).powi(3) as f32
+}
+
+/// Apply the `set_engine_par` writes a script left at init to a rack's slots.
+/// `group` is the group index or -1; `generic` selects the instrument rack
+/// (`$NI_SEND_BUS` 0, `$NI_INSERT_BUS` 1, `$NI_MAIN_BUS` 2, `$NI_BUS_OFFSET`
+/// + n) or is -1 for a group's inserts.
+pub(crate) fn apply_writes(
+    slots: &mut [Slot],
+    writes: &[sampler_ksp::EnginePar],
+    group: i32,
+    generic: i32,
+) {
+    for w in writes
+        .iter()
+        .filter(|w| w.group == group && w.generic == generic)
+    {
+        let Some(fx) = usize::try_from(w.slot)
+            .ok()
+            .and_then(|i| slots.iter_mut().find(|fx| fx.slot == i))
+        else {
+            continue;
+        };
+        match w.parameter.trim_start_matches('$') {
+            "ENGINE_PAR_EFFECT_BYPASS" | "ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+                fx.bypass = w.value != 0
+            }
+            "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+                fx.output_gain = engine_gain(w.value);
+                fx.output_set = true;
+            }
+            "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            _ => {}
+        }
+    }
 }
 
 /// A module's stored parameters, where the layout is known (byte-exact on
@@ -528,11 +584,21 @@ pub(crate) fn chain_with(
             f64::from(fx.output_gain)
         };
         let gain = [[wet, 0.0], [0.0, wet]];
+        // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
+        // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
+        // audible in Kontakt and its script never writes the slot's output gain. So
+        // the stored value counts for an EQ only when a script wrote it.
+        // ponytail: a guess from that corpus count; confirm against Kontakt output.
+        let eq_gain = if fx.output_gain == 0.0 && !fx.output_set {
+            IDENTITY
+        } else {
+            gain
+        };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
-                combined = product(gain, combined);
+                combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
                 if out.sends.is_empty() {
@@ -896,8 +962,8 @@ mod tests {
             bypass: false,
             output_gain: gain,
             dry_level: 1.0,
+            output_set: true,
             public,
-            private: Vec::new(),
         }
     }
 

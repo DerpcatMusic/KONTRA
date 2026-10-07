@@ -726,6 +726,7 @@ impl Core for V2Core {
             underruns: stats.stream_underruns,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
             stolen_voices: p.runtime.steals(),
+            refused_starts: stats.refused_starts,
             ..p.problems
         }
     }
