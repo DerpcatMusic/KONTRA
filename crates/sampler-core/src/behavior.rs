@@ -222,6 +222,16 @@ pub enum Instruction {
         control: super::ControlId,
         local: u16,
     },
+    /// Set a runtime effect slot parameter (see [`super::SlotKind`]) addressed
+    /// by locals. `Bypass` reads an integer; the gains read real bits. A slot
+    /// the plan has no control for is ignored.
+    WriteSlot {
+        kind: super::SlotKind,
+        group: u16,
+        slot: u16,
+        generic: u16,
+        local: u16,
+    },
     Jump {
         target: usize,
     },
@@ -339,6 +349,13 @@ pub struct Program {
     pub(super) script_texts: usize,
 }
 impl Program {
+    /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
+    pub fn writes_slots(&self) -> bool {
+        self.code
+            .iter()
+            .any(|op| matches!(op, Instruction::WriteSlot { .. }))
+    }
+
     /// Text constants addressed by `TextPart::Constant`.
     pub fn with_texts(mut self, texts: &[&str]) -> Result<Self, Error> {
         if texts.len() < self.text_constants
@@ -534,6 +551,16 @@ impl Program {
             }
             if let Instruction::ReadEventInfo { event, local, .. } = *op {
                 locals = locals.max(usize::from(event.max(local)) + 1);
+            }
+            if let Instruction::WriteSlot {
+                group,
+                slot,
+                generic,
+                local,
+                ..
+            } = *op
+            {
+                locals = locals.max(usize::from(group.max(slot).max(generic).max(local)) + 1);
             }
             if let Instruction::WriteEnvelope { group, local, .. } = *op {
                 locals = locals.max(usize::from(group.max(local)) + 1);
@@ -1583,6 +1610,40 @@ impl Runtime {
                 let plan = self.behavior_plan(owner)?;
                 let value = super::ControlValue::Integer(*self.local_cell_mut(id, local)?);
                 self.edit_controls_now(plan, None, &[super::ControlWrite { id: control, value }])?;
+            }
+            Instruction::WriteSlot {
+                kind,
+                group,
+                slot,
+                generic,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let mut address = [0i32; 3];
+                for (out, l) in address.iter_mut().zip([group, slot, generic]) {
+                    *out = i32::try_from(*self.local_cell_mut(id, l)?)
+                        .map_err(|_| Error::InvalidInput)?;
+                }
+                let [group, slot, generic] = address;
+                let control = super::slot_control(kind, group, slot, generic);
+                let raw = *self.local_cell_mut(id, local)?;
+                let value = if kind == super::SlotKind::Bypass {
+                    f64::from(raw != 0)
+                } else {
+                    let value = crate::ops::real(raw);
+                    if value.is_nan() { 0. } else { value.clamp(0., kind.max()) }
+                };
+                let known = self
+                    .plans
+                    .get(plan.0)
+                    .ok_or(Error::StaleHandle)?
+                    .prepared
+                    .control_index(control)
+                    .is_ok();
+                if known {
+                    let value = super::ControlValue::Real(value);
+                    self.edit_controls_now(plan, None, &[super::ControlWrite { id: control, value }])?;
+                }
             }
             Instruction::Jump { target } => {
                 self.behaviors.get_mut(id.0).ok_or(Error::StaleHandle)?.pc = target

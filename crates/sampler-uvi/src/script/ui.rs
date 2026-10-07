@@ -182,13 +182,12 @@ impl ScriptHost {
             widget.parent = num(w, "parent_id").map(|id| ui::WidgetRef(id as usize - 1));
             // Pictures: a still image, a background, or a strip of frames.
             let picture = |key: &str| text(w, key).filter(|p| !p.is_empty());
-            if kind == "Image" {
-                if let Some(path) = picture("image").or_else(|| text(w, "name")) {
+            if kind == "Image"
+                && let Some(path) = picture("image").or_else(|| text(w, "name")) {
                     widget
                         .images
                         .push(ui::ImageUse::new(asset(&path), ui::Role::Background));
                 }
-            }
             if let Some(path) = picture("backgroundImage") {
                 widget
                     .images

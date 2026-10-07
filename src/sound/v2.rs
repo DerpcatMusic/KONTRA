@@ -19,7 +19,7 @@
 //! Not yet: per-note controllers and program changes (counted), a sample-rate change
 //! without reloading.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -76,6 +76,9 @@ pub struct Part {
     /// The instrument's default articulation, when the runtime holds the
     /// articulation (it numbers that one 0).
     articulations: Option<usize>,
+    /// Behavior-owned switching: each articulation's first switch key. The
+    /// script holds the selection, so it is read from the key the driver tapped.
+    tap_keys: Option<Vec<Option<u8>>>,
     /// Notes keep their member channel ([`PartControls::mpe`]).
     mpe_zone: bool,
     /// The bend range last sent to the zone, 0 for its default.
@@ -173,6 +176,7 @@ impl Part {
             switching: 0,
             inherited: 0,
             articulations: None,
+            tap_keys: None,
             mpe_zone: false,
             bend_range: 0,
             horizon: None,
@@ -337,7 +341,7 @@ fn unit_scale(value: f64) -> u32 {
     (value.clamp(0.0, 1.0) * f64::from(u32::MAX)) as u32
 }
 
-/// `expression` on one held note.
+/// `expression` on one held note; the notes a script played from it follow.
 fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
     let tune = f64::from(part.tune);
     express(&mut part.runtime, id, |e| match expression {
@@ -346,7 +350,28 @@ fn note_expression(part: &mut Part, id: NoteId, expression: NoteExpression) {
         NoteExpression::Pan(pan) => e.pan = pan,
         NoteExpression::Pressure(v) => e.pressure = unit_scale(v),
         NoteExpression::Brightness(v) => e.timbre = unit_scale(v),
-    });
+    })
+}
+
+/// Controllers, bend, pressure and program changes reach the part's scripts
+/// (they still reach the engine: a script's `postEvent` of one adds to it).
+fn tell_script(part: &mut Part, kind: u32, status: u8, channel: u8, a: u8, b: u8, data: u32) {
+    use sampler_uvi::scripted::HostInput as Input;
+    let Part { script: Some(script), runtime, .. } = part else { return };
+    let high = (data >> 25) as u8;
+    let input = match (kind, status) {
+        (2, 0xb0) => Input::Controller { cc: a, value: b, channel },
+        (4, 0xb0) => Input::Controller { cc: a, value: high, channel },
+        (2, 0xe0) => Input::Bend { value: (f64::from(u16::from(b) << 7 | u16::from(a)) - 8192.0) / 8192.0, channel },
+        (4, 0xe0) => Input::Bend { value: f64::from(data) / 2_147_483_648.0 - 1.0, channel },
+        (2, 0xd0) => Input::Touch { value: a, channel },
+        (4, 0xd0) => Input::Touch { value: high, channel },
+        (2, 0xa0) => Input::PolyTouch { key: a, value: b, channel },
+        (4, 0xa0) => Input::PolyTouch { key: a, value: high, channel },
+        (2 | 4, 0xc0) => Input::Program { value: a, channel },
+        _ => return,
+    };
+    script.input(runtime, input);
 }
 
 /// A channel voice packet into one part, MIDI 2.0 values at full precision;
@@ -361,6 +386,7 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
             note_expression(part, h.id, expression);
         }
     };
+    tell_script(part, kind, status, channel, a, b, data);
     match (kind, status) {
         (2, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(b) / 127.0)),
         (4, 0xa0) => per_note(part, NoteExpression::Pressure(f64::from(data) / f64::from(u32::MAX))),
@@ -562,6 +588,18 @@ impl Core for V2Core {
             }
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
+                // What the scripts generated plays into the part.
+                let mut midi = [None; 64];
+                let mut n = 0;
+                script.drain_midi(|out| {
+                    if n < midi.len() {
+                        midi[n] = Some(out);
+                        n += 1;
+                    }
+                });
+                for out in midi.iter().flatten() {
+                    wire_event(part, out.status, out.a, out.b);
+                }
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
@@ -722,6 +760,7 @@ impl Core for V2Core {
             underruns: stats.stream_underruns,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
             stolen_voices: p.runtime.steals(),
+            refused_starts: stats.refused_starts,
             ..p.problems
         }
     }
@@ -729,6 +768,11 @@ impl Core for V2Core {
     fn articulation(&self, part: usize) -> Option<usize> {
         let p = self.parts.get(part)?.as_ref()?;
         let default = p.articulations?;
+        if let Some(keys) = &p.tap_keys {
+            // A script holds the selection: the last switch key, tapped or pressed.
+            let tapped = p.articulator.as_ref().and_then(Articulator::selected);
+            return Some(tapped.and_then(|k| keys.iter().position(|&f| f == Some(k))).unwrap_or(default));
+        }
         let id = p.runtime.articulation(p.runtime.performance(0).ok()?).ok()? as usize;
         // Undo the runtime's numbering: the default is 0, those before it shift up.
         Some(match id {
@@ -854,9 +898,12 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Pan(_) => "Pan",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
+            ir::Processor::Compressor(_) => "Compressor",
+            ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",
             ir::Processor::Delay { .. } => "Delay",
+            ir::Processor::Mix { .. } => "Mix",
         })
         .map(String::from)
         .collect()
@@ -933,6 +980,32 @@ type Plan = (Prepared, Option<StreamCache>, Option<ScriptDriver>);
 /// A UVI program's Lua scripts, driving the part's runtime from their own thread.
 pub type ScriptDriver = sampler_uvi::scripted::Driver<sampler_uvi::scripted::ScriptThread>;
 
+/// The instrument a snapshot was saved from: `<name>.nki` somewhere under a
+/// folder above the snapshot, named by its metadata or by the snapshot's folder.
+fn snapshot_parent(snapshot: &Path, name: &str) -> Option<PathBuf> {
+    fn find(dir: &Path, wanted: &[String], depth: usize) -> Option<PathBuf> {
+        let mut folders = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+                && path.file_stem().is_some_and(|s| wanted.iter().any(|w| s.eq_ignore_ascii_case(w.as_str())))
+            {
+                return Some(path);
+            }
+        }
+        if depth == 0 {
+            return None;
+        }
+        folders.sort();
+        folders.iter().find_map(|d| find(d, wanted, depth - 1))
+    }
+    let folder = snapshot.parent()?.file_name()?.to_string_lossy().into_owned();
+    let wanted: Vec<String> = [name.to_owned(), folder].into_iter().filter(|n| !n.is_empty()).collect();
+    snapshot.ancestors().skip(1).take(4).find_map(|dir| find(dir, &wanted, 3))
+}
+
 fn kontakt(
     request: &LoadRequest,
     progress: &mut dyn FnMut(Progress),
@@ -942,19 +1015,31 @@ fn kontakt(
         sampler_kontakt::LoadError::Canceled => CoreError::Canceled,
         e => CoreError::Load((&e).into()),
     };
-    let multi = request.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
-    let mut source = if multi {
-        sampler_kontakt::read_program(&request.path, request.program as usize)
+    let extension = |e: &str| request.path.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
+    // A snapshot is the saved state of an instrument found beside it in the library.
+    let snapshot = if extension("nksn") {
+        let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
+        let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
+            CoreError::Load(LoadFailure::message(format!("no instrument \"{}\" found for snapshot", state.instrument)))
+        })?;
+        Some((parent, state))
     } else {
-        sampler_kontakt::read(&request.path)
+        None
+    };
+    let path = snapshot.as_ref().map_or(&request.path, |(parent, _)| parent);
+    let mut source = match &snapshot {
+        Some((parent, state)) => sampler_kontakt::read_with_snapshot(parent, state),
+        None if extension("nkm") => sampler_kontakt::read_program(path, request.program as usize),
+        None => sampler_kontakt::read(path),
     }
     .map_err(load)?;
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
     let tree = nest(&mut source.instrument);
     let options = sampler_kontakt::Options {
         rate: request.sample_rate as u32,
-        library: Some(request.path.clone()),
-        mpe: request.mpe.then(Default::default),
+        library: Some(path.clone()),
+        mpe: request.mpe.then(|| sampler_core::lower::MpeDefaults::for_instrument(&source.instrument)),
+        dynamics_start: request.dynamics_start,
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {
@@ -970,6 +1055,8 @@ fn kontakt(
     let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
+    report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
+    report.decoded.needs_controller = loaded.needs_controller();
     // Loading adds what it found unplayable (samples, keys) and scripts that failed.
     report.missing = loaded.instrument.unsupported.iter().map(Missing::from).collect();
     report.decoded.zones = loaded.instrument.zones.len();
@@ -988,7 +1075,7 @@ fn kontakt(
 }
 
 /// A UVI program (loose or in a bank): its layers become mixer nodes as groups do. Samples
-/// decode up front (no streaming yet).
+/// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
@@ -996,7 +1083,9 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let mut loaded = sampler_uvi::assemble_translated(t, rate).map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
+    let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
+    report.decoded.full_bytes = stream.full_bytes;
     let driver = attached.map(|a| {
         // Loading reports a script it has no frontend for; this one runs.
         loaded.instrument.unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
@@ -1008,14 +1097,14 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     report.decoded.keys = super::report::key_bits(&loaded.instrument);
     report.decoded.samples = loaded.plan.sample_count();
     Ok(Loaded {
-        part: (loaded.plan, None, driver),
+        part: (loaded.plan, Some(cache), driver),
         tree,
         report,
         interfaces: loaded.interfaces,
         controls: Vec::new(),
         instrument: Some(Arc::new(loaded.instrument)),
         scripts: ScriptUi { views: loaded.scripts, resources: loaded.resources },
-        stream: None,
+        stream: Some(Arc::new(Stream { streamer, assets, report: stream })),
     })
 }
 
@@ -1079,10 +1168,12 @@ fn wav(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     })
 }
 
-impl CoreLoader for V2Loader {
-    type Core = V2Core;
+/// Stack for the loader worker: lowering moves large plans by value and the
+/// caller's thread (a UI or test thread) may only have 2 MB.
+const LOADER_STACK: usize = 16 << 20;
 
-    fn prepare(
+impl V2Loader {
+    fn prepare_on_worker(
         &self,
         request: &LoadRequest,
         progress: &mut dyn FnMut(Progress),
@@ -1101,6 +1192,17 @@ impl CoreLoader for V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let mut timbre = None;
+        if request.mpe {
+            let defaults = match &instrument {
+                Some(i) if is_kontakt(&request.path) => sampler_core::lower::MpeDefaults::for_instrument(i),
+                _ => Default::default(),
+            };
+            if let sampler_core::lower::TimbreTarget::Controller(cc) = defaults.timbre {
+                timbre = Some(cc);
+            }
+            report.decoded.mpe = super::report::mpe_summary(&defaults);
+        }
         let controls = prepared
             .controls()
             .iter()
@@ -1112,6 +1214,9 @@ impl CoreLoader for V2Loader {
         let voices = limits.voices;
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
+        // A source whose first window is not resident starts silent and fades in
+        // rather than being refused NotReady.
+        runtime.set_cold_starts(true);
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
@@ -1128,14 +1233,17 @@ impl CoreLoader for V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
         if let Some(inst) = instrument.as_deref() {
             part.set_drivers(inst);
         }
-        part.articulations = instrument.as_deref().filter(|i| {
-            !i.articulations.is_empty() && i.switching.owner == ir::SwitchOwner::Native
-        }).map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
+        let articulated = instrument.as_deref().filter(|i| !i.articulations.is_empty());
+        part.articulations = articulated.map(|i| i.articulations.iter().position(|a| a.default).unwrap_or(0));
+        part.tap_keys = articulated
+            .filter(|i| i.switching.owner == ir::SwitchOwner::Behavior)
+            .map(|i| i.articulations.iter().map(|a| a.switch_keys.first().copied()).collect());
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
             part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
@@ -1144,10 +1252,44 @@ impl CoreLoader for V2Loader {
         progress(Progress::DONE);
         Ok(Loaded { part: Some(Box::new(part)), tree, report, interfaces, controls, instrument, scripts, stream })
     }
+}
+
+impl CoreLoader for V2Loader {
+    type Core = V2Core;
+
+    /// Prepares on a worker with an explicit stack; progress is relayed to the
+    /// caller's (non-`Send`) callback over a channel.
+    fn prepare(
+        &self,
+        request: &LoadRequest,
+        progress: &mut dyn FnMut(Progress),
+        canceled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Loaded<Option<Box<Part>>>, CoreError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("sampler-load".into())
+                .stack_size(LOADER_STACK)
+                .spawn_scoped(scope, move || {
+                    self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+                })
+                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+            // The sender drops when the worker ends, closing the channel.
+            for p in rx {
+                progress(p);
+            }
+            worker.join().unwrap_or_else(|_| Err(CoreError::Invalid("loader panicked".into())))
+        })
+    }
 
     fn describe(&self, path: &Path, _program: u32) -> Result<Description, CoreError> {
         if is_kontakt(path) {
-            let instrument = sampler_kontakt::read(path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
+            let parent = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")).then(|| {
+                let state = sampler_kontakt::read_snapshot(path).ok()?;
+                snapshot_parent(path, &state.instrument)
+            });
+            let path = parent.flatten().unwrap_or_else(|| path.to_path_buf());
+            let instrument = sampler_kontakt::read(&path).map_err(|e| CoreError::Load(LoadFailure::message(e)))?.instrument;
             return Ok(Description {
                 name: instrument.name.clone(),
                 zones: instrument.zones.len(),
@@ -1329,6 +1471,15 @@ mod tests {
 
     #[test]
     fn a_velocity_driver_selects_and_reports_the_articulation() {
+        velocity_driver(ir::SwitchOwner::Native);
+    }
+
+    #[test]
+    fn a_velocity_driver_reports_what_it_tapped_into_a_script_owned_switch() {
+        velocity_driver(ir::SwitchOwner::Behavior);
+    }
+
+    fn velocity_driver(owner: ir::SwitchOwner) {
         // Key 60 in three articulations; keys 24..=26 switch; the second is the default.
         let zone = |asset, articulation| ir::Zone {
             keys: ir::KeyRange { low: 60, high: 60 },
@@ -1354,6 +1505,9 @@ mod tests {
         let limits = limits(&plan).0;
         let mut part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("arts")).unwrap();
         part.articulations = Some(1);
+        if owner == ir::SwitchOwner::Behavior {
+            part.tap_keys = Some(vec![Some(24), Some(25), Some(26)]);
+        }
         part.set_drivers(&instrument);
         let mut core = V2Core::with_parts(1, 48000.0);
         let mut mix = Mix::default();
@@ -1362,6 +1516,17 @@ mod tests {
         core.set_mix(&mix);
         core.install(0, Some(Box::new(part)));
         assert_eq!(core.articulation(0), Some(1), "the default plays first");
+        // A script-owned switch would tag no zones, so that plan is built native
+        // and only the readback is under test: it follows the last switch key.
+        if owner == ir::SwitchOwner::Behavior {
+            for key in [25u8, 24] {
+                let note = HostNote { port: 0, channel: 0, key, id: i32::from(key), clap: true };
+                core.event(0, Event::NoteOn { note, velocity: 0.5, tune: 0.0 });
+                core.render(64);
+                assert_eq!(core.articulation(0), Some(usize::from(key - 24)), "switch key {key}");
+            }
+            return;
+        }
         // Velocities split 1..=127 in three by lowest switch key.
         for (velocity, articulation) in [(10.0, 0), (120.0, 2), (64.0, 1)] {
             let note = HostNote { port: 0, channel: 0, key: 60, id: velocity as i32, clap: true };
@@ -1369,6 +1534,69 @@ mod tests {
             core.render(64);
             assert_eq!(core.articulation(0), Some(articulation), "velocity {velocity}");
         }
+    }
+
+    /// A real script-owned instrument (Afflatus Horns KS: its script reads the
+    /// switch keys and selects the groups): the readback follows a switch key
+    /// pressed directly and the key a velocity driver taps, and the selected
+    /// articulation sounds. Set `KONTRA_KONTAKT_LIBRARIES` to run.
+    #[test]
+    fn a_script_owned_switch_reads_back_direct_presses_and_driver_taps() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let relative = "Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki";
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.is_file()) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let instrument = loaded.instrument.clone().expect("a Kontakt instrument");
+        assert_eq!(instrument.switching.owner, ir::SwitchOwner::Behavior, "script-owned");
+        let keys: Vec<u8> = instrument.articulations.iter().filter_map(|a| a.switch_keys.first().copied()).collect();
+        assert!(keys.len() >= 3, "{} switch keys", keys.len());
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        let sounds = |core: &mut V2Core| {
+            let note = HostNote { port: 0, channel: 0, key: 60, id: 60, clap: true };
+            core.event(0, on(note));
+            let heard = (0..300).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                let r = core.render(128);
+                r.live[0] && r.buses[0][0][..128].iter().any(|x| x.abs() > 1e-5)
+            });
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            heard
+        };
+        // Direct presses: the keys driver (the instrument's own) selects.
+        for (index, article) in instrument.articulations.iter().enumerate() {
+            let Some(&key) = article.switch_keys.first() else { continue };
+            let note = HostNote { port: 0, channel: 0, key, id: 1000 + i32::from(key), clap: true };
+            core.event(0, on(note));
+            core.render(128);
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            core.render(128);
+            assert_eq!(core.articulation(0), Some(index), "pressed switch key {key}");
+            assert!(sounds(&mut core), "articulation {index} sounds after its key");
+        }
+        // A velocity driver taps the keys into the script: low to high velocity
+        // reaches different articulations, and each read back is one whose key
+        // exists and whose zones sound.
+        let mut mix = Mix::default();
+        mix.parts[0].switching = 0x80 | (ir::Driver::Velocity as u8) << 1;
+        core.set_mix(&mix);
+        let mut seen = std::collections::BTreeSet::new();
+        for velocity in [8.0, 30.0, 60.0, 90.0, 120.0] {
+            let note = HostNote { port: 0, channel: 0, key: 60, id: velocity as i32, clap: true };
+            core.event(0, Event::NoteOn { note, velocity: velocity / 127.0, tune: 0.0 });
+            for _ in 0..8 {
+                core.render(128);
+            }
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(note.key), id: note.id, clap: true }));
+            let index = core.articulation(0).expect("a readback");
+            assert!(index < keys.len(), "velocity {velocity}: articulation {index}");
+            seen.insert(index);
+        }
+        assert!(seen.len() >= 2, "velocity reached articulations {seen:?}");
     }
 
     #[test]
@@ -1584,7 +1812,7 @@ mod tests {
         };
         let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| {}, &|| false).unwrap();
         let buses: Vec<_> = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Bus).map(|n| n.name.as_str()).collect();
-        assert_eq!(buses, ["insert", "send 0"]);
+        assert_eq!(buses, ["insert", "send 0", "send 1"]);
         let groups = loaded.tree.nodes.iter().filter(|n| n.kind == NodeKind::Group).count();
         assert!(groups > 100, "every group is a node too: {groups}");
         let mut core = V2Core::with_parts(1, 48000.0);
@@ -1720,6 +1948,40 @@ mod tests {
     }
 
     #[test]
+    fn real_snapshots_read_find_their_instrument_and_load() {
+        let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
+        let Some(library) = std::env::split_paths(&roots).map(|r| r.join("Una Corda Library")).find(|p| p.is_dir()) else {
+            eprintln!("skipped: Una Corda Library is not installed");
+            return;
+        };
+        let files: Vec<_> = walkdir::WalkDir::new(library.join("Snapshots"))
+            .into_iter()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "nksn"))
+            .map(|e| e.into_path())
+            .collect();
+        assert!(!files.is_empty());
+        let (mut script, mut groups, mut effects) = (0, 0, 0);
+        for file in &files {
+            let state = sampler_kontakt::read_snapshot(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            let parent = snapshot_parent(file, &state.instrument).unwrap_or_else(|| panic!("no instrument for {}", file.display()));
+            let plain = sampler_kontakt::read(&parent).unwrap();
+            let applied = sampler_kontakt::read_with_snapshot(&parent, &state).unwrap();
+            let states = |k: &sampler_kontakt::Kontakt| k.instrument.behaviors.iter().map(|b| b.state.clone()).collect::<Vec<_>>();
+            let mix = |k: &sampler_kontakt::Kontakt| format!("{:?}{:?}", k.instrument.buses, k.instrument.chains);
+            let levels = |k: &sampler_kontakt::Kontakt| k.instrument.groups.iter().map(|g| (g.gain, g.pan, g.tune)).collect::<Vec<_>>();
+            script += usize::from(states(&plain) != states(&applied));
+            groups += usize::from(levels(&plain) != levels(&applied));
+            effects += usize::from(mix(&plain) != mix(&applied));
+        }
+        eprintln!("{} snapshots: {script} change script state, {groups} group levels, {effects} effects", files.len());
+        assert!(script > 0 && groups > 0 && effects > 0, "script {script} groups {groups} effects {effects} of {}", files.len());
+        let request = LoadRequest { path: files[0].clone(), sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        assert!(loaded.instrument.is_some_and(|i| !i.zones.is_empty()));
+    }
+
+    #[test]
     fn real_kontakt_mic_nodes_pass_audio() {
         let relative = "Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Horns/2 Horns Staccato.nki";
         let roots = std::env::var_os("KONTRA_KONTAKT_LIBRARIES").unwrap_or_default();
@@ -1757,6 +2019,9 @@ mod tests {
             "the Lua script runs: {:?}",
             loaded.report.missing
         );
+        let stream = loaded.stream.clone().expect("UVI samples stream");
+        let (held, full) = (stream.resident_bytes(), loaded.report.decoded.full_bytes);
+        assert!(held > 0 && held < full, "{held} of {full} bytes resident");
         let mut core = V2Core::with_parts(1, 48000.0);
         core.install(0, loaded.part);
         core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
@@ -1792,6 +2057,85 @@ mod tests {
             let spent = start.elapsed().as_secs_f64();
             println!("IDLE {relative}: {:.4}% of a core ({:.1} us per 128-frame block)", spent / 20.0 * 100.0, spent / blocks as f64 * 1e6);
         }
+    }
+
+    #[test]
+    fn real_uvi_lua_program_plays_without_audio_thread_allocation() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.to_string_lossy().contains(".ufs") && p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let request = LoadRequest { path, sample_rate: 48000.0, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| (), &|| false).unwrap();
+        assert!(
+            !loaded.report.missing.iter().any(|m| m.value.contains("no frontend")),
+            "the Lua script runs: {:?}",
+            loaded.report.missing
+        );
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 36, id: 1, clap: true }));
+        // The script runs on its own thread: its note arrives within a few blocks.
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard, "the scripted program is silent");
+        // Warm: the first notes sized the driver's tables. Now play more
+        // scripted notes and release them; the audio thread allocates nothing.
+        core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: 36, id: -1, clap: true }));
+        (0..50).for_each(|_| _ = core.render(128));
+        let allocations = crate::plugin::tests::allocations(|| {
+            for (id, key) in [(2, 40), (3, 43), (4, 36)] {
+                core.event(0, on(HostNote { port: 0, channel: 0, key, id, clap: true }));
+                for _ in 0..60 {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    _ = core.render(128);
+                }
+                core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: i32::from(key), id: -1, clap: true }));
+            }
+        });
+        assert_eq!(allocations, 0, "the audio thread allocated or freed memory");
+    }
+
+    #[test]
+    fn pitch_bend_reaches_notes_a_lua_script_played() {
+        let relative = "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip";
+        let roots = std::env::var_os("KONTRA_UVI_LIBRARIES").unwrap_or_default();
+        let Some(path) = std::env::split_paths(&roots).map(|r| r.join(relative)).find(|p| p.ancestors().any(|a| a.is_file())) else {
+            eprintln!("skipped: {relative} is not installed");
+            return;
+        };
+        let loaded = V2Loader.prepare(&LoadRequest { path, sample_rate: 48000.0, ..Default::default() }, &mut |_| (), &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 0, key: 40, id: 1, clap: true }));
+        // Zero crossings of the left channel over `blocks` blocks, scripts given a moment each.
+        let crossings = |core: &mut V2Core, blocks: usize| {
+            let (mut n, mut last) = (0usize, 0.0f32);
+            for _ in 0..blocks {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let r = core.render(128);
+                for x in &r.buses[0][0][..128] {
+                    n += usize::from(last <= 0.0 && *x > 0.0);
+                    last = *x;
+                }
+            }
+            n
+        };
+        let heard = (0..400).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            loud(&core.render(128), 0, 128)
+        });
+        assert!(heard);
+        let before = crossings(&mut core, 150);
+        core.event(0, Event::Ump([0x40e0_0000, 0xffff_ffff]));
+        let after = crossings(&mut core, 150);
+        assert!(before > 20, "{before} crossings");
+        // The default bend range is two semitones: about 12% higher.
+        assert!(after as f64 > before as f64 * 1.05, "{before} crossings before the bend, {after} after");
     }
 
     #[test]

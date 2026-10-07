@@ -69,6 +69,9 @@ pub struct Part {
     /// MPE: each note on its own member channel with its own bend,
     /// pressure and timbre (lower zone, manager channel 1).
     pub mpe: bool,
+    /// Where the dynamics controllers (CC1/CC11...) start before the host
+    /// moves them, 0..=127; -1 keeps Kontakt's own power-on state.
+    pub dynamics: i16,
     /// Pitch-bend range in semitones each way; 0 keeps the instrument's own.
     pub bend_range: u8,
     /// How articulations are selected, as `sampler_ir::Switching::to_bits`
@@ -97,6 +100,7 @@ impl Default for Part {
             output_manual: false,
             nodes: Vec::new(),
             mpe: false,
+            dynamics: -1,
             bend_range: 0,
             switching: 0,
         }
@@ -220,7 +224,7 @@ impl Selection {
 #[derive(Params)]
 #[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
 pub struct SamplerParams {
-    #[param(name = "Volume", range = "linear(-60, 6)", default = -12.0, unit = "dB", smooth = "exp(5)")]
+    #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
@@ -295,7 +299,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 7],
+    problems: [AtomicU64; 8],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
@@ -358,7 +362,7 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [a, b, c, d, e, f, g] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
+        let [a, b, c, d, e, f, g, h] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
             underruns: b,
@@ -367,12 +371,13 @@ impl PartShared {
             narrowed_input: e,
             ignored_input: f,
             stolen_voices: g,
+            refused_starts: h,
         }
     }
 
     fn store_problems(&self, p: RuntimeProblems) {
         let values =
-            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices];
+            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
         }
@@ -468,7 +473,7 @@ pub struct Shared {
 pub(crate) struct PartView {
     pub(crate) program: u32,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64, bool)>,
+    pub(crate) attempted: Option<(String, u32, u64, bool, i16)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -1100,7 +1105,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     let atoms = shared.part(slot).unwrap();
     let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe);
+    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe, part.dynamics);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1140,6 +1145,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         program: part.program,
         sample_rate: rate,
         mpe: part.mpe,
+        dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
         threads: match shared.libraries.settings().threads {
             crate::library::ThreadSetting::Single => None,
             crate::library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),
@@ -1716,6 +1722,17 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Matches Kontakt's matched-level reference: a fresh instance's master is
+    /// unity, so a full-scale neutral sample leaves at the level the core renders it.
+    #[test]
+    fn a_fresh_master_is_unity() {
+        let p = SamplerParams::new();
+        assert_eq!(p.volume.read(), 0.0, "master dB");
+        assert_eq!(db_to_linear(p.volume.read()), 1.0, "master gain");
+        let full_scale = 1.0_f32;
+        assert_eq!(full_scale * db_to_linear(p.volume.read()), full_scale);
+    }
     use std::{
         alloc::{GlobalAlloc, Layout, System},
         cell::Cell,

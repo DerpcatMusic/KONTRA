@@ -936,6 +936,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_fm8_preset_read() -> Result<(), Error> {
         let file = File::open("tests/patchdata/fm8/1.2.0.1010/000")?;
         FM8Preset::read(file)?;

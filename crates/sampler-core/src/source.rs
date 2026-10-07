@@ -717,7 +717,7 @@ impl Cursor {
         let (_, contiguous, _) = self.span();
         let fade = match self.loop_range.map(|r| r.shape) {
             Some(LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames }) => {
-                frames as usize
+                frames
             }
             _ => 0,
         };

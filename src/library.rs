@@ -644,7 +644,7 @@ pub fn is_multi(path: &Path) -> bool {
 
 /// What plays as one rack part: a Kontakt instrument or a sample.
 pub fn is_instrument(path: &Path) -> bool {
-    path.extension().is_some_and(|x| ["nki", "nkm", "uvip", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
+    path.extension().is_some_and(|x| ["nki", "nkm", "nksn", "uvip", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// What the browser lists and the rack opens: Kontakt instruments and saved racks.
@@ -679,6 +679,12 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         if !e.file_type().is_file() { continue; }
         if is_preset(path) {
             out.push(e.into_path());
+        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nksn")) {
+            // A snapshot lists when it reads; the one that does not is reported.
+            match sampler_kontakt::read_snapshot(path) {
+                Ok(_) => out.push(e.into_path()),
+                Err(e) => trace.issue("catalog", "snapshot_unreadable", e.to_string()),
+            }
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
             // A UVI bank lists its programs as `bank.ufs/program.uvip`.
             match sampler_uvi::Bank::open(path) {
@@ -687,7 +693,6 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
             }
         }
     }
-    // ponytail: snapshots (.nksn) are not listed until the v2 loader applies them.
     trace.detail("presets", out.len());
     trace.finish(if progress.canceled() { "canceled" } else { "loaded" });
     out

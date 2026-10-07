@@ -4,6 +4,9 @@
 One event per line, `#` comments. Times in seconds (120 bpm, 480 ppq => 960 ticks/s).
   T on KEY VEL        T off KEY            T note KEY VEL LEN
   T cc N VALUE        T pedal VALUE        T bend -1..1        T pc N
+Protocol (REFERENCE_PROTOCOL.md): before the first note the scenario must send CC 1, 7, 10, 11 and 64 on the
+note's channel (explicit controller state, never "unsent"); otherwise compilation fails, unless the file has the
+line `# protocol: unsent REASON` (tests about unsent state). OUT.mid.proto records which case applied.
 Optional leading `ch=N` (0-15) on any line. A 1 s tail is not added; end the
 scenario with `T end` to pad the file to T.
 """
@@ -66,5 +69,37 @@ def smf(text):
         + (480).to_bytes(2, "big") + b"MTrk" + len(body).to_bytes(4, "big") + body
 
 
+REQUIRED_CC = (1, 7, 10, 11, 64)
+
+
+def check_protocol(text):
+    """Returns 'explicit' or 'unsent: REASON'; raises SystemExit when state is neither sent nor declared unsent."""
+    for line in text.splitlines():
+        if line.strip().startswith("# protocol: unsent"):
+            return "unsent: " + (line.split("unsent", 1)[1].strip() or "no reason given")
+    sent, first = {}, {}
+    for line in text.splitlines():
+        w = line.split("#")[0].split()
+        if not w:
+            continue
+        ch = 0
+        if w[0].startswith("ch="):
+            ch, w = int(w[0][3:]), w[1:]
+        t = float(w[0])
+        if w[1] == "cc":
+            sent.setdefault(ch, {}).setdefault(int(w[2]), t)
+        elif w[1] in ("on", "note"):
+            first.setdefault(ch, t)
+    for ch, t0 in first.items():
+        miss = [c for c in REQUIRED_CC if sent.get(ch, {}).get(c, 1e9) > t0]
+        if miss:
+            raise SystemExit(f"protocol: channel {ch} plays at {t0}s without explicit CC {miss} before it "
+                             "(send them, or add '# protocol: unsent REASON' for an unsent-state test)")
+    return "explicit"
+
+
 if __name__ == "__main__":
-    open(sys.argv[2], "wb").write(smf(open(sys.argv[1]).read()))
+    txt = open(sys.argv[1]).read()
+    mode = check_protocol(txt)
+    open(sys.argv[2], "wb").write(smf(txt))
+    open(sys.argv[2] + ".proto", "w").write(mode + "\n")

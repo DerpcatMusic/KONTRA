@@ -105,6 +105,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_repository_root_read_000() -> Result<(), NIFileError> {
         let file =
             File::open("tests/data/Containers/NIS/objects/RepositoryRoot/RepositoryRoot-000")?;
@@ -125,6 +126,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_repository_root_read_001() -> Result<(), NIFileError> {
         let file =
             File::open("tests/data/Containers/NIS/objects/RepositoryRoot/RepositoryRoot-001")?;

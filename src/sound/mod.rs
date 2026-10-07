@@ -150,6 +150,9 @@ pub struct LoadRequest {
     /// Per-note pressure and timbre reach every zone (louder, brighter), for
     /// MPE controllers; otherwise only routes the instrument authored do.
     pub mpe: bool,
+    /// Where the dynamics controllers start before the host moves them
+    /// (`None`: Kontakt's power-on state).
+    pub dynamics_start: Option<u8>,
     /// Voice-rendering threads (`None`: one, the audio thread alone).
     pub threads: Option<ThreadChoice>,
 }

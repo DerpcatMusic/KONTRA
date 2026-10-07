@@ -80,7 +80,7 @@ impl Guard {
                 Ok(())
             }
             #[cfg(feature = "library-access")]
-            Self::Bank(ufs) => ufs.check_snapshot(file).map_err(|e| invalid(e)),
+            Self::Bank(ufs) => ufs.check_snapshot(file).map_err(invalid),
         }
     }
 }

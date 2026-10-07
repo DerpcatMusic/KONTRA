@@ -10,6 +10,12 @@ pub enum SvfMode {
     BandPass,
     Notch,
     AllPass,
+    /// 6 dB/octave: `y += (x - y) b` with `b = 1 - exp(-2 pi f / rate)`; the
+    /// high pass is `x - y`. Shares the SVF coefficient cache (`a3` holds `b`);
+    /// Q is unused. Spec: DSP_FORMAT_SPECIFICATION.md, Workstation OnePole
+    /// kernels; the exponent's multiplier is unresolved there, 2 pi is assumed.
+    OnePoleLowPass,
+    OnePoleHighPass,
 }
 
 /// Stereo trapezoidal state-variable filter. Smoothing occurs in hertz and Q,
@@ -36,7 +42,8 @@ impl StateVariableFilter {
                 if rate == 0 || hz <= 0. || hz >= f64::from(rate) * 0.5 || q <= 0. {
                     return Err(Error::InvalidInput);
                 }
-                let coefficients = Coefficients::new(f64::from(rate), hz, q);
+                let coefficients = Coefficients::new(self.mode, f64::from(rate), hz, q);
+                let one = self.mode.one_pole();
                 if ![
                     coefficients.a1,
                     coefficients.a2,
@@ -44,7 +51,7 @@ impl StateVariableFilter {
                     coefficients.k,
                 ]
                 .iter()
-                .all(|v| v.is_finite() && *v > 0.)
+                .all(|v| v.is_finite() && (*v > 0. || (one && *v == 0.)))
                 {
                     return Err(Error::InvalidInput);
                 }
@@ -81,7 +88,15 @@ pub(super) struct Coefficients {
     pub k: f64,
 }
 impl Coefficients {
-    fn new(rate: f64, hz: f64, q: f64) -> Self {
+    fn new(mode: SvfMode, rate: f64, hz: f64, q: f64) -> Self {
+        if mode.one_pole() {
+            return Self {
+                a1: 0.,
+                a2: 0.,
+                a3: -(-std::f64::consts::TAU * hz / rate).exp_m1(),
+                k: 0.,
+            };
+        }
         let g = (std::f64::consts::PI * (hz / rate)).tan();
         let k = 1. / q;
         let a1 = 1. / (1. + g * (g + k));
@@ -124,6 +139,10 @@ impl FilterCache {
         }
     }
 
+    pub(super) fn one_pole_high(&self) -> Option<bool> {
+        self.filter.mode.one_pole_high()
+    }
+
     /// The response's output mix: `[m0, mk, m2]`.
     pub(super) fn mix(&self) -> [f64; 3] {
         self.filter.mode.mix()
@@ -150,7 +169,7 @@ impl FilterCache {
                 self.filter.q.value(parameters, frame, expression),
             ];
             if self.last_values != Some(values) {
-                self.last = Coefficients::new(self.filter.rate, values[0], values[1]);
+                self.last = Coefficients::new(self.filter.mode, self.filter.rate, values[0], values[1]);
                 self.last_values = Some(values);
             }
             self.uniform &= self.filled == 0 || self.last == self.coefficients[0];
@@ -174,7 +193,11 @@ impl FilterCache {
     ) {
         self.prepare(at, len, parameters, expression);
         let mix = self.filter.mode.mix();
-        if self.uniform {
+        if let Some(high) = self.filter.mode.one_pole_high() {
+            let coefficients = &self.coefficients;
+            let uniform = self.uniform;
+            one_pole(state, block, len, high, |i| coefficients[if uniform { 0 } else { i }].a3);
+        } else if self.uniform {
             let c = self.coefficients[0];
             run(state, block, len, mix, |_| c);
         } else {
@@ -182,6 +205,26 @@ impl FilterCache {
             run(state, block, len, mix, |i| coefficients[i]);
         }
     }
+}
+
+/// `y += (x - y) b` per channel in `state[0]`; the band-state row stays zero.
+#[inline(always)]
+fn one_pole(
+    state: &mut [[f64; 2]; 2],
+    block: &mut Planar,
+    len: usize,
+    high: bool,
+    b: impl Fn(usize) -> f64,
+) {
+    let [mut yl, mut yr] = state[0];
+    let [left, right] = block;
+    for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
+        let b = b(i);
+        yl += (*l - yl) * b;
+        yr += (*r - yr) * b;
+        (*l, *r) = if high { (*l - yl, *r - yr) } else { (yl, yr) };
+    }
+    state[0] = [yl, yr].map(flush);
 }
 
 #[inline(always)]
@@ -219,7 +262,21 @@ impl SvfMode {
             Self::BandPass => [0., 1., 0.],
             Self::Notch => [1., -1., 0.],
             Self::AllPass => [1., -2., 0.],
+            Self::OnePoleLowPass => [0., 0., 1.],
+            Self::OnePoleHighPass => [1., 0., -1.],
         }
+    }
+
+    pub(super) fn one_pole_high(self) -> Option<bool> {
+        match self {
+            Self::OnePoleLowPass => Some(false),
+            Self::OnePoleHighPass => Some(true),
+            _ => None,
+        }
+    }
+
+    fn one_pole(self) -> bool {
+        matches!(self, Self::OnePoleLowPass | Self::OnePoleHighPass)
     }
 }
 
@@ -361,8 +418,12 @@ impl FilterContext<'_> {
             let hz = (filter.cutoff.value(parameters, middle, expression) * cutoff)
                 .clamp(20.0, 20_000.0_f64.min(filter.rate * 0.49));
             let q = (filter.q.value(parameters, middle, expression) * q).max(0.025);
-            let c = Coefficients::new(filter.rate, hz, q);
-            run(state, block, len, filter.mode.mix(), |_| c);
+            let c = Coefficients::new(filter.mode, filter.rate, hz, q);
+            if let Some(high) = filter.mode.one_pole_high() {
+                one_pole(state, block, len, high, |_| c.a3);
+            } else {
+                run(state, block, len, filter.mode.mix(), |_| c);
+            }
             return;
         }
         cache.process(state, block, len, parameters, at, expression);
@@ -423,6 +484,7 @@ mod tests {
                     SvfMode::BandPass => [0., 1., 0.],
                     SvfMode::Notch => [1., 0., 1.],
                     SvfMode::AllPass => [1.; 3],
+                    SvfMode::OnePoleLowPass | SvfMode::OnePoleHighPass => unreachable!("not in this list"),
                 };
                 for (a, b) in response.into_iter().zip(expected) {
                     assert!(
