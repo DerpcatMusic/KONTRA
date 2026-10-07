@@ -1151,3 +1151,29 @@ fn unsupported_and_approximate_builtins_are_positioned_diagnostics() {
         .unwrap();
     assert_eq!((error.kind, error.line), (sampler_ksp::Kind::Error, 2));
 }
+
+/// Kontakt's type constants (effects, filters, modulators, start criteria) are
+/// values scripts store and pass along; an unknown one must not fail the script.
+#[test]
+fn type_constants_outside_the_vendor_families_compile() {
+    let names = [
+        "$EFFECT_TYPE_REVERB2",
+        "$EFFECT_TYPE_GAINER",
+        "$FILTER_TYPE_LADDER",
+        "$FILTER_TYPE_DUAL_SKF",
+        "$INTMOD_TYPE_LFO",
+        "$ENV_TYPE_FLEX",
+        "$LFO_TYPE_MULTI",
+        "$START_CRITERIA_CYCLE_ROUND_ROBIN",
+        "$MOD_TARGET_INVERT_SOURCE",
+    ];
+    let mut body = String::from("on init\n  declare $a\n");
+    for name in names {
+        body.push_str(&format!("  $a := {name}\n  set_engine_par($ENGINE_PAR_EFFECT_SUBTYPE, {name}, 0, 0, -1)\n"));
+    }
+    body.push_str("end on\n");
+    let limits = sampler_ksp::Limits { source_bytes: 65536, instructions: 4096, variables: 16, array_cells: 16 };
+    if let Err(error) = sampler_ksp::compile(&body, 48000, limits, &[]) {
+        panic!("{error:?}");
+    }
+}
