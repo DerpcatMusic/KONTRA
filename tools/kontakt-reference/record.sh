@@ -10,7 +10,7 @@ here=$(cd "$(dirname "$0")" && pwd); W=${KONTRA_REFERENCE_DIR:-/home/derpcat/.ca
 if [ -z "${KONTRA_NO_STAMP_CHECK:-}" ]; then
   [ -f "$W/calibrated" ] || { echo "record: no calibration stamp, run kontakt.sh calibrate first" >&2; exit 1; }
   read -r sink wsrv _ <"$W/calibrated"
-  [ "$sink" = "$(pactl list short modules | awk '/kontra_ref/{print $1}')" ] && [ "$wsrv" = "$(pgrep -o wineserver)" ] || { echo "record: calibration stamp is from another sink/wine session, recalibrate" >&2; exit 1; }
+  [ "$sink" = "$(pactl list short modules | awk '/kontra_ref/{print $1}')" ] && [ "$wsrv" = "$("$here/wsid.sh")" ] || { echo "record: calibration stamp is from another sink/wine session, recalibrate" >&2; exit 1; }
   "$here/kontakt.sh" state >"$W/log/state.txt" || { cat "$W/log/state.txt" >&2; echo "record: Kontakt state is not pinned, no MIDI sent" >&2; exit 1; }
 fi
 load1() { cut -d' ' -f1 /proc/loadavg; }
