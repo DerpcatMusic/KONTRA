@@ -142,6 +142,8 @@ impl Script {
     ) -> Result<sampler_ui_ir::Interface, sampler_ui_ir::Error> {
         ui::interface(&self.model, self.slot, picture)
     }
+    /// Source slot retained independently of the bound script-instance index.
+    pub fn slot(&self) -> u8 { self.slot }
     pub fn has_performance_view(&self) -> bool {
         self.model.interface.performance_view
     }

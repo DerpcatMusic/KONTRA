@@ -43,6 +43,26 @@ fn authored_resource_containers_are_bounded_and_case_insensitive() {
         picture
     );
     assert!(resources.read("missing.png").unwrap().is_none());
+    let instrument = root.join("Instruments/Piano.nki");
+    std::fs::create_dir_all(instrument.parent().unwrap()).unwrap();
+    let mut routed = sampler_kontakt::Resources::of(&instrument);
+    assert_eq!(
+        routed.read("Resources\\pictures\\Wallpaper.PNG").as_deref(),
+        Some(picture.as_slice())
+    );
+    assert!(
+        routed.locations().contains(&path),
+        "opened containers retain their diagnostic paths"
+    );
+    let loose = root.join("Resources/pictures/wallpaper.png");
+    std::fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    std::fs::write(&loose, b"loose override").unwrap();
+    let mut routed = sampler_kontakt::Resources::of(&instrument);
+    assert_eq!(
+        routed.read("resources|pictures|wallpaper.PNG").as_deref(),
+        Some(b"loose override".as_slice())
+    );
+
     // Invalid markers, exaggerated counts/ranges and truncated bodies are errors.
     for at in [0, 272, 632 + 904, 1544] {
         let mut corrupt = container.clone();
