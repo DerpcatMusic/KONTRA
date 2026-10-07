@@ -470,6 +470,9 @@ pub(crate) struct Chain {
     pub processors: Vec<sampler_ir::Processor>,
     pub sends: Vec<f32>,
     pub notes: Vec<Note>,
+    /// Each translated SV filter slot and its index in `processors`, for
+    /// modulation targets that name a module slot.
+    pub filter_slots: Vec<(usize, usize)>,
 }
 
 /// Translate one rack. Each slot scales its output by its output gain. The
@@ -537,6 +540,8 @@ pub(crate) fn chain_with(
                 ..
             }) => match filter(*kind, *cutoff, *resonance) {
                 Some(f) => {
+                    out.filter_slots
+                        .push((fx.slot, out.processors.len() + filters.len()));
                     filters.push(f);
                     combined = product(gain, combined);
                 }
