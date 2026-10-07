@@ -7,11 +7,7 @@
 //! rendering adds them in, so the result is identical.
 use super::{
     Frame, Runtime, Slot, Voice, VoiceId,
-    dsp::{
-        BLOCK, MAX_LANES, RenderContext, lanes,
-        lanes::VOICES,
-        svf::FilterContext,
-    },
+    dsp::{BLOCK, MAX_LANES, RenderContext, lanes, lanes::VOICES, svf::FilterContext},
     render::{Prelude, render_source},
 };
 use sampler_pool::{Claims, Disjoint, Pool, Slab};
@@ -89,7 +85,13 @@ pub(super) struct Parallel {
 
 impl Parallel {
     fn new(threads: usize, voices: usize) -> Self {
-        let Scratch { scratch, outcomes, claims, runs, preps } = Scratch::new(voices);
+        let Scratch {
+            scratch,
+            outcomes,
+            claims,
+            runs,
+            preps,
+        } = Scratch::new(voices);
         Self {
             pool: Pool::new(threads - 1),
             threads,
@@ -126,7 +128,9 @@ impl Runtime {
         let expressions = self.expressions.slots.len();
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
             // An allocation failure leaves that plan short; blocks using it render on one thread.
-            let _ = generation.dsp.ensure_lanes(&generation.prepared, expressions, n);
+            let _ = generation
+                .dsp
+                .ensure_lanes(&generation.prepared, expressions, n);
         }
         self.parallel = (n > 1).then(|| Parallel::new(n, self.voices.slots.len()));
     }
@@ -166,15 +170,35 @@ impl Runtime {
         for run in &par.runs {
             for &i in &run.voices[..run.count] {
                 let needs = self.script_params
-                    || self.families.get(self.voices.slots[i].value.as_ref().unwrap().family.0).is_some_and(|f| {
-                        let plan = self.notes.get(f.note.0).unwrap().plan.0;
-                        self.plans.get(plan).unwrap().modulation.program(i).is_some()
-                    });
-                par.preps[i] = if needs && run.count == 1 { self.prepare_voice(i, at, frames) } else { None };
+                    || self
+                        .families
+                        .get(self.voices.slots[i].value.as_ref().unwrap().family.0)
+                        .is_some_and(|f| {
+                            let plan = self.notes.get(f.note.0).unwrap().plan.0;
+                            self.plans
+                                .get(plan)
+                                .unwrap()
+                                .modulation
+                                .program(i)
+                                .is_some()
+                        });
+                par.preps[i] = if needs && run.count == 1 {
+                    self.prepare_voice(i, at, frames)
+                } else {
+                    None
+                };
             }
         }
         {
-            let Parallel { pool, scratch, outcomes, claims, runs, preps, .. } = &mut par;
+            let Parallel {
+                pool,
+                scratch,
+                outcomes,
+                claims,
+                runs,
+                preps,
+                ..
+            } = &mut par;
             let view = View {
                 plans: &self.plans,
                 families: &self.families,
@@ -222,7 +246,10 @@ impl Runtime {
                     continue;
                 }
                 let f = self.families.get(v.family.0).unwrap();
-                let plan = self.plans.get(self.notes.get(f.note.0).unwrap().plan.0).unwrap();
+                let plan = self
+                    .plans
+                    .get(self.notes.get(f.note.0).unwrap().plan.0)
+                    .unwrap();
                 // A plan adopted before the thread count rose may lack lane caches.
                 if plan.dsp.filters.len() < lanes {
                     return false;
@@ -265,7 +292,14 @@ impl Runtime {
                 };
                 match par.preps[i].and_then(|p| p.points.map(|r| (p.modulated, r))) {
                     Some((true, ramp)) => {
-                        modulation.mix(i, &mut scratch[0][..frames], target, ramp, at, f64::from(self.rate));
+                        modulation.mix(
+                            i,
+                            &mut scratch[0][..frames],
+                            target,
+                            ramp,
+                            at,
+                            f64::from(self.rate),
+                        );
                     }
                     Some((false, ramp)) => {
                         super::render::ramp_mix(&scratch[0][..frames], target, ramp, at);
@@ -281,7 +315,9 @@ impl Runtime {
                     dsp.buses.fed(bus, outcome.produced);
                 }
                 self.nonfinite_frames = self.nonfinite_frames.saturating_add(outcome.faults);
-                self.stream_underruns = self.stream_underruns.saturating_add(u64::from(outcome.underrun));
+                self.stream_underruns = self
+                    .stream_underruns
+                    .saturating_add(u64::from(outcome.underrun));
             }
         }
         for run in &par.runs {
@@ -355,10 +391,15 @@ impl View<'_> {
             },
             at: self.at,
         };
-        let applied = prelude.and_then(|p| p.points).map_or(expression.rendered.gains, |r| {
-            let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
-            [expression.rendered.gains[0] * m(0), expression.rendered.gains[1] * m(1)]
-        });
+        let applied = prelude
+            .and_then(|p| p.points)
+            .map_or(expression.rendered.gains, |r| {
+                let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+                [
+                    expression.rendered.gains[0] * m(0),
+                    expression.rendered.gains[1] * m(1),
+                ]
+            });
         let states = &mut cells[..chain.map_or(0, |c| c.stages())];
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), self.at);
@@ -384,7 +425,12 @@ impl View<'_> {
         let done = done
             || prelude.is_some_and(|p| p.stop)
             || super::render::inaudible(v, produced, applied);
-        self.outcomes.claim(i)[0] = Outcome { produced, done, faults, underrun };
+        self.outcomes.claim(i)[0] = Outcome {
+            produced,
+            done,
+            faults,
+            underrun,
+        };
     }
 
     /// `Runtime::render_batch`, into scratch.
@@ -446,7 +492,10 @@ impl View<'_> {
         for end in &mut batch.ends[2 * voices.len()..] {
             *end = batch.len;
         }
-        let plan = self.plans.get(plan_id.expect("a batch has a voice")).unwrap();
+        let plan = self
+            .plans
+            .get(plan_id.expect("a batch has a voice"))
+            .unwrap();
         let first = slots[0].as_ref().unwrap()[0].value.as_ref().unwrap();
         let chain = &plan.prepared.voice_chains[first.chain.unwrap()];
         let mut cells: lanes::Cells<'_> =
@@ -551,7 +600,10 @@ mod tests {
                 velocity_high: 1.,
                 gain: 1.,
                 envelope: Envelope::new(4, 2, 8, 0.5, 8).unwrap(),
-                playback: Playback { transpose_semitones: 7., ..Playback::default() },
+                playback: Playback {
+                    transpose_semitones: 7.,
+                    ..Playback::default()
+                },
             })
             .collect();
         let plan = Prepared::new(48000, samples, regions, LAYERS * (NOTES + 1)).unwrap();
@@ -595,7 +647,8 @@ mod tests {
                 .write(ModTarget::Decibels, -250 * (id as i64 % 5), false)
                 .unwrap();
             if id % 3 == 0 {
-                rt.fade_event(plan, id as i64, 700 + 40 * id as u32, true, id % 2 == 0).unwrap();
+                rt.fade_event(plan, id as i64, 700 + 40 * id as u32, true, id % 2 == 0)
+                    .unwrap();
             }
         }
         let mut out = Vec::new();
@@ -615,10 +668,17 @@ mod tests {
         for threads in [2, 4] {
             let mut rt = runtime(threads);
             let actual = play(&mut rt);
-            assert!(rt.parallel_blocks() > 10, "{threads}: {} parallel blocks", rt.parallel_blocks());
+            assert!(
+                rt.parallel_blocks() > 10,
+                "{threads}: {} parallel blocks",
+                rt.parallel_blocks()
+            );
             assert_eq!(rt.voice_count(), one.voice_count());
             assert!(
-                actual.iter().zip(&expected).all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
+                actual
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, e)| a.map(f32::to_bits) == e.map(f32::to_bits)),
                 "{threads} threads differ from one"
             );
         }

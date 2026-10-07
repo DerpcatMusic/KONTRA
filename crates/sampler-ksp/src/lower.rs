@@ -9,8 +9,8 @@ use crate::sema::fold;
 use sampler_core::{
     Comparison as Cmp, ControlId, Duration, DurationValue, EnvelopeStage, Inheritance,
     Instruction as I, IntegerBinary as IB, IntegerExtra, IntegerUnary as IU, ModTarget, Op,
-    ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef, WaitLifetime,
-    real_bits,
+    ParamScope, Program, RealBinary, RealUnary, ScriptArray, SlotKind, TextPart, TextRef,
+    WaitLifetime, real_bits,
 };
 use std::collections::{BTreeMap, HashMap};
 
