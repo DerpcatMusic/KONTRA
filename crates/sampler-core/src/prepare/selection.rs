@@ -333,6 +333,17 @@ impl Runtime {
             return Ok(false);
         }
         n.attack = crate::AttackStatus::Suppressed;
+        let key = n.pitch.key();
+        if let Some(log) = &mut self.selection_log {
+            log.push(crate::SelectionRecord {
+                at: self.now,
+                key,
+                velocity: 0.,
+                trigger: Trigger::Attack,
+                suppressed: true,
+                candidates: Vec::new(),
+            });
+        }
         self.release_note_callbacks(note);
         self.trim_release_callbacks(note, false);
         Ok(true)
@@ -542,12 +553,115 @@ impl Runtime {
         Ok(required)
     }
 
+    /// Start (or stop and discard) recording why each region was or was not
+    /// chosen by every selection. Off by default and never on the audio path's
+    /// critical cost: the recorder allocates, so enable it only off-thread or
+    /// in diagnostics.
+    pub fn record_selections(&mut self, on: bool) {
+        self.selection_log = on.then(Vec::new);
+    }
+
+    /// Records gathered since the last call, oldest first.
+    pub fn take_selection_records(&mut self) -> Vec<crate::SelectionRecord> {
+        self.selection_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Verdict for every region mapped to the note's key, mirroring the checks
+    /// `commit_selection` applies in order: phase, articulation, controller
+    /// condition, velocity, script group, then the round-robin take.
+    fn diagnose(
+        &self,
+        note: NoteId,
+        trigger: Trigger,
+        velocity: f64,
+        snapshot: usize,
+    ) -> crate::SelectionRecord {
+        use crate::{RegionVerdict, Rejection};
+        let n = self.notes.get(note.0).unwrap();
+        let (plan, key) = (n.plan, n.pitch.key());
+        let generation = self.plans.get(plan.0).unwrap();
+        let prepared = &generation.prepared;
+        let state = &self.performance_state.states[snapshot];
+        let mask = generation
+            .groups
+            .view(note.0.index, crate::groups::GroupView::Committed);
+        let phase = prepared.range(key, trigger);
+        let all = prepared.offsets[usize::from(key)]..prepared.offsets[usize::from(key) + 1];
+        let mut candidates = Vec::new();
+        for index in all {
+            let c = prepared.candidates[index];
+            let r = prepared.regions[c.region];
+            let group = prepared.region_groups.get(c.region).copied().flatten();
+            let verdict = if !phase.contains(&index) {
+                Some(Rejection::Trigger)
+            } else if prepared.articulated
+                && r.articulation.is_some_and(|a| a != state.articulation)
+            {
+                Some(Rejection::Articulation)
+            } else if r.conditions.is_some_and(|i| {
+                !prepared.conditions[i].iter().all(|c| {
+                    let v = state.controllers[usize::from(c.controller)];
+                    c.low <= v && v <= c.high
+                })
+            }) {
+                Some(Rejection::Condition)
+            } else if !(r.velocity_low <= velocity && velocity <= r.velocity_high) {
+                Some(Rejection::Velocity)
+            } else if group.is_some_and(|g| mask[g as usize / 64] & (1 << (g % 64)) == 0) {
+                Some(Rejection::Group)
+            } else {
+                None
+            };
+            candidates.push((index, c, group, verdict));
+        }
+        // The take actually chosen per sequence is the first survivor's; others
+        // of the same sequence lose to the round robin.
+        let mut chosen = std::collections::BTreeMap::new();
+        for (_, c, _, verdict) in &candidates {
+            if verdict.is_none()
+                && let Some(take) = prepared.regions[c.region].take
+            {
+                chosen.entry(take.sequence).or_insert(take);
+            }
+        }
+        let candidates = candidates
+            .into_iter()
+            .map(|(_, c, group, verdict)| {
+                let take = prepared.regions[c.region].take;
+                let verdict = verdict.or_else(|| {
+                    take.filter(|t| chosen.get(&t.sequence).is_some_and(|k| k != t))
+                        .map(|_| Rejection::Take)
+                });
+                RegionVerdict {
+                    region: c.region,
+                    group,
+                    rejected: verdict,
+                }
+            })
+            .collect();
+        crate::SelectionRecord {
+            at: self.now,
+            key,
+            velocity,
+            trigger,
+            suppressed: false,
+            candidates,
+        }
+    }
+
     fn commit_selection(&mut self, note: NoteId, trigger: Trigger, velocity: f64, snapshot: usize) {
         let n = self.notes.get(note.0).unwrap();
         let (plan, note_pitch, address) = (n.plan, n.pitch, n.address);
         let key = note_pitch.key();
         let range = self.plans.get(plan.0).unwrap().prepared.range(key, trigger);
         let (begin, end) = (range.start, range.end);
+        if self.selection_log.is_some() {
+            let record = self.diagnose(note, trigger, velocity, snapshot);
+            self.selection_log.as_mut().unwrap().push(record);
+        }
         // Everything below was validated by Prepared and preflight. No callbacks,
         // concurrent writers or newly due work can consume the reserved resources.
         let mut from = begin;

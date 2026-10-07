@@ -40,12 +40,12 @@ pub struct Kontakt {
 /// and reported; a malformed container or zone table is an error.
 pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    let chunks = crate::read_chunks(&path)?;
+    let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
     let program = Program::try_from(
         chunks
             .find_first(PROGRAM)
@@ -66,7 +66,7 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
             (t.sample_filetable, t.other_filetable)
         }
     };
-    translate(path, program, table, others)
+    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 /// Translate program `index` (0-based, in slot order) of the multi at `path`;
@@ -74,24 +74,15 @@ pub fn read(path: &Path) -> Result<Kontakt, LoadError> {
 pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
-    let chunks = crate::read_chunks(&path)?;
+    let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
-    let bank = Bank::try_from(
-        chunks
-            .find_first(3)
-            .ok_or_else(|| invalid("missing multi bank"))?,
-    )
-    .map_err(|e| decode("multi bank", e))?;
-    let mut slots: Vec<_> = bank
-        .slot_list()
-        .map_err(|e| decode("multi slots", e))?
-        .slots
-        .into_iter()
-        .collect();
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
+    let bank = Bank::try_from(chunks.find_first(3).ok_or_else(|| invalid("missing multi bank"))?)
+        .map_err(|e| decode("multi bank", e))?;
+    let mut slots: Vec<_> = bank.slot_list().map_err(|e| decode("multi slots", e))?.slots.into_iter().collect();
     slots.sort_by_key(|(slot, _)| *slot);
     let mut programs = Vec::new();
     for (_, container) in slots {
@@ -119,7 +110,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
-    translate(path, program, table, others)
+    translate(path, program, table, others).map_err(|e| e.at(crate::Stage::Translate))
 }
 
 fn translate(
@@ -132,7 +123,7 @@ fn translate(
         path: path.clone(),
         reason: reason.into(),
     };
-    let decode = |what, error| LoadError::decode(&path, what, error);
+    let decode = |what, error| LoadError::decode(&path, what, error).at(crate::Stage::Parse);
     let params = program
         .params()
         .map_err(|e| decode("program parameters", e))?;
@@ -182,7 +173,7 @@ fn translate(
                 if state.len() < script.persistent.len() {
                     out.unsupported(
                         &location,
-                        "saved persistent arrays",
+                        "saved persistent text arrays",
                         script.persistent.len() - state.len(),
                         ir::Reason::NotModeled,
                     );
@@ -1287,6 +1278,12 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
                 b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
                 b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
                 b'@' => ir::Saved::Text(rest.to_owned()),
+                b'%' => ir::Saved::Ints(
+                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                ),
+                b'?' => ir::Saved::Reals(
+                    rest.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?,
+                ),
                 _ => return None,
             };
             Some((name.to_owned(), value))
@@ -1297,7 +1294,7 @@ fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 #[cfg(test)]
 mod saved_tests {
     #[test]
-    fn saved_values_keep_their_types_and_skip_arrays() {
+    fn saved_values_keep_their_types_and_arrays() {
         let entries = [
             "$level 17",
             "~mix 0.5",
@@ -1316,6 +1313,7 @@ mod saved_tests {
                     "@label".to_owned(),
                     sampler_ir::Saved::Text("two words".into())
                 ),
+                ("%table".to_owned(), sampler_ir::Saved::Ints(vec![1, 2, 3])),
             ]
         );
     }
@@ -1575,5 +1573,44 @@ mod curved_shaper_tests {
         assert!((at(&up, 0.5) + at(&down, 0.5) - 1.0).abs() < 1e-9);
         let flat = seg(0.0, 1.0, 0.0);
         assert_eq!(flat.len(), 2);
+
+#[cfg(test)]
+mod census {
+    #[test]
+    #[ignore]
+    fn mic_census() {
+        let root = std::env::var("KONTRA_KONTAKT_LIBRARIES").unwrap();
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        let mut files = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p)
+                } else if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki")) {
+                    files.push(p)
+                }
+            }
+        }
+        files.sort();
+        for f in &files {
+            let Ok(k) = super::read(f) else { continue };
+            let i = &k.instrument;
+            let mut outs = std::collections::BTreeSet::new();
+            for g in &i.groups {
+                outs.insert(format!("{:?}", g.output));
+            }
+            let names: std::collections::BTreeSet<_> = i.groups.iter().map(|g| g.name.as_str()).collect();
+            let buses: Vec<_> = i.buses.iter().map(|b| b.name.as_str()).collect();
+            println!(
+                "CENSUS\t{}\tgroups={}\tdistinct_names={}\touts={}\tbuses={:?}\tnames={:?}",
+                f.display(),
+                i.groups.len(),
+                names.len(),
+                outs.len(),
+                buses,
+                names.iter().take(12).collect::<Vec<_>>()
+            );
+        }
     }
 }

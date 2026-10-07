@@ -307,3 +307,29 @@ fn key_down_reads_held_input_keys() {
     rt.trigger(input(60), 60, 1.).unwrap();
     assert!(close(level(&mut rt), [0.25; 2]), "{:?}", level(&mut rt));
 }
+
+/// Fades start off the 64-frame grid; the output must not depend on how the
+/// host splits the render into blocks.
+#[test]
+fn a_script_fade_renders_identically_for_every_block_size() {
+    let render = |block: usize| {
+        let mut rt = runtime(
+            "on note
+               wait(10000)
+               fade_out($EVENT_ID, 20000, 1)
+             end on",
+        );
+        rt.trigger(input(60), 60, 1.).unwrap();
+        let mut out = vec![[0.0; 2]; 4096];
+        for chunk in out.chunks_mut(block) {
+            rt.render(chunk).unwrap();
+        }
+        assert_eq!(rt.voice_count(), 0);
+        out
+    };
+    let reference = render(64);
+    assert!(reference[600] != [0.0; 2], "the fade is audible");
+    for block in [7, 61] {
+        assert!(render(block) == reference, "block {block} differs");
+    }
+}
