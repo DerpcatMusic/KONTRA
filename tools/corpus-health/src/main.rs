@@ -588,11 +588,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             // silent and fades in, instead of being refused.
             rt.set_cold_starts(true);
         }
+        if std::env::var_os("CH_STEAL").is_some() {
         rt.set_voice_stealing(Some(sampler_core::Stealing::for_limits(
             rt.sample_rate(),
             limits.voices,
         )))
         .map_err(|e| format!("prepare: runtime: {e}"))?;
+        }
         Ok(Box::new(rt))
     };
     let horizon_of = |head: usize| (head.max(sampler_core::PAGE_FRAMES) + 4096) as u32;
