@@ -476,7 +476,7 @@ impl<T> Arena<T> {
         assert!(slots.len() > old);
         slots[..old].swap_with_slice(&mut self.slots);
         let words = old.div_ceil(64);
-        let kept = if old % 64 == 0 {
+        let kept = if old.is_multiple_of(64) {
             u64::MAX
         } else {
             (1u64 << (old % 64)) - 1
@@ -621,6 +621,7 @@ pub struct Runtime {
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
     voice_growths: u64,
     growth_failures: u64,
@@ -780,6 +781,7 @@ impl Runtime {
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            refused_starts: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,

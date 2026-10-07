@@ -592,7 +592,7 @@ mod tests {
         };
         let mut rt = Runtime::new(plan, limits).unwrap();
         rt.trigger(crate::Input { protocol: crate::Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.).unwrap();
-        let mut peaks = |rt: &mut Runtime| {
+        let peaks = |rt: &mut Runtime| {
             let mut out = [[0.0; 2]; 64];
             rt.render(&mut out).unwrap();
             let mut peaks = [0.0f32; 3];
