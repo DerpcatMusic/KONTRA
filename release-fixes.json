@@ -1423,6 +1423,501 @@
       ],
       "validation": "Fresh isolated f119048 passes locked all-targets/all-features check, optimized library/playback compilation and production builds. All 479 tracked source hashes remain unchanged. Frozen executables pass 600 library regressions (30 ignored), 89 playback regressions (4 ignored), all 59 reporter checks, manual export, seven saved-volume/phase gates, actual Logs/default-filter receipt UI, four primary-AHDSR gates and CLAP parent validation. Exact exported CLAP note/MIDI/pedal/home/MPE-zone and ten VST3 processing cases pass; strict C++ editor-attachment fixture passes. Final version metadata and hosted release checks are verified separately. No actual macOS DAW crash cause, genuine production issue roundtrip, GPU FPS or full-preset sonic equivalence is claimed.",
       "accepted": true
+    },
+    {
+      "id": "axis-keyswitch-tag-collision",
+      "summary": "Large articulation ids no longer collide with axis keyswitch tags",
+      "source_commits": [
+        "72c4ce226df3ba35c3fbf07346b68a456b1c57c8"
+      ],
+      "validation": "Commit 72c4ce22 changes crates/sampler-core/tests/controllers.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "prepared-arrays-fit-small-stack",
+      "summary": "Box Prepared's fixed arrays so by-value builder chains no longer overflow a 2 MB stack",
+      "source_commits": [
+        "595a4aa6f329ef5e1353b448eb26b2f35470616c"
+      ],
+      "validation": "Commit 595a4aa6 changes crates/sampler-core/tests/prepared_size.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "cold-start-and-refused-admission",
+      "summary": "Cold sources start silent and failed post-preflight admissions are refused instead of panicking",
+      "source_commits": [
+        "91011e7bd3aaa9af819acf31a70904581749b8a9"
+      ],
+      "validation": "Commit 91011e7b changes crates/sampler-core/src/lib.rs, crates/sampler-core/src/prepare.rs, crates/sampler-core/src/prepare/selection.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "stereo-modeller-spread-pan-laws",
+      "summary": "Stereo Modeller spread 0 is mono and spread and pan follow the measured laws",
+      "source_commits": [
+        "dc3eddabb7895579e232acc946d8b922b3095149"
+      ],
+      "validation": "Commit dc3eddab changes crates/sampler-kontakt/src/effects.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-playnote-duration",
+      "summary": "UVI playNote duration follows the documented 0 and -1 meanings",
+      "source_commits": [
+        "3cca8efe78527328b2bdf797c10c34921e9620ab"
+      ],
+      "validation": "Commit 3cca8efe changes crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-key-down-legato-queue",
+      "summary": "%KEY_DOWN is modelled so legato engines queue the sounding note",
+      "source_commits": [
+        "9ba9331562ff21569321af3acf61ef68d79db481"
+      ],
+      "validation": "Commit 9ba93315 changes crates/sampler-ksp/tests/key_down.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-no-sys-script-release-trigger",
+      "summary": "NO_SYS_SCRIPT_RLS_TRIG keeps native release-trigger groups silent",
+      "source_commits": [
+        "bedd5f6ac7a19e44c92f43449885574fcb3d9304"
+      ],
+      "validation": "Commit bedd5f6a changes crates/sampler-ksp/tests/groups.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-explicit-resource-bank-volume",
+      "summary": "UVI explicit resources resolve from their own bank volume",
+      "source_commits": [
+        "2b9a8b3d3f358b32812243e17e1b947c409a99bc"
+      ],
+      "validation": "Commit 2b9a8b3d changes crates/sampler-uvi/src/bank.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-large-falcon-programs",
+      "summary": "Large Falcon programs load and renders are bounded by played keys",
+      "source_commits": [
+        "f24c85c6781757ad65dfc18979b07198f50eb60b"
+      ],
+      "validation": "Commit f24c85c6 changes crates/sampler-uvi/tests/fixture.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "midi-cc121-reset-state",
+      "summary": "CC121 also centres bend, clears pressure and nulls the RPN",
+      "source_commits": [
+        "44d2c21b847b95e03ba090a240a7c2eb28b23030"
+      ],
+      "validation": "Commit 44d2c21b changes crates/sampler-midi/tests/channel_expression.rs, crates/sampler-midi/tests/ingress.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-content-access-in-memory-only",
+      "summary": "UVI content access is recovered only in memory, never persisted",
+      "source_commits": [
+        "2a6ba617efb4fdf4a6a92345d3606228c82000f5"
+      ],
+      "validation": "Commit 2a6ba617 changes crates/sampler-uvi/src/access.rs, crates/sampler-uvi/src/access_error.rs, crates/sampler-uvi/src/bank.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-admission-reclaims-callbacks",
+      "summary": "Admission reclaims finished callbacks instead of failing with Capacity",
+      "source_commits": [
+        "036b8b7916bac9d33d04a6243eacc75e7e7250a3"
+      ],
+      "validation": "Commit 036b8b79 changes crates/sampler-core/tests/behavior.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-voice-group-index-one-based",
+      "summary": "Kontakt voice-group index is 1-based, with 0 meaning none",
+      "source_commits": [
+        "0f453e4f50151b44ce102d1d92bc2903cd478204"
+      ],
+      "validation": "Commit 0f453e4f changes crates/sampler-kontakt/tests/real_libraries.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-release-trigger-gate-release",
+      "summary": "Release-trigger groups fire when the note releases",
+      "source_commits": [
+        "53d399af34f927f1a3f63bbc6c6adfcaf33dc0b1"
+      ],
+      "validation": "Commit 53d399af changes crates/sampler-kontakt/src/library.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "resample-run-loop-boundary",
+      "summary": "Resample runs stop short of the next loop boundary instead of falling back per frame",
+      "source_commits": [
+        "b83643e0780c198c88512bad20d225514525b928"
+      ],
+      "validation": "Commit b83643e0 changes crates/sampler-core/src/source.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "silent-note-held-release-retires",
+      "summary": "A silent note whose release a script holds retires",
+      "source_commits": [
+        "18390bd70ec595e4fdd5346017437b4647d3d378"
+      ],
+      "validation": "Commit 18390bd7 changes crates/sampler-ksp/tests/groups.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "looped-release-one-shot-envelope-bounded",
+      "summary": "A looped release region under a one-shot envelope is bounded",
+      "source_commits": [
+        "9136ebe45fd5144bdf77af9659bb853e05e33be2"
+      ],
+      "validation": "Commit 9136ebe4 changes crates/sampler-core/tests/release_selection.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "voice-mod-control-point-grid",
+      "summary": "Voice modulation control points sit on the absolute 64-frame grid",
+      "source_commits": [
+        "b353c4d37763476e3419ea86f2513d2d68d82ce0"
+      ],
+      "validation": "Commit b353c4d3 changes crates/sampler-core/tests/voice_mod.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ump-note-attributes-bit-depth",
+      "summary": "UMP note attributes, bit-depth scaling and native batch overflow are corrected",
+      "source_commits": [
+        "fab68d5eb9933f388e946ba729959e928ad60c03"
+      ],
+      "validation": "Commit fab68d5e changes crates/sampler-midi/tests/ingress.rs, crates/sampler-midi/tests/mpe.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "callbacks-preempt-at-fuel-budget",
+      "summary": "Callbacks are preempted at the fuel budget instead of failing",
+      "source_commits": [
+        "43feeb2511de25a418f94543e0f6e521e244a702"
+      ],
+      "validation": "Commit 43feeb25 changes crates/sampler-core/tests/behavior.rs, crates/sampler-core/tests/controls.rs, crates/sampler-core/tests/release_selection.rs, crates/sampler-ksp/tests/compile.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-array-out-of-range-reads-zero",
+      "summary": "Out-of-range script-array reads give 0 and writes drop as in Kontakt, restoring Audio Imperia Areia and Dolce patches",
+      "source_commits": [
+        "e79c7dfc1bfb928283876a5ebe708939e7cd6f3b"
+      ],
+      "validation": "Commit e79c7dfc changes crates/sampler-core/tests/buses.rs, crates/sampler-core/tests/compressor.rs, crates/sampler-core/tests/inaudible.rs, crates/sampler-core/tests/lower.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "mix-blocks-in-voice-chains",
+      "summary": "Group-insert slot writes reach the audio through Mix blocks in voice chains",
+      "source_commits": [
+        "0a1f7b8449b574ceb405244815ee0d633572ef3c"
+      ],
+      "validation": "Commit 0a1f7b84 changes crates/sampler-core/tests/buses.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-gain-partition-invariant-fades",
+      "summary": "Script gains land on the absolute 64-frame grid so fades are partition-invariant",
+      "source_commits": [
+        "d30cd6b02fd5d4aaef0a194ab92195c294556cea"
+      ],
+      "validation": "Commit d30cd6b0 changes crates/sampler-core/src/lib.rs, crates/sampler-core/src/render.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "restore-saved-persistent-arrays",
+      "summary": "Saved persistent arrays are restored so Audio Imperia scripts see their saved state",
+      "source_commits": [
+        "dbb28ad1fa843e2f2d7873e33844a1fc00ad582f"
+      ],
+      "validation": "Commit dbb28ad1 changes crates/sampler-ksp/tests/strings.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "eq-slot-output-gain-script-written-only",
+      "summary": "EQ slots count the stored output gain only when a script wrote it",
+      "source_commits": [
+        "779c529101c5335d9a59e09c0bad437b417c6268"
+      ],
+      "validation": "Commit 779c5291 changes crates/sampler-kontakt/src/effects.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "stored-output-gain-zero-not-mute",
+      "summary": "A stored output gain of 0 is a script-driven rack, not a mute",
+      "source_commits": [
+        "e459187ae5b802119c82248ef6830c3d5b208b17"
+      ],
+      "validation": "Commit e459187a changes crates/sampler-kontakt/examples/dump_scripts.rs, crates/sampler-kontakt/src/effects.rs, crates/sampler-kontakt/src/keyswitch.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "closed-note-calls-and-init-set-controller",
+      "summary": "Script ClosedNote calls are no-ops and set_controller in on init sets the starting controller",
+      "source_commits": [
+        "d211b1803df96f3335b6ebf84acfebce85644a80"
+      ],
+      "validation": "Commit d211b180 changes crates/sampler-ksp/tests/strings.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "releasing-inaudible-voices-end",
+      "summary": "Releasing voices that stay inaudible end",
+      "source_commits": [
+        "dcc455a3ebdc48c8fb229fcd27b3106357d77b15"
+      ],
+      "validation": "Commit dcc455a3 changes crates/sampler-core/tests/inaudible.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-play-note-range-and-ignore-event",
+      "summary": "play_note outside MIDI ranges returns -1 and ignore_event cannot cancel a script's own stop",
+      "source_commits": [
+        "8f66841bedef9a7e8fcf21287be8ace30e690171"
+      ],
+      "validation": "Commit 8f66841b changes crates/sampler-ksp/tests/arguments.rs, crates/sampler-ksp/tests/compile.rs, crates/sampler-ksp/tests/event_ids.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-note-off-not-ignorable-by-own-release",
+      "summary": "A script's own note_off cannot be ignored by the release callback it triggers",
+      "source_commits": [
+        "80be435b305b9fc3173be4c5ae3a53b85294e881"
+      ],
+      "validation": "Commit 80be435b changes crates/sampler-core/tests/steal.rs, crates/sampler-ksp/tests/event_ids.rs, crates/sampler-ksp/tests/groups.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-key-down-latest-event-per-key",
+      "summary": "%KEY_DOWN follows the latest physical event per key",
+      "source_commits": [
+        "fa679353c16a75ec72fb3ec162afc2e3c79f1212"
+      ],
+      "validation": "Commit fa679353 changes crates/sampler-core/src/behavior.rs, crates/sampler-core/src/lib.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-volume-tapped-group-bus-fader",
+      "summary": "Script volume on a tapped group moves the bus fader, not the pre-fader sends",
+      "source_commits": [
+        "b1ffa84ae645fe340d6a557b3df5bcf49eb8136c"
+      ],
+      "validation": "Commit b1ffa84a changes crates/sampler-core/src/bus.rs, crates/sampler-core/src/lib.rs, crates/sampler-core/src/lower.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "engine-volume-pan-tune-absolute",
+      "summary": "Engine volume, pan and tune are absolute and read back authored group values",
+      "source_commits": [
+        "f3af06faf0ed7efddc74a653b1fd4788a11e0d95"
+      ],
+      "validation": "Commit f3af06fa changes crates/sampler-ksp/tests/params.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "midi2-unnarrowed-clap-gain-range",
+      "summary": "MIDI 2.0 reaches a part unnarrowed and CLAP gain expression keeps its range",
+      "source_commits": [
+        "87bac36b64f99219496a11120fa573a5b6616fc4"
+      ],
+      "validation": "Commit 87bac36b changes src/sound/v2.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "cc11-starts-at-reset-value",
+      "summary": "CC11 starts at the MIDI reset value",
+      "source_commits": [
+        "4ddfc3ad2cb730a0fdb1c3f0ec6da671b24f3a88"
+      ],
+      "validation": "Commit 4ddfc3ad changes crates/sampler-core/tests/voice_mod.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "master-default-zero-db",
+      "summary": "Master defaults to 0 dB like Kontakt",
+      "source_commits": [
+        "196d449869e679da2e85798c7243c051b37bc88b"
+      ],
+      "validation": "Commit 196d4498 changes src/plugin.rs, src/ui/header.rs, src/ui/part.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-behavior-capacity-default",
+      "summary": "The default of 2048 script behaviors stops dense chords overflowing the plan sizing",
+      "source_commits": [
+        "bd3b92efc682c363c2a55017e533036a5ed3ad18"
+      ],
+      "validation": "Commit bd3b92ef changes crates/sampler-perf/src/main.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "page-starvation-and-loop-crossfade",
+      "summary": "Recover from page starvation and use an equal-power loop crossfade",
+      "source_commits": [
+        "e03975114f4266164d3b09d7491e72d6cc320472"
+      ],
+      "validation": "Commit e0397511 changes crates/sampler-core/tests/paged_render.rs, crates/sampler-core/tests/resample.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "module-note-runs-module-release",
+      "summary": "A note a module's note callback plays runs that module's release callback",
+      "source_commits": [
+        "a44c6b503242e0c064d4ceee0bf8c5fa5ad2c2fb"
+      ],
+      "validation": "Commit a44c6b50 changes crates/sampler-ksp/tests/controls.rs, crates/sampler-ksp/tests/event_ids.rs, crates/sampler-ksp/tests/stages.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-search-range-safe",
+      "summary": "KSP search evaluates its range safely",
+      "source_commits": [
+        "7bd8ea4cb5fdf1a98785e9fb9c3bb880a6e58de6"
+      ],
+      "validation": "Commit 7bd8ea4c changes crates/sampler-ksp/tests/params.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "held-switch-keys-survive-remap",
+      "summary": "Held switch keys survive a driver remap",
+      "source_commits": [
+        "7cfae00b1ac40410c6e88af75435065f34a6773d"
+      ],
+      "validation": "Commit 7cfae00b changes crates/sampler-ir/tests/switching_bits.rs, crates/sampler-midi/tests/articulation.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "bus-convolution-impulse-swap-no-alloc",
+      "summary": "A bus convolution's impulse is swapped without allocating on the audio thread",
+      "source_commits": [
+        "e88e960645d6be709d42930c017cd67c1995088f"
+      ],
+      "validation": "Commit e88e9606 changes crates/sampler-core/tests/buses.rs, crates/sampler-core/tests/lower.rs, crates/sampler-core/tests/svf.rs, crates/sampler-uvi/tests/tmp_ahd.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "scripted-uvi-driver-no-audio-alloc",
+      "summary": "The scripted UVI driver allocates nothing on the audio thread once warm",
+      "source_commits": [
+        "f42da03151bd921744c961ebb406bdea95f2aac9"
+      ],
+      "validation": "Commit f42da031 changes crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs, crates/sampler-uvi/src/scripted/thread.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-compressor-inverse-ratio",
+      "summary": "The Kontakt compressor reads its stored ratio as an inverse ratio",
+      "source_commits": [
+        "cd9b351624ded8ab3fb0339174d419736dc87db5"
+      ],
+      "validation": "Commit cd9b3516 changes crates/sampler-kontakt/src/effects.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "block-fuel-empty-renders",
+      "summary": "Empty renders between events no longer count as blocks for callback fuel",
+      "source_commits": [
+        "5eeb212d89e0d0e446616d7fea53d2ac3e01659d"
+      ],
+      "validation": "Commit 5eeb212d changes crates/sampler-core/src/render.rs, crates/sampler-perf/src/main.rs, src/sound/v2.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "resample-window-across-page-boundaries",
+      "summary": "Resampling windows are gathered across page and resident-range boundaries",
+      "source_commits": [
+        "5cdd6e0b4028cf74c9cecb46b3d6fbd554fa4204"
+      ],
+      "validation": "Commit 5cdd6e0b changes crates/sampler-core/src/source.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "run-fast-path-avoids-loop-crossfades",
+      "summary": "The run fast path stays away from loop crossfades",
+      "source_commits": [
+        "13924e5aee230c0be64a1bcf9bde63ad221eba2e"
+      ],
+      "validation": "Commit 13924e5a changes crates/sampler-core/src/source.rs, crates/sampler-kontakt/src/stream.rs, crates/sampler-native/examples/stream_report.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "single-frame-resample-same-arithmetic",
+      "summary": "Single-frame resampling uses the same fused arithmetic as vector runs",
+      "source_commits": [
+        "27ca770ffa32f092385f946d5155ff694e39f2a0"
+      ],
+      "validation": "Commit 27ca770f changes crates/sampler-core/src/resample.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "start-guards-kernel-read-radius",
+      "summary": "Start guards are sized from the kernel's read radius at each zone's step",
+      "source_commits": [
+        "95fd47b1efda449e03dde6489ae9ac2a75f91d72"
+      ],
+      "validation": "Commit 95fd47b1 changes crates/sampler-core/src/lib.rs, crates/sampler-core/src/resample.rs, crates/sampler-kontakt/src/stream.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "script-played-notes-start-on-yield",
+      "summary": "Notes a script plays start when its callback yields",
+      "source_commits": [
+        "d9b1b50f00605d9cf67045043b6cd58ed518d509"
+      ],
+      "validation": "Commit d9b1b50f changes crates/sampler-ksp/tests/deferred_notes.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "pending-played-notes-pinned-in-preflight",
+      "summary": "Pending played notes are pinned during preflight",
+      "source_commits": [
+        "6355d3afe32e2fd72cca289f28d47561532f637a"
+      ],
+      "validation": "Commit 6355d3af changes crates/sampler-ksp/tests/strings.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes 887 tests with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-saved-menu-item-position",
+      "summary": "A saved ui_menu value is the item position and the variable takes that item's value (Una Corda velocity curve)",
+      "source_commits": [
+        "8a3fb7696b294a7662c1a17b3240a6c5ef634bca"
+      ],
+      "validation": "Commit 8a3fb769 changes crates/sampler-ksp/tests/ui.rs, crates/sampler-native/tests/articulation_real.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-playnote-osc-index-zero-based",
+      "summary": "UVI playNote oscIndex is 0-based, so scripted Augmented Orchestra programs select a group",
+      "source_commits": [
+        "a2fa45b81d69af080b822ef78bd1e44086dbf60b"
+      ],
+      "validation": "Commit a2fa45b8 changes crates/sampler-uvi/src/lib.rs, crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-release-finished-note-not-error",
+      "summary": "Releasing an already finished UVI note no longer returns StaleHandle",
+      "source_commits": [
+        "a2fa45b81d69af080b822ef78bd1e44086dbf60b"
+      ],
+      "validation": "Commit a2fa45b8 changes crates/sampler-uvi/src/lib.rs, crates/sampler-uvi/src/script.rs, crates/sampler-uvi/src/scripted.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-init-log-memory-bound",
+      "summary": "KSP init no longer logs every set_zone_par and caps control text lines, cutting Conflux load memory from 1973 to 226 MiB",
+      "source_commits": [
+        "ee7525b57943e7548eb6abd56151e5d9525efaa4"
+      ],
+      "validation": "Commit ee7525b5 changes crates/sampler-ksp/src/eval.rs, crates/sampler-native/examples/stream_report.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
+      "accepted": true
     }
   ]
 }

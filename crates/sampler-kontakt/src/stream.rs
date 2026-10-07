@@ -257,6 +257,10 @@ pub struct StreamPolicy {
     /// Worst wait between a page request and its decode starting (worker poll
     /// and the host's service period), on top of measured read latency.
     pub slack: Duration,
+    /// The host's largest render block, in output frames. A voice that starts
+    /// inside a block is first serviced before the next one, so its head must
+    /// also cover that whole block before its next page can even be requested.
+    pub block_frames: usize,
     /// Voices that can stream at once; each needs a few pool pages.
     pub voices: usize,
     /// Decode threads.
@@ -269,6 +273,7 @@ impl Default for StreamPolicy {
             headroom: 2.0,
             max_step: 4.0,
             slack: Duration::from_millis(10),
+            block_frames: 64,
             voices: 256,
             decoders: 4,
         }
@@ -283,7 +288,7 @@ const PAGES_PER_VOICE: usize = 3;
 /// the wait from the first service after the start (which requests that page,
 /// given a service horizon of at least the head) to its decode.
 pub(crate) fn head_frames(latency: Duration, rate: u32, policy: &StreamPolicy) -> usize {
-    ((latency + policy.slack).as_secs_f64() * f64::from(rate)).ceil() as usize
+    ((latency + policy.slack).as_secs_f64() * f64::from(rate)).ceil() as usize + policy.block_frames
 }
 
 /// Fastest a zone reads its asset, in source frames per output frame: its

@@ -449,13 +449,6 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
     })
 }
 
-/// Whether a Kontakt render has confirmed the compressor's level laws and the
-/// +output-gain interaction (Analog Strings: threshold -14.2 dB, ratio 0.501,
-/// output +9 dB peaks at 3.35 against 1.24 without it). Until then a 0x19 slot
-/// is reported as unmodelled (`UnknownLaw`) and the chain is left as before.
-// ponytail: flip once a Kontakt render of ANALOG STRINGS C4..G4 confirms the level.
-const KONTAKT_COMPRESSOR_VERIFIED: bool = false;
-
 /// Where a rack's processors will run.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Scope {
@@ -691,23 +684,6 @@ pub(crate) fn chain_with(
                 attack_ms,
                 release_ms,
                 link,
-            }) if scope == Scope::Bus && !KONTAKT_COMPRESSOR_VERIFIED => {
-                notes.push((
-                    "compressor level law".into(),
-                    format!(
-                        "threshold {threshold_db} dB ratio {ratio} attack {attack_ms} ms release {release_ms} ms link {link} mode {mode}"
-                    ),
-                    sampler_ir::Reason::UnknownLaw,
-                ));
-                modelled = false;
-            }
-            Some(Params::Compressor {
-                mode,
-                threshold_db,
-                ratio,
-                attack_ms,
-                release_ms,
-                link,
             }) if scope == Scope::Bus => {
                 // Bus scope only: a group insert sees the group's summed signal in
                 // Kontakt, but a voice chain sees one voice, whose level is far
@@ -717,8 +693,10 @@ pub(crate) fn chain_with(
                 // the linked detector is the signed channel mean. The level law
                 // is the textbook one (ir::Compressor); the stored units are the
                 // importer's labels.
-                // ponytail: unverified - the first value is read as the mode and
-                // only mode 0 (Classic) is taken to share the kernel.
+                // KONTAKT_REFERENCE (ANALOG STRINGS C4/E4/G4, compressor on vs
+                // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
+                // output gain with about 0.3-0.7 dB of reduction. Only mode 0
+                // (Classic) is taken to share the kernel.
                 if *mode != 0.0 {
                     notes.push((
                         "compressor mode".into(),
@@ -771,6 +749,21 @@ pub(crate) fn chain_with(
                     }
                 }
             }
+            // A Gainer mixes its slot's dry level with the gained signal,
+            // `dry + out * g` (KONTAKT_REFERENCE s.25 measured a fresh module at
+            // 0.5 + 0.5 g). Every stored Gainer in the local corpus has dry 0 and
+            // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
+            Some(p @ Params::Gainer { .. }) if mix.is_none() => match matrix(p, &mut notes) {
+                Some(m) => {
+                    let wet = product(gain, m);
+                    let dry = f64::from(fx.dry_level);
+                    let mixed = std::array::from_fn(|i| {
+                        std::array::from_fn(|j| wet[i][j] + if i == j { dry } else { 0.0 })
+                    });
+                    combined = product(mixed, combined);
+                }
+                None => modelled = false,
+            },
             Some(p) => match matrix(p, &mut notes) {
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
@@ -802,7 +795,7 @@ pub(crate) fn chain_with(
                             slot: fx.slot as i32,
                             generic,
                         },
-                        dry: if convolution {
+                        dry: if convolution || fx.module == 0x13 {
                             f64::from(fx.dry_level)
                         } else {
                             0.0
@@ -932,8 +925,9 @@ fn convolution(
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
-/// Kontakt's normalized Reverb values as physical settings. Laws are v1's
-/// fits, not verified against Kontakt's own rendering.
+/// Kontakt's normalized Reverb values as physical settings. Time, predelay,
+/// high cut and low shelf follow the reference display; size, damping and
+/// diffusion are still v1's fits.
 fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
     let [
         room,
@@ -953,14 +947,18 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
         sampler_ir::Reason::UnknownLaw,
     ));
     sampler_ir::Reverb {
-        decay_seconds: 0.2 * 100f64.powf(time),
+        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
+        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
+        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
         size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
         damping_hz: 18_000.0 * 0.05f64.powf(damping),
         modulation_seconds: modulation * 0.0015,
         diffusion: 0.75 * diffusion,
         predelay_seconds: predelay * 0.25,
-        input_cutoff_hz: 20_000.0 * 0.025f64.powf(high_cut),
-        low_shelf_db: -18.0 * low_shelf,
+        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
+        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
+        // Low Shelf shows 0 to -12 dB, linear.
+        low_shelf_db: -12.0 * low_shelf,
         width: stereo,
     }
 }
@@ -1249,6 +1247,29 @@ mod tests {
     }
 
     #[test]
+    fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
+        let r = |time: f32, cut: f32, shelf: f32| {
+            reverb(&[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0], &mut Vec::new())
+        };
+        // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
+        assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
+        assert!((r(1.0, 0.0, 0.0).decay_seconds - 16.16).abs() < 0.5);
+        let end = r(0.0, 1.0, 1.0);
+        assert!((end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9);
+        assert_eq!(r(0.0, 0.0, 0.0).input_cutoff_hz, 21_000.0);
+    }
+
+    #[test]
+    fn gainer_mixes_its_stored_dry_level_with_the_gained_signal() {
+        // KONTAKT_REFERENCE s.25: a fresh Gainer at -6 dB reads 0.5 + 0.5 * 0.501.
+        let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
+        g.dry_level = 0.5;
+        let c = chain(&[g], Scope::Bus);
+        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else { panic!("{:?}", c.processors) };
+        assert!((m[0][0] - 0.7505).abs() < 1e-6 && m[0][1] == 0.0, "{m:?}");
+    }
+
+    #[test]
     fn dynamic_slots_run_in_mix_blocks_bypassed_ones_included() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
@@ -1332,11 +1353,6 @@ mod tests {
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        if !KONTAKT_COMPRESSOR_VERIFIED {
-            assert!(built.processors.is_empty());
-            assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLaw));
-            return;
-        }
         let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
@@ -1363,7 +1379,8 @@ mod tests {
 
     #[test]
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
-        let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        gainer.dry_level = 0.0;
         let inverter = slot(0x1a, vec![1, 1], 0.5);
         let mut modeller = 0.0f32.to_le_bytes().to_vec();
         modeller.extend(0.0f32.to_le_bytes());
@@ -1404,11 +1421,9 @@ mod tests {
             "{processors:?}"
         );
         // Unity everything: no processor at all.
-        let processors = chain(
-            &[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)],
-            Scope::Voice,
-        )
-        .processors;
+        let mut unity = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
+        unity.dry_level = 0.0;
+        let processors = chain(&[unity], Scope::Voice).processors;
         assert!(processors.is_empty());
     }
 

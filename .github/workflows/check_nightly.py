@@ -93,7 +93,7 @@ platforms = ("linux-x86_64", "windows-x86_64", "macos-arm64", "macos-x86_64")
 readme = Path(__file__).resolve().parents[2].joinpath("README.md").read_text()
 for platform in platforms:
     assert f"name: {platform}" in workflow
-    assert f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme
+    assert (f"releases/latest/download/KONTRA-nightly-{platform}.zip" in readme) != platform.startswith("macos-")
 assert "releases/latest/download/KONTRA-nightly-macos-universal.pkg" in readme
 assert "nightly-build-${{ matrix.name }}\n      cancel-in-progress: true" in workflow
 assert "nightly-publish\n      cancel-in-progress: false" in workflow
@@ -124,12 +124,12 @@ for case in ("valid", "missing", "duplicate"):
             for format in ("clap", "vst3"):
                 info=json.loads(root.joinpath(format+"-build-info.json").read_text())
                 assert set(info["features"]) & {"clap","vst3","standalone"} == {format}
-                path=root / f"stage/KONTRA2.{format}/Contents/Info.plist"
+                path=root / f"stage/KONTRA.{format}/Contents/Info.plist"
                 path.parent.mkdir(parents=True); path.write_bytes(plistlib.dumps(dict(CFBundleVersion="1",CFBundleIdentifier="preserved")))
             result=subprocess.run(["python3", "-c", plist_step], cwd=root, env=env, capture_output=True)
             assert result.returncode == 0, result.stderr
             for format in ("clap", "vst3"):
-                info=plistlib.loads(root.joinpath(f"stage/KONTRA2.{format}/Contents/Info.plist").read_bytes())
+                info=plistlib.loads(root.joinpath(f"stage/KONTRA.{format}/Contents/Info.plist").read_bytes())
                 assert info["CFBundleShortVersionString"] == info["CFBundleVersion"] == "0.2.0"
                 assert info["KONTRAVersion"] == version and info["CFBundleIdentifier"] == "preserved"
 
@@ -168,7 +168,7 @@ elif name=="hdiutil" and args[0]=="create":
     pathlib.Path(args[-1]).write_bytes(b"fixture"+b"koly"+b"\0"*508)
 elif name=="xcrun" and args[:1]==["SetFile"]: raise AssertionError("FinderInfo is forbidden on signed code")
 elif name=="xcrun" and args[:1]==["swift"]:
-    assert args[2]=="--register" and args[3].endswith("KONTRA2.app")
+    assert args[2]=="--register" and args[3].endswith("KONTRA.app")
     if os.environ["SIGNING_CASE"]=="bad-swift-after-output":
         print('{"factory_classes":1}')
         sys.exit(1)
@@ -187,7 +187,7 @@ for case in ("accepted", "duplicate-ca", "duplicate-p12", "bad-ca-import", "bad-
         root=Path(directory); tools=root/"tools"; tools.mkdir(); script=tools/"mock";script.write_text(native_mock);script.chmod(0o755)
         for name in ("uuidgen","security","lipo","codesign","hdiutil","xcrun","spctl","curl"): tools.joinpath(name).symlink_to("mock")
         stage=root/"stage";stage.mkdir()
-        for product in ("KONTRA2.clap/Contents/MacOS/KONTRA2","KONTRA2.vst3/Contents/MacOS/KONTRA2","KONTRA2.app/Contents/MacOS/KONTRA2"):
+        for product in ("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","KONTRA.app/Contents/MacOS/KONTRA"):
             path=stage/product;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b"fixture")
         stage.joinpath("build-info.json").write_text(json.dumps(dict(version="0.3.78-nightly.test",revision="a"*40,target="aarch64-apple-darwin")))
         env=dict(clean_env,PATH=str(tools)+":"+os.environ["PATH"],STAGE=str(stage),KONTRA_TARGET="aarch64-apple-darwin",GITHUB_SHA="a"*40,NATIVE_CALLS=str(root/"calls"),SIGNING_CASE=case)
@@ -311,7 +311,7 @@ def universal_fixture(root, version, revision, case="current"):
         with zipfile.ZipFile(archive) as z:
             builds[arch] = {fmt: json.loads(z.read(f"KONTRA-nightly-macos-{arch}/"+name)) for fmt,name in (("clap","clap-build-info.json"),("vst3","vst3-build-info.json"),("standalone","build-info.json"))}
     receipt = dict(version=version,revision=revision,target="universal-apple-darwin",architectures=["arm64","x86_64"],targets=["aarch64-apple-darwin","x86_64-apple-darwin"],profile="release",id="12345678-1234-1234-1234-123456789abc",status="Rejected" if case=="rejected-installer" else "Accepted",stapled=True,signatures_verified=True,package_sha256=hashlib.sha256(package.read_bytes()).hexdigest(),source_builds=builds,
-        products={name:"0"*64 for name in ("Library/Audio/Plug-Ins/CLAP/KONTRA2.clap/Contents/MacOS/KONTRA2","Library/Audio/Plug-Ins/VST3/KONTRA2.vst3/Contents/MacOS/KONTRA2","Applications/KONTRA2.app/Contents/MacOS/KONTRA2")})
+        products={name:"0"*64 for name in ("Library/Audio/Plug-Ins/CLAP/KONTRA.clap/Contents/MacOS/KONTRA","Library/Audio/Plug-Ins/VST3/KONTRA.vst3/Contents/MacOS/KONTRA","Applications/KONTRA.app/Contents/MacOS/KONTRA")})
     if case=="wrong-installer-source": receipt["source_builds"]["arm64"]["clap"]["revision"]="b"*40
     package.with_suffix(".notarization.json").write_text(json.dumps(receipt))
     if case=="missing-universal": package.unlink()
@@ -330,9 +330,9 @@ for case in cases:
                 for name in ("build-info.json","clap-build-info.json","vst3-build-info.json"):
                     target={"linux-x86_64":"x86_64-unknown-linux-gnu","windows-x86_64":"x86_64-pc-windows-msvc","macos-arm64":"aarch64-apple-darwin","macos-x86_64":"x86_64-apple-darwin"}[platform]
                     z.writestr(f"KONTRA-nightly-{platform}/{name}",json.dumps(dict(version=version,revision="a"*40,target=target,profile="release",features=["plugin","library-access"]+(["clap","vst3","standalone"] if name=="build-info.json" else [name.split("-")[0]])+(["vst3"] if case=="wrong-format" and name=="clap-build-info.json" else []))))
-                binaries=("KONTRA2.clap/Contents/MacOS/KONTRA2","KONTRA2.vst3/Contents/MacOS/KONTRA2","KONTRA2.app/Contents/MacOS/KONTRA2") if platform.startswith("macos-") else (("KONTRA2.clap","KONTRA2.vst3/Contents/x86_64-win/KONTRA2.vst3","kontakto-standalone.exe") if platform.startswith("windows-") else ("KONTRA2.clap","KONTRA2.vst3/Contents/x86_64-linux/KONTRA2.so","kontakto-standalone"))
+                binaries=("KONTRA.clap/Contents/MacOS/KONTRA","KONTRA.vst3/Contents/MacOS/KONTRA","KONTRA.app/Contents/MacOS/KONTRA") if platform.startswith("macos-") else (("KONTRA.clap","KONTRA.vst3/Contents/x86_64-win/KONTRA.vst3","kontakto-standalone.exe") if platform.startswith("windows-") else ("KONTRA.clap","KONTRA.vst3/Contents/x86_64-linux/KONTRA.so","kontakto-standalone"))
                 if platform.startswith("macos-"):
-                    for bundle in ("KONTRA2.clap", "KONTRA2.vst3"):
+                    for bundle in ("KONTRA.clap", "KONTRA.vst3"):
                         z.writestr(f"KONTRA-nightly-{platform}/{bundle}/Contents/Info.plist", plistlib.dumps(dict(CFBundleShortVersionString="0.2.0",CFBundleVersion="0.2.0",KONTRAVersion=version)))
                 if platform.startswith("macos-"):
                     import sys
@@ -340,7 +340,7 @@ for case in cases:
                     from package_macos import app_info
                     app = app_info(version)
                     if case == "missing-package-types": app.pop("UTImportedTypeDeclarations")
-                    z.writestr(f"KONTRA-nightly-{platform}/KONTRA2.app/Contents/Info.plist", plistlib.dumps(app))
+                    z.writestr(f"KONTRA-nightly-{platform}/KONTRA.app/Contents/Info.plist", plistlib.dumps(app))
                 z.writestr(f"KONTRA-nightly-{platform}/SOURCE_COMMIT.txt", "a"*40+"\n")
                 for name in (*binaries,"LICENSE","NOTICE","THIRD_PARTY.md", "assets/OFL.txt", "docs/LEGAL.md",
                              "licenses/THIRD_PARTY_NOTICES.txt", "licenses/MUI/LICENSE", "licenses/MOOSE/LICENSE",
@@ -355,10 +355,10 @@ for case in cases:
                     z.writestr(f"KONTRA-nightly-{platform}/{name}",content)
                 if platform.startswith("macos-"):
                     dmg = b"fixture" + b"koly" + b"\0" * 508
-                    z.writestr(f"KONTRA-nightly-{platform}/KONTRA2.dmg", dmg)
+                    z.writestr(f"KONTRA-nightly-{platform}/KONTRA.dmg", dmg)
                     receipt = dict(version=version, revision="a"*40, target=target, id="12345678-1234-1234-1234-123456789abc", status="Rejected" if case=="rejected-notarization" else "Accepted", stapled=True, signatures_verified=True,
-                        sha256={name:hashlib.sha256(dmg if name=="KONTRA2.dmg" else b"fixture").hexdigest() for name in ("KONTRA2.dmg", *binaries)})
-                    if case=="changed-notarized-product": receipt["sha256"]["KONTRA2.app/Contents/MacOS/KONTRA2"]="0"*64
+                        sha256={name:hashlib.sha256(dmg if name=="KONTRA.dmg" else b"fixture").hexdigest() for name in ("KONTRA.dmg", *binaries)})
+                    if case=="changed-notarized-product": receipt["sha256"]["KONTRA.app/Contents/MacOS/KONTRA"]="0"*64
                     if case!="missing-notarization": z.writestr(f"KONTRA-nightly-{platform}/notarization.json", json.dumps(receipt))
             archive=root/f"dist/KONTRA-nightly-{platform}.zip"
             digest=hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -395,6 +395,7 @@ for case in cases:
             assert len(state["releases"])==(1 if case=="first" else 2)
             newest=next(r for r in state["releases"] if r["tag_name"]=="v"+version)
             assert newest["target_commitish"]=="a"*40 and newest["name"]=="KONTRA "+version
+            assert not any(a["name"].startswith(("KONTRA-nightly-macos-arm64","KONTRA-nightly-macos-x86_64")) for a in newest["assets"]), "macOS ships only the universal installer"
             assert state["refs"]["v"+version]=="a"*40 and not newest["prerelease"] and state["latest"]==newest["id"]
             if case!="first":
                 assert state["refs"]["nightly"]=="b"*40
@@ -462,4 +463,4 @@ for case in cases:
                 state=json.loads(root.joinpath("state.json").read_text())
                 assert state["deleted"]==[100,101,102,103] and state["releases"]==before
         assert ("published=true" in output.read_text())==promoted,case
-print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 24 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and four stable README links.")
+print("Nightly checks passed: reviewed delta/history/bootstrap notes, format selection/plist checks, 24 retention/rerun/upload/checksum/cleanup/legal-bundle/notarization/installer scenarios and the stable README links.")

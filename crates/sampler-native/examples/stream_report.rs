@@ -93,6 +93,13 @@ fn main() {
             .saturating_mul(64 * pick("behavior_cells")),
         note_cells: plan.note_cell_count().saturating_mul(256),
     };
+    println!(
+        "voice state {} bytes x {} voices = {:.1} MB; RSS {} before runtime",
+        plan.voice_state_bytes(),
+        limits.voices,
+        mb((plan.voice_state_bytes() * limits.voices) as u64),
+        status("VmRSS:"),
+    );
     let mut rt = Runtime::new(plan, limits)
         .unwrap_or_else(|e| panic!("{e}"))
         .with_stream_cache(cache);
