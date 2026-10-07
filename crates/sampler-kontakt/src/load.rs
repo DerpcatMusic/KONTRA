@@ -66,6 +66,47 @@ pub struct Loaded {
     pub resources: Option<Resources>,
 }
 
+/// How well an instrument's keyswitches reached the articulation map.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArticulationMigration {
+    /// Articulations the source defined through switch keys.
+    pub switches_found: usize,
+    /// Articulations that select zones, so a velocity, channel, CC or program
+    /// driver can stand in for the keys.
+    pub migrated: usize,
+    /// Why the rest did not translate, from the load report.
+    pub unrecognised: Vec<String>,
+}
+
+/// Count keyswitch articulations that carry zones, and list the report
+/// entries that name what was not recognised.
+pub fn articulation_migration(ir: &ir::Instrument) -> ArticulationMigration {
+    let tagged = |i: usize| {
+        ir.zones
+            .iter()
+            .any(|z| z.articulation.is_some_and(|a| a.0 == i))
+    };
+    let switched = |a: &&ir::Articulation| !a.switch_keys.is_empty();
+    ArticulationMigration {
+        switches_found: ir.articulations.iter().filter(switched).count(),
+        migrated: ir
+            .articulations
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| switched(a) && tagged(*i))
+            .count(),
+        unrecognised: ir
+            .unsupported
+            .iter()
+            .filter(|u| {
+                let f = u.feature.to_lowercase();
+                f.contains("keyswitch") || f.contains("start") || f.contains("articulation")
+            })
+            .map(|u| format!("{}: {} {}", u.location, u.feature, u.value))
+            .collect(),
+    }
+}
+
 impl Loaded {
     /// The controllers that drive loudness, most used first, each with its
     /// value before any is received (CC11 full, the rest 0; Kontakt's
@@ -563,4 +604,25 @@ fn prepare_inner(
         scripts,
         resources: resources.map(std::cell::RefCell::into_inner),
     })
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn a_switch_without_zones_is_found_but_not_migrated() {
+        let mut ir = ir::Instrument::default();
+        let a = |name: &str, keys: Vec<u8>| ir::Articulation {
+            name: name.into(),
+            switch_keys: keys,
+            ..Default::default()
+        };
+        ir.articulations = vec![a("sus", vec![12]), a("stac", vec![13]), a("none", vec![])];
+        let mut zone = ir::Zone::new(ir::AssetRef(0));
+        zone.articulation = Some(ir::ArticulationRef(0));
+        ir.zones.push(zone);
+        let m = articulation_migration(&ir);
+        assert_eq!((m.switches_found, m.migrated), (2, 1));
+    }
 }
