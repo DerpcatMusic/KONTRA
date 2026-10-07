@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, SeekFrom};
 
 use flate2::read::ZlibDecoder;
 
@@ -40,10 +40,21 @@ impl NKSContainer {
             BPatchHeader::BPatchHeaderV42(_) => "v42",
         };
         let at = reader.stream_position()?;
-        let size_field = if version == "v1" { "zlib offset" } else { "declared length" };
+        let size_field = if version == "v1" {
+            "zlib offset"
+        } else {
+            "declared length"
+        };
 
         let compressed_data = (|| -> Result<Vec<u8>, NKSError> { Ok(match header {
-            BPatchHeader::BPatchHeaderV1(_) => reader.read_all()?,
+            BPatchHeader::BPatchHeaderV1(_) => {
+                // V1 stores the compressed stream's absolute start, not size.
+                if compressed_length < at as usize {
+                    return Err(NKSError::Decompression("Invalid V1 zlib offset".into()));
+                }
+                reader.seek(SeekFrom::Start(compressed_length as u64))?;
+                reader.read_all()?
+            },
             BPatchHeader::BPatchHeaderV2(ref h) => match h.is_monolith {
                 true => {
                     return Err(NKSError::Decompression(
@@ -76,9 +87,18 @@ impl NKSContainer {
         let meta_info = match header {
             BPatchHeader::BPatchHeaderV1(_) => None,
             BPatchHeader::BPatchHeaderV2(_) => None,
-            BPatchHeader::BPatchHeaderV42(_) => {
-                Some(BPatchMetaInfoHeader::read(&mut Cursor::new(&footer_raw)).map_err(|e| NKSError::context(format!("NKS {version} footer at offset {}, available {} bytes", at + compressed_data.len() as u64, footer_raw.len()), e))?)
-            }
+            BPatchHeader::BPatchHeaderV42(_) => Some(
+                BPatchMetaInfoHeader::read(&mut Cursor::new(&footer_raw)).map_err(|e| {
+                    NKSError::context(
+                        format!(
+                            "NKS {version} footer at offset {}, available {} bytes",
+                            at + compressed_data.len() as u64,
+                            footer_raw.len()
+                        ),
+                        e,
+                    )
+                })?,
+            ),
         };
 
         // let meta_info = None;
@@ -94,6 +114,11 @@ impl NKSContainer {
 
     /// Decompress raw internal preset data
     pub fn decompressed_preset(&self) -> Result<Vec<u8>, Error> {
+        self.decompressed_preset_bounded(128 << 20)
+    }
+
+    /// Decode on a worker with an explicit expansion budget, including XML.
+    pub fn decompressed_preset_bounded(&self, limit: usize) -> Result<Vec<u8>, Error> {
         if self.compressed_data.is_empty() {
             return Err(Error::Static("No compressed preset data"));
         }
@@ -102,9 +127,14 @@ impl NKSContainer {
         Ok(match &self.header {
             BPatchHeader::BPatchHeaderV1(_) | BPatchHeader::BPatchHeaderV2(_) => {
                 // zlib compression
-                let mut decoder = ZlibDecoder::new(reader);
+                let decoder = ZlibDecoder::new(reader);
                 let mut decompressed_data = Vec::new();
-                decoder.read_to_end(&mut decompressed_data)?;
+                decoder
+                    .take((limit as u64).saturating_add(1))
+                    .read_to_end(&mut decompressed_data)?;
+                if decompressed_data.len() > limit {
+                    return Err(Error::Static("Expanded NKS preset exceeds decode limit"));
+                }
 
                 decompressed_data
             }
@@ -114,6 +144,9 @@ impl NKSContainer {
 
                 let decompressed_size = h.decompressed_length as usize;
                 // The FastLZ binding passes both lengths to its C API as signed ints.
+                if decompressed_size > limit {
+                    return Err(Error::Static("Expanded NKS preset exceeds decode limit"));
+                }
                 if decompressed_size == 0
                     || i32::try_from(decompressed_size).is_err()
                     || i32::try_from(self.compressed_data.len()).is_err()
