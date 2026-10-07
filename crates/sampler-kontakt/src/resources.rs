@@ -71,6 +71,16 @@ impl Resources {
         containers.dedup();
         Self { files, containers, open: Vec::new(), failures: Vec::new(), indexed: false, root }
     }
+
+    /// Files and containers that participate in lookup, for read-only diagnostics
+    /// and survey cache identity. Resource contents and library keys stay private.
+    pub fn locations(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<_> = self.files.values().cloned().chain(self.containers.iter().cloned()).collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     pub fn root(&self) -> &Path { &self.root }
     fn index(&mut self) {
         if self.indexed { return; }
