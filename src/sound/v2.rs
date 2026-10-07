@@ -1153,6 +1153,9 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        if request.mpe {
+            report.decoded.mpe = super::report::mpe_summary(&sampler_core::lower::MpeDefaults::default());
+        }
         let controls = prepared
             .controls()
             .iter()
