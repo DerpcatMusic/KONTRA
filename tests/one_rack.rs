@@ -79,6 +79,7 @@ struct Rack {
     names: Vec<String>,
     /// Per part: tree nodes below the root.
     tree_nodes: Vec<usize>,
+    missing: Vec<String>,
 }
 
 impl Rack {
@@ -90,6 +91,7 @@ impl Rack {
         (c.channel, c.port, c.output, c.mpe, c.switching) = (channel, port, output, mpe, switching);
         self.core.set_mix(&self.mix);
         self.names.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        self.missing.push(format!("{:?}", loaded.report.missing));
         self.tree_nodes.push(loaded.tree.nodes.len() - 1);
         self.core.install(part, loaded.part);
         part
@@ -147,7 +149,7 @@ fn one_rack_plays_every_format_together() {
         return;
     };
     let mut gaps: Vec<String> = Vec::new();
-    let mut rack = Rack { core: V2Core::with_parts(8, RATE), mix: Mix::default(), names: Vec::new(), tree_nodes: Vec::new() };
+    let mut rack = Rack { core: V2Core::with_parts(8, RATE), mix: Mix::default(), names: Vec::new(), tree_nodes: Vec::new(), missing: Vec::new() };
 
     // Channel 0: Kontakt .nki. 1: UVI. 2: Kontakt multi program. 3: two WAVs layered.
     // Port 1: one MPE WAV. Channel 4: an articulated Kontakt instrument whose
@@ -185,7 +187,7 @@ fn one_rack_plays_every_format_together() {
         }
         let peak = rack.run(300, true);
         if !loud(peak[part]) {
-            failures.push(format!("{what} (part {part}, channel {channel}) is silent on pair {part}"));
+            failures.push(format!("{what} (part {part}, channel {channel}) is silent on pair {part}: voices {:?}, problems {:?}, missing {}", rack.core.voices(), rack.core.problems(part), rack.missing[part]));
         }
         for (bus, p) in peak.iter().enumerate().filter(|(b, _)| *b != part && *b < 6) {
             if loud(*p) {
