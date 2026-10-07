@@ -18,6 +18,7 @@ mod nks;
 mod resource_container;
 mod resources;
 mod samples;
+mod snapshot;
 mod script;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -35,6 +36,7 @@ pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
+pub use snapshot::{SnapshotState, apply_snapshot, read_snapshot};
 pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.

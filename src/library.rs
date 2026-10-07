@@ -93,6 +93,21 @@ pub struct Settings {
     /// The output bus new parts play through: `None` routes them as the
     /// rack's Outputs choice says, else that bus, held as if picked by hand.
     pub new_output: Option<u8>,
+    /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
+    /// overrides it).
+    pub threads: ThreadSetting,
+}
+
+/// How many threads render a part's voices.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ThreadSetting {
+    /// The audio thread alone.
+    #[default]
+    Single,
+    /// Up to four, never more than the machine has cores.
+    Auto,
+    /// Exactly this many (counting the audio thread).
+    Fixed(u8),
 }
 
 /// How a part shows its library's performance view.
@@ -629,7 +644,7 @@ pub fn is_multi(path: &Path) -> bool {
 
 /// What plays as one rack part: a Kontakt instrument or a sample.
 pub fn is_instrument(path: &Path) -> bool {
-    path.extension().is_some_and(|x| ["nki", "nkm", "uvip", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
+    path.extension().is_some_and(|x| ["nki", "nkm", "nksn", "uvip", "wav"].iter().any(|e| x.eq_ignore_ascii_case(e)))
 }
 
 /// What the browser lists and the rack opens: Kontakt instruments and saved racks.
@@ -664,6 +679,12 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         if !e.file_type().is_file() { continue; }
         if is_preset(path) {
             out.push(e.into_path());
+        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nksn")) {
+            // A snapshot lists when it reads; the one that does not is reported.
+            match sampler_kontakt::read_snapshot(path) {
+                Ok(_) => out.push(e.into_path()),
+                Err(e) => trace.issue("catalog", "snapshot_unreadable", e.to_string()),
+            }
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
             // A UVI bank lists its programs as `bank.ufs/program.uvip`.
             match sampler_uvi::Bank::open(path) {
@@ -672,7 +693,6 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
             }
         }
     }
-    // ponytail: snapshots (.nksn) are not listed until the v2 loader applies them.
     trace.detail("presets", out.len());
     trace.finish(if progress.canceled() { "canceled" } else { "loaded" });
     out
@@ -1357,5 +1377,18 @@ mod uvi_bank_tests {
         let found = presets(&dir, &Progress::default());
         let program = found.iter().find(|p| p.to_string_lossy().contains(".ufs/")).expect("a bank program");
         assert!(is_instrument(program));
+    }
+}
+
+#[cfg(test)]
+mod thread_setting_tests {
+    use super::*;
+
+    #[test]
+    fn the_thread_setting_round_trips_and_defaults_to_the_audio_thread() {
+        assert_eq!(Settings::default().threads, ThreadSetting::Single);
+        let kept = serde_json::to_string(&Settings { threads: ThreadSetting::Fixed(4), ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_str::<Settings>(&kept).unwrap().threads, ThreadSetting::Fixed(4));
+        assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().threads, ThreadSetting::Single);
     }
 }

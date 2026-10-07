@@ -144,6 +144,18 @@ pub struct Group {
     pub monophonic_release: bool,
     /// Extra routes of the group's sound to buses (aux sends), beside `output`.
     pub sends: Vec<GroupSend>,
+    /// Set by [`Instrument::tap_group`]: the bus that carries this group's
+    /// fader and sends.
+    pub tap: Option<GroupTap>,
+}
+
+/// Where a group's fader lives once it is tapped: `bus` outputs at the bus's
+/// `gain`, and so do its `sends` listed in `post` (the post-fader ones); the
+/// rest leave the bus before the fader.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupTap {
+    pub bus: BusRef,
+    pub post: Vec<usize>,
 }
 
 /// A group's send to a bus.
@@ -238,20 +250,24 @@ impl Instrument {
 
     /// Make `bus` the tap point of group `index`: the group's fader moves onto
     /// the bus's output and its sends leave from the signal before it (pre-fader)
-    /// or scaled by it (post-fader). The group's voices then feed `bus` unscaled.
+    /// or scaled by it (post-fader, see [`GroupTap`]). The group's voices then
+    /// feed `bus` unscaled.
     pub fn tap_group(&mut self, index: usize, bus: BusRef) {
         let group = &mut self.groups[index];
-        let fader = group.gain.linear();
-        let bus = &mut self.buses[bus.0];
-        bus.gain = group.gain;
+        let target = &mut self.buses[bus.0];
+        target.gain = group.gain;
+        let mut post = Vec::new();
         for send in group.sends.drain(..) {
-            let scale = if send.pre_fader { 1.0 } else { fader };
-            bus.sends.push(Send {
+            if !send.pre_fader {
+                post.push(target.sends.len());
+            }
+            target.sends.push(Send {
                 to: Output::Bus(send.to),
-                gain: Gain::Linear(send.gain.linear() * scale),
+                gain: send.gain,
                 position: SendPosition::PostChain,
             });
         }
+        group.tap = Some(GroupTap { bus, post });
         group.gain = Gain::UNITY;
     }
 
@@ -963,7 +979,8 @@ pub struct Bus {
     pub chain: Option<ChainRef>,
     pub sends: Vec<Send>,
     pub output: Output,
-    /// Level of the bus's own output; its `sends` are tapped before it.
+    /// Level of the bus's own output; its `sends` are tapped before it, except
+    /// a group tap's post-fader ones, which it scales too.
     pub gain: Gain,
 }
 
