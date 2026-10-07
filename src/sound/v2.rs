@@ -779,13 +779,17 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
-/// Voice-rendering threads per part: `KONTRA_THREADS` is `auto` or a count.
-/// One (the audio thread alone) unless set.
-fn render_threads() -> Threads {
+/// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
+/// wins, then the player's setting; one (the audio thread alone) otherwise.
+fn render_threads(request: &LoadRequest) -> Threads {
     match std::env::var("KONTRA_THREADS").as_deref() {
         Ok("auto") => Threads::Auto,
         Ok(n) => Threads::Fixed(n.parse().unwrap_or(1)),
-        Err(_) => Threads::Fixed(1),
+        Err(_) => match request.threads {
+            Some(super::ThreadChoice::Auto) => Threads::Auto,
+            Some(super::ThreadChoice::Fixed(n)) => Threads::Fixed(n),
+            None => Threads::Fixed(1),
+        },
     }
 }
 
@@ -1107,7 +1111,7 @@ impl CoreLoader for V2Loader {
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
-        let mut runtime = runtime.with_threads(render_threads());
+        let mut runtime = runtime.with_threads(render_threads(request));
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
