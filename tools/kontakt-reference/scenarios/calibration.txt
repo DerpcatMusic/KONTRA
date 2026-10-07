@@ -1,0 +1,9 @@
+# bare noise instrument (scenarios/calibration.nki): gate note vel 127 at 0 s, vel 100 at 6 s
+0 cc 1 0
+0 cc 7 127
+0 cc 10 64
+0 cc 11 127
+0 cc 64 0
+0.1 note 60 127 3
+6.1 note 60 100 3
+12 end
