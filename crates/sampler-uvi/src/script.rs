@@ -255,6 +255,12 @@ struct Shared {
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
+    nodes: RefCell<Vec<(usize, bool)>>,
+    /// Globals the scripts assign somewhere: reading one that is still unset
+    /// answers nil, as in Lua; only unknown API names answer a stub.
+    assigned: RefCell<std::collections::HashSet<String>>,
+    /// Names the scripts call or index as objects: unmodeled API when unset.
+    called: RefCell<std::collections::HashSet<String>>,
     /// The preset's saved widget values and table data (ScriptProcessor
     /// attributes and ScriptData), by widget name.
     saved: RefCell<BTreeMap<String, String>>,
@@ -351,6 +357,8 @@ fn lua_error(e: mlua::Error) -> String {
 struct Tree {
     params: Vec<Vec<(String, String)>>,
     scopes: Vec<Option<Scope>>,
+    /// Per element: its XML node and whether it is an insert.
+    nodes: Vec<(usize, bool)>,
     layers: u32,
 }
 
@@ -359,6 +367,7 @@ fn element(
     tree: &mut Tree,
     node: roxmltree::Node,
     parent: Option<&Table>,
+    insert: bool,
 ) -> mlua::Result<Table> {
     let table = lua.create_table()?;
     let id = tree.params.len();
@@ -367,6 +376,7 @@ fn element(
             .map(|a| (a.name().to_owned(), a.value().to_owned()))
             .collect(),
     );
+    tree.nodes.push((node.id().get_usize(), insert));
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
         "Layer" => {
@@ -398,11 +408,63 @@ fn element(
         let list = lua.create_table()?;
         list.set_metatable(Some(lua.globals().raw_get("__list_mt")?))?;
         for child in container.children().filter(|n| n.is_element()) {
-            list.raw_push(element(lua, tree, child, Some(&table))?)?;
+            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts")?)?;
         }
         table.raw_set(field, list)?;
     }
     Ok(table)
+}
+
+impl Shared {
+    /// Remember the names a script assigns at the start of a line (`name = ...`,
+    /// `function name`), a cheap stand-in for a parse.
+    fn note_assigned(&self, source: &str) {
+        self.note_called(source);
+        let mut names = self.assigned.borrow_mut();
+        for line in source.lines() {
+            let line = line.trim_start();
+            let (line, function) = match line.strip_prefix("function ") {
+                Some(rest) => (rest.trim_start(), true),
+                None => (line, false),
+            };
+            let end = line
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(line.len());
+            let (name, rest) = line.split_at(end);
+            let rest = rest.trim_start();
+            let defined = if function { rest.starts_with('(') } else { rest.starts_with('=') && !rest.starts_with("==") };
+            if defined && !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()) {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+}
+
+impl Shared {
+    /// Remember the plain names followed by a call or a field access.
+    fn note_called(&self, source: &str) {
+        let mut names = self.called.borrow_mut();
+        let b = source.as_bytes();
+        let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+        let mut i = 0;
+        while i < b.len() {
+            if !(b[i].is_ascii_alphabetic() || b[i] == b'_') || (i > 0 && (word(b[i - 1]) || b[i - 1] == b'.' || b[i - 1] == b':')) {
+                i += 1;
+                continue;
+            }
+            let end = (i..b.len()).find(|&j| !word(b[j])).unwrap_or(b.len());
+            let next = b[end..].iter().position(|c| !c.is_ascii_whitespace()).map(|k| end + k);
+            let used = next.is_some_and(|n| match b[n] {
+                b'(' | b'{' | b':' => true,
+                b'.' => b.get(n + 1) != Some(&b'.'),
+                _ => false,
+            });
+            if used {
+                names.insert(source[i..end].to_owned());
+            }
+            i = end;
+        }
+    }
 }
 
 impl ScriptHost {
@@ -433,6 +495,9 @@ impl ScriptHost {
             deferred: RefCell::new(Vec::new()),
             params: RefCell::new(Vec::new()),
             scopes: RefCell::new(Vec::new()),
+            nodes: RefCell::new(Vec::new()),
+            assigned: RefCell::new(Default::default()),
+            called: RefCell::new(Default::default()),
             saved: RefCell::new(BTreeMap::new()),
             files: Box::new(files),
             config,
@@ -467,19 +532,21 @@ impl ScriptHost {
                 }
             }
         }
-        let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), layers: 0 };
-        let root = element(&self.lua, &mut tree, program, None)?;
+        let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), layers: 0 };
+        let root = element(&self.lua, &mut tree, program, None, false)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
         tree.params.push(Vec::new());
         tree.scopes.push(None);
+        tree.nodes.push((usize::MAX, false));
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
         part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
         root.raw_set("parent", part)?;
         *self.shared.params.borrow_mut() = tree.params;
         *self.shared.scopes.borrow_mut() = tree.scopes;
+        *self.shared.nodes.borrow_mut() = tree.nodes;
         self.lua.globals().raw_set("Program", root)
     }
 
@@ -582,9 +649,23 @@ impl ScriptHost {
             "source",
             lua.create_function(move |_, name: String| Ok(s.files.script(&name)))?,
         )?;
+        let s = shared.clone();
+        native.set(
+            "assigned",
+            lua.create_function(move |_, name: String| {
+                // Capitalized names are API classes (`WaveView = WaveView{...}`
+                // reads the class first). Unset lowercase names the scripts
+                // only read as values are variables (nil, as in Lua); the
+                // ones they call are unmodeled API and answer a stub.
+                Ok(name.starts_with(|c: char| c.is_ascii_lowercase())
+                    && (s.assigned.borrow().contains(&name) || !s.called.borrow().contains(&name)))
+            })?,
+        )?;
+        let s = shared.clone();
         native.set(
             "compile",
-            lua.create_function(|lua, (source, name): (mlua::LuaString, String)| {
+            lua.create_function(move |lua, (source, name): (mlua::LuaString, String)| {
+                s.note_assigned(&source.to_string_lossy());
                 match lua
                     .load(source.as_bytes().as_ref())
                     .set_name(name)
@@ -856,6 +937,7 @@ impl ScriptHost {
             if text.trim().is_empty() {
                 continue;
             }
+            self.shared.note_assigned(&text);
             self.shared.arm(self.shared.config.load);
             let function = self
                 .lua
@@ -1076,6 +1158,43 @@ impl ScriptHost {
     }
 
     /// The commands issued since the last call.
+    /// A global of the scripts as text, for debugging surveys.
+    #[doc(hidden)]
+    pub fn global_text(&self, name: &str) -> String {
+        match self.lua.globals().raw_get::<Value>(name) {
+            Ok(Value::Nil) | Err(_) => "nil".into(),
+            Ok(Value::Boolean(b)) => b.to_string(),
+            Ok(Value::Integer(i)) => i.to_string(),
+            Ok(Value::Number(n)) => n.to_string(),
+            Ok(Value::String(s)) => s.to_string_lossy(),
+            Ok(other) => other.type_name().into(),
+        }
+    }
+
+    /// What the scripts wrote to insert elements while loading, as (XML node,
+    /// attribute, value): the program's starting state, which the translator
+    /// applies so the baked chains match what the scripts left them as.
+    pub fn insert_overrides(&self) -> Vec<(usize, String, String)> {
+        let mut out = Vec::new();
+        let Ok(touched) = self.lua.globals().raw_get::<Table>("__touched") else { return out };
+        let nodes = self.shared.nodes.borrow();
+        for element in touched.sequence_values::<Table>().flatten() {
+            let Ok(id) = element.raw_get::<usize>("__id") else { continue };
+            let Some(&(node, true)) = nodes.get(id) else { continue };
+            let Ok(set) = element.raw_get::<Table>("__set") else { continue };
+            for (name, value) in set.pairs::<String, Value>().flatten() {
+                let value = match value {
+                    Value::Boolean(b) => u8::from(b).to_string(),
+                    Value::Integer(i) => i.to_string(),
+                    Value::Number(n) if n.is_finite() => n.to_string(),
+                    _ => continue,
+                };
+                out.push((node, name, value));
+            }
+        }
+        out
+    }
+
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut *self.shared.commands.borrow_mut())
     }
