@@ -8,7 +8,7 @@ mod probe;
 pub use articulation::{Articulator, Intercept};
 pub use ingress::{Applied, ApplyError, BlockError, Ingress, TimedPacket};
 pub use mpe::{Mpe, Zone};
-pub use probe::{MpeResponse, mpe_response};
+pub use probe::{MpeResponse, centroid, mpe_response, spectral_ratio};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Version {
