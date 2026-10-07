@@ -324,7 +324,7 @@ def bus_timing():
     rows=[];setter=r.STUBS.pop(0x141ac69e0,None)
     for rate in [8000,44100,48000,96000,192000]:
         for index in [2,3]:
-            for x in [0,.099,.1,.101,.25,.5,.75,.899,.9,.901,1]:
+            for x in [0,.099,.1,.101,.25,.4,.5,.75,.899,.9,.901,1]:
                 clear();desc=0x18+index*0x240;put(desc+8,'d',0);put(desc+16,'d',5)
                 for channel in range(16):put(0x1aa0+channel*0xc0,'d',rate)
                 call(0x141ac69e0,[index],[(2,x)])
@@ -392,6 +392,29 @@ def solid_splines():
     return rows
 
 
+def external_modulator_queue():
+    rows=[]
+    for events in [[],[(0,-1.0)],[(0,-1.0),(2,.5),(5,1.0),(8,-.25)],[(12,.75)],[(0,.5),(0,-.5),(2,0.0)]]:
+        for blocks in [[12],[0,1,2,3,4,2],[2,0,2,4,4]]:
+            clear();put(0x1b0,'Q',len(events));put(0x1b8,'f',.25)
+            for i,(tick,value) in enumerate(events):put(0xb0+i*8,'f',value);put(0xb4+i*8,'i',tick)
+            pending=list(events);state=f32(.25);output=[]
+            for n in blocks:
+                CPU.mem_write(INPUT,b'\x55'*(4*(n+1)));call(0x140ceaf60,[INPUT,n])
+                expected=[]
+                for tick in range(n):
+                    while pending and pending[0][0]==tick:state=f32(pending.pop(0)[1])
+                    expected.append(state)
+                pending=[(tick-n,value) for tick,value in pending]
+                actual=struct.unpack('<'+'f'*n,CPU.mem_read(INPUT,n*4));assert actual==tuple(expected),(events,blocks,n,actual,expected)
+                assert get(0x1b8,'f')==state and get(0x1b0,'Q')==len(pending)
+                for i,(tick,value) in enumerate(pending):assert get(0xb4+i*8,'i')==tick and get(0xb0+i*8,'f')==f32(value)
+                assert bytes(CPU.mem_read(INPUT+n*4,4))==b'\x55'*4
+                output.extend(actual)
+            rows.append({'initial':.25,'events':events,'blocks':blocks,'samples':output,'final':state,'pending':pending})
+    return rows
+
+
 def ahdsr_lifecycle():
     rows=[]
     for curve in [-1.0,0.0,1.0]:
@@ -449,6 +472,6 @@ if __name__=='__main__':
             'mxcsr':'0x1f80','helper_substitutions':EXTRA,
             'ahdsr_controls':ahdsr_controls(),'ahdsr_kernel':ahdsr_kernel(),
             'galois_parameters':galois_parameters(),'eq_saved_conversion':eq_saved_conversion(),
-            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing(),'ahdsr_lifecycle':ahdsr_lifecycle()}
+            'solid_splines':solid_splines(),'stereo':stereo(),'wrapper_cadence':wrapper_cadence(),'eq_coefficients':eq_coefficients(),'stereo_smoothing':stereo_smoothing(),'bus_timing':bus_timing(),'ahdsr_lifecycle':ahdsr_lifecycle(),'external_modulator_queue':external_modulator_queue()}
     Path(sys.argv[2]).write_text(json.dumps(result,indent=2)+'\n')
     print({k:len(v) for k,v in result.items() if isinstance(v,list)})
