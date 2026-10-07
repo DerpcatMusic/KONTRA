@@ -2,7 +2,7 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-pub use predicates::ControllerCondition;
+pub use predicates::{ControllerCondition, PREVIOUS_KEY};
 use predicates::Matching;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard};
@@ -446,6 +446,8 @@ pub struct Prepared {
     pub(super) switching: super::Switching,
     bend_range: f64,
     conditions: Box<[Box<[ControllerCondition]>]>,
+    /// Some condition reads [`PREVIOUS_KEY`], so attacks record it.
+    tracks_previous: bool,
     condition_ends: Box<[usize]>,
     pub(super) release_selection: [super::SelectionPolicy; 2],
     pub(super) modulation: super::Modulation,
@@ -629,6 +631,7 @@ impl Prepared {
             switching: Default::default(),
             bend_range: 2.0,
             conditions: Box::new([]),
+            tracks_previous: false,
             condition_ends: Box::new([]),
             release_selection: [super::SelectionPolicy::Onset; 2],
             modulation: super::Modulation::default(),
