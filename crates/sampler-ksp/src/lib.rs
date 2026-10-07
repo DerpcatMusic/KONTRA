@@ -427,6 +427,61 @@ pub fn derived_control_id(slot: u8, variable: &str) -> ControlId {
     ControlId(h)
 }
 
+/// One `set_engine_par` write `on init` left standing, by symbolic name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnginePar {
+    /// `ENGINE_PAR_*` name; the number when the script used a literal.
+    pub parameter: String,
+    pub value: i32,
+    pub group: i32,
+    pub slot: i32,
+    pub generic: i32,
+}
+
+/// The `set_engine_par` values `on init` leaves, in parameter order, without
+/// compiling the callbacks. Hosts apply them to what they translated before
+/// the script runs (effect racks, buses).
+pub fn init_engine_pars(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Vec<EnginePar>, Error> {
+    let mut syms = lexer::Interner::default();
+    (|| {
+        let mut toks = lexer::lex(source, &mut syms)?;
+        lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        let ast = parser::parse(&toks, &syms)?;
+        let budget = sema::Budget {
+            variables: limits.variables,
+            array_cells: limits.array_cells,
+        };
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
+        let init = eval::run(&hir, environment)?;
+        let mut writes: Vec<_> = init
+            .engine
+            .iter()
+            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
+                parameter: eval::symbol_name(&hir, parameter)
+                    .unwrap_or_else(|| parameter.to_string()),
+                value,
+                group,
+                slot,
+                generic,
+            })
+            .collect();
+        writes.sort_by(|a, b| {
+            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
+                &b.parameter,
+                b.group,
+                b.slot,
+                b.generic,
+            ))
+        });
+        Ok(writes)
+    })()
+    .map_err(|f: diag::Fault| f.locate(source))
+}
+
 /// Compile a script. `on init` runs here on the control thread against
 /// `environment`; every other callback becomes a program. Controls without an
 /// explicit binding get `derived_control_id(environment.slot, name)`.
