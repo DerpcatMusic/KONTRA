@@ -108,6 +108,10 @@ fn mpe_response_across_the_corpus() {
         for library in libraries {
             let mut instruments = Vec::new();
             collect(&library.path().join("Instruments"), &mut instruments);
+            if instruments.is_empty() {
+                // A library with its instruments beside its resources.
+                collect(&library.path(), &mut instruments);
+            }
             instruments.sort();
             for path in instruments.iter().take(limit) {
                 let Some((d, key)) = decode(path) else {
