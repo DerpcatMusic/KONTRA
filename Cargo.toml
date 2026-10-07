@@ -160,3 +160,7 @@ resolver = "3"
 [profile.ci]
 inherits = "release"
 lto = false
+
+[[example]]
+name = "ui_health"
+required-features = ["shots"]
