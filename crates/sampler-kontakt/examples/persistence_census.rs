@@ -47,6 +47,7 @@ impl Census {
             Ok(parsed) => {
                 self.count(format!("decoded {} tag {tag}", self.family));
                 self.count(format!("saved declaration {declaration:?}"));
+                self.count(format!("saved {} declaration {declaration:?}", self.family));
                 if let SavedValue::Texts(texts) = parsed.value {
                     if texts.iter().any(|t| std::str::from_utf8(t).is_err()) {
                         self.count("text array non-UTF8 cells");
@@ -168,6 +169,26 @@ impl Census {
                 }
             }
             if self.probe {
+                let mut callback = "global";
+                for line in text.lines().map(str::trim) {
+                    if line.starts_with("on ") || line.starts_with("function ") {
+                        callback = line.split_whitespace().nth(1).unwrap_or("global");
+                    }
+                    if let Some((lhs, rhs)) = line.split_once(":=") {
+                        let name = lhs.split_whitespace().last().unwrap_or("");
+                        if name.contains("sord") || name.contains("vel") {
+                            if let Ok(value) = rhs.trim().parse::<i32>() {
+                                println!(
+                                    "LITERAL\t{}\t{callback}\t{name}\t{value}",
+                                    self.path.display()
+                                );
+                            }
+                        }
+                    }
+                    if line.starts_with("end on") || line.starts_with("end function") {
+                        callback = "global";
+                    }
+                }
                 for (name, declaration) in &declarations {
                     if *declaration == Decl::Menu && name.contains("vel") {
                         let values: Vec<_> = text
@@ -283,6 +304,13 @@ impl Census {
             0x4f => {
                 let snapshot = Snapshot::try_from(c).map_err(|e| e.to_string())?;
                 self.count(format!("snapshot version {}", snapshot.version));
+                if snapshot.version == 3 {
+                    let object = StructuredObject::try_from(c).map_err(|e| e.to_string())?;
+                    self.count(format!(
+                        "snapshot v3 flags {}",
+                        u32::from_le_bytes(object.public_data[..4].try_into().unwrap())
+                    ));
+                }
                 self.family = format!("0x4f/{}", snapshot.version);
                 for (i, slot) in snapshot.persistent.iter().enumerate() {
                     for entry in slot {
@@ -319,9 +347,34 @@ fn walk(path: &Path, files: &mut Vec<std::path::PathBuf>) {
     }
 }
 fn main() {
-    let root = std::env::args().nth(1).expect("ROOT");
+    let args: Vec<_> = std::env::args().collect();
+    let root = args.get(1).expect("ROOT");
+    let number = |flag: &str, default: usize| {
+        args.iter()
+            .position(|a| a == flag)
+            .map(|i| {
+                args.get(i + 1)
+                    .expect("flag needs a number")
+                    .parse()
+                    .expect("invalid number")
+            })
+            .unwrap_or(default)
+    };
+    let start = number("--start", 0);
+    let count = number("--count", usize::MAX);
     let mut files = Vec::new();
-    walk(Path::new(&root), &mut files);
+    if let Some(i) = args.iter().position(|a| a == "--files") {
+        let list = std::fs::read_to_string(args.get(i + 1).expect("--files needs a TSV path"))
+            .expect("read file list");
+        assert_eq!(list.lines().next(), Some("path\tstatus"));
+        files.extend(
+            list.lines()
+                .skip(1)
+                .map(|line| std::path::PathBuf::from(line.split('\t').next().unwrap())),
+        );
+    } else {
+        walk(Path::new(&root), &mut files);
+    }
     files.sort();
     let mut census = Census {
         probe: std::env::args().any(|a| a == "--probe"),
@@ -329,7 +382,8 @@ fn main() {
     };
     let mut file_counts = BTreeMap::<String, usize>::new();
     let mut libraries = BTreeMap::<(String, String), usize>::new();
-    for (index, path) in files.iter().enumerate() {
+    for (index, path) in files.iter().enumerate().skip(start).take(count) {
+        let before = census.counts.clone();
         census.path = path.clone();
         census.slots.clear();
         census.file_keys.clear();
@@ -347,15 +401,64 @@ fn main() {
                 if ext == "nksn" {
                     if let Some(c) = chunks.find_first(0x51) {
                         let (a, b) = snapshot_metadata_names(c).map_err(|e| e.to_string())?;
-                        census.slots = [a, b]
+                        census.slots = [&a, &b]
                             .into_iter()
                             .find_map(|name| {
                                 census
                                     .contexts
-                                    .get(&(census.library.clone(), name))
+                                    .get(&(census.library.clone(), name.clone()))
                                     .cloned()
                             })
                             .unwrap_or_default();
+                        if census.slots.is_empty() {
+                            // Shards may start at snapshots. Inspect their base instrument
+                            // separately so its records do not inflate this shard's counts.
+                            let mut names = vec![(a, false), (b, false)];
+                            names.extend(
+                                path.ancestors()
+                                    .filter_map(|p| p.file_name())
+                                    .map(|n| (n.to_string_lossy().into_owned(), true)),
+                            );
+                            for (name, folder_match) in names {
+                                if let Some(slots) =
+                                    census.contexts.get(&(census.library.clone(), name.clone()))
+                                {
+                                    census.slots = slots.clone();
+                                    if folder_match {
+                                        census.count("snapshot declaration context from folder");
+                                    }
+                                    break;
+                                }
+                                if let Some(base) = files.iter().find(|f| {
+                                    f.extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+                                        && f.file_stem()
+                                            .is_some_and(|s| s.to_string_lossy() == name)
+                                        && f.strip_prefix(root)
+                                            .ok()
+                                            .and_then(|p| p.components().next())
+                                            .is_some_and(|c| {
+                                                c.as_os_str().to_string_lossy() == census.library
+                                            })
+                                }) {
+                                    let mut context = Census::default();
+                                    for c in &sampler_kontakt::read_chunks(base)
+                                        .map_err(|e| e.to_string())?
+                                        .0
+                                    {
+                                        context.chunk(c)?;
+                                    }
+                                    census.slots = context.slots;
+                                    census.contexts.insert(
+                                        (census.library.clone(), name),
+                                        census.slots.clone(),
+                                    );
+                                    if folder_match {
+                                        census.count("snapshot declaration context from folder");
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                         if census.slots.is_empty() {
                             census.count("snapshot declaration context missing");
                         }
@@ -383,6 +486,14 @@ fn main() {
         if let Err(e) = result {
             println!("FAIL\t{}\t{}", path.display(), e);
             census.count(format!("failed {ext}"));
+        }
+        println!("ITEM_DONE\t{}", path.display());
+        for key in &census.file_keys {
+            println!(
+                "ITEM_COUNT\t{}\t{key}\t{}",
+                path.display(),
+                census.counts[key] - before.get(key).copied().unwrap_or(0)
+            );
         }
         for key in &census.file_keys {
             *file_counts.entry(key.clone()).or_default() += 1;
