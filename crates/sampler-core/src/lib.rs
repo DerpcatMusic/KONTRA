@@ -476,7 +476,7 @@ impl<T> Arena<T> {
         assert!(slots.len() > old);
         slots[..old].swap_with_slice(&mut self.slots);
         let words = old.div_ceil(64);
-        let kept = if old % 64 == 0 {
+        let kept = if old.is_multiple_of(64) {
             u64::MAX
         } else {
             (1u64 << (old % 64)) - 1
