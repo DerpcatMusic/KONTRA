@@ -94,6 +94,10 @@ pub struct Instrument {
     pub host_volume: Option<HostVolume>,
     /// Original Kontakt settings, including values not yet admitted by playback.
     pub kontakt_objects: Option<Box<kontakt::Objects>>,
+    /// Authored source modules and fields retained for format/DSP handoff.
+    /// Includes bypassed modules and unmodeled fields. Lowering does not execute
+    /// these records; executable semantics remain in processors/routes above.
+    pub source_parameters: Vec<SourceParameterRecord>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -230,6 +234,51 @@ pub struct SourceEngineValue {
     pub slot: i32,
     pub generic: i32,
     pub value: i32,
+}
+
+/// A version-pinned module record in the source format, identified by its
+/// original group/rack/physical slot path (not an index into prepared chains).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceParameterRecord {
+    pub location: String,
+    pub object_id: u16,
+    pub version: u16,
+    pub fields: Vec<SourceParameter>,
+}
+
+/// Names carry explicit units where established (`*_ms`, `*_hz`, `*_db`).
+/// Unnamed storage fields stay `unknown_*`; they are never presented as
+/// normalized engine controls or fabricated coefficients.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceParameter {
+    pub name: &'static str,
+    pub value: SourceParameterValue,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum SourceParameterValue {
+    Number(f64),
+    Integer(i64),
+    Boolean(bool),
+    Text(String),
+    Numbers(Vec<f64>),
+    Records(Vec<Vec<SourceParameter>>),
+    /// Undecoded source bytes, retained in memory only. No playback meaning.
+    Opaque(Vec<u8>),
+}
+
+impl std::fmt::Debug for SourceParameterValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number(v) => v.fmt(f),
+            Self::Integer(v) => v.fmt(f),
+            Self::Boolean(v) => v.fmt(f),
+            Self::Text(v) => v.fmt(f),
+            Self::Numbers(v) => v.fmt(f),
+            Self::Records(v) => v.fmt(f),
+            Self::Opaque(v) => write!(f, "<{} opaque bytes>", v.len()),
+        }
+    }
 }
 
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the

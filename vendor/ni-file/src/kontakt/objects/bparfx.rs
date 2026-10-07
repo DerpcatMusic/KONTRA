@@ -37,6 +37,9 @@ pub struct BParFXParams {
     pub output_gain: f32,
     /// Linear level of the unprocessed signal mixed back in.
     pub dry_level: f32,
+    pub reserved: u32,
+    pub unknown_flag: u8,
+    pub unknown_id: i32,
 }
 
 impl BParFX {
@@ -50,22 +53,35 @@ impl BParFX {
 
     pub fn params(&self) -> Result<BParFXParams, Error> {
         let data = &self.0.private_data;
-        if data.len() < 22 {
+        if self.0.version != 0x50 || data.len() != 22 {
             return Err(NIFileError::Generic(format!(
-                "BParFX private data is {} bytes, expected 22",
+                "BParFX v0x{:x} private data is {} bytes; supported v0x50 needs 22",
+                self.0.version,
                 data.len()
             )));
         }
         let mut r = Cursor::new(data);
         let effect_type = r.read_u32_le()?;
-        let _reserved = r.read_u32_le()?;
-        let _flag = r.read_u8()?;
-        let bypass = r.read_u8()? != 0;
+        let reserved = r.read_u32_le()?;
+        let unknown_flag = r.read_u8()?;
+        let bypass = match r.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::Static("Invalid FX bypass byte")),
+        };
+        let output_gain = r.read_f32_le()?;
+        let dry_level = r.read_f32_le()?;
+        if !output_gain.is_finite() || !dry_level.is_finite() {
+            return Err(Error::Static("Non-finite FX slot gain"));
+        }
         Ok(BParFXParams {
             effect_type,
             bypass,
-            output_gain: r.read_f32_le()?,
-            dry_level: r.read_f32_le()?,
+            output_gain,
+            dry_level,
+            reserved,
+            unknown_flag,
+            unknown_id: r.read_i32_le()?,
         })
     }
 }
