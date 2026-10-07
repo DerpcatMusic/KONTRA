@@ -140,6 +140,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_app_specific_read() -> Result<(), Error> {
         let file = File::open("test-data/NIS/properties/Preset/Preset-000")?;
         let item = Preset::read(file)?;

@@ -67,6 +67,7 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_item_frame_read() -> Result<(), Error> {
         let file = File::open("tests/patchdata/NISD/ItemHeader/ItemHeader-RepositoryRoot-000")?;
         let item = ItemHeader::read(file)?;
