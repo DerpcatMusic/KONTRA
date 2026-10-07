@@ -280,3 +280,38 @@ Rig: `noise_instrument.sh stereo` (independent noise A in L, B in R) as a group 
 **Output (dB)**: plain linear gain 10^(dB/20): +6 dB gives x2.0, -6 dB gives x0.5.
 
 **Pseudo Stereo on (pan centre, stereo input)**: not a memoryless matrix (residual -3.1 dB, lag 60 samples, L about 0.0018, R 0.3838). Not resolved; needs a mono-input test.
+
+## 21. Reverb (Send FX "Reverb", Mode Room and Hall)
+
+Where: Instrument Send FX slot > Reverb > Reverb (not Group Insert FX; the other entries there are Convolution, Plate Reverb, Raum, Legacy Reverb and were not measured). Panel: Mode, Predelay, Size, Time, Damping, Diffusion, Mod, Stereo, Low Shelf, High Cut, Return. Defaults: Room, 0 ms, 50%, 3.2k ms, 50%, 50%, 50%, 100%, 0 dB, 21k Hz, Return 0.0 (send level at default).
+
+Rig: `noise_instrument.sh burst` (50 ms noise burst at 0.1 s, 15 s file), reverb in Send FX slot 1, `scenarios/reverb_burst.txt` (one 14 s key-60 note). `dry.wav` is the same scenario with the reverb bypassed; `reverb_report.py WET DRY` subtracts it (wet = WET - DRY, aligned, lag 0) and prints pre-delay (first 5 ms window within 30 dB of the wet peak), broadband RT60 (Schroeder integral, -5..-35 dB fit, extrapolated to -60) and RT60 per band (smooth 1-octave-wide Gaussian bands at 250, 1k, 4k and 8k Hz). `rv_sweep.sh TAG FX FY VALUE...` types the values and prints the report; fields (Room, scrolled): Predelay (860,768), Size (994,768), Time (1140,768), Damping (1270,768), Diffusion (1408,768), Mod (855,831), Stereo (996,831), Low Shelf (1138,831), High Cut (1275,831).
+
+**Time -> decay.** Measured RT60 is 0.81-0.83 x the displayed Time, linear over 0.8-20 s (Room, damping 50%):
+
+| Time ms | 800 | 1000 | 1500 | 2000 | 3000 | 3200 | 4000 | 5000 | 10000 | 20000 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RT60 s | 0.66 | 0.84 | 1.22 | 1.63 | 2.42 | 2.60 | 3.27 | 4.08 | 8.09 | 16.17 |
+
+Range about 800 ms to 20 s (typed 100 and 500 are rejected and leave the old value). The decay is exponential (straight in dB). Hall has the same law (1000 -> 0.86, 3200 -> 2.61, 5000 -> 4.09).
+
+**Damping** changes only the high-frequency decay (3.2 s Time; 250/1k bands stay 2.9 s):
+
+| damping % | 0 | 25 | 50 | 75 | 100 |
+|---|---|---|---|---|---|
+| 4 kHz RT60 s | 2.60 | 2.40 | 2.30 | 2.19 | 2.05 |
+| 8 kHz RT60 s | 2.11 | 1.78 | 1.63 | 1.47 | 1.33 |
+
+(Even damping 0 is shorter than mid at 8 kHz: 0.72 x.) At the default the band RT60 relative to 1 kHz is 4 kHz 0.79, 8 kHz 0.56, and the 250 Hz band is about 1.02 x.
+
+**Predelay**: wet starts at predelay + about 5-10 ms (20 -> 25, 50 -> 55, 100 -> 100, 250 -> 240 ms). Range 0-250 ms (500 rejected). RT60 unchanged. Hall starts with no offset (0 ms at 0, 95 ms at 100).
+
+**Size**: RT60 does not change (2.59-2.62 s for 0-100%). It changes early-reflection level and density: wet peak -27.6 dB at 0, -30.7 at 50, -32.6 at 100 (Hall -32.8, -33.8, -35.7), and first arrival 5 ms at size 0 versus 10 ms.
+
+**Diffusion**: RT60 unchanged; only the first-arrival time (15 ms at 0, 10 at 50, 5 at 100) and the early texture change.
+
+**Stereo**: wet L/R correlation (0.5-2 s) is 1.00 at 0%, 0.59 at 50%, -0.05 at 100%. Wet level rises with it (-34.3, -33.7, -31.5 dB).
+
+**High Cut** lowers wet level and leaves the decay: wet peak -37.0 dB (1 kHz), -34.6 (4k), -32.1 (10k), -32.2 (21k). **Low Shelf** (+-12 dB) changes the 250 Hz band by about 0.1 s of RT60 and the wet peak by under 0.4 dB (a shelf on the wet low end; level effect not separated). **Mod** and **Return** not measured.
+
+Note on the first-sight default: the Time display shows "3.2k ms" and the measured default RT60 is 2.59-2.62 s, matching 3200 typed.
