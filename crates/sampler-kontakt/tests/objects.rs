@@ -196,7 +196,7 @@ fn source_versions_and_modes_consume_only_their_bounded_record() {
 
 #[test]
 fn zone_metadata_versions_and_loop_slot_identity_are_retained() {
-    for version in [0x95, 0x96, 0x98, 0x99, 0x9a] {
+    for version in [0x95, 0x96, 0x98, 0x99, 0x9a, 0x9c] {
         let mut b = vec![0; 42];
         if version >= 0x9a {
             b.extend([1, 2, 3, 4, 5, 6]);
@@ -257,7 +257,62 @@ fn zone_metadata_versions_and_loop_slot_identity_are_retained() {
         b.extend(1.5f32.to_le_bytes());
         b.extend(7i32.to_le_bytes());
     }
-    let a = LoopArray::read(Cursor::new(b)).unwrap();
+    let a = LoopArray::read(Cursor::new(&b)).unwrap();
     assert_eq!(a.slots, [2, 7]);
     assert_eq!(a.items[1].loop_count, 5);
+    for end in 0..b.len() {
+        assert!(LoopArray::read(Cursor::new(&b[..end])).is_err());
+    }
+    b[1] = 2;
+    assert!(LoopArray::read(Cursor::new(b)).is_err());
+    // A structured slot's public extension cannot swallow its next raw peer.
+    let public = [0u8; 26];
+    let mut b = vec![3, 1, 0x60, 0];
+    for area in [&[0xca][..], &public[..], &[][..]] {
+        b.extend((area.len() as u32).to_le_bytes());
+        b.extend(area);
+    }
+    b.extend([0, 0x60, 0]);
+    b.extend([0; 25]);
+    let a = LoopArray::read(Cursor::new(b)).unwrap();
+    assert_eq!(a.slots, [0, 1]);
+    assert_eq!(a.items.len(), 2);
+}
+
+#[test]
+fn modern_program_base_and_group_extensions_are_retained() {
+    // Program: empty name, 48-byte scalar base, three empty strings, categories.
+    let mut b = vec![0; 4 + 48 + 12 + 6];
+    b[12] = (-12i8) as u8; // transpose after name and memory count
+    b[13..17].copy_from_slice(&0.5f32.to_le_bytes());
+    b[17..21].copy_from_slice(&(-0.25f32).to_le_bytes());
+    b[21..25].copy_from_slice(&2f32.to_le_bytes());
+    b[29..31].copy_from_slice(&(-1i16).to_le_bytes());
+    b.extend([0xde, 0xad]);
+    for version in [0xa8, 0xab, 0xae, 0xb1, 0xb3, 0xb5] {
+        let p = ProgramPublicParams::read(Cursor::new(&b), version).unwrap();
+        assert_eq!(
+            (p.transpose, p.volume, p.pan, p.tune),
+            (-12, 0.5, -0.25, 2.0)
+        );
+        assert_eq!(p.default_key_switch, -1);
+        assert_eq!(p.unknown_tail, [0xde, 0xad]);
+    }
+    for version in [0x95, 0x96] {
+        let mut public = vec![0; 4 + 36];
+        public[34] = 1; // muted
+        public.extend([0xca, 0xfe]);
+        let group = Group(StructuredObject {
+            version,
+            private_data: vec![],
+            public_data: public,
+            children: vec![ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: vec![0],
+            }],
+        });
+        let p = group.params().unwrap();
+        assert!(p.muted);
+        assert_eq!(p.unknown_tail, [0xca, 0xfe]);
+    }
 }
