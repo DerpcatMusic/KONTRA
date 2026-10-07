@@ -586,6 +586,12 @@ impl Core for V2Core {
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
             }
+            // About 128 instructions per frame, so a long block keeps its script
+            // throughput per second; never below the 64-frame measured 8192.
+            let fuel = (n * 128).max(8192);
+            if part.runtime.behavior_block_fuel() != fuel {
+                part.runtime.set_behavior_block_fuel(fuel);
+            }
             if let Some(script) = part.script.as_mut() {
                 let _ = script.wake(&mut part.runtime);
                 // What the scripts generated plays into the part.
@@ -1222,7 +1228,7 @@ impl V2Loader {
         // A chord's script work spreads over blocks: 30 notes of a 14k-instruction
         // callback measured 8.0 ms in one block unlimited, 0.70 ms at this cap
         // (sampler-perf dense-strings, 64-frame blocks).
-        // ponytail: fixed cap; make it follow the device buffer if latency shows.
+        // render() rescales it to 128 per frame for longer blocks.
         runtime.set_behavior_block_fuel(8192);
         let streams = cache.is_some();
         if let Some(cache) = cache {
