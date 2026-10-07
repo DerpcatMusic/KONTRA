@@ -142,7 +142,7 @@ fn one_rack_plays_every_format_together() {
     sine(&wav_b, 660.0);
     sine(&wav_mpe, 220.0);
     let nki = library("KONTRA_KONTAKT_LIBRARIES", "Una Corda Library/Instruments/Una Corda Pure.nki");
-    let multi = library("KONTRA_KONTAKT_LIBRARIES", "Audio Imperia CHORUS/Multis/10 Chorus - Ensemble - Traditional Syllables.nkm");
+    let multi = library("KONTRA_KONTAKT_LIBRARIES", "Conflux 1.1.0 [Native Instruments]/Multis/Hybrid Walk.nkm");
     let uvi = library("KONTRA_UVI_LIBRARIES", "VWinds - Clarinets/VWinds-ContrabassClarinet_V2.ufs/Presets/Contrabass Clarinet.uvip");
     let (Some(nki), Some(multi), Some(uvi)) = (nki, multi, uvi) else {
         eprintln!("skipped: libraries are not installed");
