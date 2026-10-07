@@ -713,13 +713,15 @@ const REFERENCE: &[(&str, u8, u8, f64, &[(u8, u8)])] = &[
         55,
         100,
         -15.9,
-        &[(1, 48)],
+        &[],
     ),
 ];
 
 /// Every reference note within 1 dB of Kontakt. Known gaps while it fails: Una
 /// Cotton at vel 100/127 (KONTRA 4.6 dB low), Barbarian (11.4 dB low:
-/// Kontakt starts CC1 near 48, KONTRA at 0). Vista is +0.9 dB.
+/// the recording sent no CC1 or CC11 (KONTAKT_REFERENCE.md s.13), so Kontakt's
+/// script supplies its own CC1 default, read as about 48 with the script
+/// bypassed; KONTRA's scripts-on path starts it at 0). Vista is +0.9 dB.
 #[test]
 #[ignore = "known gaps: Una Cotton 5/11/11 dB low at vel 64/100/127, Barbarian 11 dB low; script-driven, Vista passes"]
 fn full_notes_match_kontakt_within_a_decibel() {
