@@ -1,0 +1,8 @@
+# ANALOG STRINGS, one note, vel 100, held 3 s, explicit controller state
+0 cc 1 0
+0 cc 7 127
+0 cc 10 64
+0 cc 11 127
+0 cc 64 0
+0.5 note 64 100 3
+8 end
