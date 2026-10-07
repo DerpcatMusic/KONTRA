@@ -324,7 +324,7 @@ impl Slot {
                         .collect::<Option<_>>()?;
                     Params::Eq { bands }
                 } else {
-                    // Ladder (70, 71) stores a leading value first.
+                    // Daft (70, 71) stores a leading value first.
                     let leading = if matches!(kind, 70 | 71) {
                         Some(r.f32()?)
                     } else {
@@ -632,6 +632,25 @@ pub(crate) fn chain_with(
                 } else {
                     modelled = false;
                 }
+                combined = product(gain, combined);
+            }
+            Some(Params::Filter {
+                kind,
+                cutoff,
+                resonance,
+                extra,
+            }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
+                // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
+                // "Daft parameter laws and scheduling". The leading value is the
+                // Gain control. No filter_slots entry: modulation routes do not
+                // reach it.
+                // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
+                filters.push(sampler_ir::Processor::Daft(sampler_ir::Daft {
+                    gain: f64::from(extra[0]).clamp(0.0, 1.0),
+                    cutoff: f64::from(*cutoff).clamp(0.0, 1.0),
+                    resonance: f64::from(*resonance).clamp(0.0, 1.0),
+                    highpass: *kind == 71,
+                }));
                 combined = product(gain, combined);
             }
             Some(Params::Filter {
@@ -1131,6 +1150,22 @@ mod tests {
         assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
         assert_eq!(c.attack.seconds(), 0.01);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn daft_filter_slot_keeps_its_normalized_controls() {
+        let mut bytes = Vec::new();
+        for _ in 0..2 {
+            bytes.extend(71i32.to_le_bytes());
+        }
+        for x in [0.25f32, 0.5, 0.75] {
+            bytes.extend(x.to_le_bytes());
+        }
+        let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+        let [sampler_ir::Processor::Daft(d), ..] = built.processors[..] else {
+            panic!("{:?} {:?}", built.processors, built.notes)
+        };
+        assert_eq!((d.gain, d.cutoff, d.resonance, d.highpass), (0.25, 0.5, 0.75, true));
     }
 
     #[test]
