@@ -350,6 +350,74 @@ impl Runtime {
         Ok(())
     }
 
+    /// Set a note's script volume (decibels), pan (-1..=1) or pitch
+    /// (semitones), or add to it, for a frontend that drives the runtime
+    /// directly (Falcon's `changeVolume`, `changePan`, `changeTune`). Voices
+    /// ramp to it across their next chunk. Stale notes are an error.
+    pub fn set_note_param(
+        &mut self,
+        note: NoteId,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+    ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            ModTarget::Pitch => 100_000.0,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        self.script_params = true;
+        self.note_params[note.0.index]
+            .layer
+            .write(target, (value * scale).round() as i64, relative)
+    }
+
+    /// As [`Runtime::set_note_param`] for a group of the active plan (a
+    /// negative `group` is the whole instrument): a frontend writing a layer's
+    /// or program's Gain (decibels) or Pan (-1..=1), as Falcon's
+    /// `setParameter` does.
+    pub fn set_group_param(
+        &mut self,
+        group: i64,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+    ) -> Result<(), Error> {
+        let scale = match target {
+            ModTarget::Decibels | ModTarget::Pan => 1000.0,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        let plan = self.active_plan();
+        self.write_param(plan, ParamScope::Group, group, target, (value * scale).round() as i64, relative)
+    }
+
+    /// Fade a note's gain linearly from `from` (its current level when
+    /// `None`) to `to` over `frames`; `stop` ends it when the fade completes
+    /// at silence.
+    pub fn fade_note(
+        &mut self,
+        note: NoteId,
+        from: Option<f64>,
+        to: f64,
+        frames: u64,
+        stop: bool,
+    ) -> Result<(), Error> {
+        self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        self.script_params = true;
+        let now = self.now;
+        let params = &mut self.note_params[note.0.index];
+        let from = from.unwrap_or_else(|| params.fade.map_or(1.0, |f| f.at(now)));
+        params.fade = Some(Fade { from, to, start: now, frames, stop });
+        Ok(())
+    }
+
     fn param_layer(
         &mut self,
         plan: crate::PlanId,
