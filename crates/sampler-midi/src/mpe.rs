@@ -126,6 +126,7 @@ pub struct Mpe {
     bindings: Vec<Binding>,
     changes: Vec<(ExpressionId, Expression)>,
     transpose: f64,
+    timbre_controller: Option<u8>,
 }
 impl Mpe {
     pub fn new(
@@ -185,7 +186,14 @@ impl Mpe {
             bindings,
             changes,
             transpose: 0.0,
+            timbre_controller: None,
         })
+    }
+
+    /// Also write each note's timbre (CC74) to its own member channel as this
+    /// controller, so an instrument's dynamics position follows Y per note.
+    pub fn set_timbre_controller(&mut self, controller: Option<u8>) {
+        self.timbre_controller = controller.filter(|&c| c < 120);
     }
 
     /// Fix the bend range of every channel in whole semitones, whatever RPN 0
@@ -307,7 +315,18 @@ impl Mpe {
             Message::Control {
                 index: 74,
                 value: value @ (Value::Bits7(_) | Value::Bits32(_)),
-            } => self.control(runtime, voice.channel, Control::Timbre(value))?,
+            } => {
+                if let Some(cc) = self.timbre_controller {
+                    runtime.dispatch_controller(
+                        self.performance,
+                        input.channel_address(),
+                        1 << voice.channel,
+                        cc,
+                        value.full_scale(),
+                    )?;
+                }
+                self.control(runtime, voice.channel, Control::Timbre(value))?
+            }
             // MIDI 2.0 carries RPNs as Registered Controllers, not CC 6/38/98..=101.
             Message::Control {
                 index: index @ (6 | 38 | 98..=101),

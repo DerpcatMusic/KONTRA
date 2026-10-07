@@ -165,7 +165,7 @@ fn read(path: &Path) -> Option<Vec<u8>> {
 fn text(bytes: &[u8]) -> String {
     match bytes {
         [0xff, 0xfe, rest @ ..] => {
-            let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
             String::from_utf16_lossy(&units)
         }
         _ => String::from_utf8_lossy(bytes).into_owned(),
@@ -308,11 +308,10 @@ pub fn plist(bytes: &[u8]) -> Vec<String> {
     while let Some(at) = rest.find("<key>") {
         rest = &rest[at + 5..];
         let Some((key, after)) = rest.split_once("</key>") else { break };
-        if VALUES.contains(&key.trim().to_lowercase().as_str()) {
-            if let Some(value) = after.trim_start().strip_prefix("<string>").and_then(|v| v.split_once("</string>")) {
+        if VALUES.contains(&key.trim().to_lowercase().as_str())
+            && let Some(value) = after.trim_start().strip_prefix("<string>").and_then(|v| v.split_once("</string>")) {
                 out.push(entities(value.0.trim()));
             }
-        }
     }
     out
 }
@@ -349,7 +348,7 @@ fn bplist_strings(b: &[u8]) -> Option<Vec<String>> {
         out.push(if kind == 5 {
             bytes.iter().map(|&c| char::from(c)).collect()
         } else {
-            let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
             String::from_utf16_lossy(&units)
         });
     }
@@ -420,7 +419,7 @@ pub fn place(raw: &str, wine: Option<&Path>) -> Option<PathBuf> {
         return Some(match wine {
             Some(prefix) => {
                 let devices = prefix.join("dosdevices").join(format!("{}:", letter.to_ascii_lowercase()));
-                let base = if devices.exists() || letter.to_ascii_lowercase() != 'c' {
+                let base = if devices.exists() || !letter.eq_ignore_ascii_case(&'c') {
                     devices
                 } else {
                     prefix.join("drive_c")

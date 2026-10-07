@@ -4,9 +4,9 @@ use std::{io, path::Path};
 #[cfg(feature = "library-access")]
 pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Result<()> {
     let bank = sampler_uvi::Bank::open(bank).map_err(io::Error::other)?;
-    // Scripts may play keys outside the requested ones: load every zone.
-    let options = sampler_kontakt::Options::default();
-    let program = sampler_uvi::load_program_scripted_with_options(&bank, program, &options)
+    // Scripts may play any key: every zone is present, its samples stream.
+    let rate = sampler_kontakt::Options::default().rate;
+    let program = sampler_uvi::load_program_scripted_streamed(&bank, program, rate, &Default::default())
         .map_err(|e| io::Error::other(e.to_string()))?;
     let ir = &program.instrument;
     eprintln!(
@@ -24,8 +24,7 @@ pub fn run(bank: &Path, program: &str, output: &Path, notes: &[Note]) -> io::Res
             item.feature, item.location
         );
     }
-    let rate = options.rate;
-    let limits = sampler_core::Limits {
+        let limits = sampler_core::Limits {
         notes: 64,
         channels: 16,
         performances: 1,

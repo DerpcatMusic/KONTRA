@@ -218,6 +218,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_private_params_v80() -> Result<(), Error> {
         let mut file = File::open("tests/data/Objects/Kontakt/Program/v80/private_params/000")?;
         let _params = ProgramDataPrivateParams::read(&mut file, 0x80)?;

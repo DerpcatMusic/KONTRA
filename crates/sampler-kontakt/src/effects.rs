@@ -11,8 +11,8 @@ use ni_file::kontakt::{
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
-const RACK: u16 = 0x3a;
-const BUS: u16 = 0x45;
+pub(crate) const RACK: u16 = 0x3a;
+pub(crate) const BUS: u16 = 0x45;
 
 /// Module names by serialization ID (Kontakt's `BParFX*` classes).
 const MODULES: &[(u16, &str)] = &[
@@ -78,8 +78,9 @@ pub(crate) struct Slot {
     pub bypass: bool,
     pub output_gain: f32,
     pub dry_level: f32,
+    /// A script wrote the output gain with `set_engine_par`.
+    pub output_set: bool,
     pub public: Vec<u8>,
-    pub private: Vec<u8>,
 }
 
 pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
@@ -99,10 +100,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
                 bypass: state.bypass,
                 output_gain: state.output_gain,
                 dry_level: state.dry_level,
+                output_set: false,
                 public: object
                     .as_ref()
                     .map_or_else(Vec::new, |o| o.public_data.clone()),
-                private: object.map_or_else(Vec::new, |o| o.private_data),
             })
         })
         .collect()
@@ -110,7 +111,10 @@ pub(crate) fn rack(array: &BParamArrayBParFX8) -> Vec<Slot> {
 
 /// The program's racks with their locations: instrument insert, send and
 /// main, then each bus.
-pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
+pub(crate) fn program_racks(
+    program: &Program,
+    writes: &[sampler_ksp::EnginePar],
+) -> Vec<(String, Vec<Slot>)> {
     let names = ["instrument insert", "instrument send", "instrument main"];
     let mut out = Vec::new();
     let mut racks = 0;
@@ -123,7 +127,13 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                     .map_or_else(|| format!("rack {racks}"), |n| (*n).into());
                 racks += 1;
                 if let Ok(array) = BParamArrayBParFX8::try_from(child) {
-                    out.push((name, rack(&array)));
+                    let mut slots = rack(&array);
+                    // File order insert, send, main; `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0,
+                    // `$NI_MAIN_BUS` 2.
+                    if let Some(&generic) = [1, 0, 2].get(racks - 1) {
+                        apply_writes(&mut slots, writes, -1, generic);
+                    }
+                    out.push((name, slots));
                 }
             }
             BUS => {
@@ -135,13 +145,61 @@ pub(crate) fn program_racks(program: &Program) -> Vec<(String, Vec<Slot>)> {
                         .find_first(RACK)
                         .and_then(|c| BParamArrayBParFX8::try_from(c).ok())
                 {
-                    out.push((format!("bus {index}"), rack(&array)));
+                    let mut slots = rack(&array);
+                    // `$NI_BUS_OFFSET` + the bus number.
+                    apply_writes(&mut slots, writes, -1, 1000 + index);
+                    out.push((format!("bus {index}"), slots));
                 }
             }
             _ => {}
         }
     }
     out
+}
+
+/// Engine value (0..1000000) of an effect level as a linear gain: cubic about
+/// 396851 (2^(-4/3)) = unity, so 1000000 is +24 dB. Fitted to stored slots whose
+/// saved output gain and dry level follow the script's init writes (396280 ->
+/// 0.99570, 303068 -> 0.44539, 560434 -> 2.8164, 3305 -> 5.776e-7).
+pub(crate) fn engine_gain(value: i32) -> f32 {
+    if value <= 0 {
+        return 0.0;
+    }
+    (f64::from(value) / 396_851.0).powi(3) as f32
+}
+
+/// Apply the `set_engine_par` writes a script left at init to a rack's slots.
+/// `group` is the group index or -1; `generic` selects the instrument rack
+/// (`$NI_SEND_BUS` 0, `$NI_INSERT_BUS` 1, `$NI_MAIN_BUS` 2, `$NI_BUS_OFFSET`
+/// + n) or is -1 for a group's inserts.
+pub(crate) fn apply_writes(
+    slots: &mut [Slot],
+    writes: &[sampler_ksp::EnginePar],
+    group: i32,
+    generic: i32,
+) {
+    for w in writes
+        .iter()
+        .filter(|w| w.group == group && w.generic == generic)
+    {
+        let Some(fx) = usize::try_from(w.slot)
+            .ok()
+            .and_then(|i| slots.iter_mut().find(|fx| fx.slot == i))
+        else {
+            continue;
+        };
+        match w.parameter.trim_start_matches('$') {
+            "ENGINE_PAR_EFFECT_BYPASS" | "ENGINE_PAR_SEND_EFFECT_BYPASS" => {
+                fx.bypass = w.value != 0
+            }
+            "ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN" | "ENGINE_PAR_SEND_EFFECT_OUTPUT_GAIN" => {
+                fx.output_gain = engine_gain(w.value);
+                fx.output_set = true;
+            }
+            "ENGINE_PAR_SEND_EFFECT_DRY_LEVEL" => fx.dry_level = engine_gain(w.value),
+            _ => {}
+        }
+    }
 }
 
 /// A module's stored parameters, where the layout is known (byte-exact on
@@ -155,6 +213,9 @@ pub(crate) enum Params {
     StereoModeller { spread: f32, pan: f32, pseudo: bool },
     /// `$ENGINE_PAR_PHASE_INVERT`, `$ENGINE_PAR_LR_SWAP`.
     Inverter { invert: bool, swap: bool },
+    /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
+    /// threshold dB, ratio, attack and release ms, stereo link.
+    Compressor { mode: f32, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, link: bool },
     /// Linear level into each instrument send slot; a second table (17
     /// levels, 1.0 locally) of unknown meaning.
     SendLevels { sends: Vec<f32>, outputs: Vec<f32> },
@@ -236,6 +297,14 @@ impl Slot {
                     ir_index: r.i32()?,
                 }))
             }
+            0x19 => Params::Compressor {
+                mode: r.f32()?,
+                threshold_db: r.f32()?,
+                ratio: r.f32()?,
+                attack_ms: r.f32()?,
+                release_ms: r.f32()?,
+                link: r.flag()?,
+            },
             0x1a => Params::Inverter {
                 invert: r.flag()?,
                 swap: r.flag()?,
@@ -352,19 +421,18 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
                     NotModeled,
                 ));
             }
-            if spread != 0.0 || pan != 0.0 {
-                // Mid/side width 1 + spread and balance pan: v1's law, not
-                // verified against Kontakt.
-                notes.push((
-                    "stereo modeller width/pan law".into(),
-                    format!("spread {spread} pan {pan}"),
-                    UnknownLaw,
-                ));
-            }
-            let width = (1.0 + f64::from(spread)).clamp(0.0, 2.0);
+            // KONTAKT_REFERENCE.md s.20 (measured 2x2 fits, pure matrix): spread
+            // s in -1..=1 (GUI percent / 100). s < 0: M/S width 1 + s, mono at
+            // -1. s > 0: [[1+s, -s], [-s, 1+s]], clamped at 1. Pan p is a
+            // linear balance: the opposite channel is scaled by 1 - |p|.
+            let s = f64::from(spread).clamp(-1.0, 1.0);
             let pan = f64::from(pan);
             let gains = [(1.0 - pan).clamp(0.0, 1.0), (1.0 + pan).clamp(0.0, 1.0)];
-            let (same, other) = ((1.0 + width) / 2.0, (1.0 - width) / 2.0);
+            let (same, other) = if s < 0.0 {
+                ((2.0 + s) / 2.0, -s / 2.0)
+            } else {
+                (1.0 + s, -s)
+            };
             [
                 [same * gains[0], other * gains[0]],
                 [other * gains[1], same * gains[1]],
@@ -482,7 +550,7 @@ pub(crate) struct Chain {
 /// Linear stereo stages fold into one matrix; EQ bands act alike on both
 /// channels, so they commute with it.
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
-    chain_with(slots, scope, None)
+    chain_with(slots, scope, None, None)
 }
 
 /// A decoded impulse response: its sample rate and frames.
@@ -496,11 +564,16 @@ pub(crate) struct Impulses<'a> {
 }
 
 /// [`chain`], translating convolutions when `impulses` is given (bus scope).
+/// With `dynamic` (a bus rack's `generic` address) every slot a script may
+/// write at runtime becomes a [`sampler_ir::Processor::Mix`] block, bypassed
+/// ones included.
 pub(crate) fn chain_with(
     slots: &[Slot],
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
+    dynamic: Option<i32>,
 ) -> Chain {
+    let dynamic = dynamic.filter(|_| scope == Scope::Bus);
     let mut out = Chain::default();
     let mut combined = IDENTITY;
     let mut filters = Vec::new();
@@ -513,17 +586,45 @@ pub(crate) fn chain_with(
                 *combined = IDENTITY;
             }
         };
-    for fx in slots.iter().filter(|fx| !fx.bypass) {
+    for fx in slots.iter().filter(|fx| dynamic.is_some() || !fx.bypass) {
         let name = module_name(fx.module);
         let mut notes = Vec::new();
         let params = fx.params();
-        let wet = f64::from(fx.output_gain);
-        let gain = [[wet, 0.0], [0.0, wet]];
+        // Send Levels feed buses, not the signal; everything else a script
+        // may bypass or trim at runtime runs inside its own Mix block.
+        let mix = dynamic.filter(|_| !matches!(params, Some(Params::SendLevels { .. })));
+        let begin = if mix.is_some() {
+            flush(&mut combined, &mut filters, &mut out);
+            out.processors.len()
+        } else {
+            0
+        };
+        // The Inverter's Output knob does not reach the signal: Una g39 and g94
+        // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
+        // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
+        // 6.0 dB louder with it.
+        let wet = if fx.module == 0x1a {
+            1.0
+        } else {
+            f64::from(fx.output_gain)
+        };
+        let gain = if mix.is_some() {
+            IDENTITY
+        } else {
+            [[wet, 0.0], [0.0, wet]]
+        };
+        // An EQ has no Output control. Of 12,918 EQ slots in the corpus 12,917 store
+        // output 1 and dry 1; the one stored 0 and 0 (ANALOG STRINGS' insert rack) is
+        // audible in Kontakt and its script never writes the slot's output gain. So
+        // the stored value counts for an EQ only when a script wrote it.
+        // ponytail: a guess from that corpus count; confirm against Kontakt output.
+        let eq_unset = fx.output_gain == 0.0 && !fx.output_set;
+        let eq_gain = if eq_unset { IDENTITY } else { gain };
         let mut modelled = true;
         match &params {
             Some(Params::Eq { bands }) => {
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
-                combined = product(gain, combined);
+                combined = product(eq_gain, combined);
             }
             Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
                 if out.sends.is_empty() {
@@ -554,6 +655,38 @@ pub(crate) fn chain_with(
                     modelled = false;
                 }
             },
+            Some(Params::Compressor {
+                mode,
+                threshold_db,
+                ratio,
+                attack_ms,
+                release_ms,
+                link,
+            }) => {
+                // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
+                // the linked detector is the signed channel mean. The level law
+                // is the textbook one (ir::Compressor); the stored units are the
+                // importer's labels.
+                // ponytail: unverified - the first value is read as the mode and
+                // only mode 0 (Classic) is taken to share the kernel.
+                if *mode != 0.0 {
+                    notes.push((
+                        "compressor mode".into(),
+                        format!("{mode}"),
+                        sampler_ir::Reason::UnknownLaw,
+                    ));
+                }
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors.push(sampler_ir::Processor::Compressor(sampler_ir::Compressor {
+                    threshold_db: f64::from(*threshold_db),
+                    ratio: f64::from(*ratio).max(1.0),
+                    attack: sampler_ir::Time::Milliseconds(f64::from(*attack_ms).max(0.0)),
+                    release: sampler_ir::Time::Milliseconds(f64::from(*release_ms).max(0.0)),
+                    makeup: sampler_ir::Gain::UNITY,
+                    link: *link,
+                }));
+                combined = gain;
+            }
             Some(Params::Reverb(values)) if scope == Scope::Bus => {
                 flush(&mut combined, &mut filters, &mut out);
                 out.processors
@@ -567,8 +700,8 @@ pub(crate) fn chain_with(
                         flush(&mut combined, &mut filters, &mut out);
                         out.processors.push(sampler_ir::Processor::Convolution {
                             impulse,
-                            dry: f64::from(fx.dry_level),
-                            wet,
+                            dry: if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                            wet: if mix.is_some() { 1.0 } else { wet },
                         });
                     }
                     Err(why) => {
@@ -586,6 +719,37 @@ pub(crate) fn chain_with(
                 None => modelled = false,
             },
             None => modelled = false,
+        }
+        if let Some(generic) = mix {
+            flush(&mut combined, &mut filters, &mut out);
+            let count = out.processors.len() - begin;
+            if count > 0 {
+                let convolution = matches!(params, Some(Params::Convolution(_)));
+                let wet = if matches!(params, Some(Params::Eq { .. })) && eq_unset {
+                    1.0
+                } else {
+                    wet
+                };
+                out.processors.insert(
+                    begin,
+                    sampler_ir::Processor::Mix {
+                        count: count as u16,
+                        address: sampler_ir::SlotAddress {
+                            group: -1,
+                            slot: fx.slot as i32,
+                            generic,
+                        },
+                        dry: if convolution { f64::from(fx.dry_level) } else { 0.0 },
+                        wet,
+                        bypass: fx.bypass,
+                    },
+                );
+                for (_, at) in &mut out.filter_slots {
+                    if *at >= begin {
+                        *at += 1;
+                    }
+                }
+            }
         }
         if !modelled {
             out.notes.push((
@@ -694,7 +858,7 @@ fn convolution(
     let [left, right] = channels;
     impulses
         .store
-        .push(sampler_ir::Impulse { rate, left, right });
+        .push(sampler_ir::Impulse { rate, left, right, asset: None });
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
@@ -738,6 +902,7 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
 pub(crate) fn instrument_buses(
     ir: &mut sampler_ir::Instrument,
     racks: &[(String, Vec<Slot>)],
+    dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> Vec<(String, Note)> {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
@@ -756,14 +921,16 @@ pub(crate) fn instrument_buses(
         store: &mut store,
         load,
     };
-    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source));
+    // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
+    let generic = |n| dynamic.then_some(n);
+    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source), generic(1));
     take("instrument insert", &insert);
-    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source));
+    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source), generic(2));
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
     let mut sends = Vec::new();
-    for slot in rack("instrument send").iter().filter(|s| !s.bypass) {
-        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source));
+    for slot in rack("instrument send").iter().filter(|s| dynamic || !s.bypass) {
+        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source), generic(0));
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
         if !c.processors.is_empty() && level > 0.0 {
@@ -887,9 +1054,83 @@ mod tests {
             bypass: false,
             output_gain: gain,
             dry_level: 1.0,
+            output_set: true,
             public,
-            private: Vec::new(),
         }
+    }
+
+    #[test]
+    fn dynamic_slots_run_in_mix_blocks_bypassed_ones_included() {
+        let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        gainer.slot = 3;
+        gainer.bypass = true;
+        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
+        assert!(plain.processors.is_empty());
+        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some(1));
+        assert!(matches!(
+            c.processors[..],
+            [
+                sampler_ir::Processor::Mix {
+                    count: 1,
+                    bypass: true,
+                    address: sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 },
+                    ..
+                },
+                sampler_ir::Processor::StereoMatrix(_)
+            ]
+        ), "{:?}", c.processors);
+    }
+
+    #[test]
+    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_is_pending() {
+        let modeller = |spread: f32, pan: f32| {
+            let mut bytes = spread.to_le_bytes().to_vec();
+            bytes.extend(pan.to_le_bytes());
+            bytes.push(0);
+            match chain(&[slot(0x1f, bytes, 1.0)], Scope::Voice)
+                .processors
+                .as_slice()
+            {
+                [sampler_ir::Processor::StereoMatrix(m)] => *m,
+                [] => [[1.0, 0.0], [0.0, 1.0]],
+                other => panic!("{other:?}"),
+            }
+        };
+        let near = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
+            for (a, b) in m.iter().flatten().zip(want.iter().flatten()) {
+                assert!((a - b).abs() < 1e-6, "{m:?} against {want:?}");
+            }
+        };
+        // KONTAKT_REFERENCE.md s.20, divided by the base gain 0.3838 (vel 100):
+        // 100%: 0.7677 / -0.3838; 50%: 0.5757 / -0.1919; -50%: 0.2879 / 0.0960.
+        near(modeller(1.0, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(0.5, 0.0), [[1.5, -0.5], [-0.5, 1.5]]);
+        near(modeller(1.5, 0.0), [[2.0, -1.0], [-1.0, 2.0]]);
+        near(modeller(-0.5, 0.0), [[0.75, 0.25], [0.25, 0.75]]);
+        near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
+        // Pan -50: R x0.5.
+        near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
+        // PENDING (reference agent measuring Output at -6/0/+6 dB): Una g39 and
+        // g94's post-amp Inverter at +6 dB reads exactly as if its Output were
+        // not applied. A single reading; if it fails, apply the gain again.
+        let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
+        assert!(inverter.is_empty(), "{inverter:?}");
+    }
+
+    #[test]
+    fn compressor_slot_becomes_a_compressor_with_its_link_flag() {
+        let mut bytes = Vec::new();
+        for x in [0.0f32, -18.0, 4.0, 10.0, 120.0] {
+            bytes.extend(x.to_le_bytes());
+        }
+        bytes.push(1);
+        let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Voice);
+        let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
+            panic!("{:?}", built.processors)
+        };
+        assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
+        assert_eq!(c.attack.seconds(), 0.01);
+        assert!(built.notes.is_empty(), "{:?}", built.notes);
     }
 
     #[test]
@@ -905,12 +1146,12 @@ mod tests {
             sampler_kontakt_chain.processors,
             sampler_kontakt_chain.notes,
         );
-        // 2 * (swap, inverted, * 0.5) * 2 = swap, inverted, * 2.
+        // 2 * (swap, inverted; its Output is not applied) * 2 = swap, inverted, * 4.
         assert_eq!(
             processors,
             vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -2.0],
-                [-2.0, 0.0]
+                [0.0, -4.0],
+                [-4.0, 0.0]
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");
@@ -975,7 +1216,7 @@ mod tests {
             ),
             ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
         ];
-        let report = instrument_buses(&mut instrument, &racks, &mut |_| Err("none".into()));
+        let report = instrument_buses(&mut instrument, &racks, false, &mut |_| Err("none".into()));
         assert_eq!(instrument.buses.len(), 2, "{report:?}");
         assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         let feed = &instrument.buses[0].sends[0];
@@ -989,7 +1230,7 @@ mod tests {
         instrument.validate().unwrap();
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
-        instrument_buses(&mut plain, &[], &mut |_| Err("none".into()));
+        instrument_buses(&mut plain, &[], false, &mut |_| Err("none".into()));
         assert!(plain.buses.is_empty());
     }
 }

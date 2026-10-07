@@ -88,11 +88,14 @@ impl Seek for Bytes {
     }
 }
 
+/// Fills frames from a start.
+type Reader = Box<dyn FnMut(usize, &mut [Frame]) -> io::Result<()> + Send>;
+
 enum Codec {
     Wav(crate::samples::Wav),
     Ncw(Box<ncw::NcwReader<Bytes>>),
     /// A reader supplied by another loader: fills frames from a start.
-    Custom(Box<dyn FnMut(usize, &mut [Frame]) -> io::Result<()> + Send>),
+    Custom(Reader),
 }
 
 /// Where an asset's frames are read from, reopened by each decode thread.

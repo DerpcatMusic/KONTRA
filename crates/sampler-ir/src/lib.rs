@@ -72,9 +72,21 @@ pub struct Instrument {
     pub voice_limit: Option<VoiceLimit>,
     /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
     pub voice_limits: Vec<VoiceLimit>,
+    /// A host controller that sets the instrument volume once it arrives.
+    pub host_volume: Option<HostVolume>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+}
+
+/// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
+/// saved value and, when `controller` is received, becomes `(cc/127)^3`,
+/// replacing the saved value (measured, not multiplied in).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HostVolume {
+    pub controller: u8,
+    /// Linear gain saved with the instrument, before any controller.
+    pub saved: f64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -420,6 +432,10 @@ pub enum Trigger {
     First,
     /// Only when another key is already held.
     Legato,
+    /// A recorded transition: only when this key minus the most recent
+    /// still-held key is `low..=high` semitones (negative: stepping down), so a
+    /// legato instrument can place one sample per interval.
+    Transition { low: i8, high: i8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -905,6 +921,10 @@ pub enum Processor {
     StereoMatrix([[f64; 2]; 2]),
     /// Algorithmic stereo reverb over a summed signal: bus and master scope.
     Reverb(Reverb),
+    /// Feed-forward compressor on the stereo pair.
+    Compressor(Compressor),
+    /// Memoryless rectification of both channels.
+    Rectify(Rectifier),
     /// `dry * input + wet * (input * impulse)` over a summed signal: bus and
     /// master scope. Convolution adds no latency.
     Convolution {
@@ -912,6 +932,49 @@ pub enum Processor {
         dry: f64,
         wet: f64,
     },
+    /// The next `count` processors of the chain run beside the unprocessed
+    /// signal: `dry` of it passes around them, `wet` of their output follows,
+    /// and `bypass` swaps both for the dry signal alone. A script can change
+    /// all three at runtime through `address`. Bus scope only.
+    Mix {
+        count: u16,
+        address: SlotAddress,
+        dry: f64,
+        wet: f64,
+        bypass: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rectifier {
+    /// `|x|`.
+    Full,
+    /// `max(x, 0)`.
+    Half,
+}
+
+/// A feed-forward compressor. The level law is the textbook hard-knee one;
+/// only the linked detector (signed channel mean) is recovered from Kontakt.
+// ponytail: unverified threshold/ratio/time laws, pending a rendering reference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Compressor {
+    pub threshold_db: f64,
+    /// At least 1.
+    pub ratio: f64,
+    pub attack: Time,
+    pub release: Time,
+    pub makeup: Gain,
+    /// Detect on the signed mean of both channels and apply one gain to both.
+    pub link: bool,
+}
+
+/// Where a script finds an effect slot: `set_engine_par`'s group, slot and
+/// generic arguments (-1 where they do not apply).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotAddress {
+    pub group: i32,
+    pub slot: i32,
+    pub generic: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -925,6 +988,10 @@ pub struct Impulse {
     pub rate: u32,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
+    /// A source whose loader decodes this impulse's audio from `asset` (a
+    /// file of the program) and clears the field; `rate`/`left`/`right` hold a
+    /// unit-impulse placeholder until then.
+    pub asset: Option<AssetRef>,
 }
 
 /// Physical reverb settings; an importing profile maps its own controls

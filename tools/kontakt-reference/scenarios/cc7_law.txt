@@ -1,0 +1,13 @@
+# protocol: unsent CC7/CC10/CC1/CC11/CC64 are the subject of this test (note 1 has nothing sent, then CC7 is swept)
+0.1 note 60 127 2
+3 cc 7 127
+3.1 note 60 127 2
+6 cc 7 100
+6.1 note 60 127 2
+9 cc 7 64
+9.1 note 60 127 2
+12 cc 7 32
+12.1 note 60 127 2
+15 cc 7 0
+15.1 note 60 127 2
+18 end

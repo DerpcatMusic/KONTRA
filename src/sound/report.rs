@@ -51,6 +51,36 @@ pub struct Decoded {
     /// their start data. 0 when not counted.
     #[serde(default)]
     pub full_bytes: u64,
+    /// The controllers that drive loudness with the value each starts at
+    /// before the host sends one, most used first.
+    #[serde(default)]
+    pub dynamics: Vec<(u8, u8)>,
+    /// One of them starts at 0: the part is near-silent until it moves.
+    #[serde(default)]
+    pub needs_controller: bool,
+    /// How per-note MPE expression is mapped, in words; empty with MPE off.
+    #[serde(default)]
+    pub mpe: String,
+}
+
+/// The default MPE mapping as the load report states it: pressure and timbre
+/// reach every zone; bend is the note's own pitch.
+pub fn mpe_summary(m: &sampler_core::lower::MpeDefaults) -> String {
+    let mut parts = vec!["per-note bend".to_owned()];
+    if m.pressure_db != 0.0 {
+        parts.push(format!("pressure raises the level up to {:+.1} dB", m.pressure_db));
+    }
+    use sampler_core::lower::TimbreTarget::*;
+    match m.timbre {
+        Controller(cc) => parts.push(format!("timbre (CC74) sets each note's CC{cc} dynamics position")),
+        Cutoff => parts.push("timbre (CC74) opens and closes the filter cutoff".to_owned()),
+        Tone if m.timbre_semitones != 0.0 => parts.push(format!(
+            "timbre (CC74) darkens the tone below centre, down to {:.0} semitones under open",
+            m.timbre_semitones
+        )),
+        Tone => {}
+    }
+    parts.join(" · ")
 }
 
 impl Decoded {
@@ -90,6 +120,10 @@ pub struct RuntimeProblems {
     /// Voices faded out to make room at full polyphony.
     #[serde(default)]
     pub stolen_voices: u64,
+    /// Starts refused after selection because their first frames were not
+    /// resident (cold starts off) or the pool could not admit them.
+    #[serde(default)]
+    pub refused_starts: u64,
 }
 
 /// A part's load report.
@@ -142,6 +176,9 @@ impl LoadReport {
                 keys: key_bits(instrument),
                 script_callbacks: 0,
                 full_bytes: 0,
+                dynamics: Vec::new(),
+                needs_controller: false,
+                mpe: String::new(),
             },
             missing: instrument.unsupported.iter().map(Missing::from).collect(),
             runtime: RuntimeProblems::default(),
@@ -163,6 +200,18 @@ impl LoadReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mpe_mapping_is_stated_in_the_report() {
+        let text = super::mpe_summary(&sampler_core::lower::MpeDefaults::default());
+        assert_eq!(text, "per-note bend · pressure raises the level up to +6.0 dB · timbre (CC74) darkens the tone below centre, down to 60 semitones under open");
+        let off = sampler_core::lower::MpeDefaults { pressure_db: 0.0, timbre_semitones: 0.0, ..Default::default() };
+        assert_eq!(super::mpe_summary(&off), "per-note bend");
+        use sampler_core::lower::TimbreTarget::*;
+        let on = |timbre| super::mpe_summary(&sampler_core::lower::MpeDefaults { timbre, ..Default::default() });
+        assert!(on(Controller(1)).ends_with("timbre (CC74) sets each note's CC1 dynamics position"));
+        assert!(on(Cutoff).ends_with("timbre (CC74) opens and closes the filter cutoff"));
+    }
+
     #[test]
     fn key_bits_cover_each_zone_range() {
         let d = super::Decoded { keys: super::range_bits(60, 64), ..Default::default() };

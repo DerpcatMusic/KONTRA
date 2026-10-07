@@ -36,11 +36,11 @@ mod control;
 pub use control::{
     ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
     ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    RejectedControls,
+    RejectedControls, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
-pub use performance::{Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -63,8 +63,8 @@ pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, ControlRange, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
+    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -108,7 +108,7 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, ControllerCondition, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
+    AssetId, ControllerCondition, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
     service_mipmaps,
 };
 mod integer;
@@ -476,7 +476,7 @@ impl<T> Arena<T> {
         assert!(slots.len() > old);
         slots[..old].swap_with_slice(&mut self.slots);
         let words = old.div_ceil(64);
-        let kept = if old % 64 == 0 {
+        let kept = if old.is_multiple_of(64) {
             u64::MAX
         } else {
             (1u64 << (old % 64)) - 1
@@ -621,6 +621,7 @@ pub struct Runtime {
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
     voice_drops: u64,
+    refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
     voice_growths: u64,
     growth_failures: u64,
@@ -666,6 +667,8 @@ pub struct Runtime {
     deferred: Vec<(BehaviorId, NoteId, usize)>,
     /// Opt-in selection diagnostics, see [`Runtime::record_selections`].
     selection_log: Option<Vec<SelectionRecord>>,
+    /// Opt-in script parameter writes, see [`Runtime::record_script_writes`].
+    write_log: Option<Vec<String>>,
     executing_due: bool,
     command_limit: usize,
     reserved_commands: usize,
@@ -780,6 +783,7 @@ impl Runtime {
             stream_cache: None,
             stream_underruns: 0,
             voice_drops: 0,
+            refused_starts: 0,
             voice_growths: 0,
             growth_failures: 0,
             growth: None,
@@ -820,6 +824,7 @@ impl Runtime {
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
             selection_log: None,
+            write_log: None,
             release_times: vec![release::ReleaseTimes::default(); limits.notes].into_boxed_slice(),
             note_events: vec![note_event::NoteEvent::new(NotePitch::Key(0), 0.); limits.notes]
                 .into_boxed_slice(),
@@ -869,6 +874,22 @@ impl Runtime {
         self.plans
             .get(self.active_plan.0)
             .map_or(0, |g| g.prepared.buses.len())
+    }
+
+    /// Replace convolution `slot` of the active plan (see
+    /// [`Prepared::convolution_slots`]) with `upload`, at a block boundary and
+    /// without allocating; `upload` then holds the old processor, to drop off
+    /// the audio thread. The new one starts with empty history.
+    pub fn swap_convolution(
+        &mut self,
+        slot: usize,
+        upload: &mut ConvolutionUpload,
+    ) -> Result<(), Error> {
+        let g = self
+            .plans
+            .get_mut(self.active_plan.0)
+            .ok_or(Error::StaleHandle)?;
+        g.dsp.buses.swap_convolution(&g.prepared.buses, slot, upload)
     }
 
     /// Each bus of the active plan's peak level since the last call, after

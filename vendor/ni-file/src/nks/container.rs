@@ -167,6 +167,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_nksv1_nki_0x5ee56eb3() -> Result<(), NKSError> {
         let file = File::open("tests/data/Containers/NKS/KontaktV1/000-kontaktv1-nki.nki")?;
         let nks = NKSContainer::read(file)?;
@@ -185,6 +186,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs vendor/ni-file/test-data, which is not in the repository"]
     fn test_nksfile_read_v42() -> Result<(), NKSError> {
         let file = File::open("tests/data/Containers/NKS/KontaktV42/4.2.4.5316-000.nki")?;
         let nks = NKSContainer::read(file)?;

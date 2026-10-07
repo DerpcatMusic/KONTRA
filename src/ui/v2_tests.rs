@@ -363,3 +363,100 @@ fn articulations_switch_by_their_keys() {
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-mapping.png");
 }
+
+/// The part's performance line: the playing articulation with its keys, the
+/// instrument volume, the dynamics controller it waits for (one click picks
+/// where it starts, saved on the part for the next load) and MPE.
+#[test]
+fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+    }
+    inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
+    assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
+    let mut report = crate::sound::report::LoadReport::default();
+    report.decoded.dynamics = vec![(1, 0), (11, 127)];
+    report.decoded.needs_controller = true;
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Strings.nki".into(), ..Default::default() });
+    {
+        let mut v = p.shared.view.lock().unwrap();
+        if v.parts.is_empty() {
+            v.parts.push(Default::default());
+        }
+        v.parts[0].active = "Strings".into();
+        v.parts[0].instrument = Some(Arc::new(inst));
+        v.parts[0].report = Some(Arc::new(report));
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.idle(4);
+    let there = |h: &Harness, id: &str| h.ui.scene().unwrap().surface(id).is_some();
+    for id in ["perf-art-0", "perf-vol-0", "perf-needs-0"] {
+        assert!(there(&h, id), "{id}");
+    }
+    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, -1, "Kontakt's own start until picked");
+    h.press("dyn-0-64");
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].dynamics, 64);
+    use super::part::badge_text;
+    assert_eq!(badge_text("CC1", -1, 0, true), "Needs CC1");
+    assert_eq!(badge_text("CC1", 64, 0, true), "CC1 starts at 64", "a picked start replaces the warning");
+    assert_eq!(badge_text("CC1", -1, 100, false), "CC1 starts at 100");
+    assert!(!there(&h, "mpe-0"), "MPE stays in the header's MIDI menu");
+    shoot(&h.ui, 1180, 780, "app/synthetic-performance.png");
+}
+
+/// What an importer set in the IR (owner, driver, key policy) is the part's
+/// until the player remaps it: opening the Articulations view must not write
+/// a remap of its own over it.
+#[test]
+fn imported_switching_survives_the_first_ui_sync() {
+    use sampler_ir as sir;
+    let drivers = [sir::Driver::Keys, sir::Driver::Velocity, sir::Driver::Channel, sir::Driver::Controller, sir::Driver::Program];
+    let owners = [sir::SwitchOwner::Native, sir::SwitchOwner::Behavior];
+    let policies = [sir::SwitchKeys::Keep, sir::SwitchKeys::Play, sir::SwitchKeys::Swallow];
+    for owner in owners {
+        for driver in drivers {
+            for keys in policies {
+                let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
+                inst.switching = sir::Switching { owner, driver, keys };
+                for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
+                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                }
+                inst.assign_alternatives(32);
+                let p = Arc::new(crate::plugin::SamplerParams::new());
+                p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/x/Imported.nki".into(), ..Default::default() });
+                {
+                    let mut v = p.shared.view.lock().unwrap();
+                    if v.parts.is_empty() {
+                        v.parts.push(Default::default());
+                    }
+                    v.parts[0].instrument = Some(Arc::new(inst));
+                }
+                let mut h = Harness::new(&p, 1180., 780.);
+                h.idle(4);
+                h.press("view-0-Articulations");
+                h.idle(3);
+                let stored = p.selection.read().unwrap().parts[0].switching;
+                assert_eq!(stored, 0, "{owner:?} {driver:?} {keys:?}: the view wrote {stored:#x} over the import");
+            }
+        }
+    }
+}
+
+/// A remap or start value belongs to the instrument it was made on: replacing
+/// the part's instrument leaves the new import's own switching in force.
+#[test]
+fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
+    let mut part = crate::plugin::Part {
+        path: "/x/Old.nki".into(),
+        switching: 0x80 | (sampler_ir::Driver::Velocity as u8) << 1,
+        dynamics: 64,
+        ..Default::default()
+    };
+    super::replace_part(&mut part, "/x/New.nki".into());
+    assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
+    assert_eq!(part.dynamics, -1);
+}

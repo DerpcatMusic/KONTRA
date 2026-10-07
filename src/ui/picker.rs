@@ -86,10 +86,10 @@ impl Picker {
         if !cfg!(target_os = "linux") {
             return true;
         }
-        let bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
+        
+        std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some()
             || std::env::var_os("XDG_RUNTIME_DIR")
-                .is_some_and(|dir| PathBuf::from(dir).join("bus").exists());
-        bus
+                .is_some_and(|dir| PathBuf::from(dir).join("bus").exists())
     }
 
     /// Run a file operation on its owned worker. Unavailable dialogs return
