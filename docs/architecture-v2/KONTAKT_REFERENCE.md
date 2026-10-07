@@ -263,3 +263,20 @@ Scenario: `tools/kontakt-reference/scenarios/una_solo_g39_g94.txt` plus `solo_gr
 
 - g39 is the velocity-sensitive note group: about 9 dB per step from 64 to 100 and 5.4 dB from 100 to 127; R is 2.4-2.8 dB louder than L.
 - g94 is velocity-independent (identical to 0.1 dB at 64, 100 and 127), nearly centred and 20 dB louder in RMS than g39 at vel 64 (a sustained layer, not a struck note).
+
+## 20. Stereo Modeller law
+
+Rig: `noise_instrument.sh stereo` (independent noise A in L, B in R) as a group Insert FX, then `sm_sweep.sh TAG FIELDX FIELDY VALUE...`, which types each value, records a 3.5 s key-60 note at vel 100 and runs `matrix_report.py` (least-squares 2x2 fit out = M [A,B], lag, residual). Base gain g = 0.3838 (-8.3 dB at vel 100); residual -119 dB, so the module is a pure memoryless matrix (unity at defaults).
+
+**Spread s (percent / 100)**
+- s > 0: M = g [[1+s, -s], [-s, 1+s]]. Mid gain stays 1, side gain is 1+2s. Clamped at 100% (150 and 200 equal 100).
+  - 25%: diag 0.4798, off -0.0960. 50%: 0.5757 / -0.1919. 100%: 0.7677 / -0.3838.
+- s < 0: standard M/S width w = 1+s, diag = g(1+w)/2, off = g(1-w)/2.
+  - -25%: 0.3359 / 0.0480. -50%: 0.2879 / 0.0960. -75%: 0.2399 / 0.1439. -100%: 0.1919 / 0.1919 (mono).
+  - One early -50% run read 0.1949 / 0.0653; it did not reproduce.
+
+**Pan p (-1..1)**: linear balance. The opposite channel is scaled by 1-|p|, the same side is unchanged. -100: R=0; -50: R x0.5 (0.1919); -25: R x0.75 (0.2879); +25, +50, +100 mirror on L.
+
+**Output (dB)**: plain linear gain 10^(dB/20): +6 dB gives x2.0, -6 dB gives x0.5.
+
+**Pseudo Stereo on (pan centre, stereo input)**: not a memoryless matrix (residual -3.1 dB, lag 60 samples, L about 0.0018, R 0.3838). Not resolved; needs a mono-input test.
