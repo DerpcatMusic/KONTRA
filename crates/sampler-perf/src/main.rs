@@ -191,6 +191,9 @@ fn load(s: &Scenario, messages: &[Message]) -> Result<Loaded, String> {
             let horizon = (report.head_frames.max(sampler_core::PAGE_FRAMES) + 512) as u32;
             let mut rt = Runtime::new(plan, limits).map_err(fail)?.with_stream_cache(cache);
             rt.set_cold_starts(true);
+            if let Some(fuel) = std::env::var("PERF_BLOCK_FUEL").ok().and_then(|v| v.parse().ok()) {
+                rt.set_behavior_block_fuel(fuel);
+            }
             rt.set_voice_stealing(Some(Stealing::for_limits(RATE, limits.voices))).map_err(fail)?;
             let mut groups = [None; 16];
             groups[0] = Some(Version::Midi1);
@@ -443,9 +446,10 @@ fn run_scenario(s: &Scenario, seconds: Option<f64>, cores: usize, only_cell: Opt
                 "read_calls_bytes": proc_value("/proc/self/io", "rchar:") - rchar0,
                 "stream_cache_bytes": st.stream_cache_bytes,
                 "stream_underruns": st.stream_underruns,
+                "core_render_peak_us": st.render_nanos_peak as f64 / 1e3,
                 "voice_capacity": st.voice_capacity, "voice_drops": st.voice_drops,
             }));
-            eprintln!("{} block {block} threads {t}: p50 {:.0} us p99 {:.0} us max {:.0} us", s.name, percentile(&times, 0.5) as f64 / 1e3, percentile(&times, 0.99) as f64 / 1e3, *times.last().unwrap() as f64 / 1e3);
+            eprintln!("{} block {block} threads {t}: core render peak {:.0} us; p50 {:.0} us p99 {:.0} us max {:.0} us", s.name, st.render_nanos_peak as f64 / 1e3, percentile(&times, 0.5) as f64 / 1e3, percentile(&times, 0.99) as f64 / 1e3, *times.last().unwrap() as f64 / 1e3);
         }
     }
     Ok((cells, json!({ "load": load_info, "idle_wakeups_per_second": idle })))
