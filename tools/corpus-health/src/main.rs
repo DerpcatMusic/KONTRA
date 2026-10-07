@@ -950,7 +950,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                 if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
                     let callback = sampler_ksp::callback_of(&views, program);
                     let error = format!("{outcome:?}");
-                    faults.push(normalize(&format!("{error} in {callback}")));
+                    faults.push(format!("{error} in {callback}"));
                     script_faults.push(sampler_core::ScriptFault { callback, error });
                 }
                 true
