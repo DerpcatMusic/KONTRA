@@ -299,7 +299,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 8],
+    problems: [AtomicU64; 14],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
@@ -362,7 +362,7 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [a, b, c, d, e, f, g, h] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
+        let [a, b, c, d, e, f, g, h, silent_notes, s0, s1, s2, fault_program, fault_error] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
             underruns: b,
@@ -372,12 +372,16 @@ impl PartShared {
             ignored_input: f,
             stolen_voices: g,
             refused_starts: h,
+            silent_notes,
+            silent: [s0, s1, s2],
+            fault_program,
+            fault_error,
         }
     }
 
     fn store_problems(&self, p: RuntimeProblems) {
         let values =
-            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts];
+            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts, p.silent_notes, p.silent[0], p.silent[1], p.silent[2], p.fault_program, p.fault_error];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
         }
@@ -962,16 +966,17 @@ impl Shared {
     }
 }
 
-/// A rack KONTRA 2 saved: a `.kontra2-multi` file, JSON, naming the
+/// A rack KONTRA saved: a `.kontra-multi` file, JSON, naming the
 /// instruments with every part setting:
 ///
 /// ```json
-/// { "format": "kontra2-multi", "version": 1, "name": "Evening",
+/// { "format": "kontra-multi", "version": 2, "name": "Evening",
 ///   "parts": [ { "path": "/…/Piano.nki", "program": 0, "channel": -1,
 ///                "port": 0, "output": 0, "gain": 0.0, "nodes": [] } ] }
 /// ```
 ///
-/// Parts are in rack order; a missing field takes its default.
+/// Parts are in rack order; a missing field takes its default. Version 1 is
+/// KONTRA v1's format, which this engine does not read.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SavedMulti {
     pub format: String,
@@ -985,7 +990,7 @@ impl SavedMulti {
     pub fn of(name: &str, selection: &Selection) -> Self {
         Self {
             format: library::MULTI.into(),
-            version: 1,
+            version: 2,
             name: name.into(),
             parts: (selection.order.iter())
                 .filter_map(|n| selection.parts.get(*n as usize))
@@ -1005,8 +1010,9 @@ impl SavedMulti {
 
     pub fn read(path: &Path) -> anyhow::Result<Self> {
         let multi: Self = serde_json::from_slice(&std::fs::read(path)?)?;
-        anyhow::ensure!(multi.format == library::MULTI, "Not a KONTRA 2 multi");
-        anyhow::ensure!(multi.version <= 1, "Saved by a newer KONTRA");
+        anyhow::ensure!(multi.format == library::MULTI, "Not a KONTRA multi");
+        anyhow::ensure!(multi.version >= 2, "Saved by KONTRA v1, which this version cannot open");
+        anyhow::ensure!(multi.version <= 2, "Saved by a newer KONTRA");
         Ok(multi)
     }
 }
@@ -1216,11 +1222,33 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
 
 /// Copy the audio thread's problem counters into the parts' load reports.
 fn refresh_problems(shared: &Shared) {
-    let problems = shared.with_parts(|parts| parts.iter().map(|p| p.problems()).collect::<Vec<_>>());
+    let problems = shared.with_parts(|parts| {
+        parts
+            .iter()
+            .map(|p| {
+                // The fault's callback resolves to text here, off the audio thread.
+                let faults: Vec<sampler_core::ScriptFault> = match p.problems().fault_program.checked_sub(1) {
+                    Some(program) => {
+                        let rt = p.problems();
+                        vec![sampler_core::ScriptFault {
+                            callback: sampler_ksp::callback_of(&p.scripts.lock().unwrap().views, program as usize),
+                            error: format!("{:?}", sampler_core::Error::ALL[(rt.fault_error as usize).min(11)]),
+                        }]
+                    }
+                    None => Vec::new(),
+                };
+                (p.problems(), faults)
+            })
+            .collect::<Vec<_>>()
+    });
     let mut view = shared.view.lock().unwrap();
-    for (v, problems) in view.parts.iter_mut().zip(problems) {
+    for (v, (problems, faults)) in view.parts.iter_mut().zip(problems) {
         if let Some(report) = v.report.as_mut().filter(|r| r.runtime != problems) {
-            Arc::make_mut(report).runtime = problems;
+            let report = Arc::make_mut(report);
+            report.runtime = problems;
+            report.faults = faults.iter().map(ToString::to_string).collect();
+            report.why_silent = (problems.silent_notes > 0)
+                .then(|| sampler_core::SilentNote::unpack(problems.silent).message(&faults));
         }
     }
 }
@@ -1809,7 +1837,7 @@ pub(crate) mod tests {
     #[test]
     fn saved_multi_round_trips_and_refuses_other_formats() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rack.kontra2-multi");
+        let path = dir.path().join("rack.kontra-multi");
         let selection = Selection {
             parts: vec![Part { path: "a.nki".into(), ..Default::default() }, Part::default()],
             order: vec![0, 1],
