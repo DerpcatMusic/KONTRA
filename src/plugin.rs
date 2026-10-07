@@ -110,6 +110,10 @@ impl Default for Part {
     }
 }
 
+fn kontakt_ui_path(path: &str) -> bool {
+    Path::new(path).extension().is_some_and(|e| ["nki", "nkm", "nksn"].iter().any(|ext| e.eq_ignore_ascii_case(ext)))
+}
+
 /// Split identity words stay exact in JSON and in the host's state codec.
 #[derive(State, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SavedControl {
@@ -268,7 +272,9 @@ impl SamplerParams {
 
     fn reload_ui_controls(&self) {
         // Recall of the same source still needs fresh script initialization.
-        for part in &mut self.shared.view.lock().unwrap().parts { part.attempted = None; }
+        for part in &mut self.shared.view.lock().unwrap().parts {
+            if part.attempted.as_ref().is_some_and(|(path, ..)| kontakt_ui_path(path)) { part.attempted = None; }
+        }
     }
 
     /// Host output port `index`'s name, as last published (`routing.rs`).
@@ -336,6 +342,7 @@ pub(crate) struct PartShared {
     problems: [AtomicU64; 14],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
+    pub(crate) control_revision: AtomicU64,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
@@ -365,8 +372,8 @@ impl ControlCell {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
 
-    fn set(&self, value: f64) {
-        self.value.store(value.to_bits(), Ordering::Relaxed);
+    fn set(&self, value: f64) -> bool {
+        self.value.swap(value.to_bits(), Ordering::Relaxed) != value.to_bits()
     }
 }
 
@@ -387,11 +394,11 @@ impl PartShared {
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
     fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
         if let Ok(cells) = self.controls.try_lock() {
-            for cell in cells.iter() {
-                if let Some(v) = value(cell.id) {
-                    cell.set(v);
-                }
+            let mut changed = false;
+            for c in cells.iter() {
+                if let Some(v) = value(c.id) { changed |= c.set(v); }
             }
+            if changed { self.control_revision.fetch_add(1, Ordering::Relaxed); }
         }
     }
 
@@ -454,8 +461,8 @@ pub struct Shared {
     pub(crate) bend: AtomicU32,
     pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<Mix>,
-    /// Widget edits for the audio thread: rack slot, control, value.
-    control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
+    /// Widget edits for the audio thread: rack slot, load generation, control, value.
+    control_edits: ArrayQueue<(usize, u64, sampler_ui_ir::ControlId, f64)>,
     /// Script effects from the audio thread: rack slot, script instance, effect.
     effects: ArrayQueue<(usize, usize, sampler_core::Effect)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
@@ -914,6 +921,7 @@ impl Shared {
     pub(crate) fn capture_ui_controls(&self, selection: &mut Selection) {
         let sources: Vec<_> = self.view.lock().unwrap().parts.iter().map(|p| if p.loading { None } else { p.attempted.as_ref().map(|(path, program, ..)| (path.clone(), *program)) }).collect();
         for (slot, part) in selection.parts.iter_mut().enumerate() {
+            if !kontakt_ui_path(&part.path) { continue; }
             if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
             if let Some(atoms) = self.part(slot) {
                 part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
@@ -925,12 +933,13 @@ impl Shared {
     /// script's `on ui_control` runs on the audio thread. False when the
     /// queue is full.
     pub(crate) fn set_control(&self, slot: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
-        if let Some(part) = self.part(slot)
-            && let Some(cell) = part.controls.lock().unwrap().iter().find(|c| c.id == control)
-        {
-            cell.set(value);
-        }
-        self.control_edits.push((slot, control, value)).is_ok()
+        if !value.is_finite() { return false; }
+        let Some(part) = self.part(slot) else { return false };
+        let cells = part.controls.lock().unwrap();
+        let Some(cell) = cells.iter().find(|c| c.id == control) else { return false };
+        if self.control_edits.push((slot, part.generation.load(Ordering::Acquire), control, value)).is_err() { return false; }
+        if cell.set(value) { part.control_revision.fetch_add(1, Ordering::Relaxed); }
+        true
     }
 
     /// Apply the script effects the audio thread queued to their parts'
@@ -1578,7 +1587,8 @@ impl PluginLogic for Sampler {
         }
         let rate = s.core.sample_rate();
         let frames = b.num_samples();
-        if s.until_poll <= frames {
+        let refresh_controls = s.until_poll <= frames;
+        if refresh_controls {
             if let Some(tasks) = cx.tasks::<Load>() {
                 tasks.spawn_coalescing(Load);
             }
@@ -1588,7 +1598,6 @@ impl PluginLogic for Sampler {
                 atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
                 let playing = s.core.articulation(slot).map_or(u32::MAX, |a| a as u32);
                 atoms.articulation.store(playing, Ordering::Relaxed);
-                atoms.refresh_controls(|id| s.core.control_value(slot, id));
             }
             s.until_poll = (rate * 0.1) as usize;
         } else {
@@ -1630,8 +1639,15 @@ impl PluginLogic for Sampler {
             s.core.panic();
             s.audition.fill((0, 0));
         }
-        while let Some((slot, control, value)) = shared.control_edits.pop() {
-            s.core.set_control(slot, control, value);
+        while let Some((slot, generation, control, value)) = shared.control_edits.pop() {
+            if part_atoms(&s.shared_parts, shared, slot).is_some_and(|p| p.generation.load(Ordering::Acquire) == generation) {
+                s.core.set_control(slot, control, value);
+            }
+        }
+        if refresh_controls {
+            for slot in 0..s.core.parts() {
+                if let Some(atoms) = part_atoms(&s.shared_parts, shared, slot) { atoms.refresh_controls(|id| s.core.control_value(slot, id)); }
+            }
         }
         while let Some((slot, play)) = shared.keyboard.pop() {
             if slot == EVERY_PART {
@@ -1966,5 +1982,59 @@ pub(crate) mod tests {
         assert_eq!(Play::Note(60, 0).event(), CoreEvent::midi1(0x80, 60, 0));
         assert_eq!(Play::Bend(8192).event(), CoreEvent::Ump([0x20e0_0040, 0]));
         assert_eq!(Play::Mod(64).event(), CoreEvent::midi1(0xb0, 1, 64));
+    }
+}
+
+#[cfg(test)]
+mod ui_recall_tests {
+    use super::*;
+
+    #[test]
+    fn admitted_edits_and_script_readback_publish_changes() {
+        let params = SamplerParams::new();
+        params.shared.ensure_parts(1);
+        let atoms = params.shared.part(0).unwrap();
+        let id = sampler_ui_ir::ControlId(7);
+        *atoms.controls.lock().unwrap() = vec![ControlCell { id, value: AtomicU64::new(0f64.to_bits()) }].into();
+        atoms.generation.store(3, Ordering::Release);
+        assert!(!params.shared.set_control(0, id, f64::NAN));
+        assert!(!params.shared.set_control(0, sampler_ui_ir::ControlId(8), 1.));
+        assert!(params.shared.control_edits.is_empty());
+        assert!(params.shared.set_control(0, id, 12.));
+        assert_eq!(params.shared.control_edits.pop(), Some((0, 3, id, 12.)));
+        assert_eq!(atoms.control_values(), [(id, 12.)]);
+        let revision = atoms.control_revision.load(Ordering::Relaxed);
+        atoms.refresh_controls(|_| Some(12.));
+        assert_eq!(atoms.control_revision.load(Ordering::Relaxed), revision);
+        atoms.refresh_controls(|_| Some(25.));
+        assert_eq!(atoms.control_revision.load(Ordering::Relaxed), revision + 1);
+        while params.shared.control_edits.push((0, 3, id, 0.)).is_ok() {}
+        assert!(!params.shared.set_control(0, id, 99.));
+        assert_eq!(atoms.control_values(), [(id, 25.)], "a full queue must not publish an unadmitted edit");
+    }
+
+    #[test]
+    fn host_save_captures_values_and_same_source_recall_is_not_overwritten() {
+        let params = SamplerParams::new();
+        params.shared.ensure_parts(1);
+        let id = sampler_ui_ir::ControlId(u128::MAX - 7);
+        params.selection.write().unwrap().parts = vec![Part { path: "menu.nki".into(), ..Default::default() }];
+        params.shared.view.lock().unwrap().parts[0].attempted = Some(("menu.nki".into(), 0, 48000f64.to_bits(), false, -1));
+        let atoms = params.shared.part(0).unwrap();
+        *atoms.controls.lock().unwrap() = vec![ControlCell { id, value: AtomicU64::new((-3f64).to_bits()) }].into();
+        let bytes = params.serialize_persist();
+        atoms.controls.lock().unwrap()[0].set(0.);
+        params.load_persist(&bytes);
+        let selection = params.selection.read().unwrap();
+        assert_eq!(selection.parts[0].control_values[0].id(), id);
+        assert_eq!(selection.parts[0].control_values[0].value, -3.);
+        assert!(params.shared.view.lock().unwrap().parts[0].attempted.is_none());
+        drop(selection);
+        let bytes = params.serialize_persist();
+        params.load_persist(&bytes);
+        assert_eq!(params.selection.read().unwrap().parts[0].control_values[0].value, -3., "old running controls cannot overwrite pending recall");
+        let json = serde_json::to_string(&SavedMulti::of("UI", &params.selection.read().unwrap())).unwrap();
+        let saved: SavedMulti = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.parts[0].control_values[0].id(), id, "JSON keeps all 128 identity bits");
     }
 }

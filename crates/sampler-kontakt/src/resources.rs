@@ -1,23 +1,20 @@
 //! An instrument's resource files (script pictures and their `.txt`
 //! layouts, performance views): loose `Resources/<kind>` folders near the
-//! instrument, else its resource container (`.nkr`), opened with the
+//! instrument, else its resource container (`.nkr` or `.nicnt`), opened with the
 //! library's own key.
 
 use std::{
     collections::HashMap,
-    fs::File,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 pub struct Resources {
     /// Loose files by lowercase library-relative path (`resources/pictures/x.png`).
     files: HashMap<String, PathBuf>,
-    /// Containers not opened yet, nearest first.
+    /// NKR/NICNT containers not opened yet, nearest first.
     containers: Vec<PathBuf>,
-    open: Vec<(File, ni_file::nkr::Archive)>,
-    key: Option<Option<Arc<dyn ni_file::nis::LibraryKey>>>,
-    instrument: PathBuf,
+    open: Vec<crate::ResourceContainer>,
+    locations: Vec<PathBuf>,
 }
 
 impl Resources {
@@ -37,7 +34,10 @@ impl Resources {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))
         };
-        let nkr = |p: &PathBuf| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkr"));
+        let container = |p: &PathBuf| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("nkr") || e.eq_ignore_ascii_case("nicnt"))
+        };
         let (mut files, mut containers) = (HashMap::new(), Vec::new());
         // Up to four folders up, further only while nothing was found.
         for (depth, folder) in instrument.ancestors().skip(1).take(8).enumerate() {
@@ -57,33 +57,37 @@ impl Resources {
                 }
             }
             let here = entries(folder);
-            containers.extend(here.iter().filter(|p| nkr(p)).cloned());
+            containers.extend(here.iter().filter(|p| container(p)).cloned());
             // Some libraries keep their container with the samples.
             for sub in here.iter().filter(|p| p.is_dir()) {
-                containers.extend(entries(sub).into_iter().filter(nkr));
+                containers.extend(entries(sub).into_iter().filter(container));
             }
         }
         containers.dedup();
+        let mut locations: Vec<_> = files
+            .values()
+            .cloned()
+            .chain(containers.iter().cloned())
+            .collect();
+        locations.sort();
+        locations.dedup();
         Self {
+            locations,
             files,
             containers,
             open: Vec::new(),
-            key: None,
-            instrument: instrument.into(),
         }
     }
 
     /// Files and containers that participate in lookup, for read-only diagnostics
     /// and survey cache identity. Resource contents and library keys stay private.
     pub fn locations(&self) -> Vec<PathBuf> {
-        let mut paths: Vec<_> = self.files.values().cloned().chain(self.containers.iter().cloned()).collect();
-        paths.sort();
-        paths.dedup();
-        paths
+        self.locations.clone()
     }
 
     /// The bytes at library-relative `path`, if the library has them.
     pub fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        let path = path.replace(['|', '\\'], "/");
         if let Some(f) = self.files.get(&path.to_lowercase()) {
             return std::fs::read(f).ok();
         }
@@ -93,28 +97,13 @@ impl Resources {
                     return None;
                 }
                 let at = self.containers.remove(0);
-                if let Some(open) = File::open(&at)
-                    .ok()
-                    .and_then(|mut f| Some((ni_file::nkr::Archive::read_index(&mut f).ok()?, f)))
-                {
-                    self.open.push((open.1, open.0));
+                if let Ok(container) = crate::ResourceContainer::open(&at) {
+                    self.open.push(container);
                 }
             }
-            let (f, archive) = &mut self.open[n];
-            let Ok(Some(entry)) = archive.member(&mut *f, path) else {
-                continue;
-            };
-            let needs_key = entry.encoded && entry.key_index != 0xff;
-            archive.entries.insert(entry.name.to_lowercase(), entry);
-            let key = match &self.key {
-                _ if !needs_key => None,
-                Some(key) => key.clone(),
-                None => self
-                    .key
-                    .insert(crate::library_key(&self.instrument).ok())
-                    .clone(),
-            };
-            return archive.read_entry_with_key(f, path, key.as_deref()).ok();
+            if let Ok(Some(bytes)) = self.open[n].read(&path) {
+                return Some(bytes);
+            }
         }
         None
     }

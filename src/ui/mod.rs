@@ -238,7 +238,10 @@ impl Watch {
         // level, frames run on the animation clock; the fall to silence
         // changes the signature, so the last one draws them empty.
         let m = &p.shared.meters;
-        let sounding = p.shared.with_parts(|parts| parts.iter().any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2]))
+        let sounding = p.shared.with_parts(|parts| {
+            for part in parts { part.control_revision.load(Ordering::Relaxed).hash(&mut h); }
+            parts.iter().any(|part| crate::plugin::Meters::read(&part.meter) != [0.; 2])
+        })
             || m.buses.iter().chain([&m.master]).any(|meter| crate::plugin::Meters::read(meter) != [0.; 2]);
         sounding.hash(&mut h);
         // Progress and the sweep redraw on the animation's own clock.
