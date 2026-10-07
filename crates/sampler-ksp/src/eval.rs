@@ -135,6 +135,8 @@ enum Flow {
     Continue,
 }
 
+const MAX_TEXT_LINES: i32 = 1 << 16;
+
 struct Eval<'h> {
     hir: &'h Hir,
     env: &'h Environment,
@@ -342,7 +344,18 @@ impl Eval<'_> {
         };
         if v.len.is_none() {
             if let Some(saved) = self.env.persisted.get(&*v.name) {
-                let value = conv(saved);
+                let mut value = conv(saved);
+                // A menu is saved as its selected item's position; the
+                // variable holds that item's value (Una Corda's velocity
+                // menu stores 5 for "Linear", whose value is 0).
+                if let Home::Control(ui) = v.home
+                    && self.hir.uis[ui as usize].kind == WidgetKind::Menu
+                    && let Some(item) = usize::try_from(value.int())
+                        .ok()
+                        .and_then(|i| self.menu(ui as usize).get(i).cloned())
+                {
+                    value = V::I(item.value);
+                }
                 self.write_var(var, value);
             }
         } else if let Some(saved) = self.env.persisted_arrays.get(&*v.name) {
@@ -872,9 +885,13 @@ impl Eval<'_> {
                     self.arg(args, 2)?,
                     self.int(args, 3)?,
                 );
-                self.st
-                    .indexed_properties
-                    .insert((id, par, index), value.value());
+                // Text lines past 64 Ki are never shown; Conflux fills nine
+                // controls with a million lines each (~700 MB of model).
+                if !(builtin == SetControlParStrArr && index >= MAX_TEXT_LINES) {
+                    self.st
+                        .indexed_properties
+                        .insert((id, par, index), value.value());
+                }
                 V::I(0)
             }
             GetControlPar | GetControlParReal => {
@@ -1230,7 +1247,10 @@ impl Eval<'_> {
             GetNumZones | GetZoneId | GetZonePar | GetPurgeState | GetVoiceLimit
             | GetUiWfProperty | EventStatus | GetEventPar | GetEventParArr | GetEventMark
             | ByMarks => V::I(0),
-            SetZonePar | PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
+            // No host consumes zone writes (FindZone finds nothing at init), and
+            // Conflux issues three million of them: logging each cost ~1 GB.
+            SetZonePar => V::I(0),
+            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
             | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
             | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;

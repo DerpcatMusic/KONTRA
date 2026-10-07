@@ -102,6 +102,8 @@ pub fn report(cx: &Cx, slot: usize) -> lr::Report {
         r.loaded.push(loaded(lr::Area::Modulation, format!("MPE: {}", d.mpe)));
     }
     r.missing.extend(l.missing.iter().map(missing));
+    r.why_silent = l.why_silent.clone();
+    r.faults = l.faults.clone();
     let p = part.map(|s| s.problems()).unwrap_or(l.runtime);
     let counts = [
         (p.script_overruns, lr::Runtime::ScriptBudget { overruns: p.script_overruns }),

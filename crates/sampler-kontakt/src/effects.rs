@@ -215,7 +215,14 @@ pub(crate) enum Params {
     Inverter { invert: bool, swap: bool },
     /// `BParFXCompressor`: the first stored value (mode, Classic/Enhanced/Pro),
     /// threshold dB, ratio, attack and release ms, stereo link.
-    Compressor { mode: f32, threshold_db: f32, ratio: f32, attack_ms: f32, release_ms: f32, link: bool },
+    Compressor {
+        mode: f32,
+        threshold_db: f32,
+        ratio: f32,
+        attack_ms: f32,
+        release_ms: f32,
+        link: bool,
+    },
     /// Linear level into each instrument send slot; a second table (17
     /// levels, 1.0 locally) of unknown meaning.
     SendLevels { sends: Vec<f32>, outputs: Vec<f32> },
@@ -442,13 +449,6 @@ fn matrix(params: &Params, notes: &mut Notes) -> Option<Matrix> {
     })
 }
 
-/// Whether a Kontakt render has confirmed the compressor's level laws and the
-/// +output-gain interaction (Analog Strings: threshold -14.2 dB, ratio 0.501,
-/// output +9 dB peaks at 3.35 against 1.24 without it). Until then a 0x19 slot
-/// is reported as unmodelled (`UnknownLaw`) and the chain is left as before.
-// ponytail: flip once a Kontakt render of ANALOG STRINGS C4..G4 confirms the level.
-const KONTAKT_COMPRESSOR_VERIFIED: bool = false;
-
 /// Where a rack's processors will run.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Scope {
@@ -556,6 +556,7 @@ pub(crate) struct Chain {
 /// whole-dB steps), where an added dry path would contradict the trim.
 /// Linear stereo stages fold into one matrix; EQ bands act alike on both
 /// channels, so they commute with it.
+#[cfg(test)]
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
     chain_with(slots, scope, None, None)
 }
@@ -605,15 +606,11 @@ pub(crate) fn chain_with(
         } else {
             0
         };
-        // The Inverter's Output knob does not reach the signal: Una g39 and g94
-        // (post-amp Inverter, Output +6.0 dB) read -15.8 and -17.7 dBFS in
-        // Kontakt 8 at key 60 vel 100, which is KONTRA exactly without it and
-        // 6.0 dB louder with it.
-        let wet = if fx.module == 0x1a {
-            1.0
-        } else {
-            f64::from(fx.output_gain)
-        };
+        // Every module's Output reaches the signal, an Inverter that changes nothing
+        // included: Una Corda's tone groups store +6 dB there against -6 dB on their
+        // instrument bus (net 0, KONTAKT_REFERENCE.md s.19a/s.24), and its Resonance
+        // group's Stereo Modeller +7 dB shows in full (g94 -25.2 dBFS RMS).
+        let wet = f64::from(fx.output_gain);
         let gain = if mix.is_some() {
             IDENTITY
         } else {
@@ -687,23 +684,6 @@ pub(crate) fn chain_with(
                 attack_ms,
                 release_ms,
                 link,
-            }) if scope == Scope::Bus && !KONTAKT_COMPRESSOR_VERIFIED => {
-                notes.push((
-                    "compressor level law".into(),
-                    format!(
-                        "threshold {threshold_db} dB ratio {ratio} attack {attack_ms} ms release {release_ms} ms link {link} mode {mode}"
-                    ),
-                    sampler_ir::Reason::UnknownLaw,
-                ));
-                modelled = false;
-            }
-            Some(Params::Compressor {
-                mode,
-                threshold_db,
-                ratio,
-                attack_ms,
-                release_ms,
-                link,
             }) if scope == Scope::Bus => {
                 // Bus scope only: a group insert sees the group's summed signal in
                 // Kontakt, but a voice chain sees one voice, whose level is far
@@ -713,8 +693,10 @@ pub(crate) fn chain_with(
                 // the linked detector is the signed channel mean. The level law
                 // is the textbook one (ir::Compressor); the stored units are the
                 // importer's labels.
-                // ponytail: unverified - the first value is read as the mode and
-                // only mode 0 (Classic) is taken to share the kernel.
+                // KONTAKT_REFERENCE (ANALOG STRINGS C4/E4/G4, compressor on vs
+                // bypassed): Kontakt +8.7 dB RMS, KONTRA +8.2..8.4 dB, i.e. the +9 dB
+                // output gain with about 0.3-0.7 dB of reduction. Only mode 0
+                // (Classic) is taken to share the kernel.
                 if *mode != 0.0 {
                     notes.push((
                         "compressor mode".into(),
@@ -749,7 +731,11 @@ pub(crate) fn chain_with(
                         flush(&mut combined, &mut filters, &mut out);
                         out.processors.push(sampler_ir::Processor::Convolution {
                             impulse,
-                            dry: if mix.is_some() { 0.0 } else { f64::from(fx.dry_level) },
+                            dry: if mix.is_some() {
+                                0.0
+                            } else {
+                                f64::from(fx.dry_level)
+                            },
                             wet: if mix.is_some() { 1.0 } else { wet },
                         });
                     }
@@ -763,6 +749,21 @@ pub(crate) fn chain_with(
                     }
                 }
             }
+            // A Gainer mixes its slot's dry level with the gained signal,
+            // `dry + out * g` (KONTAKT_REFERENCE s.25 measured a fresh module at
+            // 0.5 + 0.5 g). Every stored Gainer in the local corpus has dry 0 and
+            // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
+            Some(p @ Params::Gainer { .. }) if mix.is_none() => match matrix(p, &mut notes) {
+                Some(m) => {
+                    let wet = product(gain, m);
+                    let dry = f64::from(fx.dry_level);
+                    let mixed = std::array::from_fn(|i| {
+                        std::array::from_fn(|j| wet[i][j] + if i == j { dry } else { 0.0 })
+                    });
+                    combined = product(mixed, combined);
+                }
+                None => modelled = false,
+            },
             Some(p) => match matrix(p, &mut notes) {
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
@@ -771,6 +772,12 @@ pub(crate) fn chain_with(
         }
         if let Some((group, generic)) = mix {
             flush(&mut combined, &mut filters, &mut out);
+            // A modelled module that changes only its level still owns the slot's
+            // Output and Bypass.
+            if modelled && out.processors.len() == begin {
+                out.processors
+                    .push(sampler_ir::Processor::StereoMatrix(IDENTITY));
+            }
             let count = out.processors.len() - begin;
             if count > 0 {
                 let convolution = matches!(params, Some(Params::Convolution(_)));
@@ -788,7 +795,11 @@ pub(crate) fn chain_with(
                             slot: fx.slot as i32,
                             generic,
                         },
-                        dry: if convolution { f64::from(fx.dry_level) } else { 0.0 },
+                        dry: if convolution || fx.module == 0x13 {
+                            f64::from(fx.dry_level)
+                        } else {
+                            0.0
+                        },
                         wet,
                         bypass: fx.bypass,
                     },
@@ -905,14 +916,18 @@ fn convolution(
         channels.iter_mut().flatten().for_each(|x| *x *= gain);
     }
     let [left, right] = channels;
-    impulses
-        .store
-        .push(sampler_ir::Impulse { rate, left, right, asset: None });
+    impulses.store.push(sampler_ir::Impulse {
+        rate,
+        left,
+        right,
+        asset: None,
+    });
     Ok(sampler_ir::ImpulseRef(impulses.store.len() - 1))
 }
 
-/// Kontakt's normalized Reverb values as physical settings. Laws are v1's
-/// fits, not verified against Kontakt's own rendering.
+/// Kontakt's normalized Reverb values as physical settings. Time, predelay,
+/// high cut and low shelf follow the reference display; size, damping and
+/// diffusion are still v1's fits.
 fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
     let [
         room,
@@ -932,25 +947,65 @@ fn reverb(v: &[f32; 10], notes: &mut Notes) -> sampler_ir::Reverb {
         sampler_ir::Reason::UnknownLaw,
     ));
     sampler_ir::Reverb {
-        decay_seconds: 0.2 * 100f64.powf(time),
+        // KONTAKT_REFERENCE s.21 and the display read by get_engine_par_disp:
+        // Time shows 500 ms * 40.4^x and the measured RT60 is 0.82 x that.
+        decay_seconds: 0.82 * 0.5 * 40.4f64.powf(time),
         size: (0.5 + size) * if room >= 0.5 { 1.0 } else { 0.55 },
         damping_hz: 18_000.0 * 0.05f64.powf(damping),
         modulation_seconds: modulation * 0.0015,
         diffusion: 0.75 * diffusion,
         predelay_seconds: predelay * 0.25,
-        input_cutoff_hz: 20_000.0 * 0.025f64.powf(high_cut),
-        low_shelf_db: -18.0 * low_shelf,
+        // High Cut shows 21 kHz - 19 kHz * x (decreasing, linear in Hz).
+        input_cutoff_hz: 21_000.0 - 19_000.0 * high_cut,
+        // Low Shelf shows 0 to -12 dB, linear.
+        low_shelf_db: -12.0 * low_shelf,
         width: stereo,
     }
 }
 
+/// An instrument bus (`$NI_BUS_OFFSET` + `index`) with the groups routed to it.
+pub(crate) struct BusPlan {
+    pub index: usize,
+    /// The bus fader (linear) and pan.
+    pub volume: f32,
+    pub pan: f32,
+    pub groups: Vec<sampler_ir::GroupRef>,
+}
+
+/// The program's instrument buses with the groups routed to them (`routes`
+/// pairs a group with its 0-based bus).
+pub(crate) fn bus_plans(program: &Program, routes: &[(sampler_ir::GroupRef, u8)]) -> Vec<BusPlan> {
+    program
+        .0
+        .children
+        .iter()
+        .filter(|child| child.id == BUS)
+        .enumerate()
+        .filter_map(|(index, child)| {
+            let params = InsertBus::try_from(child).ok()?.params().ok()?;
+            Some(BusPlan {
+                index,
+                volume: params.volume,
+                pan: params.pan,
+                groups: routes
+                    .iter()
+                    .filter(|&&(_, bus)| usize::from(bus) == index)
+                    .map(|&(group, _)| group)
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 /// The instrument-level racks as buses: every group feeds an insert bus
 /// (the insert rack), whose Send Levels slots feed one bus per send slot
-/// (the send rack's effects), and the main rack follows both. Changes
-/// nothing when the racks do nothing.
+/// (the send rack's effects), and the main rack follows both. A group routed
+/// to an instrument bus (`buses`) feeds that bus instead, whose fader and rack
+/// run before the insert bus. Changes nothing when the racks do nothing.
 pub(crate) fn instrument_buses(
     ir: &mut sampler_ir::Instrument,
     racks: &[(String, Vec<Slot>)],
+    buses: &[BusPlan],
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
 ) -> Vec<(String, Note)> {
@@ -972,29 +1027,84 @@ pub(crate) fn instrument_buses(
     };
     // `$NI_INSERT_BUS` 1, `$NI_SEND_BUS` 0, `$NI_MAIN_BUS` 2.
     let generic = |n| dynamic.then_some((-1, n));
-    let insert = chain_with(rack("instrument insert"), Scope::Bus, Some(&mut source), generic(1));
+    let insert = chain_with(
+        rack("instrument insert"),
+        Scope::Bus,
+        Some(&mut source),
+        generic(1),
+    );
     take("instrument insert", &insert);
-    let main = chain_with(rack("instrument main"), Scope::Bus, Some(&mut source), generic(2));
+    let main = chain_with(
+        rack("instrument main"),
+        Scope::Bus,
+        Some(&mut source),
+        generic(2),
+    );
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
     let mut sends = Vec::new();
-    for slot in rack("instrument send").iter().filter(|s| dynamic || !s.bypass) {
-        let c = chain_with(std::slice::from_ref(slot), Scope::Bus, Some(&mut source), generic(0));
+    for slot in rack("instrument send")
+        .iter()
+        .filter(|s| dynamic || !s.bypass)
+    {
+        let c = chain_with(
+            std::slice::from_ref(slot),
+            Scope::Bus,
+            Some(&mut source),
+            generic(0),
+        );
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
         if !c.processors.is_empty() && level > 0.0 {
             sends.push((c.processors, f64::from(level)));
         }
     }
+    // Instrument buses: only the ones a group feeds and that do something.
+    // `$NI_BUS_OFFSET` + the bus number.
+    let mut instrument = Vec::new();
+    let mut panned = Vec::new();
+    for bus in buses.iter().filter(|b| !b.groups.is_empty()) {
+        let name = format!("bus {}", bus.index);
+        let c = chain_with(
+            rack(&name),
+            Scope::Bus,
+            Some(&mut source),
+            generic(1000 + bus.index as i32),
+        );
+        take(&name, &c);
+        if bus.pan.abs() > 0.01 {
+            panned.push((name, bus.pan));
+        }
+        if !c.processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
+            instrument.push((bus, c.processors));
+        }
+    }
+    for (name, pan) in panned {
+        report.push((
+            name,
+            (
+                0,
+                "instrument bus pan".into(),
+                format!("{pan}"),
+                sampler_ir::Reason::NotModeled,
+            ),
+        ));
+    }
     ir.impulses = store;
-    if insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty() {
+    let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
+    if !chained && instrument.is_empty() {
         return report;
     }
-    // Bus order: insert, sends, main.
+    // Bus order: insert, sends, main, then the instrument buses.
     let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
     let target = main_bus.map_or(Output::Master, |i| Output::Bus(BusRef(i)));
-    let add = |ir: &mut sampler_ir::Instrument, name: String, processors, sends, output| {
-        let chain = (!Vec::<sampler_ir::Processor>::is_empty(&processors)).then(|| {
+    let add = |ir: &mut sampler_ir::Instrument,
+               name: String,
+               processors: Vec<sampler_ir::Processor>,
+               sends,
+               output,
+               gain| {
+        let chain = (!processors.is_empty()).then(|| {
             let index = ir.buses.len();
             ir.chains.push(sampler_ir::Chain {
                 scope: IrScope::Bus(BusRef(index)),
@@ -1008,9 +1118,10 @@ pub(crate) fn instrument_buses(
             chain,
             sends,
             output,
-            gain: sampler_ir::Gain::UNITY,
+            gain,
         });
     };
+    let unity = sampler_ir::Gain::UNITY;
     let feeds = sends
         .iter()
         .enumerate()
@@ -1020,21 +1131,48 @@ pub(crate) fn instrument_buses(
             position: SendPosition::PostChain,
         })
         .collect();
-    add(ir, "insert".into(), insert.processors, feeds, target);
-    for (i, (processors, _)) in sends.into_iter().enumerate() {
-        add(ir, format!("send {i}"), processors, Vec::new(), target);
-    }
-    if main_bus.is_some() {
+    let entry = if chained {
+        add(ir, "insert".into(), insert.processors, feeds, target, unity);
+        for (i, (processors, _)) in sends.into_iter().enumerate() {
+            add(
+                ir,
+                format!("send {i}"),
+                processors,
+                Vec::new(),
+                target,
+                unity,
+            );
+        }
+        if main_bus.is_some() {
+            add(
+                ir,
+                "main".into(),
+                main.processors,
+                Vec::new(),
+                Output::Master,
+                unity,
+            );
+        }
+        for group in &mut ir.groups {
+            group.output = Output::Bus(BusRef(0));
+        }
+        Output::Bus(BusRef(0))
+    } else {
+        Output::Master
+    };
+    for (bus, processors) in instrument {
+        let at = BusRef(ir.buses.len());
         add(
             ir,
-            "main".into(),
-            main.processors,
+            format!("bus {}", bus.index),
+            processors,
             Vec::new(),
-            Output::Master,
+            entry,
+            sampler_ir::Gain::Linear(f64::from(bus.volume)),
         );
-    }
-    for group in &mut ir.groups {
-        group.output = Output::Bus(BusRef(0));
+        for group in &bus.groups {
+            ir.groups[group.0].output = Output::Bus(at);
+        }
     }
     report
 }
@@ -1109,29 +1247,65 @@ mod tests {
     }
 
     #[test]
+    fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
+        let r = |time: f32, cut: f32, shelf: f32| {
+            reverb(&[0.5, time, 0.5, 0.5, 0.5, 0.5, 0.5, cut, shelf, 1.0], &mut Vec::new())
+        };
+        // Default Time 3.2 s displays at x = 0.5; RT60 2.6 s (s.21).
+        assert!((r(0.5, 0.0, 0.0).decay_seconds - 2.62).abs() < 0.03);
+        assert!((r(1.0, 0.0, 0.0).decay_seconds - 16.16).abs() < 0.5);
+        let end = r(0.0, 1.0, 1.0);
+        assert!((end.input_cutoff_hz - 2000.0).abs() < 1e-6 && (end.low_shelf_db + 12.0).abs() < 1e-9);
+        assert_eq!(r(0.0, 0.0, 0.0).input_cutoff_hz, 21_000.0);
+    }
+
+    #[test]
+    fn gainer_mixes_its_stored_dry_level_with_the_gained_signal() {
+        // KONTAKT_REFERENCE s.25: a fresh Gainer at -6 dB reads 0.5 + 0.5 * 0.501.
+        let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
+        g.dry_level = 0.5;
+        let c = chain(&[g], Scope::Bus);
+        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else { panic!("{:?}", c.processors) };
+        assert!((m[0][0] - 0.7505).abs() < 1e-6 && m[0][1] == 0.0, "{m:?}");
+    }
+
+    #[test]
     fn dynamic_slots_run_in_mix_blocks_bypassed_ones_included() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
         gainer.bypass = true;
         let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
         assert!(plain.processors.is_empty());
-        let c = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, Some((-1, 1)));
-        assert!(matches!(
-            c.processors[..],
-            [
-                sampler_ir::Processor::Mix {
-                    count: 1,
-                    bypass: true,
-                    address: sampler_ir::SlotAddress { group: -1, slot: 3, generic: 1 },
-                    ..
-                },
-                sampler_ir::Processor::StereoMatrix(_)
-            ]
-        ), "{:?}", c.processors);
+        let c = chain_with(
+            std::slice::from_ref(&gainer),
+            Scope::Bus,
+            None,
+            Some((-1, 1)),
+        );
+        assert!(
+            matches!(
+                c.processors[..],
+                [
+                    sampler_ir::Processor::Mix {
+                        count: 1,
+                        bypass: true,
+                        address: sampler_ir::SlotAddress {
+                            group: -1,
+                            slot: 3,
+                            generic: 1
+                        },
+                        ..
+                    },
+                    sampler_ir::Processor::StereoMatrix(_)
+                ]
+            ),
+            "{:?}",
+            c.processors
+        );
     }
 
     #[test]
-    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_is_pending() {
+    fn modeller_follows_the_measured_spread_and_pan_laws_and_the_inverter_output_applies() {
         let modeller = |spread: f32, pan: f32| {
             let mut bytes = spread.to_le_bytes().to_vec();
             bytes.extend(pan.to_le_bytes());
@@ -1159,11 +1333,16 @@ mod tests {
         near(modeller(-1.0, 0.0), [[0.5, 0.5], [0.5, 0.5]]);
         // Pan -50: R x0.5.
         near(modeller(0.0, -0.5), [[1.0, 0.0], [0.0, 0.5]]);
-        // PENDING (reference agent measuring Output at -6/0/+6 dB): Una g39 and
-        // g94's post-amp Inverter at +6 dB reads exactly as if its Output were
-        // not applied. A single reading; if it fails, apply the gain again.
+        // An Inverter that changes nothing still applies its Output (Una's tone
+        // groups store +6 dB against -6 dB on their instrument bus).
         let inverter = chain(&[slot(0x1a, vec![0, 0], 2.0)], Scope::Voice).processors;
-        assert!(inverter.is_empty(), "{inverter:?}");
+        assert_eq!(
+            inverter,
+            vec![sampler_ir::Processor::StereoMatrix([
+                [2.0, 0.0],
+                [0.0, 2.0]
+            ])]
+        );
     }
 
     #[test]
@@ -1174,11 +1353,6 @@ mod tests {
         }
         bytes.push(1);
         let built = chain(&[slot(0x19, bytes, 1.0)], Scope::Bus);
-        if !KONTAKT_COMPRESSOR_VERIFIED {
-            assert!(built.processors.is_empty());
-            assert!(built.notes.iter().any(|n| n.3 == sampler_ir::Reason::UnknownLaw));
-            return;
-        }
         let [sampler_ir::Processor::Compressor(c), ..] = built.processors[..] else {
             panic!("{:?}", built.processors)
         };
@@ -1205,7 +1379,8 @@ mod tests {
 
     #[test]
     fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
-        let gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        gainer.dry_level = 0.0;
         let inverter = slot(0x1a, vec![1, 1], 0.5);
         let mut modeller = 0.0f32.to_le_bytes().to_vec();
         modeller.extend(0.0f32.to_le_bytes());
@@ -1216,12 +1391,12 @@ mod tests {
             sampler_kontakt_chain.processors,
             sampler_kontakt_chain.notes,
         );
-        // 2 * (swap, inverted; its Output is not applied) * 2 = swap, inverted, * 4.
+        // 2 * (swap, inverted) * 0.5 * 2 = swap, inverted, * 2.
         assert_eq!(
             processors,
             vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -4.0],
-                [-4.0, 0.0]
+                [0.0, -2.0],
+                [-2.0, 0.0]
             ])]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");
@@ -1246,11 +1421,9 @@ mod tests {
             "{processors:?}"
         );
         // Unity everything: no processor at all.
-        let processors = chain(
-            &[slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0)],
-            Scope::Voice,
-        )
-        .processors;
+        let mut unity = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
+        unity.dry_level = 0.0;
+        let processors = chain(&[unity], Scope::Voice).processors;
         assert!(processors.is_empty());
     }
 
@@ -1286,7 +1459,9 @@ mod tests {
             ),
             ("instrument send".to_string(), vec![slot(0x59, reverb, 1.0)]),
         ];
-        let report = instrument_buses(&mut instrument, &racks, false, &mut |_| Err("none".into()));
+        let report = instrument_buses(&mut instrument, &racks, &[], false, &mut |_| {
+            Err("none".into())
+        });
         assert_eq!(instrument.buses.len(), 2, "{report:?}");
         assert_eq!(instrument.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         let feed = &instrument.buses[0].sends[0];
@@ -1300,7 +1475,32 @@ mod tests {
         instrument.validate().unwrap();
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
-        instrument_buses(&mut plain, &[], false, &mut |_| Err("none".into()));
+        instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
         assert!(plain.buses.is_empty());
+        // A routed bus at half volume owns its groups' output; an unrouted one
+        // is not built.
+        let mut routed = instrument.clone();
+        routed.buses.clear();
+        routed.chains.clear();
+        let plans = [
+            BusPlan {
+                index: 0,
+                volume: 0.5,
+                pan: 0.0,
+                groups: vec![ir::GroupRef(0)],
+            },
+            BusPlan {
+                index: 1,
+                volume: 0.5,
+                pan: 0.0,
+                groups: Vec::new(),
+            },
+        ];
+        instrument_buses(&mut routed, &[], &plans, false, &mut |_| Err("none".into()));
+        assert_eq!(routed.buses.len(), 1);
+        assert_eq!(routed.buses[0].gain, ir::Gain::Linear(0.5));
+        assert_eq!(routed.buses[0].output, ir::Output::Master);
+        assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
+        routed.validate().unwrap();
     }
 }

@@ -341,11 +341,7 @@ fn kind_of(debug: &str) -> String {
 }
 
 fn categories(unsupported: &[sampler_ir::Unsupported]) -> BTreeMap<String, usize> {
-    let mut map = BTreeMap::new();
-    for u in unsupported {
-        *map.entry(normalize(&u.feature)).or_insert(0) += 1;
-    }
-    map
+    sampler_ir::rank_features(unsupported.iter().map(|u| u.feature.as_str())).into_iter().collect()
 }
 
 type Loading = (Value, Option<(Subject, Pick)>);
@@ -408,6 +404,9 @@ struct Sound {
     stuck_notes: usize,
     tail_peak: f32,
     faults: Vec<String>,
+    /// One sentence on a silent note ([`sampler_core::why_silent`]); set when
+    /// selections were recorded.
+    why_silent: Option<String>,
 }
 
 /// What a worker is doing, for failure records and the watchdog.
@@ -696,6 +695,11 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         }),
         _ => Value::Null,
     };
+    let views: Vec<sampler_ksp::ScriptView> = match &subject {
+        Subject::Plan(l) => l.scripts.clone(),
+        Subject::Streamed(s) => s.loaded.scripts.clone(),
+        _ => Vec::new(),
+    };
     let limits = limits_for(locals, cells);
     let build = |plan, cache: Option<sampler_core::StreamCache>| -> Result<Box<Runtime>, String> {
         let mut rt = Runtime::new(plan, limits).map_err(|e| format!("prepare: runtime: {e}"))?;
@@ -802,6 +806,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     let mut note_started = false;
     let mut note_other: Option<String> = None;
     let mut faults = Vec::new();
+    let mut script_faults: Vec<sampler_core::ScriptFault> = Vec::new();
     stage("render");
     for begin in (0..total).step_by(buffer.len()) {
         let len = buffer.len().min(total - begin);
@@ -941,9 +946,12 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
             let Rig::Midi { rt, .. } = &mut rig else {
                 unreachable!()
             };
-            rt.flush_behaviors(|_, _, outcome| {
+            rt.flush_behaviors_at(|_, _, outcome, program| {
                 if !matches!(outcome, Outcome::Finished | Outcome::Cancelled) && faults.len() < 8 {
-                    faults.push(normalize(&format!("{outcome:?}")));
+                    let callback = sampler_ksp::callback_of(&views, program);
+                    let error = format!("{outcome:?}");
+                    faults.push(format!("{error} in {callback}"));
+                    script_faults.push(sampler_core::ScriptFault { callback, error });
                 }
                 true
             });
@@ -960,8 +968,13 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
     }
     block_times.sort_by(f64::total_cmp);
     let q = |f: f64| block_times[((block_times.len() - 1) as f64 * f) as usize];
+    let mut why_silent = None;
     let selection = match &mut rig {
-        Rig::Midi { rt, .. } if diagnose => selection_summary(rt.take_selection_records()),
+        Rig::Midi { rt, .. } if diagnose => {
+            let records = rt.take_selection_records();
+            why_silent = sampler_core::why_silent(key, &records, &script_faults);
+            selection_summary(records)
+        }
         _ => Value::Null,
     };
     let rt: &Runtime = match &rig {
@@ -1000,6 +1013,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
         stuck_notes: rt.note_count(),
         tail_peak,
         faults,
+        why_silent,
     })
 }
 
@@ -1122,15 +1136,19 @@ fn load_item(item: &Item, ctx: &Ctx) -> Loading {
                 Err(e) => return load_failure(&*e, "container/decrypt"),
             };
             stage("parse");
+            let t = Instant::now();
             let ir = match sampler_uvi::translate_program(&bank, program) {
                 Ok(i) => i,
                 Err(e) => return load_failure(&*e, "translate-to-IR"),
             };
+            let translate_ms = t.elapsed().as_millis() as u64;
             let Some(pick) = pick_key(&ir) else {
                 return no_zone();
             };
             if ctx.tier == Tier::Parse {
-                return (ok(pick, &ir), Some((Subject::Ir(Box::new(ir)), pick)));
+                let mut record = ok(pick, &ir);
+                record["phases_ms"] = json!({"translate": translate_ms, "pick": t.elapsed().as_millis() as u64 - translate_ms});
+                return (record, Some((Subject::Ir(Box::new(ir)), pick)));
             }
             stage("load");
             match sampler_uvi::load_program_scripted_streamed(&bank, program, 48000, &policy) {
@@ -1251,7 +1269,11 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
     let mut record = json!({"id": item.id(), "kind": item.kind(), "status": "done", "tier": ctx.tier.name(), "load": load});
     let programs = record["load"]["programs"].as_u64().unwrap_or(0) as usize;
     if record["load"]["ok"] == true {
-        let cap = if ctx.tier == Tier::Full { 16 } else { 4 };
+        let cap = match ctx.tier {
+            Tier::Full => 16,
+            Tier::Quick => 4,
+            Tier::Parse => 1, // each program re-reads the whole multi
+        };
         let subs: Vec<Value> = (0..programs.min(cap))
             .map(|index| check_one(&Item::MultiProgram { path: path.into(), index }, ctx))
             .collect();
@@ -1260,13 +1282,17 @@ fn check_multi(item: &Item, path: &Path, ctx: &Ctx) -> Value {
             .iter()
             .max_by(|a, b| loudness(a).total_cmp(&loudness(b)))
             .cloned();
-        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller"));
+        // A rack slot may hold no instrument: a program with no zones is empty, not broken.
+        let empty = |r: &Value| r["load"]["kind"] == "NoZone";
+        let subs: Vec<Value> = subs;
+        let ok = |r: &Value| matches!(r["stage"].as_str(), Some("ok" | "needs-controller")) || empty(r);
         let stage = subs.iter().find(|r| !ok(r)).map_or("ok", |r| r["stage"].as_str().unwrap_or("load")).to_string();
         let load_ms: u64 = subs.iter().map(|r| r["load_ms"].as_u64().unwrap_or(0)).sum();
         let summary = json!({
             "programs": programs,
             "checked": subs.len(),
             "ok": subs.iter().filter(|r| ok(r)).count(),
+            "empty": subs.iter().filter(|r| empty(r)).count(),
             "sounding": subs.iter().filter(|r| r["sound"]["sounds"] == true || r["musical"]["sounds"] == true).count(),
             "finite": subs.iter().all(|r| r["sound"]["finite"] != false),
             "results": subs.iter().enumerate().map(|(i, r)| json!({
@@ -1321,10 +1347,17 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
         "load": load,
     });
     let mut play_ms = 0u64;
+    let mut peak_heap = 0;
     if let Some((subject, pick)) = loaded {
         record["scripts"] = scripts(&subject);
         record["unsupported"] = json!(categories(&subject.instrument().unsupported));
         record["unsupported_total"] = json!(subject.instrument().unsupported.len());
+        record["unsupported_ranked"] = json!(
+            sampler_ir::rank_features(subject.instrument().unsupported.iter().map(|u| u.feature.as_str()))
+                .into_iter()
+                .take(10)
+                .collect::<Vec<_>>()
+        );
         let dynamics: Vec<(u8, f64)> = subject.loaded().map(|l| l.dynamics()).unwrap_or_default();
         if let Some(l) = subject.loaded() {
             record["needs_controller"] = json!(l.needs_controller());
@@ -1362,11 +1395,12 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             };
             let first = play(subject, pick, false, &[]);
             let first = match first {
-                Ok(mut s) if silent(&s) && ctx.tier == Tier::Full && matches!(item, Item::Kontakt(_)) => {
+                Ok(mut s) if silent(&s) && matches!(item, Item::Kontakt(_) | Item::MultiProgram { .. }) => {
                     // Selection records allocate, so they only run on a second
                     // pass over an item that was silent.
                     if let Some(d) = reload(&[], true) {
                         s.selection = d.selection;
+                        s.why_silent = d.why_silent;
                     }
                     Ok(s)
                 }
@@ -1376,7 +1410,8 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
             // sounds, find the controller it needs.
             if let Ok(d) = &first {
                 // The quick tier only asks again of an item that was silent.
-                if (ctx.tier == Tier::Full || silent(d))
+                let t = Instant::now();
+                if silent(d)
                     && let Some(m) = reload(&ccs, false)
                 {
                     let mut musical = json!({
@@ -1396,10 +1431,21 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                     }
                     record["musical"] = musical;
                 }
+                record["perf_musical_ms"] = json!(t.elapsed().as_millis() as u64);
+                // Five full loads per probe: one instrument in eight (by id hash),
+                // or all with CH_MPE=all.
+                let sampled = std::env::var_os("CH_MPE").is_some()
+                    || item.id().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b))) % 8 == 0;
                 if ctx.tier == Tier::Full
+                    && sampled
+                    && std::env::var_os("CH_NOMPE").is_none()
                     && let Item::Kontakt(path) = item
                 {
+                    let t = Instant::now();
+                    // The probe decodes fully: keep it out of the peak memory.
+                    peak_heap = heap::peak();
                     record["mpe"] = mpe_probe(path, pick, &ccs);
+                    record["perf_mpe_ms"] = json!(t.elapsed().as_millis() as u64);
                 }
             }
             match first {
@@ -1422,6 +1468,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
                         "stuck_notes": s.stuck_notes,
                         "tail_peak_db": db(s.tail_peak),
                         "script_faults": s.faults,
+                        "why_silent": s.why_silent,
                     });
                 }
                 Err(e) => record["sound"] = json!({"error": normalize(&e)}),
@@ -1433,7 +1480,7 @@ fn check_one(item: &Item, ctx: &Ctx) -> Value {
     record["perf"] = json!({
         "load_ms": load_ms,
         "play_ms": play_ms,
-        "peak_heap_bytes": heap::peak(),
+        "peak_heap_bytes": if peak_heap > 0 { peak_heap } else { heap::peak() },
         "heap_bytes_after_load": heap_after_load,
         "workers": ctx.workers,
         // Timing is evidence only when the machine was otherwise idle: judge it
@@ -1831,7 +1878,27 @@ fn run(out: &Path, opts: &Opts) -> i32 {
         queue.push((item, key, hint));
     }
     // Biggest first, so the long jobs start early and the pool drains evenly.
-    queue.sort_by_key(|q| std::cmp::Reverse(q.2));
+    // UVI programs last: their banks open in the background meanwhile, and
+    // opening a cold bank takes up to a minute.
+    queue.sort_by_key(|q| (matches!(q.0, Item::UviProgram { .. }), std::cmp::Reverse(q.2)));
+    let banks: Vec<PathBuf> = queue
+        .iter()
+        .filter_map(|q| match &q.0 {
+            Item::UviProgram { bank, .. } => Some(bank.clone()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let next_bank = Arc::new(AtomicUsize::new(0));
+    for _ in 0..3.min(banks.len()) {
+        let (banks, next_bank) = (banks.clone(), next_bank.clone());
+        std::thread::spawn(move || {
+            while let Some(p) = banks.get(next_bank.fetch_add(1, Ordering::Relaxed)) {
+                let _ = bank(p);
+            }
+        });
+    }
     pool.queue = queue;
     let total = pool.queue.len();
     eprintln!(
@@ -2217,25 +2284,32 @@ fn diff(old: &Path, new: &Path) {
         None => stage_of(r).into(),
     };
     let why = |r: &Value| {
-        let text = r["load"]["error"].as_str().or(r["sound"]["error"].as_str()).unwrap_or("");
+        let text = r["load"]["error"]
+            .as_str()
+            .or(r["sound"]["error"].as_str())
+            .or(r["sound"]["why_silent"].as_str())
+            .or(r["sound"]["script_faults"][0].as_str())
+            .unwrap_or("");
         let at = r["load"]["where"].as_str().unwrap_or("");
         format!("{at} {text}").trim().chars().take(110).collect::<String>()
     };
     let (old, new) = (index(old), index(new));
+    // A part that sounds once its controllers are up is working.
+    let good = |s: &str| matches!(s, "ok" | "needs-controller");
     let (mut fixed, mut regressed, mut added, mut moved, mut flags) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut slow, mut quick_load, mut fat) = (vec![], vec![], vec![]);
     let mut common = vec![];
     for (id, n) in &new {
         let ns = stage(n);
         match old.get(id) {
-            None if ns != "ok" => added.push(format!("{id}  [{ns}] {}", why(n))),
+            None if !good(&ns) => added.push(format!("{id}  [{ns}] {}", why(n))),
             None => {}
             Some(o) => {
                 common.push((o, n));
                 let os = stage(o);
-                match (os == "ok", ns == "ok") {
-                    (false, true) => fixed.push(format!("{id}  [{os} -> ok]")),
-                    (true, false) => regressed.push(format!("{id}  [ok -> {ns}] {}", why(n))),
+                match (good(&os), good(&ns)) {
+                    (false, true) => fixed.push(format!("{id}  [{os} -> {ns}]")),
+                    (true, false) => regressed.push(format!("{id}  [{os} -> {ns}] {}", why(n))),
                     _ if os != ns => moved.push(format!("{id}  [{os} -> {ns}] {}", why(n))),
                     _ => {}
                 }
@@ -2269,9 +2343,9 @@ fn diff(old: &Path, new: &Path) {
     let count = |m: &BTreeMap<String, Value>, f: &dyn Fn(&Value) -> bool| m.values().filter(|r| f(r)).count();
     let line = |m: &BTreeMap<String, Value>| {
         format!(
-            "{} items: ok {}, sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}",
+            "{} items: ok {} (incl. needs-controller), sounding {}, non-finite {}, deadline-miss {}, audio-alloc {}",
             m.len(),
-            count(m, &|r| stage(r) == "ok"),
+            count(m, &|r| good(&stage(r))),
             count(m, &sounds),
             count(m, &|r| !finite_ok(r)),
             count(m, &|r| misses(r) > 0),
@@ -2317,7 +2391,7 @@ fn diff(old: &Path, new: &Path) {
             println!("    {l}");
         }
     }
-    let failing: Vec<_> = new.iter().filter(|(_, r)| stage(r) != "ok").collect();
+    let failing: Vec<_> = new.iter().filter(|(_, r)| !good(&stage(r))).collect();
     println!("\nfailing now: {}", failing.len());
     for (id, r) in failing.iter().take(40) {
         println!("  [{}] {}  {}", stage(r), id.rsplit('/').next().unwrap_or(id), why(r));
