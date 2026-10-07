@@ -21,7 +21,7 @@ Run `python tools/dsp-research/verify_laws.py ARTIFACT_ROOT OUTPUT_JSON`.
 Already-installed Unicorn and pefile map the hash-checked original image;
 each call has a two-second/two-million-instruction bound. No host launches,
 activation changes, library dumps, decoded presets or samples are involved.
-[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,132 result records,
+[Committed vectors](KONTAKT_DSP_LAWS.vectors.json) contain 1,157 result records,
 including 480 individual spline evaluations in 24 table records.
 
 Every arithmetic operation marked F rounds to IEEE binary32, ties to even.
@@ -309,7 +309,7 @@ curve would lose those differences. Constructor-to-bank binding is still open.
 ## Solid Bus Comp timing
 
 **Verified:** indices 2 (attack) and 3 (release), setter `0x141ac69e0`,
-coefficient helper `0x141acc420`, 110 cases across five sample rates and
+coefficient helper `0x141acc420`, 120 cases across five sample rates and
 all 16 stored channel lanes. **Open:** full descriptor initialization,
 threshold/makeup index binding, ratio law, detector, linking, automatic
 release state machine, gain smoothing, reset, latency and tail.
@@ -327,6 +327,56 @@ At Fs=48,000 and x=.5, enum=3: attack 3 ms gives
 At x=1 release is 75 ms, `.9999380176011787`, with auto flag set.
 Input boundaries .099/.1/.101 and .899/.9/.901 are checked as float32 inputs.
 
+## External performance modulator timing
+
+**Verified:** `BExtMod` queue renderer `0x140ceaf60`, 15 byte-check cases.
+**Open:** event-to-control-tick normalization, velocity/key value conversion,
+queue insertion/overflow, shapers/lag/depth and destination gain/pitch laws.
+The block unit is the caller's control ticks, not a verified audio-frame clock.
+
+The renderer holds its prior float32 value until a queued event tick, then
+holds the event's supplied value. No interpolation, clamp or smoothing occurs
+in this local kernel. Signed values pass through. Equal-tick events apply
+in queue order, so the last value at that tick wins. Events with tick < block
+length are consumed; events at exactly block length remain queued with tick
+zero. Remaining event ticks decrease by block length; the final emitted value
+persists across calls. A zero-length call does not consume a tick-zero event.
+
+Initial value .25 and events (0,−1), (2,.5), (5,1), (8,−.25) produce
+`[−1,−1,.5,.5,.5,1,1,1,−.25,−.25,−.25,−.25]` over 12 ticks.
+An event (12,.75) remains queued as (0,.75) after that block, whose output
+remains .25. The checks compare [12], [0,1,2,3,4,2] and [2,0,2,4,4],
+including buffer-end sentinels, exact queued records and persistent state.
+
+## Velocity-to-volume: prior host observations
+
+The [reference protocol](REFERENCE_PROTOCOL.md), “Findings from the calibration
+(2026-10-07)”, records the following relative gains for a bare mono noise
+instrument with default Velocity-to-Volume, CC7=127 and velocity 127 at 0 dB.
+These are prior host measurements, not new byte checks or a universal
+instrument law. The saved depth and target/shaper state must be known before
+a formula can be specified. The protocol's rough fitted amplitude
+`0.22 + 0.78*(v/127)^1.4` is an approximation and is **not** an exact DSP law.
+
+| velocity | relative dB |
+| ---: | ---: |
+| 1 | −12.9 |
+| 8 | −12.0 |
+| 16 | −11.0 |
+| 32 | −9.1 |
+| 48 | −7.4 |
+| 64 | −5.7 |
+| 80 | −4.1 |
+| 100 | −2.30 |
+| 110 | −1.42 |
+| 127 | 0 |
+
+That protocol separately measures the instrument CC7 amplitude law as
+`(CC7/127)^3`, with unsent CC7 after restart at .5 amplitude. This is a
+controller observation and must not be substituted for velocity response.
+The census's `ir_velocity=None` also does not mean velocity is inaudible:
+authored velocity modulation can remain in the separate modulation graph.
+
 ## Other required modules and performance laws
 
 | module/law | established here | remaining evidence needed |
@@ -336,7 +386,7 @@ Input boundaries .099/.1/.101 and .899/.9/.901 are checked as float32 inputs.
 | Transient Master | saved layout in reference spec | all parameter and detector/smoother laws, reset/latency/tail |
 | Supercharger / GT | no verified law | variant identity, nonlinear transfer, detector/timing, reset/latency/tail |
 | Pro EQ | no verified law | distinction from legacy/Solid EQ, coefficients/smoothing/state |
-| velocity → volume | saved and IR census path only | shaper, signed depth, combination with base gain, event normalization and effective amplitude law |
+| velocity → volume | prior host vectors and external queue timing; saved/IR census | shaper, signed depth, combination with base gain, event normalization and effective amplitude law |
 | key tracking | saved flag / IR census path only | pitch/volume route conversion, shaping and event cadence |
 | amplifier / group pan | IR enum and unit census only | native mapping and placement relative to modulation/effect chains |
 
