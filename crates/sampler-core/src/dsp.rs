@@ -129,6 +129,15 @@ pub enum Processor {
         dry: f64,
         wet: f64,
     },
+    /// The next `count` processors run in parallel with the unprocessed
+    /// signal: `(dry·(1-b) + b)·x + wet·(1-b)·inner(x)`, where `b` is the
+    /// bypass control (0..=1). All three are ramped controls. Bus scope only.
+    Mix {
+        count: u16,
+        dry: ControlRange,
+        wet: ControlRange,
+        bypass: ControlRange,
+    },
 }
 
 impl Processor {
@@ -140,6 +149,9 @@ impl Processor {
             Processor::StateVariable(filter) => filter.valid(),
             Processor::Reverb(settings) => settings.valid(),
             Processor::Convolution { dry, wet, .. } => dry.is_finite() && wet.is_finite(),
+            Processor::Mix {
+                dry, wet, bypass, ..
+            } => dry.valid() && wet.valid() && bypass.valid(),
             Processor::Biquad(_) | Processor::Delay(_) => true,
         }
     }
@@ -174,6 +186,12 @@ pub(super) enum PreparedProcessor {
     Reverb(usize),
     /// Index into the bus graph's convolutions.
     Convolution(usize),
+    /// `count` following stages in parallel with the dry signal; the lanes are
+    /// dry, wet and bypass.
+    Mix {
+        count: u16,
+        lanes: [usize; 3],
+    },
 }
 
 pub(super) struct PreparedVoiceChain {
@@ -291,6 +309,22 @@ pub(super) fn compile_processors(
                     let all = convolutions.as_deref_mut().ok_or(Error::InvalidInput)?;
                     all.push((impulse, dry, wet));
                     PreparedProcessor::Convolution(all.len() - 1)
+                }
+                Processor::Mix {
+                    count,
+                    dry,
+                    wet,
+                    bypass,
+                } => {
+                    // Only buses (which have reverbs) can run a parallel block.
+                    if reverbs.is_none() {
+                        return Err(Error::InvalidInput);
+                    }
+                    let lanes = [dry, wet, bypass].map(|binding| {
+                        bindings.push(binding);
+                        bindings.len() - 1
+                    });
+                    PreparedProcessor::Mix { count, lanes }
                 }
                 Processor::Gain(gain) => PreparedProcessor::Gain(gain),
                 Processor::StereoMatrix(matrix) => PreparedProcessor::StereoMatrix(matrix),
@@ -562,8 +596,42 @@ pub(super) fn process(
     filters: &mut svf::FilterContext<'_>,
 ) -> bool {
     let mut fault = false;
-    for (stage, state) in stages.iter().zip(states) {
+    let mut next = 0;
+    while next < stages.len() {
+        let (stage, index) = (&stages[next], next);
+        next += 1;
+        let state = &mut states[index];
         match stage {
+            PreparedProcessor::Mix { count, lanes } => {
+                let inner = next..next + usize::from(*count);
+                next = inner.end;
+                let [dry, wet, bypass] = lanes.map(|lane| parameters[lane]);
+                let last = at + len.saturating_sub(1) as u64;
+                // A fully bypassed block skips the inner processors (their
+                // state, such as a reverb tail, rests until the bypass lifts).
+                let off = bypass.value(at) >= 1. && bypass.value(last) >= 1.;
+                let dry_block = *block;
+                if !off {
+                    fault |= process(
+                        &stages[inner.clone()],
+                        &mut states[inner],
+                        block,
+                        len,
+                        parameters,
+                        at,
+                        delay_samples,
+                        filters,
+                    );
+                }
+                for c in 0..2 {
+                    for i in 0..len {
+                        let t = at + i as u64;
+                        let b = bypass.value(t);
+                        let wet_part = if off { 0. } else { wet.value(t) * (1. - b) * block[c][i] };
+                        block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
+                    }
+                }
+            }
             PreparedProcessor::StateVariable(index) => {
                 filters.process(*index, &mut state.z, block, len, parameters, at);
             }
