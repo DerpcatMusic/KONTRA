@@ -1846,7 +1846,7 @@ mod survey {
         }
         files.sort();
         for f in files {
-            if std::env::var("KONTRA_ONLY").is_ok_and(|o| !f.to_string_lossy().contains(o.split("::").next().unwrap_or(""))) {
+            if std::env::var("KONTRA_ONLY").is_ok_and(|o| o.split_once("::").is_some_and(|(file, _)| !f.to_string_lossy().contains(file))) {
                 continue;
             }
             let Ok(bank) = crate::Bank::open(&f) else { continue };
@@ -1856,7 +1856,10 @@ mod survey {
                 if index % shards != shard {
                     continue;
                 }
-                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
+                    let (file, member) = o.split_once("::").unwrap_or(("", &o));
+                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                }) {
                     continue;
                 }
                 let Ok((text, _)) = bank.program(&program) else { continue };
@@ -1916,6 +1919,12 @@ mod survey {
                 if let Ok(specs) = std::env::var("KONTRA_LINE") {
                     // transient debugging aid, prints to the terminal only
                     for spec in specs.split(',') {
+                        if spec == "ls" {
+                            for n in scripts.names() {
+                                println!("UX ls {n}");
+                            }
+                            continue;
+                        }
                         let Some((m, l)) = spec.split_once(':') else { continue };
                         use crate::script::Files;
                         let src = if m == "main" { text.clone() } else { scripts.script(m).unwrap_or_default() };
@@ -1983,7 +1992,10 @@ mod survey {
                 if index % shards != shard {
                     continue;
                 }
-                if std::env::var("KONTRA_ONLY").is_ok_and(|o| !format!("{}::{program}", f.display()).contains(&o)) {
+                if std::env::var("KONTRA_ONLY").is_ok_and(|o| {
+                    let (file, member) = o.split_once("::").unwrap_or(("", &o));
+                    !(f.to_string_lossy().contains(file) && format!("{}::{program}", f.display()).contains(member))
+                }) {
                     continue;
                 }
                 let name = format!("{}::{program}", f.display());

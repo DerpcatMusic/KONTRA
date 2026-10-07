@@ -186,13 +186,39 @@ widget_mt.__index = function(t, k)
 end
 
 -- Elements -----------------------------------------------------------------
+-- Parameters the shipped scripts look up by name on elements whose presets
+-- often omit them (defaults).
+local known_params = {
+  Keygroup = { "Gain", "Pan" },
+  Layer = { "Gain", "Pan" },
+  SamplePlayer = { "Gain", "Pan", "Pitch" },
+  BusRouter = { "Gain" },
+  CombFilter = { "Freq", "Q", "Bypass", "Mode" },
+  MS20 = { "Freq", "Q", "Bypass" },
+  XpanderFilter = { "Freq", "Q", "Drive", "Mode", "Bypass" },
+  OnePole = { "Freq", "Bypass", "Mode" },
+  Flanger = { "Feedback", "Mix", "Speed", "Bypass" },
+  Phasor = { "Depth", "Feedback", "Speed", "Bypass" },
+  WaveShaper = { "Amount", "Mix", "Bypass" },
+  LFO = { "Depth", "Freq" },
+  MultiLFO = { "Depth", "Freq" },
+}
 local element = {}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then
-    local defs = {}
-    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do defs[#defs + 1] = { name = n } end
+    -- `id` is what setParameter takes back: the parameter's name. Parameters
+    -- a preset leaves at their default are still defined.
+    local defs, seen = {}, {}
+    local function add(n)
+      if not seen[n] then
+        seen[n] = true
+        defs[#defs + 1] = { id = n, name = n, min = 0, max = 1, default = native.param(rawget(t, "__id"), n) or 0 }
+      end
+    end
+    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do add(n) end
+    for _, n in ipairs(known_params[rawget(t, "type")] or {}) do add(n) end
     return defs
   end
   return nil
