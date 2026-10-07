@@ -322,7 +322,12 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
-                if r.i32()? != kind {
+                if (30..=41).contains(&kind) {
+                    // Ladder records repeat the subtype, with a version flag
+                    // byte before some repeats (DSP_FORMAT_SPECIFICATION,
+                    // "Effect parameter payloads"); v0x95 repeats it more.
+                    r.skip_repeats(kind);
+                } else if r.i32()? != kind {
                     return None;
                 }
                 if (22..=24).contains(&kind) {
@@ -332,7 +337,7 @@ impl Slot {
                     Params::Eq { bands }
                 } else {
                     // Daft (70, 71) stores a leading value first.
-                    let leading = if matches!(kind, 70 | 71) {
+                    let leading = if matches!(kind, 70 | 71 | 30..=41) {
                         Some(r.f32()?)
                     } else {
                         None
@@ -371,6 +376,19 @@ impl Reader<'_> {
     }
     fn i32(&mut self) -> Option<i32> {
         self.take().map(i32::from_le_bytes)
+    }
+    /// Consume the subtype repeats and their flag bytes after the first.
+    fn skip_repeats(&mut self, kind: i32) {
+        let k = kind.to_le_bytes();
+        loop {
+            if let Some(rest) = self.0.strip_prefix(&k) {
+                self.0 = rest;
+            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
+                self.0 = rest;
+            } else {
+                return;
+            }
+        }
     }
     fn flag(&mut self) -> Option<bool> {
         self.take::<1>().map(|[b]| b != 0)
@@ -1369,6 +1387,21 @@ mod tests {
         assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
         assert_eq!(c.attack.seconds(), 0.01);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn ladder_records_with_flag_bytes_parse_to_their_cutoff() {
+        // Conflux (v0x92): kind, flag, kind, then leading, cutoff, resonance.
+        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind, floats.
+        let k = 33i32.to_le_bytes();
+        let floats: Vec<u8> = [0.0f32, 0.4, 0.25].iter().flat_map(|x| x.to_le_bytes()).collect();
+        for layout in [&[&k[..], &[0], &k][..], &[&k, &[0], &k, &k, &k, &[0], &k]] {
+            let mut bytes = layout.concat();
+            bytes.extend(&floats);
+            let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+            let note = &built.notes[1].2;
+            assert_eq!(*note, "33 cutoff 0.4 resonance 0.25", "{:?}", built.notes);
+        }
     }
 
     #[test]
