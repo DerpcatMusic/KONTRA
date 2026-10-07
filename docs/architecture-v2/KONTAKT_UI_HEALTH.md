@@ -97,7 +97,8 @@ widget support.
 
 UI resource lookup now uses the existing bounded `ResourceContainer` reader for
 both NKR and NICNT, preserving loose-file precedence and normalized path/case
-lookup. `locations()` retains paths after opening them. This also serves the
+lookup. Lookup stops at the corpus Kontakt boundary instead of borrowing a
+sibling library’s resources. `locations()` retains paths after opening them. This also serves the
 format owner's linked-script port, which calls `Resources::read`.
 
 The official [control parameter documentation](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/control-parameters)
