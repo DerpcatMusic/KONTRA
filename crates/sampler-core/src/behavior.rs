@@ -1661,7 +1661,12 @@ impl Runtime {
         let origin = match callback.owner {
             BehaviorOwner::Note(note) => super::NoteOrigin::Child(note, linked, inheritance),
             BehaviorOwner::Plan(plan) => {
-                if linked || inheritance != Inheritance::Independent {
+                if linked
+                    || !matches!(
+                        inheritance,
+                        Inheritance::Independent | Inheritance::Expression
+                    )
+                {
                     return Err(Error::InvalidInput);
                 }
                 let (origin, performance) = if let PlanContext::Controller(event) = callback.context
