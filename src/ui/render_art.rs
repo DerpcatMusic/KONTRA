@@ -69,20 +69,28 @@ fn bitmap_words(text: &str, align: ir::Align, top: Option<i32>, w:f64,h:f64,s:f6
 
 /// Arbitrary margins take precedence; absent margins retain v1's symmetric cuts.
 pub(super) fn sliced(image:&Arc<Image>, meta: ir::ImageMeta,w:f64,h:f64,s:f64)->El {
-    let axis=|on:bool,own:u32,to:f64,mut first:u32,mut last:u32|->Vec<(u32,u32,f64)> {
-        if !on || own<2 {return vec![(0,own,to)];}
-        if first==0 && last==0 {first=(own-1)/2;last=first;}
-        if first.saturating_add(last)>=own {return vec![(0,own,to)];}
+    let axis=|on:bool,own:u32,source:u32,to:f64,mut first:u32,mut last:u32|->Vec<(u32,u32,f64)> {
+        if !on || own<2 || source<2 {return vec![(0,own,to)];}
+        if first==0 && last==0 {first=(source-1)/2;last=first;}
+        if first.saturating_add(last)>=source {return vec![(0,own,to)];}
         let (a,b)=(first as f64*s,last as f64*s);
         if to<=a+b {return vec![(0,own,to)];}
-        vec![(0,first,a),(first,own-first-last,to-a-b),(own-last,last,b)]
+        let left=(first as f64*own as f64/source as f64).round() as u32;
+        let right=(last as f64*own as f64/source as f64).round() as u32;
+        if left+right>=own {return vec![(0,own,to)];}
+        vec![(0,left,a),(left,own-left-right,to-a-b),(own-right,right,b)]
     };
-    let across=axis(meta.stretch[0],image.width,w,meta.margins.left,meta.margins.right);
-    let down=axis(meta.stretch[1],image.height,h,meta.margins.top,meta.margins.bottom);
+    let size=meta.size.unwrap_or(ir::Size{width:image.width,height:image.height});
+    let across=axis(meta.stretch[0],image.width,size.width,w,meta.margins.left,meta.margins.right);
+    let down=axis(meta.stretch[1],image.height,size.height,h,meta.margins.top,meta.margins.bottom);
     if across.len()==1 && down.len()==1 {return block(w,h).radius(0.).fill(Fill::Image(image.clone(),Fit::Fill));}
     let mut parts=Vec::new();let mut y=0.;
     for &(sy,sh,th) in &down {let mut x=0.;for &(sx,sw,tw) in &across {
-        if let Some(piece)=super::pictures::cut(image,[sx,sy,sw,sh]) {parts.push(block(tw,th).radius(0.).fill(Fill::Image(piece,Fit::Fill)).at(x,y));}x+=tw;
+        if sw>0 && sh>0 && tw>0. && th>0. {
+            // Shared image and clipped source view: no per-corner RGBA copies.
+            let (zx,zy)=(tw/sw as f64,th/sh as f64);
+            parts.push(stack![block(image.width as f64*zx,image.height as f64*zy).radius(0.).fill(Fill::Image(image.clone(),Fit::Fill)).at(-(sx as f64)*zx,-(sy as f64)*zy)].w(tw).h(th).clip().at(x,y));
+        }x+=tw;
     }y+=th;}
     stack(parts).w(w).h(h)
 }
