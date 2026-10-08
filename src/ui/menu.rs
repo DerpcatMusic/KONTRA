@@ -78,6 +78,7 @@ pub enum Command {
     /// Add a library folder (`true`) or a folder of libraries.
     AddFolder(bool),
     ImportKontakt,
+    CreateLibrary,
     Rescan,
     CancelScan,
     /// A library's cover, by its folder: a picture chosen for it, the
@@ -289,6 +290,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 act("Add folder of libraries…", "", Command::AddFolder(false)),
                 act("Add library folder…", "", Command::AddFolder(true)),
                 act("Import from Kontakt", "", Command::ImportKontakt),
+                act("Create library from folder…", "", Command::CreateLibrary),
                 Item::Rule,
                 act("Library folders…", "", Command::Folders),
                 act("Reset library order to A–Z", "", Command::ResetLibraryOrder),
@@ -462,6 +464,7 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             for (mb, label) in [(0, "Keep all"), (1024, "1 GB"), (2048, "2 GB"), (4096, "4 GB"), (8192, "8 GB")] {
                 items.push(check(label, cx.selection.memory_budget_mb == mb, Command::MemoryBudget(mb)));
             }
+            items.push(act("Create library from folder…", "", Command::CreateLibrary));
             items
         }
     }
@@ -652,6 +655,12 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Folders => cx.state.settings = !cx.state.settings,
         Command::AddFolder(single) => super::header::add_folder(cx, single),
         Command::ImportKontakt => shared.libraries.import_kontakt(),
+        Command::CreateLibrary => {
+            let out = super::header::root(cx).into();
+            if !cx.state.picker.ask(super::picker::Ask::Samples { out }) {
+                cx.state.notice = "No file dialog here: use `kontakto create-library <folder>`".into();
+            }
+        }
         Command::Rescan => shared.libraries.rescan(),
         Command::SortLibraries(sort) => shared.libraries.edit(|s| s.sort = sort),
         Command::Pin(dir) => shared.libraries.edit(|s| match s.pinned.iter().position(|d| *d == dir) {
