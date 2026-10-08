@@ -58,6 +58,7 @@ pub struct Part {
     pub(crate) epoch: u64,
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
+    pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
     mpe: Mpe,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
@@ -168,6 +169,7 @@ impl Part {
         // Plans without articulations have nothing to drive.
         let articulator = runtime.performance(0).and_then(|p| Articulator::new(&runtime, p, WIRE.port)).ok();
         let count = tree.nodes.len();
+        let engine_bindings = runtime.engine_parameter_bindings(runtime.active_plan()).map_err(core)?.into();
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
         let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
@@ -187,6 +189,7 @@ impl Part {
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
+            engine_bindings,
             waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
@@ -861,6 +864,7 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
+            let _ = p.runtime.set_engine_offsets(self.mix.editor_offsets.get(part).map_or(&[],|o|o.as_ref()));
             p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
         }
         Retired(std::mem::replace(slot, prepared))
@@ -1059,6 +1063,7 @@ impl Core for V2Core {
         for (to, from) in self.mix.articulation_routes.iter_mut().zip(mix.articulation_routes.iter().chain(std::iter::repeat(&None))) { *to = from.clone(); }
         for (index, (p, c)) in self.parts.iter_mut().zip(&self.mix.parts).enumerate() {
             let Some(p) = p else { continue };
+            let _ = p.runtime.set_engine_offsets(mix.editor_offsets.get(index).map_or(&[], |o|o.as_ref()));
             p.configure(c, mix.articulation_routes.get(index).and_then(Option::as_ref));
             p.mix_nodes(mix.nodes.get(index).map_or(&[], Vec::as_slice));
         }
@@ -1094,6 +1099,8 @@ impl Core for V2Core {
         let Some(Some(p)) = self.parts.get_mut(part) else { return };
         p.runtime.drain_effects(|e| e.instance.is_none_or(|i| each(usize::from(i.0), e)));
     }
+
+    fn voice_taps(&self, part:usize)->[Option<sampler_core::VoiceTap>;16] {self.parts.get(part).and_then(Option::as_ref).map_or([None;16],|p|p.runtime.voice_taps())}
 
     fn voices(&self) -> Voices {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
