@@ -3375,23 +3375,3 @@ mod timing_parity_tests {
     }
 }
 
-;
-    #[test]
-    fn v1_editor_mix_before_load_and_reload_keeps_the_saved_offset() {
-        let address=EngineParameterAddress{parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(),group:0,slot:3,generic:-1};
-        let id=ControlId(10);let law=EngineParameterLaw::Exponential{low:10.,high:10000.};
-        let make=|| {
-            let plan=Prepared::new(48000,vec![],vec![],0).unwrap().with_controls(vec![ControlDefinition{id,domain:ControlDomain::Real{min:10.,max:10000.},default:ControlValue::Real(100.)}]).unwrap().with_engine_parameters(vec![EngineParameterBinding{address,control:id,law}],vec![]).unwrap();
-            let limits=Limits::for_plan(&plan,128,16);Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("Reload")).unwrap()
-        };
-        let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();
-        mix.editor_offsets=vec![Arc::from([EngineParameterOffset{address,offset:0.1}])];
-        c.set_mix(&mix);
-        for _ in 0..2 {
-            let _old=c.install(0,Some(Box::new(make())));
-            let rt=&c.parts[0].as_ref().unwrap().runtime;
-            assert_eq!(rt.control_base_value(rt.active_plan(),id).unwrap(),ControlValue::Real(100.));
-            assert_eq!(rt.control_value(rt.active_plan(),id).unwrap(),ControlValue::Real(law.decode(law.encode(100.)+100000)),"loading applies the already saved editor layer");
-        }
-    }
-}
