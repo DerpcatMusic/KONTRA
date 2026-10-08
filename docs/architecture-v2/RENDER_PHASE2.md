@@ -318,3 +318,19 @@ does not prove inactive branches or Kontakt-observed legacy Native behavior.
 
 This checkpoint does not claim full-editor Native painting or a final N/50
 Original-OK count. Those remain a separate, timeboxed investigation.
+
+
+### Deferred Canvas callback budget
+
+Canvas paint executes after graph construction and layout. Give each deferred
+paint callback the same bounded 100,000-instruction/250 ms budget as an input
+callback; the graph deadline may have expired while layout loaded fonts.
+
+Failing-first regression waits 300 ms after lowering a Canvas, then paints it:
+old code reports an expired NativeUI budget; the fixed callback paints. An
+explicit 2 MiB full-editor fixture also paints a nested native graph. Real
+Conflux and BigScreen program 1 painted with no native failure categories on
+2 MiB threads: debug peak 1,120,160 bytes, optimized CI peak 269,079 bytes.
+Receipts: `~/.cache/kontakto-w3/ui-audit-stack/`. The evidence build contained
+additional test-only diagnostics; this commit excludes those probes.
+BigScreen program 0 and the 50-multi count remain separate pending checks.
