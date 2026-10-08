@@ -527,7 +527,6 @@ pub struct Session {
     root: Function,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
-    deadline: Arc<Mutex<std::time::Instant>>,
 }
 impl Session {
     pub fn new(
@@ -553,12 +552,8 @@ impl Session {
         for name in ["loadstring", "collectgarbage", "getfenv", "setfenv"] {
             lua.globals().set(name, LuaValue::Nil)?;
         }
-        // Luau interrupts fire at calls/backedges, unlike Lua instruction hooks.
+        // Bound Luau call/backedge checkpoints; scheduler time cannot invalidate UI work.
         let fuel = Arc::new(AtomicUsize::new(500_000));
-        let deadline = Arc::new(Mutex::new(
-            std::time::Instant::now() + std::time::Duration::from_secs(2),
-        ));
-        let hook_deadline = deadline.clone();
         let hook_fuel = fuel.clone();
         lua.set_interrupt(move |lua| {
             if hook_fuel
@@ -571,11 +566,6 @@ impl Session {
                     format!("{}:{}:{}:{}", usize::from(source == "NativeUI host"), debug.current_line().unwrap_or(0), &blake3::hash(source.as_bytes()).to_hex()[..16], lua.globals().get::<u32>("__native_nodes").unwrap_or(0))
                 }).unwrap_or_default();
                 return Err(mlua::Error::external(format!("NativeUI interrupt budget exceeded; site {site}")));
-            }
-            if hook_fuel.load(Ordering::Relaxed) % 256 == 0
-                && std::time::Instant::now() > *hook_deadline.lock().unwrap()
-            {
-                return Err(mlua::Error::external("NativeUI time budget exceeded"));
             }
             Ok(mlua::VmState::Continue)
         });
@@ -680,7 +670,6 @@ impl Session {
             root,
             bridge,
             fuel,
-            deadline,
         })
     }
     pub fn update_view(
@@ -730,8 +719,6 @@ impl Session {
     }
     pub fn render(&self) -> anyhow::Result<Table> {
         self.fuel.store(1_000_000, Ordering::Relaxed);
-        *self.deadline.lock().unwrap() =
-            std::time::Instant::now() + std::time::Duration::from_millis(250);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
         }
@@ -741,23 +728,26 @@ impl Session {
             .get::<Function>("__render")?
             .call(self.root.clone())?)
     }
+    #[cfg(test)]
+    pub fn work_remaining(&self) -> usize { self.fuel.load(Ordering::Relaxed) }
+    #[cfg(any(test, feature = "shots"))]
+    pub fn graph_work(&self) -> (usize, usize) {
+        (self.lua.globals().get::<usize>("__native_nodes").unwrap_or(0),
+            1_000_000usize.saturating_sub(self.fuel.load(Ordering::Relaxed)))
+    }
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
     pub fn paint_callback(&self, paint:Function) -> mlua::Result<Function> {
         let fuel=self.fuel.clone();
-        let deadline=self.deadline.clone();
         self.lua.create_function(move |_,args:mlua::MultiValue| {
-            // Canvas paint is deferred until after layout, beyond the graph's deadline.
+            // Deferred Canvas starts its own work allowance after layout.
             fuel.store(100_000,Ordering::Relaxed);
-            *deadline.lock().unwrap()=std::time::Instant::now()+std::time::Duration::from_millis(250);
             paint.call::<()>(args)
         })
     }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
         self.fuel.store(100_000, Ordering::Relaxed);
-        *self.deadline.lock().unwrap() =
-            std::time::Instant::now() + std::time::Duration::from_millis(250);
         function.call(args)
     }
     pub fn event(
@@ -946,6 +936,7 @@ mod tests {
         assert_eq!(nested.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "nested");
         assert_eq!(sibling.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "base");
         let forever: Function = session.lua().load("return function() while true do end end").eval().unwrap();
-        assert!(session.call(forever, ()).unwrap_err().to_string().contains("budget exceeded"));
+        assert!(session.call(forever, ()).unwrap_err().to_string().contains("NativeUI interrupt budget exceeded"));
+        assert_eq!(session.work_remaining(),0,"pathological loops must exhaust deterministic work");
     }
 }
