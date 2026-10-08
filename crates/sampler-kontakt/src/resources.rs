@@ -86,11 +86,14 @@ impl Resources {
     /// Resolve linked script source before the inline fallback. Resource bytes
     /// remain in memory and are never written to a plaintext cache.
     pub fn script(&mut self, name: &str) -> Option<String> {
+        let name = name.trim();
+        let file = name.rsplit(['/', '\\']).next()?;
+        if file.is_empty() || matches!(file, "." | "..") { return None; }
         let normalized = name.replace('\\', "/");
-        let bytes = self
-            .read(&normalized)
-            .or_else(|| self.read(&format!("Resources/scripts/{normalized}")))?;
-        Some(ni_file::kontakt::objects::BParScript::decode_source(bytes))
+        let bytes = self.read(&normalized)
+            .or_else(|| self.read(&format!("Resources/scripts/{file}")))?;
+        let text = script_text(&bytes);
+        (!text.trim().is_empty()).then_some(text)
     }
     /// Normalized namespace members. No bytes are extracted or persisted.
     pub fn names(&mut self, prefix: &str) -> Vec<String> {
@@ -147,8 +150,54 @@ impl Resources {
         ))
     }
 }
+fn script_text(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    if bytes.starts_with(b"\xff\xfe")
+        || (bytes.len() >= 4 && bytes[0] != 0 && bytes[1] == 0 && bytes[3] == 0)
+    {
+        let units: Vec<_> = bytes
+            .strip_prefix(b"\xff\xfe")
+            .unwrap_or(bytes)
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    // ponytail: legacy byte strings use v1's Latin-1 fallback; use a Windows-1252
+    // decoder if a library needs the 0x80..0x9f punctuation mapping.
+    String::from_utf8(bytes.to_vec())
+        .unwrap_or_else(|_| bytes.iter().map(|&b| char::from(b)).collect())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linked_scripts_reload_from_resources_and_decode_saved_encodings() {
+        let dir =
+            std::env::temp_dir().join(format!("kontakt-linked-script-{}", std::process::id()));
+        let scripts = dir.join("Resources/Scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::create_dir_all(dir.join("Instruments")).unwrap();
+        let source = "on init\nmessage(\"linked\")\nend on";
+        let mut bytes = vec![0xff, 0xfe];
+        for unit in source.encode_utf16() {
+            bytes.extend(unit.to_le_bytes());
+        }
+        std::fs::write(scripts.join("Linked.txt"), bytes).unwrap();
+        std::fs::write(scripts.join("Empty.txt"), b" \n").unwrap();
+        let mut r = super::Resources::of(&dir.join("Instruments/Piano.nki"));
+        assert_eq!(
+            r.script(r"C:\old\LINKED.TXT").as_deref(),
+            Some(source)
+        );
+        for missing in ["Empty.txt", "missing.txt", "..", ""] {
+            assert!(r.script(missing).is_none());
+        }
+        assert_eq!(super::script_text(b"\xef\xbb\xbfhello"), "hello");
+        assert_eq!(super::script_text(b"caf\xe9"), "café");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn nested_names_and_library_boundary() {
         let dir = std::env::temp_dir().join(format!("kontakt-resource-boundary-{}", std::process::id()));

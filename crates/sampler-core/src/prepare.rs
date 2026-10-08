@@ -171,7 +171,7 @@ impl Pcm {
     pub(crate) fn try_head(&self) -> Option<RwLockReadGuard<'_, Ranges>> {
         self.0.head.try_read().ok()
     }
-    pub(crate) fn mark_cold(&self) {
+    pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
     }
     pub(crate) fn touch(&self, now: u64) {

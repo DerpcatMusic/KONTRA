@@ -38,10 +38,12 @@ pub(super) struct State {
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
 }
-fn failure(error: &anyhow::Error) -> String {
+fn failure(error: &anyhow::Error, phase: &str) -> String {
     fn category(error: &mlua::Error) -> String {
         match error {
-            mlua::Error::CallbackError { cause, .. } => category(cause),
+            mlua::Error::CallbackError { cause, .. } | mlua::Error::BadArgument { cause, .. } => {
+                category(cause)
+            }
             mlua::Error::FromLuaConversionError { from, to, .. } => {
                 let allowed = [
                     "nil", "boolean", "integer", "number", "string", "table", "function",
@@ -62,7 +64,29 @@ fn failure(error: &anyhow::Error) -> String {
                 )
             }
             mlua::Error::SyntaxError { .. } => "NativeUI Lua syntax".into(),
-            mlua::Error::ExternalError(_) => "NativeUI host operation".into(),
+            mlua::Error::ExternalError(error) => {
+                let message = error.to_string();
+                if let Some(site) = message.strip_prefix("NativeUI interrupt budget exceeded; site ")
+                    && site.bytes().all(|c| c.is_ascii_hexdigit() || c == b':')
+                {
+                    return message;
+                }
+                [
+                    "NativeUI module absent",
+                    "NativeUI meter unavailable",
+                    "NativeUI control unavailable",
+                    "NativeUI syntax translation",
+                    "Invalid NativeUI module path",
+                    "NativeUI interrupt budget exceeded",
+                    "NativeUI time budget exceeded",
+                    "NativeUI value type unsupported",
+                    "invalid utf-8 sequence",
+                ]
+                .into_iter()
+                .find(|class| message.contains(class))
+                .unwrap_or("NativeUI host operation")
+                .into()
+            }
             mlua::Error::RuntimeError(_) => "NativeUI Lua runtime".into(),
             _ => "NativeUI Lua operation".into(),
         }
@@ -70,8 +94,10 @@ fn failure(error: &anyhow::Error) -> String {
     let category = error
         .downcast_ref::<mlua::Error>()
         .map(category)
-        .unwrap_or_else(|| "NativeUI package".into());
-    format!("{category}: {error}")
+        .unwrap_or_else(|| if error.to_string()=="NativeUI supplied font unavailable" {
+            "NativeUI font service unavailable".into()
+        } else {"NativeUI package".into()});
+    format!("{phase}, {category}: {error}")
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -172,40 +198,11 @@ impl State {
     #[cfg(feature = "shots")]
     pub fn diagnostic(&self) -> Option<String> {
         self.failure.as_ref().map(|raw| {
-            let class = [
-                "NativeUI meter unavailable",
-                "NativeUI module absent",
-                "No readable legacy .nui resources",
-                "NativeUI control unavailable",
-                "error converting Lua table to string",
-                "error converting Lua nil",
-                "error converting Lua string",
-                "NativeUI interrupt budget exceeded",
-                "NativeUI time budget exceeded",
-                "Expected identifier",
-                "Expected '('",
-                "Expected expression",
-                "Unknown NativeUI primitive",
-                "NativeUI conversion boolean to string",
-                "NativeUI conversion table to string",
-                "NativeUI conversion table to String",
-                "NativeUI conversion table to Function",
-                "NativeUI conversion nil to Function",
-                "NativeUI Lua syntax",
-                "NativeUI Lua runtime",
-                "NativeUI host operation",
-                "NativeUI package",
-            ]
-            .into_iter()
-            .find(|class| raw.contains(class));
-            class.map_or_else(
-                || crate::scan_metrics::message(raw),
-                |class| {
-                    format!(
-                        "{class}; hash {}",
-                        &blake3::hash(raw.as_bytes()).to_hex()[..16]
-                    )
-                },
+            format!(
+                "{}; {}",
+                raw.split_once(": ")
+                    .map_or("NativeUI failure", |(category, _)| category),
+                crate::scan_metrics::message(raw)
             )
         })
     }
@@ -227,7 +224,7 @@ impl State {
                 Ok(package) => self.package = Some(package),
                 Err(error) => {
                     self.failed = true;
-                    self.failure = Some(failure(&error));
+                    self.failure = Some(failure(&error, "NativeUI resource preparation"));
                 }
             }
         }
@@ -291,7 +288,7 @@ impl State {
             Ok(el) => el,
             Err(error) => {
                 self.failed = true;
-                self.failure = Some(failure(&error));
+                self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
@@ -470,6 +467,7 @@ fn draw(
     let props: Table = node.get("props")?;
     let modifiers = tables(node, "modifiers")?;
     let kind = string(node, "kind");
+    let mut font_name = None;
     for m in &modifiers {
         let v = val(m, "value");
         match string(m, "name").as_str() {
@@ -484,25 +482,17 @@ fn draw(
                 }
             }
             "font" | "font_family" => {
-                let name = string(m, "value").to_lowercase();
-                style.font = package
-                    .fonts
-                    .iter()
-                    .find(|(path, _)| {
-                        *path == &name
-                            || path.rsplit('/').next().is_some_and(|p| {
-                                p == name
-                                    || p.strip_suffix(".ttf") == Some(name.as_str())
-                                    || p.strip_suffix(".otf") == Some(name.as_str())
-                            })
-                    })
-                    .map(|(_, f)| f.clone());
+                font_name = Some(string(m, "value"));
             }
             "bold" => style.bold = boolean(&v),
             "disabled" => style.disabled |= boolean(&v),
             "hidden" => style.hidden |= boolean(&v),
             _ => {}
         }
+    }
+    if let Some(name) = font_name {
+        style.font=Some(package.font(&name,style.bold)
+            .ok_or_else(||anyhow::anyhow!("NativeUI supplied font unavailable"))?);
     }
     let child_nodes = tables(node, "children")?;
     let has_flexible_content = child_nodes.iter().any(|child| {
@@ -595,6 +585,20 @@ fn draw(
             if !ui.focused(id.as_str()) {
                 *value = string(&props, "text");
             }
+            static FALLBACK: std::sync::OnceLock<Font> = std::sync::OnceLock::new();
+            let font=style.font.clone().unwrap_or_else(||FALLBACK.get_or_init(||Font::new(NOTO_SANS).unwrap()).clone());
+            let nominal=style.size*s;
+            // Reuse v1's bounded caption fit when the host default face is
+            // approximated. Authored fonts and focused editing keep their size.
+            let size=if style.font.is_none() && !ui.focused(id.as_str()) {
+                ui.scene().and_then(|scene|scene.surface(&id)).map_or(nominal,|surface| {
+                    let advance=mui_text::shape_run(std::slice::from_ref(&font),value,nominal,
+                        &[("wght",if style.bold {700.}else{400.})]).map_or(0.,|r|r.advance);
+                    if advance>0. && surface.frame.size.width>0. {
+                        nominal*(surface.frame.size.width/advance).clamp(0.75,1.)
+                    } else {nominal}
+                })
+            } else {nominal};
             let field = text_edit(ui, id, value, TextOpts::default());
             if field.changed.changed
                 && let Ok(f) = props.get::<Function>("on_change")
@@ -606,12 +610,23 @@ fn draw(
             {
                 session.call(f, value.clone())?;
             }
-            field
+            let mut el = field
                 .el
-                .text_size(style.size * s)
+                .text_size(size)
+                .font(font.clone())
+                .text_weight(if style.bold { mui_text::Weight::BOLD } else { mui_text::Weight::REGULAR })
                 .fill(Fill::None)
                 .pad(0)
-                .radius(0.)
+                .radius(0.);
+            // The generic editor has separate paint/hit-test insets; clearing
+            // layout padding alone still clips authored fields by 16 pixels.
+            if let Some(edit) = &mut el.payload_mut().extras_mut().editable_text {
+                edit.insets = [0., 0.];
+            }
+            let height=mui_text::shape_run(std::slice::from_ref(&font), "M", size,
+                &[("wght", if style.bold { 700. } else { 400. })])
+                .map_or(size*1.25,|run|run.line_height);
+            el.h(height)
         }
         "Rectangle" => block(Len::Auto, Len::Auto)
             .fill(color(&val(&props, "color")).unwrap_or(style.ink))
@@ -1093,4 +1108,167 @@ fn canvas_draw(lua: &mlua::Lua, paint: &Function, size: Size, s: f64) -> mlua::R
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires locally owned NativeUI library; graph and bindings stay in RAM"]
+    fn native_edit_selector_bindings_use_the_published_source() {
+        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source=sampler_kontakt::read(&path).unwrap().instrument;
+        source.zones.clear(); source.source_indices.zones.clear(); source.assets.clear();
+        let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {
+            library:Some(path.clone()),..Default::default()
+        }).unwrap();
+        let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls:Vec<_>=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
+            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
+        let package=Arc::new(Package::load(&path).unwrap());
+        let session=Session::new(package,&entry,controls.clone()).unwrap();
+        let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String)>::new()));
+        let trace=reads.clone();
+        session.lua().globals().set("__audit_parameter",session.lua().create_function(
+            move |_,(name,binding,path):(String,i64,String)| {
+                if binding>=0 && (name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {
+                    let mut trace=trace.lock().unwrap();
+                    if trace.len()<16384 {trace.push((name,binding as usize,path));}
+                }
+                Ok(())
+            }
+        ).unwrap()).unwrap();
+        fn tap(node:&Table,target:&str)->Option<Function> {
+            let mut contains=string(node,"kind")=="Text" &&
+                node.get::<Table>("props").ok().is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target));
+            for child in tables(node,"children").unwrap() {
+                if let Some(callback)=tap(&child,target) {return Some(callback);}
+                contains|=has_text(&child,target);
+            }
+            if contains {for modifier in tables(node,"modifiers").unwrap() {
+                if string(&modifier,"name")=="on_tap_gesture" &&
+                    let Ok(value)=modifier.get::<Table>("value") &&
+                    let Ok(callback)=value.get::<Function>("complete").or_else(|_|value.get("start")) {return Some(callback);}
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
+                    let Ok(child)=modifier.get::<Table>("value") &&
+                    let Some(callback)=tap(&child,target) {return Some(callback);}
+            }}
+            None
+        }
+        fn has_text(node:&Table,target:&str)->bool {
+            (string(node,"kind")=="Text" && node.get::<Table>("props").ok()
+                .is_some_and(|p|string(&p,"text").eq_ignore_ascii_case(target))) ||
+                tables(node,"children").unwrap().iter().any(|c|has_text(c,target))
+        }
+        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
+        let callback=tap(&graph,"EDIT").expect("authored Edit tab has a tap callback");
+        session.call(callback,session.event(0.,0.,0.,0.,0.,0.,false,false,false,false).unwrap()).unwrap();
+        reads.lock().unwrap().clear();
+        let graph=session.render().unwrap_or_else(|e|panic!("{}",failure(&e,"graph").split_once(": ").unwrap().0));
+        fn node_kinds(node:&Table,out:&mut HashMap<String,String>) {
+            out.insert(string(node,"path"),string(node,"kind"));
+            for child in tables(node,"children").unwrap() {node_kinds(&child,out);}
+            for modifier in tables(node,"modifiers").unwrap() {
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") &&
+                    let Ok(child)=modifier.get::<Table>("value") {node_kinds(&child,out);}
+            }
+        }
+        let mut kinds=HashMap::new();node_kinds(&graph,&mut kinds);
+        let mut seen=std::collections::BTreeSet::new();
+        for (name,binding,path) in reads.lock().unwrap().iter() {
+            if !(name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {continue;}
+            let kind=kinds.get(path).map(String::as_str).unwrap_or("Component");
+            if !seen.insert((name.clone(),kind.to_owned(),*binding)) {continue;}
+            let (source,_,widget)=controls.get(*binding).expect("binding addresses a published control");
+            println!("NATIVE_BINDING node={kind} parameter={name} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
+        }
+        assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
+    }
+
+    #[test]
+    #[ignore = "requires locally owned NativeUI library; text stays in RAM"]
+    fn native_saved_text_reaches_authored_field_without_host_insets() {
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+        source.retain_zones(|_|false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+            library: Some(path.clone()), ..Default::default()
+        }).unwrap();
+        let entry = loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls: Vec<_> = loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
+            .map(move |(n,w)|(f.source,n,w.clone()))).collect();
+        let saved: Vec<_> = controls.iter().filter(|(_,_,w)|w.name.starts_with("@Footer__Macro__Name__"))
+            .map(|(_,_,w)|match &w.value {Some(ir::Value::Text(s))=>s.clone(),_=>panic!("published text missing")}).collect();
+        assert_eq!(saved.len(), 6);
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let graph = session.render().unwrap();
+        fn font_usage(node:&Table,package:&Package,counts:&mut [usize;3]) {
+            for modifier in tables(node,"modifiers").unwrap() {
+                let kind=string(&modifier,"name");
+                if matches!(kind.as_str(),"font"|"font_family") {
+                    counts[0]+=1;
+                    let name=string(&modifier,"value");
+                    counts[1]+=usize::from(!name.is_empty());
+                    counts[2]+=usize::from(package.font(&name,false).is_some());
+                }
+                if matches!(kind.as_str(),"background"|"overlay") {
+                    if let Ok(child)=modifier.get::<Table>("value") {font_usage(&child,package,counts);}
+                }
+            }
+            for child in tables(node,"children").unwrap() {font_usage(&child,package,counts);}
+        }
+        let mut fonts=[0;3];font_usage(&graph,&package,&mut fonts);
+        println!("NATIVE_FONT declarations={} string_names={} supplied_matches={}",fonts[0],fonts[1],fonts[2]);
+        fn fields(node:&Table,saved:&[String],out:&mut Vec<(String,usize,usize)>) {
+            let kind = string(node,"kind");
+            if matches!(kind.as_str(),"Text"|"TextInput") {
+                let props=node.get::<Table>("props").unwrap();
+                let text = string(&props,"text");
+                if let Some(n)=saved.iter().position(|s|s==&text) {
+                    println!("NATIVE_TEXT_PROPS slot={n} font_size={:?} size={:?} family_declared={} font_table={} style_table={}",number(&props,"font_size"),number(&props,"size"),!string(&props,"font_family").is_empty(),matches!(val(&props,"font"),Value::Table(_)),matches!(val(&props,"style"),Value::Table(_)));
+                    out.push((string(node,"path"),n,text.chars().count()));
+                }
+            }
+            for child in tables(node,"children").unwrap() {fields(&child,saved,out);}
+            for modifier in tables(node,"modifiers").unwrap() {
+                if matches!(string(&modifier,"name").as_str(),"background"|"overlay") {
+                    if let Ok(child)=modifier.get::<Table>("value") {fields(&child,saved,out);}
+                }
+            }
+        }
+        let mut fields_found=Vec::new();
+        fields(&graph,&saved,&mut fields_found);
+        assert!(fields_found.len()>=6,"six complete saved strings reach native primitives");
+        let mut ui=super::super::theme::ui();
+        let mut drafts=HashMap::new();
+        for _ in 0..4 {
+            let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).unwrap();
+            ui.frame(el,Some(authored_size(&graph)),Input::default(),1./60.).unwrap();
+        }
+        let scene=ui.scene().unwrap();
+        let mut matched=0;
+        for (path,n,len) in fields_found {
+            if let Some(surface)=scene.surface(&format!("nui-0-{path}-text")) {
+                let geometry=surface.text_geometry.as_ref().unwrap();
+                let advance=geometry.lines[0].carets.x(geometry.text.len());
+                println!("NATIVE_TEXT slot={n} chars={len} equals_saved={} frame_width={} viewport_width={} advance={} insets={:?}",
+                    geometry.text.as_ref()==saved[n],surface.frame.size.width,geometry.viewport.width,advance,geometry.state.insets);
+                assert!(geometry.text.as_ref()==saved[n],"full saved text reaches final field geometry");
+                assert_eq!(geometry.state.insets,[0.,0.],"authored text fields must not retain generic editor padding");
+                assert!(advance<=geometry.viewport.width+0.01,"fallback metrics fit the complete saved caption");
+                matched+=1;
+            }
+        }
+        assert_eq!(matched,6);
+        let modifiers=graph.get::<Table>("modifiers").unwrap();
+        let missing=session.lua().create_table().unwrap();
+        missing.set("name","font_family").unwrap();
+        missing.set("value","unavailable-test-font").unwrap();
+        modifiers.push(missing).unwrap();
+        let error=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).err().unwrap();
+        assert!(failure(&error,"graph").starts_with("graph, NativeUI font service unavailable:"));
+    }
 }

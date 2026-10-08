@@ -9,19 +9,24 @@
 mod access;
 mod automation;
 pub use automation::{program_automation, AutomationRecord};
+pub mod audit;
 mod container;
+mod header_cache;
 mod effects;
 pub mod keyswitch;
+mod keyswitch_ui;
 mod library;
 mod load;
 mod mapping;
 mod metadata;
+mod objects;
 pub mod nis;
 mod nks;
 mod persistence;
 mod resource_container;
 mod resources;
 mod samples;
+mod pcm;
 mod script;
 mod snapshot;
 mod stream;
@@ -32,7 +37,8 @@ pub use library::{Kontakt, read, read_program, read_with_snapshot};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
-    compile_ui, load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
+    compile_ui, load_cancelable, load_read, load_read_streamed, load_read_streamed_cancelable, load_streamed,
+    prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
@@ -46,7 +52,7 @@ pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
 pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
-pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
+pub use stream::{DISK_READ, AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]

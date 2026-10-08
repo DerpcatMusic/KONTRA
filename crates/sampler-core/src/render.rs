@@ -148,6 +148,7 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let start = std::time::Instant::now();
+        self.stream_fault = None;
         if self.signal_trace { self.render_inner::<true>(output, outs)?; }
         else { self.render_inner::<false>(output, outs)?; }
         let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -180,6 +181,7 @@ impl Runtime {
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
             self.render_segment::<TRACE>(segment, outs, offset);
+            if self.stream_fault.is_some() { return Err(Error::NotReady); }
             for frame in segment {
                 if !frame.iter().all(|x| x.is_finite()) {
                     *frame = [0.0; 2];
@@ -225,6 +227,7 @@ impl Runtime {
                 if TRACE { if let Some(trace) = &mut g.dsp.trace { trace.begin(at, output.len()); } }
             }
             self.render_voices::<TRACE>(output, at);
+            if self.stream_fault.is_some() { return; }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
                 let faults = g
@@ -248,6 +251,20 @@ impl Runtime {
             }
             return;
         }
+        if self.offline {
+            // Modulation advance is cached on the absolute control grid. Prepare
+            // the exact steps before requesting pages; rendering at the same
+            // clock reads that ramp without advancing its sources again.
+            let mut next = self.voices.first;
+            while let Some(i) = next {
+                next = self.voices.slots[i].next;
+                self.prepare_voice(i, at, output.len());
+            }
+            if let Err(error) = self.wait_streaming(output.len().min(u32::MAX as usize) as u32, std::time::Duration::from_secs(5)) {
+                self.stream_fault = Some(error);
+                return;
+            }
+        }
         if self.render_voices_parallel(output, at) {
             return;
         }
@@ -267,6 +284,7 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
+                    if self.stream_fault.is_some() { return; }
                     let key = self.batch_key(i, output.len());
                     if key.is_none() || key != batch.0 || batch.2 == VOICES {
                         self.render_run(&batch.1[..batch.2], output, at);
@@ -334,6 +352,7 @@ impl Runtime {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
+            v.last_gains = gains[lane].map(|g| g * v.gain);
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
@@ -679,6 +698,7 @@ impl Runtime {
             let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
             [gains[0] * m(0), gains[1] * m(1)]
         });
+        v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));

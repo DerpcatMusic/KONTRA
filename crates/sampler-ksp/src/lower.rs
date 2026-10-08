@@ -605,8 +605,8 @@ impl Gen<'_, '_> {
 
     fn assign(&mut self, place: &Place, value: &Expr) -> Result<()> {
         let v = place.var();
-        let var = self.var(v).clone();
-        match (place, var.home) {
+        let home = self.var(v).home;
+        match (place, home) {
             (Place::Var(_), Home::Text(cell)) => self.text_into(value, TextRef::Cell(cell), 0),
             (Place::Elem(_, index), Home::Texts { offset, len }) => {
                 self.value(index, 0)?;
@@ -623,8 +623,8 @@ impl Gen<'_, '_> {
                 })
             }
             (Place::Var(_), _) => {
-                if let (Home::Control(ui), Some(Const::Int(n))) =
-                    (var.home, fold(self.u.hir, value))
+                if let Home::Control(ui) = home
+                    && let Some(Const::Int(n)) = fold(self.u.hir, value)
                 {
                     let (lo, hi) = self.range(ui);
                     self.set(0, i64::from(n.clamp(lo, hi)))?;
@@ -875,6 +875,10 @@ impl Gen<'_, '_> {
 
     fn sys(&mut self, s: SysVar, dst: u16) -> Result<()> {
         let note = self.note_context();
+        if s == SysVar::PitchBend {
+            self.set(dst, 128)?;
+            return self.sys_read(SysArray::Cc, dst);
+        }
         let op = match s {
             SysVar::EventId if note => I::ReadEventId { local: dst },
             SysVar::CallbackId => I::ReadCallbackId { local: dst },
@@ -946,11 +950,11 @@ impl Gen<'_, '_> {
     fn sys_read(&mut self, array: SysArray, at: u16) -> Result<()> {
         match array {
             SysArray::Cc => {
-                self.emit(I::ReadInputController {
-                    controller: at,
-                    local: at,
-                })?;
-                self.emit(I::ControllerToMidi7 { local: at })
+                let number = reg(at, 1)?;
+                self.set(number, 0)?;
+                self.emit(I::Binary32 { lhs: number, rhs: at, operation: IB::Or })?;
+                self.emit(I::ReadInputController { controller: number, local: at })?;
+                self.emit(I::ControllerToScript { controller: number, local: at })
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
             SysArray::EventPar => self.emit(I::Op(Op::ReadWidgetEventParameter { local: at })),
@@ -1021,7 +1025,7 @@ impl Gen<'_, '_> {
             ExprKind::Load(v) if e.ty == Ty::Str => match self.var(*v).home {
                 Home::Text(cell) => TextPart::Text(TextRef::Cell(cell)),
                 Home::Const(k) => match &self.u.hir.consts[k as usize] {
-                    Const::Str(s) => TextPart::Constant(self.constant(&s.clone())),
+                    Const::Str(s) => TextPart::Constant(self.constant(&s)),
                     _ => return Ok(()),
                 },
                 _ => return Ok(()),
@@ -1584,7 +1588,7 @@ impl Gen<'_, '_> {
                 true
             }
             PlayNote => return self.play(args, dst),
-            NoteOff | IgnoreEvent | ChangeNote | ChangeVelo
+            IgnoreEvent | ChangeNote | ChangeVelo
                 if self.selects_many(builtin, args, 0) =>
             {
                 return Ok(());
@@ -1719,7 +1723,7 @@ impl Gen<'_, '_> {
             SetController => {
                 self.arg(args, 0, dst)?;
                 self.arg(args, 1, t)?;
-                self.emit(I::ControllerFromMidi7 { local: t })?;
+                self.emit(I::ControllerFromScript { controller: dst, local: t })?;
                 self.emit(I::WriteController {
                     controller: dst,
                     value: t,
