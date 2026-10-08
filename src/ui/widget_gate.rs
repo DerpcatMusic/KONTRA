@@ -97,7 +97,7 @@ impl Gate {
         }
     }
     fn settle(&mut self) {
-        for _ in 0..3 {
+        for _ in 0..8 {
             self.tick(Input::default());
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -143,6 +143,7 @@ impl Gate {
         let part = &view.parts[0];
         for (source, face) in part.interfaces.iter().enumerate() {
             for (n, widget) in face.widgets.iter().enumerate() {
+                if !widget.enabled || !face.visible(ir::WidgetRef(n)) { continue; }
                 let kind = match widget.kind {
                     ir::Kind::Knob {..} => "knob", ir::Kind::Slider {..} => "slider",
                     ir::Kind::Button {..} => "button", ir::Kind::Switch => "switch",
@@ -208,7 +209,7 @@ impl Gate {
                 }
             }
             _ => {
-                self.pointer(at, true); self.pointer(at, false);
+                self.pointer(at, true); self.pointer(at, false); self.settle();
                 if kind == "menu" || kind == "native-click" {
                     // A menu choice is another real pointer target. Do not call callbacks directly.
                     let popup: Vec<_> = if kind == "native-click" {
