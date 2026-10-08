@@ -431,6 +431,7 @@ impl Runtime {
                 .expect("reserved plan generation slot"),
         );
         self.collect_retired_plans();
+        self.start_plan_programs();
         if let Some(queues) = &self.plan_queues {
             queues
                 .installed

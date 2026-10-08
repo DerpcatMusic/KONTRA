@@ -426,12 +426,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut instances = Vec::new();
     let mut resources = Vec::new();
     // The plan's effect slot controls stay beside the scripts' own.
-    let mut controls: Vec<_> = plan
-        .controls()
-        .iter()
-        .filter(|c| sampler_core::is_slot_control(c.id))
-        .copied()
-        .collect();
+    let mut controls = plan.controls().to_vec();
     let mut callbacks = Vec::new();
     let mut widgets = Vec::new();
     let mut stages = Vec::new();
@@ -444,7 +439,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .collect();
     let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
     let owns_release_triggers = scripts.iter().any(|s| s.owns_release_triggers);
-    for (index, script) in scripts.into_iter().enumerate() {
+    for (index, mut script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
         }
@@ -458,7 +453,12 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         });
         for w in &script.model.interface.widgets {
             use model::{Location, WidgetValue};
-            let storage = if let Some(id) = w.control {
+            let storage = if w.kind == model::WidgetKind::FileSelector {
+                let offset = u32::try_from(script.resources.texts.len())
+                    .map_err(|_| sampler_core::Error::Capacity)?;
+                script.resources.texts.push(String::new());
+                Some(sampler_core::WidgetStorage::FileSelection { offset })
+            } else if let Some(id) = w.control {
                 Some(sampler_core::WidgetStorage::Control(id))
             } else {
                 w.location.as_ref().and_then(|location| match *location {

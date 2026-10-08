@@ -245,6 +245,11 @@ pub enum Op {
         write: bool,
     },
     /// Value supplied by the host through `Runtime::set_host_value`.
+    FileName {
+        ui: u16,
+        format: u16,
+        text: TextRef,
+    },
     ReadWidgetEventParameter {
         local: u16,
     },
@@ -262,6 +267,10 @@ pub enum Op {
         local: u16,
         micros: u32,
     },
+    ReadTimer {
+        local: u16,
+    },
+    ResetTimer,
     /// Address registers are parameter, physical group, slot and generic.
     TextProperty {
         key: u16,
@@ -321,7 +330,11 @@ impl Op {
             | Self::ReadWidgetEventParameter { local }
             | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
-            | Self::ReadClock { local, .. } => usize::from(*local) + 1,
+            | Self::ReadClock { local, .. }
+            | Self::ReadTimer { local } => usize::from(*local) + 1,
+            Self::FileName { ui, format, text } => {
+                (usize::from(*ui.max(format)) + 1).max(reg(text))
+            }
             Self::TextProperty { key, text, .. } => (usize::from(*key) + 4).max(reg(text)),
             Self::TimeConversion { local, .. } => usize::from(*local) + 1,
             Self::EngineParameter { address, local, .. } => {
@@ -342,7 +355,7 @@ impl Op {
                 ..
             } => usize::from(*group.max(owner).max(local)) + 1 + reg(text),
             Self::Purge { group, local, .. } => usize::from(*group.max(local)) + 1,
-            Self::Call { .. } | Self::Return => 0,
+            Self::Call { .. } | Self::Return | Self::ResetTimer => 0,
             Self::TextClear { text } => reg(text),
             Self::TextAppend { text: t, part } => reg(t).max(match part {
                 TextPart::Constant(_) => 0,
@@ -417,6 +430,14 @@ impl Default for Text {
     }
 }
 impl Text {
+    /// Producer-boundary conversion; never silently truncate a file path/edit.
+    pub fn try_new(text: &str) -> Result<Self, Error> {
+        if text.len() > TEXT_CAPACITY {
+            Err(Error::Capacity)
+        } else {
+            Ok(Self::new(text))
+        }
+    }
     pub fn new(text: &str) -> Self {
         let mut t = Self::default();
         t.push(text);
@@ -604,10 +625,18 @@ pub(crate) struct OpState {
     pub truncated_texts: u64,
     pub host: [i64; HOST_VALUES],
     pub random: u64,
+    timer_origin: std::time::Instant,
+    engine_outcomes: std::collections::VecDeque<crate::EngineParameterOutcome>,
+    dropped_engine_outcomes: u64,
 }
 impl Default for OpState {
     fn default() -> Self {
         Self {
+            timer_origin: std::time::Instant::now(),
+            engine_outcomes: std::collections::VecDeque::with_capacity(
+                crate::engine_parameters::ENGINE_OUTCOME_CAPACITY,
+            ),
+            dropped_engine_outcomes: 0,
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
             truncated_texts: 0,
@@ -640,6 +669,34 @@ fn i32_of(value: i64) -> Result<i32, Error> {
 }
 
 impl Runtime {
+    pub fn take_engine_parameter_outcome(&mut self) -> Option<crate::EngineParameterOutcome> {
+        self.ops.engine_outcomes.pop_front()
+    }
+    pub fn dropped_engine_parameter_outcomes(&self) -> u64 {
+        self.ops.dropped_engine_outcomes
+    }
+    fn record_engine_outcome(
+        &mut self,
+        id: BehaviorId,
+        plan: crate::PlanId,
+        address: Option<crate::EngineParameterAddress>,
+        write: bool,
+        result: Result<(), Error>,
+    ) {
+        if self.ops.engine_outcomes.len() == crate::engine_parameters::ENGINE_OUTCOME_CAPACITY {
+            self.ops.dropped_engine_outcomes += 1;
+        } else {
+            self.ops
+                .engine_outcomes
+                .push_back(crate::EngineParameterOutcome {
+                    plan,
+                    program: self.behaviors.get(id.0).unwrap().program,
+                    address,
+                    write,
+                    result,
+                });
+        }
+    }
     /// Pending effects in emission order. Returning false stops and keeps the rest.
     pub fn drain_effects(&mut self, mut accept: impl FnMut(&Effect) -> bool) {
         while let Some(effect) = self.ops.effects.front() {
@@ -1006,15 +1063,41 @@ impl Runtime {
                 write,
             } => {
                 let plan = self.behavior_plan(owner)?;
-                if let Some(address) = self.engine_address(id, address)? {
+                let address = self.engine_address(id, address)?;
+                if let Some(address) = address {
                     if write {
-                        self.set_engine_parameter_in(plan, address, self.reg(id, local)? as i32)?;
+                        let result = self.set_engine_parameter_in(
+                            plan,
+                            address,
+                            self.reg(id, local)? as i32,
+                        );
+                        self.record_engine_outcome(id, plan, Some(address), true, result);
+                        if let Err(error) = result
+                            && error != Error::InvalidInput
+                        {
+                            return Err(error);
+                        }
                     } else {
-                        let value = self.engine_parameter_in(plan, address)?;
+                        let result = self.engine_parameter_in(plan, address);
+                        self.record_engine_outcome(
+                            id,
+                            plan,
+                            Some(address),
+                            false,
+                            result.map(|_| ()),
+                        );
+                        let value = match result {
+                            Ok(v) => v,
+                            Err(Error::InvalidInput) => 0,
+                            Err(error) => return Err(error),
+                        };
                         self.set_reg(id, local, value.into())?;
                     }
-                } else if !write {
-                    self.set_reg(id, local, 0)?;
+                } else {
+                    self.record_engine_outcome(id, plan, None, write, Err(Error::InvalidInput));
+                    if !write {
+                        self.set_reg(id, local, 0)?;
+                    }
                 }
             }
             Op::EngineDisplay {
@@ -1028,9 +1111,28 @@ impl Runtime {
                     let plan = self.behavior_plan(owner)?;
                     let value = match value {
                         Some(v) => self.reg(id, v)? as i32,
-                        None => self.engine_parameter_in(plan, address)?,
+                        None => {
+                            let read_result = self.engine_parameter_in(plan, address);
+                            self.record_engine_outcome(
+                                id,
+                                plan,
+                                Some(address),
+                                false,
+                                read_result.map(|_| ()),
+                            );
+                            match read_result {
+                                Ok(value) => value,
+                                Err(Error::InvalidInput) => {
+                                    result = Text::new("?");
+                                    0
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
                     };
-                    crate::engine_parameters::display(address.parameter, value, &mut result);
+                    if result.as_str().is_empty() {
+                        crate::engine_parameters::display(address.parameter, value, &mut result);
+                    }
                 }
                 *self
                     .behavior_bank(id)?
@@ -1161,6 +1263,38 @@ impl Runtime {
                     self.set_reg(id, local, value)?;
                 }
             }
+            Op::FileName { ui, format, text } => {
+                let ui = self.reg(id, ui)? as i32;
+                let format = self.reg(id, format)?;
+                let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                let plan = self.behavior_plan(owner)?;
+                let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+                let instance = generation.prepared.programs[callback.program]
+                    .script_instance
+                    .ok_or(Error::InvalidInput)?;
+                let definition = generation
+                    .prepared
+                    .widgets
+                    .iter()
+                    .find(|w| w.instance == instance && w.ui_id == ui)
+                    .ok_or(Error::InvalidInput)?;
+                let crate::WidgetStorage::FileSelection { offset } = definition.storage else {
+                    return Err(Error::InvalidInput);
+                };
+                let path = generation.scripts[instance.0 as usize].texts[offset as usize];
+                let filename = path.as_str().rsplit('/').next().unwrap_or("");
+                let result = Text::new(match format {
+                    0 => filename
+                        .rsplit_once('.')
+                        .filter(|(stem, _)| !stem.is_empty())
+                        .map_or(filename, |(stem, _)| stem),
+                    1 => filename,
+                    2 => path.as_str(),
+                    _ => return Err(Error::InvalidInput),
+                });
+                let cell = self.text_cell(id, text)?;
+                self.behavior_bank(id)?.texts[cell] = result;
+            }
             Op::ReadWidgetEventParameter { local } => {
                 let index =
                     usize::try_from(self.reg(id, local)?).map_err(|_| Error::InvalidInput)?;
@@ -1202,6 +1336,14 @@ impl Runtime {
                     / u128::from(micros.max(1));
                 self.set_reg(id, local, i64::from(elapsed as u32 as i32))?;
             }
+            Op::ReadTimer { local } => {
+                self.set_reg(
+                    id,
+                    local,
+                    i64::from(self.ops.timer_origin.elapsed().as_micros() as u32 as i32),
+                )?;
+            }
+            Op::ResetTimer => self.ops.timer_origin = std::time::Instant::now(),
             Op::Emit {
                 service,
                 args,
