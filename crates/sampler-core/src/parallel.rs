@@ -182,7 +182,7 @@ impl Runtime {
                                 .program(i)
                                 .is_some()
                         });
-                par.preps[i] = if needs {
+                par.preps[i] = if needs && run.count == 1 {
                     self.prepare_voice(i, at, frames)
                 } else {
                     None
@@ -413,7 +413,15 @@ impl View<'_> {
             at: self.at,
             feeds: &mut [],
         };
-        let applied = super::render::applied_gains(expression.rendered.gains, prelude.and_then(|p| p.points));
+        let applied = prelude
+            .and_then(|p| p.points)
+            .map_or(expression.rendered.gains, |r| {
+                let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+                [
+                    expression.rendered.gains[0] * m(0),
+                    expression.rendered.gains[1] * m(1),
+                ]
+            });
         let states = &mut cells[..chain.map_or(0, |c| c.stages())];
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), self.at);
@@ -439,7 +447,6 @@ impl View<'_> {
         let done = done
             || prelude.is_some_and(|p| p.stop)
             || super::render::inaudible(v, produced, applied);
-        v.last_gains = applied.map(|g| g * v.gain);
         self.outcomes.claim(i)[0] = Outcome {
             produced,
             done,
@@ -470,9 +477,7 @@ impl View<'_> {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[k] = expression.rendered.gains;
-            if self.preps[voices[k]].is_none() {
-                v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
-            }
+            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
@@ -518,8 +523,6 @@ impl View<'_> {
         let mut cells: lanes::Cells<'_> =
             std::array::from_fn(|k| voices.get(k).map(|&i| plan.dsp.cells.claim(i)));
         let mut bank = plan.dsp.filters.claim(lane);
-        bank[0].modulation = [1.0; 2];
-        bank[0].set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, voices[0]);
         let at = self.at;
         sampler_simd::dispatch(
             #[inline(always)]
@@ -539,9 +542,7 @@ impl View<'_> {
         for (k, slot) in slots.iter_mut().enumerate().take(voices.len()) {
             let v = slot.as_mut().unwrap()[0].value.as_mut().unwrap();
             let len = batch.ends[2 * k];
-            super::render::amplify_lane(
-                &mut block, k, v, len, self.preps[voices[k]].and_then(|p| p.points), at,
-            );
+            lanes::scale(&mut block, k, &crate::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]
@@ -576,13 +577,9 @@ impl View<'_> {
             } else {
                 self.scratch.claim(i)[0][..frames].fill([0.; 2]);
             }
-            let prelude = self.preps[i];
-            let applied = super::render::applied_gains(gains[k], prelude.and_then(|p| p.points));
-            v.last_gains = applied.map(|g| g * v.gain);
             self.outcomes.claim(i)[0] = Outcome {
                 produced,
-                done: chain.done(v) || prelude.is_some_and(|p| p.stop)
-                    || super::render::inaudible(v, produced, applied),
+                done: chain.done(v) || super::render::inaudible(v, produced, gains[k]),
                 faults: u64::from(fault),
                 underrun: !starved[k] && v.cursor.starved(),
             };

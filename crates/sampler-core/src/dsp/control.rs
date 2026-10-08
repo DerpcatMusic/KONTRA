@@ -156,6 +156,9 @@ impl ControlRamp {
     pub(super) fn test_ramp(from: f64, target: f64, start: u64, frames: u32) -> Self {
         Self { from, target, start, frames, modulation: None }
     }
+    pub(crate) fn settled(self, at: u64) -> Option<f64> {
+        (at.saturating_sub(self.start) >= u64::from(self.frames)).then(|| self.value(at))
+    }
     pub(crate) fn value(self, at: u64) -> f64 {
         let elapsed = at.saturating_sub(self.start);
         let value = if elapsed >= u64::from(self.frames) {
