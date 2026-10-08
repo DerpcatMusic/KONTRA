@@ -441,6 +441,9 @@ impl Runtime {
             .map(|peak| peak[address.channel as usize])
             .ok_or(Error::InvalidInput)
     }
+    pub fn engine_parameter_bindings(&self, plan: PlanId) -> Result<&[EngineParameterBinding], Error> {
+        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.engine_parameters)
+    }
     /// Replace the player's complete offset layer without allocating. Scripts
     /// continue to read/write base values; DSP consumes the base plus offsets.
     pub fn set_engine_offsets(&mut self, offsets: &[EngineParameterOffset]) -> Result<(), Error> {
@@ -449,15 +452,18 @@ impl Runtime {
         }
         let generation = self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?;
         let prepared = &generation.prepared;
-        let matches = |a: EngineParameterAddress, b: EngineParameterAddress| {
-            a.parameter == b.parameter && a.slot == b.slot && a.generic == b.generic
+        let matches = |a: EngineParameterAddress, binding: &EngineParameterBinding| {
+            let b = binding.address;
+            // User-layer amplitude selector across different physical modulator slots.
+            // -2 is never admitted as a script address; match only actual amplitude lanes.
+            a.parameter == b.parameter && (a.slot == b.slot || a.slot == -2 && binding.control.0 >> 104 == 0x454e56) && a.generic == b.generic
                 && (a.group == -1 || a.group == b.group)
         };
         // Missing controls are ignored, like v1 offsets for a group without that parameter.
         let mut changed = false;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
             if !offset.is_finite() { return Err(Error::InvalidInput); }
             changed |= generation.controls.offsets[index] != offset;
         }
@@ -466,7 +472,7 @@ impl Runtime {
             .filter(|r| r.checked_add(generation.controls.pending as u64).is_some()).ok_or(Error::Capacity)?;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
             if generation.controls.offsets[index] != offset {
                 generation.controls.offsets[index] = offset;
                 let value = generation.controls.playing(prepared, index);

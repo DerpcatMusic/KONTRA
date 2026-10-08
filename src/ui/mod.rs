@@ -44,6 +44,10 @@ mod native_runtime;
 mod native_ui;
 mod render_art;
 mod inside;
+mod editor;
+mod editor_model;
+mod viz;
+mod chain;
 mod part;
 pub(crate) mod picker;
 mod rack;
@@ -422,6 +426,7 @@ struct EditorState {
     faces: HashMap<usize, part::Face>,
     /// Each part's views beside its interface.
     inside: HashMap<usize, inside::State>,
+    editor: editor::State,
     /// The spectrum on screen, and the strip it shows this frame
     /// ([`crate::plugin::Scope::source`]; 0 for none).
     analyser: spectrum::Analyser,
@@ -947,6 +952,7 @@ fn build(
         report: Default::default(),
         faces: Default::default(),
         inside: Default::default(),
+        editor: Default::default(),
         analyser: Default::default(),
         scope: 0,
         corner: None,
@@ -960,6 +966,7 @@ fn build(
             state.last_poll = Instant::now();
         }
         let p = bridge.params().clone();
+        p.shared.editor_watch.store(usize::MAX,Ordering::Relaxed);
         let mut selection = read(&p.selection).clone();
         p.shared.ensure_parts(selection.parts.len());
         let mut view = shown(&p.shared.view);
