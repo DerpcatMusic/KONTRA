@@ -49,6 +49,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
     "$CONTROL_PAR_MOUSE_MODE",
+    "$CONTROL_PAR_ACTIVE_INDEX",
     "$CONTROL_PAR_WT_VIS_MODE",
     "$CONTROL_PAR_PARALLAX_X",
     "$CONTROL_PAR_PARALLAX_Y",
@@ -455,6 +456,7 @@ pub fn interface(
         out.auto_size = width.is_none() || height.is_none();
         out.default_axes = [width.is_none(), height.is_none()];
         out.source_id = Some(w.ui_id);
+        out.active_index = int("$CONTROL_PAR_ACTIVE_INDEX");
         out.value = match &w.value {
             WidgetValue::None => None,
             WidgetValue::Int(v) => Some(ir::Value::Integer(*v)),
