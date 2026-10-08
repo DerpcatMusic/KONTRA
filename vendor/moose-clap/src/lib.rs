@@ -169,12 +169,10 @@ enum GuiParamChange {
 const GUI_QUEUE_CAPACITY: usize = 1024;
 type GuiChangeQueue = crossbeam_queue::ArrayQueue<GuiParamChange>;
 
-/// Bounded handoff slot for state loads. Capacity 1: presets don't
-/// arrive faster than the audio thread completes a block, and on
-/// overflow we want most-recent-wins (`force_push`) so a rapid
-/// double-recall doesn't get the audio thread to apply a stale state
-/// after the host already moved on.
-type StateLoadQueue = crossbeam_queue::ArrayQueue<state::DeserializedState>;
+/// Single latest-wins restore slot, with bounded off-audio blob retirement.
+#[path = "../../moose-state-queue.rs"]
+mod state_queue;
+use state_queue::StateLoadQueue;
 
 // ---------------------------------------------------------------------------
 // Internal wrapper struct held as plugin_data
@@ -930,6 +928,7 @@ unsafe extern "C" fn clap_plugin_reset<P: PluginExport>(plugin: *const clap_plug
 unsafe extern "C" fn clap_plugin_on_main_thread<P: PluginExport>(plugin: *const clap_plugin) {
     unsafe {
         let data = data_from_plugin::<P>(plugin);
+        data.pending_state.collect_retired();
         // Runtime presentation metadata is re-read on RESCAN_INFO. A change
         // to the exposed list requests a restart and is published inactive.
         let revision = data.params_arc.parameter_presentation_revision();
@@ -2639,6 +2638,9 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
             return CLAP_PROCESS_CONTINUE;
         }
 
+        // Cover the entire valid callback, including deferred state application.
+        let _rt = RtSection::enter();
+
         // Take ownership of the plugin for the whole block: an
         // uncontended `Acquire`, never a wait, since the host contract
         // keeps `process` from overlapping a lifecycle callback and host
@@ -2654,17 +2656,12 @@ unsafe extern "C" fn clap_plugin_process<P: PluginExport>(
         // single-slot queue means a rapid double-recall lands the
         // newest blob and the older one is dropped - preferred to
         // the audio thread chasing stale state across blocks.
-        let state_loaded = data.pending_state.pop().is_some_and(|state| {
-            state::apply_state(&mut *instance, &state);
-            true
+        let state_loaded = data.pending_state.apply_audio(|state| {
+            state::apply_state(&mut *instance, state);
         });
-
-        // Paranoid allocation check (the `rt-paranoid` feature): guard the
-        // wrapper's per-block glue - event conversion, transport, process,
-        // output encode, snapshot publish - as well as the plugin. Placed
-        // after the state-load apply above, since `load_state` legitimately
-        // allocates. No-op and zero-sized when the feature is off.
-        let _rt = RtSection::enter();
+        if state_loaded && !data.host.is_null()
+            && let Some(request) = (*data.host).request_callback
+        { request(data.host); }
 
         // The audio scratch lives behind an ownership cell reached through the
         // shared `&data`, so a concurrent host-thread `&data` (param reads,
@@ -6159,3 +6156,7 @@ mod bus_kind_tests {
         assert_eq!(audio_port_main_flag(1, BusKind::Sidechain), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "../../moose-state-queue-tests.rs"]
+mod state_retirement_tests;
