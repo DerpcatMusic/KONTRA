@@ -581,6 +581,7 @@ impl Runtime {
         let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
         let mut delay = plan.dsp.delay_samples.claim(i);
         let context = super::dsp::RenderContext {
+            amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters: &plan.dsp.parameters,
@@ -617,6 +618,7 @@ impl Runtime {
         };
         drop((claimed, delay));
         if let (Some(ramp), Some(target)) = (points, mixed) {
+            let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
                 plan.modulation

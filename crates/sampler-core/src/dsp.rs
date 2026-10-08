@@ -272,6 +272,7 @@ pub(super) struct PreparedVoiceChain {
 }
 
 pub(super) struct RenderContext<'a> {
+    pub amplifier: Option<crate::voice_mod::Ramp>,
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
     pub parameters: &'a [ControlRamp],
@@ -499,9 +500,10 @@ impl PreparedVoiceChain {
             let mut fault = self.process_section(true, pre, &mut block, len, at, &mut context);
             let levels = levels(voice, len);
             let [left, right] = &mut block;
-            for ((l, r), level) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels) {
-                *l *= level;
-                *r *= level;
+            for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
+                let gains = context.amplifier.map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+                *l *= level * f64::from(gains[0]);
+                *r *= level * f64::from(gains[1]);
             }
             fault |= self.process_section(false, post, &mut block, len, at, &mut context);
             faults += u64::from(self.finish(
@@ -545,7 +547,7 @@ impl PreparedVoiceChain {
                 pcm,
                 &mut raw[..count],
                 &mut unity,
-                voice.gain,
+                1.0,
                 [1.; 2],
                 kernel,
             )
@@ -659,7 +661,7 @@ pub(super) struct Begun {
 pub(super) fn levels(voice: &mut Voice, len: usize) -> [f64; BLOCK] {
     let mut levels = [0.; BLOCK];
     for level in &mut levels[..len] {
-        *level = f64::from(
+        *level = f64::from(voice.gain) * f64::from(
             voice
                 .envelope
                 .constant_level()
