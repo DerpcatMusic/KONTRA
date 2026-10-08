@@ -280,85 +280,53 @@ The three normal baselines preserve integer/polyphonic state, aliased ignore_eve
 
 ## Shared scanner production follow-up
 
-After the shared scanner became available, this audit consumed its canonical v2 Conflux result and ran the matching **shared v1 binary** for frozen-list row 0. No further independent corpus collector was launched. Both digests match the shared README: v1 `4ab053cde8eb1197591cc3696ef38e99709a6ac52174c56fccc24f5596129caf`, v2 `1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`; source branch `tools/kontra-scan@54f7ea57`, pinned to the same v1/v2 baselines as this report.
+Current installed scanner-only source: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`; pinned Kontakt v1 adapter `44d03cecbd3b5e47b1564d17ac239239dc2ba4ea`. Product baselines remain v2 `7e82b152` and v1 `0cb7a8a0`. Verified optimized binary SHA-256: v2 `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`, v1 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`. This is the final installed extension, including the source-slot counting correction. The [accessor handoff](ksp-scanner-fields.md) defines phase/ownership and safe record boundaries. No independent collector or sweep was started here.
 
-| Conflux.nki production observation | Shared v1 | Shared v2 |
+The measured partial cohort is **the first 100 IDs of the frozen `kontakt-items.tsv`**, all NKI. Both published 72-column TSVs and all 100 per-engine cache identities were validated against their installed binary and current shared note plan. Sorted cohort IDs, LF-terminated, have SHA-256 `1afa7b4304cdd1a66db9f2523981665396e4aace456b87e7b395c55b879af99e`. This ordered cohort is not representative of the full corpus. The complete 834 Kontakt / 1,494 Kontakt+UVI paired denominator remains pending; the report's whole-corpus frontend rates above are not replaced by this subset.
+
+| First 100 shared NKI IDs | Pinned v1 | v2 |
 |---|---:|---:|
-| Load admitted | yes | yes |
-| Mapped-note audition | audible | audible |
-| Original UI | missing-images | missing-images |
-| Missing requested images | 1 | 1 |
-| Visible interactive bindings | 78/78 | 107/113 |
-| Load wall time | 1,786.14 ms | 18,941.86 ms |
-| Worker peak RSS | 69.29 MB | 229.71 MB |
+| Production load admission | 100/100 | 100/100 |
+| Raw Script chunks | 500 | 500 |
+| Inline active / empty slots | 104 / 396 | 104 / 396 |
+| Bypassed / linked-only / source decode-failed | 0 / 0 / 0 | 0 / 0 / 0 |
+| Clean compilation | 104/104 | 104/104 |
+| Disabled non-init callback blocks | 0 | 0 |
+| Actual init completion | 104/104 present | 104/104 present |
+| Persistence_changed completion | 2/3 present | 3/3 present |
+| Persistence_changed waiting at load boundary | 1 | 0 |
+| Persistence_changed absent | 101 | 101 |
+| Instruments with unavailable raw saved histograms | **100/100** | 0/100 |
 
-The UI and binding populations differ between renderers; 78 versus 113 is not a count of identical controls. These are single-instrument observations at different moments, not corpus rates or a controlled repeated benchmark. The README defines v1 load time as initial streaming-bank construction excluding UI rendering; v2 uses the production streamed loader and includes asset metadata resolution. Audible output establishes that this selected audition produces audio, not that KSP callbacks/engine parameters match Kontakt.
+Init/persistence success totals use final runtime preparation, excluding import-harvest and short-circuited dynamic-rack attempts. Absence is not a failed completion. The v1 waiting persistence phase is not a proven permanent failure: this is load-boundary telemetry, not later completion. Zero retained terminal faults likewise does not establish correct engine/UI/host effects or native saved-value restoration.
 
-The canonical v2 JSON also records ignored engine-display queries (441 ordinary / 474 extended), event-status, menu/control string getters, event enumeration and other KSP warnings. Its successful production load therefore confirms the main distinction in this report: admission/audio can succeed while substantial script semantics remain incomplete.
+Conflux provides the current paired scheduling and persistence witness:
 
-Evidence: `~/.cache/kontra-scan/results/v2/results.tsv` and its digest-keyed JSON cache; own shared-v1 output `~/.cache/kontakto-audit-ksp/shared-scanner/v1/{results.tsv,cache/}`; `shared-v1.log`. At inspection the canonical v2 TSV had **one row** and the full sweep was still in progress. Requested additions through the coordinator: active/cleanly compiled script slots, init completion, load-time fault records, and separate init/persistence callback outcomes. That initial scanner could not supply a fresh whole-corpus KSP compile/init rate; the extension below supersedes its field-availability limitation.
-
-### Extended shared scanner: historical smoke witness (`9dcf05e5`)
-
-The installed extension is `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`. Verified installed SHA-256: v2 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`, v1 `a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`. Kontakt product baselines remain unchanged. The shared collector now records the requested raw slot partition, ownership/wire/runtime mapping, compile cleanliness, actual callback phases and safe fault categories, and raw/admitted saved sigils. The [accessor handoff](ksp-scanner-fields.md) explains why these measures differ from importer success.
-
-At inspection, current-digest `results/v2/results.tsv` contained **three smoke rows: one Kontakt Conflux NKI and two UVI programs**. V1 had zero rows. The top-level published `results/{v1,v2}.tsv` both contained headers only at that moment; consume the detailed current-digest cache/local TSV for this witness and the completed publication for final corpus rates. This is partial coverage of the planned paired 1,494 IDs (834 Kontakt, 660 UVI), with no new v1/v2 paired result yet. Historical scanner digests and timings above describe the previous witness rather than this extension.
-
-| Extended v2 Conflux observation | Result |
-|---|---|
-| Raw Script slots | 5: 2 empty, 3 nonempty inline; 0 bypassed, linked-only or decode-failed |
-| Admitted / clean compiled slots | 3 / 3; original wire slots 2, 3, 4 |
-| Actual init completion | 3 completed of 3 present |
-| Actual persistence_changed completion | 2 completed of 2 present; absent in slot 4 |
-| Retained load / audition runtime fault records | 0 / 0 |
-| Raw saved entries | `$` 223, `%` 15, `@` 6, `!` 13 |
-| Admitted saved entries | `$` 223, `%` 15, `@` 6; **all 13 `!` entries dropped** |
-| Load / selected audition | admitted / audible, matched note plan |
-| Visible interactive bindings / images | 107/113; one lookup failure |
-
-The init/persistence counts exclude the three import-harvest attempts and the one short-circuited dynamic-rack attempt. An absent callback is not a failed completion. These are actual phase observations for one production instrument, replacing the old return-value proxy for this witness; the report's whole-corpus frontend rates remain unchanged until completed shared data arrives. Zero terminal faults does not establish correct engine/UI/host effects or saved-value restoration. The raw/admitted histogram directly confirms the existing text-array gap in a production load, with no saved names or values exported.
-
-The instantiated UI inventory contains 242 knobs, 20 menus, 6 tables, 2 sliders, 34 labels, 41 switches, 16 buttons, 6 level meters, 46 panels, 6 text edits and 15 value edits. These total 434 authored widgets across three views; they include hidden controls and differ from the 113 visible interactive population. The same witness observes six declared fonts with the font service unavailable. Its original main page has declared RGBA `[240,239,228,255]` covering 93.90% of rendered pixels; this is a measured authored cream background, not a blank-page defect classification.
-
-Evidence: shared `results/v2/cache/70c67b9c5e48dfa082f09f49941b681d89ff920179ae6911a0d781c7dad8b8f2.json` and its 63-column local TSV, filtered to the installed v2 digest. No independent collector or new sweep was started. Unsupported-command exposure ranking and completed-phase corpus denominators will use the shared per-slot data after the coordinator publishes completed coverage.
-
-### Shared scanner: historical paired phase witness (`e340c39a`)
-
-Current scanner-only source is `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`, pinned v1 adapter `788f41fafa7e21ddf7b1917bc4cf43e0a83876b8`. Verified binary SHA-256: v2 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`, v1 `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`. The previous smoke witness above is historical. The restarted paired sweep adds strict saved framing, typed-target binding counts, sample-zone/zero-zone evidence and actual safe note/keyswitch selection. No safe key means no audition; fallback auditions are excluded from parity. Frozen-base phantom-free control counts remain unknown, with no instrument-specific subtraction.
-
-Although published TSVs still had headers only at first inspection, the detailed cache already supplied this **current paired Conflux witness**. Both records match the shared driver's complete signature, including current binary and note plan. Both have five raw slots (two empty, three active), three clean compilations, three completed init callbacks, and zero retained load/audition runtime fault records.
-
-| Conflux load-boundary phase/state | Pinned v1 | v2 |
+| Conflux observation | Pinned v1 | v2 |
 |---|---|---|
-| Persistence at wire slot 2 | **Waiting**, present; runtime slot 0 | Completed; runtime slot 2 |
-| Persistence at wire slot 3 | Completed; runtime slot 1 | Completed; runtime slot 3 |
-| Persistence at wire slot 4 | Absent; runtime slot 2 | Absent; runtime slot 4 |
-| Raw text-array entries | 13 | 13 |
+| Wire slot 2 persistence | **Waiting**; runtime slot 0 | Completed; runtime slot 2 |
+| Wire slot 3 persistence | Completed; runtime slot 1 | Completed; runtime slot 3 |
+| Wire slot 4 persistence | Absent; runtime slot 2 | Absent; runtime slot 4 |
+| Raw text-array entries | **Unknown** | 13 |
 | Admitted text-array entries | **13** | **0** |
 | Visible scalar/ID binding criterion | 78/78 | 107/113 |
 | Additional validated typed targets (`bound_typed`) | 5 | 6 |
-| Actual audition | Key 60, velocity 64; audible | Key 60, velocity 64; audible |
-| Surviving load-time sample zones | 1,985 | 1,985 |
+| Selected audition | Key 60, velocity 64; audible | Key 60, velocity 64; audible |
+| Original authored UI | One missing image | One missing image |
 
-The suspended v1 phase is neither an init failure nor a proven permanent failure: this observation is its load-boundary status, not a later completion measurement. It provides a production scheduling witness beyond the authored tests. V2 runs persistence in the same init evaluator; `eval.rs:1278` treats Wait/WaitTicks/WaitAsync as warning-producing no-ops there, allowing synchronous completion. More completed callbacks therefore do not imply better timing fidelity. Both auditions use `zone_coverage`, `fallback_note=false` and `matched-note-plan`; audible output remains a selected-note observation rather than native PCM parity. Typed-target counts are separate from the frozen scalar criterion, not extra identical native controls or proof of working gestures.
+V2 runs persistence in the same init evaluator; `eval.rs:1278` treats Wait/WaitTicks/WaitAsync as warning-producing no-ops there, allowing synchronous completion. More completed callbacks therefore do not imply better timing fidelity. Both auditions use `zone_coverage`, `fallback_note=false` and `matched-note-plan`; audible output remains a selected-note observation rather than native PCM parity. Scalar populations differ between renderers; typed-target counts are separate, not extra identical native controls or proof of working gestures. Phantom-free counts remain unknown on these frozen baselines; no instrument-specific subtraction is applied.
 
-Evidence: v1 cache `c63dffe4968f449627be69b37918711a42665a905fc076f52de0d425bdbf33c9.json`, v2 cache `8d50917a5a616f5bffbf5d207e427ad5e37612f814847b9def39bec6ed503135.json`, under the shared `results/{v1,v2}/cache`. Publication and caches advance independently during shards; no partial row count is a completed-corpus denominator. Whole-corpus rates remain the earlier specialized frontend measurements pending completed shared publication. The new `results/v2/symbol-aggregates.tsv` must be read with its coverage counters and digest: its initial zero-coverage rows are unmeasured, not evidence of zero use. Its generated UI/keyboard/persistence whitelist does not replace the broader unsupported-builtin ranking above. The shared `v1ok-v2missing.tsv` provides separate authored-UI candidates; gesture and native-host verification remain outstanding.
+**Source-slot counting defect resolved:** the prior `f7b2a8cd` shared metadata category let unknown saved framing override successfully decoded source fields. Current `abf248cd` correctly gives Conflux five slots = three inline + two empty and **zero source decode failures in both engines**. Saved-table integrity is independent: v1's bounded fallback does not decode this saved format, so its raw histogram now exports `unknown`, not `{}`/zero. V2's strict reader decodes the raw table. V1 admission of 13 text-array entries versus v2 zero still directly confirms the production text-array gap. Earlier scanner witnesses and defect evidence remain in this report's Git history (`68cde85f` and predecessors); they are not mixed into current-revision rates.
 
-### Current shared scanner: section J (`f7b2a8cd`)
+Section J onset is monotonic wall time from the first production import, outside the lexical prepass/worker spawn. Painting and audition run concurrently. The current Conflux first finite exactly-nonzero output is v1/v2 **146.11 / 5,257.57 ms**; completed Original CPU paint is **354.09 / 5,262.49 ms**, before hashing/PNG writing. `load_ms` remains separate and is not first sound; audible `plays_note` still uses 1e-5. Both report product `cache_state=cold`; OS page-cache state is uncontrolled. These single-witness scanner observations are not a repeated benchmark or native callback timing measurement. Missing onset stays unknown; no-safe-key auditions and fallback-note parity exclusions remain explicit. UVI's section J sidecar update is pending its owner.
 
-Installed source `tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`, pinned v1 adapter `11db26e72650f373465b6534d6ddb3684e1e9970`. Verified SHA-256: v2 `2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0`, v1 `bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438`. One current-signature Conflux row exists per engine in the 72-column local TSV/cache. At first inspection, top-level published TSVs still held 378 rows of the preceding 69-column schema; those are historical until republished. No completed 1,494-ID denominator is available.
-
-This pair preserves the three clean compilations/init completions, v1 waiting first persistence phase versus v2 synchronous completion, and admitted text-array difference (v1 13, v2 zero). New onset observations are v1/v2 first finite exactly-nonzero output **277.08 / 8,060.11 ms**, and completed Original CPU paint **903.43 / 8,064.81 ms**, from the production-import clock with concurrent painting/audio. `load_ms` is unchanged and is not first sound; the audible `plays_note` threshold remains separately 1e-5. Both report product `cache_state=cold`; OS page-cache state is uncontrolled. These are single-witness scanner observations, not a repeated load benchmark or native timing fidelity measurement. Missing onset stays unknown, not zero. The UVI sidecar remains at its prior digest pending its separate section J update.
-
-**Raw-metadata measurement defect:** current v1 Conflux marks all five slots `decode_failed` with `saved_table_integrity=unknown`, incomplete raw histograms and null entry totals, despite successful production parameter decoding/admission and 13 admitted text arrays. The empty raw histogram is therefore **unavailable, not zero**. V1 still calls the default `metadata::inspect` fallback (`v1-instrumentation.patch:307`), whose `table` supports only version 0x50 (`metadata.rs:23`). Separately, `metadata.rs:97` incorrectly lets unknown/malformed saved framing override successfully decoded source categories. The strict reader is connected on the v2 path (`src/ui/scan.rs:287`), whose current raw Conflux table decodes correctly. Both issues were sent to the scanner owner; no shared code was changed here. Keep source admission/decode and independent saved-table integrity separate before using raw cross-version partition/histogram rates.
-
-Evidence: current-signature shared v1 cache `99db0fa082d5497fadfd93d10765e8e03ed04e6bc76d20d8fb25d8e0fc794ebd.json`, v2 cache `73163dd602abf47eecbef21691479f65e23840f4d4808ad50f5d8566040b34c1.json`. Earlier observations remain tied to their recorded scanner digests; whole-corpus KSP findings above remain unchanged pending validated complete shared data.
+Evidence: current Conflux v1 cache `aff9c78de29075f5c197a8f7a8d0daefc8dff64ce75f1a85ff1bc9e1ae69683b.json`, v2 cache `06cfd71d81310ddba20c5a1640431d9909985050fc4ec519c5f8a3629886189d.json`, under shared `results/{v1,v2}/cache`, plus published `results/{v1,v2}.tsv`. Publication and caches advance independently during shards; validated cohort membership, not a changing row count, defines this snapshot. The generated `symbol-aggregates.tsv` must be read with coverage counters and scanner digest: its 246 UI/keyboard/persistence identifiers plus eight raw saved categories complement the broader unsupported-builtin ranking above. `v1ok-v2missing.tsv` supplies separate authored-UI candidates; gesture/native-host checks remain outstanding.
 
 ## Unknowns and concrete measurement plan
 
 - **Native audio fidelity:** no fresh Kontakt reference-host PCM in this run. Record matched NKI/snapshot/key/velocity/CC/transport/UI scenarios; compare onset/release timing, group choice, engine values and audio at 44.1/48/96 kHz. Prior synthetic failures are definitive differences in KONTRA contracts, not quantified PCM error across every exposed instrument.
 - **Five-slot init semantics:** benchmark actual ordered slots including PGS, inherited preprocessor definitions, authored engine state, original group indices and real resource containers. Isolated scripts do not establish cross-slot correctness.
-- **Strict v1 init completion:** retained load-time fault records are counted separately from successful Runtime::load. Array bounds reports ignore the read/write and continue; missing PGS keys can arise from isolated slots. They are not automatically stopped-init callbacks. Capture callback entry/exit and service outcomes with all ordered slots in a matched adapter. `LogEngine` cannot validate resource completion, modulator existence or sample/IR installation.
+- **Strict whole-corpus init completion:** the shared extension now captures actual callback phases, with 104/104 init completions verified per engine in the first 100 IDs. Await completed production coverage before replacing the old whole-corpus return-value proxy. Retained bounds/PGS fault records remain distinct from stopped callbacks. `LogEngine` cannot validate resource completion, modulator existence or sample/IR installation; native service outcomes still need reference-host checks.
 - **Saved-entry behavioral impact:** 422 string-array paths and 441 compressed-array paths are raw master-file exposures. Read assignments/callback reachability and chosen snapshots in memory, then verify affected UI/engine outputs. Counts of invalid native menu indices, early menu reads and assignments after explicit persistence reads remain unmeasured.
 - **Host state/timing:** inject changing BPM/signature/position/transport and verify timer/listener ordering, `stop_wait` modes, note durations, callback IDs and async failure/cancellation. Add actual audio-block adapter ingress; merely writing host slots in a synthetic test is insufficient.
 - **Parameter laws:** independently check all supported conversions at endpoints/intermediate values and while voices are active. Saved static FX translation and live scripted edits are different coverage paths. Missing enum values cannot be inferred safely from identifier spelling or hashes.
