@@ -30,6 +30,37 @@ fn catalog() -> Arc<SamplerParams> {
     p
 }
 
+fn settings_roots(p: &Arc<SamplerParams>) {
+    p.shared.libraries.edit(|settings| settings.roots = vec![
+        crate::library::Root { path: "/virtual/Library folders with long names/Kontakt orchestral and performance instruments".into(), single: false },
+        crate::library::Root { path: "/virtual/UVI".into(), single: false },
+    ]);
+    let mut view = p.shared.view.lock().unwrap();
+    let mut shelf = crate::library::Shelf::new(view.shelf.libraries.clone());
+    shelf.per_root = vec![16, 12];
+    view.shelf = Arc::new(shelf);
+    view.scanned = p.shared.libraries.wanted();
+}
+
+#[test]
+fn settings_keeps_the_keyboard_inside_the_minimum_window() {
+    let p = catalog();
+    settings_roots(&p);
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("library-0");
+    h.press("app-menu");
+    h.press("menu-item-5");
+    h.idle(30);
+    let keys = h.ui.scene().unwrap().surface("keys").unwrap().frame;
+    assert!(keys.y + keys.size.height <= 600.5, "settings must keep the keyboard visible: {keys:?}");
+    let toolbar_y = h.ui.scene().unwrap().surface("settings-close").unwrap().frame.y;
+    let at = center(&h.ui, "settings-body");
+    h.tick(Input { wheel: Vec2::new(0., 1000.), pointer: PointerInput { pos: Some(at), ..Default::default() }, ..Default::default() });
+    h.idle(30);
+    assert!(h.ui.scroll("settings-body")[1] > 0., "preferences remain reachable by scrolling");
+    assert_eq!(h.ui.scene().unwrap().surface("settings-close").unwrap().frame.y, toolbar_y, "settings toolbar stays fixed");
+}
+
 #[test]
 #[cfg(feature = "shots")]
 fn w14_browser_chrome_shots() {
@@ -50,6 +81,7 @@ fn w14_browser_chrome_shots() {
         save("hierarchy", &mut harness);
         harness.press("app-menu");
         save("menu", &mut harness);
+        settings_roots(&p);
         harness.press("menu-item-5");
         save("settings", &mut harness);
         harness.press("settings-close");
