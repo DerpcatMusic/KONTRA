@@ -86,6 +86,8 @@ pub(super) struct State {
     size: Size,
     #[cfg(feature = "shots")]
     graph_depth: Option<usize>,
+    #[cfg(feature = "shots")]
+    graph_work: Option<(usize, usize)>,
 }
 fn failure(error: &anyhow::Error, phase: &str) -> String {
     fn category(error: &mlua::Error) -> String {
@@ -186,6 +188,8 @@ impl State {
             size: Size::new(970., 600.),
             #[cfg(feature = "shots")]
             graph_depth: None,
+            #[cfg(feature = "shots")]
+            graph_work: None,
         }
     }
     pub fn bytes(&self) -> usize {
@@ -249,6 +253,8 @@ impl State {
     pub fn graph_depth(&self) -> Option<usize> {
         self.graph_depth
     }
+    #[cfg(feature = "shots")]
+    pub fn graph_work(&self) -> Option<(usize,usize)> { self.graph_work }
     #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
         self.package
@@ -328,7 +334,10 @@ impl State {
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
-            let graph = session.render()?;
+            let graph = session.render();
+            #[cfg(feature = "shots")]
+            { self.graph_work = Some(session.graph_work()); }
+            let graph = graph?;
             #[cfg(feature = "shots")]
             { self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?)); }
             let authored = authored_size(&graph);
@@ -1354,6 +1363,34 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_delay_does_not_reject_bounded_native_graph_work() {
+        let dir=std::env::temp_dir().join(format!("kontra-native-work-budget-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.join("Resources/native_ui/main.nui"),br#"
+            local ui=require('native_ui')
+            return function()
+                __audit_pause()
+                local sum=0;for i=1,2000 do sum=sum+i end
+                return @ui.Text {text=tostring(sum)}
+            end
+        "#).unwrap();
+        let package=Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+        let session=Session::new(package,"main",vec![]).unwrap();
+        let pause=Arc::new(AtomicBool::new(false));let callback_pause=pause.clone();
+        session.lua().globals().set("__audit_pause",session.lua().create_function(move |_,()| {
+            if callback_pause.load(Ordering::Relaxed) {std::thread::sleep(std::time::Duration::from_millis(300));}
+            Ok(())
+        }).unwrap()).unwrap();
+        let graph=session.render().unwrap();let work=session.graph_work();
+        pause.store(true,Ordering::Relaxed);
+        let delayed=session.render().expect("scheduler delay must not invalidate bounded graph work");
+        assert_eq!(session.graph_work(),work,"work counts must be independent of scheduler delay");
+        assert_eq!(string(&graph.get::<Table>("props").unwrap(),"text"),string(&delayed.get::<Table>("props").unwrap(),"text"));
+        assert!(work.0>0 && work.0<=16384 && work.1>0 && work.1<1_000_000);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn deferred_canvas_gets_a_fresh_callback_budget() {
         let dir=std::env::temp_dir().join(format!("kontra-native-canvas-budget-{}",std::process::id()));
         std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
@@ -1500,6 +1537,29 @@ mod tests {
             println!("NATIVE_BINDING node={kind} parameter={name} access={access} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
         }
         assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
+    }
+
+    #[cfg(feature = "shots")]
+    #[test]
+    #[ignore = "requires locally owned NativeUI program; numeric work only"]
+    fn native_program_work_counts() {
+        let path=std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let program=std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0,|n|n.parse().unwrap());
+        let mut source=if path.extension().is_some_and(|e|e=="nkm") {
+            sampler_kontakt::read_program(&path,program).unwrap().instrument
+        } else {sampler_kontakt::read(&path).unwrap().instrument};
+        source.retain_zones(|_|false);source.assets.clear();
+        let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
+        let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect();
+        let package=Arc::new(Package::load(&path).unwrap());
+        let session=Session::new(package,&entry,controls).unwrap();
+        println!("NATIVE_WORK_INIT program={program} checkpoints={} checkpoint_budget=500000",500_000-session.work_remaining());
+        for frame in 0..8 {
+            let _=session.render().unwrap();let (nodes,checkpoints)=session.graph_work();
+            assert!(nodes>0 && nodes<=16384 && checkpoints<1_000_000);
+            println!("NATIVE_WORK program={program} frame={frame} nodes={nodes} checkpoints={checkpoints} node_budget=16384 checkpoint_budget=1000000");
+        }
     }
 
     #[cfg(all(target_os = "linux", feature = "shots"))]
