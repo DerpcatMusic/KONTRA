@@ -192,6 +192,7 @@ fn translate(
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
         dynamic: false,
+        send_taps: Vec::new(),
     };
     match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
         Ok(records) => for record in records {
@@ -384,11 +385,12 @@ fn translate(
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
-        for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load)
-        {
+        let (notes, send_buses) =
+            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load);
+        for (at, (slot, feature, value, reason)) in notes {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
+        out.resolve_send_taps(&send_buses);
     }
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
@@ -494,6 +496,7 @@ struct Translation {
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
     dynamic: bool,
+    send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -564,6 +567,30 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    fn resolve_send_taps(&mut self, buses: &[(usize, ir::BusRef)]) {
+        for (chain, tap) in std::mem::take(&mut self.send_taps) {
+            for (send, level) in tap.levels.into_iter().enumerate() {
+                if !level.is_finite() || level < 0.0 {
+                    self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                        "send level", send.to_string(), ir::Reason::InvalidValue);
+                    continue;
+                }
+                let Some(&(_, bus)) = buses.iter().find(|(slot, _)| *slot == send) else {
+                    if level != 0.0 && !tap.bypass {
+                        self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                            "send return", send.to_string(), ir::Reason::NotModeled);
+                    }
+                    continue;
+                };
+                self.ir.voice_send_taps.push(ir::VoiceSendTap {
+                    chain, position: tap.position, bus,
+                    gain: ir::Gain::Linear(f64::from(level)), bypass: tap.bypass,
+                    gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+                });
+            }
+        }
+    }
+
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
     /// defined voice groups, then one voice limit per defined group.
     fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
@@ -741,7 +768,7 @@ impl Translation {
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
-                if !processors.is_empty() {
+                if !processors.is_empty() || !c.send_taps.is_empty() {
                     let post_amplitude = processors.split_off(boundary);
                     self.ir.chains.push(ir::Chain {
                         scope: ir::Scope::Voice,
@@ -749,6 +776,7 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
             Err(error) => self.unsupported(
@@ -1706,7 +1734,26 @@ mod modulation {
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
             dynamic: false,
+            send_taps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
+        let mut out = translation();
+        out.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: Vec::new(), post_amplitude: Vec::new() });
+        out.send_taps.push((ir::ChainRef(0), crate::effects::SendTap {
+            slot: 5, position: ir::VoiceSendPosition::AfterAmplitude(0),
+            levels: vec![0.0, 0.0, 0.0, 0.5], bypass: false,
+        }));
+        out.resolve_send_taps(&[(3, ir::BusRef(1))]);
+        assert_eq!(out.ir.voice_send_taps, vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0), position: ir::VoiceSendPosition::AfterAmplitude(0),
+            bus: ir::BusRef(1), gain: ir::Gain::Linear(0.5), bypass: false,
+            gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+        }]);
+        assert!(out.ir.unsupported.is_empty());
     }
 
     #[test]
