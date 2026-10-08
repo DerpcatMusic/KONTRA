@@ -126,9 +126,9 @@ pub fn dock(ui: &mut Ui, cx: &mut Cx) -> El {
             if ui.get(format!("key-{note}")).clicked_with(Button::Secondary) {
                 super::menu::open(ui, cx, super::menu::Target::Key(note));
             }
-            let lit = cx.p.shared.played[note as usize]
-                .load(Ordering::Relaxed)
-                .max(cx.p.shared.heard[note as usize].load(Ordering::Relaxed));
+            let heard = cx.p.shared.heard[note as usize].load(Ordering::Relaxed);
+            let lit = if cx.p.shared.engine_keys.load(Ordering::Acquire) { heard }
+                else { heard.max(cx.p.shared.played[note as usize].load(Ordering::Relaxed)) };
             key(ui, cx.p, note, black, looks[note as usize], lit)
         };
         let whites =
