@@ -1,0 +1,154 @@
+population	command	coverage	script_slots	source_hashes	container_paths	lowered_call_sites_after_inlining
+nki	set_control_par	Host	778	45	775	17431353
+nki	get_engine_par_disp	Ignored	775	42	775	20799
+nki	set_engine_par	Approximate	775	42	775	1023396
+nki	set_engine_par	Effect	775	42	775	149177
+nki	find_mod	Approximate	774	41	774	3195238
+nki	set_key_color	Host	774	41	774	1461763
+nki	message	Host	773	40	773	212961
+nki	set_control_par_str	Host	767	40	767	2041628
+nki	set_key_pressed	Host	718	31	718	303586
+nki	set_key_type	Host	577	27	577	1373030
+nki	set_key_name	Host	575	25	575	666392
+nki	set_text	Host	507	29	505	24350
+nki	add_text_line	Host	471	21	471	56000
+nki	set_menu_item_str	Host	370	9	370	210200
+nki	set_menu_item_visibility	Host	370	9	370	714357
+nki	set_keyrange	Host	369	8	369	782066
+nki	remove_keyrange	Host	368	7	368	143862
+nki	stop_wait	Effect	368	7	368	5030
+nki	ticks_to_ms	Approximate	349	23	349	367
+nki	output_channel_name	Ignored	348	22	348	1392
+nki	save_array	Host	335	6	335	664
+nki	reset_rls_trig_counter	Effect	283	12	283	741
+nki	move_control_px	Host	230	3	230	59084
+nki	set_table_steps_shown	Host	102	4	102	6044
+nki	load_array	Host	100	2	100	200
+nki	set_knob_label	Host	59	13	58	534
+nki	ignore_event	Approximate	8	4	7	23
+nki	fs_get_filename	Ignored	7	3	7	16
+nki	fs_navigate	Host	7	3	7	14
+nki	load_array_str	Host	7	3	7	67
+nki	save_array_str	Host	7	3	7	61
+nki	event_status	Ignored	5	5	3	27
+nki	get_event_par	Ignored	3	3	2	9
+nki	move_control	Host	3	3	2	42
+nki	set_event_mark	Effect	3	3	1	32
+nki	set_event_par	Effect	3	3	1	36
+nki	will_never_terminate	Effect	3	3	2	3
+nki	attach_level_meter	Host	2	2	2	16
+nki	get_event_ids	Ignored	2	2	1	2
+nki	get_mod_idx	Approximate	2	2	2	1646
+nki	get_target_idx	Approximate	2	2	2	1164
+nki	load_ir_sample	Effect	2	2	2	1460
+nki	note_off	Ignored	2	2	2	10
+nki	set_control_par_arr	Host	2	2	2	2484
+nki	set_skin_offset	Ignored	2	2	2	280
+nki	fade_out	Effect	1	1	1	31
+nki	fade_out	Ignored	1	1	1	31
+nki	find_target	Approximate	1	1	1	1314
+nki	get_control_par_str	Ignored	1	1	1	16
+nki	get_engine_par_disp_ext	Ignored	1	1	1	1850
+nki	get_menu_item_str	Ignored	1	1	1	21
+nki	get_menu_item_value	Ignored	1	1	1	86
+nki	get_zone_par	Ignored	1	1	1	15
+nki	ignore_controller	Ignored	1	1	1	1
+nki	ms_to_ticks	Approximate	1	1	1	3
+nki	reset_ksp_timer	Effect	1	1	1	8
+nki	reset_nks_nav	Host	1	1	1	1
+nki	set_control_par_str_arr	Host	1	1	1	1533
+nki	set_event_par_arr	Effect	1	1	1	1
+nki	set_event_par_arr	Ignored	1	1	1	1
+nki	set_nks_nav_name	Host	1	1	1	338
+nki	set_nks_nav_par	Host	1	1	1	8361
+nki	set_zone_par	Effect	1	1	1	90
+all	set_control_par	Host	908	47	829	17764327
+all	set_control_par_str	Host	862	43	821	2276492
+all	set_key_color	Host	854	43	828	1482255
+all	get_engine_par_disp	Ignored	835	43	829	46497
+all	set_engine_par	Approximate	835	43	829	1111578
+all	set_engine_par	Effect	835	43	829	1142359
+all	message	Host	803	41	797	213265
+all	set_key_pressed	Host	797	36	771	307432
+all	find_mod	Approximate	784	41	778	3203904
+all	set_text	Host	662	32	555	25970
+all	set_key_type	Host	633	28	630	1391430
+all	set_key_name	Host	581	25	578	675392
+all	add_text_line	Host	517	22	494	59092
+all	set_menu_item_str	Host	426	10	423	223740
+all	set_menu_item_visibility	Host	426	10	423	725383
+all	set_keyrange	Host	375	8	372	791066
+all	remove_keyrange	Host	374	7	371	145362
+all	stop_wait	Effect	374	7	371	5092
+all	ticks_to_ms	Approximate	369	24	369	687
+all	save_array	Host	361	7	358	690
+all	output_channel_name	Ignored	348	22	348	1392
+all	reset_rls_trig_counter	Effect	293	12	287	751
+all	move_control_px	Host	280	3	280	59184
+all	set_table_steps_shown	Host	172	6	152	8224
+all	set_knob_label	Host	133	14	109	1896
+all	load_array	Host	120	3	120	220
+all	get_event_ids	Ignored	102	3	51	102
+all	get_event_par	Ignored	93	4	52	339
+all	get_menu_item_value	Ignored	71	3	51	4406
+all	set_nks_nav_par	Host	71	3	51	426651
+all	move_control	Host	68	4	52	557
+all	ignore_event	Approximate	62	4	58	327
+all	event_status	Ignored	55	5	53	477
+all	will_never_terminate	Effect	53	3	52	53
+all	get_mod_idx	Approximate	52	3	52	41746
+all	get_target_idx	Approximate	52	3	52	32064
+all	load_ir_sample	Effect	52	3	52	8760
+all	set_control_par_arr	Host	52	3	52	3184
+all	get_control_par_str	Ignored	51	2	51	816
+all	get_engine_par_disp_ext	Ignored	51	2	51	94350
+all	get_menu_item_str	Ignored	51	2	51	1071
+all	get_zone_par	Ignored	51	2	51	765
+all	ignore_controller	Ignored	51	2	51	51
+all	reset_nks_nav	Host	51	2	51	51
+all	set_control_par_str_arr	Host	51	2	51	78183
+all	set_event_par_arr	Effect	51	2	51	51
+all	set_event_par_arr	Ignored	51	2	51	51
+all	set_nks_nav_name	Host	51	2	51	17238
+all	set_zone_par	Effect	51	2	51	4590
+all	mf_get_byte_one	Rejected script	45	3	30	0
+all	mf_get_byte_two	Rejected script	45	3	30	0
+all	mf_get_command	Rejected script	45	3	30	0
+all	mf_get_first	Rejected script	45	3	30	0
+all	mf_get_next	Rejected script	45	3	30	0
+all	set_event_mark	Effect	38	5	36	67
+all	mf_copy_export_area	Rejected script	30	2	30	0
+all	mf_defined_length	Rejected script	30	2	30	0
+all	mf_full_length	Rejected script	30	2	30	0
+all	mf_generated_events_id	Rejected script	30	2	30	0
+all	mf_get_event_par	Rejected script	30	2	30	0
+all	mf_get_id	Rejected script	30	2	30	0
+all	mf_get_last	Rejected script	30	2	30	0
+all	mf_get_last_filename	Rejected script	30	2	30	0
+all	mf_get_next_at	Rejected script	30	2	30	0
+all	mf_get_pos	Rejected script	30	2	30	0
+all	mf_insert_event	Rejected script	30	2	30	0
+all	mf_insert_file	Rejected script	30	2	30	0
+all	mf_length_to_consider	Rejected script	30	2	30	0
+all	mf_original_length	Rejected script	30	2	30	0
+all	mf_remove_event	Rejected script	30	2	30	0
+all	mf_set_buffer_size	Rejected script	30	2	30	0
+all	mf_set_event_par	Rejected script	30	2	30	0
+all	mf_set_export_area	Rejected script	30	2	30	0
+all	mf_set_num_export_areas	Rejected script	30	2	30	0
+all	mf_set_pos	Rejected script	30	2	30	0
+all	subscribe_async	Rejected script	30	2	30	0
+all	note_off	Ignored	22	3	22	30
+all	get_event_mark	Ignored	15	1	15	15
+all	fs_get_filename	Ignored	13	3	10	28
+all	fs_navigate	Host	13	3	10	26
+all	load_array_str	Host	13	3	10	79
+all	save_array_str	Host	13	3	10	67
+all	set_event_par	Effect	3	3	1	36
+all	attach_level_meter	Host	2	2	2	16
+all	set_skin_offset	Ignored	2	2	2	280
+all	fade_out	Effect	1	1	1	31
+all	fade_out	Ignored	1	1	1	31
+all	find_target	Approximate	1	1	1	1314
+all	ms_to_ticks	Approximate	1	1	1	3
+all	reset_ksp_timer	Effect	1	1	1	8
