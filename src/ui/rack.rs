@@ -532,6 +532,14 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     if let Some(path) = before.filter(|_| previous).or(after.filter(|_| next)) {
         cx.replace(slot, path);
     }
+    let view_el = super::part::available(cx, slot).then(|| {
+        let original = super::part::presentation(cx, slot) == sampler_ui_ir::Presentation::Bitmap;
+        let label = if original { "Original" } else { "Vectorized" };
+        let (hit, el) = icon_button(ui, format!("view-{slot}"), Icon::Picture,
+            &format!("Performance view: {label}. Switch to {}", if original { "Vectorized" } else { "Original" }), original);
+        if hit { cx.selection.parts[slot].view = if original { 3 } else { 1 }; }
+        el
+    });
     let more_id = format!("more-{slot}");
     let (more, more_el) = icon_button(ui, more_id.as_str(), Icon::More, "Part menu", false);
     if more {
@@ -611,6 +619,7 @@ fn header_at(ui: &mut Ui, cx: &mut Cx, slot: usize, stuck: bool) -> El {
     let mix = cluster(vec![midi_el, output_el, pan_el, gain_el, tune_el]).gap(if narrow { TIGHT } else { SPACE });
     let mut tail = vec![switches];
     if !narrow { tail.push(dot); }
+    tail.extend(view_el);
     tail.push(more_el);
     tail.extend(remove_el);
     let tail = cluster(tail).gap(TIGHT + 1.);

@@ -2244,3 +2244,66 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
+
+/// The landscape button lives in the header, preserves control values and
+/// stores the same Original/Vectorized state codes used by v1.
+#[test]
+fn the_header_picture_button_switches_and_restores_the_authored_view() {
+    use sampler_ui_ir as ir;
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(Part { path: "/virtual/header-picture.nki".into(), view: 1, ..Default::default() });
+    let mut knob = ir::Widget::new("Level", ir::PageRef(0), ir::Rect::new(10, 10, 85, 52),
+        ir::Kind::Knob { range: Default::default(), display: Default::default() });
+    knob.binding = ir::Binding::Control(ir::ControlId(99));
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 300, height: 100 }, ..Default::default() }], widgets: vec![knob], ..Default::default() };
+    p.shared.view.lock().unwrap().parts[0].interfaces = vec![face.clone(), face].into();
+    let mut h = Harness::new(&p, 1180., 760.);
+    let scene = h.ui.scene().unwrap();
+    let header = scene.surface("header-0").unwrap().frame;
+    let button = scene.surface("view-0").expect("header picture icon").frame;
+    assert!(button.y >= header.y && button.y + button.size.height <= header.y + header.size.height);
+    assert!(scene.surface("face-original-0").is_none() && scene.surface("face-vector-0").is_none());
+    h.press("view-0"); h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 3);
+    h.press("face-0-0"); h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("part-0-script-0-ir-0").is_some());
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let mut updated = view.parts[0].interfaces.to_vec();
+        updated[0].widgets[0].text = "A callback updated this caption".into();
+        view.parts[0].interfaces = updated.into();
+    }
+    h.idle(3);
+    assert!(h.ui.scene().unwrap().surface("part-0-script-0-ir-0").is_some(), "a UI publication keeps the selected script");
+    let saved = serde_json::to_string(&p.selection.read().unwrap().parts[0]).unwrap();
+    let restored: Part = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored.view, 3);
+    h.press("view-0"); h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].view, 1);
+}
+
+#[test]
+fn an_authored_menu_opens_a_popup_and_queues_its_selected_value() {
+    use sampler_ui_ir as ir;
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(Part { path: "/virtual/menu.nki".into(), ..Default::default() });
+    p.shared.ensure_parts(1);
+    let id = ir::ControlId(73);
+    let atoms = p.shared.part(0).unwrap();
+    *atoms.controls.lock().unwrap() = vec![crate::plugin::ControlCell::new(id, 10.)].into();
+    let mut menu = ir::Widget::new("Mode", ir::PageRef(0), ir::Rect::new(10, 10, 120, 24),
+        ir::Kind::Menu { items: [10,30,70].into_iter().map(|value| ir::MenuItem { text: format!("Mode {value}"), value, visible: true }).collect() });
+    menu.binding = ir::Binding::Control(id);
+    let face = ir::Interface { pages: vec![ir::Page { size: ir::Size { width: 300, height: 80 }, ..Default::default() }], widgets: vec![menu], ..Default::default() };
+    p.shared.view.lock().unwrap().parts[0].interfaces = vec![face].into();
+    let mut h = Harness::new(&p, 1180., 760.);
+    h.press("part-0-script-0-ir-0"); h.idle(2);
+    assert_eq!(atoms.control_values(), [(id,10.)], "opening a menu does not cycle it");
+    h.press("menu-item-1"); h.idle(2);
+    assert_eq!(atoms.control_values(), [(id,30.)]);
+    assert_eq!(p.shared.control_edits.pop().map(|(_,_,c,v)|(c,v)), Some((id,30.)), "queue the item value, not position 1");
+    h.press("part-0-script-0-ir-0"); h.idle(2);
+    atoms.generation.fetch_add(1, Ordering::Relaxed);
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("menu-item-1").is_none(), "reloading retires the old script menu");
+}

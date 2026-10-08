@@ -307,14 +307,9 @@ fn widget(
             .a11y(A11y::Toggle { on })
         }
         Kind::Menu { items } => {
-            let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
-            let at = shown.iter().position(|i| f64::from(i.value) == v);
-            // Displaying an unmatched value must not change the script variable.
-            // ponytail: click cycles entries; use a popup when direct menu selection is needed.
-            if ui.get(id.as_str()).activated() && !shown.is_empty() {
-                v = f64::from(shown[at.map_or(0, |a| (a + 1) % shown.len())].value);
-            }
-            let label = items.iter().find(|i| f64::from(i.value) == v).or_else(|| shown.first().copied()).map(|i| i.text.clone()).unwrap_or_default();
+            let label = items.iter().find(|i| f64::from(i.value) == v).or_else(|| items.iter().find(|i| i.visible)).map(|i| i.text.clone()).unwrap_or_default();
+            // The editor opens its shared popup and dispatches the selected
+            // semantic value; drawing never cycles or rewrites a menu value.
             match strip {
                 Some(p) => stack![block(w, h).radius(0).fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))), row![words(label)].align(Align::Center).pad((TIGHT * scale, 0.)).w(w).h(h)],
                 None => row![words(label).flex(1).min_w(0), glyph(Icon::Down, TIGHT * 2. * scale, secondary())]

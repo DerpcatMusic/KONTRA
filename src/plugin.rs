@@ -55,6 +55,9 @@ pub struct Part {
     pub name: String,
     /// The rack shows only the part's header.
     pub collapsed: bool,
+    /// Authored UI presentation: 0 follows settings, 1 Original, 3 Vectorized
+    /// (the v1 state codes); 2 is reserved for the generated KONTRA panel.
+    pub view: u8,
     /// The part's height in the rack when the player sized it; 0 is automatic.
     pub height: f32,
     /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
@@ -96,6 +99,7 @@ impl Default for Part {
             solo: false,
             name: String::new(),
             collapsed: false,
+            view: 0,
             height: 0.,
             aux: -1,
             aux_gain: 0.,
@@ -368,6 +372,10 @@ pub(crate) struct ControlCell {
 }
 
 impl ControlCell {
+    pub(crate) fn new(id: sampler_ui_ir::ControlId, value: f64) -> Self {
+        Self { id, value: AtomicU64::new(value.to_bits()) }
+    }
+
     pub(crate) fn value(&self) -> f64 {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
@@ -1244,7 +1252,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             *atoms.controls.lock().unwrap() = loaded
                 .controls
                 .iter()
-                .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
+                .map(|&(id, value)| ControlCell::new(id, value))
                 .collect();
             v.instrument = loaded.instrument;
             v.keys = loaded.scripts.keys();

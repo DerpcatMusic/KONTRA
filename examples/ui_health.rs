@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
         .windows(2)
         .find(|a| a[0] == "--shots")
         .map(|a| PathBuf::from(&a[1]));
+    let benchmark = args.iter().any(|a| a == "--bench");
     let max_items: usize = option("--max-items").unwrap_or("25".into()).parse()?;
     let list = fs::read_to_string(
         Path::new(&std::env::var("HOME")?).join(".cache/kontakto-corpus/items.tsv"),
@@ -124,7 +125,7 @@ fn main() -> anyhow::Result<()> {
         for resource in sampler_kontakt::Resources::of(path).locations() {
             fingerprint(&mut item_key, &resource);
         }
-        item_key.update(format!("{shots:?}").as_bytes());
+        item_key.update(format!("{shots:?}:{benchmark}").as_bytes());
         let item_cache = cache_dir.join(format!("item-{}.json", item_key.finalize().to_hex()));
         if let Ok(bytes) = fs::read(&item_cache) {
             let record: Value = serde_json::from_slice(&bytes)?;
@@ -164,7 +165,7 @@ fn main() -> anyhow::Result<()> {
                         let mut key = blake3::Hasher::new();
                         let root = path.ancestors().find(|a| a.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "Kontakt"))).unwrap_or(path.parent().unwrap());
                         key.update(root.as_os_str().as_encoded_bytes());
-                        key.update(format!("{shots:?}").as_bytes());
+                        key.update(format!("{shots:?}:{benchmark}").as_bytes());
                         for resource in sampler_kontakt::Resources::of(path).locations() { fingerprint(&mut key, &resource); }
                         for b in &k.instrument.behaviors { key.update(format!("{:?}", b).as_bytes()); }
                         for g in &k.instrument.groups { key.update(g.name.as_bytes()); key.update(b"\0"); }
@@ -175,7 +176,7 @@ fn main() -> anyhow::Result<()> {
                         let ui = if let Some(ui) = cached { ui } else {
                             let options = sampler_kontakt::Options { library:Some(path.to_owned()), ..Default::default() };
                             let dir = shots.as_ref().map(|d| d.join(&key));
-                            let ui = kontakto::ui_health(&mut k.instrument, &options, dir.as_deref());
+                            let ui = kontakto::ui_health(&mut k.instrument, &options, dir.as_deref(), benchmark);
                             fs::write(&input_cache, serde_json::to_vec(&ui).expect("serialize UI report")).expect("cache UI report");
                             ui
                         };
