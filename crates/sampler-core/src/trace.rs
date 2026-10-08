@@ -994,7 +994,7 @@ impl crate::Runtime {
             applied,
             enabled,
             TraceIdentity {
-                external_port: Some(port),
+                external_port: (!matches!(stage, HostStage::PartFader | HostStage::AuxSend)).then_some(port),
                 output_channels: match stage {HostStage::Output(_, channels) => Some(channels), _ => None},
                 routed_to: match stage {
                     HostStage::PartFader | HostStage::AuxSend if port < HOST_PORTS => Some(trace.graph.host[1 + port]),

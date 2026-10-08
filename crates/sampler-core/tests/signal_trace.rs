@@ -331,7 +331,7 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
             .unwrap();
         assert_eq!(row.at, 0);
         assert_eq!(row.frames, 64);
-        assert_eq!(row.identity.external_port, Some(2));
+        assert_eq!(row.identity.external_port, (!matches!(kind, "host_part_fader" | "host_aux_send")).then_some(2));
         assert!((row.output.rms[0] - left).abs() < 1e-7);
         assert!((row.output.rms[1] - right).abs() < 1e-7);
         if kind == "host_output" { assert_eq!(row.identity.output_channels, Some(1)); }
