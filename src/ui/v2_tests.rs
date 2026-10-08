@@ -1417,3 +1417,342 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
     }
     assert_eq!(matched,6);
 }
+
+#[test]
+fn v1_sound_editor_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut instrument = sampler_ir::Instrument {
+        name: "Editor fixture".into(),
+        ..Default::default()
+    };
+    instrument.groups.push(sampler_ir::Group {
+        name: "Sustain".into(),
+        ..Default::default()
+    });
+    let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+    zone.group = Some(sampler_ir::GroupRef(0));
+    instrument.zones.push(zone);
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/generated/editor.nki".into(),
+            ..Default::default()
+        });
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(instrument));
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Sound");
+    for id in [
+        "edit-group-prev",
+        "edit-group-next",
+        "edit-scope-all",
+        "edit-scope-one",
+        "edit-compact",
+        "edit-expanded",
+        "edit-envelope",
+    ] {
+        assert!(
+            h.ui.scene().unwrap().surface(id).is_some(),
+            "missing v1 editor control {id}"
+        );
+    }
+}
+
+fn editor_fixture() -> Arc<crate::plugin::SamplerParams> {
+    use sampler_core::{ControlValue, Envelope, Prepared};
+    use sampler_ir as I;
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut i = I::Instrument {
+        name: "Native editor".into(),
+        ..Default::default()
+    };
+    i.groups = vec![
+        I::Group {
+            name: "Sustain".into(),
+            ..Default::default()
+        },
+        I::Group {
+            name: "Legato".into(),
+            ..Default::default()
+        },
+    ];
+    i.source_indices.groups = vec![Some(I::GroupRef(0)), Some(I::GroupRef(1))];
+    i.modulators.push(I::Modulator {
+        scope: I::Scope::Voice,
+        source: I::ModulationSource::Envelope(I::Envelope {
+            attack: I::Time::Milliseconds(10.),
+            decay: I::Time::Milliseconds(200.),
+            sustain: 0.5,
+            release: I::Time::Milliseconds(300.),
+            ..Default::default()
+        }),
+    });
+    for g in 0..2 {
+        let mut z = I::Zone::new(I::AssetRef(0));
+        z.group = Some(I::GroupRef(g));
+        z.amplitude = Some(I::ModulatorRef(0));
+        i.zones.push(z);
+    }
+    let native = Envelope::new(480, 0, 9600, 0.5, 14400).unwrap();
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_groups(2, vec![])
+        .unwrap()
+        .with_group_envelope_parameters(0, 0, 2, native)
+        .unwrap()
+        .with_group_envelope_parameters(1, 1, 7, native)
+        .unwrap();
+    let atoms = p.shared.part(0).unwrap();
+    *atoms.engine_bindings.lock().unwrap() = plan.engine_parameter_bindings().into();
+    *atoms.controls.lock().unwrap() = plan
+        .controls()
+        .iter()
+        .map(|c| {
+            let ControlValue::Real(v) = c.default else {
+                panic!("real native lane")
+            };
+            crate::plugin::ControlCell::new(sampler_ui_ir::ControlId(c.id.0), v)
+        })
+        .collect();
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/generated/editor.nki".into(),
+            ..Default::default()
+        });
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(i));
+    p
+}
+
+#[test]
+fn v1_editor_typed_native_values_and_state_round_trip() {
+    use crate::sound::edits::{Edits, Override, Param};
+    use moose::prelude::*;
+    let p = editor_fixture();
+    let atoms = p.shared.part(0).unwrap();
+    let i = p.shared.view.lock().unwrap().parts[0]
+        .instrument
+        .clone()
+        .unwrap();
+    let model = super::editor_model::Model::new(
+        &i,
+        0,
+        &Edits::default(),
+        &atoms.engine_bindings.lock().unwrap(),
+        &atoms.control_values(),
+        48000.,
+    );
+    for (param, text, native) in [
+        (Param::Attack, "250 ms", 0.25),
+        (Param::Release, "1.5 s", 1.5),
+        (Param::Sustain, "-6 dB", 0.501187),
+    ] {
+        let n = model.typed(param, text).unwrap();
+        assert!((model.display(param, n) - native).abs() < 0.0001, "{text}");
+    }
+    assert_eq!(model.typed(Param::Attack, "fast"), None);
+    assert!(model.display(Param::Sustain, model.typed(Param::Sustain, "-inf").unwrap()) < 0.00001);
+    let mut e = Edits::default();
+    e.set(Override {
+        group: None,
+        param: Param::Attack,
+        offset: 0.1,
+    });
+    e.set(Override {
+        group: Some(1),
+        param: Param::Attack,
+        offset: 0.2,
+    });
+    assert!((e.offset(1, Param::Attack) - 0.3).abs() < 1e-6);
+    let mut state = p.selection.read().unwrap().clone();
+    state.parts[0].group = 1;
+    state.parts[0].edits = e;
+    assert_eq!(
+        crate::plugin::Selection::deserialize(&state.serialize())
+            .unwrap()
+            .parts[0]
+            .edits,
+        state.parts[0].edits
+    );
+}
+
+#[test]
+fn v1_editor_scope_reset_compact_and_group_navigation_work() {
+    use crate::sound::edits::{Override, Param};
+    let p = editor_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Sound");
+    for param in Param::ENVELOPE {
+        assert!(
+            h.ui.scene()
+                .unwrap()
+                .surface(&format!("edit-envelope-value-{param:?}"))
+                .is_some()
+        );
+    }
+    h.press("edit-group-next");
+    assert_eq!(p.selection.read().unwrap().parts[0].group, 1);
+    h.press("edit-group-prev");
+    assert_eq!(p.selection.read().unwrap().parts[0].group, 0);
+    h.press("edit-compact");
+    assert!(
+        h.ui.scene()
+            .unwrap()
+            .surface("edit-envelope-value-Attack")
+            .is_none()
+    );
+    h.press("edit-expanded");
+    p.selection.write().unwrap().parts[0].edits.set(Override {
+        group: None,
+        param: Param::Attack,
+        offset: 0.1,
+    });
+    h.idle(3);
+    assert!(
+        h.ui.scene()
+            .unwrap()
+            .surface("edit-envelope-reset-Attack")
+            .is_some()
+    );
+    h.idle(60);
+    shoot(&h.ui, 1180, 780, "settings-editor.png");
+    h.press("edit-envelope-reset-Attack");
+    assert!(p.selection.read().unwrap().parts[0].edits.0.is_empty());
+}
+
+#[test]
+fn v1_editor_graph_drag_wheel_fine_and_typed_readout_work() {
+    use crate::sound::edits::Param;
+    let p = editor_fixture();
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Sound");
+    h.idle(60);
+    let model = || {
+        let atoms = p.shared.part(0).unwrap();
+        let i = p.shared.view.lock().unwrap().parts[0]
+            .instrument
+            .clone()
+            .unwrap();
+        let e = p.selection.read().unwrap().parts[0].edits.clone();
+        super::editor_model::Model::new(
+            &i,
+            0,
+            &e,
+            &atoms.engine_bindings.lock().unwrap(),
+            &atoms.control_values(),
+            48000.,
+        )
+    };
+    let handle = |h: &Harness| {
+        let m = model();
+        let env = m.playing.envelope.as_ref().unwrap();
+        let shape = super::viz::envelope_over(env, super::viz::envelope_width(env));
+        let at = super::viz::envelope_handles(&shape, env)[0].at;
+        let r =
+            h.ui.scene()
+                .unwrap()
+                .surface("edit-envelope")
+                .unwrap()
+                .frame;
+        Point::new(
+            r.x + theme::SPACE + f64::from(at[0]) * (r.size.width - 2. * theme::SPACE),
+            r.y + theme::SPACE + (1. - f64::from(at[1])) * (r.size.height - 2. * theme::SPACE),
+        )
+    };
+    let pointer = |at: Point, down: bool, shift: bool| Input {
+        pointer: PointerInput {
+            pos: Some(at),
+            buttons: if down {
+                Buttons::PRIMARY
+            } else {
+                Buttons::default()
+            },
+            mods: Mods {
+                shift,
+                ..Default::default()
+            },
+        },
+        ..Default::default()
+    };
+    let at = handle(&h);
+    h.tick(pointer(at, true, false));
+    h.tick(pointer(Point::new(at.x + 40., at.y), true, false));
+    h.tick(pointer(Point::new(at.x + 40., at.y), false, false));
+    h.idle(3);
+    let normal = p.selection.read().unwrap().parts[0]
+        .edits
+        .get(None, Param::Attack);
+    assert!(normal > 0.01, "drag edits the all-groups layer");
+    h.press("edit-reset-part");
+    h.press("edit-scope-one");
+    let at = handle(&h);
+    h.tick(pointer(at, true, true));
+    h.tick(pointer(Point::new(at.x + 40., at.y), true, true));
+    h.tick(pointer(Point::new(at.x + 40., at.y), false, true));
+    h.idle(3);
+    let fine = p.selection.read().unwrap().parts[0]
+        .edits
+        .get(Some(0), Param::Attack);
+    assert!(
+        (fine / normal - 0.1).abs() < 0.03,
+        "Shift scales drag to a tenth: {fine}/{normal}"
+    );
+    let at = handle(&h);
+    h.tick(Input {
+        pointer: PointerInput {
+            pos: Some(at),
+            ..Default::default()
+        },
+        wheel: Vec2::new(0., -1.),
+        ..Default::default()
+    });
+    h.idle(3);
+    assert!(
+        p.selection.read().unwrap().parts[0]
+            .edits
+            .get(Some(0), Param::Attack)
+            > fine,
+        "wheel edits nearest handle"
+    );
+    let at = super::tests::center(&h.ui, "edit-envelope-value-Attack");
+    for down in [true, false, true, false] {
+        h.tick(pointer(at, down, false));
+    }
+    h.idle(2);
+    let edit = "edit-envelope-value-Attack-edit";
+    assert!(
+        h.ui.scene().unwrap().surface(edit).is_some(),
+        "double-click opens typed readout"
+    );
+    h.ui.focus(edit);
+    h.tick(Input {
+        keys: vec![KeyPress {
+            key: Key::Char('a'),
+            mods: Mods {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    });
+    h.tick(Input {
+        text: "250 ms".into(),
+        ..Default::default()
+    });
+    h.tick(Input {
+        keys: vec![KeyPress {
+            key: Key::Enter,
+            mods: Mods::default(),
+        }],
+        ..Default::default()
+    });
+    h.idle(3);
+    let m = model();
+    assert!(
+        (m.playing.envelope.unwrap().attack - 0.25).abs() < 0.0001,
+        "typed input changes the same offset layer"
+    );
+}

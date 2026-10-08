@@ -21,6 +21,7 @@
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
 pub mod articulation;
+pub mod edits;
 pub mod event;
 pub mod mics;
 pub mod mix;
@@ -372,6 +373,7 @@ pub trait Core: Send {
     fn take_effects(&mut self, part: usize, each: &mut dyn FnMut(usize, &sampler_core::Effect) -> bool);
 
     fn voices(&self) -> Voices;
+    fn voice_taps(&self, _part:usize)->[Option<sampler_core::VoiceTap>;16] {[None;16]}
     /// `part`'s runtime problems since it was installed.
     fn problems(&self, part: usize) -> report::RuntimeProblems;
     /// The articulation `part` plays, by index in its instrument, when the
