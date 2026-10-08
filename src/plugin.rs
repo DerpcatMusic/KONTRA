@@ -2264,6 +2264,109 @@ pub(crate) mod tests {
         assert_eq!(Play::Bend(8192).event(), CoreEvent::Ump([0x20e0_0040, 0]));
         assert_eq!(Play::Mod(64).event(), CoreEvent::midi1(0xb0, 1, 64));
     }
+
+    /// Compare an installed script's empty and real control environments;
+    /// output only aggregate allocation/eval metrics.
+    #[test]
+    #[ignore]
+    fn probe_ksp_init() {
+        let path = std::path::PathBuf::from(std::env::var("PROBE_PATH").expect("PROBE_PATH"));
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let groups = kontakt.instrument.groups.iter().map(|g| g.name.clone()).collect::<Vec<_>>();
+        let mut resources = sampler_kontakt::Resources::of(&path);
+        for (slot, behavior) in kontakt.instrument.behaviors.iter().enumerate() {
+            if behavior.language != sampler_ir::Language::Ksp { continue; }
+            for real in [false, true] {
+                let view = if real {
+                    sampler_ksp::nckp::view_name(&behavior.source).and_then(|name| resources.read(&format!("Resources/performance_view/{name}.nckp")))
+                        .and_then(|bytes| sampler_ksp::nckp::parse(&bytes).ok()).map(|v| v.0).unwrap_or_default()
+                } else { Default::default() };
+                let environment = sampler_ksp::Environment { groups: groups.clone(), slot: slot as u8, performance_view: view, ..Default::default() };
+                for cell in [&CALLS, &ALLOCATED, &FREED] { cell.with(|n| n.set(0)); }
+                LIVE.with(|n| n.set(0)); PEAK.with(|n| n.set(0));
+                let begin = Instant::now();
+                COUNTING.with(|c| c.set(true));
+                let _initialized = sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment).unwrap();
+                COUNTING.with(|c| c.set(false));
+                println!("AUDIT {}", serde_json::json!({"stage":"init_allocations", "slot":slot, "real_view":real, "ms":begin.elapsed().as_secs_f64()*1000., "calls":CALLS.with(Cell::get), "allocated_bytes":ALLOCATED.with(Cell::get), "freed_bytes":FREED.with(Cell::get), "live_bytes":LIVE.with(Cell::get), "peak_live_bytes":PEAK.with(Cell::get)}));
+
+            }
+        }
+    }
+
+    /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
+    #[test]
+    #[ignore]
+    fn probe_load() {
+        let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+        let program = std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let proc_kb = |key: &str| -> u64 {
+            std::fs::read_to_string("/proc/self/status").unwrap().lines()
+                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok()).unwrap_or(0)
+        };
+        let params = std::sync::Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
+        let rss0 = proc_kb("VmRSS:");
+        let mut dsp = Dsp::default(); dsp.core.set_mix(&mix(&params.selection.read().unwrap()));
+        let t0 = Instant::now();
+        let worker = { let p = params.clone(); std::thread::spawn(move || { Load.run(&p); t0.elapsed() }) };
+        let mut publication_ms = None;
+        let mut first_audio_ms = None;
+        let mut first_audio_frame = None;
+        let mut installed_ms = None;
+        let mut peak = 0f32;
+        let mut blocks = 0u32;
+        loop {
+            if publication_ms.is_none() && params.shared.view.lock().unwrap().parts[0].tree.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
+            while let Some((slot, _, part)) = params.shared.ready.pop() {
+                let present = part.is_some(); dsp.core.install(slot, part);
+                if present {
+                    installed_ms = Some(t0.elapsed().as_secs_f64()*1000.);
+                    for cc in [1,11] { dsp.core.play(0, CoreEvent::midi1(0xb0,cc,127)); }
+                    dsp.core.play(0, CoreEvent::midi1(0x90,60,100));
+                }
+            }
+            if installed_ms.is_some() {
+                let rendered=dsp.core.render(64); for bus in rendered.buses { for channel in bus { for x in &channel[..64] { peak=peak.max(x.abs()); } } }
+                if peak > 1e-7 && first_audio_ms.is_none() {
+                    first_audio_ms = Some(t0.elapsed().as_secs_f64()*1000.);
+                    first_audio_frame = Some(blocks*64);
+                }
+                blocks += 1;
+            }
+            if worker.is_finished() && (installed_ms.is_none() || blocks >= 375) { break; }
+            std::thread::sleep(std::time::Duration::from_micros(1333));
+        }
+        let total = worker.join().unwrap();
+        let rss_done = proc_kb("VmRSS:");
+        let hwm_done = proc_kb("VmHWM:");
+        let ui = crate::ui::audit_frames(&params);
+        let ui_wall_ms = ui["build_ms"].as_f64().unwrap();
+        let rss_settled = (ui["rss_live_mb"].as_f64().unwrap() * 1024.) as u64;
+        let hwm = proc_kb("VmHWM:");
+        #[cfg(all(target_os="linux", target_env="gnu"))]
+        let trimmed_rss = { unsafe { libc::malloc_trim(0); } proc_kb("VmRSS:") };
+        #[cfg(not(all(target_os="linux", target_env="gnu")))]
+        let trimmed_rss = rss_settled;
+
+        let atoms = params.shared.part(0).unwrap();
+        let stream = atoms.stream.lock().unwrap();
+        let stream = stream.as_ref().map(|s| serde_json::json!({"heads":s.report.head_bytes,"head_frames":s.report.head_frames,"pool_bytes":s.report.pool_bytes,"full_bytes":s.report.full_bytes,"resident_bytes":s.resident_bytes()}));
+        let view = params.shared.view.lock().unwrap();
+        let decoded = view.parts[0].report.as_ref().map(|r| serde_json::json!({"zones":r.decoded.zones,"groups":r.decoded.groups,"samples":r.decoded.samples,"scripts":r.decoded.scripts,"missing":r.missing.len()}));
+        drop(view);
+        let extra = serde_json::json!({"stream":stream,"decoded":decoded,"problems":format!("{:?}",dsp.core.problems(0))});
+        let trace = params.shared.view.lock().unwrap().parts[0].trace.as_deref().cloned();
+        println!("PROBE {}", serde_json::json!({
+            "path":path,"program":program,"publication_ms":publication_ms,
+            "installed_ms":installed_ms,"first_audio_ms":first_audio_ms,"first_audio_frames":first_audio_frame,"peak":peak,
+            "load_run_ms":total.as_secs_f64()*1000.,"ui_wall_ms":ui_wall_ms,"ui":ui,
+            "rss0_mb":rss0 as f64/1024.,"rss_done_mb":rss_done as f64/1024.,"hwm_done_mb":hwm_done as f64/1024.,
+            "rss_settled_mb":rss_settled as f64/1024.,"rss_after_trim_mb":trimmed_rss as f64/1024.,"hwm_mb":hwm as f64/1024.,"trace":trace,
+            "extra":extra
+        }));
+    }
+
 }
 
 #[cfg(test)]

@@ -1256,3 +1256,5 @@ impl Cx<'_> {
 pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }

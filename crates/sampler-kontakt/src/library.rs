@@ -34,6 +34,7 @@ pub struct Kontakt {
     /// Each asset's resolved location, in asset order.
     pub locations: Vec<PathBuf>,
     pub samples: Samples,
+    pub(crate) initialized: Option<crate::load::ScriptInit>,
 }
 
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
@@ -61,6 +62,7 @@ fn read_overlaid(
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -86,6 +88,8 @@ fn read_overlaid(
             (t.sample_filetable, t.other_filetable)
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -95,6 +99,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -139,6 +144,8 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -305,45 +312,38 @@ fn translate(
         .map(|g| g.params().map(|p| p.name))
         .collect::<Result<_,_>>()
         .map_err(|e| decode("source group names",e))?;
-    let writes: Vec<_> = out
-        .ir
-        .behaviors
+    if let Some(snapshot) = snapshot {
+        for behavior in &mut out.ir.behaviors {
+            if let Some(entries) = behavior
+                .slot
+                .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
+            {
+                for (name, value) in saved(entries) {
+                    match behavior.state.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => behavior.state.push((name, value)),
+                    }
+                }
+            }
+        }
+    }
+    let span = crate::audit::Span::new("translate_ksp_init");
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, &[]);
+    out.engine = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .filter_map(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("import-harvest");
-            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
-                .ok()
-        })
         .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .flat_map(|s| s.engine_pars())
         .collect();
-    out.engine = writes;
-    // Scripts that set slot bypass or levels while playing get runtime blocks.
-    let dynamic = out
-        .ir
-        .behaviors
+    let dynamic = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .any(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
-            #[cfg(feature="scan")]
-            sampler_ksp::scan::attempt("dynamic-rack");
-            sampler_ksp::compile_with(
-                &b.source,
-                48_000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &environment,
-            )
-            .is_ok_and(|script| script.writes_effect_slots())
-        });
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
+    drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         let runtime = ir::GroupRef(out.ir.groups.len());
@@ -359,6 +359,7 @@ fn translate(
             out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
         }
     }
+    let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -405,6 +406,8 @@ fn translate(
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
     let data = &program
@@ -468,6 +471,8 @@ fn translate(
             out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
         }
     }
+    drop(span);
+    let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
@@ -475,6 +480,7 @@ fn translate(
         instrument: out.ir,
         locations: out.locations,
         samples,
+        initialized: Some(initialized),
     })
 }
 

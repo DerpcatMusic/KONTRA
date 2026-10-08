@@ -1418,7 +1418,7 @@ fn kontakt(
     if canceled() {
         return Err(CoreError::Canceled);
     }
-    let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
+    let streamed = sampler_kontakt::load_read_streamed_cancelable(source, &options, &sampler_kontakt::StreamPolicy { lazy: true, head_budget: 8 << 20, block_frames: super::MAX_BLOCK, max_step: 16.0, ..Default::default() }, progress, canceled).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
@@ -1444,12 +1444,16 @@ fn kontakt(
 /// stream from the bank or file; its Lua scripts run on their own thread.
 fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let load = |e: &dyn std::fmt::Display| CoreError::Load(LoadFailure::message(e));
+    let span = sampler_kontakt::audit::Span::new("uvi_read_translate");
     let mut t = sampler_uvi::translate_path(&request.path).map_err(|e| load(&*e))?;
+    drop(span);
+    let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
     let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
+    drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &sampler_kontakt::StreamPolicy { lazy: true, head_budget: 8 << 20, block_frames: super::MAX_BLOCK, max_step: 16.0, ..Default::default() }).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     let uvi_ui = attached.as_ref().map(|a| a.driver.ui().clone());
@@ -1559,6 +1563,7 @@ impl V2Loader {
         if canceled() {
             return Err(CoreError::Canceled);
         }
+        let _span = sampler_kontakt::audit::Span::new("runtime_alloc_init");
         let mut timbre = None;
         if request.mpe {
             let defaults = match &instrument {

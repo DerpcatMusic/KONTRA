@@ -21,6 +21,7 @@ sampler-ksp = { path = "../sampler-ksp" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 ni-file = { path = "../../vendor/ni-file" }
 ncw = { path = "../../vendor/ncw" }
+dirs = "5"
 aes = { version = "0.8", optional = true }
 
 [lints.rust]
