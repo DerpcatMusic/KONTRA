@@ -11,7 +11,7 @@ menu semantics and typed value editing. Several recognized widgets are passive
 placeholders. V1 is comparison evidence, not the Kontakt behavioral oracle.
 
 Evidence labels: **code** = traced implementation; **probe** = this branch's
-executable result; **usage** = source identifier census, not successful execution;
+executable result; **scan** = shared scanner measurements, with explicit coverage;
 **unknown** = requires a reference-host or integrated-runtime measurement.
 Recognizing a declaration/property is not equivalent to supporting its behavior.
 The matrices cover all 16 KSP widget declarations listed by
@@ -94,26 +94,26 @@ The existing frontend mapping check also asserts the reversed negative-axis resu
 
 ## Exhaustive widget matrix
 
-Counts are **source-present NKI / NKM files** from all 834 manifest items. They are identifier-presence counts in active inline scripts, including helpers/branches that may never execute; they are not initialized widget counts. Resource-only widgets can be absent from this declaration census. Zero is source absence, never implementation proof.
+The count column is the shared scanner’s **initialized Conflux widget count across all three views**, including hidden and phantom controls. It covers **1/834 Kontakt files**, not the whole corpus. Zero means no initialized instance in this witness; it says nothing about implementation support or corpus use. Whole-corpus widget/input reach is pending the census sweep.
 
-| Widget | Expected value/input contract | V2 status and evidence at baseline | Root cause and systemic fix | Source NKI / NKM |
+| Widget | Expected value/input contract | V2 status and evidence at baseline | Root cause and systemic fix | Shared scan: Conflux instances |
 |---|---|---|---|---|
-| `ui_knob` | Integer range; up/down relative drag; fine adjustment and source default | **Partial**. Vertical drag, wheel, arrows, reset in `ir_view.rs:246` / `theme.rs:704`; declaration ratio affects display | Fixed 180px travel; range step ignored; rounded-feedback fixture proves lost fractional accumulation. Consume gesture policy and retain grab accumulator | 58 / 50 |
-| `ui_slider` | Integer range; authored direction/sensitivity; skinned dial still preserves intended gesture | **Wrong**. Always horizontal `ui.rs:332`; signed metadata reversed `ui.rs:448`; renderer ignores it `ir_view.rs:247` | Preserve axis/picture-relative sensitivity and use it for both presentations | 781 / 53 |
-| `ui_button` | Integer 0/1; click changes value and dispatches its handler; distinct from an automatable switch | **Partial**. Scalar binding and activation toggle `ir_view.rs:291`; KSP emits nonmomentary button `ui.rs:336` | Basic toggle exists; picture hover/press states and source modifier payload do not. Preserve those states without inventing momentary KSP behavior | 774 / 53 |
-| `ui_switch` | 0/1 toggle with host automation identity | **Partial**. Same activation branch `ir_view.rs:291`, automation metadata `ui.rs:502` | Metadata is not a host automation/gesture bridge. Bind source automation plus modifier and picture states | 780 / 53 |
-| `ui_menu` | Select visible entry by its semantic integer value; drawing does not edit state | **Wrong**. `ir_view.rs:311` coerces unmatched value to first visible entry even while idle; click cycles entries | Reuse shared popup; preserve unknown current values; select exact semantic value once | 781 / 53 |
-| `ui_table` | Integer array, declared bipolar range/visible steps; pointer edits report the column index | **Missing interaction / wrong display**. IR retains cells `ui.rs:354`; renderer draws identical 1px bars `ir_view.rs:348` | Scalar `Values` cannot submit indexed edits; draw cells and add typed indexed transactions/callback index | 142 / 50 |
-| `ui_xy` | Real array of cursor coordinates; independent axes/mode, cursor selection and reset | **Missing**. IR cursor/sensitivity metadata `ui.rs:383`; placeholder `ir_view.rs:357`; `Binding::Variable` | Typed cursor values/events are absent from view and edit service; implement them without scalar encoding | 1 / 0 |
-| `ui_waveform` | Attached zone/sample view, cursor/slices/selection; enabled MIDI drag export | **Missing**. Placeholder `ir_view.rs:357` | No owned waveform data, selection or export input path. Add async peaks and versioned source edits, use existing asset lifetime | 3 / 0 |
-| `ui_wavetable` | Attached zone and position/mode visualization; source-prescribed interaction | **Missing**. Retained mode/parallax `ui.rs:391`; placeholder `ir_view.rs:357` | No renderer consumes data/properties. Bind zone/position before adding interactive behavior; exact gestures need reference | 1 / 0 |
-| `ui_file_selector` | Navigate/filter allowed base directory; selected path and callback | **Missing**. Base/type/column metadata `ui.rs:404`; placeholder `ir_view.rs:357` | No picker/navigation/selected-path bridge. Reuse native picker with source epoch and directory validation | 7 / 3 |
-| `ui_level_meter` | Read-only levels from attached output/bus; source orientation/range | **Wrong**. Binding constructed `ui.rs:585`, renderer `ir_view.rs:347` returns `[0.;2]` | Wire existing live meter service to the binding. No click/drag editing should be invented | 2 / 0 |
-| `ui_value_edit` | Integer value; typed entry, optional arrows and source units | **Partial**. Drag/wheel/reset only `ir_view.rs:327`; arrow metadata `ui.rs:351` ignored | Reuse native text input and bounded numeric parsing; honor arrows. Double-click should enter typing, not reset | 777 / 53 |
-| `ui_label` | Text/lines; overflow scrolling and configured MIDI export drag | **Partial display / missing scrolling and DnD**. Passive caption `ir_view.rs:346`; no scrolling/export handlers | Implement clipped multiline content and innermost wheel ownership; bind configured MIDI export area | 780 / 53 |
-| `ui_text_edit` | String value with focus, selection, keyboard/IME edit and callback | **Missing**. Passive placeholder `ir_view.rs:357` | No typed string edit/readback service; reuse MUI text/IME component rather than numeric `f64` | 369 / 53 |
-| `ui_panel` | Noneditable container; parent-relative geometry and inherited visibility | **Partial**. `page_rect`/`visible` `sampler-ui-ir/src/lib.rs:552`, `:567`; flat draw `ir_view.rs:184` | Container inheritance exists; pointer clipping/stacking needs overlapping scene probes. Treat panel as presentation container, not scalar control | 1 / 30 |
-| `ui_mouse_area` | Typed drag/drop target with file filtering and enter/leave/drop callbacks | **Missing**. Passive block `ir_view.rs:360`; no event payload/input registration | Add typed DnD events and source callback context; use shared native desktop drop service | 0 / 0 |
+| `ui_knob` | Integer range; up/down relative drag; fine adjustment and source default | **Partial**. Vertical drag, wheel, arrows, reset in `ir_view.rs:246` / `theme.rs:704`; declaration ratio affects display | Fixed 180px travel; range step ignored; rounded-feedback fixture proves lost fractional accumulation. Consume gesture policy and retain grab accumulator | 242 |
+| `ui_slider` | Integer range; authored direction/sensitivity; skinned dial still preserves intended gesture | **Wrong**. Always horizontal `ui.rs:332`; signed metadata reversed `ui.rs:448`; renderer ignores it `ir_view.rs:247` | Preserve axis/picture-relative sensitivity and use it for both presentations | 2 |
+| `ui_button` | Integer 0/1; click changes value and dispatches its handler; distinct from an automatable switch | **Partial**. Scalar binding and activation toggle `ir_view.rs:291`; KSP emits nonmomentary button `ui.rs:336` | Basic toggle exists; picture hover/press states and source modifier payload do not. Preserve those states without inventing momentary KSP behavior | 16 |
+| `ui_switch` | 0/1 toggle with host automation identity | **Partial**. Same activation branch `ir_view.rs:291`, automation metadata `ui.rs:502` | Metadata is not a host automation/gesture bridge. Bind source automation plus modifier and picture states | 41 |
+| `ui_menu` | Select visible entry by its semantic integer value; drawing does not edit state | **Wrong**. `ir_view.rs:311` coerces unmatched value to first visible entry even while idle; click cycles entries | Reuse shared popup; preserve unknown current values; select exact semantic value once | 20 |
+| `ui_table` | Integer array, declared bipolar range/visible steps; pointer edits report the column index | **Missing interaction / wrong display**. IR retains cells `ui.rs:354`; renderer draws identical 1px bars `ir_view.rs:348` | Scalar `Values` cannot submit indexed edits; draw cells and add typed indexed transactions/callback index | 6 |
+| `ui_xy` | Real array of cursor coordinates; independent axes/mode, cursor selection and reset | **Missing**. IR cursor/sensitivity metadata `ui.rs:383`; placeholder `ir_view.rs:357`; `Binding::Variable` | Typed cursor values/events are absent from view and edit service; implement them without scalar encoding | 0 |
+| `ui_waveform` | Attached zone/sample view, cursor/slices/selection; enabled MIDI drag export | **Missing**. Placeholder `ir_view.rs:357` | No owned waveform data, selection or export input path. Add async peaks and versioned source edits, use existing asset lifetime | 0 |
+| `ui_wavetable` | Attached zone and position/mode visualization; source-prescribed interaction | **Missing**. Retained mode/parallax `ui.rs:391`; placeholder `ir_view.rs:357` | No renderer consumes data/properties. Bind zone/position before adding interactive behavior; exact gestures need reference | 0 |
+| `ui_file_selector` | Navigate/filter allowed base directory; selected path and callback | **Missing**. Base/type/column metadata `ui.rs:404`; placeholder `ir_view.rs:357` | No picker/navigation/selected-path bridge. Reuse native picker with source epoch and directory validation | 0 |
+| `ui_level_meter` | Read-only levels from attached output/bus; source orientation/range | **Wrong**. Binding constructed `ui.rs:585`, renderer `ir_view.rs:347` returns `[0.;2]` | Wire existing live meter service to the binding. No click/drag editing should be invented | 6 |
+| `ui_value_edit` | Integer value; typed entry, optional arrows and source units | **Partial**. Drag/wheel/reset only `ir_view.rs:327`; arrow metadata `ui.rs:351` ignored | Reuse native text input and bounded numeric parsing; honor arrows. Double-click should enter typing, not reset | 15 |
+| `ui_label` | Text/lines; overflow scrolling and configured MIDI export drag | **Partial display / missing scrolling and DnD**. Passive caption `ir_view.rs:346`; no scrolling/export handlers | Implement clipped multiline content and innermost wheel ownership; bind configured MIDI export area | 34 |
+| `ui_text_edit` | String value with focus, selection, keyboard/IME edit and callback | **Missing**. Passive placeholder `ir_view.rs:357` | No typed string edit/readback service; reuse MUI text/IME component rather than numeric `f64` | 6 |
+| `ui_panel` | Noneditable container; parent-relative geometry and inherited visibility | **Partial**. `page_rect`/`visible` `sampler-ui-ir/src/lib.rs:552`, `:567`; flat draw `ir_view.rs:184` | Container inheritance exists; pointer clipping/stacking needs overlapping scene probes. Treat panel as presentation container, not scalar control | 46 |
+| `ui_mouse_area` | Typed drag/drop target with file filtering and enter/leave/drop callbacks | **Missing**. Passive block `ir_view.rs:360`; no event payload/input registration | Add typed DnD events and source callback context; use shared native desktop drop service | 0 |
 
 The source compiler allocates native scalar controls only for button, knob,
 menu, value edit, slider and switch (`crates/sampler-ksp/src/hir.rs:143`). Other
@@ -172,73 +172,98 @@ settles native scroll nodes. At pinned MUI `822b192`, `Ui::wheel` returns the ra
 response and registers a claim (`crates/mui/src/ui/scroll.rs:144`);
 `land_wheel` arbitrates native nodes afterward (`:277`). A child native scroller can therefore consume its own wheel while the custom rack has already changed its offset. This is an additional code-level ordering risk where such a child exists; a real nested rack fixture should quantify it. The baseline authored label has no child scroller to arbitrate.
 
-## Whole-corpus measurement
+## Shared corpus measurement — partial snapshot
 
-Manifest: `~/.cache/kontakto-corpus/items.tsv`: **781 NKI + 53 NKM = 834 Kontakt
-files**, alongside 660 UVI programs outside this scope. NKM usage unions all
-contained programs once per file. The directory was verified mounted.
+Addendum 3 makes the shared scanner the source of record. Frozen manifest:
+`~/.cache/kontra-scan/kontakt-items.tsv`: **781 NKI + 53 NKM = 834 Kontakt files**;
+660 UVI programs are outside this scope. Shared v2 baseline is `7e82b152`, scanner
+SHA-256 `1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`.
+Read `~/.cache/kontra-scan/bin/README.md` for cache identity and measurement limits.
+Canonical outputs are `results/v1` and `results/v2` under that cache. Reuse the
+census owner’s outputs; targeted scans use `--list kontakt-items.tsv --start N
+--count M --out DIR`, one `kontakto-heavy` invocation per <=235-second shard.
+Do not create another corpus collector.
 
-`tools/widget-audit.py` runs container/script metadata reads in separate <=240-second
-`kontakto-heavy` shards, with <=20 seconds per item and resumable hash-keyed JSON
-in `~/.cache/kontakto-audit-ui-widgets/corpus-raw/`. It excludes strings/comments and
-stores only identifier-presence counts, item size/mtime identity, timing/status and error hashes. Decrypted
-scripts, samples, resource images and saved strings are never written. Reader
-errors/timeouts are reported as unknown coverage, not as zero use.
+**Snapshot 2026-10-08 07:26 UTC: 1/834 Kontakt items observed, Conflux only; no v1
+result yet. Full-corpus counts, NKI/NKM feature reach and v1/v2 scan comparisons
+are pending the census owner’s sweep.** The prior independent source census at
+`2c6f6213` is superseded and must not be quoted as authoritative coverage. Its
+batch driver and example usage mode have been removed; no replacement collector
+was built. This report consumes the existing shared JSON.
 
-**Results:** **834/834 files decoded; zero errors/timeouts**, covering **890 contained programs** (781 NKI programs +109 programs in 53 multis) and **1,143 active inline scripts** (794 NKI +349 NKM). All 834 have source tokens for sliders, menus and scalar UI handlers; this includes shared helper declarations and is not an execution claim. The final raw decoder reuses `read_chunks`, `Program`/`Bank` and `BParScript::params`, matching active inline-script selection in `library.rs:213` while avoiding two unrelated KSP init executions. The abandoned translated-reader attempt had timeouts; its counts are excluded. Final native item reads totaled **437.995s**, maximum **5.624s per item**, across shards capped below 240s.
+| Shared Conflux measurement | Result |
+|---|---|
+| Load admission | yes |
+| Original UI classification | missing-images (one requested image unresolved) |
+| Visible interactive bindings | 107 / 113 |
+| Audition | plays_note yes |
+| Loader wall time | 18,941.864 ms |
+| Peak worker RSS | 229.71 MiB |
+| Initialized widgets / views | 434 / 3 |
+| Rendered placeholder instances | 4 meters, 6 text edits |
+| Geometry flags | 19 outside-page candidates; 15 zero-sized visible widgets |
 
-[UI_WIDGET_USAGE.json](UI_WIDGET_USAGE.json) preserves all token counts, separate NKI/NKM denominators, program/script totals and the complete manifest SHA-256. Per-item records stay in the private audit cache and reuse unchanged size/mtime identities. No decrypted resources are saved; the Conflux raw-NCKP comparison sends bytes through an in-memory pipe and outputs counts only.
+The scanner’s **107/113** includes all visible interactive widget kinds; the audit’s
+**81/81** covers visible continuous controls only. These denominators are not in
+conflict. Geometry flags and placeholder counters are candidates, not native-host
+verification; the 32 capture misses have independent gesture proof above.
+Original rendered successfully, but `missing-images` is not a gesture pass.
+Audible output is a bounded mapped-note audition, not sound parity.
 
-Initialized NCKP-only controls, linked external scripts, Komplete UI and dynamically selected resources are not captured by source identifier presence. For example Conflux's main KSP source has no `ui_knob` declaration token while its initialized view has 233 knobs, including 33 inferred phantoms. The census auditor's initialized/rendered measurements must complement these source denominators. **Instruments actually unlocked by a future fix remain unmeasured**; reach below identifies source-present candidates and may both include dead branches and omit resource-only use.
-Do not quote the older 2,741-instrument source census as this manifest's size.
+[UI_WIDGET_USAGE.json](UI_WIDGET_USAGE.json) records this counts-only snapshot,
+manifest/scanner/cache digests, initialized kind totals and source-symbol item
+presence. No decrypted source/resource bytes are saved. The Conflux raw-NCKP
+comparison remains a single-instrument in-memory probe, with counts-only output.
 
+Input hooks below use **shared scanner symbol presence in the one observed file**.
+“Not recorded” is unknown, not a zero-use assertion. A recorded symbol is not
+proof of execution; the main NCKP script has no knob declaration while other
+scripts in the file do. Full-corpus and actual unlock counts remain pending.
 
-Input-related source counts (same NKI/NKM file-presence denominator; parameter set/get semantics belong to the params report):
-
-| Token / contract hook | NKI | NKM |
-|---|---:|---:|
-| `$CONTROL_PAR_MOUSE_BEHAVIOUR` | 780 | 3 |
-| `$CONTROL_PAR_MOUSE_BEHAVIOUR_X` | 1 | 0 |
-| `$CONTROL_PAR_MOUSE_BEHAVIOUR_Y` | 0 | 0 |
-| `$CONTROL_PAR_MOUSE_MODE` | 1 | 0 |
-| `$CONTROL_PAR_DEFAULT_VALUE` | 781 | 53 |
-| `$CONTROL_PAR_MIN_VALUE` | 1 | 50 |
-| `$CONTROL_PAR_MAX_VALUE` | 1 | 50 |
-| `$CONTROL_PAR_KEY_SHIFT` | 57 | 0 |
-| `$CONTROL_PAR_KEY_ALT` | 289 | 0 |
-| `$CONTROL_PAR_KEY_CONTROL` | 428 | 53 |
-| `$CONTROL_PAR_DND_BEHAVIOUR` | 0 | 30 |
-| `$CONTROL_PAR_MIDI_EXPORT_AREA_IDX` | 0 | 30 |
-| `$CONTROL_PAR_SHOW_ARROWS` | 413 | 3 |
-| `$CONTROL_PAR_TEXTLINE` | 2 | 50 |
-| `$CONTROL_PAR_PARENT_PANEL` | 1 | 30 |
-| `set_table_steps_shown` | 102 | 50 |
-| `attach_level_meter` | 3 | 50 |
-| `attach_zone` | 3 | 0 |
-| `fs_get_filename` | 7 | 3 |
-| `fs_navigate` | 7 | 3 |
-| `load_performance_view` | 1 | 50 |
-| `load_komplete_ui` | 0 | 0 |
-| `ui_control` | 781 | 53 |
-| `ui_controls` | 0 | 0 |
-| `ui_update` | 0 | 0 |
+| Token / contract hook | Shared Conflux source symbol |
+|---|---|
+| `$CONTROL_PAR_MOUSE_BEHAVIOUR` | not recorded |
+| `$CONTROL_PAR_MOUSE_BEHAVIOUR_X` | not recorded |
+| `$CONTROL_PAR_MOUSE_BEHAVIOUR_Y` | not recorded |
+| `$CONTROL_PAR_MOUSE_MODE` | not recorded |
+| `$CONTROL_PAR_DEFAULT_VALUE` | present (1 file) |
+| `$CONTROL_PAR_MIN_VALUE` | present (1 file) |
+| `$CONTROL_PAR_MAX_VALUE` | present (1 file) |
+| `$CONTROL_PAR_KEY_SHIFT` | not recorded |
+| `$CONTROL_PAR_KEY_ALT` | not recorded |
+| `$CONTROL_PAR_KEY_CONTROL` | present (1 file) |
+| `$CONTROL_PAR_DND_BEHAVIOUR` | not recorded |
+| `$CONTROL_PAR_MIDI_EXPORT_AREA_IDX` | not recorded |
+| `$CONTROL_PAR_SHOW_ARROWS` | not recorded |
+| `$CONTROL_PAR_TEXTLINE` | present (1 file) |
+| `$CONTROL_PAR_PARENT_PANEL` | not recorded |
+| `set_table_steps_shown` | present (1 file) |
+| `attach_level_meter` | not recorded |
+| `attach_zone` | not recorded |
+| `fs_get_filename` | not recorded |
+| `fs_navigate` | not recorded |
+| `load_performance_view` | present (1 file) |
+| `load_komplete_ui` | not recorded |
+| `ui_control` | present (1 file) |
+| `ui_controls` | not recorded |
+| `ui_update` | not recorded |
 
 ## Ranked systemic fixes and proving tests
 
-Effort S: localized component/adapter change; M: several typed services/components; L: source execution/async feature family. Reach is measured source-present NKI/NKM candidates, not an unlock count or compatibility promise. Mechanisms overlap. No product fix was made on this research branch.
+Effort S: localized component/adapter change; M: several typed services/components; L: source execution/async feature family. Whole-corpus reach is pending shared scanner results; the witnesses below are bounded, not unlock counts or compatibility promises. Mechanisms overlap. No product fix was made on this research branch.
 
 | Rank | Severity / mechanism | Concrete files/approach | Effort | Reach and test that proves it |
 |---|---|---|---|---|
-| 1 | P0 visible phantom controls and passive surfaces steal capture | `sema.rs`/`model.rs`/`ui.rs`: keep undescribed assumed controls hidden/unplaced; `ir_view.rs`: deliberate passive hit-through policy | S/M | Conflux has 33 phantom tail knobs; performance-view source present in 1 NKI/50 NKM (other cases need init proof). Passive label/panel/view source appears in 781/53. No origin ghost is visible/hittable after fix. Owned missing-view and label-overlay fixtures invert; preserve all 378 authored NCKP controls and valid callbacks |
-| 2 | P0 authored slider gestures lost | `sampler-ksp/src/ui.rs`, `ui/ir_view.rs`; correct sign, consume direction/speed, preserve fallback geometry policy | S | 781/53 slider-source items; synthetic negative/positive trajectories change intended axis only |
-| 3 | P0 duplicate widget IDs across parts | `ui/part.rs`, `ui/ir_view.rs`; existing MUI namespaces keyed by part/script identity | S | All 781/53 contain widget source; two-face usage unmeasured. Same widget ordinal edits only hovered part, focus/wheel/capture remain isolated |
-| 4 | P0 render-time menu writes | Reuse popup work on prior branch; retain semantic value while idle | S | 781/53 menu-source items; nonconsecutive values, hidden entries, unmatched value and passive 100-frame run |
-| 5 | P0 indexed/string values have no edit route | Explicit typed source edits/readback; keep native numeric service and no lossy f64 encoding | M | Union 411 NKI/53 NKM (464 files) of table/XY/text-edit/file-selector; nonzero bipolar cells/visible steps render correctly, source callbacks report values/index and readback |
-| 6 | P1 value edit cannot type | Existing MUI text entry with integer validation and arrows | S | 777/53 value-edit source items; enter commits clamped parsed value, Esc cancels; double-click does not reset |
+| 1 | P0 visible phantom controls and passive surfaces steal capture | `sema.rs`/`model.rs`/`ui.rs`: keep undescribed assumed controls hidden/unplaced; `ir_view.rs`: deliberate passive hit-through policy | S/M | Conflux has 33 phantom tail knobs; passive-overlay proof is synthetic. Corpus reach pending. No origin ghost is visible/hittable after fix. Owned missing-view and label-overlay fixtures invert; preserve all 378 authored NCKP controls and valid callbacks |
+| 2 | P0 authored slider gestures lost | `sampler-ksp/src/ui.rs`, `ui/ir_view.rs`; correct sign, consume direction/speed, preserve fallback geometry policy | S | Conflux has 2 initialized sliders (hidden included); corpus reach pending; synthetic negative/positive trajectories change intended axis only |
+| 3 | P0 duplicate widget IDs across parts | `ui/part.rs`, `ui/ir_view.rs`; existing MUI namespaces keyed by part/script identity | S | Two-face proof required; corpus reach pending. Same widget ordinal edits only hovered part, focus/wheel/capture remain isolated |
+| 4 | P0 render-time menu writes | Reuse popup work on prior branch; retain semantic value while idle | S | Conflux has 20 initialized menus; corpus reach pending; nonconsecutive values, hidden entries, unmatched value and passive 100-frame run |
+| 5 | P0 indexed/string values have no edit route | Explicit typed source edits/readback; keep native numeric service and no lossy f64 encoding | M | Conflux has 6 tables and 6 text edits; corpus reach pending; nonzero bipolar cells/visible steps render correctly, source callbacks report values/index and readback |
+| 6 | P1 value edit cannot type | Existing MUI text entry with integer validation and arrows | S | Conflux has 15 initialized value edits; corpus reach pending; enter commits clamped parsed value, Esc cancels; double-click does not reset |
 | 7 | P1 nested wheel leaks to rack | One innermost input owner shared by custom/native scroll consumers | S/M | Nested-scroll usage unmeasured; overflowing child + overflowing parent, both wheel directions and boundaries |
-| 8 | P1 small/fine moves erased by readback; fixed travel | Retained grab accumulator, source speed and acknowledged values separated | S/M | 781/53 continuous-control source items; 100 substep Shift drags with audio readback accumulate; external edits reconcile |
-| 9 | P1 attached meters stay silent | Resolve `Binding::Meter` to existing live peak owner and orientation/range | S/M | Union 3 NKI/50 NKM of meter declarations/attach calls; known stereo signal makes two authored meters show routed independent levels |
-| 10 | P1 file/drop/waveform families are placeholders | Existing file picker, native DnD, owned sample peaks and versioned async transactions | M/L | Union 11 NKI/33 NKM (44 files) of file/drop/waveform/wavetable/export hooks; stale completion cannot mutate replacement; exact path/file types/MIDI payload |
+| 8 | P1 small/fine moves erased by readback; fixed travel | Retained grab accumulator, source speed and acknowledged values separated | S/M | Conflux has narrow-range knobs; owned 0..2 fixture fails under rounded feedback; corpus reach pending; 100 substep Shift drags with audio readback accumulate; external edits reconcile |
+| 9 | P1 attached meters stay silent | Resolve `Binding::Meter` to existing live peak owner and orientation/range | S/M | Conflux has 6 initialized meters; corpus reach pending; known stereo signal makes two authored meters show routed independent levels |
+| 10 | P1 file/drop/waveform families are placeholders | Existing file picker, native DnD, owned sample peaks and versioned async transactions | M/L | No such widget instances in the Conflux snapshot; corpus reach pending; stale completion cannot mutate replacement; exact path/file types/MIDI payload |
 
 Further acceptance gates: every gesture tested in Original/Vector, view zoom and
 HiDPI; initialized current/default/range distinguished; every typed edit emits
@@ -296,7 +321,7 @@ text-edit, mouse-area and XY paths according to the prior parity audit.
 6. Native-host cancellation and accessibility: pointer leaves/release, hidden UI,
    lost focus, reparent/reopen; keyboard/IME and semantic actions in both presentations.
 7. Actual instruments unlocked: rerun initialized/rendered corpus after each
-   mechanism fix; source use is a candidate count, not an unlock count; resource-only use and dead branches require initialized measurement.
+   mechanism fix using the shared scanner; widget/source presence is not an unlock count. Resource-only use and dead branches require initialized measurement.
 
 ## Reproduction and validation
 
@@ -310,11 +335,15 @@ Run from the audit worktree root (the raw-resource helper uses `tools/widget-aud
 ~/.cache/kontakto-heavy cargo test --lib audit_widget_negative_mouse_behaviour_baseline -- --nocapture --test-threads=1
 KONTRA_AUDIT_WIDGET_PATCH='/path/to/Conflux.nki' ~/.cache/kontakto-heavy cargo test --lib audit_widget_real_input -- --ignored --nocapture --test-threads=1
 python3 tools/widget-audit.py --self-check
-python3 tools/widget-audit.py /path/to/widget_audit ~/.cache/kontakto-audit-ui-widgets/corpus-raw
 ```
 
 The negative-axis check intentionally records the broken baseline. After the
 systemic fix, invert its axis/value expectations to become the regression gate.
 Gesture deltas start at the declared midpoint, avoiding clamp-boundary false negatives; initial saved-value correctness is a separate obligation. No product behavior is changed by these tests.
 
-Validation: native example build and lexer check passed; root `cargo test --locked --no-run --lib` passed after the final editor-probe edit. The final gesture run passed all four audit checks: negative axis, passive overlay, rounded substeps and real Conflux sweep/editor tree (83.04s). The existing native callback regression passed (0.06s). Both native example checks passed, including undescribed-view fallback. `python3 tools/widget-audit.py --self-check` passed. The upstream metadata/raw-resource result above is complete. Whole-corpus counts are complete (834/834 metadata reads); final `cargo test --locked --no-run` passed for root library and both integration targets. Native DAW/reference-host parity remains unmeasured.
+Validation: native example build and lexer check passed; root `cargo test --locked --no-run --lib` passed after the final editor-probe edit. The final gesture run passed all four audit checks: negative axis, passive overlay, rounded substeps and real Conflux sweep/editor tree (83.04s). The existing native callback regression passed (0.06s). Both native example checks passed, including undescribed-view fallback. `python3 tools/widget-audit.py --self-check` passed. The upstream metadata/raw-resource result above is complete. Independent census is superseded; shared corpus coverage is 1/834, explicitly pending; final `cargo test --locked --no-run` passed for root library and both integration targets. Native DAW/reference-host parity remains unmeasured.
+
+Shared-scanner follow-up: snapshot/manifest consistency and raw-NCKP self-check passed.
+After deleting the independent collector, root `cargo test --locked --no-run`
+passed again (3.64s); the retained native witness example passed both tests (5.92s
+compile, 0.00s tests). Original gesture and callback results above are unchanged.
