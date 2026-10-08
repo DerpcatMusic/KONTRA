@@ -1,4 +1,10 @@
 //! Retained UI-loop admission and source-generation regression witnesses.
+impl PartShared {
+    pub(crate) fn loop_audit_install_ingress(&self, ingress:Option<crate::sound::v2::ControlIngress>) {
+        *self.ingress.lock().unwrap()=ingress;
+    }
+}
+
 use super::*;
 
 impl ControlCell {
@@ -144,4 +150,58 @@ fn stale_epoch_effect_replay_cannot_mutate_the_new_source() {
             .as_deref(),
         Some("changed")
     );
+}
+
+#[test]
+fn host_parameter_events_and_epoch_channel_run_the_saved_widget_callback_without_heap() {
+    use sampler_core::{AutomationBinding, AutomationSource, ControlOperation, ControlRequest};
+    let script = sampler_ksp::compile(
+        "on init declare ui_knob $k(0,100,1) declare ui_knob $echo(0,1000,1) end on on ui_control($k) $echo := $k + 1 end on",
+        48000, sampler_ksp::Limits::LIBRARY, &[],
+    ).unwrap();
+    let k = sampler_ui_ir::ControlId(script.controls()[0].definition.id.0);
+    let echo = sampler_ui_ir::ControlId(script.controls()[1].definition.id.0);
+    let ui_id = script.model().interface.widgets[0].ui_id;
+    let prepared = script.bind(sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap()).unwrap()
+        .with_automation_bindings(vec![AutomationBinding {
+            source: AutomationSource::HostParameter(2048), source_slot: 0, ui_id,
+            low: 0., high: 1., soft_takeover: false,
+        }]).unwrap();
+    let limits = sampler_core::Limits::for_plan(&prepared, 8, 0);
+    let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+    let plan = runtime.active_plan();
+    let revision = runtime.control_revision(plan).unwrap();
+    let context = sampler_core::ControlContext { performance: runtime.performance(0).unwrap(),
+        origin: sampler_core::ChannelAddress { protocol: sampler_core::Protocol::Midi1, port: 0, group: 0, channel: 0 }, channels: 1 };
+    let mut part = CorePart::new(runtime, MixTree::instrument("host automation")).unwrap();
+    let p = SamplerParams::new();
+    p.shared.ensure_parts(1);
+    let atoms = p.shared.part(0).unwrap();
+    atoms.generation.store(1, Ordering::Release);
+    atoms.loop_audit_install_ingress(part.ui_controls.take());
+    let mut dsp = Dsp::default();
+    dsp.core = V2Core::with_parts(1, 48000.);
+    dsp.core.install(0, Some(Box::new(part)));
+    let mut output = EventList::with_capacity(8);
+    let transport = TransportInfo::default();
+    let mut cx = ProcessContext::new(&transport, 48000., 16, &mut output);
+    let event = Event::new(7, EventBody::ParamChange { id: automation::BASE + 2048, value: 0.42 });
+    assert_eq!(tests::allocations(|| feed_typed_input(&mut dsp, &p, &event, &mut cx, false)), 0);
+    dsp.core.render(16);
+    assert_eq!((dsp.core.control_value(0, k), dsp.core.control_value(0, echo)), (Some(42.), Some(43.)));
+    assert_eq!(dsp.unsupported, 0);
+    assert!(!p.shared.set_host_parameter_at(0, 0, 2048, 0.6));
+    assert!(!p.shared.set_host_parameter_at(0, 1, 2049, 0.6));
+    assert!(p.shared.set_host_parameter_at(0, 1, 2048, 0.6));
+    dsp.core.render(16);
+    assert_eq!((dsp.core.control_value(0, k), dsp.core.control_value(0, echo)), (Some(60.), Some(61.)));
+    let mut ingress = atoms.ingress.lock().unwrap();
+    let ingress = ingress.as_mut().unwrap();
+    let reply = ingress.client.reply().unwrap();
+    assert!(reply.result.is_ok());
+    ingress.client.submit(ControlRequest { plan, expected_revision: Some(revision),
+        operation: ControlOperation::HostParameter(context, 2048, 0.8) }).unwrap();
+    assert_eq!(tests::allocations(|| { dsp.core.render(16); }), 0);
+    assert_eq!(ingress.client.reply().unwrap().result, Err(sampler_core::Error::RevisionConflict));
+    assert_eq!(dsp.core.control_value(0, k), Some(60.));
 }

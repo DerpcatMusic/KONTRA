@@ -446,6 +446,7 @@ pub struct Prepared {
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
     pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) envelope_controls: Box<[[Option<super::ControlId>; 6]]>,
     pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
@@ -645,6 +646,7 @@ impl Prepared {
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
             engine_parameters: Box::new([]),
+            envelope_controls: Box::new([]),
             engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
@@ -748,7 +750,16 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if regions.len() != self.regions.len()
+            || programs
+                .iter()
+                .flat_map(|p| &p.routes)
+                .any(|r| match r.target {
+                    super::ModTarget::ProcessorCutoff(i)
+                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    _ => false,
+                })
+        {
             return Err(Error::InvalidInput);
         }
         self.voice_modulation =
@@ -764,6 +775,10 @@ impl Prepared {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+
+    pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
+        self.regions[region].chain
     }
 
     /// Required cells per logical note across all script-instance namespaces.
@@ -824,6 +839,21 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
+    /// Control-side lookup; zero, omitted zones and absent source maps return None.
+    /// No fallback to runtime region ordinals.
+    pub fn source_zone_region(&self, zone_id: u32) -> Option<usize> {
+        if zone_id == 0 {
+            return None;
+        }
+        self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The immutable prepared sample asset behind a region, for control-side peak work.
+    pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
+        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+    }
+
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
     }

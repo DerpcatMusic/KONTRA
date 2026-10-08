@@ -84,3 +84,83 @@ The runnable ignored real-library test passed for Pure zone3725, Felt/Cotton3726
 ## Landing gates
 
 Final post-W5 checks: core lib62; controller stages5/controllers11/controls10; lower17; native starts2; paged render15; release4/release selection18; source9; voice modulation11 (1 ignored). KSP automation4, selection8, typed widgets7; decoder/loader4; actual Una source proof1 covering3 presets. Root `cargo test --no-run` passed. Automation CC execution is checked without heap activity; both callback capacity and pedal-domain capacity reject before widget/input writes. The pedal regression failed first (target changed90→127 despite Capacity), then passed using the shared pedal-domain preflight. Failed unbound pedal inputs preserve the old raw CC bank, while bound widget callbacks see the newly admitted CC.
+
+## Native modulator/target lookup follow-up
+
+IR API: `Instrument.source_indices.engine_lookups: Vec<sampler_ir::SourceEngineLookup>`, with `{group:i32, owner:i32, target:bool, name:String, index:i32}`. Mod records use owner-1 and physical modulator slot as index. Target records use the owning physical modulator slot and authored target ordinal; unnamed or unsupported targets still occupy their original ordinal. Internal/external identity remains in `source_indices.modulators`. Lookup inventory runs before script init and before muted/unsupported DSP omissions. Init group names also retain muted groups' physical positions. Runtime DSP source maps now assign internal modulator runtime refs before amplitude-envelope optimization.
+
+`sampler_core::lower::source_engine_lookups(&SourceIndices)` converts the source records to W5's typed `EngineLookup` table. W7 supplies the same table to init evaluation; W5 owns installing it alongside authored parameter bindings in Prepared. The seam regression exercises init and note lookup with the authored runtime table explicitly installed. No behavior/current-slot/symbol service logic was duplicated. A second failing-first regression proves restored modulation intensity uses physical slot31 rather than a name hash; source-target ordinal tests retain unnamed target0 before named target1.
+
+Standalone host bounds were subsequently verified by RE: BAO reader preserves fullu16, creation accepts0..=2048, and host limit initial value is2049. Program/Group runtime remap applies a delta then clamps to0..2048. Wire mapping for the delta fields is still unavailable, so lowering does not invent or apply a remap. W1 received the exact bound and this limitation. VST3 published capacity/address2048 meaning remain unverified independently of the UI ID ceiling.
+
+RE provenance: [re/w7-vectors-20261008 at d773d214](https://github.com/DerpcatMusic/KONTRA/tree/d773d214/docs/research/w7-native-20261008). The checked translator uses exactly serialized0=AND,1=AND_NOT,2=OR. Reader vectors and host boundary vectors establish serialization/address behavior; they are not playback measurements. The edited native fixture was rejected before MIDI. All five criteria-precedence/count/tuning/ping-pong-crossfade/multiple-loop gates remain **pending native vectors**; no authored case was treated as a measured expected result.
+
+Local rerun of the unmodified d773d214 verifier passed32 pinned original PE ranges,12 original-reader vectors with stubbed I/O, and16 native address-bound vectors. Verification read the pinned executable and wrote no prefix state or audio. The bounded BAO reader now rejects mode enums outside0..2 while retaining host wire address65535; invalid enum errors report the exact public-field offset.
+
+## Event query and parameter follow-up
+
+The nine newly enabled named audit contracts first failed (existing eight lifecycle
+contracts passed): status0 instead of1, enumeration search-1 instead of0, mark0
+instead of1, group allow0 instead of1, custom15=0 instead of42, thirteenth
+modulator0 instead of42, affected-group size4096 instead of1, mode2 volume-9000
+instead of-3000 and pan0 instead of-1000. The fixes use generation-scoped source
+aliases and callback group projections, not a second event registry.
+
+Nonignored `selection_contract` now covers all requested names plus creator/current
+slot, distinct note/release callback IDs, stop/resume/disable-wait, release velocity
+and release-counter reset. Boundary checks exercise unknown/retired IDs, terminal
+acceptance and note-slot reuse, mark deletion, deferred generated-note group masks,
+release-stage group masks/tags, all1001 modulator IDs alongside all16 custom
+parameters, signed minimum values, invalid index separation, dynamic mode1 versus2,
+physical group holes, dynamic affected-group search and allocation-free callbacks.
+
+Custom indices0..3 alias `$EVENT_PAR_0..3`; storage holds the complete bounded native
+modulator/custom domain, replacing the twelve-entry silent-drop ceiling. Voice
+modulation borrows that state rather than copying it per chunk. Enumeration includes
+lazy IDs and appends one zero sentinel; `%GROUPS_AFFECTED` describes native mapping
+before script allow/disallow edits. Sources: [NI event commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/event-commands)
+and [NI built-in variables](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/built-in-variables-and-constants).
+
+Waveform asset seam: `Prepared::source_zone_region(zone_id:u32)->Option<usize>`
+resolves explicit positive source IDs used by `EventInfo::ZoneId`; holes,0 and
+absent source maps returnNone, with no runtime ordinal fallback. `Prepared::region_asset(region:usize)->Option<&Pcm>` returns the
+immutable prepared asset, including its `AssetId`, for the control-side peak worker.
+The importer retains physical zone order in `source_indices.zones`; lowering uses
+physical index+1 as the source ID. This is independent of UI display ordering.
+W2/W3 own provider/painter/worker wiring. A sparse3/9 source-ID regression passes.
+
+## Analog saved automation inventory
+
+The framed Program0xab private reader finds287 BAO0x71 records, all mode2 host
+parameters at addresses0..286, all soft takeoverfalse/range0..1; there are **zero
+mode1 MIDI-CC assignments**. The metadata-only `analog-automation.tsv` records every
+address/tag and222 resolved slider-only ordinals. The65 switch tags remain diagnosed
+as unmodeled; native switch ordinal decoding is not inferred from slider evidence.
+
+Compressor gain bindings: host122 → slot2 slider71/ui32956, layer1 saved396933;
+host128 → slider153/ui33136, layer2 saved396933; host173 → slider185/ui33198,
+global saved560434. Compressor switch tags occur at host117/123/168/174. These
+bindings run only when host automation arrives; saved MIDI learn does not explain
+an init/CC compressor change here. The normal script init/persistence engine writes
+are a separate W5 path; this inventory does not assign the observed+9dB difference
+a cause or propose a gain correction. Existing Areia40/48 and five **pending native
+vectors** gates remain unchanged; no new native audio parity measurement is claimed.
+
+Follow-up validation: KSP lib5, selection/event26, automation4 and typed widgets7;
+core lib62, lower17, controllers11, note stages8, release4, release selection18,
+script arrays3, source10 and voice modulation11 (one ignored). Root
+`cargo test --no-run` passed. Source-ID lookup and real-library metadata probes
+write no audio/sample data. Logs reside in `~/.cache/kontakto-w7-render/event-*`.
+
+Analog init metadata: all compiled slots2/3/4 report no `set_controller` writes.
+The normal slot2 init does emit gain/bypass engine requests, including
+`$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN=560434` at group-1/slot1/generic1 and
+layer outputs396933 at group-1/slot1/generic1002 and1003. All108 selected
+GAIN/BYPASS requests are retained in `analog-init-engine-writes.tsv`; they are
+compile/init intentions, not measured runtime/native DSP outcomes. W5/W6 can compare
+these exact addresses against typed service admission and saved rack state.
+
+`Pcm::resident_frames()->Option<&[Frame]>` exposes read-only resident frames,
+`Frame=[f32;2]`, for bounded peaks in memory. `frame_count`, `sample_rate` and
+`asset_id` supply length/rate/identity. Streamed assets can returnNone; the asset
+worker must service them separately, never invent an ordinal or silent waveform.

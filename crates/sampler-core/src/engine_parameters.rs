@@ -58,6 +58,14 @@ pub enum EngineParameterLaw {
         low: f64,
         high: f64,
     },
+    /// Geometric range minus an offset, including a native zero endpoint.
+    ShiftedExponential {
+        low: f64,
+        high: f64,
+        offset: f64,
+    },
+    /// Kontakt AHDSR normalized curvature to native exponential curvature.
+    AhdsrCurve,
     /// A fixed decibel range whose DSP lane holds linear amplitude.
     DecibelGain {
         low_db: f64,
@@ -74,6 +82,15 @@ impl EngineParameterLaw {
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high >= low
             }
+            Self::ShiftedExponential { low, high, offset } => {
+                low.is_finite()
+                    && high.is_finite()
+                    && offset.is_finite()
+                    && low > 0.
+                    && high >= low
+                    && low >= offset
+            }
+            Self::AhdsrCurve => true,
             Self::DecibelGain { low_db, high_db } => {
                 low_db.is_finite()
                     && high_db.is_finite()
@@ -84,18 +101,48 @@ impl EngineParameterLaw {
             Self::CubicGain { unity } => unity.is_finite() && unity > 0.,
         }
     }
-    fn decode(self, value: i32) -> f64 {
+    /// Validate a native authored value before converting it. This is the same
+    /// law the addressed runtime binding uses; frontends do not duplicate it.
+    pub fn normalized_value(self, value: f64) -> Result<i32, Error> {
+        if !self.valid() || !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        let (a, b) = (self.decode(0), self.decode(1_000_000));
+        let (low, high) = (a.min(b), a.max(b));
+        if !low.is_finite() || !high.is_finite() || value < low || value > high {
+            return Err(Error::InvalidInput);
+        }
+        Ok(self.encode(value))
+    }
+
+    /// Convert the normalized service range to a native DSP value. Use a law
+    /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
+    pub fn decode(self, value: i32) -> f64 {
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp(),
+            Self::ShiftedExponential { low, high, offset } => {
+                (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp().max(low) - offset
+            }
+            Self::AhdsrCurve => {
+                let c = v / 500000. - 1.;
+                let b = f64::from(((1. - c.abs()) * 500000f64.ln() - 20000f64.ln()).exp() as f32);
+                if c > 0. {
+                    (b / (1. + b)).ln()
+                } else {
+                    ((1. + b) / b).ln()
+                }
+            }
             Self::DecibelGain { low_db, high_db } => {
                 10f64.powf((low_db + (high_db - low_db) * v / 1e6) / 20.)
             }
             Self::CubicGain { unity } => (v / unity).powi(3),
         }
     }
-    fn encode(self, value: f64) -> i32 {
+    /// Convert a finite native DSP value to the normalized service range.
+    /// Frontends should use normalized_value to validate authored input.
+    pub fn encode(self, value: f64) -> i32 {
         (match self {
             Self::Linear { low, high } => {
                 if low == high {
@@ -110,6 +157,18 @@ impl EngineParameterLaw {
                     0.
                 } else {
                     (value.max(low).ln() - low.ln()) / (high.ln() - low.ln()) * 1e6
+                }
+            }
+            Self::ShiftedExponential { low, high, offset } => {
+                ((value + offset).max(low) / low).ln() / (high / low).ln() * 1e6
+            }
+            Self::AhdsrCurve => {
+                if value == 0. {
+                    500000.
+                } else {
+                    let b = 1. / value.abs().exp_m1();
+                    let c = (1. - (b.ln() + 20000f64.ln()) / 500000f64.ln()).clamp(0., 1.);
+                    500000. * (1. - value.signum() * c)
                 }
             }
             Self::DecibelGain { low_db, high_db } => {
@@ -139,7 +198,105 @@ pub struct EngineLookup {
     pub index: i32,
 }
 
+pub(crate) const ENVELOPE_STAGES: [crate::EnvelopeStage; 6] = [
+    crate::EnvelopeStage::Attack,
+    crate::EnvelopeStage::Hold,
+    crate::EnvelopeStage::Decay,
+    crate::EnvelopeStage::Sustain,
+    crate::EnvelopeStage::Release,
+    crate::EnvelopeStage::AttackCurve,
+];
+
 impl Prepared {
+    pub fn engine_parameter_bindings(&self) -> &[EngineParameterBinding] {
+        &self.engine_parameters
+    }
+    pub fn engine_lookups(&self) -> &[EngineLookup] {
+        &self.engine_lookups
+    }
+
+    /// Install real native amplitude-envelope control lanes at an inventoried
+    /// physical modulator slot. Defaults are authored native values, never a
+    /// script-write mirror. Values are consumed when a voice starts.
+    pub fn with_group_envelope_parameters(
+        mut self,
+        group: u32,
+        physical_group: i32,
+        slot: i32,
+        authored: crate::Envelope,
+    ) -> Result<Self, Error> {
+        if group >= self.group_count || physical_group < 0 || slot < 0 {
+            return Err(Error::InvalidInput);
+        }
+        let mut controls = self.controls.to_vec();
+        let mut bindings = self.engine_parameters.to_vec();
+        let mut lanes = self.envelope_controls.to_vec();
+        lanes.resize(self.group_count as usize, [None; 6]);
+        for (index, stage) in ENVELOPE_STAGES.into_iter().enumerate() {
+            if lanes[group as usize][index].is_some() {
+                return Err(Error::InvalidInput);
+            }
+            let parameter = engine_parameter_id(
+                [
+                    "ENGINE_PAR_ATTACK",
+                    "ENGINE_PAR_HOLD",
+                    "ENGINE_PAR_DECAY",
+                    "ENGINE_PAR_SUSTAIN",
+                    "ENGINE_PAR_RELEASE",
+                    "ENGINE_PAR_ATK_CURVE",
+                ][index],
+            )
+            .unwrap();
+            let id = ControlId(
+                (0x454e56u128 << 104)
+                    | (u128::from(index as u8) << 96)
+                    | (u128::from(physical_group as u32) << 64)
+                    | (u128::from(slot as u32) << 32),
+            );
+            let law = match stage {
+                crate::EnvelopeStage::Sustain => EngineParameterLaw::CubicGain { unity: 1000000. },
+                crate::EnvelopeStage::AttackCurve => EngineParameterLaw::AhdsrCurve,
+                _ => {
+                    let scale = self.rate as f64 / 1000.;
+                    EngineParameterLaw::ShiftedExponential {
+                        low: 2. * scale,
+                        high: if stage == crate::EnvelopeStage::Attack {
+                            15002. * scale
+                        } else {
+                            25002. * scale
+                        },
+                        offset: 2. * scale,
+                    }
+                }
+            };
+            let (min, max) = match stage {
+                crate::EnvelopeStage::Sustain => (0., 1.),
+                crate::EnvelopeStage::AttackCurve => (-32., 32.),
+                _ => (0., u32::MAX as f64),
+            };
+            controls.push(crate::ControlDefinition {
+                id,
+                domain: crate::ControlDomain::Real { min, max },
+                default: ControlValue::Real(authored.control_value(stage)),
+            });
+            lanes[group as usize][index] = Some(id);
+            bindings.push(EngineParameterBinding {
+                address: EngineParameterAddress {
+                    parameter,
+                    group: physical_group,
+                    slot,
+                    generic: -1,
+                },
+                control: id,
+                law,
+            });
+        }
+        let lookups = self.engine_lookups.to_vec();
+        self = self.with_controls(controls)?;
+        self.envelope_controls = lanes.into_boxed_slice();
+        self.with_engine_parameters(bindings, lookups)
+    }
+
     pub fn with_engine_parameters(
         mut self,
         mut bindings: Vec<EngineParameterBinding>,
@@ -224,6 +381,12 @@ mod law_tests {
         ];
         for law in laws {
             assert!(law.valid());
+            assert_eq!(law.normalized_value(f64::NAN), Err(Error::InvalidInput));
+            assert_eq!(
+                law.normalized_value(f64::INFINITY),
+                Err(Error::InvalidInput)
+            );
+            assert_eq!(law.normalized_value(law.decode(500000)), Ok(500000));
             for value in [0, 123456, 500000, 999999, 1000000] {
                 assert!((law.encode(law.decode(value)) - value).abs() <= 1);
             }

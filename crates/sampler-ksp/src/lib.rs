@@ -418,6 +418,45 @@ pub fn callback_of(views: &[ScriptView], program: usize) -> String {
     format!("program {program}")
 }
 
+/// Prepare a live host-state capture off audio. Persistent locations are the
+/// actual bound banks; variable names and sigils stay in `ScriptView::model`.
+/// Instrument persistence includes both persistence kinds. Snapshot callers
+/// may filter instrument-only locations using that authored metadata.
+pub fn persistent_state_buffer(
+    views: &[ScriptView],
+) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
+    use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
+    let mut state = sampler_core::ScriptStateBuffer::default();
+    let mut base = 0;
+    for (i, view) in views.iter().enumerate() {
+        let instance = ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
+        for persistent in &view.model.persistent {
+            match persistent.location {
+                model::Location::Control(id) => state.values.push(sampler_core::ScriptStateEntry {
+                    address: A::Control(id), value: V::Control(sampler_core::ControlValue::Integer(0)),
+                }),
+                model::Location::Cells { offset, len } => {
+                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
+                        state.values.push(sampler_core::ScriptStateEntry { address: A::Cell {instance,index}, value: V::Cell(0) });
+                    }
+                }
+                model::Location::Texts { offset, len } => {
+                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
+                        state.values.push(sampler_core::ScriptStateEntry { address: A::Text {instance,index}, value: V::Text(sampler_core::Text::new("")) });
+                    }
+                }
+            }
+        }
+        if let Some(entry) = view.entries.iter().find(|e| e.kind == EntryKind::PersistenceChanged) {
+            state.callbacks.push(sampler_core::ScriptStateCallback { program: base + entry.program, behavior: None, outcome: None });
+        }
+        base += view.programs;
+    }
+    state.values.sort_by_key(|entry| entry.address);
+    state.values.dedup_by_key(|entry| entry.address);
+    Ok(state)
+}
+
 /// Bind source modules in order through the shared native routing table.
 /// Note, release and controller callbacks share native module positions and
 /// retain separate instance state and reached-event projections.
@@ -484,12 +523,50 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                 })
             };
             if let Some(storage) = storage {
+                let drop = if w.kind == model::WidgetKind::MouseArea {
+                    let texts = u32::try_from(script.resources.texts.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    let counts = u32::try_from(script.cells.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    script.resources.texts.resize(
+                        script.resources.texts.len()
+                            + 3 * sampler_core::WIDGET_DROP_CAPACITY as usize,
+                        String::new(),
+                    );
+                    script.cells.resize(script.cells.len() + 3, 0);
+                    Some(sampler_core::WidgetDropStorage {
+                        texts,
+                        counts,
+                        accepts: [
+                            "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+                            "$CONTROL_PAR_DND_ACCEPT_MIDI",
+                            "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+                        ]
+                        .map(|name| {
+                            [
+                                w.ui_id,
+                                builtins::control_par(name).unwrap(),
+                                lower::PROPERTY_TAG,
+                                lower::PROPERTY_TAG,
+                            ]
+                        }),
+                        receive_drag: [
+                            w.ui_id,
+                            builtins::control_par("$CONTROL_PAR_RECEIVE_DRAG_EVENTS").unwrap(),
+                            lower::PROPERTY_TAG,
+                            lower::PROPERTY_TAG,
+                        ],
+                    })
+                } else {
+                    None
+                };
                 widgets.push(sampler_core::WidgetDefinition {
                     id: derived_control_id(script.slot, &w.name),
                     source_slot: script.slot,
                     ui_id: w.ui_id,
                     instance,
                     storage,
+                    drop,
                     program: script
                         .routed(EntryKind::UiControl(
                             (w.ui_id - builtins::FIRST_UI_ID) as usize,

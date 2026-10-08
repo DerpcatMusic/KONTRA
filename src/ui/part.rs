@@ -3,7 +3,7 @@
 //! authored or with our controls) or, without one, what its load decoded and
 //! could not translate.
 
-use super::{Cx, inside, ir_view, pictures, theme::*};
+use super::{Cx, inside, ir_view, theme::*};
 use moose::mui::mui::prelude::*;
 use sampler_ui_ir::{self as ir, Presentation};
 use std::sync::Arc;
@@ -20,17 +20,18 @@ pub struct Face {
     /// Which of them is shown.
     pub shown: usize,
     face: ir::Interface,
-    source: pictures::Source,
     assets: ir_view::Assets,
     pub presentation: Presentation,
     values: ir_view::Values,
+    pub input: ir_view::InputState,
+    native:Option<super::native_ui::State>,
 }
 
 impl Face {
     fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
-        let source = pictures::Source::of(path);
         let face = ir_view::resolved(&from[shown]);
-        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, source, assets: Default::default(), presentation, values: Default::default() };
+        let native=face.native_ui.as_ref().map(|n|super::native_ui::State::new(path,&n.entry,from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default(), input:Default::default(), native };
         out.sync();
         out
     }
@@ -50,12 +51,16 @@ impl Face {
 
     /// Decoded picture bytes the view keeps.
     pub fn bytes(&self) -> usize {
-        self.assets.bytes()
+        self.assets.bytes()+self.native.as_ref().map_or(0,|n|n.bytes())
     }
 
     fn sync(&mut self) {
-        let source = &mut self.source;
-        self.assets.sync(&self.face, self.presentation, |a| source.load(a));
+        let entry=self.face.native_ui.as_ref().map(|n|n.entry.as_str());
+        if self.native.as_ref().map(|n|n.entry())!=entry {
+            self.native=entry.map(|entry|super::native_ui::State::new(&self.path,entry,self.from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        }
+        if self.native.is_some() && self.presentation==Presentation::Bitmap {return;}
+        self.assets.prepare(&self.path,&self.face,self.page,self.presentation,1.,&self.values);
     }
 }
 
@@ -103,7 +108,6 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let presentation = if mode == crate::library::ViewMode::Original { Presentation::Bitmap } else { Presentation::Vector };
     let stale = cx.state.faces.get(&slot).is_none_or(|f| f.path != path || f.generation != generation);
     if stale {
-        // ponytail: first decode is synchronous; W3 owns moving preparation to the asset worker.
         cx.state.faces.insert(slot, Face::new(&path, generation, from.clone(), main, presentation));
     }
     let face = cx.state.faces.get_mut(&slot)?;
@@ -159,6 +163,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     if let Some(n) = pick.filter(|&n| n != face.shown) {
         let presentation = face.presentation;
         face.shown = n;
+        face.input = Default::default();
         face.page = ir::PageRef(0);
         face.face = ir_view::resolved(&from[n]);
         face.patch = Default::default();
@@ -174,7 +179,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.sync();
     }
 
-    let held = face.assets.bytes() as f64 / (1024. * 1024.);
+    let held = face.bytes() as f64 / (1024. * 1024.);
     bar.insert(bar.len() - 1, caption(format!("{held:.1} MB pictures")).fill(secondary()).lines(1).tip("Decoded artwork this view keeps in memory"));
     let mode = if a { crate::library::ViewMode::Original } else if b { crate::library::ViewMode::Vectorized } else if c { crate::library::ViewMode::Kontra } else { mode };
     let page = &face.face.pages[face.page.0];
@@ -183,17 +188,57 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let scale = scale_to_fit(Size::new(avail, room), Size::new(f64::from(page.size.width), f64::from(ir_view::height(&face.face, face.page))), cx.settings.view_scale);
     // The core's values (scripts change them too); edits go back as widget edits.
     let shared = cx.p.shared.part(slot);
+    face.assets.meter=shared.clone().map(|part|Arc::new(move |_bus: Option<u32>,channel: u8| {
+        let levels=part.meter.each_ref().map(|v|f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed)));
+        if channel==0 {levels}else{[levels[(channel as usize).min(1)];2]}
+    }) as Arc<dyn Fn(Option<u32>,u8)->[f32;2]+Send+Sync>);
     let current: Vec<_> = shared.as_ref().map(|p| p.display_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
-    let namespace = format!("part-{slot}-epoch-{generation}-script-{}-", face.shown);
-    let view = if mode == crate::library::ViewMode::Kontra {
-        super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values)
+    if let Some(shared) = &shared {
+        face.input.values.extend(shared.widget_values(&face.face));
+    }
+    if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
+    let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
+    let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
+        for (index,source) in face.from.iter().enumerate() {
+            let current=published.updates.get(index).filter(|patch|**patch!=Default::default()).map(|patch| {let mut current=source.clone();patch.apply(source,&Default::default(),&mut current);current});
+            let current=current.as_ref().unwrap_or(source);
+            let typed=shared.as_ref().map(|shared|shared.widget_values(current)).unwrap_or_default();
+            native.update_view(current,&face.values,&typed);
+        }
+        let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
+        let view=native.view(ui,slot,scale,&face.face,&face.values,&face.input);
+        for edit in native.edits() {
+            let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)} else {face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
+            let admitted=widget.is_some_and(|widget| {
+                let source_slot=match edit.source {ir::Source::Ksp{slot}=>slot,_=>0};
+                cx.p.shared.set_widget_at(slot,generation,source_slot,widget,edit.index,edit.value.clone())
+            });
+            if !admitted {cx.state.notice="This authored widget edit could not be applied.".into();}
+        }
+        view
+    } else if mode == crate::library::ViewMode::Kontra {
+        super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values, &mut face.input)
     } else {
-        ir_view::view_scoped(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values)
+        ir_view::view_state(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values, &mut face.input)
     };
+    let mut edits: std::collections::HashMap<ir::WidgetRef, (std::collections::BTreeMap<u32, ir::Value>, sampler_core::WidgetInteraction)> = Default::default();
+    for edit in face.input.edits.drain(..) {
+        let entry = edits.entry(edit.widget).or_default();
+        entry.0.insert(edit.index, edit.value);
+        entry.1 = sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift) | (u8::from(edit.mods.ctrl || edit.mods.cmd)<<1) | (u8::from(edit.mods.alt)<<2),..Default::default()};
+    }
+    let mut edited_controls = std::collections::HashSet::new();
+    for (n, (edits, interaction)) in edits {
+        let Some(widget) = face.face.widgets.get(n.0) else { continue };
+        if let ir::Binding::Control(id) = widget.binding { edited_controls.insert(id); }
+        let source_slot=match face.face.source {ir::Source::Ksp{slot}=>slot,_=>0};
+        if !cx.p.shared.set_widget_batch_at(slot, generation, source_slot, widget, edits.into_iter().collect(), interaction) { face.input.values.remove(&n); }
+    }
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)
             && now != was
+            && !edited_controls.contains(&id)
         {
             cx.p.shared.set_control_at(slot, generation, id, now);
         }
@@ -354,6 +399,7 @@ mod tests {
         let mut face = Face::new(std::path::Path::new("/missing/synthetic.nki"), 7, from.clone(), 1, Presentation::Bitmap);
         face.page = ir::PageRef(1);
         face.values.insert(ir::ControlId(9), 31.);
+        face.input.values.insert(ir::WidgetRef(0),ir::Value::Text("Retained draft".into()));
         let mut current = authored.clone();
         current.widgets[0].value_text = Some("Changed".into());
         current.widgets[0].rect.x += 10;
@@ -362,6 +408,7 @@ mod tests {
         assert_eq!((face.shown, face.page, face.presentation), (1, ir::PageRef(1), Presentation::Bitmap));
         assert!(Arc::ptr_eq(&face.from, &from));
         assert_eq!(face.values[&ir::ControlId(9)], 31.);
+        assert_eq!(face.input.values[&ir::WidgetRef(0)],ir::Value::Text("Retained draft".into()));
         assert_eq!(face.face.widgets[0].value_text.as_deref(), Some("Changed"));
         let first = face.face.clone();
         face.update(patch);

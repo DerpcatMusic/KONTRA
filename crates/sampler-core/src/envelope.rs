@@ -148,6 +148,28 @@ impl Envelope {
         self.one_shot && self.hold != u32::MAX
     }
 
+    pub(crate) fn control_value(self, stage: crate::EnvelopeStage) -> f64 {
+        use crate::EnvelopeStage as S;
+        match stage {
+            S::Attack => self.attack as f64,
+            S::Hold => self.hold as f64,
+            S::Decay => self.decay as f64,
+            S::Release => self.release as f64,
+            S::Sustain => self.sustain as f64,
+            S::AttackCurve => self.curves[0].curvature,
+        }
+    }
+    pub(crate) fn with_control(mut self, stage: crate::EnvelopeStage, value: f64) -> Self {
+        match stage {
+            crate::EnvelopeStage::Sustain => self.sustain = value.clamp(0., 1.) as f32,
+            crate::EnvelopeStage::AttackCurve => {
+                self.curves[0] = Curve::new(EnvelopeCurve(value), self.attack)
+            }
+            _ => self = self.with_stage(stage, value.round().clamp(0., u32::MAX as f64) as u32),
+        }
+        self
+    }
+
     /// Replace one stage's frames (or Sustain's 0..=1000 level), keeping
     /// the stage's curvature. Script engine parameters; see `script_params`.
     pub(crate) fn with_stage(mut self, stage: crate::EnvelopeStage, value: u32) -> Self {

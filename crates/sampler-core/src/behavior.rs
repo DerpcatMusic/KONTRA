@@ -100,6 +100,30 @@ pub enum Instruction {
     ReadEventId {
         local: u16,
     },
+    /// Enumerate live source IDs of this prepared generation, ascending; append a zero sentinel.
+    ReadEventIds {
+        array: super::ScriptArray,
+    },
+    ReadEventMark {
+        event: u16,
+        mark: u16,
+        local: u16,
+    },
+    WriteEventMark {
+        event: u16,
+        mark: u16,
+        delete: bool,
+    },
+    ReadEventGroup {
+        event: u16,
+        group: u16,
+        local: u16,
+    },
+    /// Read one eligible physical group index, or the dynamic length when index is None.
+    ReadAffectedGroup {
+        index: Option<u16>,
+        local: u16,
+    },
     ResetReleaseCounter {
         event: u16,
     },
@@ -595,6 +619,24 @@ impl Program {
             {
                 locals = locals.max(usize::from(event.max(allowed).max(group.unwrap_or(0))) + 1);
             }
+            if let Instruction::ReadEventIds { array } = *op {
+                script_cells = script_cells.max(array.end()?);
+            }
+            if let Instruction::ReadEventMark { event, mark, local }
+            | Instruction::ReadEventGroup {
+                event,
+                group: mark,
+                local,
+            } = *op
+            {
+                locals = locals.max(usize::from(event.max(mark).max(local)) + 1);
+            }
+            if let Instruction::WriteEventMark { event, mark, .. } = *op {
+                locals = locals.max(usize::from(event.max(mark)) + 1);
+            }
+            if let Instruction::ReadAffectedGroup { index, local } = *op {
+                locals = locals.max(usize::from(index.unwrap_or(local).max(local)) + 1);
+            }
             if let Instruction::ReadEventInfo { event, local, .. } = *op {
                 locals = locals.max(usize::from(event.max(local)) + 1);
             }
@@ -663,6 +705,7 @@ impl Program {
                         ..
                     }
                     | Instruction::ReadEventId { .. }
+                    | Instruction::ReadAffectedGroup { .. }
                     | Instruction::ReadVelocity7 { .. }
                     | Instruction::WriteEventKey { event: None, .. }
                     | Instruction::WriteEventVelocity7 { event: None, .. }
@@ -927,6 +970,18 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<BehaviorId, Error> {
+        let id = self.admit_plan_context(plan, program, context)?;
+        self.resume_behavior(id);
+        Ok(id)
+    }
+
+    /// Reserve ownership before a transaction runs any authored callback.
+    pub(super) fn admit_plan_context(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+        context: PlanContext,
+    ) -> Result<BehaviorId, Error> {
         self.validate_plan_context(plan, program, context)?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         let id = BehaviorId(self.behaviors.insert(Continuation {
@@ -952,7 +1007,6 @@ impl Runtime {
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
-        self.resume_behavior(id);
         Ok(id)
     }
 
@@ -1056,6 +1110,7 @@ impl Runtime {
                 return;
             }
             self.release_controller_reserve(id);
+            self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
             match c.owner {
                 BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -1094,6 +1149,7 @@ impl Runtime {
             {
                 let id = BehaviorId(self.behaviors.id(i));
                 self.release_controller_reserve(id);
+                self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
                 match c.owner {
                     BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -1884,6 +1940,94 @@ impl Runtime {
                 let slot = *self.local_cell_mut(id, slot)?;
                 *self.local_cell_mut(id, local)? = self.read_mod_value(plan, event, slot)?;
             }
+            Instruction::ReadEventIds { array } => {
+                let plan = self.behavior_plan(owner)?;
+                // Source aliases are normally lazy; enumeration must include a note
+                // before any callback has read its EVENT_ID.
+                for i in 0..self.notes.slots.len() {
+                    if self.notes.slots[i].value.is_some_and(|n| n.plan == plan) {
+                        self.source_event_id(NoteId(self.notes.id(i)))?;
+                    }
+                }
+                let mut at = 0;
+                for i in 0..self.source_ids.len() {
+                    let (source, note) = self.source_ids[i];
+                    if self.notes.get(note.0).is_some_and(|n| n.plan == plan) {
+                        if at == array.len {
+                            break;
+                        }
+                        *self.behavior_script_cell_mut(id, array.offset + at)? = i64::from(source);
+                        at += 1;
+                    }
+                }
+                if at < array.len {
+                    *self.behavior_script_cell_mut(id, array.offset + at)? = 0;
+                }
+            }
+            Instruction::ReadEventMark { event, mark, local } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = i32::try_from(*self.local_cell_mut(id, event)?).ok();
+                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x0fff_ffff;
+                let note = event
+                    .map(|e| self.resolve_source_event(plan, e))
+                    .transpose()?
+                    .flatten();
+                let value = note.is_some_and(|n| self.note_events[n.0.index].marks & mark != 0);
+                *self.local_cell_mut(id, local)? = i64::from(value);
+            }
+            Instruction::WriteEventMark {
+                event,
+                mark,
+                delete,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = i32::try_from(*self.local_cell_mut(id, event)?).ok();
+                let mark = *self.local_cell_mut(id, mark)? as u32 & 0x0fff_ffff;
+                if let Some(note) = event
+                    .map(|e| self.resolve_source_event(plan, e))
+                    .transpose()?
+                    .flatten()
+                {
+                    let marks = &mut self.note_events[note.0.index].marks;
+                    *marks = if delete {
+                        *marks & !mark
+                    } else {
+                        *marks | mark
+                    };
+                }
+            }
+            Instruction::ReadEventGroup {
+                event,
+                group,
+                local,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let event = i32::try_from(*self.local_cell_mut(id, event)?).ok();
+                let group = u32::try_from(*self.local_cell_mut(id, group)?).ok();
+                let note = event
+                    .map(|e| self.resolve_source_event(plan, e))
+                    .transpose()?
+                    .flatten();
+                let mut allowed = false;
+                if let (Some(note), Some(group)) = (note, group) {
+                    let view = self.event_group_view(id, note)?;
+                    let generation = self.plans.get(plan.0).unwrap();
+                    allowed = group < generation.prepared.group_count
+                        && generation.groups.view(note.0.index, view)[group as usize / 64]
+                            & (1 << (group % 64))
+                            != 0;
+                }
+                *self.local_cell_mut(id, local)? = i64::from(allowed);
+            }
+            Instruction::ReadAffectedGroup { index, local } => {
+                let note = owner.note()?;
+                let view = self.event_group_view(id, note)?;
+                let index = index
+                    .map(|index| self.local_cell_mut(id, index).copied())
+                    .transpose()?;
+                let value = self.affected_group(note, view, index);
+                *self.local_cell_mut(id, local)? = value;
+            }
             Instruction::ReadEventInfo { event, info, local } => {
                 let plan = self.behavior_plan(owner)?;
                 let event = *self.local_cell_mut(id, event)?;
@@ -2141,6 +2285,26 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    fn event_group_view(
+        &self,
+        id: BehaviorId,
+        note: NoteId,
+    ) -> Result<super::groups::GroupView, Error> {
+        let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        if callback.owner.note().ok() == Some(note) {
+            return Ok(callback.note_stage.map_or(
+                super::groups::GroupView::Note(self.behavior_stage(id)?),
+                |stage| stage.groups(),
+            ));
+        }
+        let entry = self
+            .deferred
+            .iter()
+            .find(|d| d.1 == note)
+            .map_or(self.note_events[note.0.index].entry, |d| d.2);
+        Ok(super::groups::GroupView::Note(entry))
     }
 
     pub(crate) fn write_event_group(

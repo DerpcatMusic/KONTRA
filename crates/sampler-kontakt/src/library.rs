@@ -252,7 +252,7 @@ fn translate(
             {
                 if let Some(text) = resources
                     .get_or_insert_with(|| crate::Resources::of(&path))
-                    .linked_script(link)
+                    .script(link)
                 {
                     script.text = Some(text);
                 }
@@ -293,15 +293,18 @@ fn translate(
             }
         }
     }
+    // Lookup metadata precedes script init and never depends on DSP admission.
+    for (index, group) in groups.groups.iter().enumerate() {
+        out.source_modulators(index, group).map_err(|e| decode("source modulation names", e))?;
+    }
     // Scripts first: what `on init` writes with set_engine_par (effect gains,
     // bypass) is the rack's state, so racks are translated after it.
     let group_names: Vec<String> = groups
         .groups
         .iter()
-        .filter_map(|g| g.params().ok())
-        .filter(|g| !g.muted)
-        .map(|g| g.name)
-        .collect();
+        .map(|g| g.params().map(|p| p.name))
+        .collect::<Result<_,_>>()
+        .map_err(|e| decode("source group names",e))?;
     let writes: Vec<_> = out
         .ir
         .behaviors
@@ -310,7 +313,7 @@ fn translate(
         .filter(|(_, b)| b.language == ir::Language::Ksp)
         .filter_map(|(index, b)| {
             let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
+                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
             #[cfg(feature="scan")]
             sampler_ksp::scan::attempt("import-harvest");
             sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
@@ -328,7 +331,7 @@ fn translate(
         .filter(|(_, b)| b.language == ir::Language::Ksp)
         .any(|(index, b)| {
             let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
+                crate::load::script_environment(b, index, group_names.clone(), &out.ir.source_indices, Default::default());
             #[cfg(feature="scan")]
             sampler_ksp::scan::attempt("dynamic-rack");
             sampler_ksp::compile_with(
@@ -607,6 +610,49 @@ impl Translation {
         });
     }
 
+    fn source_modulators(&mut self, index: usize, group: &Group) -> Result<(), ni_file::Error> {
+        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
+            if let Some(chunk) = group.0.find_first(id) {
+                let names: Vec<_> = if external {
+                    ExternalModArray32::try_from(chunk)?
+                        .slots()?
+                        .into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
+                        .collect::<Result<_, _>>()?
+                } else {
+                    InternalModArray16::try_from(chunk)?
+                        .slots()?
+                        .into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
+                        .collect::<Result<_, _>>()?
+                };
+                for (slot, name, targets) in names {
+                    self.source_modulator(index, slot, external, name, &targets);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn source_modulator(
+        &mut self, group: usize, slot: usize, external: bool,
+        name: String, targets: &[ni_file::kontakt::objects::ModTarget],
+    ) {
+        self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
+            group: group as i32, owner: -1, target: false,
+            name: name.clone(), index: slot as i32,
+        });
+        for (index, target) in targets.iter().enumerate() {
+            self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
+                group: group as i32, owner: slot as i32, target: true,
+                name: target.name.clone(), index: index as i32,
+            });
+        }
+        self.ir.source_indices.modulators.push(ir::SourceModulator {
+            group, slot, external, name, runtime: None,
+        });
+    }
+
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let mut v = group.params()?;
@@ -631,32 +677,6 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
-        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
-            if let Some(chunk) = group.0.find_first(id) {
-                let names: Vec<_> = if external {
-                    ExternalModArray32::try_from(chunk)?
-                        .slots()?
-                        .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
-                        .collect::<Result<_, _>>()?
-                } else {
-                    InternalModArray16::try_from(chunk)?
-                        .slots()?
-                        .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
-                        .collect::<Result<_, _>>()?
-                };
-                for (slot, name) in names {
-                    self.ir.source_indices.modulators.push(ir::SourceModulator {
-                        group: index,
-                        slot: usize::from(slot),
-                        external,
-                        name,
-                        runtime: None,
-                    });
-                }
-            }
-        }
         if v.muted {
             // Empty source groups retain their numeric address for KSP and DSP writes.
             self.ir.groups.push(ir::Group {
@@ -725,18 +745,19 @@ impl Translation {
                 });
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
-                let c =
-                    crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
-                let processors = c.processors;
+                let (c, boundary) =
+                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic);
+                let mut processors = c.processors;
                 filter_slots = c.filter_slots;
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
                 if !processors.is_empty() {
+                    let post_amplitude = processors.split_off(boundary);
                     self.ir.chains.push(ir::Chain {
                         scope: ir::Scope::Voice,
                         pre_amplitude: processors,
-                        post_amplitude: Vec::new(),
+                        post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
                 }
@@ -836,6 +857,9 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                if let Some(address) = self.ir.source_indices.modulators.iter_mut()
+                    .find(|m| m.group == index && m.slot == usize::from(slot) && !m.external)
+                { address.runtime = Some(modulator); }
                 if envelope_source && volume && envelope.is_none() {
                     envelope = Some(modulator);
                     continue;
@@ -1020,7 +1044,9 @@ impl Translation {
 
     /// The modulation intensity a script set for modulation `name` of group `index`.
     fn script_intensity(&self, index: usize, name: &str) -> Option<f32> {
-        let slot = sampler_core::name_index(name);
+        let slot = self.ir.source_indices.engine_lookups.iter()
+            .find(|lookup| lookup.group == index as i32 && lookup.owner == -1 && !lookup.target
+                && lookup.name.eq_ignore_ascii_case(name))?.index;
         let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
@@ -1752,6 +1778,34 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
         }
+    }
+
+    #[test]
+    fn source_mod_and_target_lookups_keep_holes_and_unmodeled_targets() {
+        let mut out = translation();
+        let mut unnamed = target("not-modeled", 1.);
+        unnamed.name.clear();
+        let mut named = target("not-modeled", 1.);
+        named.name = "Cutoff".into();
+        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named]);
+        out.source_modulator(7, 12, false, "Envelope".into(), &[]);
+        let lookups = &out.ir.source_indices.engine_lookups;
+        assert_eq!(lookups.len(), 4);
+        assert_eq!((lookups[0].group, lookups[0].owner, lookups[0].target, lookups[0].index), (7,-1,false,31));
+        assert_eq!((lookups[2].group, lookups[2].owner, lookups[2].target, lookups[2].index), (7,31,true,1));
+        assert_eq!(lookups[2].name,"Cutoff");
+        assert_eq!(lookups[3].index,12);
+        assert_eq!(out.ir.source_indices.modulators[0].slot,31);
+        assert!(out.ir.source_indices.modulators[0].external);
+        assert_eq!(out.ir.source_indices.modulators[0].runtime,None);
+    }
+
+    #[test]
+    fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
+        let mut out=translation();
+        out.source_modulator(7,31,true,"Controller".into(),&[]);
+        out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
+        assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
     }
 
     #[test]

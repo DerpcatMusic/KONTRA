@@ -582,3 +582,26 @@ fn every_physical_loop_slot_is_consumed_once_with_its_own_count() {
         );
     }
 }
+
+#[test]
+fn source_zone_lookup_preserves_native_holes_and_shared_asset_identity() {
+    let unmapped = prepare(vec![region(Playback::default())]).unwrap();
+    assert_eq!(unmapped.source_zone_region(1), None);
+    let plan = prepare(vec![
+        region(Playback::default()),
+        region(Playback::default()),
+    ])
+    .unwrap()
+    .with_source_zones(vec![3, 9])
+    .unwrap();
+    assert_eq!(plan.source_zone_region(0), None);
+    assert_eq!(plan.source_zone_region(1), None);
+    assert_eq!(plan.source_zone_region(3), Some(0));
+    assert_eq!(plan.source_zone_region(9), Some(1));
+    assert_eq!(plan.source_zone_region(10), None);
+    assert_eq!(
+        plan.region_asset(0).unwrap().asset_id(),
+        plan.region_asset(1).unwrap().asset_id()
+    );
+    assert!(plan.region_asset(2).is_none());
+}
