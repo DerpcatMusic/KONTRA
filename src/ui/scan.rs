@@ -280,7 +280,7 @@ fn render(
         .iter()
         .filter(|(c, v)| initial.get(c).is_some_and(|old| old != *v))
         .count();
-    let fonts_declared = face
+    let legacy_fonts_declared = face
         .styles
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
@@ -293,7 +293,7 @@ fn render(
     );
     missing.sort();
     missing.dedup();
-    let font_success = face
+    let legacy_font_success = face
         .styles
         .iter()
         .filter(|s| match s.font {
@@ -303,17 +303,28 @@ fn render(
             ir::Font::File(a) => assets.font(&a).is_some(),
         })
         .count();
+    let native_fonts=native.as_ref().and_then(|n|n.font_success());
+    let fonts_declared=if native.is_some(){native_fonts}else{Some(legacy_fonts_declared)};
+    let font_success=if native.is_some(){native_fonts}else{Some(legacy_font_success)};
+    let resources_known=native.is_none()||native_fonts.is_some();
+    let mut failures=BTreeMap::new();
+    if resources_known {
+        failures.insert("lookup-not-found",scan.lookups-scan.lookup_ok);
+        failures.insert("decode-failed",scan.decodes-scan.decode_ok);
+    }
+    if let Some((declared,success))=fonts_declared.zip(font_success) {
+        failures.insert("font-service-unavailable",declared.saturating_sub(success));
+    }
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
-        "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
-        "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
+        "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
+        "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
         "font_declared":fonts_declared,"font_success":font_success,
 
-        "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
+        "custom_font_uses":if native.is_some(){None}else{Some(face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_)|ir::Font::File(_))).count())},
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
-            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
+        "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
 
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
@@ -454,14 +465,14 @@ pub fn one(id: &str, out: &Path) -> Value {
         metrics::checkpoint(out, &result);
         let typed_targets=loaded.scripts.views.iter().flat_map(|view|view.model().interface.widgets.iter().filter(|w|matches!(w.value,sampler_ksp::model::WidgetValue::Text(_)|sampler_ksp::model::WidgetValue::Ints(_)|sampler_ksp::model::WidgetValue::Reals(_))).map(|w|(view.slot(),w.name.clone()))).collect();
         let faces = loaded.interfaces.clone();
-        any_ui |= faces.iter().any(|face| !face.widgets.is_empty());
+        any_ui |= faces.iter().any(|face| !face.widgets.is_empty() || face.native_ui.is_some());
         let paint_path = path.clone();
         let paint_out = out.to_path_buf();
         let paint = std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
 
         let mut views = Vec::new();
         for (slot, face) in faces.iter().enumerate() {
-            if face.widgets.is_empty() {
+            if face.widgets.is_empty() && face.native_ui.is_none() {
                 continue;
             }
             let view = render(
@@ -613,7 +624,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let lua = core.scan_lua(0);
         let lua_report = lua.as_ref().map(|l| json!({"init_faults":l.init_count,"runtime_faults":l.runtime_count,
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
-        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":if native_requested{Some(false)}else{None},"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
+        result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":if native_requested{Some(views.iter().any(|v|v["native_frontend_consumed"]==true))}else{None},"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
