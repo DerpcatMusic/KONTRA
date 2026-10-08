@@ -373,6 +373,17 @@ impl Runtime {
             ) => true,
         });
         self.behaviors.unreserve(controller_reserves);
+        // Aborted callbacks discard their uncommitted attacks and return ownership.
+        self.deferred.retain(|&(callback, note, _)| {
+            let keep = self
+                .behaviors
+                .get(callback.0)
+                .is_some_and(|c| c.outcome.is_none());
+            if !keep {
+                self.notes.get_mut(note.0).unwrap().work -= 1;
+            }
+            keep
+        });
     }
 
     /// Remove queued control writes, including an unexecuted boundary event. Does not change
