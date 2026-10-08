@@ -65,8 +65,12 @@ same configuration as the gate. The scalar witness compiles the new branch out;
 all other source and build settings match the candidate. Exact binary hashes
 are in `cubic-BUILD.json` in the receipt directory.
 
-Status: HOLD for WAV comparison and quiet CPU acceptance. No READY or CPU
-acceptance claim. CPU acceptance must use unprofiled ci/default-feature binaries
+Signal witness: Cotton, Analog Strings and Areia each produced identical scalar,
+scalar-repeat and cubic PCM hashes at block 64. All 384,000 float samples per
+cell match exactly; max absolute and RMS errors are zero. The comparison
+receipts are `wav/<item>/comparison.json`; all generated WAVs were deleted.
+
+Status: HOLD for quiet CPU acceptance. No READY or CPU acceptance claim. CPU acceptance must use unprofiled ci/default-feature binaries
 against the frozen v1 in a quiet A/B. No release or install.
 
-NEXT: targeted checks, full-signal preservation and unprofiled same-cell CPU.
+NEXT: unprofiled same-cell quiet CPU, then the next render hot stage.
