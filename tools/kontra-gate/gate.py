@@ -305,11 +305,11 @@ def main():
     args = parser.parse_args()
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', args.sha + '^{commit}'], text=True).strip()
     ROOT.mkdir(parents=True, exist_ok=True)
-    with (ROOT / '.gate.lock').open('w') as lock:
+    previous = next((p for p in sorted(ROOT.iterdir(), reverse=True) if p.is_dir() and (p / 'metrics.json').exists() and p != args.resume), None)
+    run = args.resume or ROOT / (utc() + '-' + sha[:12])
+    run.mkdir(exist_ok=bool(args.resume))
+    with (run / '.run.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        previous = next((p for p in sorted(ROOT.iterdir(), reverse=True) if p.is_dir() and (p / 'metrics.json').exists() and p != args.resume), None)
-        run = args.resume or ROOT / (utc() + '-' + sha[:12])
-        run.mkdir(exist_ok=bool(args.resume))
         if args.resume and json.loads((run / 'manifest.json').read_text())['sha'] != sha:
             parser.error('resume SHA differs')
         if args.adapter and not args.resume:
