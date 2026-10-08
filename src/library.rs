@@ -361,10 +361,18 @@ pub struct Library {
     pub hue: Option<f32>,
 }
 
+/// Real snapshot files matched to the exact embedded base instrument name.
+#[derive(Debug)]
+pub struct Snapshots {
+    pub instrument: String,
+    pub paths: Vec<PathBuf>,
+}
+
 /// The libraries found, looked up by folder or name.
 #[derive(Default, Debug)]
 pub struct Shelf {
     pub libraries: Vec<Library>,
+    pub snapshots: HashMap<PathBuf, Snapshots>,
     /// Prepared once by the library worker, never scanned during painting.
     /// Native path keys also equate Windows' slash and backslash separators.
     by_dir: HashMap<PathBuf, usize>,
@@ -395,7 +403,7 @@ impl Shelf {
             .map(|(n, l)| (l.dir.clone(), n))
             .collect();
         let by_name = libraries.iter().enumerate().map(|(n, l)| (l.name.clone(), n)).collect();
-        Self { libraries, by_dir, by_name, per_root: Vec::new() }
+        Self { libraries, by_dir, by_name, per_root: Vec::new(), snapshots: HashMap::new() }
     }
 
     /// The library `path` is in: the nearest library folder above it.
@@ -659,7 +667,7 @@ pub fn is_preset(path: &Path) -> bool {
 }
 
 /// Presets in a library folder, its sample folders left unread.
-fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
+fn presets(dir: &Path, progress: &Progress) -> (Vec<PathBuf>, HashMap<PathBuf, Snapshots>) {
     let mut trace = crate::diagnostics::LoadTrace::new(dir, 0, None);
     trace.detail("operation", "preset_catalog");
     trace.stage("catalog");
@@ -670,6 +678,7 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         })
     });
     let mut out = Vec::new();
+    let mut snapshots: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for entry in walk {
         if progress.canceled() {
             break;
@@ -683,31 +692,55 @@ fn presets(dir: &Path, progress: &Progress) -> Vec<PathBuf> {
         }
         let path = e.path();
         if !e.file_type().is_file() { continue; }
-        if is_preset(path) {
-            out.push(e.into_path());
-        } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("nksn")) {
-            // A snapshot lists when it reads; the one that does not is reported.
-            match sampler_kontakt::read_snapshot(path) {
-                Ok(_) => out.push(e.into_path()),
-                Err(e) => trace.issue("catalog", "snapshot_unreadable", e.to_string()),
+        if path.extension().is_some_and(|s| s.eq_ignore_ascii_case("nksn")) {
+            match crate::sound::v2::snapshot_instrument(path) {
+                Ok(name) => snapshots.entry(name).or_default().push(e.into_path()),
+                Err(error) => trace.issue("catalog", "snapshot_metadata_failed", format!("{}: {error:#}", path.display())),
             }
+        } else if is_preset(path) {
+            out.push(e.into_path());
         } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ufs")) {
-            // A UVI bank lists its programs as `bank.ufs/program.uvip`.
             match sampler_uvi::Bank::open(path) {
                 Ok(bank) => out.extend(bank.programs().into_iter().map(|member| path.join(member))),
                 Err(e) => trace.issue("catalog", "bank_unreadable", e.to_string()),
             }
         }
     }
+    let mut matched = HashMap::new();
+    if !snapshots.is_empty() {
+        for paths in snapshots.values_mut() {
+            paths.sort_by_cached_key(|p| (natural(&p.strip_prefix(dir).unwrap_or(p).to_string_lossy()), p.clone()));
+        }
+        let mut bases: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+        for base in out.iter().filter(|p| p.extension().is_some_and(|s| s.eq_ignore_ascii_case("nki"))) {
+            if progress.canceled() { break; }
+            match crate::sound::v2::snapshot_base_name(base) {
+                Ok(name) => bases.entry(name).or_default().push(base.clone()),
+                Err(error) => trace.issue("catalog", "snapshot_base_metadata_failed", format!("{}: {error:#}", base.display())),
+            }
+        }
+        for (name, bases) in bases {
+            if let Some(paths) = snapshots.get(&name) {
+                if bases.len() == 1 {
+                    matched.insert(bases[0].clone(), Snapshots { instrument: name, paths: paths.clone() });
+                } else {
+                    trace.issue("catalog", "snapshot_base_ambiguous", format!("{name}: {} base instruments have the same embedded name; load snapshots explicitly", bases.len()));
+                }
+            }
+        }
+    }
     trace.detail("presets", out.len());
+    trace.detail("snapshots", snapshots.values().map(Vec::len).sum::<usize>());
+    trace.detail("snapshot_bases", matched.len());
     trace.finish(if progress.canceled() { "canceled" } else { "loaded" });
-    out
+    (out, matched)
 }
 
 /// Every library in `roots` and its presets; `None` once canceled.
 pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)> {
     let mut libraries: Vec<Library> = Vec::new();
     let mut files = BTreeSet::new();
+    let mut snapshots = HashMap::new();
     let mut per_root = Vec::new();
     let mut seen = BTreeSet::new();
     for root in roots {
@@ -720,7 +753,8 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
             if !seen.insert(key) {
                 continue;
             }
-            let found = presets(&c.dir, progress);
+            let (found, matched) = presets(&c.dir, progress);
+            snapshots.extend(matched);
             if progress.canceled() {
                 trace.finish("canceled");
                 return None;
@@ -753,6 +787,7 @@ pub fn scan(roots: &[Root], progress: &Progress) -> Option<(Shelf, Vec<PathBuf>)
     }
     let mut shelf = Shelf::new(libraries);
     shelf.per_root = per_root;
+    shelf.snapshots = snapshots;
     Some((shelf, files.into_iter().collect()))
 }
 
@@ -1039,8 +1074,10 @@ impl Scanner {
                         }
                     }
                     let per_root = std::mem::take(&mut shelf.per_root);
+                    let snapshots = std::mem::take(&mut shelf.snapshots);
                     let mut shelf = Shelf::new(shelf.libraries);
                     shelf.per_root = per_root;
+                    shelf.snapshots = snapshots;
                     Scanned { shelf: Arc::new(shelf), files: Arc::new(files), artwork, imported }
                 });
                 let scanned = scanned.filter(|_| !progress.canceled());
@@ -1392,7 +1429,7 @@ mod uvi_bank_tests {
         else {
             return;
         };
-        let found = presets(&dir, &Progress::default());
+        let (found, _) = presets(&dir, &Progress::default());
         let program = found.iter().find(|p| p.to_string_lossy().contains(".ufs/")).expect("a bank program");
         assert!(is_instrument(program));
     }

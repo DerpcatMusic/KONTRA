@@ -95,14 +95,27 @@ impl Tree {
 
 /// Each level down is this much shorter than its parent.
 pub const STEP: f64 = SPACE * 2.;
-const WIDTH: f64 = TEXT * 7.;
+const WIDTH: f64 = TEXT * 6.5;
+const WIDE: f64 = TEXT * 9.5;
 /// The tie bar over a node's children.
 const BAR: f64 = 3.;
 const DB: std::ops::RangeInclusive<f64> = -60.0..=6.0;
 
+/// What the mixer's spectrum shows.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Spectrum {
+    Off,
+    /// The selected part; the master when none is.
+    #[default]
+    Part,
+    Master,
+}
+
 /// The mixer's view state across frames.
 #[derive(Default)]
 pub struct State {
+    pub wide: bool,
+    pub spectrum: Spectrum,
     /// Folded nodes, by [`Node::id`].
     pub folded: HashSet<u64>,
     /// The node whose output list is open.
@@ -241,14 +254,20 @@ fn strip(
     let switches = solo_mute(ui, &format!("mt-{key}"), &mut node.solo, &mut node.mute);
 
     let mut rows = vec![block(Len::Pct(100.), 2).fill(colour).shrink(0)];
-    let body = col![header, middle, row![switches].justify(Justify::Center).shrink(0), out]
+    let inserts = state.wide.then(|| {
+        let names = &tree.nodes[n].inserts;
+        col(names.iter().take(3).map(|name| caption(name.clone()).text_size(SMALL).lines(1).fill(secondary())))
+            .gap(0).h(SMALL * 3.).shrink(0).named("Inserts").id(format!("mt-inserts-{key}"))
+    });
+    let mut controls = vec![header]; controls.extend(inserts); controls.extend([middle, row![switches].justify(Justify::Center).shrink(0), out]);
+    let body = col(controls)
         .gap(TIGHT)
         .align(Align::Stretch)
         .pad((TIGHT, TIGHT))
         .flex(1)
         .min_h(0);
     rows.push(body);
-    let el = col(rows).gap(0).align(Align::Stretch).w(WIDTH).h(height.max(CONTROL * 8.)).fill(Role::Surface).shrink(0);
+    let el = col(rows).gap(0).align(Align::Stretch).w(if state.wide { WIDE } else { WIDTH }).h(height.max(CONTROL * 8.)).fill(Role::Surface).shrink(0);
     // Below the top, a hairline in the parent's colour down the left edge
     // ties the strip to its bar even when the bar scrolls out of view.
     let el = match parent_colour {

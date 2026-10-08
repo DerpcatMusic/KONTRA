@@ -156,6 +156,22 @@ pub struct LoadRequest {
     pub dynamics_start: Option<u8>,
     /// Voice-rendering threads (`None`: one, the audio thread alone).
     pub threads: Option<ThreadChoice>,
+    pub streaming: Streaming,
+    /// MPE manager on channel 16 instead of channel 1.
+    pub mpe_upper: bool,
+    /// Snapshot applied to an explicit base instrument.
+    pub snapshot: Option<std::path::PathBuf>,
+}
+
+/// Where sample data plays from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Streaming {
+    /// Preload sample starts and stream the rest from disk.
+    #[default]
+    Auto,
+    /// Load every sample whole: no disk reads or streaming while playing.
+    /// Samples that do not fit the free RAM stream as with `Auto`.
+    RamOnly,
 }
 
 /// A request for voice-rendering threads.

@@ -265,6 +265,8 @@ pub struct StreamPolicy {
     pub voices: usize,
     /// Decode threads.
     pub decoders: usize,
+    /// RAM-only: keep whole samples smallest first within this safe byte budget.
+    pub resident_budget: Option<usize>,
 }
 
 impl Default for StreamPolicy {
@@ -276,6 +278,7 @@ impl Default for StreamPolicy {
             block_frames: 64,
             voices: 256,
             decoders: 4,
+            resident_budget: None,
         }
     }
 }
@@ -354,8 +357,34 @@ pub(crate) fn start_ranges(
         }
         *list = merged;
     }
+    if let Some(room) = policy.resident_budget { keep_whole(assets, &mut ranges, room); }
     ranges
 }
+
+// Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
+/// Load samples whole instead of streaming them, smallest first, while
+/// they fit `room` bytes. Returns the bytes the rest would need.
+fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> usize {
+    let size = |i: usize| assets[i].frame_count().saturating_mul(8);
+    let resident = |list: &[Range<usize>]| list.iter().map(|r| r.end - r.start).sum::<usize>() * 8;
+    let mut streamed: Vec<_> = (0..ranges.len()).filter(|&i| !ranges[i].is_empty() && resident(&ranges[i]) < size(i)).collect();
+    streamed.sort_by_key(|&i| size(i));
+    let bytes: usize = ranges.iter().map(|r| resident(r)).sum();
+    let mut room = room.saturating_sub(bytes);
+    let mut needed = 0;
+    for i in streamed {
+        let more = size(i).saturating_sub(resident(&ranges[i]));
+        if more <= room {
+            room -= more;
+            ranges[i] = std::iter::once(0..assets[i].frame_count()).collect();
+        } else {
+            needed += more - room.min(more);
+            room = 0;
+        }
+    }
+    needed
+}
+
 
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
@@ -721,6 +750,20 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v1_ram_mode_fills_small_samples_first_and_streams_over_budget() {
+        let assets: Vec<_> = [1000, 4000, 2000].into_iter().map(|n| Pcm::streamed(48000, n).unwrap()).collect();
+        let mut heads = vec![vec![0..100]; 3];
+        let needed = keep_whole(&assets, &mut heads, 24000 + 800);
+        assert_eq!(heads[0], vec![0..1000]);
+        assert_eq!(heads[2], vec![0..2000]);
+        assert_eq!(heads[1], vec![0..100], "large sample falls back to streaming");
+        assert_eq!(needed, (4000 - 100) * 8);
+        keep_whole(&assets, &mut heads, usize::MAX);
+        assert_eq!(heads[1], vec![0..4000]);
+    }
+
 
     #[test]
     fn trimming_purges_idle_heads_until_within_budget() {
