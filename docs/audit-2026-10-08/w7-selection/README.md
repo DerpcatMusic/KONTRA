@@ -142,9 +142,11 @@ host128 → slider153/ui33136, layer2 saved396933; host173 → slider185/ui33198
 global saved560434. Compressor switch tags occur at host117/123/168/174. These
 bindings run only when host automation arrives; saved MIDI learn does not explain
 an init/CC compressor change here. The normal script init/persistence engine writes
-are a separate W5 path; this inventory does not assign the observed+9dB difference
-a cause or propose a gain correction. Existing Areia40/48 and five **pending native
-vectors** gates remain unchanged; no new native audio parity measurement is claimed.
+are a separate W5 path. The subsequent reported static compressor probe supports
+compressor on/off as the approximately 9 dB difference; native full-grid switch
+state remains unknown. No gain correction is proposed. Existing Areia40/48 and
+five **pending native vectors** gates remain unchanged; no new native audio parity
+measurement is claimed.
 
 Follow-up validation: KSP lib5, selection/event26, automation4 and typed widgets7;
 core lib62, lower17, controllers11, note stages8, release4, release selection18,
@@ -164,3 +166,21 @@ these exact addresses against typed service admission and saved rack state.
 `Frame=[f32;2]`, for bounded peaks in memory. `frame_count`, `sample_rate` and
 `asset_id` supply length/rate/identity. Streamed assets can returnNone; the asset
 worker must service them separately, never invent an ordinal or silent waveform.
+
+## Analog reported static compressor diagnostic
+
+The reported metadata probe used the shared production Mix lowering with
+the saved static gfx compressor and existing output trim. The exact compressor
+address is group=-1, slot=1, generic=1, OUTPUT_GAIN=560434, bypass=0. At C4
+(key60), velocity64, CC1=100 and CC11=127, reported RMS was0.0932991;
+forced bypass produced0.0331272: about8.994 dB from the stated RMS values
+(the supplied receipt reported approximately8.9945 dB).
+`analog-static-compressor.tsv` retains these reported metrics; W7 did not perform
+this render. No synthetic init CC or importer state change was made.
+
+Verdict: this supports compressor on/off as the approximately9 dB fresh/cached
+level difference. It does not establish the native full-grid compressor switch
+state, which remains **unknown**, or complete native DSP parity. The saved
+controller-automation inventory contains no MIDI-CC bindings, so this evidence
+does not support a CC-binding explanation. No gain/default/bypass patch is justified
+from this single static diagnostic.
