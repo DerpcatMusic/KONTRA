@@ -1,17 +1,17 @@
 # Whole-corpus Original UI census
 
-Scope 5, 2026-10-08. Coverage: **PARTIAL — sweep still running**. Frozen installed corpus: **834 Kontakt paths (781 NKI + 53 NKM), 660 UVI programs; 1,494 item IDs**. One row per path/program ID; each Kontakt multi includes every embedded program observed by its production loader. No product fixes. Generated from the current cache at 2026-10-08T10:16:53+00:00.
+Scope 5, 2026-10-08. Coverage: **PARTIAL — sweep still running**. Frozen installed corpus: **834 Kontakt paths (781 NKI + 53 NKM), 660 UVI programs; 1,494 item IDs**. One row per path/program ID; each Kontakt multi includes every embedded program observed by its production loader. No product fixes. Generated from the current cache at 2026-10-08T10:38:21+00:00.
 
 **Load admission, authored UI painting and audible audition are separate results.** The plain per-instrument answer is in [v1.tsv](/home/derpcat/.cache/kontra-scan/results/v1.tsv) and [v2.tsv](/home/derpcat/.cache/kontra-scan/results/v2.tsv). `loads=yes` means the production importer and initial playable bank/plan returned successfully. A missing image, script callback fault or silent note can coexist with admitted loading. `loads=no` includes a bounded 90-second worker timeout; it is an observed failure under this probe, not proof of permanent incompatibility.
 
 ## Frozen builds and reproducibility
 
-Shared scanner instrumentation and CLI: `tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`, based on v2 `7e82b152`. Pinned Kontakt v1: `0cb7a8a0` plus scanner adapter `audit/ui-census-v1-scanner-20261008@11db26e72650f373465b6534d6ddb3684e1e9970`. UVI v1 is explicitly a later, separate baseline: sidecar `audit/uvi-v1-scanner-20261008@1c198e60`, product base `4bffbb18`; pinned Kontakt is unchanged. All are optimized release. The adjacent [installed README](/home/derpcat/.cache/kontra-scan/bin/README.md) records exact binary hashes, build date, rebuilding and limits.
+Shared scanner instrumentation and CLI: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`, based on v2 `7e82b152`. Pinned Kontakt v1: `0cb7a8a0` plus scanner adapter `audit/ui-census-v1-scanner-20261008@44d03cecbd3b5e47b1564d17ac239239dc2ba4ea`. UVI v1 is explicitly a later, separate baseline: sidecar `audit/uvi-v1-scanner-20261008@1c198e60`, product base `4bffbb18`; pinned Kontakt is unchanged. All are optimized release. The adjacent [installed README](/home/derpcat/.cache/kontra-scan/bin/README.md) records exact binary hashes, build date, rebuilding and limits.
 
 | Adapter | SHA-256 |
 | --- | --- |
-| v1 | bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438 |
-| v2 | 2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0 |
+| v1 | 870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e |
+| v2 | d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a |
 | v1 UVI sidecar | d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1 |
 
 ```sh
@@ -43,12 +43,12 @@ Numeric timing fields observe actual output/paint from the first production prog
 
 | Build | Corpus | Timing field | Observed numeric | Unknown | Median ms | p95 ms |
 | --- | --- | --- | --- | --- | --- | --- |
-| v2 | Kontakt | first_audio_ms | 1 | 0 | 8060.11 | 8060.11 |
-| v2 | Kontakt | ui_first_frame_ms | 1 | 0 | 8064.81 | 8064.81 |
+| v2 | Kontakt | first_audio_ms | 1 | 0 | 5257.57 | 5257.57 |
+| v2 | Kontakt | ui_first_frame_ms | 1 | 0 | 5262.49 | 5262.49 |
 | v2 | UVI | first_audio_ms | 0 | 0 | Unknown | Unknown |
 | v2 | UVI | ui_first_frame_ms | 0 | 0 | Unknown | Unknown |
-| v1 | Kontakt | first_audio_ms | 1 | 0 | 277.08 | 277.08 |
-| v1 | Kontakt | ui_first_frame_ms | 1 | 0 | 903.43 | 903.43 |
+| v1 | Kontakt | first_audio_ms | 1 | 0 | 146.11 | 146.11 |
+| v1 | Kontakt | ui_first_frame_ms | 1 | 0 | 354.09 | 354.09 |
 | v1 | UVI | first_audio_ms | 0 | 0 | Unknown | Unknown |
 | v1 | UVI | ui_first_frame_ms | 0 | 0 | Unknown | Unknown |
 
@@ -90,18 +90,18 @@ An unsupported parameter can be nonvisual metadata. An outside-page or zero-size
 
 ### Script-slot, callback and saved-state partitions
 
-Raw slots are partitioned before compilation into decode_failed / bypassed / inline_nonempty / linked_only / empty. Wire slot, owner and program index are distinct from compact runtime admission. Active slots skip bypassed/empty slots. V1 compile-admitted allows disabled non-init callback blocks; compile-clean requires zero `Program.errors`. Init and persistence_changed completion/faults are independently observed, never inferred from public `Ok`. `absent`, `compile_disabled`, `entered`, `completed`, `faulted`, `budget_stopped`, `waiting`, `deferred` and `dropped` remain distinct. Diagnostics contain a fixed safe category, static builtin and numeric location only.
+Raw slots are partitioned before compilation into decode_failed / bypassed / inline_nonempty / linked_only / empty. Only actual record/parameter errors count as decode_failed; saved-table uncertainty retains decoded source disposition independently. Wire slot, owner and program index are distinct from compact runtime admission. Active slots skip bypassed/empty slots. V1 compile-admitted allows disabled non-init callback blocks; compile-clean requires zero `Program.errors`. Init and persistence_changed completion/faults are independently observed, never inferred from public `Ok`. `absent`, `compile_disabled`, `entered`, `completed`, `faulted`, `budget_stopped`, `waiting`, `deferred` and `dropped` remain distinct. Diagnostics contain a fixed safe category, static builtin and numeric location only.
 
 | Field | v2 sum / observed rows | v1 sum / observed rows |
 | --- | --- | --- |
 | bound_typed | 6 / 1 | 5 / 1 |
 | sample_zone_count | 1985 / 1 | 1985 / 1 |
 | slots_seen | 5 / 1 | 5 / 1 |
-| slots_decode_failed | 0 / 1 | 5 / 1 |
+| slots_decode_failed | 0 / 1 | 0 / 1 |
 | slots_bypassed | 0 / 1 | 0 / 1 |
-| slots_inline_nonempty | 3 / 1 | 0 / 1 |
+| slots_inline_nonempty | 3 / 1 | 3 / 1 |
 | slots_linked_only | 0 / 1 | 0 / 1 |
-| slots_empty | 2 / 1 | 0 / 1 |
+| slots_empty | 2 / 1 | 2 / 1 |
 | active_script_slots | 3 / 1 | 3 / 1 |
 | compiled_script_slots | 3 / 1 | 3 / 1 |
 | clean_compiled_slots | 3 / 1 | 3 / 1 |
@@ -154,9 +154,9 @@ Raw slots are partitioned before compilation into decode_failed / bypassed / inl
 | v1 | persistence_changed | dropped | 0 |
 | v1 | persistence_changed | unknown | 0 |
 
-v2 saved-table integrity (raw slot observations): decoded=5. Only complete raw histograms enter the counts below.
+v2 saved-table integrity (raw slot observations): decoded=5. Only complete raw histograms enter the counts below; these are known-subset counts, and all-slot raw totals remain unknown when any histogram is incomplete.
 
-v1 saved-table integrity (raw slot observations): unknown=5. Only complete raw histograms enter the counts below.
+v1 saved-table integrity (raw slot observations): unknown=5. Only complete raw histograms enter the counts below; these are known-subset counts, and all-slot raw totals remain unknown when any histogram is incomplete.
 
 | Build | Fixed sigil | Raw complete-table entries | Admitted entries |
 | --- | --- | --- | --- |
@@ -181,11 +181,11 @@ Saved sigils use only `$ ~ % ? @ ! empty other`; malformed table framing is dist
 
 ## Conflux mandatory first witness
 
-**v2: loads yes; Original missing-images; bindings 107/113; audition yes; note {"0":[60,64]}; load 8020.021826000001 ms; first sound 8060.106203 ms; first authored frame 8064.8115 ms; product cache cold; peak RSS 229.55 MB.**
+**v2: loads yes; Original missing-images; bindings 107/113; audition yes; note {"0":[60,64]}; load 5212.613054 ms; first sound 5257.569810999999 ms; first authored frame 5262.492196 ms; product cache cold; peak RSS 229.69 MB.**
 
 Main authored view: 411 widgets, 134 visible, 102/108 scalar bindings; 4 image requests / 1 missing. Declared background [240, 239, 228, 255]; plain fraction 93.8985%. This is a cream, nonuniform page, not a literal all-white pixel buffer. The renderer auditor's 94.94% figure uses its separate capture/layout and must not replace this matched witness.
 
-**v1: loads yes; Original missing-images; bindings 78/78; audition yes; note {"0":[60,64]}; load 263.675119 ms; first sound 277.077449 ms; first authored frame 903.432403 ms; product cache cold; peak RSS 88.45 MB.**
+**v1: loads yes; Original missing-images; bindings 78/78; audition yes; note {"0":[60,64]}; load 134.102572 ms; first sound 146.11175200000002 ms; first authored frame 354.094091 ms; product cache cold; peak RSS 88.96 MB.**
 
 W2 traced the six scalar-excluded main bindings to footer TextEdits; they are typed variable targets, not absent declarations. W5’s later implementation can type/read back all six; that later result is separate from this frozen baseline. W2 also removed 33 inferred phantom knobs, changing its later scalar denominator to about74/80 without losing real bindings. This baseline has no reliable origin marker; the census never subtracts a library-specific33.
 
