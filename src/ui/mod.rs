@@ -31,6 +31,7 @@ mod menu;
 #[allow(dead_code)]
 mod mix_tree;
 mod ir_view;
+mod generated;
 #[cfg(feature = "shots")]
 pub(crate) mod scan;
 #[allow(dead_code)]
@@ -199,6 +200,7 @@ impl Watch {
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
+            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); } });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
@@ -274,7 +276,7 @@ fn fingerprint(view: &View, h: &mut DefaultHasher) {
     (&view.status, &view.multi_status, view.scanned).hash(h);
     (Arc::as_ptr(&view.files) as usize, view.artwork.len()).hash(h);
     for v in &view.parts {
-        (v.loading, &v.status, v.program).hash(h);
+        (v.loading, &v.status, v.program, v.ui_revision, v.generation).hash(h);
         (at(&v.tree), at(&v.report), at(&v.trace), Arc::as_ptr(&v.interfaces) as *const () as usize).hash(h);
     }
 }
@@ -626,6 +628,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
     part.nodes.clear();
@@ -1191,3 +1194,6 @@ impl Cx<'_> {
         self.state.analyser.update(&self.p.shared.scope, source, rate)
     }
 }
+
+#[cfg(test)]
+mod loop_audit;
