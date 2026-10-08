@@ -61,7 +61,7 @@ pub use stream::{
     StreamCache, StreamError, StreamWorker,
 };
 mod source;
-pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
+pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};

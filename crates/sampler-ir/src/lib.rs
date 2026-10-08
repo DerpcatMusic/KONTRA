@@ -195,11 +195,22 @@ pub struct GroupStart {
     pub next: StartJoin,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StartJoin { And, AndNot, Or }
+pub enum StartJoin {
+    And,
+    AndNot,
+    Or,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartTest {
-    Key { low: u8, high: u8 },
-    Controller { controller: u8, low: u8, high: u8 },
+    Key {
+        low: u8,
+        high: u8,
+    },
+    Controller {
+        controller: u8,
+        low: u8,
+        high: u8,
+    },
     /// One-based authored position in the instrument's native RR cycle.
     RoundRobin(u32),
     Random,
@@ -361,7 +372,10 @@ impl Instrument {
         let mut next = 0;
         self.zones.retain(|zone| {
             let retained = keep(zone);
-            if retained { remap[old] = Some(ZoneRef(next)); next += 1; }
+            if retained {
+                remap[old] = Some(ZoneRef(next));
+                next += 1;
+            }
             old += 1;
             retained
         });
@@ -574,6 +588,10 @@ pub struct AxisPick {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
     pub name: String,
+    /// Stable authored group/axis/control identity.
+    pub source: String,
+    /// Authored keyless choice callback, when present.
+    pub control: Option<u128>,
     /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
     /// reads them, and the first is the key a driver taps to select this.
     pub switch_keys: Vec<u8>,
@@ -719,6 +737,8 @@ pub enum Looping {
     Continuous(LoopRange),
     /// Loops while the note is held, then plays past the loop end.
     UntilRelease(LoopRange),
+    /// Eight authored physical slots, including unoccupied holes.
+    Slots([Option<LoopSlot>; 8]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -728,6 +748,16 @@ pub struct LoopRange {
     pub end: SourceFrames,
     pub crossfade: Span,
     pub alternating: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopSlot {
+    pub range: LoopRange,
+    /// Zero repeats indefinitely; positive values are total outward passes.
+    pub count: u32,
+    /// Source-rate multiplier on repeated passes.
+    pub tuning: f64,
+    pub until_release: bool,
 }
 
 // ---------------------------------------------------------------- modulation

@@ -480,6 +480,26 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
         ));
         return false;
     }
+    if let ir::Looping::Slots(mut slots) = playback.looping {
+        for slot in &mut slots {
+            if let Some(value) = slot {
+                let mut view = *playback;
+                view.looping = if value.until_release {
+                    ir::Looping::UntilRelease(value.range)
+                } else {
+                    ir::Looping::Continuous(value.range)
+                };
+                fit(&mut view, frames, report);
+                match view.looping {
+                    ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) => {
+                        value.range = range
+                    }
+                    _ => *slot = None,
+                }
+            }
+        }
+        playback.looping = ir::Looping::Slots(slots);
+    }
     if let ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) = &mut playback.looping
     {
         if range.start < playback.start || range.end > end || range.start >= range.end {
