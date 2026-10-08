@@ -4,6 +4,7 @@ use crate::{
     BehaviorId, ControlId, ControlValue, Error, Outcome, PlanId, Runtime, ScriptInstanceId, Text,
 };
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScriptStateAddress {
     Control(ControlId),
@@ -17,6 +18,7 @@ pub enum ScriptStateAddress {
     },
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScriptStateValue {
     Control(ControlValue),
@@ -25,6 +27,7 @@ pub enum ScriptStateValue {
     Text(Text),
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScriptStateEntry {
     pub address: ScriptStateAddress,
