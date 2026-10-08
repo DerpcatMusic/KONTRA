@@ -2,6 +2,8 @@
 
 Baseline: integration `7e82b152`. v1: pinned `0cb7a8a0`, not a current v1 branch. Audit worktree: `audit-ksp`; branch `audit/ksp-20261008`. This phase adds measurement tools and contract probes only.
 
+Shared scanner accessor definitions and phase instrumentation evidence: [ksp-scanner-fields.md](ksp-scanner-fields.md).
+
 ## Verdict
 
 **v2 is worse in runtime fidelity; NKI frontend admission is equal with resources supplied, and multi-script compilation remains incomplete in both engines.** A high compile rate is not a high compatibility rate. v2 admits commands which become unconsumed effects, zero/default queries, or no-ops. Several corresponding v1 paths have actual scheduler/UI/host implementations. Neither implementation is certified against native Kontakt by this audit.
