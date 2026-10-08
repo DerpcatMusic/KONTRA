@@ -43,7 +43,7 @@ pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
 pub use script::{Script, Strings};
 pub use snapshot::{GroupState, SnapshotState, apply_snapshot, read_snapshot};
-pub use stream::{AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
+pub use stream::{DISK_READ, AssetSource, SampleReader, StreamPolicy, StreamReport, Streamed, Streamer};
 
 /// Without the `library-access` feature, encrypted content is refused.
 #[cfg(not(feature = "library-access"))]

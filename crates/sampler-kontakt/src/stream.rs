@@ -12,7 +12,7 @@ use std::{
     ops::Range,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -22,7 +22,12 @@ type Frame = [f32; 2];
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
+/// Sample bytes streamed from disk so far (loading reads are not counted).
+/// Port from v1 0cb7a8a0:src/audio.rs.
+pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
+
 struct Bytes {
+    counted: bool,
     file: File,
     source: Source,
     position: u64,
@@ -35,8 +40,9 @@ struct Bytes {
 const BUFFER: usize = 16 << 10;
 
 impl Bytes {
-    fn open(source: &Source) -> io::Result<Self> {
+    fn open(source: &Source, counted: bool) -> io::Result<Self> {
         Ok(Self {
+            counted,
             file: File::open(&source.path)?,
             source: source.clone(),
             position: 0,
@@ -59,7 +65,7 @@ impl Read for Bytes {
             while filled < len {
                 match self.file.read(&mut self.buffer[filled..])? {
                     0 => break,
-                    n => filled += n,
+                    n => { filled += n; if self.counted { DISK_READ.fetch_add(n as u64, Ordering::Relaxed); } },
                 }
             }
             self.buffer.truncate(filled);
@@ -101,12 +107,15 @@ enum Codec {
 /// Where an asset's frames are read from, reopened by each decode thread.
 pub trait AssetSource: Send + Sync {
     fn open(&self) -> io::Result<SampleReader>;
+    /// Playback/reload IO, counted separately from initial loading.
+    fn open_stream(&self) -> io::Result<SampleReader> { self.open() }
 }
 
 impl AssetSource for Source {
     fn open(&self) -> io::Result<SampleReader> {
         SampleReader::open(self)
     }
+    fn open_stream(&self) -> io::Result<SampleReader> { SampleReader::open_counted(self, true) }
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -120,9 +129,11 @@ pub struct SampleReader {
 }
 
 impl SampleReader {
-    pub fn open(source: &Source) -> io::Result<Self> {
+    pub fn open(source: &Source) -> io::Result<Self> { Self::open_counted(source, false) }
+
+    fn open_counted(source: &Source, counted: bool) -> io::Result<Self> {
         let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidData, e);
-        let mut bytes = Bytes::open(source)?;
+        let mut bytes = Bytes::open(source, counted)?;
         let mut head = Vec::new();
         (&mut bytes).take(1 << 12).read_to_end(&mut head)?;
         if head.starts_with(b"RIFF") && crate::samples::wav_layout(&head).is_err() {
@@ -600,7 +611,7 @@ fn reload(
         let (Some(source), Some(ranges)) = (sources.get(&id), ranges.get(&id)) else {
             continue;
         };
-        if let Err(error) = source.open().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
+        if let Err(error) = source.open_stream().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
             if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
                 pcm.mark_cold();
             }
@@ -650,7 +661,7 @@ fn decode(
         let asset = job.key().asset;
         let index = match readers.iter().position(|(id, ..)| *id == asset) {
             Some(i) => Some(i),
-            None => sources.get(&asset).and_then(|s| s.open().ok()).map(|r| {
+            None => sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|r| {
                 if readers.len() == OPEN_READERS {
                     let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
                     readers.swap_remove(oldest);
@@ -809,6 +820,7 @@ mod tests {
             std::fs::write(&path, &bytes).unwrap();
             let full = crate::decode(&bytes).unwrap().frames;
             let source = crate::Samples::new(&dir).source(&path).unwrap();
+            let before = DISK_READ.load(Ordering::Relaxed);
             let mut reader = SampleReader::open(&source).unwrap();
             assert_eq!((reader.frames(), reader.rate()), (40000, 44100));
             for range in [0..40000, 511..1025, 39999..40000, 1000..1000, 32000..33000] {
@@ -817,6 +829,10 @@ mod tests {
                 assert_eq!(out, full[range], "{name}");
             }
             assert!(reader.read(39999, &mut [[0.0; 2]; 2]).is_err());
+            assert_eq!(DISK_READ.load(Ordering::Relaxed), before, "loading reads do not count");
+            let mut reader = source.open_stream().unwrap();
+            reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+            assert!(DISK_READ.load(Ordering::Relaxed) >= before + bytes.len() as u64, "physical playback reads count");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

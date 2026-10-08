@@ -515,6 +515,7 @@ pub struct Shared {
     /// Voices sounding across the rack, reported by the audio thread.
     pub(crate) voices: AtomicU64,
     pub(crate) audible: AtomicU64,
+    memory_freed: AtomicU64,
     /// Audio thread load (`f32` bits): render time over block time, peak-held.
     pub(crate) cpu: AtomicU64,
     /// Render time and the audio time it rendered, in nanoseconds, summed:
@@ -643,6 +644,7 @@ impl Default for Shared {
             dialog_runtime: Arc::default(),
             voices: AtomicU64::new(0),
             audible: AtomicU64::new(0),
+            memory_freed: AtomicU64::new(0),
             cpu: AtomicU64::new(0),
             busy_ns: AtomicU64::new(0),
             span_ns: AtomicU64::new(0),
@@ -1036,6 +1038,11 @@ impl Shared {
 
     /// Fit streamed start data in `budget_mb`, shared evenly by the parts that
     /// stream, dropping what has idled longest; refresh what each holds.
+    pub(crate) fn memory_snapshot(&self) -> (u64, u64) {
+        let resident = self.parts.lock().unwrap().iter().map(|p| p.resident_bytes.load(Ordering::Relaxed)).sum();
+        (resident, self.memory_freed.load(Ordering::Relaxed))
+    }
+
     fn trim_streams(&self, budget_mb: u32) {
         let idle = (IDLE_SECONDS * self.rate()) as u64;
         let parts = self.parts.lock().unwrap().clone();
@@ -1044,7 +1051,8 @@ impl Shared {
         let share = u64::from(budget_mb) * (1 << 20) / streams.len().max(1) as u64;
         for (part, stream) in streams {
             if budget_mb > 0 && !part.keep_resident.load(Ordering::Relaxed) {
-                stream.trim(share, part.clock.load(Ordering::Relaxed).saturating_sub(idle));
+                let freed = stream.trim(share, part.clock.load(Ordering::Relaxed).saturating_sub(idle));
+                self.memory_freed.fetch_add(freed as u64, Ordering::Relaxed);
             }
             part.resident_bytes.store(stream.resident_bytes(), Ordering::Relaxed);
         }
