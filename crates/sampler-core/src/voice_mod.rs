@@ -552,7 +552,7 @@ pub(crate) struct Inputs<'a> {
     pub controllers: &'a [u32; 128],
     /// Frames from the note's admission to its key release (or now).
     pub held: u64,
-    pub script: crate::script_params::ModValues,
+    pub script: &'a crate::script_params::ModValues,
     /// The note's raw pitch bend, -1..=1.
     pub bend: f64,
 }
@@ -563,7 +563,7 @@ impl<'a> Inputs<'a> {
         expression: crate::Expression,
         controllers: &'a [u32; 128],
         held: u64,
-        script: crate::script_params::ModValues,
+        script: &'a crate::script_params::ModValues,
     ) -> Self {
         Self {
             velocity: note.velocity,
@@ -1177,7 +1177,7 @@ mod tests {
                 timbre: 0,
                 controllers: &controllers,
                 held: 0,
-                script: Default::default(),
+                script: &Default::default(),
                 bend: 0.0,
             };
             let clock = |now| Clock {
