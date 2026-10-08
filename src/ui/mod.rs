@@ -1346,6 +1346,8 @@ mod loop_audit;
 #[cfg(test)]
 mod browser_tests;
 #[cfg(test)]
+mod chrome_tests;
+#[cfg(test)]
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
 #[cfg(all(test, feature = "library-access"))]
 mod uvi_audit;
