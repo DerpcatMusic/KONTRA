@@ -60,12 +60,10 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 // Instance wrapper
 // ---------------------------------------------------------------------------
 
-/// Bounded handoff slot for state loads. Capacity 1: presets don't
-/// arrive faster than the audio thread completes a block, and on
-/// overflow we want most-recent-wins (`force_push`) so a rapid
-/// double-recall doesn't get the audio thread to apply a stale state
-/// after the host already moved on.
-type StateLoadQueue = crossbeam_queue::ArrayQueue<state::DeserializedState>;
+/// Single latest-wins restore slot, with bounded off-audio blob retirement.
+#[path = "../../moose-state-queue.rs"]
+mod state_queue;
+use state_queue::StateLoadQueue;
 
 /// VST3 `RestartFlags::kLatencyChanged`. The audio thread flags this
 /// through `moose_vst3_mark_restart` (an atomic bit-set, no host call);
@@ -1269,6 +1267,9 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
             return;
         }
 
+        // Cover the entire valid callback, including deferred state application.
+        let _rt = RtSection::enter();
+
         // Take ownership of the plugin for the whole block: an
         // uncontended `Acquire`, never a wait, since the host contract
         // keeps `process` from overlapping a lifecycle callback and host
@@ -1279,16 +1280,9 @@ unsafe fn process_block<P: PluginExport, H: Sample>(
         // plugin sees consistent params and extra state for the
         // entire block. See `pending_state` field comment for the
         // queue-overflow policy.
-        if let Some(state) = inst.pending_state.pop() {
-            state::apply_state(&mut *plugin, &state);
+        if inst.pending_state.apply_audio(|state| state::apply_state(&mut *plugin, state)) {
+            ffi::moose_vst3_mark_restart(ctx, 0);
         }
-
-        // Paranoid allocation check (the `rt-paranoid` feature): guard the
-        // wrapper's per-block glue - event conversion, transport, process,
-        // output encode, snapshot publish - as well as the plugin. Placed
-        // after the state-load apply above, since `load_state` legitimately
-        // allocates. No-op and zero-sized when the feature is off.
-        let _rt = RtSection::enter();
 
         // One reborrow of the scratch so the disjoint fields below (event
         // list, sub-block scratch, output events, build scratch) can be
@@ -1685,9 +1679,10 @@ unsafe extern "C" fn cb_param_presentation_revision<P: PluginExport>(
         if ctx.is_null() {
             return 0;
         }
-        (*ctx.cast::<Vst3Instance<P>>())
-            .params_arc
-            .parameter_presentation_revision()
+        let inst = &*ctx.cast::<Vst3Instance<P>>();
+        // The shim polls this only from its main-thread restart drain.
+        inst.pending_state.collect_retired();
+        inst.params_arc.parameter_presentation_revision()
     })
 }
 
@@ -4454,3 +4449,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "../../moose-state-queue-tests.rs"]
+mod state_retirement_tests;
