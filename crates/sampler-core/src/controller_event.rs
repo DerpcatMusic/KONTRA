@@ -64,6 +64,7 @@ impl Runtime {
         number: u8,
         value: u32,
     ) -> Result<Option<BehaviorId>, Error> {
+        let context = crate::ControlContext { performance, origin, channels };
         let performance = self.performance_index(performance)?;
         if number >= 128 || origin.group >= 16 || origin.channel >= 16 || channels == 0 {
             return Err(Error::InvalidInput);
@@ -79,6 +80,11 @@ impl Runtime {
             reserved: 0,
         };
         self.apply_due();
+        let needed = self.plans.get(self.active_plan.0).unwrap().prepared.stages.iter().filter(|s| s.controller.is_some()).count();
+        if needed == 0 && matches!(number, 64 | 66) && value >= 0x8000_0000 {
+            self.missing_pedal_channels(event.scope())?;
+        }
+        self.dispatch_automation(context, self.active_plan, crate::AutomationSource::Controller(number), f64::from(value) / f64::from(u32::MAX), needed)?;
         self.admit_controller(self.active_plan, event)
     }
 

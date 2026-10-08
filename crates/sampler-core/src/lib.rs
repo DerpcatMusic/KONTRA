@@ -32,6 +32,8 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod automation;
+pub use automation::{AutomationBinding, AutomationSource};
 mod widget;
 pub use widget::{
     WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetEventType, WidgetInteraction,
@@ -66,7 +68,7 @@ pub use stream::{
     StreamCache, StreamError, StreamWorker,
 };
 mod source;
-pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
+pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
@@ -105,6 +107,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
 mod packed;
@@ -172,11 +175,12 @@ pub enum EventInfo {
     Key,
     /// The event's velocity, 0..=127.
     Velocity,
+    ReleaseVelocity,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
-    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    /// Physical creator script slot, or -1 for a host event.
     Source,
 }
 
@@ -446,6 +450,7 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
+    source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
 }
@@ -641,6 +646,7 @@ pub struct Runtime {
     note_events: Box<[note_event::NoteEvent]>,
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
+    last_callback_id: i32,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -791,6 +797,8 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            native_cycle: 0,
+            native_seed: 0,
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
@@ -816,6 +824,7 @@ impl Runtime {
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
+            last_callback_id: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
@@ -1223,6 +1232,13 @@ impl Runtime {
             let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
             self.note_values[begin..begin + cells].fill(0);
         }
+        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+            let generation = self.plans.get_mut(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
+            generation.native_cycle = generation.native_cycle.wrapping_add(1);
+        }
         self.selections[id.index] = performance::NoteSelection {
             performance,
             snapshot: self.performance_state.capture(performance),
@@ -1444,6 +1460,7 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
+            source_zone: 0,
             quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
