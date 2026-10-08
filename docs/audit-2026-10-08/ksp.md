@@ -345,6 +345,33 @@ Native font success now measures decoded package font files, while custom-font g
 
 Evidence: current shared v2 Conflux cache `37bb5dbb6785a6c2851f46776725f21b983eb280608d75584dd2ec363df8d52b.json`; pinned v1 comparison `aff9c78de29075f5c197a8f7a8d0daefc8dff64ce75f1a85ff1bc9e1ae69683b.json`. Census owns the fresh paired full 1,494-ID run. No independent collector, checkpoint binary build, scanner modification or product release was started here.
 
+## Keyboard declaration and no-audition investigation
+
+**348 matching Afflatus Chapter II Brass IDs are loaded but not auditioned in each engine's current shared cache.** This is an observed exclusion count, not 348 silent notes, script failures or confirmed sampler regressions. The sorted LF-terminated matching ID set has SHA-256 `cf0ccb4b6afdc131ed620a1a067e7fd9da91a346a4d1dd9c6516bd102a3dac1c`; coverage was partial (425 validated Kontakt v1 / 436 v2 rows at this inspection). These rows remain excluded from sound parity.
+
+The 2 Horns KS witness has 17,084 retained mappings in both engines (also 17,084 decoded mappings in v2), 15,000 v2 sample sources, one clean script/complete init, no persistence callback, 47/47 scalar bindings, no preferred valid keys and `pick=null`; the common keyswitch plan is 24. Current v2 Original paint succeeds. Evidence: shared v2 `a78268fc057b1fb6010775f9b142440816e89f8db4c836baa562359e24cd28ea.json`, v1 `24f4bb264360acc5d02069534d0a0574f688b430f82bd8483ca66933dc57cbb1.json`, with binary/signature validation.
+
+The shared scanner has a **generic declaration-classification mismatch**. V2 `ef88 src/ui/scan.rs:505,529` hard-excludes key type 1 **or 2**, and colour 17; it treats colour 18/19 as positive validity. V1 `tools/kontra-scan/v1-instrumentation.patch:485` likewise excludes numeric 1/2 or symbolic CONTROL/NONE. Public enum IDs come from the respective KSP builtin tables:
+
+| Public KSP value | Native meaning relevant to selection | Current classifier issue |
+|---|---|---|
+| `$NI_KEY_TYPE_DEFAULT` = 0 | Declared normal mapped-key intent | Not used as explicit positive type evidence |
+| `$NI_KEY_TYPE_CONTROL` = 1 | Control/keyswitch intent | Legitimate control exclusion |
+| `$NI_KEY_TYPE_NONE` = 2 | Restore ordinary host behaviour | **Incorrect hard invalidation** |
+| `$KEY_COLOR_DEFAULT` = 16 | Mapped-key appearance | Omitted from positive colour hint |
+| `$KEY_COLOR_INACTIVE` = 17 | Reset visual black/white appearance | **Incorrect hard validity inference** |
+| `$KEY_COLOR_NONE` = 18 | Reset native presentation, which can include a keyswitch | **Incorrect unconditional positive validity** |
+
+NI defines the NONE key type as a reset, rather than a control-only declaration; colour resets concern presentation. A normal-colour reset can restore an internal keyswitch colour. These facts support separating inherited/unknown state from explicit control intent. [NI keyboard commands](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/keyboard-commands).
+
+V1 additionally stores recognised colour/type constants as symbolic `Value::Text` (`calls.rs:1637`, `mod.rs:81`), while its colour-17 exclusion only handles numeric `Value::Int(17)`. V2 accumulates an invalid set across per-slot model snapshots; a prior exclusion remains sticky despite a later property assignment. That order/ownership issue is separate from this single-slot Afflatus example. Prefer an instrument-wide snapshot at the actual observation boundary; reset/appearance values must not be turned into a hard playback mask. UVI RGBA colour conventions are a separate contract, not these KSP enum IDs.
+
+The available inline-source metadata has 17 `set_key_color` and seven `set_key_type` lexical references, but zero `get_key_color`, `get_key_type`, `get_keyrange_min_note` or `get_keyrange_max_note` references in both engines. The getter identifiers are in the generated whitelist; colour/type constants are not, so absent constant counters cannot establish zero use. Completed init and absent persistence rule out an unfinished persistence phase for this witness. The concrete common classification error is a better-supported explanation than a key-read/range-query bug here, but **exact executed kind/colour counts and rejection reasons are not exported yet**, so not every exclusion is causally attributed.
+
+There is a separate host-read fidelity boundary: v2 `eval.rs:1203` returns a per-script stored colour or synthetic default 16, and stored kind or default zero; v1 `calls.rs:1659` uses shared host state but absent colour/kind defaults to zero (colour zero is RED). These defaults differ and are not native mapped-zone queries. They may affect scripts that actually read keys; the Afflatus lexical evidence does not establish that cause. Named keyrange APIs concern display label ranges, not sample coverage.
+
+Sent the shared owner a generic correction/test handoff: reset NONE/inactive appearance with mapped coverage must not exclude every key; explicit CONTROL/keyswitch exclusions must remain; all-CONTROL state must still produce no safe key; NONE colour alone must not certify playability. Requested only fixed kind/colour category counts, presence and exclusion reasons at a documented phase boundary, without authored names/text/values. No shared policy change, library-specific note override, extra collector or native audio-parity claim was made here.
+
 ## Unknowns and concrete measurement plan
 
 - **Native audio fidelity:** no fresh Kontakt reference-host PCM in this run. Record matched NKI/snapshot/key/velocity/CC/transport/UI scenarios; compare onset/release timing, group choice, engine values and audio at 44.1/48/96 kHz. Prior synthetic failures are definitive differences in KONTRA contracts, not quantified PCM error across every exposed instrument.
