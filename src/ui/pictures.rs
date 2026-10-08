@@ -86,7 +86,9 @@ impl Source {
         window: Option<[u32; 4]>,
         canceled: impl Fn() -> bool,
     ) -> Option<Arc<Picture>> {
+        if canceled() {return None;}
         let bytes = self.read(&asset.path)?;
+        if canceled() {return None;}
         let meta = match asset.kind {
             ir::AssetKind::Image(m) => m,
             ir::AssetKind::BitmapFont => ir::ImageMeta::default(),
