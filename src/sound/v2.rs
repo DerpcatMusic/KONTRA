@@ -43,6 +43,8 @@ use super::{
 };
 
 mod persistence;
+#[cfg(test)]
+mod pressed_tests;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
