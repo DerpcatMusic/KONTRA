@@ -428,7 +428,7 @@ fn foot(ui: &mut Ui, cx: &mut Cx) -> El {
     .focusable()
     .a11y(A11y::Button)
     .named("Add to rack")
-    .tip("Drop a preset here to add it, or click to search the browser")
+    .tip("Drop a preset here to add it, or click to search the browser. Multis load the whole rack.")
     .id("rack-drop")
     .shrink(0);
     interactive(el, false)
