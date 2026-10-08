@@ -70,7 +70,7 @@ impl Runtime {
             Event::Control(plan, write) => {
                 self.validate_controls(plan, None, &[write])?;
             }
-            Event::Controller(_, controller, _) if controller >= 128 => {
+            Event::Controller(_, controller, _) if controller >= 130 => {
                 return Err(Error::InvalidInput);
             }
             Event::Articulation(id, _) | Event::Controller(id, ..) => {

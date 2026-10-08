@@ -38,7 +38,10 @@ fn run_in(source: &str, environment: sampler_ksp::Environment) -> Runtime {
         envelope: Envelope::default(),
         playback: Playback::default(),
     };
-    let prepared = Prepared::new(48000, pcm, vec![region], 128).unwrap();
+    let prepared = Prepared::new(48000, pcm, vec![region], 128)
+        .unwrap()
+        .with_engine_parameters(vec![], environment.engine_lookups.clone())
+        .unwrap();
     let note_cells = script.note_cells() * 8;
     let plan = script.bind(prepared).unwrap();
     let behavior_cells = plan.behavior_local_count() * 8;
@@ -80,8 +83,8 @@ fn cell(rt: &Runtime, n: u32) -> i64 {
 
 #[test]
 fn group_names_and_lookups_take_computed_indices_and_names() {
-    let rt = run(
-        "on init declare $a declare $b declare $c declare $d declare $i declare @n end on
+    let rt = run_in(
+        "on init declare $a declare $b declare $c declare $d declare $e declare $i declare @n end on
          on note
            $i := 2
            @n := group_name($i)
@@ -89,16 +92,25 @@ fn group_names_and_lookups_take_computed_indices_and_names() {
            $b := find_group(\"gr\" & (($i - 1) mod 3 + 1))
            $c := find_mod(0, \"ENV_\" & \"AHDSR\")
            $d := find_group(\"missing\")
+           $e := find_mod(0, \"missing\")
          end on",
-        &["gr1", "gr2", "gr3"],
+        sampler_ksp::Environment {
+            groups: ["gr1", "gr2", "gr3"].map(str::to_owned).into(),
+            engine_lookups: vec![sampler_core::EngineLookup {
+                group: 0,
+                owner: -1,
+                target: false,
+                name: "ENV_AHDSR".into(),
+                index: 5,
+            }],
+            ..Default::default()
+        },
     );
     assert_eq!(cell(&rt, 0), 2);
     assert_eq!(cell(&rt, 1), 1);
-    assert_eq!(
-        cell(&rt, 2),
-        i64::from(sampler_core::name_index("ENV_AHDSR"))
-    );
+    assert_eq!(cell(&rt, 2), 5);
     assert_eq!(cell(&rt, 3), -1);
+    assert_eq!(cell(&rt, 4), -1);
 }
 
 #[test]

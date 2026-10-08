@@ -1,0 +1,385 @@
+engine	note	key	velocity	repeat	source	articulation	offset_frames	direction	gain_db	rms_db	ncc	status
+after	0	60	20	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-15.0	forward	1.9	-34.43	0.7680000066757202	identified
+after	0	60	20	0	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	0	60	20	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	0	60	20	0	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.4	-34.43	0.2280000001192093	identified
+native	0	60	20	0	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	21.0	forward	-17.9	-40.03	0.6940000057220459	identified
+native	0	60	20	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.03	0.24699999392032623	identified
+native	0	60	20	0	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-19.9	-40.03	0.24500000476837158	identified
+native	0	60	20	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.6	-40.03	0.26499998569488525	identified
+after	1	60	20	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	1	60	20	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	1	60	20	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	1	60	20	1	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	1	60	20	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	8.0	forward	-3.4	-40.12	0.6650000214576721	identified
+native	1	60	20	1	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.8	-40.12	0.3160000145435333	identified
+native	1	60	20	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.12	0.23499999940395355	identified
+native	1	60	20	1	Areia_16VlnsSstndVFMpDyn3RR1_61.ncw	16VlnsSstndVFMpDyn3RR1			-24.5	-40.12	0.2290000021457672	identified
+after	2	60	20	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	2	60	20	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	2	60	20	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	2	60	20	2	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	2	60	20	2	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	21.0	forward	-17.8	-40.03	0.6890000104904175	identified
+native	2	60	20	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.03	0.2460000067949295	identified
+native	2	60	20	2	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-19.9	-40.03	0.23999999463558197	identified
+native	2	60	20	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.6	-40.03	0.26100000739097595	identified
+after	3	60	20	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	3	60	20	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	3	60	20	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	3	60	20	3	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	3	60	20	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-15.0	forward	-3.3	-40.02	0.6650000214576721	identified
+native	3	60	20	3	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.6	-40.02	0.3230000138282776	identified
+native	3	60	20	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.02	0.23499999940395355	identified
+native	3	60	20	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-40.02	0.2290000021457672	identified
+after	4	60	60	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	4	60	60	0	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	4	60	60	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	4	60	60	0	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	4	60	60	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	15.0	forward	-3.4	-40.01	0.6610000133514404	identified
+native	4	60	60	0	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.4	-40.01	0.3269999921321869	identified
+native	4	60	60	0	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.01	0.23499999940395355	identified
+native	4	60	60	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-40.01	0.2290000021457672	identified
+after	5	60	60	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	5	60	60	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	5	60	60	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	5	60	60	1	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	5	60	60	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	-3.4	-39.98	0.6639999747276306	identified
+native	5	60	60	1	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.8	-39.98	0.3149999976158142	identified
+native	5	60	60	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-39.98	0.23499999940395355	identified
+native	5	60	60	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-39.98	0.2290000021457672	identified
+after	6	60	60	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	6	60	60	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	6	60	60	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	6	60	60	2	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	6	60	60	2	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	-8.0	forward	-17.8	-40.0	0.6850000023841858	identified
+native	6	60	60	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.0	0.2460000067949295	identified
+native	6	60	60	2	Areia_16VlnsMrctShrtSptDyn1RR3_61.ncw	16VlnsMrctShrtSptDyn1RR3			-7.2	-40.0	0.23199999332427979	identified
+native	6	60	60	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.6	-40.0	0.23199999332427979	identified
+after	7	60	60	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	7	60	60	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	7	60	60	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	7	60	60	3	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	7	60	60	3	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	-9.0	forward	-17.8	-39.87	0.6880000233650208	identified
+native	7	60	60	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-39.87	0.2460000067949295	identified
+native	7	60	60	3	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-20.1	-39.87	0.23399999737739563	identified
+native	7	60	60	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.5	-39.87	0.2639999985694885	identified
+after	8	60	100	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	8	60	100	0	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	8	60	100	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	8	60	100	0	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	8	60	100	0	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	11.0	forward	-17.9	-40.01	0.6790000200271606	identified
+native	8	60	100	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.01	0.2460000067949295	identified
+native	8	60	100	0	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-19.9	-40.01	0.23499999940395355	identified
+native	8	60	100	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.5	-40.01	0.26100000739097595	identified
+after	9	60	100	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	9	60	100	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	9	60	100	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	9	60	100	1	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	9	60	100	1	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	19.0	forward	-17.8	-40.01	0.6819999814033508	identified
+native	9	60	100	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.01	0.2460000067949295	identified
+native	9	60	100	1	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-20.0	-40.01	0.23399999737739563	identified
+native	9	60	100	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.5	-40.01	0.2619999945163727	identified
+after	10	60	100	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	10	60	100	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	10	60	100	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	10	60	100	2	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	10	60	100	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-6.0	forward	-3.4	-40.01	0.6660000085830688	identified
+native	10	60	100	2	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.7	-40.01	0.3179999887943268	identified
+native	10	60	100	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.01	0.23499999940395355	identified
+native	10	60	100	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-40.01	0.2290000021457672	identified
+after	11	60	100	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	11	60	100	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	11	60	100	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	11	60	100	3	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	11	60	100	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-17.0	forward	-3.4	-39.86	0.6650000214576721	identified
+native	11	60	100	3	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.5	-39.86	0.3240000009536743	identified
+native	11	60	100	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-39.86	0.23499999940395355	identified
+native	11	60	100	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-39.86	0.2290000021457672	identified
+after	12	60	127	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	12	60	127	0	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	12	60	127	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	12	60	127	0	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	12	60	127	0	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	21.0	forward	-17.8	-40.04	0.6880000233650208	identified
+native	12	60	127	0	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.04	0.24699999392032623	identified
+native	12	60	127	0	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-20.1	-40.04	0.2329999953508377	identified
+native	12	60	127	0	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.5	-40.04	0.26499998569488525	identified
+after	13	60	127	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	13	60	127	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	13	60	127	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	13	60	127	1	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	13	60	127	1	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-23.0	forward	-3.4	-40.02	0.6639999747276306	identified
+native	13	60	127	1	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.4	-40.02	0.328000009059906	identified
+native	13	60	127	1	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.02	0.23499999940395355	identified
+native	13	60	127	1	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-40.02	0.2290000021457672	identified
+after	14	60	127	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	14	60	127	2	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	14	60	127	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	14	60	127	2	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	14	60	127	2	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1	21.0	forward	-17.9	-40.03	0.6840000152587891	identified
+native	14	60	127	2	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-22.7	-40.03	0.24699999392032623	identified
+native	14	60	127	2	Areia_16VlnsSstndVSptDyn2RR1_61.ncw	16VlnsSstndVSptDyn2RR1			-19.8	-40.03	0.23999999463558197	identified
+native	14	60	127	2	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1			-13.7	-40.03	0.2590000033378601	identified
+after	15	60	127	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-13.0	forward	1.9	-34.43	0.7570000290870667	identified
+after	15	60	127	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-14.1	-34.43	0.2590000033378601	identified
+after	15	60	127	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-18.2	-34.43	0.23399999737739563	identified
+after	15	60	127	3	Areia_16VlnsTrmlFMpDyn2RR1_61.ncw	16VlnsTrmlFMpDyn2RR1			-10.5	-34.43	0.2280000001192093	identified
+native	15	60	127	3	Areia_16VlnsSstndVFMDyn2RR1_61.ncw	16VlnsSstndVFMDyn2RR1	-26.0	forward	-3.5	-40.2	0.6589999794960022	identified
+native	15	60	127	3	Areia_16VlnsSstndVFMpDyn2RR1_61.ncw	16VlnsSstndVFMpDyn2RR1			-26.5	-40.2	0.3269999921321869	identified
+native	15	60	127	3	Areia_16VlnsStcctDccDyn1RR2_61.ncw	16VlnsStcctDccDyn1RR2			-20.2	-40.2	0.23499999940395355	identified
+native	15	60	127	3	Areia_16VlnsMrctLngWdDyn3RR1_61.ncw	16VlnsMrctLngWdDyn3RR1			-23.6	-40.2	0.2290000021457672	identified
+after	16	72	20	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.6	-36.8	0.8519999980926514	identified
+after	16	72	20	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.8	-36.8	0.41600000858306885	identified
+after	16	72	20	0	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3310000002384186	identified
+after	16	72	20	0	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.3310000002384186	identified
+native	16	72	20	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-13.0	forward	-3.9	-42.14	0.7390000224113464	identified
+native	16	72	20	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-13.0	forward	-11.2	-42.14	0.4749999940395355	identified
+native	16	72	20	0	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.6	-42.14	0.3779999911785126	identified
+native	16	72	20	0	Areia_16VlnsPrttRlsFrDyn3RR3_73.ncw	16VlnsPrttRlsFrDyn3RR3			-14.2	-42.14	0.3089999854564667	identified
+after	17	72	20	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	17	72	20	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	17	72	20	1	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	17	72	20	1	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	17	72	20	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-2.0	forward	-3.7	-42.11	0.7749999761581421	identified
+native	17	72	20	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.3	-42.11	0.4000000059604645	identified
+native	17	72	20	1	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.0	-42.11	0.3109999895095825	identified
+native	17	72	20	1	Areia_16VlnsMrctShrtFMDyn3RR4_73.ncw	16VlnsMrctShrtFMDyn3RR4			-36.2	-42.11	0.30799999833106995	identified
+after	18	72	20	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	18	72	20	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	18	72	20	2	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	18	72	20	2	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	18	72	20	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	-3.7	-42.2	0.7730000019073486	identified
+native	18	72	20	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.4	-42.2	0.39800000190734863	identified
+native	18	72	20	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	-15.3	-42.2	0.3160000145435333	identified
+native	18	72	20	2	Areia_16VlnsMrctShrtFMDyn3RR4_73.ncw	16VlnsMrctShrtFMDyn3RR4			-36.1	-42.2	0.31299999356269836	identified
+after	19	72	20	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	19	72	20	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	19	72	20	3	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	19	72	20	3	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	19	72	20	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-11.0	forward	-4.0	-42.2	0.7369999885559082	identified
+native	19	72	20	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-11.0	forward	-11.1	-42.2	0.4830000102519989	identified
+native	19	72	20	3	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.6	-42.2	0.3779999911785126	identified
+native	19	72	20	3	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.1	-42.2	0.3089999854564667	identified
+after	20	72	60	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	20	72	60	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	20	72	60	0	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	20	72	60	0	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	20	72	60	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	8.0	forward	-4.0	-42.3	0.7360000014305115	identified
+native	20	72	60	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	8.0	forward	-11.2	-42.3	0.4790000021457672	identified
+native	20	72	60	0	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.7	-42.3	0.37700000405311584	identified
+native	20	72	60	0	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.2	-42.3	0.30799999833106995	identified
+after	21	72	60	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	21	72	60	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	21	72	60	1	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	21	72	60	1	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	21	72	60	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	23.0	forward	-3.7	-42.26	0.7730000019073486	identified
+native	21	72	60	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.4	-42.26	0.39800000190734863	identified
+native	21	72	60	1	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.0	-42.26	0.3109999895095825	identified
+native	21	72	60	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	23.0	forward	-15.5	-42.26	0.3109999895095825	identified
+after	22	72	60	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	22	72	60	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	22	72	60	2	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	22	72	60	2	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	22	72	60	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-15.0	forward	-3.7	-42.14	0.7739999890327454	identified
+native	22	72	60	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.3	-42.14	0.39899998903274536	identified
+native	22	72	60	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-15.0	forward	-15.3	-42.14	0.31700000166893005	identified
+native	22	72	60	2	Areia_16VlnsMrctShrtFMDyn3RR4_73.ncw	16VlnsMrctShrtFMDyn3RR4			-36.1	-42.14	0.31299999356269836	identified
+after	23	72	60	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	23	72	60	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	23	72	60	3	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	23	72	60	3	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	23	72	60	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-8.0	forward	-3.7	-42.25	0.777999997138977	identified
+native	23	72	60	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.3	-42.25	0.4000000059604645	identified
+native	23	72	60	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-8.0	forward	-15.3	-42.25	0.32100000977516174	identified
+native	23	72	60	3	Areia_16VlnsMrctShrtFMDyn3RR4_73.ncw	16VlnsMrctShrtFMDyn3RR4			-36.0	-42.25	0.3140000104904175	identified
+after	24	72	100	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	24	72	100	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	24	72	100	0	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	24	72	100	0	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	24	72	100	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-15.0	forward	-3.7	-42.16	0.7770000100135803	identified
+native	24	72	100	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.4	-42.16	0.39800000190734863	identified
+native	24	72	100	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-15.0	forward	-15.4	-42.16	0.3179999887943268	identified
+native	24	72	100	0	Areia_16VlnsMrctShrtFMDyn3RR4_73.ncw	16VlnsMrctShrtFMDyn3RR4			-36.1	-42.16	0.31200000643730164	identified
+after	25	72	100	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	25	72	100	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	25	72	100	1	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	25	72	100	1	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	25	72	100	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-4.0	-42.32	0.7329999804496765	identified
+native	25	72	100	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-11.1	-42.32	0.4779999852180481	identified
+native	25	72	100	1	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.6	-42.32	0.3779999911785126	identified
+native	25	72	100	1	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.2	-42.32	0.30799999833106995	identified
+after	26	72	100	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	26	72	100	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	26	72	100	2	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	26	72	100	2	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	26	72	100	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-4.0	-42.33	0.7379999756813049	identified
+native	26	72	100	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-11.2	-42.33	0.48100000619888306	identified
+native	26	72	100	2	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.7	-42.33	0.37599998712539673	identified
+native	26	72	100	2	Areia_16VlnsStcctFMDyn3RR2_73.ncw	16VlnsStcctFMDyn3RR2			-18.2	-42.33	0.30799999833106995	identified
+after	27	72	100	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	27	72	100	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	27	72	100	3	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	27	72	100	3	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	27	72	100	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-4.0	-41.03	0.7369999885559082	identified
+native	27	72	100	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-11.1	-41.03	0.47999998927116394	identified
+native	27	72	100	3	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.7	-41.03	0.37700000405311584	identified
+native	27	72	100	3	Areia_16VlnsSpcctFstDccDyn1RR8_73.ncw	16VlnsSpcctFstDccDyn1RR8			-7.1	-41.03	0.328000009059906	identified
+after	28	72	127	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	28	72	127	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	28	72	127	0	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	28	72	127	0	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	28	72	127	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-11.0	forward	-3.7	-41.22	0.7730000019073486	identified
+native	28	72	127	0	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.3	-41.22	0.39899998903274536	identified
+native	28	72	127	0	Areia_16VlnsSpcctFstDccDyn1RR8_73.ncw	16VlnsSpcctFstDccDyn1RR8			-7.1	-41.22	0.328000009059906	identified
+native	28	72	127	0	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-11.0	forward	-15.4	-41.22	0.3140000104904175	identified
+after	29	72	127	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	29	72	127	1	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	29	72	127	1	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	29	72	127	1	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	29	72	127	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	0.0	forward	-4.0	-41.15	0.7369999885559082	identified
+native	29	72	127	1	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	0.0	forward	-11.2	-41.15	0.4740000069141388	identified
+native	29	72	127	1	Areia_16VlnsMrctLngSptDyn3RR4_73.ncw	16VlnsMrctLngSptDyn3RR4			-33.6	-41.15	0.37700000405311584	identified
+native	29	72	127	1	Areia_16VlnsTrmlFrDyn3RR1_73.ncw	16VlnsTrmlFrDyn3RR1			9.1	-41.15	0.3310000002384186	identified
+after	30	72	127	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	30	72	127	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	30	72	127	2	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	30	72	127	2	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	30	72	127	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-3.7	-41.2	0.7739999890327454	identified
+native	30	72	127	2	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.4	-41.2	0.39800000190734863	identified
+native	30	72	127	2	Areia_16VlnsSpcctFstDccDyn1RR8_73.ncw	16VlnsSpcctFstDccDyn1RR8			-7.1	-41.2	0.328000009059906	identified
+native	30	72	127	2	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	15.0	forward	-15.4	-41.2	0.3149999976158142	identified
+after	31	72	127	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	11.0	forward	1.7	-36.8	0.8579999804496765	identified
+after	31	72	127	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-36.9	-36.8	0.41499999165534973	identified
+after	31	72	127	3	Areia_16VlnsStcctFrDyn2RR2_73.ncw	16VlnsStcctFrDyn2RR2			6.5	-36.8	0.3319999873638153	identified
+after	31	72	127	3	Areia_16VlnsMrctShrtFMDyn3RR1_73.ncw	16VlnsMrctShrtFMDyn3RR1			-26.5	-36.8	0.33000001311302185	identified
+native	31	72	127	3	Areia_16VlnsSstndVSptDyn2RR1_73.ncw	16VlnsSstndVSptDyn2RR1	-19.0	forward	-3.7	-41.18	0.7730000019073486	identified
+native	31	72	127	3	Areia_16VlnsMrctLngFMpDyn3RR4_73.ncw	16VlnsMrctLngFMpDyn3RR4			-42.4	-41.18	0.39800000190734863	identified
+native	31	72	127	3	Areia_16VlnsSpcctFstDccDyn1RR8_73.ncw	16VlnsSpcctFstDccDyn1RR8			-7.1	-41.18	0.328000009059906	identified
+native	31	72	127	3	Areia_16VlnsTrmlFrDyn3RR1_73.ncw	16VlnsTrmlFrDyn3RR1			8.6	-41.18	0.3240000009536743	identified
+after	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-10.4	-39.83	0.574999988079071	identified
+native	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-31.6	-39.83	0.5249999761581421	identified
+native	32	84	20	0	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.83	0.5230000019073486	identified
+native	32	84	20	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-16.9	-39.83	0.5049999952316284	identified
+after	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-10.4	-39.85	0.5759999752044678	identified
+native	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-31.6	-39.85	0.5239999890327454	identified
+native	33	84	20	1	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.85	0.5230000019073486	identified
+native	33	84	20	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-16.9	-39.85	0.5040000081062317	identified
+after	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-10.4	-39.59	0.574999988079071	identified
+native	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-31.5	-39.59	0.5270000100135803	identified
+native	34	84	20	2	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.59	0.5230000019073486	identified
+native	34	84	20	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-16.9	-39.59	0.5049999952316284	identified
+after	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-9.7	-39.83	0.6119999885559082	identified
+native	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-30.6	-39.83	0.5490000247955322	identified
+native	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-21.9	-39.83	0.546999990940094	identified
+native	35	84	20	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-16.4	-39.83	0.5260000228881836	identified
+after	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-9.7	-39.83	0.6110000014305115	identified
+native	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-30.5	-39.83	0.5509999990463257	identified
+native	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-21.9	-39.83	0.5479999780654907	identified
+native	36	84	60	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	261.0	forward	-16.4	-39.83	0.5260000228881836	identified
+after	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	194.0	forward	-9.7	-39.82	0.6110000014305115	identified
+native	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	194.0	forward	-30.6	-39.82	0.546999990940094	identified
+native	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	194.0	forward	-21.9	-39.82	0.5479999780654907	identified
+native	37	84	60	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	194.0	forward	-16.4	-39.82	0.5270000100135803	identified
+after	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-9.7	-39.81	0.6119999885559082	identified
+native	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-30.6	-39.81	0.5479999780654907	identified
+native	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-21.9	-39.81	0.5479999780654907	identified
+native	38	84	60	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-16.4	-39.81	0.5270000100135803	identified
+after	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	91.0	forward	-10.4	-39.81	0.574999988079071	identified
+native	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	91.0	forward	-31.6	-39.81	0.5239999890327454	identified
+native	39	84	60	3	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.81	0.5230000019073486	identified
+native	39	84	60	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	91.0	forward	-16.9	-39.81	0.5049999952316284	identified
+after	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-9.7	-39.82	0.6110000014305115	identified
+native	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-30.6	-39.82	0.5490000247955322	identified
+native	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-21.9	-39.82	0.5479999780654907	identified
+native	40	84	100	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	257.0	forward	-16.4	-39.82	0.5260000228881836	identified
+after	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	109.0	forward	-10.4	-39.33	0.574999988079071	identified
+native	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	109.0	forward	-31.6	-39.33	0.5270000100135803	identified
+native	41	84	100	1	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.33	0.5230000019073486	identified
+native	41	84	100	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	109.0	forward	-16.9	-39.33	0.5049999952316284	identified
+after	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-10.4	-39.76	0.5740000009536743	identified
+native	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-31.6	-39.76	0.5230000019073486	identified
+native	42	84	100	2	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.8	-39.76	0.5230000019073486	identified
+native	42	84	100	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	123.0	forward	-16.9	-39.76	0.5059999823570251	identified
+after	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	100.0	forward	-10.4	-39.78	0.5740000009536743	identified
+native	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	100.0	forward	-31.6	-39.78	0.5249999761581421	identified
+native	43	84	100	3	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.78	0.5230000019073486	identified
+native	43	84	100	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	100.0	forward	-16.9	-39.78	0.5059999823570251	identified
+after	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-10.4	-39.83	0.574999988079071	identified
+native	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-31.6	-39.83	0.5230000019073486	identified
+native	44	84	127	0	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.83	0.5239999890327454	identified
+native	44	84	127	0	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	121.0	forward	-16.9	-39.83	0.5049999952316284	identified
+after	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	117.0	forward	-10.4	-39.77	0.5740000009536743	identified
+native	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	117.0	forward	-31.6	-39.77	0.5230000019073486	identified
+native	45	84	127	1	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.8	-39.77	0.5230000019073486	identified
+native	45	84	127	1	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	117.0	forward	-16.9	-39.77	0.5059999823570251	identified
+after	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	189.0	forward	-9.7	-39.8	0.6119999885559082	identified
+native	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	189.0	forward	-30.6	-39.8	0.5479999780654907	identified
+native	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	189.0	forward	-21.9	-39.8	0.546999990940094	identified
+native	46	84	127	2	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	189.0	forward	-16.4	-39.8	0.5270000100135803	identified
+after	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-4.4	-33.29	0.6019999980926514	identified
+after	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-24.4	-33.29	0.5799999833106995	identified
+after	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-15.7	-33.29	0.5799999833106995	identified
+after	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	395.0	forward	-10.7	-33.29	0.5400000214576721	identified
+native	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	106.0	forward	-10.4	-39.86	0.5759999752044678	identified
+native	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	106.0	forward	-31.6	-39.86	0.5249999761581421	identified
+native	47	84	127	3	Areia_16VlnsTrmlFMpDyn3RR1_85.ncw	16VlnsTrmlFMpDyn3RR1			-31.7	-39.86	0.5239999890327454	identified
+native	47	84	127	3	Areia_16VlnsTrmlSptDyn3RR1_85.ncw	16VlnsTrmlSptDyn3RR1	106.0	forward	-16.9	-39.86	0.5049999952316284	identified

@@ -1963,6 +1963,160 @@
       ],
       "validation": "Commit af77fb29 changes src/library.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
       "accepted": true
+    },
+    {
+      "id": "kontakt-complete-versioned-program-public-reader",
+      "summary": "Decode the verified complete Program public record with versioned strings, SoundData and neutral F1/F2 fields",
+      "source_commits": [
+        "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "nis-complete-typed-preset-readers",
+      "summary": "Read versioned NIS preset items and sound header/preset records with their verified payload layouts",
+      "source_commits": [
+        "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-occupied-fx-slot-failure-diagnostics",
+      "summary": "Report failed occupied FX slots while retaining valid siblings and current routing/wet-dry behavior",
+      "source_commits": [
+        "d3f95c9ceaf89dbbd6a78fea0470f7e3218eb70d"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-program-resource-reader-unification",
+      "summary": "Use the verified public Program reader for resource metadata instead of four guessed consecutive words",
+      "source_commits": [
+        "29ad88a727c08994002a0d00ebbb873ce7e6e989"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "live-note-callback-owner-traversal",
+      "summary": "Traverse only live note and callback owners while retaining safe removal and slot reuse",
+      "source_commits": [
+        "ffd858c4665b98e0f446dc359cc44ff80bcca599"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "sound-callback-flush-once-per-host-block",
+      "summary": "Flush completed sound callback outcomes once at host-block end instead of every render fragment",
+      "source_commits": [
+        "ffd858c4665b98e0f446dc359cc44ff80bcca599"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "offline-exact-stream-step-readiness",
+      "summary": "Wait for exact offline render-step sample readiness with a bounded diagnosed failure",
+      "source_commits": [
+        "87b23907a493a34aed63a87111794ca5e5ff427d"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "transient-stream-page-retry-and-storage-reporting",
+      "summary": "Retry protected transient sample pages with backoff, reopen decoders and surface storage failure counters",
+      "source_commits": [
+        "87b23907a493a34aed63a87111794ca5e5ff427d"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "original-default-persisted-view-selection",
+      "summary": "Default to Original and resolve rack, instrument and global view preferences consistently in both selectors",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "incremental-authored-ui-publication",
+      "summary": "Publish sparse changed-script overrides and preserve script, page, mode, values and cached picture identities",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "native-scalar-edit-admission-readback",
+      "summary": "Separate pending native widget edits from authoritative control admission and readback",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "native-widget-source-generation-guards",
+      "summary": "Guard widget submission, scalar readback and effect replay against replaced source generations",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "runtime-ui-alias-identity-and-effects",
+      "summary": "Lower UI aliases to widget identity and apply their existing label, text, movement and property effects",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "authored-view-two-axis-fit-and-exact-zoom",
+      "summary": "Fit authored pages to both available axes and retain exact explicit zoom factors",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "picker-completion-after-worker-close",
+      "summary": "Expose picker completion only after the owned operation releases its open flag",
+      "source_commits": [
+        "f2f1a9791a9bdb3b46e156a2c84e0ab90399f978"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "linux-release-glibc-235-baseline",
+      "summary": "Package Linux on Ubuntu22.04 and reject staged artifacts requiring glibc newer than2.35",
+      "source_commits": [
+        "f954a6cb5d74762c0e680db131a608fc443c592b"
+      ],
+      "validation": "Eight CI unit checks,24 nightly publication scenarios and actionlint pass; real readelf accepts GLIBC2.34 and rejects the installed GLIBC2.39 plugin. Actual packaged KONTRA ABI is enforced by CI; the user local release intentionally uses the host toolchain.",
+      "accepted": true
+    },
+    {
+      "id": "program-change-selector-input-accounting",
+      "summary": "Route MIDI 1 and MIDI 2 Program Change through authored selectors and count unhandled input as ignored",
+      "source_commits": [
+        "27b51c6d6ccdf17a394115737311e7ac0cf1fd14",
+        "76f5469487cb3278de3922a9bb9e588290f9574f"
+      ],
+      "validation": "Integration 67dafc61 root no-run, all three test shards, NI reader15/compat32, thirteen keyswitch tests and App-menu pixel check pass. MIDI1/MIDI2 selectors change selection with ignored_input zero; absent selectors increment ignored_input. Fresh final-scanner quick15 versus frozen f1105599 has zero load/UI/binding/audio regressions across fourteen matched auditions; Afflatus is not auditioned. The keyswitch panel is a feature and adds no second defect count.",
+      "accepted": true
     }
   ]
 }

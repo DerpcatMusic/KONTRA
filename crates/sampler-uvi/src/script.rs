@@ -17,17 +17,22 @@ use std::{
 };
 
 mod ui;
+#[path = "parameters.rs"]
+pub(crate) mod parameters;
+pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
+    fn script_path(&self, _module: &str) -> Option<String> { None }
 }
 
 impl<T: Files> Files for std::rc::Rc<T> {
     fn script(&self, module: &str) -> Option<String> {
         (**self).script(module)
     }
+    fn script_path(&self, module: &str) -> Option<String> { (**self).script_path(module) }
 }
 
 /// A bank's Lua members, by path.
@@ -47,19 +52,20 @@ impl Scripts {
         self.files
             .push((path.to_lowercase().replace('\\', "/"), source));
     }
+    fn member(&self, module: &str) -> Option<&(String, String)> {
+        let wanted = format!("{}.lua", module.to_lowercase().replace('\\', "/"));
+        let tail = format!("/{wanted}");
+        self.files.iter().filter(|(path, _)| *path == wanted || path.ends_with(&tail))
+            .min_by_key(|(path, _)| path.len())
+    }
 }
 
 impl Files for Scripts {
     /// `require 'a/b'` finds the member `.../a/b.lua`; the shortest path wins.
     fn script(&self, module: &str) -> Option<String> {
-        let wanted = format!("{}.lua", module.to_lowercase().replace('\\', "/"));
-        let tail = format!("/{wanted}");
-        self.files
-            .iter()
-            .filter(|(path, _)| *path == wanted || path.ends_with(&tail))
-            .min_by_key(|(path, _)| path.len())
-            .map(|(_, source)| source.clone())
+        self.member(module).map(|(_, source)| source.clone())
     }
+    fn script_path(&self, module: &str) -> Option<String> { self.member(module).map(|(path, _)| path.clone()) }
 }
 
 impl Files for () {
@@ -153,6 +159,8 @@ pub struct Play {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// A typed insert write, normalized by the shared native law.
+    EngineParameter { address: sampler_core::EngineParameterAddress, value: i32 },
     Play(Play),
     Release {
         id: u64,
@@ -173,6 +181,7 @@ pub enum Command {
         what: Change,
         value: f64,
         relative: bool,
+        immediate: bool,
         at_ms: f64,
     },
     /// `fadein`/`fadeout`/`fade`/`fade2` on one voice: its gain from `from`
@@ -184,6 +193,7 @@ pub enum Command {
         to: f64,
         ms: f64,
         kill: bool,
+        layer: u32,
         at_ms: f64,
     },
     /// A MIDI message the script generated, for the host to play into the part.
@@ -204,6 +214,8 @@ pub enum Scope {
     Program,
     /// The 1-based ordinal of the layer in document order.
     Layer(u32),
+    Keygroup(usize),
+    Oscillator(usize),
 }
 
 /// The parameters the runtime follows.
@@ -212,6 +224,7 @@ pub enum Param {
     /// Linear gain.
     Gain,
     Pan,
+    Pitch,
     /// Program voice limit.
     Polyphony,
 }
@@ -239,7 +252,57 @@ pub struct Finding {
     pub feature: String,
     pub value: String,
     pub count: usize,
+    pub setter_type_mismatch: Option<SetterTypes>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all="lowercase")]
+pub enum ParameterType { Int, Float, Bool, String, Nil, Table, Function, Thread, Userdata, Other }
+impl ParameterType {
+    fn of(name:&str)->Self { match name {
+        "int"=>Self::Int,"float"=>Self::Float,"bool"=>Self::Bool,"string"=>Self::String,
+        "nil"=>Self::Nil,"table"=>Self::Table,"function"=>Self::Function,"thread"=>Self::Thread,
+        "userdata"=>Self::Userdata,_=>Self::Other,
+    }}
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct SetterTypes { pub expected:ParameterType, pub actual:ParameterType }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SetterTypeFinding { pub types:SetterTypes, pub count:u64 }
+
+/// Public fault categories; messages remain in the in-memory findings only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum FaultCategory { Lua, UiCallback, Budget }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FaultCounts {
+    pub first: Option<FaultCategory>,
+    #[serde(default)]
+    pub setter_type_mismatches: Vec<SetterTypeFinding>,
+    pub init: BTreeMap<FaultCategory, u64>,
+    pub runtime: BTreeMap<FaultCategory, u64>,
+}
+
+/// Scanner-only diagnostics. Raw messages stay in memory; the scanner sanitizes them.
+#[cfg(feature = "scan")]
+#[derive(Clone, Debug, Default)]
+pub struct ScanFaults {
+    pub init_count: usize,
+    pub init_first: Option<String>,
+    pub runtime_count: usize,
+    pub runtime_first: Option<String>,
+    pub budget_hits: usize,
+    pub native_valid_keys: Vec<u8>,
+    pub native_invalid_keys: Vec<u8>,
+    pub native_key_conflicts: usize,
+}
+
+#[cfg(feature = "scan")]
+static SCAN_LOAD_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+#[cfg(feature = "scan")]
+pub fn scan_load_error() -> Option<String> { SCAN_LOAD_ERROR.lock().unwrap().take() }
+#[cfg(feature = "scan")]
+pub(crate) fn scan_failed_load(error: &str) { *SCAN_LOAD_ERROR.lock().unwrap() = Some(error.to_owned()); }
 
 struct Waiting {
     thread: Thread,
@@ -250,6 +313,13 @@ struct Waiting {
 }
 
 struct Shared {
+    #[cfg(feature = "scan")]
+    scan: RefCell<ScanFaults>,
+    initializing: Cell<bool>,
+    faults: RefCell<FaultCounts>,
+    finding_revision: Cell<u64>,
+    #[cfg(feature="scan")]
+    key_declarations: RefCell<BTreeMap<u8,u8>>,
     now: Cell<f64>,
     ids: Cell<u64>,
     seq: Cell<u64>,
@@ -257,12 +327,13 @@ struct Shared {
     deadline: Cell<Option<Instant>>,
     current: Cell<Option<u64>>,
     commands: RefCell<Vec<Command>>,
-    findings: RefCell<BTreeMap<String, Finding>>,
+    findings: RefCell<BTreeMap<(String,Option<SetterTypes>), Finding>>,
     waiting: RefCell<Vec<Waiting>>,
     deferred: RefCell<Vec<(Thread, MultiValue, Option<u64>)>>,
     params: RefCell<Vec<Vec<(String, String)>>>,
     scopes: RefCell<Vec<Option<Scope>>>,
     nodes: RefCell<Vec<(usize, bool)>>,
+    kinds: RefCell<Vec<String>>,
     /// Globals the scripts assign somewhere: reading one that is still unset
     /// answers nil, as in Lua; only unknown API names answer a stub.
     assigned: RefCell<std::collections::HashSet<String>>,
@@ -276,27 +347,66 @@ struct Shared {
     tempo: Cell<f64>,
     /// When each key went down (ms), if it is down.
     down: RefCell<[Option<f64>; 128]>,
+    held: RefCell<std::collections::BTreeSet<u64>>,
+    voices: RefCell<std::collections::BTreeSet<u64>>,
+    playing: Cell<bool>,
+    beat_anchor: Cell<(f64, f64)>,
     cc: RefCell<[u8; 128]>,
 }
 
 impl Shared {
     fn find(&self, feature: &str, value: &str) {
+        self.finding_revision.set(self.finding_revision.get().saturating_add(1));
+        if matches!(feature,"lua error"|"lua UI callback") {
+            let category = if value.contains("time budget exceeded") { FaultCategory::Budget } else if feature=="lua UI callback" { FaultCategory::UiCallback } else { FaultCategory::Lua };
+            let mut faults = self.faults.borrow_mut();
+            faults.first.get_or_insert(category);
+            let counts = if self.initializing.get() { &mut faults.init } else { &mut faults.runtime };
+            let count = counts.entry(category).or_default();
+            *count = count.saturating_add(1);
+        }
+        #[cfg(feature = "scan")]
+        if matches!(feature,"lua error"|"lua UI callback") {
+            let mut scan = self.scan.borrow_mut();
+            if self.initializing.get() {
+                scan.init_count += 1;
+                scan.init_first.get_or_insert_with(|| value.to_owned());
+            } else {
+                scan.runtime_count += 1;
+                scan.runtime_first.get_or_insert_with(|| value.to_owned());
+            }
+            scan.budget_hits += usize::from(value.contains("time budget exceeded"));
+        }
         let mut findings = self.findings.borrow_mut();
-        match findings.get_mut(feature) {
-            Some(f) => f.count += 1,
+        let key=(feature.to_owned(),None);
+        match findings.get_mut(&key) {
+            Some(f) => f.count = f.count.saturating_add(1),
             None => {
                 if findings.len() < 2000 {
                     findings.insert(
-                        feature.to_owned(),
+                        key,
                         Finding {
                             feature: feature.to_owned(),
                             value: value.to_owned(),
                             count: 1,
+                            setter_type_mismatch: None,
                         },
                     );
                 }
             }
         }
+    }
+
+    fn setter_mismatch(&self,types:SetterTypes) {
+        self.finding_revision.set(self.finding_revision.get().saturating_add(1));
+        let mut findings=self.findings.borrow_mut();
+        let finding=findings.entry(("setter_type_mismatch".into(),Some(types))).or_insert_with(||Finding {
+            feature:"setter_type_mismatch".into(),value:String::new(),count:0,setter_type_mismatch:Some(types),
+        });
+        finding.count=finding.count.saturating_add(1);
+        let mut faults=self.faults.borrow_mut();
+        if let Some(f)=faults.setter_type_mismatches.iter_mut().find(|f|f.types==types) {f.count=f.count.saturating_add(1);}
+        else {faults.setter_type_mismatches.push(SetterTypeFinding{types,count:1});}
     }
 
     /// Start a time budget for the code about to run.
@@ -366,6 +476,7 @@ struct Tree {
     scopes: Vec<Option<Scope>>,
     /// Per element: its XML node and whether it is an insert.
     nodes: Vec<(usize, bool)>,
+    kinds: Vec<String>,
     layers: u32,
 }
 
@@ -384,19 +495,22 @@ fn element(
             .collect(),
     );
     tree.nodes.push((node.id().get_usize(), insert));
+    tree.kinds.push(node.tag_name().name().to_owned());
     tree.scopes.push(match node.tag_name().name() {
         "Program" => Some(Scope::Program),
         "Layer" => {
             tree.layers += 1;
             Some(Scope::Layer(tree.layers))
         }
-        // A keygroup's gain and pan reach the runtime through its layer.
-        "Keygroup" if tree.layers > 0 => Some(Scope::Layer(tree.layers)),
+        "Keygroup" => Some(Scope::Keygroup(node.id().get_usize())),
+        "SamplePlayer" => Some(Scope::Oscillator(node.id().get_usize())),
         _ => None,
     });
     table.raw_set("__id", id)?;
+    table.raw_set("id", id)?;
     table.raw_set("type", node.tag_name().name())?;
     table.raw_set("name", node.attribute("Name").unwrap_or_default())?;
+    table.raw_set("displayName", node.attribute("DisplayName").or_else(|| node.attribute("Name")).unwrap_or_default())?;
     table.raw_set("bypass", node.attribute("Bypass") == Some("1"))?;
     if let Some(parent) = parent {
         table.raw_set("parent", parent.clone())?;
@@ -412,6 +526,8 @@ fn element(
             "Auxs" | "Chains" => "auxs",
             "BusRouters" => "sends",
             "ControlSignalSources" => "modulations",
+            "EventProcessors" => "eventProcessors",
+            "Connections" => "connections",
             _ => continue,
         };
         let list = lua.create_table()?;
@@ -421,6 +537,23 @@ fn element(
         }
         table.raw_set(field, list)?;
     }
+    let children = lua.create_table()?;
+    let synthesis = lua.create_table()?;
+    for field in ["layers", "keygroups", "oscillators", "inserts", "auxs", "sends", "modulations", "eventProcessors", "connections"] {
+        let list = match table.raw_get::<Table>(field) {
+            Ok(list) => list,
+            Err(_) => { let list = lua.create_table()?; table.raw_set(field, list.clone())?; list },
+        };
+        for child in list.sequence_values::<Table>().flatten() {
+            let name: String = child.raw_get("name")?;
+            if !name.is_empty() { children.raw_set(name, child.clone())?; }
+            if matches!(field, "layers" | "keygroups") { synthesis.raw_push(child.clone())?; }
+            children.raw_push(child)?;
+        }
+    }
+    table.raw_set("children", children)?;
+    table.raw_set("synthChildren", synthesis)?;
+    table.raw_set("mods", table.raw_get::<Table>("modulations")?)?;
     Ok(table)
 }
 
@@ -480,6 +613,10 @@ impl ScriptHost {
     /// Run the scripts of the program `xml` (its `ScriptProcessor`s). Fails when
     /// the sandbox cannot be built or a script does not load.
     pub fn new(xml: &str, files: impl Files + 'static, config: Config) -> Result<Self, String> {
+        Self::new_with_ui_state(xml, files, config, None)
+    }
+
+    pub fn new_with_ui_state(xml: &str, files: impl Files + 'static, config: Config, state: Option<&UiState>) -> Result<Self, String> {
         let options = roxmltree::ParsingOptions {
             nodes_limit: 4_000_000,
             ..Default::default()
@@ -487,14 +624,21 @@ impl ScriptHost {
         let doc =
             roxmltree::Document::parse_with_options(xml, options).map_err(|e| e.to_string())?;
         let lua = Lua::new_with(
-            StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE,
+            StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT,
             LuaOptions::new(),
         )
         .map_err(lua_error)?;
         lua.set_memory_limit(config.memory).map_err(lua_error)?;
         let shared = Rc::new(Shared {
+            #[cfg(feature = "scan")]
+            scan: RefCell::new(ScanFaults::default()),
+            initializing: Cell::new(true),
+            faults: RefCell::new(FaultCounts::default()),
+            finding_revision: Cell::new(0),
+            #[cfg(feature="scan")]
+            key_declarations: RefCell::new(BTreeMap::new()),
             now: Cell::new(0.0),
-            ids: Cell::new(0),
+            ids: Cell::new(1 << 32),
             seq: Cell::new(0),
             deadline: Cell::new(Some(Instant::now() + config.load)),
             current: Cell::new(None),
@@ -505,6 +649,7 @@ impl ScriptHost {
             params: RefCell::new(Vec::new()),
             scopes: RefCell::new(Vec::new()),
             nodes: RefCell::new(Vec::new()),
+            kinds: RefCell::new(Vec::new()),
             assigned: RefCell::new(Default::default()),
             called: RefCell::new(Default::default()),
             saved: RefCell::new(BTreeMap::new()),
@@ -512,12 +657,17 @@ impl ScriptHost {
             config,
             tempo: Cell::new(120.0),
             down: RefCell::new([None; 128]),
+            held: RefCell::new(Default::default()),
+            voices: RefCell::new(Default::default()),
+            playing: Cell::new(false),
+            beat_anchor: Cell::new((0., 0.)),
             cc: RefCell::new([0; 128]),
         });
         let host = Self { lua, shared };
         host.install().map_err(lua_error)?;
         host.build_program(&doc).map_err(lua_error)?;
-        host.load_scripts(&doc)?;
+        host.load_scripts(&doc, state)?;
+        host.shared.initializing.set(false);
         Ok(host)
     }
 
@@ -541,7 +691,7 @@ impl ScriptHost {
                 }
             }
         }
-        let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), layers: 0 };
+        let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), kinds: Vec::new(), layers: 0 };
         let root = element(&self.lua, &mut tree, program, None, false)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
@@ -549,13 +699,16 @@ impl ScriptHost {
         tree.params.push(Vec::new());
         tree.scopes.push(None);
         tree.nodes.push((usize::MAX, false));
+        tree.kinds.push("Part".into());
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
         part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
-        root.raw_set("parent", part)?;
+        root.raw_set("parent", part.clone())?;
+        root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
         *self.shared.scopes.borrow_mut() = tree.scopes;
         *self.shared.nodes.borrow_mut() = tree.nodes;
+        *self.shared.kinds.borrow_mut() = tree.kinds;
         self.lua.globals().raw_set("Program", root)
     }
 
@@ -579,11 +732,87 @@ impl ScriptHost {
 
         // Natives the prelude wraps (`__native`) and the engine API (globals).
         let native = lua.create_table()?;
+        for name in ["loadData", "loadSample", "loadImpulse"] {
+            let s = shared.clone();
+            globals.raw_set(name, lua.create_function(move |lua, args: Variadic<Value>| {
+                // Failed resource tasks still complete; do not invent a successful load.
+                s.find(&format!("lua {name} resource task unavailable"), "");
+                if let Some(Value::Function(callback)) = args.iter().find(|v| matches!(v, Value::Function(_))) {
+                    let thread = lua.create_thread(callback.clone())?;
+                    s.deferred.borrow_mut().push((thread, MultiValue::from_vec(vec![Value::Nil]), None));
+                }
+                Ok(())
+            })?)?;
+        }
+        let s=shared.clone();
+        native.set("setterMismatch",lua.create_function(move |_,(expected,actual):(String,String)| {
+            s.setter_mismatch(SetterTypes{expected:ParameterType::of(&expected),actual:ParameterType::of(&actual)});
+            Ok(())
+        })?)?;
+        native.set("resourcePath", lua.create_function(|lua, path: String| {
+            // v1 4bffbb18:src/uvi/host.rs retains empty artwork/font assignments.
+            // They clear a resource; resolving them to a module directory creates a phantom asset.
+            if path.is_empty() || path.starts_with(['/', '$']) { return Ok(path); }
+            for level in 0..32 {
+                let Some(source) = lua.inspect_stack(level, |d| d.source().source.map(|s| s.into_owned())) else { break };
+                if let Some(source) = source {
+                    let source = source.trim_start_matches('@');
+                    if source.ends_with(".lua") && let Some((base, _)) = source.rsplit_once('/') {
+                        return Ok(format!("/{base}/{path}"));
+                    }
+                }
+            }
+            Ok(path)
+        })?)?;
         let s = shared.clone();
         native.set(
             "saved",
             lua.create_function(move |_, name: String| Ok(s.saved.borrow().get(&name).cloned()))?,
         )?;
+        let s = shared.clone();
+        native.set("definitions", lua.create_function(move |lua, id: usize| {
+            let kinds = s.kinds.borrow();
+            let defs = lua.create_table()?;
+            for (i, p) in parameters::definitions(kinds.get(id).map_or("", String::as_str)).iter().enumerate() {
+                let d = lua.create_table()?;
+                d.set("id", i + 1)?;
+                d.set("name", p.name)?;
+                d.set("type", match p.kind {"integer"=>"int", "boolean"=>"bool", kind=>kind})?;
+                d.set("displayName", p.name)?;
+                d.set("description", "")?;
+                d.set("readOnly", false)?;
+                d.set("serialize", true)?;
+                let value = |n| if p.kind == "boolean" {Value::Boolean(n != 0.)} else {Value::Number(n)};
+                d.set("min", value(p.min))?;
+                d.set("max", value(p.max))?;
+                d.set("default", value(p.default))?;
+                d.set("unit", p.unit)?;
+                // Hz controls have a logarithmic UI mapping; stored values remain Hz.
+                d.set("mapper", if p.unit == "Hz" && p.min > 0. {"Exponential"} else {"Linear"})?;
+                defs.raw_set(p.name, d.clone())?;
+                defs.raw_push(d)?;
+            }
+            // The public numeric catalog omits string fields and some graph
+            // nodes. Retain their typed XML identity without fabricating native
+            // bounds or omitted defaults. Provenance distinguishes these facts.
+            if let Some(params) = s.params.borrow().get(id) {
+                for (name,value) in params {
+                    if !defs.raw_get::<Value>(name.as_str())?.is_nil() { continue; }
+                    let d=lua.create_table()?;
+                    d.set("id",defs.raw_len()+1)?;
+                    d.set("name",name.as_str())?;
+                    d.set("displayName",name.as_str())?;
+                    d.set("description","")?;
+                    d.set("readOnly",false)?;
+                    d.set("serialize",true)?;
+                    d.set("type",if value.parse::<f64>().is_ok() {"float"}else{"string"})?;
+                    d.set("provenance","retained-xml")?;
+                    defs.raw_set(name.as_str(),d.clone())?;
+                    defs.raw_push(d)?;
+                }
+            }
+            Ok(defs)
+        })?)?;
         let s = shared.clone();
         native.set(
             "paramNames",
@@ -601,12 +830,21 @@ impl ScriptHost {
         native.set(
             "setParam",
             lua.create_function(move |_, (id, name, value): (usize, String, f64)| {
+                let processor = s.nodes.borrow().get(id).copied()
+                    .filter(|(_, insert)| *insert)
+                    .and_then(|(node, _)| crate::engine_parameters::binding(node, s.kinds.borrow().get(id)?.as_str(), &name));
+                if let Some(binding) = processor {
+                    let Ok(value) = binding.law.normalized_value(value) else { return Ok(false) };
+                    s.command(Command::EngineParameter { address: binding.address, value });
+                    return Ok(true);
+                }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
                     return Ok(false);
                 };
                 let (param, default) = match (scope, name.as_str()) {
                     (_, "Gain") => (Param::Gain, 1.0),
                     (_, "Pan") => (Param::Pan, 0.0),
+                    (Scope::Oscillator(_), "Pitch") => (Param::Pitch, 1.0),
                     (Scope::Program, "Polyphony") => (Param::Polyphony, 16.0),
                     _ => return Ok(false),
                 };
@@ -621,6 +859,11 @@ impl ScriptHost {
                     .and_then(|(_, v)| v.parse().ok())
                     .unwrap_or(default);
                 s.command(Command::Parameter { scope, param, value, authored });
+                let mut params = s.params.borrow_mut();
+                if let Some(params) = params.get_mut(id) {
+                    if let Some((_, v)) = params.iter_mut().find(|(k, _)| *k == name) { *v = value.to_string(); }
+                    else { params.push((name, value.to_string())); }
+                }
                 Ok(true)
             })?,
         )?;
@@ -628,6 +871,8 @@ impl ScriptHost {
         native.set(
             "param",
             lua.create_function(move |lua, (id, name): (usize, String)| {
+                let kinds = s.kinds.borrow();
+                let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str)).iter().find(|p| p.name == name);
                 let found = s
                     .params
                     .borrow()
@@ -635,7 +880,12 @@ impl ScriptHost {
                     .and_then(|p| p.iter().find(|(k, _)| *k == name))
                     .map(|(_, v)| v.clone());
                 Ok(match found {
-                    None => Value::Nil,
+                    None => match definition {
+                        Some(p) if p.kind == "boolean" => Value::Boolean(p.default != 0.),
+                        Some(p) => Value::Number(p.default),
+                        None => Value::Nil,
+                    },
+                    Some(v) if definition.is_some_and(|p| p.kind == "boolean") => Value::Boolean(v == "1" || v == "true"),
                     Some(v) => match v.parse::<f64>() {
                         Ok(n) => Value::Number(n),
                         Err(_) => Value::String(lua.create_string(&v)?),
@@ -675,6 +925,7 @@ impl ScriptHost {
             "compile",
             lua.create_function(move |lua, (source, name): (mlua::LuaString, String)| {
                 s.note_assigned(&source.to_string_lossy());
+                let name = s.files.script_path(&name).unwrap_or(name);
                 match lua
                     .load(source.as_bytes().as_ref())
                     .set_name(name)
@@ -685,12 +936,21 @@ impl ScriptHost {
                 }
             })?,
         )?;
-        globals.raw_set("__native", native)?;
+        #[cfg(feature="scan")]
+        {let s=shared.clone();native.set("scanKey",lua.create_function(move |_,(name,args):(String,Table)|{
+            let Some(note)=args.raw_get::<Value>(1).ok().as_ref().and_then(number).filter(|n|n.is_finite()&&*n>=0.&&*n<=127.&&n.fract()==0.) else{return Ok(())};
+            let mut keys=s.key_declarations.borrow_mut();
+            if name=="resetKeyColour" {keys.remove(&(note as u8));}
+            else if let Ok(Value::String(c))=args.raw_get::<Value>(2) {let c=c.to_string_lossy();let state=if c.eq_ignore_ascii_case("#00FFFFFF"){1}else if c.eq_ignore_ascii_case("#00000000"){2}else{0};
+                keys.entry(note as u8).and_modify(|old|{if *old!=state{*old=3;}}).or_insert(state);}
+            let mut scan=s.scan.borrow_mut();scan.native_valid_keys=keys.iter().filter(|(_,c)|**c==1).map(|(k,_)|*k).collect();scan.native_invalid_keys=keys.iter().filter(|(_,c)|**c==2).map(|(k,_)|*k).collect();scan.native_key_conflicts=keys.values().filter(|c|**c==3).count();Ok(())
+        })?)?;}
+        globals.raw_set("__native", native.clone())?;
         let s = shared.clone();
         globals.raw_set(
             "__report",
             lua.create_function(move |_, (feature, value): (String, String)| {
-                s.find(&format!("lua {feature}"), &value);
+                if feature=="lua error" { s.find(&feature,&value); } else { s.find(&format!("lua {feature}"), &value); }
                 Ok(())
             })?,
         )?;
@@ -706,14 +966,24 @@ impl ScriptHost {
             lua.create_function(move |_, args: Variadic<Value>| {
                 let play = parse_play(&s, &args);
                 let id = play.id;
+                s.voices.borrow_mut().insert(id);
                 s.command(Command::Play(play));
                 Ok(id)
             })?,
         )?;
         let s = shared.clone();
+        native.set("postNote", lua.create_function(move |_, event: Table| {
+            let mut play = parse_play(&s, &[Value::Table(event.clone())]);
+            play.id = field(&event, "id").or_else(|| field(&event, "voiceId")).map_or(play.id, |id| id as u64);
+            s.voices.borrow_mut().insert(play.id);
+            s.command(Command::Play(play.clone()));
+            Ok(play.id)
+        })?)?;
+        let s = shared.clone();
         globals.raw_set(
             "releaseVoice",
             lua.create_function(move |_, id: f64| {
+                if !s.voices.borrow_mut().remove(&(id as u64)) { return Ok(false); }
                 s.command(Command::Release {
                     id: id as u64,
                     at_ms: s.now.get(),
@@ -744,7 +1014,7 @@ impl ScriptHost {
                 let thread = lua.create_thread(f)?;
                 s.deferred
                     .borrow_mut()
-                    .push((thread, args, s.current.get()));
+                    .push((thread, args, None));
                 Ok(())
             })?,
         )?;
@@ -779,7 +1049,10 @@ impl ScriptHost {
         define!("getBarDuration", s, move |_, ()| Ok(beat(&s) * 4.0));
         globals.raw_set("getTimeSignature", lua.create_function(|_, ()| Ok((4, 4)))?)?;
         define!("getSamplingRate", s, move |_, ()| Ok(s.config.rate));
-        define!("getBeatTime", s, move |_, ()| Ok(s.now.get() / beat(&s)));
+        define!("getBeatTime", s, move |_, ()| {
+            let (at, value) = s.beat_anchor.get();
+            Ok(value + if s.playing.get() {(s.now.get() - at) / beat(&s)} else {0.})
+        });
         define!("getRunningBeatTime", s, move |_, ()| Ok(s.now.get() / beat(&s)));
         define!("getNoteDuration", s, move |_, note: f64| {
             let down = s.down.borrow();
@@ -796,7 +1069,7 @@ impl ScriptHost {
             let class = (note as usize) % 12;
             Ok(s.down.borrow().iter().enumerate().any(|(k, d)| k % 12 == class && d.is_some()))
         });
-        define!("isNoteHeld", s, move |_, ()| Ok(s.down.borrow().iter().any(Option::is_some)));
+        define!("isNoteHeld", s, move |_, ()| Ok(s.current.get().is_some_and(|id| s.held.borrow().contains(&id))));
         define!("getCC", s, move |_, cc: f64| {
             Ok(s.cc.borrow().get(cc as usize).copied().unwrap_or(0))
         });
@@ -808,12 +1081,13 @@ impl ScriptHost {
         // Voice manipulation.
         let change = |what: Change, to_value: fn(f64) -> f64| {
             move |s: Rc<Shared>| {
-                move |_: &Lua, (id, value, relative, _): (f64, f64, Option<bool>, Option<bool>)| {
+                move |_: &Lua, (id, value, relative, immediate): (f64, f64, Option<bool>, Option<bool>)| {
                     s.command(Command::Change {
                         id: id as u64,
                         what,
                         value: to_value(value),
                         relative: relative.unwrap_or(false),
+                        immediate: immediate.unwrap_or(false),
                         at_ms: s.now.get(),
                     });
                     Ok(())
@@ -837,13 +1111,14 @@ impl ScriptHost {
             "changeTune",
             lua.create_function(change(Change::Tune, |v| v)(shared.clone()))?,
         )?;
-        define!("fadein", s, move |_, (id, ms, reset): (f64, f64, Option<bool>)| {
+        define!("fadein", s, move |_, (id, ms, reset, layer): (f64, f64, Option<bool>, Option<u32>)| {
             s.command(Command::Fade {
                 id: id as u64,
                 from: reset.unwrap_or(false).then_some(0.0),
                 to: 1.0,
                 ms: ms.max(0.0),
                 kill: false,
+                layer: layer.unwrap_or(0),
                 at_ms: s.now.get(),
             });
             Ok(())
@@ -851,36 +1126,39 @@ impl ScriptHost {
         define!(
             "fadeout",
             s,
-            move |_, (id, ms, kill, reset): (f64, f64, Option<bool>, Option<bool>)| {
+            move |_, (id, ms, kill, reset, layer): (f64, f64, Option<bool>, Option<bool>, Option<u32>)| {
                 s.command(Command::Fade {
                     id: id as u64,
                     from: reset.unwrap_or(false).then_some(1.0),
                     to: 0.0,
                     ms: ms.max(0.0),
                     kill: kill.unwrap_or(false),
+                    layer: layer.unwrap_or(0),
                     at_ms: s.now.get(),
                 });
                 Ok(())
             }
         );
-        define!("fade", s, move |_, (id, to, ms): (f64, f64, f64)| {
+        define!("fade", s, move |_, (id, to, ms, layer): (f64, f64, f64, Option<u32>)| {
             s.command(Command::Fade {
                 id: id as u64,
                 from: None,
                 to,
                 ms: ms.max(0.0),
                 kill: false,
+                layer: layer.unwrap_or(0),
                 at_ms: s.now.get(),
             });
             Ok(())
         });
-        define!("fade2", s, move |_, (id, from, to, ms): (f64, f64, f64, f64)| {
+        define!("fade2", s, move |_, (id, from, to, ms, layer): (f64, f64, f64, f64, Option<u32>)| {
             s.command(Command::Fade {
                 id: id as u64,
                 from: Some(from),
                 to,
                 ms: ms.max(0.0),
                 kill: false,
+                layer: layer.unwrap_or(0),
                 at_ms: s.now.get(),
             });
             Ok(())
@@ -940,8 +1218,9 @@ impl ScriptHost {
         Ok(())
     }
 
-    fn load_scripts(&self, doc: &roxmltree::Document) -> Result<(), String> {
+    fn load_scripts(&self, doc: &roxmltree::Document, state: Option<&UiState>) -> Result<(), String> {
         for script in doc.descendants().filter(|n| n.has_tag_name("script")) {
+            if script.ancestors().any(|n| n.has_tag_name("ScriptProcessor") && n.attribute("Bypass").is_some_and(|v| v == "1" || v == "true")) { continue; }
             let text: String = script.text().unwrap_or_default().to_owned();
             if text.trim().is_empty() {
                 continue;
@@ -957,6 +1236,16 @@ impl ScriptHost {
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
             resume(&self.shared, thread, MultiValue::new(), None);
             self.cycle();
+            // Initial load sees constructor values; explicit restoration below
+            // uses the opposite order and never reruns onInit.
+            if let Some(state) = state {
+                self.restore_ui_custom(state)?;
+            } else if let Some(saved) = script.parent().and_then(|p| p.children().find(|n| n.has_tag_name("state"))) {
+                self.restore_ui_custom(&UiState {
+                    custom: Some(ui::json_state(saved.text().unwrap_or_default())?),
+                    ..Default::default()
+                })?;
+            }
             // Saved widget values and their `changed` callbacks come after the script body
             // and before onInit, which is why scripts test for a restored zero there.
             if let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("__restore") {
@@ -966,6 +1255,7 @@ impl ScriptHost {
                     self.cycle();
                 }
             }
+            if let Some(state) = state { self.restore_ui_values(state)?; }
             self.call("onInit", None);
         }
         Ok(())
@@ -974,12 +1264,8 @@ impl ScriptHost {
     /// Start spawned threads until none remain.
     fn cycle(&self) {
         loop {
-            let next = self.shared.deferred.borrow_mut().pop();
-            // Spawned threads start in spawn order.
-            let Some(first) = next else { break };
-            let mut batch = vec![first];
-            batch.append(&mut self.shared.deferred.borrow_mut());
-            batch.reverse();
+            let batch = std::mem::take(&mut *self.shared.deferred.borrow_mut());
+            if batch.is_empty() { break; }
             for (thread, args, note) in batch {
                 resume(&self.shared, thread, args, note);
             }
@@ -1008,7 +1294,13 @@ impl ScriptHost {
         let Some(f) = handler else {
             return;
         };
-        self.shared.arm(self.shared.config.callback);
+        // onInit is load work, including its spawned callbacks. The realtime
+        // note/UI callback budget must not truncate the authored editor.
+        self.shared.arm(if self.shared.initializing.get() {
+            self.shared.config.load
+        } else {
+            self.shared.config.callback
+        });
         let Ok(thread) = self.lua.create_thread(f) else {
             return;
         };
@@ -1035,6 +1327,8 @@ impl ScriptHost {
 
     /// A note-on the host received, as the script's `onNote(e)`.
     pub fn note_on(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        self.shared.held.borrow_mut().insert(id);
+        self.shared.voices.borrow_mut().insert(id);
         self.shared.down.borrow_mut()[usize::from(key & 127)] = Some(self.shared.now.get());
         let e = self.event(
             1,
@@ -1053,6 +1347,7 @@ impl ScriptHost {
 
     /// A note-off for the note-on `id`: `onRelease(e)`, and wakes `waitForRelease`.
     pub fn note_off(&mut self, id: u64, key: u8, velocity: u8, channel: u8) {
+        self.shared.held.borrow_mut().remove(&id);
         self.shared.down.borrow_mut()[usize::from(key & 127)] = None;
         let woken: Vec<Waiting> = {
             let mut waiting = self.shared.waiting.borrow_mut();
@@ -1107,7 +1402,7 @@ impl ScriptHost {
 
     /// Pitch bend in -1..=1.
     pub fn pitch_bend(&mut self, value: f64, channel: u8) {
-        self.deliver("onPitchBend", 4, &[("value", value), ("channel", f64::from(channel) + 1.0)]);
+        self.deliver("onPitchBend", 4, &[("value", value), ("bend", value), ("channel", f64::from(channel) + 1.0)]);
     }
 
     pub fn after_touch(&mut self, value: u8, channel: u8) {
@@ -1123,11 +1418,15 @@ impl ScriptHost {
     }
 
     pub fn program_change(&mut self, value: u8, channel: u8) {
-        self.deliver("onProgramChange", 7, &[("value", f64::from(value)), ("channel", f64::from(channel) + 1.0)]);
+        self.deliver("onProgramChange", 7, &[("value", f64::from(value)), ("program", f64::from(value)), ("channel", f64::from(channel) + 1.0)]);
     }
 
     /// The host's transport: `onTransport(playing)`.
     pub fn transport(&mut self, playing: bool) {
+        let (at, value) = self.shared.beat_anchor.get();
+        let elapsed = if self.shared.playing.get() {(self.shared.now.get() - at) * self.shared.tempo.get() / 60_000.} else {0.};
+        self.shared.beat_anchor.set((self.shared.now.get(), value + elapsed));
+        self.shared.playing.set(playing);
         let Ok(Value::Function(f)) = self.lua.globals().raw_get::<Value>("onTransport") else {
             return;
         };
@@ -1228,10 +1527,15 @@ impl ScriptHost {
             .min_by(f64::total_cmp)
     }
 
+    pub fn fault_counts(&self) -> FaultCounts { self.shared.faults.borrow().clone() }
+    pub fn finding_revision(&self) -> u64 { self.shared.finding_revision.get() }
+
     /// Everything inert or failed so far.
     pub fn findings(&self) -> Vec<Finding> {
         self.shared.findings.borrow().values().cloned().collect()
     }
+    #[cfg(feature = "scan")]
+    pub fn scan_faults(&self) -> ScanFaults { self.shared.scan.borrow().clone() }
 
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
@@ -1281,11 +1585,7 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
                     .ok()
                     .filter(|v| !v.is_nil())
                     .or_else(|| {
-                        if i < 3 {
-                            t.get::<Value>(i as i64 + 1).ok().filter(|v| !v.is_nil())
-                        } else {
-                            None
-                        }
+                        t.get::<Value>(i as i64 + 1).ok().filter(|v| !v.is_nil())
                     });
             }
         }
@@ -1395,14 +1695,14 @@ mod tests {
     #[test]
     fn wait_for_release_resumes_on_note_off_and_release_is_called() {
         let mut h = host(
-            "function onNote(e) spawn(function() waitForRelease(); releaseVoice(e.id + 100) end) end\n\
+            "function onNote(e) run(function() waitForRelease(); releaseVoice(e.id) end) end\n\
              function onRelease(e) playNote(e.note, 1) end",
         );
         h.note_on(3, 60, 100, 0);
         assert!(h.take_commands().is_empty());
         h.note_off(3, 60, 0, 0);
         let c = h.take_commands();
-        assert!(matches!(&c[0], Command::Release { id: 103, .. }));
+        assert!(matches!(&c[0], Command::Release { id: 3, .. }));
         assert!(matches!(&c[1], Command::Play(p) if p.velocity == 1));
     }
 
@@ -1583,25 +1883,21 @@ mod tests {
     }
 
     #[test]
-    fn unknown_api_and_ui_are_inert_and_reported_once() {
+    fn unknown_globals_are_nil_and_invalid_calls_are_reported() {
         let mut h = host(
             "local p = Panel('main')\n\
              local k = p:Knob('gain', 0.5, 0, 1)\n\
              k.changed = function(self) playNote(61, 100) end\n\
              k:setValue(0.75)\n\
-             Mystery.thing:go(1, 2)\n\
+             assert(Mystery == nil)\n\
              Program.layers[1].keygroups[1].oscillators[2]:setParameter('Gain', 0.5)\n\
              assert(Program.layers[1].keygroups[1].oscillators[1].name == 'o1')\n\
-             assert(k.value == 0.75)",
+             assert(k.value == 0.75)\n\
+             Mystery.thing:go(1, 2)",
         );
         let features: Vec<_> = h.findings().into_iter().map(|f| f.feature).collect();
-        assert!(features.contains(&"lua global Mystery".to_owned()), "{features:?}");
-        assert!(!features.contains(&"lua error".to_owned()), "{features:?}");
-        assert!(
-            features.contains(&"lua setParameter SamplePlayer.Gain".to_owned()),
-            "{features:?}"
-        );
-        assert!(matches!(&h.take_commands()[..], [Command::Play(p)] if p.key == 61));
+        assert!(features.contains(&"lua error".to_owned()), "{features:?}");
+        assert!(h.take_commands().iter().any(|c| matches!(c, Command::Play(p) if p.key == 61)));
     }
 
     #[test]

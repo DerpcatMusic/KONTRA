@@ -1110,14 +1110,17 @@ fn performance_view_controls_and_indexed_properties_reach_the_model() {
     assert!(
         ui.widgets
             .iter()
-            .all(|w| w.name == "$L" || w.control.is_some())
+            .all(|w| w.name == "$L" || w.name == "$Drive" || w.control.is_some())
     );
     assert_eq!(ui.widgets[0].callback, Some(0));
     assert_eq!(
         ui.widgets[2].indexed_properties["$CONTROL_PAR_TEXT"][&1],
         Value::Text("two".into())
     );
-    // `$Drive` was not described by the host: assumed a knob, with a warning.
+    // An unresolved handle stays in script storage, never in the rendered UI.
+    let drive = ui.widgets.iter().find(|w| w.name == "$Drive").unwrap();
+    assert!(drive.control.is_none());
+    assert_eq!(script.ui(&|_| None).unwrap().widgets.len(), 3);
     assert!(
         script
             .warnings()

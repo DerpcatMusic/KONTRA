@@ -100,11 +100,14 @@ impl Cursor {
     /// traversal direction, and the virtual offset of the cursor's window
     /// start, to recover first-use deadlines.
     pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
-        let radius = if self.step == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step) as f64 };
+        if self.loops.is_some() {
+            return None;
+        }
+        let radius = if self.step() == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step()) as f64 };
         let length = (self.end - self.start) as f64;
         let low = self.position as f64 - radius;
         let high =
-            self.position as f64 + self.fraction + f64::from(frames) * self.step + radius + 1.;
+            self.position as f64 + self.fraction + f64::from(frames) * self.step() + radius + 1.;
         if let Some(r) = self.loop_range {
             let fade = match r.shape {
                 crate::LoopShape::Crossfade { frames }
@@ -133,6 +136,9 @@ impl Cursor {
     /// superset of `visit_demand`'s ranges, ignoring envelope ends; `None` for
     /// ping-pong loops and a loop exit within reach.
     pub(crate) fn loop_reach(&self, frames: u32) -> Option<LoopReach> {
+        if self.loops.is_some() {
+            return None;
+        }
         let r = self.loop_range?;
         let fade = match r.shape {
             crate::LoopShape::PingPong => return None,
@@ -140,10 +146,10 @@ impl Cursor {
             crate::LoopShape::Crossfade { frames }
             | crate::LoopShape::EqualPowerCrossfade { frames } => frames as u64,
         };
-        let radius = if self.step == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step) as f64 };
+        let radius = if self.step() == 1. && self.fraction == 0. { 0. } else { crate::resample::Kernel::radius(self.step()) as f64 };
         let lead = self.position as f64 + self.fraction + radius;
         let low = (self.position as f64 - radius).max(0.) as u64;
-        let high = (lead + f64::from(frames) * self.step + 1.).ceil() as u64;
+        let high = (lead + f64::from(frames) * self.step() + 1.).ceil() as u64;
         if self.exit.is_some_and(|exit| high > exit) {
             return None;
         }
@@ -151,7 +157,7 @@ impl Cursor {
         let first = self.first_boundary(r);
         let length = (r.end - r.start) as u64;
         let base = first - length;
-        let when = |v: u64| (((v as f64 - lead) / self.step).floor() - 1.).max(0.) as u32;
+        let when = |v: u64| (((v as f64 - lead) / self.step()).floor() - 1.).max(0.) as u32;
         let mut out: [Option<(Range<u64>, u32)>; 4] = Default::default();
         out[0] = Some((low..high.min(first), when(low)));
         if high > first {
@@ -215,9 +221,16 @@ impl Cursor {
                 Direction::Reverse => view.start = looped.start,
             }
         }
-        let span = ((f64::from(frames) * self.step).ceil() as usize)
-            .saturating_add(2 * crate::resample::Kernel::radius(self.step) as usize + 1);
-        let legs = if self.loop_range.is_some_and(|r| r.shape != crate::LoopShape::PingPong) { 2 } else { 1 };
+        // Native slots can change rate on repeated passes and split the
+        // physical footprint. Eight slots bound both calculations on admission.
+        let (step, legs) = if let Some(loops) = self.loops {
+            let tuning = loops.slots.iter().flatten().fold(1.0f64, |max, slot| max.max(slot.tuning));
+            (self.step * tuning, 2 * loops.slots.iter().flatten().count() + 1)
+        } else {
+            (self.step, if self.loop_range.is_some_and(|r| r.shape != crate::LoopShape::PingPong) { 2 } else { 1 })
+        };
+        let span = ((f64::from(frames) * step).ceil() as usize)
+            .saturating_add(2 * crate::resample::Kernel::radius(step) as usize + 1);
         pages(view).min(legs * (span.div_ceil(PAGE_FRAMES) + 1))
     }
 
@@ -229,7 +242,7 @@ impl Cursor {
             Direction::Reverse => self.end - 1 - index,
         } as f64;
         // One frame early: a deadline may only err towards urgency.
-        (((offset - lead) / self.step).floor() - 1.).max(0.) as u32
+        (((offset - lead) / self.step()).floor() - 1.).max(0.) as u32
     }
 
     pub(crate) fn visit_demand(
@@ -239,14 +252,19 @@ impl Cursor {
         mut accept: impl FnMut(u32, Range<usize>) -> bool,
     ) -> bool {
         let mut covered_end: Option<i128> = None;
+        let mut previous_step = self.step();
         for offset in 0..frames {
             if self.done() || envelope.done() {
                 break;
             }
-            let radius = if self.step == 1. && self.fraction == 0. {
+            if self.step() != previous_step {
+                covered_end = None;
+                previous_step = self.step();
+            }
+            let radius = if self.step() == 1. && self.fraction == 0. {
                 0
             } else {
-                crate::resample::Kernel::radius(self.step)
+                crate::resample::Kernel::radius(self.step())
             };
             let mut primary = None;
             let mut partner = None;
@@ -310,6 +328,63 @@ fn extend(
 mod tests {
     use super::*;
     use crate::{Direction, Envelope, Loop, LoopMode, LoopShape, Playback};
+
+    #[test]
+    fn a_plain_native_loop_slot_keeps_geometric_demand() {
+        let looped = Loop { start: 4096, end: 8192, mode: LoopMode::Continuous,
+            shape: LoopShape::Wrap, passes: None };
+        let cursor = Playback { loop_slots: [Some(crate::LoopSlot { range: looped, tuning: 1. }), None, None, None, None, None, None, None],
+            ..Default::default()
+        }.cursor(32768, 48000, 48000).unwrap();
+        assert!(cursor.linear_reach(64).is_some(), "one untuned slot must retain constant-work demand");
+    }
+
+    #[test]
+    fn native_slot_admission_covers_tuned_repeated_traversals() {
+        let looped = Loop { start: 4096, end: 65536, mode: LoopMode::Continuous,
+            shape: LoopShape::Wrap, passes: None };
+        let mut cursor = Playback { loop_slots: [Some(crate::LoopSlot { range: looped, tuning: 16. }), None, None, None, None, None, None, None],
+            ..Default::default()
+        }.cursor(131072, 48000, 48000).unwrap();
+        for _ in 0..65537 { cursor.advance(); }
+        let mut pages = [false; 32];
+        cursor.visit_demand(4096, EnvelopeState::new(Envelope::default()), |_, range| {
+            for page in range.start / crate::PAGE_FRAMES..=(range.end - 1) / crate::PAGE_FRAMES { pages[page] = true; }
+            true
+        });
+        let actual = pages.into_iter().filter(|&p| p).count();
+        assert!(cursor.reservation_pages(4096) >= actual, "native tuning exceeds reserved pages: {} < {actual}", cursor.reservation_pages(4096));
+    }
+
+    #[test]
+    fn native_slot_admission_covers_serial_shapes_rates_and_exits() {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            for shape in [LoopShape::Wrap, LoopShape::Crossfade { frames: 64 }, LoopShape::PingPong] {
+                for tuning in [0.5, 4., 16.] {
+                    for released in [false, true] {
+                        let slots = std::array::from_fn(|i| Some(crate::LoopSlot {
+                            range: Loop { start: 1024 * (2 + 3 * i), end: 1024 * (3 + 3 * i),
+                                mode: LoopMode::UntilRelease, shape, passes: std::num::NonZeroU32::new(2) },
+                            tuning,
+                        }));
+                        let mut cursor = Playback { direction, loop_slots: slots, ..Default::default() }
+                            .cursor(32768, 48000, 48000).unwrap();
+                        for _ in 0..7000 { cursor.advance(); }
+                        if released { cursor.release(); }
+                        for frames in [1, 64, 256, 4096] {
+                            let mut pages = [false; 8];
+                            cursor.visit_demand(frames, EnvelopeState::new(Envelope::default()), |_, range| {
+                                for page in range.start / crate::PAGE_FRAMES..=(range.end - 1) / crate::PAGE_FRAMES { pages[page] = true; }
+                                true
+                            });
+                            let actual = pages.into_iter().filter(|&p| p).count();
+                            assert!(cursor.reservation_pages(frames) >= actual, "{direction:?} {shape:?} {tuning} {released} {frames}: {} < {actual}", cursor.reservation_pages(frames));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn admission_footprints_cover_every_read_without_walking_the_horizon() {
