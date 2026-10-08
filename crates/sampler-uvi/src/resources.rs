@@ -1,9 +1,16 @@
-//! UI resources remain library-owned and are decoded in memory off audio.
+//! Bank artwork and explicitly requested host fonts are decoded off audio.
 use std::{
     io::Read,
     path::{Path, PathBuf},
 };
 const LIMIT: u64 = 32 << 20;
+
+// This authored host font is not a substitute for any other family or style.
+fn host_font(path: &str) -> Option<Vec<u8>> {
+    path.rsplit(['/', '\\']).next()
+        .filter(|name| name.eq_ignore_ascii_case("Assistant-Regular.ttf"))
+        .map(|_| include_bytes!("../assets/assistant/Assistant-Regular.ttf").to_vec())
+}
 
 /// Message-free failures shared with the UI worker. Absence is `Ok(None)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +76,8 @@ impl Resources {
         #[cfg(feature = "library-access")]
         if let Some(bank) = &self.bank {
             let (bank, program) = bank.as_ref().map_err(|e| *e)?;
-            return bank.ui_resource_result(program, path);
+            // Bank authority, ambiguity and read failures still take precedence.
+            return bank.ui_resource_result(program, path).map(|bytes| bytes.or_else(|| host_font(path)));
         }
         #[cfg(not(feature = "library-access"))]
         if self
@@ -96,10 +104,10 @@ impl Resources {
             Err(_) => Err(ResourceError::Read),
         };
         let Some(root) = canonical(&self.root)? else {
-            return Ok(None);
+            return Ok(host_font(&path));
         };
         let Some(file) = canonical(&root.join(relative))? else {
-            return Ok(None);
+            return Ok(host_font(&path));
         };
         if !file.starts_with(&root) {
             return Err(ResourceError::InvalidPath);
