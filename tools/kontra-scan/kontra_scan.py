@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import time
 
@@ -167,6 +168,9 @@ def extra_columns(r):
     r['note_picked']=json.dumps({str(p.get('program',i)):p.get('pick') for i,p in enumerate(programs)},sort_keys=True,separators=(',',':'))
     r['note_policy']=r.get('note_policy','declared-keys-then-zone-v1')
     r.setdefault('audition_status','unmatched')
+    if r.get('script_phase_observation') == 'disabled-for-product-cache':
+        for key in ['ksp_compile_ok', 'ksp_init_ok', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors']:
+            r[key] = 'unknown'
     return r
 
 
@@ -190,6 +194,31 @@ def probe(engine, item, work, timeout, shots):
     work.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env['KONTRA_SCAN_ACTIVE'] = '1'
+    cache_root = os.environ.get('KONTRA_GATE_PRODUCT_CACHE_ROOT')
+    condition = os.environ.get('KONTRA_GATE_CACHE_CONDITION', 'disabled')
+    cache_stats = None
+    if cache_root:
+        root = Path(cache_root).resolve()
+        if root.parent != Path('/dev/shm') or not root.name.startswith('kontra-gate-cache-'):
+            raise ValueError('gate product cache must be an owned private tmpfs directory')
+        version = os.environ['KONTRA_GATE_VERSION']
+        item_hash = hashlib.sha256(item.encode()).hexdigest()
+        cache = root / version / ('cold' if condition in ['product-warm', 'prime'] else condition) / item_hash
+        marker = cache.parent / (item_hash + '.loaded')
+        if condition == 'product-warm' and not marker.exists():
+            # A resumed run lost its RAM cache. Re-prime through this same collector, not a new engine path.
+            previous = os.environ['KONTRA_GATE_CACHE_CONDITION']
+            try:
+                os.environ['KONTRA_GATE_CACHE_CONDITION'] = 'prime'
+                probe(engine, item, work / 'reprime', timeout, False)
+            finally:
+                os.environ['KONTRA_GATE_CACHE_CONDITION'] = previous
+        if condition in ['cold', 'os-warm'] and cache.exists(): shutil.rmtree(cache)
+        cache.mkdir(parents=True, exist_ok=True)
+        env['KONTRA_GATE_ITEM_CACHE'] = str(cache)
+        if engine.name == 'kontra-scan-v1': env.pop('KONTRA_SCAN_ACTIVE', None)
+        files = [p for p in cache.rglob('*') if p.is_file()]
+        cache_stats = {'condition': condition, 'before_files': len(files), 'before_bytes': sum(p.stat().st_size for p in files), 'writable': True}
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
     reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
@@ -238,6 +267,13 @@ def probe(engine, item, work, timeout, shots):
         r.update(loads='no', plays_note='no')
         r.setdefault('ui', 'error')
         r['reason'] = ('timeout' if timed_out else f'worker exit {child.returncode}') + ' at ' + r.get('stage', 'start')
+    if cache_stats is not None:
+        files = [p for p in cache.rglob('*') if p.is_file()]
+        cache_stats.update(after_files=len(files), after_bytes=sum(p.stat().st_size for p in files))
+        r['product_cache'] = cache_stats
+        marker.touch()
+        if engine.name == 'kontra-scan-v1': r['script_phase_observation'] = 'disabled-for-product-cache'
+    r['rss_measurement'] = {'scope':'isolated-worker-process', 'lifecycle':'spawn-through-exit', 'poll_ms':100, 'kernel_high_water':True, 'external_children_included':False}
     r['peak_rss_mb'] = round(max(rss, r.get('peak_rss_mb', 0)), 2)
     r['process_ms'] = round((time.monotonic() - started) * 1000, 2)
     r.setdefault('load_ms', r['process_ms'])
@@ -297,7 +333,8 @@ def main():
                 reused += 1
                 continue
             remaining = args.budget_seconds - (time.monotonic() - started)
-            if remaining < min(args.timeout_seconds,args.budget_seconds):
+            needed = args.timeout_seconds * (2 if os.environ.get('KONTRA_GATE_CACHE_CONDITION') == 'product-warm' else 1)
+            if remaining < min(needed,args.budget_seconds):
                 break
             r = probe(engine, item, args.out / 'items' / key, min(args.timeout_seconds, args.budget_seconds), args.shots)
             r.update(path=item, library=library(item), revision=revision)
