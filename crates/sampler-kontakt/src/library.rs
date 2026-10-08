@@ -270,6 +270,8 @@ fn translate(
         .filter_map(|(index, b)| {
             let environment =
                 crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            #[cfg(feature="scan")]
+            sampler_ksp::scan::attempt("import-harvest");
             sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
                 .ok()
         })
@@ -286,6 +288,8 @@ fn translate(
         .any(|(index, b)| {
             let environment =
                 crate::load::script_environment(b, index, group_names.clone(), Default::default());
+            #[cfg(feature="scan")]
+            sampler_ksp::scan::attempt("dynamic-rack");
             sampler_ksp::compile_with(
                 &b.source,
                 48_000,
@@ -308,7 +312,13 @@ fn translate(
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program, &out.engine);
+    let mut rack_errors = Vec::new();
+    let racks = crate::effects::program_racks(&program, &out.engine, |at, error| {
+        rack_errors.push((at, error));
+    });
+    for (at, error) in rack_errors {
+        out.unsupported(&at, "effect decoding", error, ir::Reason::Unknown);
+    }
     let routes: Vec<_> = translated
         .iter()
         .flatten()
@@ -619,24 +629,40 @@ impl Translation {
             }),
             None => group.insert_fx(),
         };
-        if let Ok(array) = insert {
-            let mut slots = crate::effects::rack(&array);
-            crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
-            let dynamic = self.dynamic.then_some((index as i32, -1));
-            let c = crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
-            let processors = c.processors;
-            filter_slots = c.filter_slots;
-            for (slot, feature, value, reason) in c.notes {
-                self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
-            }
-            if !processors.is_empty() {
-                self.ir.chains.push(ir::Chain {
-                    scope: ir::Scope::Voice,
-                    pre_amplitude: processors,
-                    post_amplitude: Vec::new(),
+        match insert {
+            Ok(array) => {
+                let mut slots = crate::effects::rack(&array, |slot, error| {
+                    self.unsupported(
+                        &format!("{at} insert slot {slot}"),
+                        "effect decoding",
+                        error,
+                        ir::Reason::Unknown,
+                    )
                 });
-                chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
+                let dynamic = self.dynamic.then_some((index as i32, -1));
+                let c =
+                    crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
+                let processors = c.processors;
+                filter_slots = c.filter_slots;
+                for (slot, feature, value, reason) in c.notes {
+                    self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
+                }
+                if !processors.is_empty() {
+                    self.ir.chains.push(ir::Chain {
+                        scope: ir::Scope::Voice,
+                        pre_amplitude: processors,
+                        post_amplitude: Vec::new(),
+                    });
+                    chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                }
             }
+            Err(error) => self.unsupported(
+                &format!("{at} insert"),
+                "effect decoding",
+                error,
+                ir::Reason::Unknown,
+            ),
         }
         let mut envelope = None;
         let mut flex_release = None;
@@ -1572,6 +1598,62 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
         }
+    }
+
+    #[test]
+    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+        let mut public = 0u32.to_le_bytes().to_vec();
+        for value in [1f32, 0.0, 1.0] {
+            public.extend(value.to_le_bytes());
+        }
+        public.extend([1, 0, 0, 0]);
+        public.extend(0i32.to_le_bytes());
+        public.extend((-1i16).to_le_bytes());
+        public.extend([0; 10]); // Voice group, amplifier split, mute/solo.
+        public.extend(0i32.to_le_bytes());
+        let mut group = Group(ni_file::kontakt::StructuredObject {
+            version: 0x95,
+            private_data: vec![],
+            public_data: public,
+            children: vec![ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: vec![0],
+            }],
+        });
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        let notes: Vec<_> = out
+            .ir
+            .unsupported
+            .iter()
+            .filter(|n| n.feature == "effect decoding")
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].location, "group 0 \"\" insert");
+        assert_eq!(notes[0].reason, ir::Reason::Unknown);
+        assert!(notes[0].value.contains("Unrecognized group private data"));
+        for _ in 0..136 {
+            group.0.private_data.extend(8u32.to_le_bytes());
+            group.0.private_data.extend([0; 8]);
+        }
+        group.0.private_data.extend([0; 24]);
+        group.0.private_data.extend([0, 0xff, 0xff]);
+        let raw = group.0.private_data.clone();
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        assert!(
+            out.ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "effect decoding"
+                    && n.location == "group 0 \"\" insert"
+                    && n.value.contains("ffff"))
+        );
+        assert_eq!(group.0.private_data, raw);
+        group.0.public_data[34] = 1; // Muted groups do not enter FX translation.
+        let mut muted = translation();
+        assert!(muted.group(0, &group).unwrap().is_none());
+        assert!(muted.ir.unsupported.is_empty());
     }
 
     fn target(param: &str, intensity: f32) -> ModTarget {

@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
+          - {os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, name: linux-x86_64}
           - {os: windows-2025, target: x86_64-pc-windows-msvc, name: windows-x86_64}
           - {os: macos-15, target: aarch64-apple-darwin, name: macos-arm64}
           - {os: macos-15-intel, target: x86_64-apple-darwin, name: macos-x86_64}
@@ -49,6 +49,9 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
       - name: Nightly version
         shell: bash
         run: |
@@ -74,7 +77,7 @@ jobs:
             libasound2-dev libjack-jackd2-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: nightly-${{ matrix.target }}-release
+          key: nightly-${{ matrix.os }}-${{ matrix.target }}-release
       - name: Install cargo-moose
         shell: bash
         run: cargo install --locked --git https://github.com/Matari-Audio/moose --rev "$MOOSE_REV" cargo-moose
@@ -135,6 +138,11 @@ jobs:
           PYAPP
           fi
           echo "STAGE=$stage" >> "$GITHUB_ENV"
+      - name: Verify Linux glibc baseline
+        if: runner.os == 'Linux'
+        run: |
+          python3 .github/scripts/check_glibc.py "$STAGE/KONTRA.clap" \
+            "$STAGE/KONTRA.vst3/Contents/x86_64-linux/KONTRA.so" "$STAGE/kontakto-standalone"
       - name: Normalize macOS bundle versions
         if: runner.os == 'macOS'
         run: |
