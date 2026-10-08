@@ -680,6 +680,27 @@ pub fn compile_with(
             }
         }
     }
+    // Group volume, pan and tune `on init` wrote reach the runtime layers.
+    let mut start: Vec<_> = init
+        .engine
+        .iter()
+        .filter(|(k, _)| k[2] == -1 && k[3] == -1 && k[1] >= -1)
+        .filter_map(|(k, &v)| {
+            let target = match eval::symbol_name(&hir, k[0])?.trim_start_matches('$') {
+                "ENGINE_PAR_VOLUME" => sampler_core::ModTarget::Decibels,
+                "ENGINE_PAR_PAN" => sampler_core::ModTarget::Pan,
+                "ENGINE_PAR_TUNE" => sampler_core::ModTarget::Pitch,
+                _ => return None,
+            };
+            Some((target, k[1], v))
+        })
+        .collect();
+    start.sort_by_key(|&(t, g, _)| (g, t as u8));
+    if !start.is_empty() {
+        let program = unit.engine_start(&start).map_err(|f| f.locate(source))?;
+        starts.push(programs.len());
+        programs.push(program);
+    }
     for (ui, control) in &mut host {
         control.callback = entries
             .iter()
