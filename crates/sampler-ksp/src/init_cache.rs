@@ -311,6 +311,7 @@ pub fn restore_initialized(
     if source.len() > limits.source_bytes {
         return Err(error("source byte budget exceeded"));
     }
+    let frontend_begin = std::time::Instant::now();
     let mut syms = crate::lexer::Interner::default();
     let mut toks = crate::lexer::lex(source, &mut syms).map_err(|f| f.locate(source))?;
     let conditions = crate::lexer::preprocess(&mut toks, &syms, &Default::default())
@@ -326,6 +327,10 @@ pub fn restore_initialized(
         &cached.performance_view.controls,
     )
     .map_err(|f| f.locate(source))?;
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!("AUDIT {{\"stage\":\"ksp_cache_frontend\",\"ms\":{}}}", frontend_begin.elapsed().as_secs_f64() * 1000.);
+    }
+    let restore_begin = std::time::Instant::now();
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
@@ -361,6 +366,9 @@ pub fn restore_initialized(
     .deserialize(&mut d)
     .map_err(|_| error("invalid cached native state"))?;
     d.end().map_err(|_| error("trailing cached state"))?;
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!("AUDIT {{\"stage\":\"ksp_cache_native_restore\",\"ms\":{}}}", restore_begin.elapsed().as_secs_f64() * 1000.);
+    }
     for (start, end, builtin, message) in cached.warnings {
         if start > end || end as usize > source.len() {
             return Err(error("invalid cached warning span"));
