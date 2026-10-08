@@ -276,6 +276,26 @@ The three normal baselines preserve integer/polyphonic state, aliased ignore_eve
 | Integrated `88fdfd6b` | Numeric array compressed tails repeat their last decoded value | Already present; passing follow-up and existing string/array tests. |
 | Integrated `30953f9c` | Adds event-source host/script query and group routing surfaces | Does not preserve creator slot or fix current-event group writes. Retest actual contracts instead of trusting the commit title. |
 
+## Shared scanner production follow-up
+
+After the shared scanner became available, this audit consumed its canonical v2 Conflux result and ran the matching **shared v1 binary** for frozen-list row 0. No further independent corpus collector was launched. Both digests match the shared README: v1 `4ab053cde8eb1197591cc3696ef38e99709a6ac52174c56fccc24f5596129caf`, v2 `1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`; source branch `tools/kontra-scan@54f7ea57`, pinned to the same v1/v2 baselines as this report.
+
+| Conflux.nki production observation | Shared v1 | Shared v2 |
+|---|---:|---:|
+| Load admitted | yes | yes |
+| Mapped-note audition | audible | audible |
+| Original UI | missing-images | missing-images |
+| Missing requested images | 1 | 1 |
+| Visible interactive bindings | 78/78 | 107/113 |
+| Load wall time | 1,786.14 ms | 18,941.86 ms |
+| Worker peak RSS | 69.29 MB | 229.71 MB |
+
+The UI and binding populations differ between renderers; 78 versus 113 is not a count of identical controls. These are single-instrument observations at different moments, not corpus rates or a controlled repeated benchmark. The README defines v1 load time as initial streaming-bank construction excluding UI rendering; v2 uses the production streamed loader and includes asset metadata resolution. Audible output establishes that this selected audition produces audio, not that KSP callbacks/engine parameters match Kontakt.
+
+The canonical v2 JSON also records ignored engine-display queries (441 ordinary / 474 extended), event-status, menu/control string getters, event enumeration and other KSP warnings. Its successful production load therefore confirms the main distinction in this report: admission/audio can succeed while substantial script semantics remain incomplete.
+
+Evidence: `~/.cache/kontra-scan/results/v2/results.tsv` and its digest-keyed JSON cache; own shared-v1 output `~/.cache/kontakto-audit-ksp/shared-scanner/v1/{results.tsv,cache/}`; `shared-v1.log`. At inspection the canonical v2 TSV had **one row** and the full sweep was still in progress. Requested additions through the coordinator: active/cleanly compiled script slots, init completion, load-time fault records, and separate init/persistence callback outcomes. Until those arrive, the shared scanner cannot supply a fresh whole-corpus KSP compile/init rate.
+
 ## Unknowns and concrete measurement plan
 
 - **Native audio fidelity:** no fresh Kontakt reference-host PCM in this run. Record matched NKI/snapshot/key/velocity/CC/transport/UI scenarios; compare onset/release timing, group choice, engine values and audio at 44.1/48/96 kHz. Prior synthetic failures are definitive differences in KONTRA contracts, not quantified PCM error across every exposed instrument.
@@ -295,7 +315,12 @@ bash tools/audit-ksp/prepare-v1.sh
 ~/.cache/kontakto-heavy cargo build --profile ci --locked \
   --no-default-features --features library-access --example ksp_audit
 /mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-ksp/ci/examples/ksp_audit --check
-KSP_AUDIT_RESOURCES=1 python3 tools/audit-ksp/run.py
+# Historical KSP corpus measurement: tools/audit-ksp/run.py (already completed).
+# Further corpus work uses the shared scanner, with KSP columns requested
+# through the coordinator; do not launch another independent collector.
+~/.cache/kontakto-heavy ~/.cache/kontra-scan/bin/kontra-scan-v1 \
+  --list ~/.cache/kontra-scan/kontakt-items.tsv --start 0 --count 1 \
+  --out ~/.cache/kontakto-audit-ksp/shared-scanner/v1
 python3 tools/audit-ksp/summarize.py > ~/.cache/kontakto-audit-ksp/summary.json
 ~/.cache/kontakto-heavy cargo test --locked -p sampler-ksp
 # Known failures are deliberately ignored in normal CI; run to measure them:
@@ -307,4 +332,4 @@ python3 tools/audit-ksp/summarize.py > ~/.cache/kontakto-audit-ksp/summary.json
 
 The raw source cache referenced by the old audit no longer exists. Do not regenerate it with `dump_scripts`; this probe reads directly into memory. Shards have an outer 290-second timeout and release the heavy slot between calls; results live only under `~/.cache/kontakto-audit-ksp`. The resource-aware JSON shards retain only metadata, and `isolated-shards/` retains the earlier resource-free measurement. The runner resumes completed shards; use a separate clean cache generation when changing probe/context rather than silently mixing versions. No server is started. Checks which intentionally demonstrate contract failures must not be reported as passing compatibility tests.
 
-Fresh verification logs are in the private audit cache: `ksp-tests.log` (123 passed / 0 failed / 43 intentionally ignored), `contracts.log` (40 expected failures), `followup-failures.log` (3 expected failures), `v1-contracts.jsonl`, `resources-shards.log`, `nkm-groups.jsonl`, `fault-kinds.jsonl`, `probe-selfcheck.log`, and `no-run-final.log`. The opt-in failure suites are evidence and remain ignored in ordinary CI. The report's conclusions do not depend on a full-instrument scanner completing; its separate load/play/UI rates are outside this specialized frontend probe.
+Fresh verification logs are in the private audit cache: `ksp-tests.log` (123 passed / 0 failed / 43 intentionally ignored), `contracts.log` (40 expected failures), `followup-failures.log` (3 expected failures), `v1-contracts.jsonl`, `resources-shards.log`, `nkm-groups.jsonl`, `fault-kinds.jsonl`, `probe-selfcheck.log`, and `no-run-final.log`. The opt-in failure suites are evidence and remain ignored in ordinary CI. The shared scanner supplies separate production load/play/UI observations; they do not replace callback-level KSP measurements. Future corpus validation uses its frozen lists and resumable outputs.
