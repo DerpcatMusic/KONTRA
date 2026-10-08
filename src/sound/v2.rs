@@ -845,7 +845,10 @@ impl Core for V2Core {
     fn problems(&self, part: usize) -> RuntimeProblems {
         let Some(Some(p)) = self.parts.get(part) else { return RuntimeProblems::default() };
         let stats = p.runtime.stats();
+        let (lua_faults,lua_budgets) = p.script.as_ref().map_or((0,0), |s|s.ui().runtime_faults());
         RuntimeProblems {
+            lua_faults,
+            script_overruns: p.problems.script_overruns.saturating_add(lua_budgets),
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
@@ -1179,6 +1182,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let rate = request.sample_rate as u32;
     let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
+    if let Some(a) = &attached { report.uvi_faults = a.driver.ui().fault_counts(); }
     let tree = nest(&mut t.instrument);
     let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
