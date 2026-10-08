@@ -762,15 +762,35 @@ impl Lowering<'_> {
                     let processor = listed.get(index).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
-                    let mut start = 0;
-                    for p in &listed[..index] {
-                        start += self.processors(&owner, **p)?.len();
-                    }
-                    let end = start + self.processors(&owner, **processor)?.len();
                     let native_chain = plan.region_chain(zone_index).ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
-                    processor_targets = plan.voice_chains[native_chain].filter_indices(start..end);
+                    let native = &plan.voice_chains[native_chain];
+                    let pre_count = authored.pre_amplitude.len();
+                    let (before, authored_side, native_start, native_len) = if index < pre_count {
+                        (
+                            &listed[..index],
+                            &listed[..pre_count],
+                            0,
+                            native.pre().len(),
+                        )
+                    } else {
+                        (
+                            &listed[pre_count..index],
+                            &listed[pre_count..],
+                            native.pre().len(),
+                            native.post().len(),
+                        )
+                    };
+                    let mut start = native_start + native_len;
+                    for p in authored_side {
+                        start -= self.processors(&owner, **p)?.len();
+                    }
+                    for p in before {
+                        start += self.processors(&owner, **p)?.len();
+                    }
+                    let end = start + self.processors(&owner, **processor)?.len();
+                    processor_targets = native.filter_indices(start..end);
                     let first = *processor_targets.first().ok_or_else(|| {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;

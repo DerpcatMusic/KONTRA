@@ -1035,6 +1035,11 @@ fn processor_modulation_keeps_filter_identity_in_multiple_chains_and_cascades() 
                 velocity: ir::VelocityResponse::None,
                 pitch: ir::KeyTracking::Fixed,
                 chain: Some(ir::ChainRef(0)),
+                gain: ir::Gain::Decibels(6.0),
+                pan: ir::Pan {
+                    position: 0.25,
+                    law: ir::PanLaw::Balance,
+                },
                 routes: if routed {
                     vec![ir::RouteRef(0)]
                 } else {
