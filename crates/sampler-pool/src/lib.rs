@@ -13,9 +13,11 @@
 
 mod claim;
 mod pool;
+mod ring;
 
 pub use claim::{Claim, Claims, Disjoint, Slab};
 pub use pool::Pool;
+pub use ring::{RingConsumer, RingError, RingProducer, RingRead, STREAM_RING_FRAMES, stream_rings};
 
 #[cfg(test)]
 mod tests {
