@@ -945,9 +945,11 @@ pub(super) fn process<const TRACE: bool>(
             }
             PreparedProcessor::ControlGain(lane) => {
                 let ramp = parameters[*lane];
+                if TRACE { applied = [0.; 2]; }
                 let [left, right] = block;
                 for (i, (l, r)) in left[..len].iter_mut().zip(&mut right[..len]).enumerate() {
                     let gain = ramp.value(at + i as u64);
+                    if TRACE { for mean in &mut applied { *mean += gain / len.max(1) as f64; } }
                     *l *= gain;
                     *r *= gain;
                 }
@@ -968,7 +970,7 @@ pub(super) fn process<const TRACE: bool>(
             }
         }
         if TRACE { if let Some(t) = trace.as_mut() {
-            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::Mix { .. } | PreparedProcessor::Branch { .. }) {
+            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::ControlGain(_) | PreparedProcessor::Mix { .. } | PreparedProcessor::Branch { .. }) {
                 for c in 0..2 {
                     let a: f64 = input[c][..len].iter().map(|v| v*v).sum();
                     let b: f64 = block[c][..len].iter().map(|v| v*v).sum();

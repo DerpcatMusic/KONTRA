@@ -29,6 +29,7 @@ pub struct TraceNode {
     pub group: Option<u32>,
     pub bus: Option<usize>,
     pub latency_samples: u32,
+    pub gain_measurement: &'static str,
     pub parameters: Vec<TraceParameter>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -85,6 +86,7 @@ pub struct TraceIdentity {
     pub group: Option<u32>,
     pub layer: Option<usize>,
     pub external_port: Option<usize>,
+    pub output_channels: Option<u8>,
     pub routed_to: Option<usize>,
     pub cc1: u8,
     pub cc7: u8,
@@ -509,6 +511,20 @@ impl TraceGraph {
             graph.edge(graph.host[1 + port], id, "host_master");
         }
 
+        let aux = graph.node("host_aux_send", "send_gain", None, None, None, vec![], 0);
+        graph.host.push(aux);
+        graph.edge(part, aux, "aux_send");
+        for port in 0..HOST_PORTS {
+            graph.edge(aux, graph.host[1 + port], "possible_host_route");
+        }
+        for port in 0..HOST_PORTS {
+            let output = graph.node("host_output", "physical_channel_sum", None, None, Some(port), vec![], 0);
+            graph.host.push(output);
+            for rack in 0..HOST_PORTS {
+                graph.edge(graph.host[1 + HOST_PORTS + rack], output, "possible_physical_route");
+            }
+        }
+
         for &id in &graph.host {
             graph.nodes[id].parameters = vec![
                 TraceParameter::constant("left_gain", 1.),
@@ -537,6 +553,7 @@ impl TraceGraph {
             bus,
             parameters,
             latency_samples: latency,
+            gain_measurement: "scalar_multiplier",
         });
         id
     }
@@ -838,7 +855,13 @@ impl TraceGraph {
                 0,
             ),
         };
-        self.node(kind, name, zone, group, bus, parameters, latency)
+        let id = self.node(kind, name, zone, group, bus, parameters, latency);
+        self.nodes[id].gain_measurement = match stage {
+            PreparedProcessor::Gain(_) | PreparedProcessor::ControlGain(_) | PreparedProcessor::Branch { .. } => "scalar_multiplier",
+            PreparedProcessor::Mix { .. } => "mix_coefficients",
+            _ => "effective_energy_ratio",
+        };
+        id
     }
 }
 
@@ -846,6 +869,8 @@ impl TraceGraph {
 #[derive(Clone, Copy)]
 pub enum HostStage {
     PartFader,
+    AuxSend,
+    Output(usize, u8),
     RackBus(usize),
     Master(usize),
 }
@@ -941,6 +966,8 @@ impl crate::Runtime {
         };
         let id = match stage {
             HostStage::PartFader => trace.graph.host[0],
+            HostStage::AuxSend => trace.graph.host[1 + 2 * HOST_PORTS],
+            HostStage::Output(n, _) if n < HOST_PORTS => trace.graph.host[2 + 2 * HOST_PORTS + n],
             HostStage::RackBus(n) if n < HOST_PORTS => trace.graph.host[1 + n],
             HostStage::Master(n) if n < HOST_PORTS => trace.graph.host[1 + HOST_PORTS + n],
             _ => return,
@@ -968,11 +995,13 @@ impl crate::Runtime {
             enabled,
             TraceIdentity {
                 external_port: Some(port),
+                output_channels: match stage {HostStage::Output(_, channels) => Some(channels), _ => None},
                 routed_to: match stage {
-                    HostStage::PartFader if port < HOST_PORTS => Some(trace.graph.host[1 + port]),
+                    HostStage::PartFader | HostStage::AuxSend if port < HOST_PORTS => Some(trace.graph.host[1 + port]),
                     HostStage::RackBus(p) if p < HOST_PORTS => {
                         Some(trace.graph.host[1 + HOST_PORTS + p])
                     }
+                    HostStage::Master(_) if port < HOST_PORTS => Some(trace.graph.host[2 + 2 * HOST_PORTS + port]),
                     _ => None,
                 },
                 ..Default::default()
