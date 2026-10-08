@@ -114,7 +114,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Arc<Image> {
 }
 
 fn picture(frames: Vec<Arc<Image>>) -> Arc<Picture> {
-    Arc::new(Picture { frames })
+    Arc::new(Picture::new(frames))
 }
 
 /// A wallpaper, a background panel picture, a 64-frame knob strip and a
@@ -480,7 +480,7 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     let tick = |ui: &mut Ui, face: &ir::Interface, values: &mut ir_view::Values,
                 host: &mut sampler_uvi::script::ScriptHost, input| {
         let before = values.clone();
-        let root = ir_view::view(ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., values);
+        let root = ir_view::view(ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., values);
         ui.frame(root, Some(Size::new(200.,100.)), input, 1./60.).unwrap();
         for (&id,&value) in values.iter() {
             if before.get(&id).copied().unwrap_or(0.) != value { host.set_control(id,value).unwrap(); }

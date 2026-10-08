@@ -145,6 +145,7 @@ fn render(
                 for _ in 0..2 {
                     let el = ir_view::view(
                         &mut ui,
+                        "scan-",
                         &face,
                         ir::PageRef(p),
                         &assets,

@@ -1839,7 +1839,7 @@ mod tests {
                       set_knob_label($k, \"changed\")\nend on\n";
         let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
         let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
-        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None, ..Default::default() };
         let before = ui.interfaces();
         assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
         let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
