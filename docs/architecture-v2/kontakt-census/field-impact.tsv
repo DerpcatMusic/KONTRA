@@ -1,4 +1,5 @@
 structure	version	field	files	nonbaseline_files	records	status	owner	consequence
+Kontakt:0x03	0x73	extension	3	0	3	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x03	0x73	master_tempo	3	3	3	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x03	0x73	master_tune	3	0	3	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x03	0x73	master_volume	3	0	3	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
@@ -6,6 +7,7 @@ Kontakt:0x03	0x73	name	3	3	3	decoded-unused	gpt-format-gaps	readable value; see 
 Kontakt:0x03	0x73	private	3	3	3	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x03	0x73	public	3	3	3	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x03	0x73	structure	3	3	3	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x03	0x76	extension	50	0	50	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x03	0x76	master_tempo	50	50	50	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x03	0x76	master_tune	50	0	50	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x03	0x76	master_volume	50	0	50	decoded-unused	gpt-format-gaps	readable value; see family doc for runtime admission/unsupported consequence
@@ -156,9 +158,11 @@ Kontakt:0x25	0x50	private	1736	1736	2072739	raw/unknown	gpt-format-fxmod	bounded
 Kontakt:0x25	0x50	public	1736	0	2072739	raw/unknown	gpt-format-fxmod	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x25	0x50	structure	1736	1736	2072739	raw/unknown	gpt-format-fxmod	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xa8	cat_icon_idx	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xa8	container_reference	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	default_key_switch	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	dfd_channel_preload_size	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	fingerprint	3	0	3	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xa8	full_path_reference	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	group_solo	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	high_key	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	high_velocity	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -177,16 +181,21 @@ Kontakt:0x28	0xa8	num_bytes_samples_total	3	3	3	decoded-unused	gpt-format-object
 Kontakt:0x28	0xa8	pan	3	2	3	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xa8	private	3	3	3	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xa8	public	3	3	3	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xa8	public_extension	3	3	3	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xa8	resource_container_filename	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xa8	snapshot_directory_reference	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xa8	structure	3	3	3	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xa8	transpose	3	0	3	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xa8	tune	3	0	3	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xa8	volume	3	3	3	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xa8	wallpaper_filename	3	0	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xa8	wallpaper_reference	3	3	3	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	cat_icon_idx	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xab	container_reference	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	default_key_switch	8	6	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	dfd_channel_preload_size	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	fingerprint	8	0	8	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xab	full_path_reference	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	group_solo	8	0	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	high_key	8	0	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	high_velocity	8	0	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -206,16 +215,21 @@ Kontakt:0x28	0xab	pan	8	0	8	decoded+used	gpt-format-objects	used by baseline tra
 Kontakt:0x28	0xab	private	8	8	8	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xab	private[4096..]	1	1	1	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xab	public	8	8	8	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xab	public_extension	8	8	8	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xab	resource_container_filename	8	0	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xab	snapshot_directory_reference	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xab	structure	8	8	8	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xab	transpose	8	0	8	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xab	tune	8	0	8	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xab	volume	8	8	8	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xab	wallpaper_filename	8	0	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xab	wallpaper_reference	8	8	8	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	cat_icon_idx	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xae	container_reference	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	default_key_switch	729	8	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	dfd_channel_preload_size	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	fingerprint	729	0	729	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xae	full_path_reference	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	group_solo	729	0	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	high_key	729	0	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	high_velocity	729	0	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -234,16 +248,21 @@ Kontakt:0x28	0xae	num_bytes_samples_total	729	729	729	decoded-unused	gpt-format-
 Kontakt:0x28	0xae	pan	729	0	729	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xae	private	729	729	729	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xae	public	729	729	729	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xae	public_extension	729	729	729	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xae	resource_container_filename	729	0	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xae	snapshot_directory_reference	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xae	structure	729	729	729	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xae	transpose	729	0	729	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xae	tune	729	0	729	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xae	volume	729	594	729	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xae	wallpaper_filename	729	0	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xae	wallpaper_reference	729	729	729	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	cat_icon_idx	42	42	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb1	container_reference	39	39	39	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	default_key_switch	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	dfd_channel_preload_size	42	42	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	fingerprint	42	0	48	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb1	full_path_reference	39	39	39	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	group_solo	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	high_key	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	high_velocity	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -262,16 +281,21 @@ Kontakt:0x28	0xb1	num_bytes_samples_total	42	42	48	decoded-unused	gpt-format-obj
 Kontakt:0x28	0xb1	pan	42	0	48	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb1	private	42	42	48	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb1	public	42	42	48	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb1	public_extension	39	39	39	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb1	resource_container_filename	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb1	snapshot_directory_reference	39	39	39	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb1	structure	42	42	48	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb1	transpose	42	0	48	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb1	tune	42	0	48	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb1	volume	42	38	48	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb1	wallpaper_filename	42	0	48	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb1	wallpaper_reference	39	39	39	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	cat_icon_idx	31	31	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb3	container_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	default_key_switch	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	dfd_channel_preload_size	31	31	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	fingerprint	31	0	61	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb3	full_path_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	group_solo	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	high_key	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	high_velocity	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -290,16 +314,21 @@ Kontakt:0x28	0xb3	num_bytes_samples_total	31	31	61	decoded-unused	gpt-format-obj
 Kontakt:0x28	0xb3	pan	31	0	61	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb3	private	31	31	61	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb3	public	31	31	61	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb3	public_extension	1	1	1	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb3	resource_container_filename	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb3	snapshot_directory_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb3	structure	31	31	61	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb3	transpose	31	0	61	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb3	tune	31	0	61	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb3	volume	31	31	61	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb3	wallpaper_filename	31	0	61	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb3	wallpaper_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	cat_icon_idx	21	21	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb5	container_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	default_key_switch	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	dfd_channel_preload_size	21	21	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	fingerprint	21	0	41	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb5	full_path_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	group_solo	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	high_key	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	high_velocity	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
@@ -318,12 +347,15 @@ Kontakt:0x28	0xb5	num_bytes_samples_total	21	21	41	decoded-unused	gpt-format-obj
 Kontakt:0x28	0xb5	pan	21	0	41	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb5	private	21	21	41	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb5	public	21	21	41	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x28	0xb5	public_extension	1	1	1	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb5	resource_container_filename	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb5	snapshot_directory_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x28	0xb5	structure	21	21	41	raw/unknown	gpt-format-objects	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x28	0xb5	transpose	21	0	41	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb5	tune	21	0	41	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb5	volume	21	21	41	decoded+used	gpt-format-objects	used by baseline translator; native law/selection parity not implied
 Kontakt:0x28	0xb5	wallpaper_filename	21	0	41	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
+Kontakt:0x28	0xb5	wallpaper_reference	1	1	1	decoded-unused	gpt-format-objects	readable value; see family doc for runtime admission/unsupported consequence
 Kontakt:0x29	0x51	private	53	53	109	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x29	0x51	public	53	53	109	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x29	0x51	structure	53	53	109	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
@@ -496,9 +528,16 @@ Kontakt:0x45	0x12	structure	195	195	4016	raw/unknown	gpt-format-fxmod	bounded re
 Kontakt:0x46	0x12	private	109	0	109	raw/unknown	gpt-format-fxmod	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x46	0x12	public	109	109	109	raw/unknown	gpt-format-fxmod	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x46	0x12	structure	109	109	109	raw/unknown	gpt-format-fxmod	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x47	0x10	extension	831	0	940	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x47	0x10	flag0	831	3	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
+Kontakt:0x47	0x10	flag1	831	399	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
+Kontakt:0x47	0x10	flag2	831	831	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
+Kontakt:0x47	0x10	original_reference	831	0	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
 Kontakt:0x47	0x10	private	831	0	940	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x47	0x10	public	831	831	940	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x47	0x10	structure	831	831	940	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
+Kontakt:0x47	0x10	translated_reference	831	831	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
+Kontakt:0x47	0x10	unknown	831	0	940	raw/unknown	gpt-format-gaps	typed references/flags retained; native setting meanings and binding unestablished
 Kontakt:0x48	unestablished:0xff00	private	50	0	50	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x48	unestablished:0xff00	public	50	50	50	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
 Kontakt:0x48	unestablished:0xff00	structure	50	50	50	raw/unknown	gpt-format-gaps	bounded region/framing; bytes are not independently named parameters
