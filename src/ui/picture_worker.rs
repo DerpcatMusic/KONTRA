@@ -43,6 +43,8 @@ struct Result {
     font: Option<Font>,
     epoch: u64,
     bytes: usize,
+    #[cfg(feature = "shots")]
+    scan: super::pictures::Scan,
 }
 struct Cached {
     picture: Option<Arc<Picture>>,
@@ -62,6 +64,8 @@ pub(super) struct Preparation {
     presentation: ir::Presentation,
     tick: u64,
     bytes: usize,
+    #[cfg(feature = "shots")]
+    pub scan: super::pictures::Scan,
 }
 impl Drop for Preparation {
     fn drop(&mut self) {
@@ -119,6 +123,8 @@ impl Preparation {
                                 font,
                                 epoch: request.epoch,
                                 bytes,
+                                #[cfg(feature = "shots")]
+                                scan: source.scan,
                             })
                             .is_err()
                         {
@@ -140,6 +146,8 @@ impl Preparation {
             presentation: Default::default(),
             tick: 0,
             bytes: 0,
+            #[cfg(feature = "shots")]
+            scan: Default::default(),
         }
     }
     pub fn path(&self) -> &Path {
@@ -150,6 +158,18 @@ impl Preparation {
     }
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+    #[cfg(feature = "shots")]
+    pub fn failures(&self) -> Vec<String> {
+        self.wanted
+            .iter()
+            .filter(|key| {
+                self.cache
+                    .get(*key)
+                    .is_some_and(|v| v.picture.is_none() && v.font.is_none())
+            })
+            .map(|key| blake3::hash(key.identity.as_bytes()).to_hex().to_string())
+            .collect()
     }
     pub fn prepare(
         &mut self,
@@ -177,6 +197,10 @@ impl Preparation {
         }
         let epoch = self.epoch.load(Ordering::Acquire);
         while let Ok(result) = self.results.try_recv() {
+            #[cfg(feature = "shots")]
+            {
+                self.scan = result.scan;
+            }
             self.pending.remove(&result.key);
             if result.epoch != epoch {
                 continue;

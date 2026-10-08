@@ -87,6 +87,10 @@ impl Assets {
         for (n,picture,font) in prepared {if picture.is_some(){self.loaded.insert(n,picture);}if font.is_some(){self.fonts.insert(n,font);}}
     }
     pub fn pending(&self)->usize {self.preparation.as_ref().map_or(0,|p|p.pending())}
+    #[cfg(feature = "shots")]
+    pub fn scan(&self)->super::pictures::Scan {self.preparation.as_ref().map_or(Default::default(),|p|p.scan)}
+    #[cfg(feature = "shots")]
+    pub fn failures(&self)->Vec<String> {self.preparation.as_ref().map_or(Vec::new(),|p|p.failures())}
 
     /// Loads what `presentation` draws and releases everything else.
     pub fn sync(&mut self, ui: &Interface, presentation: Presentation, mut load: impl FnMut(&ir::Asset) -> Option<Arc<Picture>>) {
@@ -572,7 +576,7 @@ pub(super) fn widget_state(
                 vec![Draw::fill(area,signal())]
             }).fill(Role::Ink.alpha(0.12))
         },
-        Kind::Table { columns, range, cells, .. } => {
+        Kind::Table { columns, range, cells, bipolar, steps_shown } => {
             let mut samples = match input.values.get(&n).or(wd.value.as_ref()) {
                 Some(ir::Value::Integers(v)) => v.iter().map(|v|f64::from(*v)).collect::<Vec<_>>(),
                 Some(ir::Value::Reals(v)) => v.clone(),
@@ -591,16 +595,7 @@ pub(super) fn widget_state(
                     input.values.insert(n,ir::Value::Reals(samples.clone()));
                 }
             }
-            let range = *range;
-            canvas(move |s| {
-                let bw = s.width/samples.len().max(1) as f64;
-                let unit = |v:f64| if range.max == range.min {0.} else {((v-range.min)/(range.max-range.min)).clamp(0.,1.)};
-                let zero=s.height*(1.-unit(0.));
-                samples.iter().enumerate().map(|(c,v)| {
-                    let y=s.height*(1.-unit(*v));
-                    Draw::fill(rect(c as f64*bw,y.min(zero),(bw-1.).max(1.),(y-zero).abs().max(1.)),value_ink(0.))
-                }).collect()
-            }).fill(Role::Ink.alpha(0.06)).cursor(Cursor::Crosshair).focusable()
+            super::render_art::table(samples,*range,*bipolar,*steps_shown,wd.colors).cursor(Cursor::Crosshair).focusable()
         }
         Kind::Xy { cursors, .. } => {
             let mut points = match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Reals(v))=>v.clone(), _=>vec![0.; *cursors as usize*2]};
