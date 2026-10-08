@@ -538,3 +538,13 @@ Cold32FX repeated alternating pairs:
 | 3 | 46.111 / 102.622 | 52.051 / 111.193 | 0 / 0 |
 
 Cold32FX aggregate 45.801 / 102.622→52.051 / 111.193µs; the12 deadline misses in the first after run did not recur in repeats2/3, but were not proven noise or fixed. **HOLD**, cold64 and warmFX p99 remain above the acceptance baseline.
+
+## Streamed high-rate prepared resampling (continuation)
+
+Extends the existing realtime polyphase bank through the admitted maximum16x rate. The original eight rows covering1–2x retain their exact coefficient bits. Above2x, sixteen stretches per octave preserve the existing passband limit; the provisional eight-stretch extension failed at step2.01 and was corrected rather than relaxing the test. Row preparation evaluates the existing Q32 reference impulse weights once, retains its f32 normalization rounding, and avoids the old quadratic impulse evaluation. Coefficients use4,388,800 shared bytes, allocated during control-side construction. High-quality conversion retains the long reference kernel. Narrow stack windows remain52frames; wider fallbacks are bounded at388frames.
+
+Scope: private resample.rs bank construction/selection; existing Cursor::sample, sample_window and render_run callers consume it unchanged; new paged_render PCM fixture; synthetic streamed_resample example. No public API, config, admission, DSP or residency changes. This accelerates the streamed high-rate source fallback; it does not yet provide resident octave levels to PagedFrames, so audit finding6 is only partly addressed.
+
+Verification:43 targeted checks pass (3 kernel units,3 cold-chain,19 paged-render,18 resample). The new fixture compares streamed and resident PCM over forward/reverse page and loop seams at2.01/2.5/4/8/16x, partitions1/7/64/128, with zero heap calls and underruns. Unit coverage checks each extended-bank boundary against the unchanged passband/alias thresholds and preserves all narrow-row bits. Default root cargo test --no-run passes. Evidence:~/.cache/kontakto-fix-cpu/streamed-resample-check.log.
+
+Before synthetic binary SHA256de85991754b29123bba7b158530574a17758d64c396d6d6b1f8004958fd852ea is preserved. Optimized after build and original piano/FX32/64/256 warm/cold A/B are pending. Vista remains W7's lifecycle dependency and is not scored as a CPU win. **HOLD; no v1 parity claim.**
