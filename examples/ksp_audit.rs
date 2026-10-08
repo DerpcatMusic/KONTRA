@@ -93,11 +93,27 @@ fn saved(entries: &[String], slot: u8, groups: &[String]) -> Environment {
     }
     e
 }
+fn group_names(children: &[Chunk], fallback: &[String]) -> Vec<String> {
+    children
+        .iter()
+        .find(|c| c.id == 0x33)
+        .and_then(|c| GroupList::try_from(c).ok())
+        .map(|g| {
+            g.groups
+                .iter()
+                .filter_map(|g| g.params().ok())
+                .filter(|g| !g.muted)
+                .map(|g| g.name)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| fallback.to_vec())
+}
 fn scripts(
     c: &Chunk,
     groups: &[String],
     slot: &mut u8,
-    out: &mut Vec<(String, Vec<String>, u8, Vec<String>)>,
+    origin: &'static str,
+    out: &mut Vec<(String, Vec<String>, u8, Vec<String>, &'static str)>,
 ) -> Result<(), String> {
     match c.id {
         6 => {
@@ -114,7 +130,10 @@ fn scripts(
                 .map_err(|_| "script record")?;
             if !s.bypass
                 && let Some(text) = s.text
-                && !std::str::from_utf8(text.data()).unwrap_or("").trim().is_empty()
+                && !std::str::from_utf8(text.data())
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
             {
                 let source = std::str::from_utf8(text.data())
                     .map_err(|_| "source encoding")?
@@ -125,41 +144,39 @@ fn scripts(
                     .flat_map(|t| t.iter())
                     .map(|x| String::from_utf8_lossy(x.data()).into_owned())
                     .collect();
-                out.push((source, saved, *slot, groups.to_vec()));
+                out.push((source, saved, *slot, groups.to_vec(), origin));
             }
             *slot += 1;
         }
         0x28 | 0x29 => {
             let o = StructuredObject::try_from(c).map_err(|_| "structured program")?;
-            let names = o
-                .children
-                .iter()
-                .find(|c| c.id == 0x33)
-                .and_then(|c| GroupList::try_from(c).ok())
-                .map(|g| {
-                    g.groups
-                        .iter()
-                        .filter_map(|g| g.params().ok())
-                        .filter(|g| !g.muted)
-                        .map(|g| g.name)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| groups.to_vec());
+            let names = group_names(&o.children, groups);
             let mut slot = 0;
             for child in &o.children {
-                scripts(child, &names, &mut slot, out)?;
+                scripts(child, &names, &mut slot, origin, out)?;
             }
         }
         3 => {
             let bank = Bank::try_from(c).map_err(|_| "bank")?;
             for c in bank.0.children.iter().filter(|c| c.id == 6 || c.id == 0x29) {
-                scripts(c, groups, slot, out)?;
+                scripts(
+                    c,
+                    groups,
+                    slot,
+                    if c.id == 6 {
+                        "bank-global"
+                    } else {
+                        "bank-container"
+                    },
+                    out,
+                )?;
             }
             for (_, s) in bank.slot_list().map_err(|_| "bank slots")?.slots {
                 for p in s.program_list().map_err(|_| "program list")?.programs {
+                    let names = group_names(&p.0.children, groups);
                     let mut slot = 0;
                     for c in &p.0.children {
-                        scripts(c, groups, &mut slot, out)?;
+                        scripts(c, &names, &mut slot, "program", out)?;
                     }
                 }
             }
@@ -205,17 +222,24 @@ fn main() {
         let result = sampler_kontakt::read_chunks(Path::new(path))
             .map_err(|_| "read container".to_owned())
             .and_then(|cs| {
+                let is_multi = cs.0.iter().any(|c| c.id == 3);
                 for c in &cs.0 {
-                    scripts(c, &[], &mut 0, &mut slots)?;
+                    if is_multi && c.id != 3 {
+                        continue;
+                    }
+                    scripts(c, &[], &mut 0, "root", &mut slots)?;
                 }
                 Ok(())
             });
         let mut records = Vec::new();
-        for (source, entries, slot, groups) in slots {
+        for (source, entries, slot, groups, origin) in slots {
             let mut h = DefaultHasher::new();
             source.hash(&mut h);
             let source_hash = format!("{:016x}", h.finish());
             (slot, &groups, &entries).hash(&mut h);
+            if std::env::var_os("KSP_AUDIT_RESOURCES").is_some() {
+                path.hash(&mut h);
+            }
             let key = format!("{:016x}", h.finish());
             if !cache.contains_key(&key) {
                 let mut data = json!({"hash":source_hash,"slot":slot,"groups":groups.len(),"saved_entries":entries.len()});
@@ -226,8 +250,19 @@ fn main() {
                     "$duration_",
                     "$ni_callback_",
                     "ui_",
+                    "mf_",
+                    "$event_par_",
+                    "$num_",
+                    "%groups_",
                 ];
                 let tracked = [
+                    "subscribe_async",
+                    "$current_script_slot",
+                    "$all_events",
+                    "%poly_at",
+                    "pgs_get_key_val",
+                    "get_event_ids",
+                    "event_status",
                     "make_persistent",
                     "make_instr_persistent",
                     "read_persistent_var",
@@ -280,7 +315,19 @@ fn main() {
                         m
                     }
                 ));
-                let env = saved(&entries, slot, &groups);
+                let mut env = saved(&entries, slot, &groups);
+                if std::env::var_os("KSP_AUDIT_RESOURCES").is_some() {
+                    if let Some(name) = sampler_ksp::nckp::view_name(&source) {
+                        let bytes = sampler_kontakt::Resources::of(Path::new(path))
+                            .read(&format!("Resources/performance_view/{name}.nckp"));
+                        if let Some(bytes) = bytes {
+                            if let Ok((view, _)) = sampler_ksp::nckp::parse(&bytes) {
+                                env.performance_view = view;
+                            }
+                        }
+                    }
+                    data["resource_controls"] = json!(env.performance_view.controls.len());
+                }
                 let t = std::time::Instant::now();
                 data["init_frontend"] =
                     json!(sampler_ksp::init_engine_pars(&source, Limits::LIBRARY, &env).is_ok());
@@ -322,6 +369,8 @@ fn main() {
                         match s.ui(&|_| None) {
                             Ok(ui) => {
                                 data["ui"] = json!(true);
+                                data["wallpaper"] =
+                                    json!(ui.pages.iter().any(|p| p.background.image.is_some()));
                                 data["ui_unsupported"] = json!(
                                     ui.unsupported
                                         .iter()
@@ -338,7 +387,7 @@ fn main() {
                     }
                     Err(e) => {
                         data["compile"] = json!(false);
-                        data["failure"] = json!({"line":e.line,"column":e.column,"kind":format!("{:?}",e.kind),"builtin":e.builtin,"category":if e.message.contains("budget") {"budget"} else if e.message.contains("fuel") {"init fuel"} else if e.message.contains("unknown") {"unknown symbol"} else {"frontend"}});
+                        data["failure"] = json!({"message":e.message,"line":e.line,"column":e.column,"kind":format!("{:?}",e.kind),"builtin":e.builtin, "category":if e.message.contains("budget") {"budget"} else if e.message.contains("fuel") {"init fuel"} else if e.message.contains("unknown") {"unknown symbol"} else {"frontend"}});
                     }
                 }
                 data["compile_us"] = json!(t.elapsed().as_micros());
@@ -346,7 +395,7 @@ fn main() {
                     writeln!(
                         input,
                         "{}",
-                        json!({"source":source,"saved":entries,"groups":groups})
+                        json!({"source":source,"saved":entries,"groups":groups,"path":std::env::var_os("KSP_AUDIT_RESOURCES").map(|_|path)})
                     )
                     .unwrap();
                     input.flush().unwrap();
@@ -356,7 +405,9 @@ fn main() {
                 }
                 cache.insert(key.clone(), data);
             }
-            records.push(cache[&key].clone());
+            let mut record = cache[&key].clone();
+            record["origin"] = json!(origin);
+            records.push(record);
         }
         println!(
             "{}",

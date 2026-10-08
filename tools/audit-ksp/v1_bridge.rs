@@ -11,8 +11,15 @@ fn main() {
             .iter()
             .map(|s| s.as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
-        let compiled = kontakto::ksp::audit_compile(source, groups.len());
+        let compile_started = std::time::Instant::now();
+        let compiled = kontakto::ksp::audit_compile(
+            source,
+            groups.len(),
+            req["path"].as_str().map(std::path::Path::new),
+        );
+        let compile_us = compile_started.elapsed().as_micros();
         let mut engine = kontakto::ksp::LogEngine::new(groups, 48000.);
+        engine.instrument = req["path"].as_str().map(std::path::PathBuf::from);
         let entries = req["saved"]
             .as_array()
             .unwrap()
@@ -26,7 +33,11 @@ fn main() {
         );
         let started = std::time::Instant::now();
         let init = rt.load(&mut engine, source).is_ok();
-        let mut result = serde_json::json!({"compile":compiled.is_some(), "block_errors":compiled.as_ref().map(|c|c.0), "init":init,"us":started.elapsed().as_micros(),"diagnostics":compiled.map(|c|c.1.len()).unwrap_or_default(), "runtime_diagnostics":rt.diagnostics().len()});
+        let mut init_fault_kinds = std::collections::BTreeMap::<&str, usize>::new();
+        for fault in rt.faults() {
+            *init_fault_kinds.entry(fault.message).or_default() += 1;
+        }
+        let mut result = serde_json::json!({"init_fault_kinds":init_fault_kinds,"compile_us":compile_us,"init_faults":rt.faults().count(),"compile":compiled.is_some(), "block_errors":compiled.as_ref().map(|c|c.0), "init":init,"us":started.elapsed().as_micros(),"diagnostics":compiled.map(|c|c.1.len()).unwrap_or_default(), "runtime_diagnostics":rt.diagnostics().len()});
         if req["probe"].as_bool() == Some(true) {
             if let Some(actions) = req["actions"].as_array() {
                 for a in actions {
