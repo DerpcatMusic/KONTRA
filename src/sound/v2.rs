@@ -127,6 +127,7 @@ impl Grower {
         mut control: PlanControl,
         ceiling: usize,
         per_voice: usize,
+        note_ceiling: usize,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
@@ -134,6 +135,13 @@ impl Grower {
             move || {
                 while !stop.load(Ordering::Relaxed) {
                     let capacity = control.voice_capacity();
+                    let notes = control.note_params_capacity();
+                    if control.note_pressure() && notes < note_ceiling {
+                        let next = (notes * 2).min(note_ceiling);
+                        let fits = mem_available().is_none_or(|free|
+                            (next - notes).saturating_mul(control.note_params_bytes()) <= free / GROWTH_SHARE);
+                        if fits { let _ = control.grow_note_params(next); }
+                    }
                     if control.voice_pressure() && capacity < ceiling {
                         let next = (capacity * 2).min(ceiling);
                         let fits = mem_available()
@@ -1302,6 +1310,8 @@ const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
 const MAX_VOICES: usize = 16384;
 const GROWTH: usize = 8;
+// v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY; grow past it off audio.
+const INITIAL_NOTE_PARAMS: usize = 4096;
 /// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
 const VOICE_OVERHEAD: usize = 4096;
 
@@ -1715,7 +1725,9 @@ impl V2Loader {
                 }
             }
         }
-        let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
+        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity(
+            prepared, limits, 2, 1, limits.notes.min(INITIAL_NOTE_PARAMS),
+        ).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
@@ -1738,7 +1750,7 @@ impl V2Loader {
                 runtime.bus_count()
             )));
         }
-        let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
+        let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.waveform_sources = waveform_sources;
@@ -2533,6 +2545,15 @@ mod tests {
         let request = LoadRequest { path: "x.exs".into(), sample_rate: 48000.0, ..Default::default() };
         let err = V2Loader.prepare(&request, &mut |_| {}, &|| false).err().unwrap();
         assert!(matches!(err, CoreError::Unsupported(_)), "{err}");
+    }
+
+    #[test]
+    fn loader_starts_note_parameters_at_v1_event_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note-capacity.wav");
+        sine(&path);
+        let part = load(&path).unwrap();
+        assert_eq!(part.runtime.note_params_capacity(), 4096);
     }
 
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
