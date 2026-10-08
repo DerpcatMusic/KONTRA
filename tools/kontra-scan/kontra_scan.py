@@ -21,7 +21,7 @@ V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state', 'restored_state_status', 'script_init_runs', 'expected_init_runs', 'restored_scalar_overrides']
 
 
 def library(item):
@@ -63,6 +63,19 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    states = [p['restored_state'] for p in programs if isinstance(p.get('restored_state'), dict)]
+    def restored_count(key):
+        return sum(p[key] for p in states) if states and len(states)==len(programs) and all(isinstance(p.get(key), int) for p in states) else 'unknown'
+    r['script_init_runs'] = restored_count('init_runs') if states else sum(p['script_init_runs'] for p in programs) if programs and all(isinstance(p.get('script_init_runs'),int) for p in programs) else 'unknown'
+    r['expected_init_runs'] = restored_count('expected_init_runs')
+    r['restored_scalar_overrides'] = restored_count('scalar_overrides')
+    r['restored_state_status'] = r.get('restored_state', {}).get('status', 'unknown')
+    if r.get('gate_condition') == 'restored-state':
+        witnessed = bool(states) and len(states)==len(programs) and r.get('restored_state',{}).get('timer_excludes_seed') is True and all(p.get('timer_excludes_seed') is True and p.get('status') in ['single-init','duplicate-init'] for p in states)
+        if not witnessed:
+            r['restored_state_status'] = 'unknown'
+            for metric in ['loads','load_ms','first_audio_ms','peak_rss_mb','ui','plays_note']:
+                r[metric] = 'unknown'
     for p in programs:
         if p.get('loaded') is True and 'pick' in p and p['pick'] is None:p['plays_note']='no'
     if r.get('loads')=='yes' and programs and all('pick' in p and p['pick'] is None for p in programs):
@@ -201,6 +214,7 @@ def probe(engine, item, work, timeout, shots):
     cache_root = os.environ.get('KONTRA_GATE_PRODUCT_CACHE_ROOT')
     condition = os.environ.get('KONTRA_GATE_CACHE_CONDITION', 'disabled')
     cache_stats = None
+    if condition == 'restored-state': env['KONTRA_SCAN_RESTORED_STATE'] = '1'
     if cache_root:
         root = Path(cache_root).resolve()
         if root.parent != Path('/dev/shm') or not root.name.startswith('kontra-gate-cache-'):
@@ -217,7 +231,7 @@ def probe(engine, item, work, timeout, shots):
                 probe(engine, item, work / 'reprime', timeout, False)
             finally:
                 os.environ['KONTRA_GATE_CACHE_CONDITION'] = previous
-        if condition in ['cold', 'os-warm'] and cache.exists(): shutil.rmtree(cache)
+        if condition in ['cold', 'os-warm', 'restored-state'] and cache.exists(): shutil.rmtree(cache)
         cache.mkdir(parents=True, exist_ok=True)
         env['KONTRA_GATE_ITEM_CACHE'] = str(cache)
         if engine.name == 'kontra-scan-v1': env.pop('KONTRA_SCAN_ACTIVE', None)
@@ -277,6 +291,7 @@ def probe(engine, item, work, timeout, shots):
         r['product_cache'] = cache_stats
         marker.touch()
         if engine.name == 'kontra-scan-v1': r['script_phase_observation'] = 'disabled-for-product-cache'
+    r['gate_condition'] = condition
     r['rss_measurement'] = {'scope':'isolated-worker-process', 'lifecycle':'spawn-through-exit', 'poll_ms':100, 'kernel_high_water':True, 'external_children_included':False}
     r['peak_rss_mb'] = round(max(rss, r.get('peak_rss_mb', 0)), 2)
     r['process_ms'] = round((time.monotonic() - started) * 1000, 2)
@@ -337,7 +352,7 @@ def main():
                 reused += 1
                 continue
             remaining = args.budget_seconds - (time.monotonic() - started)
-            needed = args.timeout_seconds * (2 if os.environ.get('KONTRA_GATE_CACHE_CONDITION') == 'product-warm' else 1)
+            needed = args.timeout_seconds * (2 if os.environ.get('KONTRA_GATE_CACHE_CONDITION') in ['product-warm', 'restored-state'] else 1)
             if remaining < min(needed,args.budget_seconds):
                 break
             r = probe(engine, item, args.out / 'items' / key, min(args.timeout_seconds, args.budget_seconds), args.shots)
