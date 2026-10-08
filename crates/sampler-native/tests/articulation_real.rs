@@ -898,7 +898,8 @@ fn full_note_runtime_trace_probe() {
         let mut out = vec![[0.0; 2]; 64];
         println!("=== {relative} key {key} vel {vel}");
         let mut words = vec![0x2000_0000, 0x2090_0000 | u32::from(key) << 8 | u32::from(vel)];
-        words.resize(1500, 0x2000_0000);
+        let len = std::env::var("KONTRA_TRACE_LEN").ok().map_or(1500, |v| v.parse().unwrap());
+        words.resize(len, 0x2000_0000);
         if let Some(off) = std::env::var("KONTRA_TRACE_OFF").ok().and_then(|v| v.parse::<usize>().ok()) {
             words[off] = 0x2080_0000 | u32::from(key) << 8;
         }
@@ -912,7 +913,7 @@ fn full_note_runtime_trace_probe() {
             }
             rt.render(&mut out).unwrap();
             let peak = out.iter().flatten().fold(0f32, |p, x| p.max(x.abs()));
-            if i % 50 == 0 {
+            if i % std::env::var("KONTRA_TRACE_EVERY").ok().map_or(50, |v| v.parse().unwrap()) == 0 {
                 println!("step {i} peak {:.1} dB voices {}", 20.0 * f64::from(peak).log10(), rt.voice_count());
             }
             for r in rt.take_selection_records() {
