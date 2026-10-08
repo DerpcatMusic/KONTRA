@@ -141,6 +141,78 @@ fn init_indexed_values_reach_typed_bank_readback() {
 }
 
 #[test]
+fn unsupported_init_address_is_observable_and_later_volume_write_changes_audio() {
+    let script = sampler_ksp::compile_with("on init set_engine_par($ENGINE_PAR_ATTACK,123,0,9,-1) set_engine_par($ENGINE_PAR_VOLUME,500000,0,-1,-1) end on",48000,KspLimits::LIBRARY,&[],&Environment::default()).unwrap();
+    let plan = script
+        .bind(
+            Prepared::new(
+                48000,
+                vec![Pcm::new(48000, vec![[0.5; 2]; 1024].into_boxed_slice()).unwrap()],
+                vec![Region {
+                    sample: 0,
+                    key_low: 60,
+                    key_high: 60,
+                    root_key: None,
+                    velocity_low: 0.,
+                    velocity_high: 1.,
+                    gain: 1.,
+                    envelope: Envelope::default(),
+                    playback: Playback::default(),
+                }],
+                1,
+            )
+            .unwrap()
+            .with_groups(1, vec![Some(0)])
+            .unwrap(),
+        )
+        .unwrap();
+    let mut limits = Limits::for_plan(&plan, 4, 4);
+    limits.behaviors = 4;
+    limits.behavior_cells = plan.behavior_local_count() * 4;
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let unknown = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_ATTACK").unwrap(),
+        group: 0,
+        slot: 9,
+        generic: -1,
+    };
+    assert_eq!(
+        rt.set_engine_parameter(unknown, 123),
+        Err(Error::InvalidInput)
+    );
+    assert!(rt.take_fault().is_none());
+    let mut outcomes = vec![];
+    while let Some(outcome) = rt.take_engine_parameter_outcome() {
+        outcomes.push(outcome);
+    }
+    assert!(
+        outcomes
+            .iter()
+            .any(|o| o.address == Some(unknown) && o.write && o.result == Err(Error::InvalidInput))
+    );
+    assert!(outcomes.iter().any(|o| o.write && o.result == Ok(())));
+    rt.trigger(
+        Input {
+            protocol: Protocol::Native,
+            port: 0,
+            group: 0,
+            channel: 0,
+            key: 60,
+            external_id: None,
+        },
+        60,
+        1.,
+    )
+    .unwrap();
+    let mut out = [[0.; 2]; 64];
+    rt.render(&mut out).unwrap();
+    assert!(
+        (out[32][0] - 0.2506).abs() < 0.003,
+        "authored volume must change rendered level"
+    );
+}
+
+#[test]
 fn typed_toggle_preserves_native_domain_validation() {
     let id = ControlId(42);
     let plan = Prepared::new(48000, vec![], vec![], 1)

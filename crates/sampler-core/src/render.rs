@@ -557,9 +557,9 @@ impl Runtime {
             }
         }
         let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
-        if let Some(filter) = filter {
-            plan.dsp.filters.as_mut_slice()[0].modulation = filter;
-        }
+        let bank = &mut plan.dsp.filters.as_mut_slice()[0];
+        bank.modulation = filter.unwrap_or([1.0; 2]);
+        bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
         let target = if let Some(bus) = bus {
