@@ -1356,6 +1356,13 @@ impl Prepared {
         self
     }
 
+    /// Mark the pre-insert sum before signal-trace preparation. Processor indices stay unchanged.
+    pub fn with_input_bus(mut self, bus: usize) -> Result<Self, Error> {
+        if bus >= self.buses.len() { return Err(Error::InvalidInput); }
+        self.buses.input = Some(bus);
+        Ok(self)
+    }
+
     /// Bind each region to a bus, or directly to stereo output (`None`).
     /// Graph construction, cycle validation and coefficient compilation run off audio.
     pub fn with_buses(
