@@ -58,7 +58,14 @@ and curved envelope transitions. The offline witness renders the cpu_audit note
 schedule to float WAVs for an A/B comparison; those WAVs must be deleted after
 comparison, with only hashes and numeric errors retained.
 
-Status: draft, validation pending an available build window. No READY or CPU
+Validation: both optimized bit-exact tests pass, along with 44 source,
+resampling and paged-render regression tests. Root `cargo test --no-run` passes.
+Matching scalar/cubic cpu_audit and WAV witnesses use ci/default features, the
+same configuration as the gate. The scalar witness compiles the new branch out;
+all other source and build settings match the candidate. Exact binary hashes
+are in `cubic-BUILD.json` in the receipt directory.
+
+Status: HOLD for WAV comparison and quiet CPU acceptance. No READY or CPU
 acceptance claim. CPU acceptance must use unprofiled ci/default-feature binaries
 against the frozen v1 in a quiet A/B. No release or install.
 
