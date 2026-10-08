@@ -1315,3 +1315,8 @@ pub fn ksp_key_color(index: u8) -> Option<Color> {
     let [r, g, b] = *COLORS.get(index as usize)?;
     Some(Color::srgb(f32::from(r) / 255., f32::from(g) / 255., f32::from(b) / 255.))
 }
+
+// Port from v1 0cb7a8a0:src/ui/theme.rs.
+pub fn megabytes(bytes: usize) -> String {
+    format!("{:.0} MB", bytes as f64 / 1_048_576.)
+}
