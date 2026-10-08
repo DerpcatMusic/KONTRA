@@ -155,6 +155,8 @@ pub struct LoadRequest {
     pub dynamics_start: Option<u8>,
     /// Voice-rendering threads (`None`: one, the audio thread alone).
     pub threads: Option<ThreadChoice>,
+    /// Host-saved Kontakt UI values (menus carry item values, not positions).
+    pub control_values: Vec<(sampler_ui_ir::ControlId, f64)>,
 }
 
 /// A request for voice-rendering threads.
