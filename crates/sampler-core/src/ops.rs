@@ -245,6 +245,11 @@ pub enum Op {
         write: bool,
     },
     /// Value supplied by the host through `Runtime::set_host_value`.
+    FileName {
+        ui: u16,
+        format: u16,
+        text: TextRef,
+    },
     ReadWidgetEventParameter {
         local: u16,
     },
@@ -322,6 +327,9 @@ impl Op {
             | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
             | Self::ReadClock { local, .. } => usize::from(*local) + 1,
+            Self::FileName { ui, format, text } => {
+                (usize::from(*ui.max(format)) + 1).max(reg(text))
+            }
             Self::TextProperty { key, text, .. } => (usize::from(*key) + 4).max(reg(text)),
             Self::TimeConversion { local, .. } => usize::from(*local) + 1,
             Self::EngineParameter { address, local, .. } => {
@@ -417,6 +425,14 @@ impl Default for Text {
     }
 }
 impl Text {
+    /// Producer-boundary conversion; never silently truncate a file path/edit.
+    pub fn try_new(text: &str) -> Result<Self, Error> {
+        if text.len() > TEXT_CAPACITY {
+            Err(Error::Capacity)
+        } else {
+            Ok(Self::new(text))
+        }
+    }
     pub fn new(text: &str) -> Self {
         let mut t = Self::default();
         t.push(text);
@@ -1160,6 +1176,38 @@ impl Runtime {
                     };
                     self.set_reg(id, local, value)?;
                 }
+            }
+            Op::FileName { ui, format, text } => {
+                let ui = self.reg(id, ui)? as i32;
+                let format = self.reg(id, format)?;
+                let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                let plan = self.behavior_plan(owner)?;
+                let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+                let instance = generation.prepared.programs[callback.program]
+                    .script_instance
+                    .ok_or(Error::InvalidInput)?;
+                let definition = generation
+                    .prepared
+                    .widgets
+                    .iter()
+                    .find(|w| w.instance == instance && w.ui_id == ui)
+                    .ok_or(Error::InvalidInput)?;
+                let crate::WidgetStorage::FileSelection { offset } = definition.storage else {
+                    return Err(Error::InvalidInput);
+                };
+                let path = generation.scripts[instance.0 as usize].texts[offset as usize];
+                let filename = path.as_str().rsplit('/').next().unwrap_or("");
+                let result = Text::new(match format {
+                    0 => filename
+                        .rsplit_once('.')
+                        .filter(|(stem, _)| !stem.is_empty())
+                        .map_or(filename, |(stem, _)| stem),
+                    1 => filename,
+                    2 => path.as_str(),
+                    _ => return Err(Error::InvalidInput),
+                });
+                let cell = self.text_cell(id, text)?;
+                self.behavior_bank(id)?.texts[cell] = result;
             }
             Op::ReadWidgetEventParameter { local } => {
                 let index =
