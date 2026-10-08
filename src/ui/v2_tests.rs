@@ -20,7 +20,8 @@ fn settle(w: f64, h: f64, mut build: impl FnMut(&mut Ui) -> El) -> Ui {
 }
 
 fn shoot(ui: &Ui, w: u16, h: u16, name: &str) {
-    let path = Path::new("artifacts/v2-ui").join(name);
+    let dir = std::env::var("KONTRA_UI_AUDIT_OUT").unwrap_or_else(|_| "artifacts/v2-ui".into());
+    let path = Path::new(&dir).join(name);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     moose::core::screenshot::save_png(&path, &pixels(ui, w, h), u32::from(w), u32::from(h));
 }
