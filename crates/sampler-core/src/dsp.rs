@@ -143,6 +143,8 @@ pub enum Processor {
     StereoModeller(StereoSettings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
+    /// Pinned v1 native Ladder LP4, with separate preallocated family state.
+    LadderLP4(LadderSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -183,6 +185,7 @@ impl Processor {
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::Daft(settings) => settings.valid(),
+            Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -198,6 +201,9 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
+mod ladder_kernel;
+mod ladder;
+pub use ladder::LadderSettings;
 mod delay;
 mod stereo;
 mod taps;
@@ -239,6 +245,7 @@ pub(super) enum PreparedProcessor {
     },
     Decimate(Decimator),
     Daft(daft::Daft),
+    LadderLP4 { ladder: ladder::Ladder, offset: usize },
     StereoModeller {
         stereo: stereo::Stereo,
         offset: usize,
@@ -399,6 +406,11 @@ pub(super) fn compile_processors(
                 },
                 Processor::Daft(settings) => {
                     PreparedProcessor::Daft(settings.compile(rate, bindings))
+                }
+                Processor::LadderLP4(settings) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
+                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -628,6 +640,7 @@ impl PreparedVoiceChain {
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
                         | PreparedProcessor::Daft(_)
+                        | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
                 ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
@@ -840,6 +853,9 @@ pub(super) fn process(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::LadderLP4 { ladder, offset } => {
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+            }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
                     state,
