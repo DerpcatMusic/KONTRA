@@ -167,11 +167,22 @@ impl Part {
         let plan = runtime.active_plan();
         let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
         let widget_values = widgets.iter().filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_))).filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
+        let mut captures=std::collections::VecDeque::new();
+        let mut capture=Vec::new();
+        for widget in &widgets {
+            let len=match widget.storage {sampler_core::WidgetStorage::Control(_)=>0,sampler_core::WidgetStorage::Cells{len,..}|sampler_core::WidgetStorage::Texts{len,..}=>len,sampler_core::WidgetStorage::FileSelection{..}=>1};
+            for index in 0..len {
+                capture.push(sampler_core::WidgetEdit{id:widget.id,index,value:sampler_core::WidgetValue::Integer(0),interaction:Default::default()});
+                if capture.len()==sampler_core::WIDGET_EDIT_CAPACITY {captures.push_back(std::mem::take(&mut capture));}
+            }
+        }
+        if !capture.is_empty() {captures.push_back(capture);}
+        let revision=runtime.control_revision(plan).unwrap_or(0);
         let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, pending_widgets: Default::default(), pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
             mpe,
             tune: 0.0,
@@ -296,6 +307,9 @@ pub(crate) struct ControlIngress {
     widget_values: std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value>,
     pending_widgets: std::collections::BTreeMap<(sampler_ui_ir::ControlId, u32), (u64, sampler_ui_ir::Value)>,
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
+    captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
+    capturing:bool,
+    revision:u64,
 }
 
 impl ControlIngress {
@@ -372,9 +386,23 @@ impl ControlIngress {
         }
     }
 
+    /// Existing 100 ms worker owns polling and recycles native capture buffers.
+    pub(crate) fn refresh(&mut self) -> bool {
+        let changed=self.settle();
+        if !self.capturing && let Some(output)=self.captures.pop_front() {
+            let request=sampler_core::ControlRequest {plan:self.plan,expected_revision:None,operation:sampler_core::ControlOperation::CaptureWidget(output)};
+            match self.client.submit(request) {
+                Ok(_)=>self.capturing=true,
+                Err(rejected)=>if let sampler_core::ControlOperation::CaptureWidget(output)=rejected.command.operation {self.captures.push_front(output);},
+            }
+        }
+        changed
+    }
+
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if let Ok((_,revision))=reply.result {self.revision=revision;}
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self.pending.get(&id).is_some_and(|(request, _)| *request == reply.request) {
@@ -393,6 +421,11 @@ impl ControlIngress {
                     }
                     if reply.result.is_ok() { changed |= self.accept_value(edit); }
                 }
+            }
+            if let sampler_core::ControlOperation::CaptureWidget(output)=reply.command.operation {
+                self.capturing=false;
+                if let Ok((count,_))=reply.result {for edit in output.iter().take(count) {changed|=self.accept_value(edit);}}
+                self.captures.push_back(output);
             }
             if let Err(error) = reply.result {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
@@ -449,7 +482,7 @@ fn ui_value(value: sampler_core::WidgetValue) -> Option<sampler_ui_ir::Value> {
 fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_core::WidgetDefinition) -> Option<sampler_ui_ir::Value> {
     use sampler_core::{WidgetStorage, WidgetValue};
     Some(match widget.storage {
-        WidgetStorage::Control(_) | WidgetStorage::Texts { .. } => ui_value(runtime.widget_value(plan, widget.id, 0).ok()?)?,
+        WidgetStorage::Control(_) | WidgetStorage::Texts { .. } | WidgetStorage::FileSelection{..} => ui_value(runtime.widget_value(plan, widget.id, 0).ok()?)?,
         WidgetStorage::Cells { len, real: false, .. } => sampler_ui_ir::Value::Integers((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Integer(value) => value.try_into().ok(), _ => None }).collect::<Option<_>>()?),
         WidgetStorage::Cells { len, real: true, .. } => sampler_ui_ir::Value::Reals((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Real(value) => Some(value), _ => None }).collect::<Option<_>>()?),
     })
@@ -1113,6 +1146,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
         .chain(&chain.post_amplitude)
         .map(|p| match p {
             ir::Processor::Gain(_) => "Gain",
+            ir::Processor::Gainer { .. } => "Gainer",
+            ir::Processor::StereoModeller { .. } => "Stereo Modeller",
             ir::Processor::Pan(_) => "Pan",
             ir::Processor::StereoMatrix(_) => "Stereo",
             ir::Processor::Reverb(_) => "Reverb",
@@ -1931,6 +1966,40 @@ mod tests {
         core.render(16);
         assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
         assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
+    }
+
+    #[test]
+    fn typed_capture_reads_callback_changes_and_rejected_edits_roll_back() {
+        let source="on init declare ui_knob $k(0,100,1) declare ui_table %t[4](1,1,100) declare ui_xy ?xy[2] declare ui_text_edit @text end on on ui_control($k) %t[1] := $k @text := \"live callback\" ?xy[0] := 0.25 end on";
+        let script=sampler_ksp::compile(source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let face=script.ui(&|_|None).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let limits=limits(&plan).0;
+        let mut part=Part::new(Runtime::new(plan,limits).unwrap(),MixTree::instrument("typed")).unwrap();
+        let mut ingress=part.ui_controls.take().unwrap();
+        let knob=sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(0,"$k").0);
+        assert!(ingress.submit(knob,25.));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        part.runtime.render(&mut [[0.;2];16]).unwrap();
+        ingress.settle();
+        let revision=ingress.revision;
+        assert!(!ingress.refresh(),"poll only queues capture");
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        assert!(ingress.settle(),"typed callback changes wake the view");
+        assert!(ingress.revision>=revision);
+        let values=ingress.values(&face);
+        let find=|name:&str|sampler_ui_ir::WidgetRef(face.widgets.iter().position(|widget|widget.name==name).unwrap());
+        let table=find("%t"); let text=find("@text"); let xy=find("?xy");
+        assert_eq!(values[&table],sampler_ui_ir::Value::Integers(vec![0,25,0,0]));
+        assert_eq!(values[&text],sampler_ui_ir::Value::Text("live callback".into()));
+        assert!(matches!(&values[&xy],sampler_ui_ir::Value::Reals(values) if values[0]==0.25));
+        assert!(ingress.submit_ui_widgets(0,&face.widgets[table.0],vec![(1,sampler_ui_ir::Value::Integer(999))],Default::default()));
+        assert!(matches!(&ingress.values(&face)[&table],sampler_ui_ir::Value::Integers(values) if values[1]==999));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        assert!(ingress.settle(),"rejected preview must wake rollback");
+        assert_eq!(ingress.values(&face)[&table],values[&table]);
+        assert!(!ingress.submit_ui_widgets(0,&face.widgets[text.0],vec![(0,sampler_ui_ir::Value::Text("x".repeat(8192)))],Default::default()));
+        assert_eq!(ingress.values(&face)[&text],values[&text]);
     }
 
     #[test]

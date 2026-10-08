@@ -217,17 +217,11 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         e.st.model.persistence_completion = match result {
             Ok(_) => model::PersistenceCompletion::Completed,
             Err(f) => {
-                let category = if e.fuel == 0 {
-                    model::EvaluationFailure::Budget
-                } else {
-                    model::EvaluationFailure::InvalidValue
-                };
+                let category = if e.fuel == 0 {model::EvaluationFailure::Budget} else {model::EvaluationFailure::InvalidValue};
                 e.warn(f.span, "on persistence_changed did not complete".to_owned());
                 model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
             }
         };
-
-
     }
     Ok(e.st)
 }
