@@ -162,6 +162,7 @@ impl<'h> Unit<'h> {
         g.block(body)?;
         g.forward()?;
         g.emit(I::End)?;
+        let body_instructions = g.code.len();
         // Append reached functions breadth-first; calls are patched afterwards.
         let mut next = 0;
         while next < g.calls.len() {
@@ -180,6 +181,13 @@ impl<'h> Unit<'h> {
             g.code[at] = I::Op(Op::Call {
                 target: g.starts[&f] as u32,
             });
+        }
+        if std::env::var_os("KONTRA_AUDIT_LOWER").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_code_owners\",\"slot\":{},\"callback_type\":{},\"body_instructions\":{},\"function_instructions\":{},\"functions\":{},\"calls\":{},\"text_constants\":{},\"text_payload_bytes\":{}}}",
+                g.u.slot, g.callback_type, body_instructions, g.code.len() - body_instructions,
+                g.starts.len(), g.calls.len(), g.texts.len(), g.texts.iter().map(String::len).sum::<usize>()
+            );
         }
         let texts: Vec<&str> = g.texts.iter().map(String::as_str).collect();
         Program::new(g.code)
