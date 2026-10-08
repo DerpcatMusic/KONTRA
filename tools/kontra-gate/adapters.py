@@ -11,6 +11,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from evidence import Capture, redact
+from contention import wait_for_quiet
 HEAVY = Path.home() / '.cache/kontakto-heavy'
 V1 = Path.home() / '.cache/kontra-v1'
 CPU_V1 = Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
@@ -18,7 +19,7 @@ CPU_V1_SHA256 = 'b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6a
 GESTURE = 'ui::v2_tests::widget_conflux_native_gestures_and_readback'
 
 
-def capture(args, folder, env=None, cwd=None, timeout=235):
+def capture(args, folder, env=None, cwd=None, timeout=235, timed=False):
     folder.mkdir(parents=True, exist_ok=True)
     child_env = dict(os.environ, **(env or {}))
     evidence = Capture(folder, child_env)
@@ -27,7 +28,12 @@ def capture(args, folder, env=None, cwd=None, timeout=235):
     # Runtime output stays in RAM until reduced to numeric JSON and test witnesses.
     with tempfile.TemporaryFile(dir='/dev/shm') as output:
         try:
-            job = subprocess.run([str(HEAVY), 'timeout', str(timeout), *map(str, args)], stdout=output, stderr=evidence.stderr, env=child_env, cwd=cwd)
+            worker = [sys.executable, HERE / 'contention.py', folder, *args] if timed else args
+            while True:
+                if timed and child_env.get('KONTRA_GATE_REQUIRE_QUIET') == '1': wait_for_quiet(folder)
+                job = subprocess.run([str(HEAVY), 'timeout', str(timeout), *map(str, worker)], stdout=output, stderr=evidence.stderr, env=child_env, cwd=cwd)
+                activity = json.loads((folder / 'activity.json').read_text()) if timed and (folder / 'activity.json').exists() else {}
+                if not (timed and job.returncode == 75 and activity.get('status') == 'WAITING'): break
             output.seek(0); raw = output.read().decode(errors='replace')
             records = []
             for line in raw.splitlines():
@@ -36,6 +42,7 @@ def capture(args, folder, env=None, cwd=None, timeout=235):
                     if isinstance(row, dict): records.append(row)
                 except ValueError: pass
             witness = {'stdout_sha256': hashlib.sha256(raw.encode()).hexdigest(), 'returncode': job.returncode, 'lines': len(raw.splitlines())}
+            if timed: witness['contention'] = activity.get('status', 'UNKNOWN')
             return records, witness, raw
         finally:
             evidence.finish()
@@ -77,13 +84,17 @@ def cpu(run, source):
                         out = run / 'cpu' / f'{item}-{block}-{version}'
                         metric = out / 'metrics.json'
                         if metric.exists():
-                            result['cells'].append(json.loads(metric.read_text())); continue
-                        records, witness, _ = capture([exe, path, block, scenario], out, {'XDG_CACHE_HOME': '/dev/null'})
+                            cached = json.loads(metric.read_text())
+                            if os.environ.get('KONTRA_GATE_REQUIRE_QUIET') != '1' or cached.get('contention') == 'QUIET':
+                                result['cells'].append(cached); continue
+                        records, witness, _ = capture([exe, path, block, scenario], out, {'XDG_CACHE_HOME': '/dev/null'}, timed=True)
                         row = next((r for r in records if r.get('block') == block and isinstance(r.get('all'), dict)), {})
                         cell = {'item_sha256': item, 'version': version, 'block': block, 'scenario': scenario, **witness,
                                 'cpu_p50_us': row.get('all', {}).get('p50_us'), 'cpu_p99_us': row.get('all', {}).get('p99_us'),
                                 'idle': row.get('idle'), 'steady': row.get('steady'), 'voices_mean': row.get('voices_mean'), 'voices_peak': row.get('voices_peak'),
-                                'peak': row.get('peak'), 'deadline_misses': row.get('deadline_misses'), 'problems': redact(row.get('problems')),
+                                'peak': row.get('peak'), 'deadline_misses': row.get('deadline_misses'),
+                                'underruns': row.get('problems', {}).get('underruns') if isinstance(row.get('problems'), dict) else None,
+                                'problems': redact(row.get('problems')),
                                 'binary_sha256': hashlib.sha256(exe.read_bytes()).hexdigest()}
                         metric.write_text(json.dumps(cell) + '\n'); result['cells'].append(cell)
             result['reason'] = 'measured-sound-seam; UVI/multi/host coverage remains unknown'
@@ -125,10 +136,10 @@ def host(run, source):
             _, witness, _ = capture(['g++', '-O2', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', sdk, cpp, '-ldl', '-o', probe], run / 'host/build')
             if witness['returncode'] == 0:
                 for version, binary in [('v2', artifact), ('v1', V1 / 'plugin/KONTRA.clap')]:
-                    records, witness, _ = capture([probe, binary], run / 'host' / version)
+                    records, witness, _ = capture([probe, binary], run / 'host' / version, timed=True)
                     for row in records:
                         if all(k in row for k in ['block', 'events', 'flush', 'p50_us', 'p99_us']):
-                            result['cells'].append({'version': version, **{k: row[k] for k in ['block', 'events', 'flush', 'p50_us', 'p99_us', 'max_us']}})
+                            result['cells'].append({'version': version, 'contention': witness['contention'], **{k: row[k] for k in ['block', 'events', 'flush', 'p50_us', 'p99_us', 'max_us']}})
                     result[version + '_run'] = witness
                 result.update(reason='observed-empty-host-probe', status='PASS' if len(result['cells']) == 36 and all(result[v + '_run']['returncode'] == 0 for v in ['v1', 'v2']) else 'UNKNOWN')
     (run / 'host.json').write_text(json.dumps(result, indent=2) + '\n')

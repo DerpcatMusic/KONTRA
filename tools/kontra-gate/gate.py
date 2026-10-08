@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 from evidence import redact
+from contention import wait_for_quiet
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -40,7 +41,7 @@ def write_json(path, value):
 
 
 def verdict(states):
-    return 'FAIL' if 'FAIL' in states else 'UNKNOWN' if not states or 'UNKNOWN' in states else 'PASS'
+    return 'FAIL' if 'FAIL' in states else 'UNKNOWN' if not states or any(s in ['UNKNOWN', 'CONTENDED'] for s in states) else 'PASS'
 
 
 def number(value):
@@ -62,6 +63,11 @@ def signed_number(value):
 def compare(old, new, optimum=None):
     old, new = number(old), number(new)
     return 'UNKNOWN' if old is None or new is None else 'PASS' if new < old or old == new == optimum else 'FAIL'
+
+
+def timed_compare(old, new, states, optimum=None):
+    if 'CONTENDED' in states: return 'CONTENDED'
+    return compare(old, new, optimum) if states == ['QUIET', 'QUIET'] else 'UNKNOWN'
 
 
 def rows(run, version, condition):
@@ -131,29 +137,32 @@ def summarize(run, complete=False):
                     a = a if old.get('loads') == 'yes' else None
                     b = b if new.get('loads') == 'yes' else None
                 state = compare(a, b, 0 if metric in ['underruns', 'nonfinite'] else None)
+                if metric in ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'underruns']:
+                    state = timed_compare(a, b, [row.get('contention', 'UNKNOWN') for row in [old, new]], 0 if metric == 'underruns' else None)
                 if metric == 'signal_graph_trace':
                     a, b = (traces[v].get(path, 'unknown') for v in ['v1', 'v2'])
                     state = 'PASS' if b == 'complete' else 'UNKNOWN'
-                if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb']:
+                if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb'] and state != 'CONTENDED':
                     state='UNKNOWN'  # trace specialization changes performance; diagnostic only
                 if metric in ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'cpu_p50_us', 'cpu_p99_us']:
                     axes['beats-v1-every-metric'].append(state)
                 elif metric in ['underruns', 'nonfinite']:
-                    # Zero underruns is an absolute ceiling; equality at zero is valid.
-                    axes['beats-v1-every-metric'].append('PASS' if number(a) == number(b) == 0 else state)
+                    axes['beats-v1-every-metric'].append(state)
                 delta = number(b) - number(a) if number(a) is not None and number(b) is not None else None
                 observed.append({'item_sha256': item, 'condition': condition, 'metric': metric, 'v1': a, 'v2': b, 'delta': delta, 'verdict': state})
     cpu_cells = {(cell['item_sha256'], cell['block'], cell['version']): cell for cell in cpu.get('cells', [])}
     for path in paths:
         item = hashlib.sha256(path.encode()).hexdigest()
         for block in [32, 64, 256]:
-            for metric in ['cpu_p50_us', 'cpu_p99_us']:
+            for metric in ['cpu_p50_us', 'cpu_p99_us', 'underruns', 'deadline_misses']:
                 values = []
+                activity = []
                 for version in ['v1', 'v2']:
                     cell = cpu_cells.get((item, block, version), {})
+                    activity.append(cell.get('contention', 'UNKNOWN'))
                     usable = cell.get('returncode') == 0 and number(cell.get('peak')) is not None and number(cell['peak']) > 1e-5
                     values.append(cell.get(metric) if usable else None)
-                a, b = values; state = compare(a, b)
+                a, b = values; state = timed_compare(a, b, activity, 0 if metric in ['underruns', 'deadline_misses'] else None)
                 axes['beats-v1-every-metric'].append(state)
                 observed.append({'item_sha256': item, 'condition': f'cpu-runtime-block-{block}', 'metric': metric, 'v1': a, 'v2': b, 'delta': number(b)-number(a) if number(a) is not None and number(b) is not None else None, 'verdict': state})
     host_cells = {(cell['version'], cell['block'], cell['events'], cell['flush']): cell for cell in host.get('cells', [])}
@@ -163,7 +172,7 @@ def summarize(run, complete=False):
                 for metric in ['p50_us', 'p99_us']:
                     a = host_cells.get(('v1', block, events, flush), {}).get(metric)
                     b = host_cells.get(('v2', block, events, flush), {}).get(metric)
-                    state = compare(a, b); axes['beats-v1-every-metric'].append(state)
+                    state = timed_compare(a, b, [host_cells.get((v, block, events, flush), {}).get('contention', 'UNKNOWN') for v in ['v1', 'v2']]); axes['beats-v1-every-metric'].append(state)
                     observed.append({'item_sha256': 'empty-CLAP', 'condition': f'block-{block}-events-{events}-' + ('flush' if flush else 'process'), 'metric': metric, 'v1': a, 'v2': b, 'delta': number(b)-number(a) if number(a) is not None and number(b) is not None else None, 'verdict': state})
     # Warm product cache, feature parity, full corpus, live plugin/host and native validation remain required.
     axes['beats-v1-every-metric'].append('UNKNOWN')
@@ -307,9 +316,10 @@ def scans(run, engine, version, env):
             continue  # Frozen collectors have no host-restore path; missing rows remain UNKNOWN.
         env = dict(env, KONTRA_GATE_CACHE_CONDITION=condition, KONTRA_GATE_VERSION=version)
         out = run / version / condition
-        args = [sys.executable, run / 'harness/kontra-scan/kontra_scan.py', '--engine', engine, '--list', run / 'items.tsv', '--count', '100', '--out', out, '--budget-seconds', '235', '--timeout-seconds', '90']
+        args = [sys.executable, run / 'harness-contention-v1/kontra-scan/kontra_scan.py', '--engine', engine, '--list', run / 'items.tsv', '--count', '100', '--out', out, '--budget-seconds', '235', '--timeout-seconds', '90']
         # Each invocation acquires and releases its own FIFO heavy slot.
         for attempt in range(100):
+            if env.get('KONTRA_GATE_REQUIRE_QUIET') == '1': wait_for_quiet(out / 'quiet-wait')
             rc = command(args, run / f'{version}-{condition}-shards.log', env=env)
             summarize(run)
             if rc == 0: break
@@ -336,8 +346,9 @@ def probes(run, env):
         if reader.is_file(): probe_env.setdefault('KONTRA_UVI_READER', str(reader))
         probe_env.update(PROBE_TEST='uvi::scan::tests::probe_load_onset' if uvi else 'plugin::tests::probe_load', KONTRA_AUDIT_ONSET_ONLY='1')
         for mode in ['v1fresh', 'v1user']:
-            args = [sys.executable, run / 'harness/audit-load.py', manifest, run / 'probes', binary, mode, '0', str(len(selected))]
+            args = [sys.executable, run / 'harness-contention-v1/audit-load.py', manifest, run / 'probes', binary, mode, '0', str(len(selected))]
             for attempt in range(100):
+                if env.get('KONTRA_GATE_REQUIRE_QUIET') == '1': wait_for_quiet(run / 'probes/quiet-wait')
                 rc = command(args, run / f'{mode}-{uvi}-probes.log', env=probe_env)
                 if rc == 0: break
                 if rc != 75: raise RuntimeError('v1 onset probe runner failed')
@@ -352,6 +363,7 @@ def main():
     parser.add_argument('--items', type=Path, help='targeted diagnostic manifest; default is the fixed acceptance set')
     parser.add_argument('--conditions', nargs='+', choices=['cold','product-warm','os-warm','restored-state'], help='targeted diagnostic conditions; default runs all')
     parser.add_argument('--signal-trace', action='store_true', help='diagnostic trace run; do not use trace-enabled timings for performance acceptance')
+    parser.add_argument('--require-quiet', action='store_true', help='wait outside heavy slots until other heavy units/processes are inactive; monitor every timed cell')
     parser.add_argument('--adapter', choices=['cpu', 'gestures', 'host', 'all'], help='run owner adapter(s) on an existing run without repeating scanner cells')
     args = parser.parse_args()
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', args.sha + '^{commit}'], text=True).strip()
@@ -376,6 +388,10 @@ def main():
                 if (run / leaf).is_file() and not initial.exists(): shutil.copyfile(run / leaf, initial)
             import adapters
             manifest = json.loads((run / 'manifest.json').read_text())
+            manifest['require_quiet'] = args.require_quiet or manifest.get('require_quiet', False)
+            os.environ['KONTRA_GATE_REQUIRE_QUIET'] = '1' if manifest['require_quiet'] else '0'
+            manifest['contention_sha256'] = sha256(HERE / 'contention.py')
+            manifest['contention_protocol'] = 1
             if subprocess.check_output(['git', '-C', str(args.source), 'rev-parse', 'HEAD'], text=True).strip() != sha:
                 parser.error('adapter checkout SHA differs')
             for name in (['cpu', 'gestures', 'host'] if args.adapter == 'all' else [args.adapter]):
@@ -391,15 +407,17 @@ def main():
         manifest = {'signal_trace': args.signal_trace, 'sha': sha, 'created_utc': utc(), 'state': 'running', 'binaries': binaries, 'driver_sha256': sha256(DRIVER), 'gate_sha256': sha256(__file__), 'items_sha256': sha256(run / 'items.tsv'), 'source_checkout': str(args.source) if args.source else None, 'evidence_sha256': sha256(HERE / 'evidence.py'), 'conditions': args.conditions or ['cold', 'product-warm', 'os-warm', 'restored-state'], 'scope': 'targeted-diagnostic' if args.items or args.conditions else 'fixed-acceptance-set', 'restored_state_scope': 'Kontakt scalar controls; in-memory seed then timed production reload; v1 and UVI unsupported', 'cache_protocol': 'empty-writable-tmpfs-then-enabled-reload', 'profile': 'ci (release optimization, no cross-crate LTO)', 'previous_run': str(previous) if previous else None, 'plugin_host_run': False, 'os_page_cache': 'uncontrolled', 'no_release_or_install': True}
         if args.resume:
             manifest = json.loads((run / 'manifest.json').read_text())
+        manifest.update(require_quiet=args.require_quiet or manifest.get('require_quiet', False), contention_protocol=1, contention_sha256=sha256(HERE / 'contention.py'))
+        os.environ['KONTRA_GATE_REQUIRE_QUIET'] = '1' if manifest['require_quiet'] else '0'
         write_json(run / 'manifest.json', manifest); summarize(run)
         print(run / 'summary.md', flush=True)
         product_cache = tempfile.TemporaryDirectory(prefix='kontra-gate-cache-', dir='/dev/shm')
         try:
-            harness = run / 'harness'
+            harness = run / 'harness-contention-v1'
             if not harness.exists():
                 (harness / 'kontra-gate').mkdir(parents=True)
                 (harness / 'kontra-scan').mkdir()
-                for name in ['evidence.py', 'adapters.py', 'gate.py']:
+                for name in ['evidence.py', 'adapters.py', 'gate.py', 'contention.py']:
                     shutil.copyfile(HERE / name, harness / 'kontra-gate' / name)
                 shutil.copyfile(DRIVER, harness / 'kontra-scan/kontra_scan.py')
                 shutil.copyfile(HERE.parent / 'audit-load.py', harness / 'audit-load.py')
@@ -407,7 +425,7 @@ def main():
             if not engine.exists(): engine = prepare(sha, run, args.source)
             manifest['binaries']['v2-scanner'] = sha256(engine); write_json(run / 'manifest.json', manifest)
             env = os.environ.copy()
-            env.update(KONTRA_GATE_PRODUCT_CACHE_ROOT=product_cache.name, KONTRA_GATE_CAPTURE='1', KONTRA_SCAN_NOTE_ROOT=str(run / 'notes'), KONTRA_SCAN_SIDECAR=str(V1 / 'scan/kontra-scan-v1-uvi'), KONTRA_SCAN_V2_ENGINE=str(engine), KONTRA_REPORT_DIR=str(run / 'reports'), KONTRA_DISABLE_NETWORK='1')
+            env.update(KONTRA_GATE_PRODUCT_CACHE_ROOT=product_cache.name, KONTRA_GATE_CAPTURE='1', KONTRA_GATE_ACTIVITY='1', KONTRA_SCAN_NOTE_ROOT=str(run / 'notes'), KONTRA_SCAN_SIDECAR=str(V1 / 'scan/kontra-scan-v1-uvi'), KONTRA_SCAN_V2_ENGINE=str(engine), KONTRA_REPORT_DIR=str(run / 'reports'), KONTRA_DISABLE_NETWORK='1')
             scans(run, engine, 'v2', env)
             scans(run, V1 / 'scan/kontra-scan-v1', 'v1', env)
             if manifest.get('signal_trace'): env['KONTRA_SIGNAL_TRACE']='1'
