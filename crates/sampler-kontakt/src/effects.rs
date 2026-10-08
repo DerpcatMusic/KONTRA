@@ -589,6 +589,41 @@ pub(crate) struct Chain {
     pub filter_slots: Vec<(usize, usize)>,
 }
 
+/// Keep the amplifier boundary at its physical slot, even when either side
+/// has holes or linear processors that can otherwise collapse together.
+pub(crate) fn voice_chain(
+    slots: &[Slot],
+    split: i32,
+    dynamic: Option<(i32, i32)>,
+) -> (Chain, usize) {
+    let valid = (0..=8).contains(&split);
+    let cut = if valid {
+        slots.partition_point(|slot| slot.slot < split as usize)
+    } else {
+        slots.len()
+    };
+    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic);
+    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic);
+    let boundary = before.processors.len();
+    before.processors.extend(after.processors);
+    before.notes.extend(after.notes);
+    before.filter_slots.extend(
+        after
+            .filter_slots
+            .into_iter()
+            .map(|(slot, index)| (slot, index + boundary)),
+    );
+    if !valid {
+        before.notes.push((
+            0,
+            "amplifier split point".into(),
+            split.to_string(),
+            sampler_ir::Reason::InvalidValue,
+        ));
+    }
+    (before, boundary)
+}
+
 /// Translate one rack. Each slot scales its output by its output gain. The
 /// slot's dry level is not mixed back: local presets store 1.0 on Stereo
 /// Modeller, Inverter and EQ slots used as gain trims (output gains in
@@ -723,11 +758,9 @@ pub(crate) fn chain_with(
                 attack_ms,
                 release_ms,
                 link,
-            }) if scope == Scope::Bus => {
-                // Bus scope only: a group insert sees the group's summed signal in
-                // Kontakt, but a voice chain sees one voice, whose level is far
-                // lower (Analog Strings' compressor, threshold -14 dB, would
-                // never act while its +9 dB output gain applied).
+            }) => {
+                // Group inserts are per voice; instrument/bus inserts see their
+                // corresponding sum. The chain's scope preserves that distinction.
                 // DSP_SYSTEM_INVENTORY "Subtype selection and compressor linking":
                 // the linked detector is the signed channel mean. The level law
                 // is the textbook one (ir::Compressor); the stored units are the
@@ -793,17 +826,32 @@ pub(crate) fn chain_with(
             // `dry + out * g` (KONTAKT_REFERENCE s.25 measured a fresh module at
             // 0.5 + 0.5 g). Every stored Gainer in the local corpus has dry 0 and
             // output 1, so they stay plain `g`; a nonzero stored dry is honoured.
-            Some(p @ Params::Gainer { .. }) if mix.is_none() => match matrix(p, &mut notes) {
-                Some(m) => {
-                    let wet = product(gain, m);
-                    let dry = f64::from(fx.dry_level);
-                    let mixed = std::array::from_fn(|i| {
-                        std::array::from_fn(|j| wet[i][j] + if i == j { dry } else { 0.0 })
-                    });
-                    combined = product(mixed, combined);
-                }
-                None => modelled = false,
-            },
+            Some(Params::Gainer { gain: parameter }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors.push(sampler_ir::Processor::Gainer {
+                    gain: sampler_ir::Gain::Linear(
+                        f64::from(*parameter) * if mix.is_some() { 1.0 } else { wet },
+                    ),
+                    dry: if mix.is_some() {
+                        0.0
+                    } else {
+                        f64::from(fx.dry_level)
+                    },
+                });
+            }
+            Some(Params::StereoModeller {
+                spread,
+                pan,
+                pseudo,
+            }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                out.processors.push(sampler_ir::Processor::StereoModeller {
+                    width: (f64::from(*spread).clamp(-1.0, 1.0) + 1.0) * 0.5,
+                    pan: f64::from(*pan).clamp(-1.0, 1.0),
+                    pseudo: *pseudo,
+                });
+                combined = gain;
+            }
             Some(p) => match matrix(p, &mut notes) {
                 Some(m) => combined = product(product(gain, m), combined),
                 None => modelled = false,
@@ -1391,10 +1439,10 @@ mod tests {
             assert_eq!(
                 chain(&racks[index].1, Scope::Voice).processors,
                 // Existing rack law: wet Gainer 2 plus saved dry level 1.
-                [sampler_ir::Processor::StereoMatrix([
-                    [3.0, 0.0],
-                    [0.0, 3.0]
-                ])]
+                [sampler_ir::Processor::Gainer {
+                    gain: sampler_ir::Gain::Linear(2.0),
+                    dry: 1.0
+                }]
             );
         }
         assert_eq!(errors.len(), 8, "{errors:?}");
@@ -1495,10 +1543,65 @@ mod tests {
         let mut g = slot(0x13, 0.501f32.to_le_bytes().to_vec(), 0.5);
         g.dry_level = 0.5;
         let c = chain(&[g], Scope::Bus);
-        let [sampler_ir::Processor::StereoMatrix(m)] = c.processors[..] else {
+        let [sampler_ir::Processor::Gainer { gain, dry }] = c.processors[..] else {
             panic!("{:?}", c.processors)
         };
-        assert!((m[0][0] - 0.7505).abs() < 1e-6 && m[0][1] == 0.0, "{m:?}");
+        assert!((dry + gain.linear() - 0.7505).abs() < 1e-6);
+    }
+
+    #[test]
+    fn group_compressor_and_pseudo_stereo_are_admitted_per_voice() {
+        let mut body = 0i32.to_le_bytes().to_vec();
+        for value in [-14f32, 0.5, 0., 100.] {
+            body.extend(value.to_le_bytes());
+        }
+        body.push(1);
+        let c = chain(&[slot(0x19, body, 1.)], Scope::Voice);
+        assert!(
+            c.processors
+                .iter()
+                .any(|p| matches!(p, sampler_ir::Processor::Compressor(_))),
+            "{:?}",
+            c.notes
+        );
+        let mut body = 0f32.to_le_bytes().to_vec();
+        body.extend(0f32.to_le_bytes());
+        body.push(1);
+        let c = chain(&[slot(0x1f, body, 1.)], Scope::Voice);
+        assert!(
+            !c.notes
+                .iter()
+                .any(|(_, feature, _, _)| feature.contains("pseudo stereo")),
+            "{:?}",
+            c.notes
+        );
+    }
+
+    #[test]
+    fn amplifier_split_uses_physical_slots_and_keeps_both_gain_stages() {
+        let mut before = slot(0x13, 2f32.to_le_bytes().to_vec(), 1.0);
+        let mut after = slot(0x13, 3f32.to_le_bytes().to_vec(), 1.0);
+        before.slot = 1;
+        after.slot = 7;
+        before.dry_level = 0.0;
+        after.dry_level = 0.0;
+        let (chain, boundary) = voice_chain(&[before, after], 6, None);
+        assert_eq!(boundary, 1);
+        assert_eq!(chain.processors.len(), 2);
+        assert_eq!(
+            chain.processors[0],
+            sampler_ir::Processor::Gainer {
+                gain: sampler_ir::Gain::Linear(2.0),
+                dry: 0.0
+            }
+        );
+        assert_eq!(
+            chain.processors[1],
+            sampler_ir::Processor::Gainer {
+                gain: sampler_ir::Gain::Linear(3.0),
+                dry: 0.0
+            }
+        );
     }
 
     #[test]
@@ -1528,7 +1631,7 @@ mod tests {
                         },
                         ..
                     },
-                    sampler_ir::Processor::StereoMatrix(_)
+                    sampler_ir::Processor::Gainer { .. }
                 ]
             ),
             "{:?}",
@@ -1546,8 +1649,25 @@ mod tests {
                 .processors
                 .as_slice()
             {
-                [sampler_ir::Processor::StereoMatrix(m)] => *m,
-                [] => [[1.0, 0.0], [0.0, 1.0]],
+                [
+                    sampler_ir::Processor::StereoModeller {
+                        width,
+                        pan: imported_pan,
+                        pseudo: false,
+                    },
+                ] => {
+                    assert_eq!(*width, (f64::from(spread).clamp(-1.0, 1.0) + 1.0) * 0.5);
+                    assert_eq!(*imported_pan, f64::from(pan));
+                    matrix(
+                        &Params::StereoModeller {
+                            spread,
+                            pan,
+                            pseudo: false,
+                        },
+                        &mut Vec::new(),
+                    )
+                    .unwrap()
+                }
                 other => panic!("{other:?}"),
             }
         };
@@ -1631,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_inserts_fold_into_one_matrix_with_slot_gains() {
+    fn stateful_inserts_keep_their_boundaries_and_slot_gains() {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.dry_level = 0.0;
         let inverter = slot(0x1a, vec![1, 1], 0.5);
@@ -1647,10 +1767,19 @@ mod tests {
         // 2 * (swap, inverted) * 0.5 * 2 = swap, inverted, * 2.
         assert_eq!(
             processors,
-            vec![sampler_ir::Processor::StereoMatrix([
-                [0.0, -2.0],
-                [-2.0, 0.0]
-            ])]
+            vec![
+                sampler_ir::Processor::Gainer {
+                    gain: sampler_ir::Gain::Linear(2.0),
+                    dry: 0.0
+                },
+                sampler_ir::Processor::StereoMatrix([[0.0, -0.5], [-0.5, 0.0]]),
+                sampler_ir::Processor::StereoModeller {
+                    width: 0.5,
+                    pan: 0.0,
+                    pseudo: false
+                },
+                sampler_ir::Processor::StereoMatrix([[2.0, 0.0], [0.0, 2.0]]),
+            ]
         );
         assert_eq!(notes.len(), 1, "{notes:?}");
         // An EQ: its boosted band, then its slot gain.
@@ -1673,11 +1802,17 @@ mod tests {
             ),
             "{processors:?}"
         );
-        // Unity everything: no processor at all.
+        // Unity Gainer retains its stateful parameter owner.
         let mut unity = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
         unity.dry_level = 0.0;
         let processors = chain(&[unity], Scope::Voice).processors;
-        assert!(processors.is_empty());
+        assert_eq!(
+            processors,
+            vec![sampler_ir::Processor::Gainer {
+                gain: sampler_ir::Gain::UNITY,
+                dry: 0.0
+            }]
+        );
     }
 
     #[test]

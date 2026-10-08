@@ -646,6 +646,8 @@ pub fn compile_ui(
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
+                #[cfg(feature="scan")]
+                sampler_ksp::scan::attempt("runtime-preparation");
                 sampler_ksp::compile_with(&behavior.source, rate, limits, &[], &environment)
                     .map_err(|e| e.to_string())
             }
@@ -653,6 +655,13 @@ pub fn compile_ui(
         };
         match result {
             Ok(script) => {
+                if !cfg!(feature="native-ui") && script.model().requests.iter().any(|r| r.command == "load_native_ui") {
+                    instrument.unsupported.push(ir::Unsupported {
+                        location: behavior.name.clone(), feature: "native interface".into(),
+                        value: "The requested native performance view is unavailable; showing the script controls.".into(),
+                        reason: ir::Reason::NotModeled,
+                    });
+                }
                 instrument
                     .unsupported
                     .extend(script.warnings().iter().map(|w| ir::Unsupported {
@@ -941,6 +950,28 @@ mod automation_tests {
 mod native_lookup_tests {
     use super::*;
     #[test]
+    fn init_envelope_write_reaches_pcm_through_production_prepare() {
+        let mut instrument=ir::Instrument::default();
+        instrument.assets.push(ir::Asset {location:ir::AssetLocation::Path("synthetic.wav".into()),encoding:ir::Encoding::Wav,root_key:None,loops:vec![]});
+        instrument.groups.push(ir::Group::default());
+        instrument.modulators.push(ir::Modulator {scope:ir::Scope::Voice,source:ir::ModulationSource::Envelope(ir::Envelope::default())});
+        let mut zone=ir::Zone::new(ir::AssetRef(0));
+        zone.keys=ir::KeyRange{low:60,high:60};
+        zone.group=Some(ir::GroupRef(0)); zone.amplitude=Some(ir::ModulatorRef(0));
+        instrument.zones.push(zone);
+        instrument.source_indices.modulators.push(ir::SourceModulator {group:0,slot:9,external:false,name:"ENV_AHDSR".into(),runtime:Some(ir::ModulatorRef(0))});
+        instrument.source_indices.engine_lookups.push(ir::SourceEngineLookup {group:0,owner:-1,target:false,name:"ENV_AHDSR".into(),index:9});
+        instrument.behaviors.push(ir::Behavior {name:"synthetic envelope init".into(),language:ir::Language::Ksp,slot:Some(0),state:vec![],requires:vec![],source:"on init set_engine_par($ENGINE_PAR_ATTACK,200809,0,find_mod(0,\"ENV_AHDSR\"),-1) end on".into()});
+        let loaded=prepare(instrument,vec![Pcm::new(48000,vec![[0.5;2];4096].into_boxed_slice()).unwrap()],&Options{mpe:None,..Default::default()}).unwrap();
+        assert_eq!(loaded.plan.engine_parameter_bindings().len(),6);
+        let limits=sampler_core::Limits::for_plan(&loaded.plan,4,4);
+        let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+        runtime.trigger(sampler_core::Input{protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+        let mut out=[[0.;2];257];runtime.render(&mut out).unwrap();
+        assert!((out[256][0]-0.5*256./480.).abs()<0.01,"init engine write must change rendered attack");
+        assert!(runtime.take_engine_parameter_outcome().is_some_and(|outcome|outcome.result.is_ok()));
+    }
+    #[test]
     fn physical_mod_and_target_names_resolve_during_init_and_note() {
         let mut instrument = ir::Instrument::default();
         instrument.groups = ["muted", "hole", "live"].into_iter().map(|name| ir::Group { name:name.into(), ..Default::default() }).collect();
@@ -950,9 +981,8 @@ mod native_lookup_tests {
         ];
         instrument.behaviors.push(ir::Behavior { name:"lookup".into(),language:ir::Language::Ksp,slot:Some(3),state:vec![],requires:vec![],
             source:"on init declare $mod := get_mod_idx(2,\"source\") declare $target := get_target_idx(2,$mod,\"cutoff\") declare $group := find_group(\"live\") declare $note_mod declare $note_target end on on note $note_mod := get_mod_idx(2,\"SOURCE\") $note_target := get_target_idx(2,$note_mod,\"CUTOFF\") end on".into() });
-        let lookups = sampler_core::lower::source_engine_lookups(&instrument.source_indices);
         let loaded = prepare(instrument,vec![],&Options::default()).unwrap();
-        let plan=loaded.plan.with_engine_parameters(vec![],lookups).unwrap();
+        let plan=loaded.plan;
         let limits=sampler_core::Limits::for_plan(&plan,4,8);
         let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
         let cell=|rt:&sampler_core::Runtime,index| rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index);

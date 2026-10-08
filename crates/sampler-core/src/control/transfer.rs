@@ -6,8 +6,11 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 #[derive(Debug)]
 pub enum ControlOperation {
     Invoke(super::ControlContext, ControlWrite),
+    HostParameter(super::ControlContext, u16, f64),
     InvokeWidget(super::ControlContext, Vec<crate::WidgetEdit>),
     CaptureWidget(Vec<crate::WidgetEdit>),
+    CaptureScriptState(crate::ScriptStateBuffer),
+    RestoreScriptState(crate::ScriptStateBuffer),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -15,9 +18,12 @@ pub enum ControlOperation {
 impl ControlOperation {
     fn len(&self) -> usize {
         match self {
-            Self::Invoke(..) => 1,
+            Self::Invoke(..) | Self::HostParameter(..) => 1,
             Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
+            Self::CaptureScriptState(v) | Self::RestoreScriptState(v) => {
+                v.values.len().saturating_add(v.callbacks.len())
+            }
         }
     }
 }
@@ -174,7 +180,22 @@ impl Runtime {
                     reply.behavior = behavior;
                     (edits.len(), revision)
                 }),
+            ControlOperation::HostParameter(context, address, value) => self
+                .dispatch_host_parameter_in(
+                    *context,
+                    command.plan,
+                    command.expected_revision,
+                    *address,
+                    *value,
+                )
+                .map(|revision| (1, revision)),
             ControlOperation::CaptureWidget(output) => self.capture_widgets(command.plan, output),
+            ControlOperation::CaptureScriptState(output) => {
+                self.capture_script_state(command.plan, output)
+            }
+            ControlOperation::RestoreScriptState(state) => {
+                self.restore_script_state(command.plan, command.expected_revision, state)
+            }
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
                 .map(|rev| (writes.len(), rev)),

@@ -7,6 +7,9 @@
 //! larger storage to the audio thread through lock-free queues. Everything the
 //! audio thread replaces goes back to the loader to be dropped.
 
+mod automation;
+pub(crate) mod automation_ids;
+
 use crate::sound::{
     BUSES, BlockInfo, Core, CoreError, CoreLoader, LoadRequest, MAX_BLOCK, Progress, RACK_SLOTS, Rendered, TUNE_RANGE,
     Transport,
@@ -35,6 +38,9 @@ use std::{
 #[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Part {
+    /// Typed UVI widget/custom state, captured on the Lua worker.
+    pub uvi_state: String,
+    pub uvi_state_source: String,
     pub path: String,
     /// Program inside a bank file.
     pub program: u32,
@@ -55,6 +61,8 @@ pub struct Part {
     pub name: String,
     /// The rack shows only the part's header.
     pub collapsed: bool,
+    /// v1 codes: 0 global default, 1 Original, 2 KONTRA, 3 Vector.
+    pub view: u8,
     /// The part's height in the rack when the player sized it; 0 is automatic.
     pub height: f32,
     /// Output bus (0..[`BUSES`]) the part also sends to, post-fader; -1 for none.
@@ -84,6 +92,8 @@ pub struct Part {
 impl Default for Part {
     fn default() -> Self {
         Self {
+            uvi_state: String::new(),
+            uvi_state_source: String::new(),
             path: String::new(),
             program: 0,
             port: 0,
@@ -96,6 +106,7 @@ impl Default for Part {
             solo: false,
             name: String::new(),
             collapsed: false,
+            view: 0,
             height: 0.,
             aux: -1,
             aux_gain: 0.,
@@ -246,6 +257,8 @@ impl Selection {
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
+    #[nested(base = 0)]
+    pub host: automation::HostAutomation,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
     pub selection: RwLock<Selection>,
@@ -328,6 +341,9 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 #[derive(Default)]
 pub(crate) struct PartShared {
     pub(crate) generation: AtomicU64,
+    pub(crate) scalar_revision: AtomicU64,
+    pub(crate) native_revision: AtomicU64,
+    ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
     /// Out of [`Progress::DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
     pub(crate) meter: [AtomicU32; 2],
@@ -385,14 +401,29 @@ impl PartShared {
     }
 
     /// Audio thread: copy the core's values in, unless the loader holds the lock.
-    fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
+    pub(crate) fn refresh_controls(&self, value: impl Fn(sampler_ui_ir::ControlId) -> Option<f64>) {
         if let Ok(cells) = self.controls.try_lock() {
+            let mut changed = false;
             for cell in cells.iter() {
                 if let Some(v) = value(cell.id) {
-                    cell.set(v);
+                    if cell.value().to_bits() != v.to_bits() { cell.set(v); changed = true; }
                 }
             }
+            if changed { self.scalar_revision.fetch_add(1, Ordering::Release); }
         }
+    }
+
+    pub(crate) fn display_values(&self) -> Vec<(sampler_ui_ir::ControlId, f64)> {
+        let mut values = self.control_values();
+        if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
+        values
+    }
+
+    pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        let mut ingress = self.ingress.lock().unwrap();
+        let Some(ingress) = ingress.as_mut() else { return Default::default() };
+        if ingress.settle() { self.scalar_revision.fetch_add(1, Ordering::Release); }
+        ingress.values(face)
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
@@ -454,10 +485,8 @@ pub struct Shared {
     pub(crate) bend: AtomicU32,
     pub(crate) modulation: AtomicU32,
     pub(crate) controls: ArrayQueue<Mix>,
-    /// Widget edits for the audio thread: rack slot, control, value.
-    control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
-    /// Script effects from the audio thread: rack slot, script instance, effect.
-    effects: ArrayQueue<(usize, usize, sampler_core::Effect)>,
+    /// Script effects from the audio thread: rack slot, source epoch, script instance, effect.
+    effects: ArrayQueue<(usize, u64, usize, sampler_core::Effect)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
     pub meters: Meters,
     /// One strip's signal for a spectrum on screen.
@@ -510,6 +539,9 @@ pub struct Shared {
 #[derive(Default, Clone)]
 pub(crate) struct PartView {
     pub(crate) program: u32,
+    pub(crate) generation: u64,
+    pub(crate) ui_revision: u64,
+    pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, u64, bool, i16)>,
     pub(crate) status: String,
@@ -530,6 +562,22 @@ pub(crate) struct PartView {
     pub(crate) keys: Arc<[crate::sound::KeyLook]>,
     /// The load's log record ([`crate::diagnostics::LoadTrace`]).
     pub(crate) trace: Option<Arc<serde_json::Value>>,
+}
+
+impl PartView {
+    pub(crate) fn publish_interface(&mut self, current: &sampler_ui_ir::Interface) -> bool {
+        let Some(index) = self.interfaces.iter().position(|f| f.source == current.source) else { return false };
+        let patch = sampler_ui_ir::InterfacePatch::between(&self.interfaces[index], current);
+        if self.updates.get(index).map_or(patch == Default::default(), |old| *old == patch) { return false; }
+        let mut updates = self.updates.to_vec();
+        updates.resize_with(self.interfaces.len(), Default::default);
+        updates[index] = patch;
+        self.updates = updates.into();
+        self.ui_revision += 1;
+        true
+    }
+
+
 }
 
 #[derive(Clone)]
@@ -569,7 +617,6 @@ impl Default for Shared {
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
-            control_edits: ArrayQueue::new(256),
             effects: ArrayQueue::new(1024),
             meters: Meters::default(),
             scope: Scope::default(),
@@ -924,34 +971,109 @@ impl Shared {
     /// Edit a control of the part in `slot` as its widget would; the
     /// script's `on ui_control` runs on the audio thread. False when the
     /// queue is full.
+    #[cfg(test)]
     pub(crate) fn set_control(&self, slot: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
-        if let Some(part) = self.part(slot)
-            && let Some(cell) = part.controls.lock().unwrap().iter().find(|c| c.id == control)
-        {
-            cell.set(value);
+        let Some(part) = self.part(slot) else { return false };
+        self.set_control_at(slot, part.generation.load(Ordering::Acquire), control, value)
+    }
+
+    pub(crate) fn set_control_at(&self, slot: usize, epoch: u64, control: sampler_ui_ir::ControlId, value: f64) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        if let Some(uvi) = &part.scripts.lock().unwrap().uvi {
+            if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
+            return uvi.edit(control,value);
         }
-        self.control_edits.push((slot, control, value)).is_ok()
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
+        ingress.as_mut().is_some_and(|client| client.submit(control, value))
+    }
+
+    /// Main-thread host automation uses the same epoch admission and reply queue.
+    pub(crate) fn set_host_parameter_at(&self, slot: usize, epoch: u64, address: u16, value: f64) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|client| client.submit_host_parameter(address, value))
+    }
+
+    /// One authored gesture; XY axes and touched table cells stay one transaction.
+    pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        if part.scripts.lock().unwrap().uvi.is_some() {
+            return match (&widget.binding, edits.as_slice()) {
+                (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Integer(value))]) => self.set_control_at(slot,epoch,*id,f64::from(*value)),
+                (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Real(value))]) => self.set_control_at(slot,epoch,*id,*value),
+                _=>false,
+            };
+        }
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|ingress| ingress.submit_ui_widgets(source_slot, widget, edits, interaction))
+    }
+
+    pub(crate) fn set_widget_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, index: Option<usize>, value: sampler_ui_ir::Value) -> bool {
+        let Some(index) = u32::try_from(index.unwrap_or(0)).ok() else { return false };
+        let edits = match value {
+            sampler_ui_ir::Value::Integers(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Integer(value)))).collect::<Option<Vec<_>>>(),
+            sampler_ui_ir::Value::Reals(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Real(value)))).collect::<Option<Vec<_>>>(),
+            value => Some(vec![(index, value)]),
+        };
+        edits.is_some_and(|edits| self.set_widget_batch_at(slot, epoch, source_slot, widget, edits, Default::default()))
     }
 
     /// Apply the script effects the audio thread queued to their parts'
     /// interface models, and publish the interfaces that changed.
     fn apply_effects(&self) {
-        let mut changed = Vec::new();
-        while let Some((slot, instance, effect)) = self.effects.pop() {
+        let mut changed = std::collections::BTreeMap::<(usize, u64), std::collections::BTreeSet<usize>>::new();
+        while let Some((slot, epoch, instance, effect)) = self.effects.pop() {
             let Some(part) = self.part(slot) else { continue };
-            if part.scripts.lock().unwrap().apply(instance, &effect) && !changed.contains(&slot) {
-                changed.push(slot);
+            if part.generation.load(Ordering::Acquire) != epoch { continue; }
+            let mut scripts = part.scripts.lock().unwrap();
+            let key_only = scripts.views.get(instance).and_then(|v| v.service(effect.service)).is_some_and(|s| s.starts_with("set_key_"));
+            if scripts.apply(instance, &effect) {
+                let instances = changed.entry((slot, epoch)).or_default();
+                if !key_only { instances.insert(instance); }
             }
         }
-        for slot in changed {
+        self.with_parts(|parts| { for part in parts {
+            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() { ingress.settle(); }
+        }});
+        for ((slot, epoch), instances) in changed {
             let Some(part) = self.part(slot) else { continue };
+            if part.generation.load(Ordering::Acquire) != epoch { continue; }
             let (interfaces, keys) = {
                 let mut scripts = part.scripts.lock().unwrap();
-                (scripts.interfaces(), scripts.keys())
+                (instances.into_iter().filter_map(|i| scripts.interface(i)).collect::<Vec<_>>(), scripts.keys())
             };
-            if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot) {
-                v.interfaces = interfaces.into();
-                v.keys = keys;
+            if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot).filter(|v| v.generation == epoch) {
+                for interface in interfaces { v.publish_interface(&interface); }
+                if v.keys != keys { v.keys = keys; v.ui_revision += 1; }
+            }
+        }
+    }
+
+    fn refresh_uvi(&self, params: &SamplerParams) {
+        let parts = self.parts.lock().unwrap().clone();
+        for (slot, part) in parts.iter().enumerate() {
+            let mut scripts = part.scripts.lock().unwrap();
+            let Some(uvi) = scripts.uvi.clone() else {
+                continue;
+            };
+            let revision = uvi.revision();
+            if revision == scripts.uvi_revision {
+                continue;
+            }
+            scripts.uvi_revision = revision;
+            if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
+                view.publish_interface(&uvi.interface());
+            }
+            if let Ok(state) = uvi.state()
+                && let Ok(state) = serde_json::to_string(&state)
+                && let Some(part) = params.selection.write().unwrap().parts.get_mut(slot)
+                && scripts.uvi_source.as_ref() == Some(&part.source())
+            {
+                part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
+                part.uvi_state = state;
             }
         }
     }
@@ -1073,6 +1195,12 @@ impl BackgroundTask for Load {
         let shared = &params.shared;
         shared.flush_ready();
         shared.apply_effects();
+        shared.with_parts(|parts| { for part in parts {
+            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.refresh() {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        } });
+        shared.refresh_uvi(&params);
         shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -1173,7 +1301,13 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         };
     }
     atoms.load_progress.store(0, Ordering::Relaxed);
-    let generation = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
+    // Serialize epoch changes with off-audio producers.
+    let generation = {
+        let mut ingress = atoms.ingress.lock().unwrap();
+        let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        *ingress = None;
+        epoch
+    };
     if part.path.is_empty() {
         *atoms.stream.lock().unwrap() = None;
         atoms.resident_bytes.store(0, Ordering::Relaxed);
@@ -1192,7 +1326,16 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
+    let state = if part.uvi_state.is_empty()
+        || part.uvi_state_source != serde_json::to_string(&source).unwrap() { Ok(None) }
+        else if part.uvi_state.len() > 8 << 20 {
+            Err(CoreError::Invalid("Saved UVI UI state exceeds 8 MiB".into()))
+        } else {
+            serde_json::from_str(&part.uvi_state).map(Some)
+                .map_err(|_| CoreError::Invalid("Saved UVI UI state is malformed".into()))
+        };
     let request = LoadRequest {
+        uvi_state: state.as_ref().ok().cloned().flatten(),
         path: part.path.clone().into(),
         program: part.program,
         sample_rate: rate,
@@ -1206,12 +1349,15 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = V2Loader.prepare(&request, &mut progress, &canceled);
+    let result = state.and_then(|_| V2Loader.prepare(&request, &mut progress, &canceled));
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
-        Ok(loaded) => {
+        Ok(mut loaded) => {
+            if loaded.scripts.uvi.is_some() {
+                loaded.scripts.uvi_source = Some(source.clone());
+            }
             for line in loaded.report.lines().skip(1) {
                 trace.issue("translate", crate::diagnostics::code(&line), line);
             }
@@ -1229,7 +1375,12 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.active = loaded.report.name.clone();
             v.tree = Some(Arc::new(loaded.tree));
             v.report = Some(Arc::new(loaded.report));
+            v.generation = generation;
             v.interfaces = loaded.interfaces.into();
+            if let Some(part) = loaded.part.as_mut() {
+                part.epoch = generation;
+                *atoms.ingress.lock().unwrap() = part.ui_controls.take();
+            }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
             *atoms.node_meters.lock().unwrap() = (0..nodes).map(|_| Default::default()).collect();
             *atoms.controls.lock().unwrap() = loaded
@@ -1414,6 +1565,12 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
 
 /// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
 fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessContext, thru: bool) {
+    if let EventBody::ParamChange { id, value } = e.body {
+        if let Some(address) = automation::HostAutomation::address(id) {
+            if !s.core.host_parameter(address, value) { s.unsupported += 1; }
+        }
+        return;
+    }
     relay_typed_input(e, cx, thru);
     let shared = &p.shared;
     let lit = |note: u8, velocity: u8| shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed);
@@ -1588,7 +1745,9 @@ impl PluginLogic for Sampler {
                 atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
                 let playing = s.core.articulation(slot).map_or(u32::MAX, |a| a as u32);
                 atoms.articulation.store(playing, Ordering::Relaxed);
-                atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                if s.core.epoch(slot) == atoms.generation.load(Ordering::Acquire) {
+                    atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                }
             }
             s.until_poll = (rate * 0.1) as usize;
         } else {
@@ -1629,9 +1788,6 @@ impl PluginLogic for Sampler {
             shared.reset_midi();
             s.core.panic();
             s.audition.fill((0, 0));
-        }
-        while let Some((slot, control, value)) = shared.control_edits.pop() {
-            s.core.set_control(slot, control, value);
         }
         while let Some((slot, play)) = shared.keyboard.pop() {
             if slot == EVERY_PART {
@@ -1730,7 +1886,14 @@ impl PluginLogic for Sampler {
             at += len;
         }
         for slot in 0..s.core.parts() {
-            s.core.take_effects(slot, &mut |instance, effect| shared.effects.push((slot, instance, *effect)).is_ok());
+            let epoch = s.core.epoch(slot);
+            let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
+            let revision = s.core.ui_revision(slot);
+            if atoms.generation.load(Ordering::Acquire) == epoch && revision != atoms.native_revision.load(Ordering::Relaxed) {
+                atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                atoms.native_revision.store(revision, Ordering::Relaxed);
+            }
+            s.core.take_effects(slot, &mut |instance, effect| shared.effects.push((slot, epoch, instance, *effect)).is_ok());
         }
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
@@ -1968,3 +2131,6 @@ pub(crate) mod tests {
         assert_eq!(Play::Mod(64).event(), CoreEvent::midi1(0xb0, 1, 64));
     }
 }
+
+#[cfg(test)]
+mod loop_audit;

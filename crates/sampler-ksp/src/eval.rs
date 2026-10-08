@@ -27,7 +27,7 @@ pub struct Environment {
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
-    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
 }
 
@@ -124,6 +124,8 @@ pub struct Initial {
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
     pub controls: Vec<i32>,
+    /// Effective persistence, including declarations reached through init functions.
+    pub persistence: Vec<Persistence>,
     pub model: model::Model,
     /// Positioned non-fatal problems (Kontakt reports these and continues).
     pub warnings: Vec<Fault>,
@@ -165,6 +167,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
+            persistence: hir.vars.iter().map(|v| v.persistence).collect(),
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
@@ -178,6 +181,8 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         pending_menus: BTreeMap::new(),
         callback_type: b::cb::INIT,
     };
+    #[cfg(feature="scan")]
+    crate::scan::present(hir.callbacks.iter().any(|c|c.kind==CallbackKind::Init),hir.callbacks.iter().any(|c|c.kind==CallbackKind::PersistenceChanged));
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
         if let Some((lo, hi)) = declared_range(ui) {
@@ -185,13 +190,18 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     if let Some(init) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::Init) {
-        e.block(&init.body)?;
+        #[cfg(feature="scan")]
+        crate::scan::stage("init");
+        let r=e.block(&init.body);
+        #[cfg(feature="scan")]
+        crate::scan::phase("init",r.as_ref().err());
+        r?;
     }
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
         if !e.consumed.contains(&VarId(i as u32))
-            && (var.persistence != Persistence::None
+            && (e.st.persistence[i] != Persistence::None
                 || matches!(var.home, Home::Control(_))
                     && e.env
                         .control_values
@@ -206,7 +216,10 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
     {
-        e.st.model.persistence_completion = match e.block(&cb.body) {
+        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
+        let result=e.block(&cb.body);
+        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
+        e.st.model.persistence_completion = match result {
             Ok(_) => model::PersistenceCompletion::Completed,
             Err(f) => {
                 let category = if e.fuel == 0 {
@@ -215,11 +228,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
                     model::EvaluationFailure::InvalidValue
                 };
                 e.warn(f.span, "on persistence_changed did not complete".to_owned());
-                model::PersistenceCompletion::Failed {
-                    category,
-                    offset: f.span.start,
-                    builtin: f.builtin,
-                }
+                model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
             }
         };
     }
@@ -252,6 +261,8 @@ impl Eval<'_> {
     fn block(&mut self, body: &[Stmt]) -> Result<Flow> {
         for s in body {
             if self.fuel == 0 {
+                #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
                 return fault(s.span, "on init exceeded its evaluation budget");
             }
             self.fuel -= 1;
@@ -286,7 +297,9 @@ impl Eval<'_> {
             StmtKind::While(cond, body) => {
                 while self.expr(cond)?.int() != 0 {
                     if self.fuel == 0 {
-                        return fault(s.span, "on init exceeded its evaluation budget");
+                        #[cfg(feature="scan")]
+                crate::scan::category("fuel-budget");
+                return fault(s.span, "on init exceeded its evaluation budget");
                     }
                     self.fuel -= 1;
                     match self.block(body)? {
@@ -511,7 +524,11 @@ impl Eval<'_> {
                 if !(0..array.len() as i32).contains(&i) {
                     self.warn(e.span, format!("array index {i} out of bounds"));
                 }
-                V::I(0)
+                if array.drop_kind().is_some() {
+                    V::S(String::new())
+                } else {
+                    V::I(0)
+                }
             }
             ExprKind::Neg(inner) => match self.expr(inner)? {
                 V::R(r) => V::R(-r),
@@ -746,9 +763,10 @@ impl Eval<'_> {
         for i in 0..args.len() {
             let v = match &args[i] {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
-                // Engine parameters are recorded by name: hashed ids are unreadable.
-                _ if i == 0 && builtin == Builtin::SetEnginePar => {
-                    let id = self.int(args, 0)?;
+                // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
+                _ if (i == 0 && builtin == Builtin::SetEnginePar)
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
                 _ => self.arg(args, i)?,
@@ -762,7 +780,14 @@ impl Eval<'_> {
         Ok(())
     }
 
-    fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+    fn builtin(&mut self,builtin:Builtin,args:&[Arg],span:Span)->Result<V> {
+        let result=self.builtin_inner(builtin,args,span);
+        #[cfg(feature="scan")]
+        crate::scan::builtin(result.as_ref().err().map(|_|builtin.name()));
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use Builtin::*;
         if let Some(Arg::SysArray(array)) = args.first() {
             // Runtime-maintained arrays are all zero while initializing.
@@ -1117,7 +1142,7 @@ impl Eval<'_> {
                     fonts.push(name);
                     fonts.len() - 1
                 });
-                V::I(index as i32)
+                V::I(26 + index as i32)
             }
             SetKeyColor | SetKeyType | SetKeyPressed | SetKeyName => {
                 let key = self.int(args, 0)?;
@@ -1202,7 +1227,15 @@ impl Eval<'_> {
                 }
                 V::I(0)
             }
-            MakePersistent | MakeInstrPersistent => V::I(0),
+            MakePersistent | MakeInstrPersistent => {
+                let var = Self::var(args, 0);
+                self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
+                    Persistence::Instrument
+                } else {
+                    Persistence::Snapshot
+                };
+                V::I(0)
+            }
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
                 self.restore(var);
@@ -1365,7 +1398,19 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            LoadArray => {
+                // NI load/save contract: load_array in init implicitly persists
+                // its target; saved state is restored after the init callback.
+                let var = Self::var(args, 0);
+                if self.callback_type == b::cb::INIT
+                    && self.st.persistence[var.0 as usize] == Persistence::None
+                {
+                    self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                self.request(builtin, args)?;
+                V::I(0)
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr
             | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
             | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
@@ -1426,6 +1471,7 @@ pub fn lookup_index(name: &str) -> i32 {
 
 fn placeholder() -> model::Widget {
     model::Widget {
+        unresolved: false,
         name: String::new(),
         kind: WidgetKind::Label,
         ui_id: 0,

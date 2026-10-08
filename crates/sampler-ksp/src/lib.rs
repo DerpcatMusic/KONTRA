@@ -21,6 +21,8 @@ pub mod model;
 pub mod nckp;
 mod parser;
 mod sema;
+#[cfg(feature = "scan")]
+pub mod scan;
 pub mod ui;
 
 pub use diag::{Error, Kind};
@@ -286,14 +288,12 @@ fn apply_ui_effect(
     let Some(&service) = services.get(usize::from(effect.service)) else {
         return false;
     };
-    let args = &effect.args[..usize::from(effect.count)];
-    let arg = |i: usize| args.get(i).map(|&v| v as i32);
+    let Some(args) = effect.args.get(..usize::from(effect.count)) else { return false };
+    let arg = |i: usize| args.get(i).and_then(|&v| i32::try_from(v).ok());
     let text = || effect.text.as_ref().map(|t| t.as_str().to_string());
     if let Some(rest) = service.strip_prefix("set_key_") {
-        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?))
-        else {
-            return false;
-        };
+        let Some(key) = arg(0).and_then(|k| model.interface.keys.get_mut(usize::try_from(k).ok()?)) else { return false };
+        let before = key.clone();
         match rest {
             "color" => key.color = arg(1),
             "type" => key.kind = arg(1),
@@ -301,52 +301,92 @@ fn apply_ui_effect(
             "name" => key.name = text(),
             _ => return false,
         }
+        return *key != before;
+    }
+    if service == "set_skin_offset" {
+        let Some(value) = arg(0) else { return false };
+        let changed = model.interface.skin_offset != Some(value);
+        model.interface.skin_offset = Some(value);
+        return changed;
+    }
+    if service == "set_ui_color" {
+        let Some(value) = arg(0) else { return false };
+        if let Some(request) = model.requests.iter_mut().rev().find(|r| r.command == "set_ui_color") {
+            if request.args == [Value::Int(value)] { return false; }
+            request.args = vec![Value::Int(value)];
+        } else { model.requests.push(model::Request { command: "set_ui_color", args: vec![Value::Int(value)] }); }
         return true;
     }
-    let (Some(id), Some(par)) = (arg(0), arg(1)) else {
-        return false;
-    };
-    let (value, index) = match service {
-        "set_control_par" => (arg(2).map(Value::Int), None),
-        "set_control_par_real" => (
-            args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))),
-            None,
-        ),
-        "set_control_par_str" => (text().map(Value::Text), None),
-        "set_control_par_arr" => (arg(2).map(Value::Int), arg(3)),
-        "set_control_par_str_arr" => (text().map(Value::Text), arg(2)),
-        _ => return false,
-    };
-    let (Some(value), Some(name)) = (value, eval::symbol_in(symbols, par)) else {
-        return false;
-    };
-    let interface = &mut model.interface;
-    if let Some(w) = interface.widgets.iter_mut().find(|w| w.ui_id == id) {
-        match index {
-            Some(i) => {
-                w.indexed_properties
-                    .entry(name)
-                    .or_default()
-                    .insert(i, value);
+    let Some(id) = arg(0) else { return false };
+    let widget = model.interface.widgets.iter_mut().find(|w| w.ui_id == id);
+    if matches!(service, "move_control" | "move_control_px" | "add_menu_item" | "set_menu_item_str" | "set_menu_item_visibility" | "set_menu_item_value") {
+        let Some(w) = widget else { return false };
+        let before = w.clone();
+        match service {
+            "move_control" | "move_control_px" => {
+                let (Some(x), Some(y)) = (arg(1), arg(2)) else { return false };
+                let (px, py) = if service == "move_control" { ("grid_x", "grid_y") } else {
+                    w.properties.remove("grid_x"); w.properties.remove("grid_y");
+                    ("$CONTROL_PAR_POS_X", "$CONTROL_PAR_POS_Y")
+                };
+                w.properties.insert(px.into(), Value::Int(x));
+                w.properties.insert(py.into(), Value::Int(y));
             }
-            None => {
-                if name == "$CONTROL_PAR_VALUE"
-                    && let (Value::Int(v), model::WidgetValue::Int(_)) = (&value, &w.value)
-                {
-                    w.value = model::WidgetValue::Int(*v);
+            "add_menu_item" => {
+                let (Some(text), Some(value)) = (text(), arg(1)) else { return false };
+                w.menu.push(model::MenuItem { text, value, visible: true });
+            }
+            _ => {
+                let Some(item) = arg(1).and_then(|i| w.menu.get_mut(usize::try_from(i).ok()?)) else { return false };
+                match service {
+                    "set_menu_item_str" => { let Some(value) = text() else { return false }; item.text = value; }
+                    "set_menu_item_value" => { let Some(value) = arg(2) else { return false }; item.value = value; }
+                    _ => { let Some(value) = arg(2) else { return false }; item.visible = value != 0; }
                 }
-                w.properties.insert(name, value);
             }
         }
-    } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
-        interface
-            .instrument
-            .entry(id)
-            .or_default()
-            .insert(name, value);
-    } else {
-        return false;
+        return *w != before;
     }
+    let (name, value, index) = match service {
+        "set_text" | "add_text_line" => (Some("$CONTROL_PAR_TEXT".into()), text().map(Value::Text), None),
+        "set_knob_label" => (Some("$CONTROL_PAR_LABEL".into()), text().map(Value::Text), None),
+        "set_control_help" => (Some("$CONTROL_PAR_HELP".into()), text().map(Value::Text), None),
+        "set_knob_unit" => (Some("$CONTROL_PAR_UNIT".into()), arg(1).map(Value::Int), None),
+        "set_knob_defval" => (Some("$CONTROL_PAR_DEFAULT_VALUE".into()), arg(1).map(Value::Int), None),
+        "hide_part" => (Some("$CONTROL_PAR_HIDE".into()), arg(1).map(Value::Int), None),
+        "set_table_steps_shown" => (Some("table_steps_shown".into()), arg(1).map(Value::Int), None),
+        "set_control_par" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), None),
+        "set_control_par_real" | "set_control_par_real_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), args.get(2).map(|&b| Value::Real(f64::from_bits(b as u64))), if service.ends_with("_arr") { arg(3) } else { None }),
+        "set_control_par_str" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), None),
+        "set_control_par_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), arg(2).map(Value::Int), arg(3)),
+        "set_control_par_str_arr" => (arg(1).and_then(|p| eval::symbol_in(symbols, p)), text().map(Value::Text), arg(2)),
+        _ => return false,
+    };
+    let (Some(name), Some(mut value)) = (name, value) else { return false };
+    if let Some(w) = widget {
+        if service == "add_text_line" && let Value::Text(new) = &mut value
+            && let Some(Value::Text(old)) = w.properties.get(&name) && !old.is_empty() {
+            *new = format!("{old}\n{new}");
+        }
+        if let Some(i) = index {
+            let properties = w.indexed_properties.entry(name).or_default();
+            if properties.get(&i) == Some(&value) { return false; }
+            properties.insert(i, value);
+        } else {
+            if w.properties.get(&name) == Some(&value) { return false; }
+            if name == "$CONTROL_PAR_VALUE" {
+                match (&value, &mut w.value) {
+                    (Value::Int(v), model::WidgetValue::Int(old)) => *old = *v,
+                    _ => {}
+                }
+            }
+            w.properties.insert(name, value);
+        }
+    } else if (builtins::INST_ICON_ID..=builtins::INST_ICON_ID + 5).contains(&id) {
+        let properties = model.interface.instrument.entry(id).or_default();
+        if properties.get(&name) == Some(&value) { return false; }
+        properties.insert(name, value);
+    } else { return false; }
     true
 }
 
@@ -376,6 +416,45 @@ pub fn callback_of(views: &[ScriptView], program: usize) -> String {
         base += v.programs;
     }
     format!("program {program}")
+}
+
+/// Prepare a live host-state capture off audio. Persistent locations are the
+/// actual bound banks; variable names and sigils stay in `ScriptView::model`.
+/// Instrument persistence includes both persistence kinds. Snapshot callers
+/// may filter instrument-only locations using that authored metadata.
+pub fn persistent_state_buffer(
+    views: &[ScriptView],
+) -> Result<sampler_core::ScriptStateBuffer, sampler_core::Error> {
+    use sampler_core::{ScriptStateAddress as A, ScriptStateValue as V};
+    let mut state = sampler_core::ScriptStateBuffer::default();
+    let mut base = 0;
+    for (i, view) in views.iter().enumerate() {
+        let instance = ScriptInstanceId(u16::try_from(i).map_err(|_| sampler_core::Error::Capacity)?);
+        for persistent in &view.model.persistent {
+            match persistent.location {
+                model::Location::Control(id) => state.values.push(sampler_core::ScriptStateEntry {
+                    address: A::Control(id), value: V::Control(sampler_core::ControlValue::Integer(0)),
+                }),
+                model::Location::Cells { offset, len } => {
+                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
+                        state.values.push(sampler_core::ScriptStateEntry { address: A::Cell {instance,index}, value: V::Cell(0) });
+                    }
+                }
+                model::Location::Texts { offset, len } => {
+                    for index in offset..offset.checked_add(len).ok_or(sampler_core::Error::Capacity)? {
+                        state.values.push(sampler_core::ScriptStateEntry { address: A::Text {instance,index}, value: V::Text(sampler_core::Text::new("")) });
+                    }
+                }
+            }
+        }
+        if let Some(entry) = view.entries.iter().find(|e| e.kind == EntryKind::PersistenceChanged) {
+            state.callbacks.push(sampler_core::ScriptStateCallback { program: base + entry.program, behavior: None, outcome: None });
+        }
+        base += view.programs;
+    }
+    state.values.sort_by_key(|entry| entry.address);
+    state.values.dedup_by_key(|entry| entry.address);
+    Ok(state)
 }
 
 /// Bind source modules in order through the shared native routing table.
@@ -444,12 +523,50 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
                 })
             };
             if let Some(storage) = storage {
+                let drop = if w.kind == model::WidgetKind::MouseArea {
+                    let texts = u32::try_from(script.resources.texts.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    let counts = u32::try_from(script.cells.len())
+                        .map_err(|_| sampler_core::Error::Capacity)?;
+                    script.resources.texts.resize(
+                        script.resources.texts.len()
+                            + 3 * sampler_core::WIDGET_DROP_CAPACITY as usize,
+                        String::new(),
+                    );
+                    script.cells.resize(script.cells.len() + 3, 0);
+                    Some(sampler_core::WidgetDropStorage {
+                        texts,
+                        counts,
+                        accepts: [
+                            "$CONTROL_PAR_DND_ACCEPT_AUDIO",
+                            "$CONTROL_PAR_DND_ACCEPT_MIDI",
+                            "$CONTROL_PAR_DND_ACCEPT_ARRAY",
+                        ]
+                        .map(|name| {
+                            [
+                                w.ui_id,
+                                builtins::control_par(name).unwrap(),
+                                lower::PROPERTY_TAG,
+                                lower::PROPERTY_TAG,
+                            ]
+                        }),
+                        receive_drag: [
+                            w.ui_id,
+                            builtins::control_par("$CONTROL_PAR_RECEIVE_DRAG_EVENTS").unwrap(),
+                            lower::PROPERTY_TAG,
+                            lower::PROPERTY_TAG,
+                        ],
+                    })
+                } else {
+                    None
+                };
                 widgets.push(sampler_core::WidgetDefinition {
                     id: derived_control_id(script.slot, &w.name),
                     source_slot: script.slot,
                     ui_id: w.ui_id,
                     instance,
                     storage,
+                    drop,
                     program: script
                         .routed(EntryKind::UiControl(
                             (w.ui_id - builtins::FIRST_UI_ID) as usize,
@@ -561,15 +678,31 @@ pub fn init_engine_pars(
     limits: Limits,
     environment: &Environment,
 ) -> Result<Vec<EnginePar>, Error> {
+    #[cfg(feature="scan")]
+    scan::reset_script();
+    let result=init_engine_pars_inner(source,limits,environment);
+    #[cfg(feature="scan")]
+    scan::record(&result,source,environment.slot);
+    result
+}
+fn init_engine_pars_inner(source: &str,limits: Limits,environment: &Environment)->Result<Vec<EnginePar>,Error>{
     let mut syms = lexer::Interner::default();
     (|| {
+        #[cfg(feature="scan")]
+        scan::stage("lex");
         let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature="scan")]
+        scan::stage("preprocess");
         lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature="scan")]
+        scan::stage("parse");
         let ast = parser::parse(&toks, &syms)?;
         let budget = sema::Budget {
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
+        #[cfg(feature="scan")]
+        scan::stage("sema");
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
         let init = eval::run(&hir, environment)?;
         let mut writes: Vec<_> = init
@@ -607,6 +740,21 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
+    #[cfg(feature = "scan")]
+    scan::reset_script();
+    let result = compile_inner(source, rate, limits, controls, environment);
+    #[cfg(feature = "scan")]
+    scan::record(&result, source, environment.slot);
+    result
+}
+
+fn compile_inner(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    environment: &Environment,
+) -> Result<Script, Error> {
     let error = |message: &str| Error {
         offset: 0,
         line: 1,
@@ -638,18 +786,29 @@ pub fn compile_with(
     let mut syms = lexer::Interner::default();
     let (hir, init, conditions) = (|| {
         let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature="scan")]
+        scan::stage("preprocess");
         let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature="scan")]
+        scan::stage("parse");
         let ast = parser::parse(&toks, &syms)?;
         let budget = sema::Budget {
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
+        #[cfg(feature="scan")]
+        scan::stage("sema");
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment)?;
+        let init = eval::run(&hir, environment);
+        #[cfg(feature = "scan")]
+        scan::initialized(init.is_ok());
+        let init = init?;
         Ok((hir, init, conditions))
     })()
     .map_err(|f: diag::Fault| f.locate(source))?;
 
+    #[cfg(feature="scan")]
+    scan::stage("lower");
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];
     let mut host = Vec::new();
