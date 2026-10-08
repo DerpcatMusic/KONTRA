@@ -816,3 +816,42 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
     assert!(high > low * 100., "Daft {low} {high}");
 }
+
+#[test]
+fn authored_delay_runs_existing_dsp_at_the_requested_time() {
+    let instrument = ir::Instrument {
+        assets: vec![asset("impulse")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            chain: Some(ir::ChainRef(0)),
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Delay {
+                time: ir::Time::Seconds(4. / 48000.),
+                feedback: 0.5,
+                mix: 1.,
+            }],
+            post_amplitude: vec![],
+        }],
+        ..Default::default()
+    };
+    let mut samples = vec![[0.; 2]; 64];
+    samples[0] = [1.; 2];
+    let plan = lower(
+        &instrument,
+        48000,
+        vec![Pcm::new(48000, samples.into_boxed_slice()).unwrap()],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut output = [[0.; 2]; 16];
+    rt.render(&mut output).unwrap();
+    assert!(output[..4].iter().all(|sample| sample[0] == 0.));
+    assert!(output[4][0] > 0.);
+    assert!((output[8][0] / output[4][0] - 0.5).abs() < 1e-6);
+}
