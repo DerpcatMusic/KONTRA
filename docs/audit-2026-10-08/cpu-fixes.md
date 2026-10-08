@@ -687,3 +687,49 @@ Splitting next: retain only the control-side quadratic-to-linear coefficient pre
 The working branch restores the exact945098b2 render implementation, original eight bank entries and52-frame stack window. Its only production diff from945098b2 is linear control-side coefficient construction; the reference impulse-row test proves all eight banks'65 phases bit-exact. The extended bank, wider stack fallbacks and lookup correction remain rejected experiments reachable in the history, with all measurements retained.
 
 43 area checks and default root cargo test --no-run pass. Candidate CPU SHA256 `0adbdef8d357dafd379185509960eab21baaabf8230b237cf847e0633fbcb505`. The next rotating60-run original-instrument batch compares8c baseline,50 extended-bank experiment and preparation-only. Its two overlapping40-run comparisons isolate coefficient preparation (baseline→preparation-only) and the extended bank/window/lookup (preparation-only→50). No part is accepted from a source-only synthetic win. **HOLD pending that gate.**
+
+### Final component gates: reject every resampler production change
+
+Rotating three-way order, 60 original-instrument runs: 20 frozen baseline, 20 preparation-only and 20 extended-bank runs. These provide two overlapping 40-run component comparisons: baseline → preparation-only, then preparation-only → extended bank/window/lookup. All processes returned 0, all event/render heap counters were 0, and every one of the 30 cold evictions verified pages_after=0. All runs, including outliers, remain under `~/.cache/kontakto-fix-cpu/resample-preparation-matrix/`.
+
+| Cell | Repeat | 8c baseline median/p99 µs | 124 preparation median/p99 µs | 50 extended median/p99 µs | Underruns baseline/prep/extended | Deadlines baseline/prep/extended |
+|---|---:|---:|---:|---:|---:|---:|
+| fx-256 | 1 | 179.314/277.446 | 180.874/269.545 | 180.813/272.735 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-256-cold | 1 | 178.744/343.327 | 177.833/275.865 | 177.394/268.615 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-32 | 1 | 50.001/109.123 | 53.851/120.552 | 53.021/118.022 | 0 / 0 / 0 | 0 / 6 / 1 |
+| fx-32-cold | 1 | 48.951/104.962 | 47.181/100.642 | 48.801/109.682 | 0 / 0 / 0 | 1 / 0 / 0 |
+| fx-64 | 1 | 50.691/113.732 | 53.671/115.582 | 50.441/123.273 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 1 | 72.392/194.784 | 52.151/123.152 | 52.221/127.283 | 0 / 0 / 2 | 0 / 0 / 0 |
+| piano-256 | 1 | 88.732/144.733 | 89.932/129.362 | 79.502/129.212 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-256-cold | 1 | 88.402/129.592 | 89.932/111.802 | 91.672/141.673 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-32 | 1 | 18.251/42.061 | 16.780/37.931 | 16.110/34.571 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-32-cold | 1 | 16.100/37.190 | 16.520/37.170 | 17.290/36.451 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64 | 1 | 26.180/51.381 | 37.691/74.262 | 40.281/106.032 | 0 / 0 / 0 | 1 / 0 / 0 |
+| piano-64-cold | 1 | 25.250/45.131 | 36.651/147.313 | 26.140/54.251 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64 | 2 | 49.481/103.312 | 52.811/123.453 | 52.871/117.922 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 2 | 49.461/118.052 | 53.181/130.363 | 50.421/113.442 | 0 / 0 / 1 | 0 / 0 / 0 |
+| piano-64 | 2 | 26.010/49.270 | 24.530/45.201 | 25.690/47.071 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-cold | 2 | 25.330/45.800 | 24.030/48.380 | 26.000/51.631 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64 | 3 | 52.281/115.072 | 47.391/122.683 | 53.861/128.262 | 0 / 0 / 0 | 0 / 0 / 0 |
+| fx-64-cold | 3 | 54.061/136.853 | 72.621/249.944 | 51.430/123.353 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64 | 3 | 26.130/49.631 | 29.680/59.091 | 23.651/45.391 | 0 / 0 / 0 | 0 / 0 / 0 |
+| piano-64-cold | 3 | 24.940/44.011 | 24.510/48.091 | 27.091/48.281 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+Three-run 64-frame aggregates (median of run medians / median of run p99s):
+
+| Cell | 8c baseline µs | 124 preparation µs | 50 extended µs |
+|---|---:|---:|---:|
+| piano-64-cold | 25.250/45.131 | 24.510/48.380 | 26.140/51.631 |
+| piano-64-warm | 26.130/49.631 | 29.680/59.091 | 25.690/47.071 |
+| fx-64-cold | 54.061/136.853 | 53.181/130.363 | 51.430/123.353 |
+| fx-64-warm | 50.691/113.732 | 52.811/122.683 | 52.871/123.273 |
+
+**REJECT/HOLD.** Baseline: 2 deadlines / 0 underruns; preparation-only: 6 / 0; extended bank: 1 / 3. Preparation-only piano64 cold aggregate 24.510/48.380 versus baseline 25.250/45.131µs, warm 29.680/59.091 versus 26.130/49.631. FX64 cold 53.181/130.363 versus 54.061/136.853, warm 52.811/122.683 versus 50.691/113.732. Favorable cells do not cancel regressions. No component passed every p99/deadline/underrun cell; no production part is retained or handed to W0 as an accepted improvement.
+
+The extended bank adds 3 storage underruns in FX64 cold (2 in repeat 1, 1 in repeat 2); this reinforces the streaming gate failure. The earlier FX256 cold underruns remain unresolved. The matched audio-TID profiles identified added lookup cost, but correcting it did not pass the real-instrument gate. Diagnostic tracing did not establish whether prefetch was starved; unchanged demand bounds do not prove storage scheduling is unaffected.
+
+Normalized disassembly for the preparation-only trial matches baseline in all 681 sample_window and 178 reference-window instruction strings after addresses/relocations are normalized. This establishes that coefficient preparation added no resampling-render instructions; it does not establish performance equivalence or explain the measured tails. Full listings are retained as prep-render-{sample_window,reference_window}-{baseline,candidate}.asm.txt in the cache.
+
+The final branch restores `crates/sampler-core/src/resample.rs` byte-for-byte from 945098b2. Experimental commits 4c3c8f07, 50b2b8db and 124ca53a remain reachable, with frozen binaries and all receipts preserved. The high-rate streamed/resident allocation-free PCM fixture and synthetic benchmark remain as regression/diagnostic coverage. This is rejection of the experiment, not completion of #6 or v1 CPU parity.
+
+Final restore validation: 42 targeted resampling/cold-chain/paged-render tests pass, including the retained high-rate streamed/resident allocation-free PCM fixture. Default root `cargo test --no-run` passes; existing warnings remain. `git diff 945098b2 -- crates/sampler-core/src/resample.rs` is empty, and the restored file SHA256 is `cc82a1c002ee59c40900ded23f2798b80f5cae95db4396af5457a4c2929bab40`. No release/install or fresh v1 parity gate was run in this rejection batch.
