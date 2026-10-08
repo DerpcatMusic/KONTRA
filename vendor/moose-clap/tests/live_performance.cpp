@@ -1,5 +1,5 @@
 // Real-time exported CLAP host. Reuses native_midi_audio.cpp's SDK/state path.
-// HOST PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV
+// HOST PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE
 #include <clap/clap.h>
 #include <dlfcn.h>
 #include <algorithm>
@@ -26,6 +26,16 @@ struct Stream {
         auto& s = *static_cast<Stream*>(stream->ctx);
         auto n = std::min<uint64_t>(size, s.bytes.size() - s.cursor);
         std::memcpy(out, s.bytes.data() + s.cursor, n); s.cursor += n; return n;
+    }};
+};
+struct SavedState {
+    std::vector<char> bytes;
+    clap_ostream_t api{this, [](const clap_ostream_t* stream, const void* data, uint64_t size)->int64_t {
+        auto& s = *static_cast<SavedState*>(stream->ctx);
+        if (size > 64 * 1024 * 1024 - s.bytes.size()) return -1;
+        if (size == 0) return 0;
+        const auto* chars = static_cast<const char*>(data);
+        s.bytes.insert(s.bytes.end(), chars, chars + size); return size;
     }};
 };
 struct Midi { uint64_t frame; unsigned status, a, b; };
@@ -100,9 +110,12 @@ int main(int argc, char** argv) {
             && events.in.get(&events.in, 1) == nullptr, "sample-exact bounded host events");
         const auto io = parse_io("rchar: 1200\nread_bytes: 4096\nwchar: 8\n");
         require(io.valid && io.chars == 1200 && io.disk == 4096 && !parse_io("rchar: 1\n").valid, "stream I/O counters and absent field");
-        std::puts("PASS: percentiles, timestamped event input and stream I/O"); return 0;
+        SavedState saved;
+        require(saved.api.write(&saved.api, "abc", 3) == 3 && saved.bytes == std::vector<char>({'a', 'b', 'c'})
+            && saved.api.write(&saved.api, "x", 64 * 1024 * 1024) == -1, "bounded native state-save stream");
+        std::puts("PASS: percentiles, timestamped event input, stream I/O and native state save"); return 0;
     }
-    require(argc == 8, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS");
+    require(argc == 9, "PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE");
     const unsigned block = std::strtoul(argv[3], nullptr, 10);
     const double seconds = std::strtod(argv[4], nullptr);
     const unsigned parts = std::strtoul(argv[7], nullptr, 10);
@@ -214,6 +227,12 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     audio.join(); if (host.callback.exchange(false)) p->on_main_thread(p);
+    // State readback stays outside measured process calls and streaming deltas.
+    SavedState saved;
+    require(state->save(p, &saved.api) && !saved.bytes.empty(), "native CLAP state save");
+    std::ofstream readback(argv[8], std::ios::binary);
+    readback.write(saved.bytes.data(), saved.bytes.size()); readback.close();
+    require(bool(readback), "native state readback file");
     // Let the one-second frozen-v1 diagnostic snapshot reach its existing worker.
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     std::sort(wall.begin(), wall.end()); std::sort(cpu.begin(), cpu.end());
