@@ -113,7 +113,7 @@ impl Preparation {
                         if canceled() {
                             continue;
                         }
-                        let bytes = picture
+                        let bytes = font.as_ref().map_or(0, |f| f.as_ref().len()) + picture
                             .as_ref()
                             .map_or(0, |p| p.frames.iter().map(|i| i.rgba.len()).sum());
                         if done
