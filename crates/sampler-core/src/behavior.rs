@@ -901,6 +901,8 @@ pub(super) struct Continuation {
     pub callback_id: i32,
     pub waiting: bool,
     pub disable_wait: bool,
+    pub async_result: Option<(i32,i32)>,
+    pub async_wait:Option<i32>,
 }
 
 #[derive(Clone, Copy)]
@@ -974,6 +976,8 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         n.work = work;
         let begin = id.0.index * self.behavior_stride;
@@ -1067,6 +1071,8 @@ impl Runtime {
             },
             waiting: false,
             disable_wait: false,
+            async_result: None,
+            async_wait: None,
         })?);
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
@@ -1228,6 +1234,7 @@ impl Runtime {
     pub(super) fn resume_behavior(&mut self, id: BehaviorId) {
         if let Some(c) = self.behaviors.get_mut(id.0) {
             c.waiting = false;
+            c.async_wait=None;
         }
         self.queue_behavior(id);
         self.drain_behavior();

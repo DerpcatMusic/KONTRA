@@ -136,6 +136,8 @@ mod integer;
 pub mod lower;
 pub use integer::{IntegerBinary, IntegerUnary};
 mod ops;
+mod midi_object;
+pub use midi_object::{MidiAction, MidiObject, MidiObjectEvent, MidiExportArea, MidiCompletion, midi_par, MIDI_CURRENT_EVENT, MIDI_ALL_EVENTS, MIDI_TRACK_FLAG, MIDI_MARKS_FLAG, MIDI_SERVICE, MIDI_ASYNC_SIGNAL, MIDI_MAX_EVENTS};
 mod script;
 pub use ops::{
     CALL_DEPTH, EFFECT_ARGS, EFFECT_CAPACITY, Effect, HOST_VALUES, IntegerExtra, Op, RealBinary,
@@ -871,6 +873,7 @@ impl Runtime {
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
             scripts: plan.script_initial.clone(),
+            midi_object: plan.midi_object.clone(),
             dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,
@@ -1656,6 +1659,8 @@ impl Runtime {
             }
         }
         for generation in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
+            generation.callbacks=generation.callbacks.saturating_sub(generation.midi_object.jobs.iter().filter(|j|!j.initial).count());
+            generation.midi_object.jobs.clear();
             generation.dsp.buses.reset();
         }
         self.cleanup_closed_notes();
