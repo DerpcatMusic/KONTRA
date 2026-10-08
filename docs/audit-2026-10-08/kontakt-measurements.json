@@ -5893,5 +5893,48 @@
   "validation": {
     "cargo_test_no_run": "passed",
     "seconds": 31.75
+  },
+  "shared_scan_partial": {
+    "source_revision": "9dcf05e59cbc67e45c56872e1418817693150085",
+    "status": "partial; no paired regression claims",
+    "v1_binary_sha256": "a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399",
+    "v2_binary_sha256": "18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d",
+    "v1_published_rows": 0,
+    "v2_published_rows": 0,
+    "conflux_cache_sha256": "794f975cae0a997cde78459d8f2fcc6a1d7e174f9127e84b75cf046df485c5c6",
+    "conflux": {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+      "revision": "18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d",
+      "loads": "yes",
+      "plays_note": "yes",
+      "ui": "missing-images",
+      "controls_bound": "107/113",
+      "load_ms": 17338.27955,
+      "peak_rss_mb": 230.84,
+      "ksp_compile_ok": "yes",
+      "ksp_init_ok": "yes",
+      "active_script_slots": 3,
+      "compiled_script_slots": 3,
+      "clean_compiled_slots": 3,
+      "init_callbacks_completed": 3,
+      "persistence_changed_completed": 2,
+      "load_fault_records": 0,
+      "ksp_runtime_fault_records": 0,
+      "saved_entry_sigils": "{\"!\":13,\"$\":223,\"%\":15,\"@\":6}",
+      "admitted_saved_entry_sigils": "{\"$\":223,\"%\":15,\"@\":6}",
+      "sample_resident_bytes": 38249160,
+      "underruns": 0,
+      "note_picked": "{\"0\":[60,64]}",
+      "pick_source": "{\"0\":\"zone_coverage\"}",
+      "audition_status": "matched-note-plan",
+      "paint_ok": "yes",
+      "page_background_rgba": "[[240,239,228,255],null,null]",
+      "plain_background_fraction": "[0.9389854416271942,0.9263170547427708,1.0]",
+      "asset_lookup_requested": 4,
+      "asset_lookup_ok": 3,
+      "asset_decode_requested": 3,
+      "asset_decode_ok": 3,
+      "resource_failure_reasons": "{\"decode-failed\":0,\"font-service-unavailable\":6,\"lookup-not-found\":1}"
+    }
   }
 }
