@@ -12,10 +12,11 @@ pub struct LadderSettings {
 
 impl LadderSettings {
     pub(super) fn valid(self) -> bool {
-        [self.cutoff, self.resonance, self.gain].iter().all(|p| {
+        [self.cutoff, self.resonance].iter().all(|p| {
             p.valid() && !matches!(p, Parameter::Expression { .. })
                 && p.bounds().iter().all(|v| (0.0..=1.0).contains(v))
-        })
+        }) && self.gain.valid() && !matches!(self.gain, Parameter::Expression { .. })
+            && self.gain.bounds().iter().all(|v| (-1.0..=1.0).contains(v))
     }
 
     pub(super) fn compile(self, rate: u32, bindings: &mut Vec<ControlRange>) -> Ladder {

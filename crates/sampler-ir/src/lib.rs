@@ -1120,6 +1120,8 @@ pub struct Daft {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LadderLP4 {
+    /// Physical native owner; absent for an authored standalone processor.
+    pub address: Option<SlotAddress>,
     pub gain: f64,
     pub cutoff: f64,
     pub resonance: f64,
