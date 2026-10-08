@@ -124,6 +124,8 @@ pub struct Initial {
     pub texts: Vec<String>,
     /// Values of host-owned controls, by UI index.
     pub controls: Vec<i32>,
+    /// Effective persistence, including declarations reached through init functions.
+    pub persistence: Vec<Persistence>,
     pub model: model::Model,
     /// Positioned non-fatal problems (Kontakt reports these and continues).
     pub warnings: Vec<Fault>,
@@ -165,6 +167,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             cells: vec![0; hir.cells as usize],
             texts: vec![String::new(); hir.texts as usize],
             controls: vec![0; hir.uis.len()],
+            persistence: hir.vars.iter().map(|v| v.persistence).collect(),
             model,
             warnings: Vec::new(),
             engine: HashMap::new(),
@@ -198,7 +201,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
         if !e.consumed.contains(&VarId(i as u32))
-            && (var.persistence != Persistence::None
+            && (e.st.persistence[i] != Persistence::None
                 || matches!(var.home, Home::Control(_))
                     && e.env
                         .control_values
@@ -1224,7 +1227,15 @@ impl Eval<'_> {
                 }
                 V::I(0)
             }
-            MakePersistent | MakeInstrPersistent => V::I(0),
+            MakePersistent | MakeInstrPersistent => {
+                let var = Self::var(args, 0);
+                self.st.persistence[var.0 as usize] = if builtin == MakeInstrPersistent {
+                    Persistence::Instrument
+                } else {
+                    Persistence::Snapshot
+                };
+                V::I(0)
+            }
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
                 self.restore(var);
@@ -1387,7 +1398,19 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            LoadArray => {
+                // NI load/save contract: load_array in init implicitly persists
+                // its target; saved state is restored after the init callback.
+                let var = Self::var(args, 0);
+                if self.callback_type == b::cb::INIT
+                    && self.st.persistence[var.0 as usize] == Persistence::None
+                {
+                    self.st.persistence[var.0 as usize] = Persistence::Snapshot;
+                }
+                self.request(builtin, args)?;
+                V::I(0)
+            }
+            PurgeGroup | SetVoiceLimit | LoadIrSample | SaveArray | LoadArrayStr
             | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
             | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;

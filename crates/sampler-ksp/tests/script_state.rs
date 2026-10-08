@@ -242,3 +242,131 @@ fn restore_rejection_and_capture_bad_address_leave_buffers_and_live_state_untouc
         ControlQueueError::PayloadLimit
     );
 }
+
+#[test]
+fn persistence_declared_in_an_init_function_restores_and_enters_native_capture() {
+    let source = r#"on init
+        declare !texts[2] := ("default","default")
+        declare $value
+        call register_state
+        end on
+        function register_state
+            make_persistent(!texts)
+            make_instr_persistent($value)
+        end function"#;
+    let environment = sampler_ksp::Environment {
+        persisted: [("$value".into(), sampler_ksp::model::Value::Int(42))].into(),
+        persisted_arrays: [(
+            "!texts".into(),
+            vec![
+                sampler_ksp::model::Value::Text("restored".into()),
+                sampler_ksp::model::Value::Text("array".into()),
+            ],
+        )]
+        .into(),
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
+        source,
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+        &environment,
+    )
+    .unwrap();
+    assert_eq!(script.model().persistent.len(), 2);
+    let mut state = sampler_ksp::persistent_state_buffer(&[script.view()]).unwrap();
+    let plan = sampler_ksp::bind_modules(
+        vec![script],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    runtime
+        .capture_script_state(runtime.active_plan(), &mut state)
+        .unwrap();
+    assert_eq!(state.values.len(), 3);
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|e| e.value == ScriptStateValue::Text(Text::new("restored")))
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|e| e.value == ScriptStateValue::Text(Text::new("array")))
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|e| e.value == ScriptStateValue::Cell(42))
+    );
+}
+
+#[test]
+fn init_load_array_implicitly_restores_numeric_and_text_arrays() {
+    let source = r#"on init
+        declare !texts[2]
+        declare %numbers[3]
+        load_array(!texts,1)
+        load_array(%numbers,1)
+        end on"#;
+    let environment = sampler_ksp::Environment {
+        persisted_arrays: [
+            (
+                "!texts".into(),
+                vec![
+                    sampler_ksp::model::Value::Text("saved".into()),
+                    sampler_ksp::model::Value::Text("text".into()),
+                ],
+            ),
+            ("%numbers".into(), vec![sampler_ksp::model::Value::Int(42)]),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let script = sampler_ksp::compile_with(
+        source,
+        48000,
+        sampler_ksp::Limits::LIBRARY,
+        &[],
+        &environment,
+    )
+    .unwrap();
+    assert_eq!(script.model().persistent.len(), 2);
+    let mut state = sampler_ksp::persistent_state_buffer(&[script.view()]).unwrap();
+    let plan = sampler_ksp::bind_modules(
+        vec![script],
+        Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    runtime
+        .capture_script_state(runtime.active_plan(), &mut state)
+        .unwrap();
+    assert_eq!(
+        state
+            .values
+            .iter()
+            .filter(|e| e.value == ScriptStateValue::Cell(42))
+            .count(),
+        3
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|e| e.value == ScriptStateValue::Text(Text::new("saved")))
+    );
+    assert!(
+        state
+            .values
+            .iter()
+            .any(|e| e.value == ScriptStateValue::Text(Text::new("text")))
+    );
+}
