@@ -294,13 +294,13 @@ pub fn interface(
         height_rows,
     });
 
-    let by_id: HashMap<i32, usize> = m
-        .widgets
+    let widgets: Vec<_> = m.widgets.iter().filter(|w| !w.unresolved).collect();
+    let by_id: HashMap<i32, usize> = widgets
         .iter()
         .enumerate()
         .map(|(i, w)| (w.ui_id, i))
         .collect();
-    for (i, w) in m.widgets.iter().enumerate() {
+    for (i, w) in widgets.iter().enumerate() {
         let int = |p: &str| w.int(p);
         let range = |default_max: i32| {
             let (lo, hi) = w.range.unwrap_or((0, default_max));
@@ -331,7 +331,11 @@ pub fn interface(
             },
             WidgetKind::Slider => ir::Kind::Slider {
                 range: range(1_000_000),
-                orientation: ir::Orientation::Horizontal,
+                orientation: if int("$CONTROL_PAR_MOUSE_BEHAVIOUR").is_some_and(|m| m < 0) {
+                    ir::Orientation::Vertical
+                } else {
+                    ir::Orientation::Horizontal
+                },
             },
             WidgetKind::Button => ir::Kind::Button { momentary: false },
             WidgetKind::Switch => ir::Kind::Switch,
@@ -447,9 +451,9 @@ pub fn interface(
         out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
         out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {
             axis: if m < 0 {
-                ir::Orientation::Horizontal
-            } else {
                 ir::Orientation::Vertical
+            } else {
+                ir::Orientation::Horizontal
             },
             sensitivity: m.unsigned_abs(),
         });
@@ -529,7 +533,7 @@ pub fn interface(
         }
         if let Some(parent) = int("$CONTROL_PAR_PARENT_PANEL") {
             match by_id.get(&parent) {
-                Some(&p) if m.widgets[p].kind == WidgetKind::Panel && p != i => {
+                Some(&p) if widgets[p].kind == WidgetKind::Panel && p != i => {
                     out.parent = Some(ir::WidgetRef(p));
                 }
                 _ => bld.unsupported(Some(i), "$CONTROL_PAR_PARENT_PANEL", parent.to_string()),
