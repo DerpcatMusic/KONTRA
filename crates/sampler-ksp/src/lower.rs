@@ -885,11 +885,7 @@ impl Gen<'_, '_> {
                 local: dst,
                 micros: 1000,
             }),
-            // ponytail: reset_ksp_timer is not honoured; the timer counts from engine start.
-            SysVar::KspTimer => I::Op(Op::ReadClock {
-                local: dst,
-                micros: 1,
-            }),
+            SysVar::KspTimer => I::Op(Op::ReadTimer { local: dst }),
             SysVar::CallbackType => I::SetLocal {
                 local: dst,
                 value: i64::from(self.callback_type),
@@ -2002,6 +1998,10 @@ impl Gen<'_, '_> {
                 })?;
                 true
             }
+            ResetKspTimer => {
+                self.emit(I::Op(Op::ResetTimer))?;
+                true
+            }
             WaitAsync | DisableLogging | WatchVar | WatchArrayIdx => {
                 // Effects complete immediately; logging switches have no runtime state.
                 true
@@ -2023,7 +2023,6 @@ impl Gen<'_, '_> {
             | WillNeverTerminate
             | RedirectOutput
             | StopWait
-            | ResetKspTimer
             | SetZonePar
             | SetVoiceLimit
             | LoadIrSample
