@@ -35,7 +35,7 @@ fn pointer(pos: Point, down: bool) -> Input {
     }
 }
 
-fn center(ui: &Ui, id: &str) -> Point {
+pub(super) fn center(ui: &Ui, id: &str) -> Point {
     let r = ui
         .scene()
         .unwrap()
@@ -1612,7 +1612,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     let meters = Meters::default();
-    let mut watch = Watch::default();
+    static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
+    let mut watch = Watch { disk_counter: Some(&IDLE_DISK), ..Default::default() };
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");

@@ -41,7 +41,7 @@ pub(crate) enum Origin {
 }
 
 impl Origin {
-    fn open(&self) -> io::Result<Bytes> {
+    fn open(&self, counted: bool) -> io::Result<Bytes> {
         let (file, base, size, key, guard) = match self {
             Self::File(path) => {
                 let file = File::open(path)?;
@@ -57,7 +57,7 @@ impl Origin {
                 Guard::Bank(ufs.clone()),
             ),
         };
-        Ok(Bytes { file, base, size, key, guard, pos: 0, buf: Vec::new(), at: 0, riff: false })
+        Ok(Bytes { counted, file, base, size, key, guard, pos: 0, buf: Vec::new(), at: 0, riff: false })
     }
 }
 
@@ -87,6 +87,7 @@ impl Guard {
 
 /// A seekable, on-the-fly decrypted view of one member.
 struct Bytes {
+    counted: bool,
     guard: Guard,
     file: File,
     /// Physical offset of the member, also the cipher nonce base.
@@ -115,7 +116,7 @@ impl Read for Bytes {
             while filled < len {
                 match self.file.read(&mut self.buf[filled..])? {
                     0 => break,
-                    n => filled += n,
+                    n => { filled += n; if self.counted { sampler_kontakt::DISK_READ.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed); } },
                 }
             }
             if filled < len {
@@ -183,8 +184,8 @@ struct Stream {
 }
 
 impl Stream {
-    fn open(origin: &Origin) -> io::Result<Self> {
-        let stream = MediaSourceStream::new(Box::new(origin.open()?), Default::default());
+    fn open_counted(origin: &Origin, counted: bool) -> io::Result<Self> {
+        let stream = MediaSourceStream::new(Box::new(origin.open(counted)?), Default::default());
         let metadata = MetadataOptions {
             limit_metadata_bytes: Limit::Maximum(2 << 20),
             limit_visual_bytes: Limit::Maximum(2 << 20),
@@ -298,8 +299,13 @@ pub(crate) struct Sample {
 }
 
 impl AssetSource for Sample {
-    fn open(&self) -> io::Result<SampleReader> {
-        let mut streams = self.parts.iter().map(Stream::open).collect::<io::Result<Vec<_>>>()?;
+    fn open(&self) -> io::Result<SampleReader> { self.open_counted(false) }
+    fn open_stream(&self) -> io::Result<SampleReader> { self.open_counted(true) }
+}
+
+impl Sample {
+    fn open_counted(&self, counted: bool) -> io::Result<SampleReader> {
+        let mut streams = self.parts.iter().map(|o| Stream::open_counted(o, counted)).collect::<io::Result<Vec<_>>>()?;
         if streams.len() > 1
             && streams.iter().any(|s| s.channels != 1 || s.rate != streams[0].rate)
         {
@@ -369,6 +375,22 @@ mod tests {
             out[4..8].copy_from_slice(&n.to_le_bytes());
         }
         out
+    }
+
+    #[test]
+    fn v1_disk_counter_excludes_loads_and_counts_physical_uvi_reads() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let dir = std::env::temp_dir().join(format!("uvi-read-counter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.wav"); let bytes = wav(40000, 2, false);
+        std::fs::write(&path, &bytes).unwrap();
+        let source = Sample { parts: vec![Origin::File(path)] };
+        let before = sampler_kontakt::DISK_READ.load(Relaxed);
+        let mut reader = source.open().unwrap(); reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+        assert_eq!(sampler_kontakt::DISK_READ.load(Relaxed), before);
+        let mut reader = source.open_stream().unwrap(); reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+        assert!(sampler_kontakt::DISK_READ.load(Relaxed) >= before + bytes.len() as u64);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

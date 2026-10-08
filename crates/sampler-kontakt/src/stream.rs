@@ -15,7 +15,7 @@ use std::{
     ops::Range,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -25,7 +25,12 @@ type Frame = [f32; 2];
 
 /// A sample's bytes as a seekable stream, decrypted on the fly. Reads go
 /// through one buffer: decoders read a few bytes at a time.
+/// Sample bytes streamed from disk so far (loading reads are not counted).
+/// Port from v1 0cb7a8a0:src/audio.rs.
+pub static DISK_READ: AtomicU64 = AtomicU64::new(0);
+
 struct Bytes {
+    counted: bool,
     file: Arc<File>,
     source: Source,
     position: u64,
@@ -38,8 +43,9 @@ struct Bytes {
 const BUFFER: usize = 16 << 10;
 
 impl Bytes {
-    fn open(source: &Source) -> io::Result<Self> {
+    fn open(source: &Source, counted: bool) -> io::Result<Self> {
         Ok(Self {
+            counted,
             file: match &source.handle {
                 Some(handle) => handle.clone(),
                 None => Arc::new(File::open(&source.path)?),
@@ -67,7 +73,7 @@ impl Read for Bytes {
             while filled < len {
                 match file.read(&mut self.buffer[filled..])? {
                     0 => break,
-                    n => filled += n,
+                    n => { filled += n; if self.counted { DISK_READ.fetch_add(n as u64, Ordering::Relaxed); } },
                 }
             }
             self.buffer.truncate(filled);
@@ -96,6 +102,11 @@ impl Seek for Bytes {
     }
 }
 
+impl symphonia::core::io::MediaSource for Bytes {
+    fn is_seekable(&self) -> bool { true }
+    fn byte_len(&self) -> Option<u64> { Some(self.source.size) }
+}
+
 /// Fills frames from a start.
 type Reader = Box<dyn FnMut(usize, &mut [Frame]) -> io::Result<()> + Send>;
 
@@ -113,6 +124,8 @@ pub trait AssetSource: Send + Sync {
     fn header(&self) -> Option<(u32, usize)> {
         None
     }
+    /// Playback/reload IO, counted separately from initial loading.
+    fn open_stream(&self) -> io::Result<SampleReader> { self.open() }
 }
 
 impl AssetSource for Source {
@@ -122,6 +135,7 @@ impl AssetSource for Source {
     fn header(&self) -> Option<(u32, usize)> {
         self.header
     }
+    fn open_stream(&self) -> io::Result<SampleReader> { SampleReader::open_counted(self, true) }
 }
 
 /// Random-access frames of one sample, converted exactly as a full decode.
@@ -135,9 +149,11 @@ pub struct SampleReader {
 }
 
 impl SampleReader {
-    pub fn open(source: &Source) -> io::Result<Self> {
+    pub fn open(source: &Source) -> io::Result<Self> { Self::open_counted(source, false) }
+
+    fn open_counted(source: &Source, counted: bool) -> io::Result<Self> {
         let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidData, e);
-        let mut bytes = Bytes::open(source)?;
+        let mut bytes = Bytes::open(source, counted)?;
         let mut head = Vec::new();
         (&mut bytes).take(1 << 12).read_to_end(&mut head)?;
         if head.starts_with(b"RIFF") && crate::samples::wav_layout(&head).is_err() {
@@ -163,6 +179,11 @@ impl SampleReader {
             });
         }
         bytes.seek(SeekFrom::Start(0))?;
+        if head.starts_with(b"FORM") {
+            let mut reader = crate::pcm::Reader::open(Box::new(bytes)).map_err(|e| invalid(format!("AIFF: {e:#}")))?;
+            let frames = usize::try_from(reader.frames).map_err(|_| invalid("AIFF too long".into()))?;
+            return Ok(Self::custom(reader.rate, frames, move |start, out| reader.read(start as u64, out).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))));
+        }
         let reader = ncw::NcwReader::read(bytes).map_err(|e| invalid(format!("NCW: {e}")))?;
         Ok(Self {
             rate: reader.header.sample_rate,
@@ -284,6 +305,8 @@ pub struct StreamPolicy {
     pub head_budget: usize,
     /// Publish before heads are read. Runtime must enable cold-start holding.
     pub lazy: bool,
+    /// RAM-only: keep whole samples smallest first within this safe byte budget.
+    pub resident_budget: Option<usize>,
 }
 
 impl Default for StreamPolicy {
@@ -297,6 +320,7 @@ impl Default for StreamPolicy {
             decoders: 4,
             head_budget: usize::MAX,
             lazy: false,
+            resident_budget: None,
         }
     }
 }
@@ -375,8 +399,34 @@ pub(crate) fn start_ranges(
         }
         *list = merged;
     }
+    if let Some(room) = policy.resident_budget { keep_whole(assets, &mut ranges, room); }
     ranges
 }
+
+// Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
+/// Load samples whole instead of streaming them, smallest first, while
+/// they fit `room` bytes. Returns the bytes the rest would need.
+fn keep_whole(assets: &[Pcm], ranges: &mut [Vec<Range<usize>>], room: usize) -> usize {
+    let size = |i: usize| assets[i].frame_count().saturating_mul(8);
+    let resident = |list: &[Range<usize>]| list.iter().map(|r| r.end - r.start).sum::<usize>() * 8;
+    let mut streamed: Vec<_> = (0..ranges.len()).filter(|&i| !ranges[i].is_empty() && resident(&ranges[i]) < size(i)).collect();
+    streamed.sort_by_key(|&i| size(i));
+    let bytes: usize = ranges.iter().map(|r| resident(r)).sum();
+    let mut room = room.saturating_sub(bytes);
+    let mut needed = 0;
+    for i in streamed {
+        let more = size(i).saturating_sub(resident(&ranges[i]));
+        if more <= room {
+            room -= more;
+            ranges[i] = std::iter::once(0..assets[i].frame_count()).collect();
+        } else {
+            needed += more - room.min(more);
+            room = 0;
+        }
+    }
+    needed
+}
+
 
 /// Streamed assets before their start ranges are read.
 pub(crate) struct Opened {
@@ -666,7 +716,7 @@ fn reload(
             .sum::<usize>();
         let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
         if held.saturating_add(estimate) <= budget {
-        if let Err(error) = source.open().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
+        if let Err(error) = source.open_stream().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
             if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
                 pcm.mark_cold();
             }
@@ -717,7 +767,7 @@ fn decode(
         let asset = job.key().asset;
         let index = match readers.iter().position(|(id, ..)| *id == asset) {
             Some(i) => Some(i),
-            None => sources.get(&asset).and_then(|s| s.open().ok()).map(|r| {
+            None => sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|r| {
                 if readers.len() == OPEN_READERS {
                     let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
                     readers.swap_remove(oldest);
@@ -912,6 +962,20 @@ mod tests {
     }
 
     #[test]
+    fn v1_ram_mode_fills_small_samples_first_and_streams_over_budget() {
+        let assets: Vec<_> = [1000, 4000, 2000].into_iter().map(|n| Pcm::streamed(48000, n).unwrap()).collect();
+        let mut heads = vec![vec![0..100]; 3];
+        let needed = keep_whole(&assets, &mut heads, 24000 + 800);
+        assert_eq!(heads[0], vec![0..1000]);
+        assert_eq!(heads[2], vec![0..2000]);
+        assert_eq!(heads[1], vec![0..100], "large sample falls back to streaming");
+        assert_eq!(needed, (4000 - 100) * 8);
+        keep_whole(&assets, &mut heads, usize::MAX);
+        assert_eq!(heads[1], vec![0..4000]);
+    }
+
+
+    #[test]
     fn trimming_purges_idle_heads_until_within_budget() {
         let head = [[0.5f32; 2]; 1000];
         let assets: Vec<Pcm> = (0..3)
@@ -963,6 +1027,7 @@ mod tests {
             std::fs::write(&path, &bytes).unwrap();
             let full = crate::decode(&bytes).unwrap().frames;
             let source = crate::Samples::new(&dir).source(&path).unwrap();
+            let before = DISK_READ.load(Ordering::Relaxed);
             let mut reader = SampleReader::open(&source).unwrap();
             assert_eq!((reader.frames(), reader.rate()), (40000, 44100));
             for range in [0..40000, 511..1025, 39999..40000, 1000..1000, 32000..33000] {
@@ -971,6 +1036,10 @@ mod tests {
                 assert_eq!(out, full[range], "{name}");
             }
             assert!(reader.read(39999, &mut [[0.0; 2]; 2]).is_err());
+            assert_eq!(DISK_READ.load(Ordering::Relaxed), before, "loading reads do not count");
+            let mut reader = source.open_stream().unwrap();
+            reader.read(0, &mut vec![[0.; 2]; 40000]).unwrap();
+            assert!(DISK_READ.load(Ordering::Relaxed) >= before + bytes.len() as u64, "physical playback reads count");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
