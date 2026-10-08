@@ -1,5 +1,5 @@
 //! Bounded decoded-page ownership. One audio cache and one worker coordinator.
-use crate::{AssetId, Error, Frame, Pcm};
+use crate::{AssetId, Error, Frame, Index, Pcm};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::{
     ops::Range,
@@ -104,6 +104,7 @@ struct Entry {
     state: State,
     retries: u8,
     retry_after: Option<std::time::Instant>,
+    next: Option<Index>,
 }
 impl Entry {
     fn status(&self) -> PageStatus {
@@ -120,11 +121,12 @@ impl Entry {
 /// cannot evict another voice's required page. A cache miss never waits.
 pub struct StreamCache {
     entries: Box<[Option<Entry>]>,
-    index: Vec<(PageKey, usize)>,
+    buckets: Box<[Option<Index>]>,
     requests: Producer<Request>,
     completed: Consumer<Completed>,
     recycled: Producer<Box<[Frame]>>,
     epoch: u64,
+    protected: usize,
     serial: u64,
     store: u64,
     /// Decoder threads to unpark after a service pushed requests.
@@ -165,6 +167,7 @@ impl StreamCache {
             .checked_mul(PAGE_FRAMES)
             .and_then(|n| n.checked_mul(std::mem::size_of::<Frame>()))
             .ok_or(Error::Capacity)?;
+        let buckets = pages.checked_mul(2).and_then(usize::checked_next_power_of_two).ok_or(Error::Capacity)?;
         let mut free = Vec::new();
         free.try_reserve_exact(pages).map_err(|_| Error::Capacity)?;
         for _ in 0..pages {
@@ -186,11 +189,12 @@ impl StreamCache {
         Ok((
             Self {
                 entries: (0..pages).map(|_| None).collect(),
-                index: Vec::with_capacity(pages),
+                buckets: vec![None; buckets].into_boxed_slice(),
                 requests,
                 completed,
                 recycled,
                 epoch: 1,
+                protected: 0,
                 serial: 0,
                 store,
                 wake: Vec::new(),
@@ -230,13 +234,29 @@ impl StreamCache {
             .epoch
             .checked_add(1)
             .ok_or(StreamError::SequenceExhausted)?;
+        self.protected = 0;
         Ok(())
     }
     fn find(&self, key: PageKey) -> Option<usize> {
-        self.index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .ok()
-            .map(|i| self.index[i].1)
+        find(&self.entries, &self.buckets, key)
+    }
+    fn unlink(&mut self, slot: usize) {
+        let entry = self.entries[slot].as_ref().unwrap();
+        let bucket = bucket(entry.request.key, self.buckets.len());
+        let mut at = self.buckets[bucket];
+        let mut previous: Option<Index> = None;
+        while let Some(index) = at {
+            let i = index.get();
+            let next = self.entries[i].as_ref().unwrap().next;
+            if i == slot {
+                if let Some(p) = previous { self.entries[p.get()].as_mut().unwrap().next = next; }
+                else { self.buckets[bucket] = next; }
+                return;
+            }
+            previous = Some(index);
+            at = next;
+        }
+        unreachable!("every admitted entry is indexed");
     }
     pub fn status(&self, key: PageKey) -> PageStatus {
         self.find(key).map_or(PageStatus::Missing, |i| {
@@ -252,19 +272,13 @@ impl StreamCache {
         let first = frames.start / PAGE_FRAMES;
         let last = (frames.end - 1) / PAGE_FRAMES;
         let mut ready = 0;
-        let begin = self.index.partition_point(|(key, _)| {
-            *key < PageKey {
-                asset: asset.asset_id(),
-                index: first,
+        for page in first..=last {
+            if let Some(slot) = self.find(PageKey { asset: asset.asset_id(), index: page }) {
+                let entry = self.entries[slot].as_mut().unwrap();
+                if entry.used != self.epoch { self.protected += 1; }
+                entry.used = self.epoch;
+                ready += usize::from(entry.status() == PageStatus::Ready);
             }
-        });
-        for &(key, slot) in &self.index[begin..] {
-            if key.asset != asset.asset_id() || key.index > last {
-                break;
-            }
-            let entry = self.entries[slot].as_mut().unwrap();
-            entry.used = self.epoch;
-            ready += usize::from(entry.status() == PageStatus::Ready);
         }
         Ok(ready == last - first + 1)
     }
@@ -289,6 +303,7 @@ impl StreamCache {
             if matches!(entry.state, State::Pending) && self.requests.is_abandoned() {
                 return Err(StreamError::Disconnected);
             }
+            if entry.used != self.epoch { self.protected += 1; }
             entry.used = self.epoch;
             if matches!(entry.state, State::Pending) && deadline < entry.request.deadline {
                 let request = Request {
@@ -313,6 +328,7 @@ impl StreamCache {
         // protected. ponytail: not strict LRU (a page idle one epoch goes as
         // soon as one idle for many); amortized O(1) instead of a full scan.
         let count = self.entries.len();
+        if self.protected == count { return Err(StreamError::Capacity); }
         let slot = (0..count)
             .map(|i| (self.hand + i) % count)
             .find(|&i| {
@@ -347,12 +363,8 @@ impl StreamCache {
         self.pushed = true;
         self.serial = serial;
         self.hand = (slot + 1) % count;
+        if self.entries[slot].is_some() { self.unlink(slot); }
         if let Some(old) = self.entries[slot].take() {
-            let index = self
-                .index
-                .binary_search_by_key(&old.request.key, |(key, _)| *key)
-                .unwrap();
-            self.index.remove(index);
             if let State::Ready(samples) = old.state {
                 self.recycled
                     .push(samples)
@@ -365,9 +377,11 @@ impl StreamCache {
             state: State::Pending,
             retries: 0,
             retry_after: None,
+            next: self.buckets[bucket(key, self.buckets.len())],
         });
-        let index = self.index.partition_point(|(found, _)| *found < key);
-        self.index.insert(index, (key, slot));
+        let bucket = bucket(key, self.buckets.len());
+        self.buckets[bucket] = Some(Index::new(slot));
+        self.protected += 1;
         Ok(PageStatus::Pending)
     }
     /// Client retry policy: transient unavailability gets three retries with
@@ -410,17 +424,14 @@ impl StreamCache {
         {
             return Err(StreamError::Capacity);
         }
+        self.unlink(slot);
         let entry = self.entries[slot].take().unwrap();
+        self.protected -= usize::from(entry.used == self.epoch);
         if let State::Ready(samples) = entry.state {
             self.recycled
                 .push(samples)
                 .expect("reserved return capacity");
         }
-        let index = self
-            .index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .unwrap();
-        self.index.remove(index);
         Ok(true)
     }
 
@@ -462,7 +473,7 @@ impl StreamCache {
     pub fn reader(&self) -> PageReader<'_> {
         PageReader {
             entries: &self.entries,
-            index: &self.index,
+            buckets: &self.buckets,
         }
     }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
@@ -474,19 +485,34 @@ impl StreamCache {
     }
 }
 
+// A fixed bucket table and intrusive slot links: admission never shifts all
+// resident keys. Collisions only visit their bucket; storage never grows on audio.
+fn bucket(key: PageKey, count: usize) -> usize {
+    use std::hash::{Hash, Hasher};
+    // Keys are process-owned asset revisions and validated page numbers.
+    let mut hash = rustc_hash::FxHasher::default();
+    key.hash(&mut hash);
+    hash.finish() as usize & (count - 1)
+}
+fn find(entries: &[Option<Entry>], buckets: &[Option<Index>], key: PageKey) -> Option<usize> {
+    let mut next = buckets[bucket(key, buckets.len())];
+    while let Some(index) = next {
+        let i = index.get();
+        let entry = entries[i].as_ref().unwrap();
+        if entry.request.key == key { return Some(i); }
+        next = entry.next;
+    }
+    None
+}
+
 /// Resident pages, read-only.
 #[derive(Clone, Copy)]
 pub struct PageReader<'a> {
     entries: &'a [Option<Entry>],
-    index: &'a [(PageKey, usize)],
+    buckets: &'a [Option<Index>],
 }
 impl<'a> PageReader<'a> {
-    fn find(&self, key: PageKey) -> Option<usize> {
-        self.index
-            .binary_search_by_key(&key, |(key, _)| *key)
-            .ok()
-            .map(|i| self.index[i].1)
-    }
+    fn find(&self, key: PageKey) -> Option<usize> { find(self.entries, self.buckets, key) }
     pub fn frame(&self, asset: AssetId, frame: usize) -> Option<Frame> {
         self.span(asset, frame..frame.checked_add(1)?).map(|s| s[0])
     }
@@ -885,5 +911,43 @@ mod admission_tests {
             rt.stop_voice(voice).unwrap();
             assert_eq!(rt.stream_reserved, 0);
         }
+    }
+
+    #[test]
+    fn colliding_page_keys_survive_middle_tail_head_removal_and_slot_reuse() {
+        let pcm = Pcm::streamed(48000, PAGE_FRAMES * 512).unwrap();
+        let (mut cache, mut worker) = StreamCache::new(4).unwrap();
+        let keys: Vec<_> = (0..512).map(|index| PageKey { asset: pcm.asset_id(), index })
+            .filter(|&key| super::bucket(key, cache.buckets.len()) == 0).take(6).collect();
+        assert_eq!(keys.len(), 6);
+        let fill = |cache: &mut StreamCache, worker: &mut StreamWorker, key: PageKey| {
+            assert_eq!(cache.request(&pcm, key.index, 0), Ok(PageStatus::Pending));
+            let mut job = worker.next_job().unwrap();
+            assert_eq!(job.key(), key);
+            job.frames_mut().fill([key.index as f32; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            assert_eq!(cache.poll(), Some(PageUpdate::Loaded(key)));
+        };
+        for &key in &keys[..4] { fill(&mut cache, &mut worker, key); }
+        assert_eq!(cache.protected, 4);
+        assert_eq!(cache.request(&pcm, keys[4].index, 0), Err(StreamError::Capacity));
+        cache.begin_epoch().unwrap();
+        assert_eq!(cache.protect(&pcm, keys[0].index * PAGE_FRAMES..(keys[0].index + 1) * PAGE_FRAMES), Ok(true));
+        assert_eq!(cache.invalidate(keys[1]), Ok(true));
+        fill(&mut cache, &mut worker, keys[4]);
+        for &key in &[keys[0], keys[2], keys[3], keys[4]] {
+            assert_eq!(cache.frame(key.asset, key.index * PAGE_FRAMES), Some([key.index as f32; 2]));
+        }
+        for &key in &[keys[3], keys[0], keys[4]] {
+            assert_eq!(cache.invalidate(key), Ok(true));
+            assert_eq!(cache.status(key), PageStatus::Missing);
+        }
+        assert_eq!(cache.protected, 0);
+        assert_eq!(cache.request(&pcm, keys[2].index, 0), Ok(PageStatus::Ready));
+        assert_eq!(cache.request(&pcm, keys[2].index, 0), Ok(PageStatus::Ready));
+        assert_eq!(cache.protected, 1, "duplicate hits consume one protection credit");
+        for &key in &[keys[0], keys[1], keys[3]] { fill(&mut cache, &mut worker, key); }
+        assert_eq!(cache.protected, 4);
+        assert_eq!(cache.request(&pcm, keys[5].index, 0), Err(StreamError::Capacity));
     }
 }
