@@ -321,6 +321,7 @@ pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
     fn capture_ui_controls(&self) {
+        self.shared.refresh_uvi(self);
         let mut selection = self.selection.read().unwrap().clone();
         self.shared.capture_ui_controls(&mut selection);
         let mut current = self.selection.write().unwrap();
