@@ -19,13 +19,14 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+mod engine_parameters;
 pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 pub mod script;
 mod resources;
-pub use resources::Resources;
+pub use resources::{Resources, ResourceError};
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -263,6 +264,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             );
         }
     }
+    engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -975,6 +977,8 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Typed initial findings; runtime findings are published through the driver UI bridge.
+    pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
@@ -993,10 +997,11 @@ impl Translated {
         self.attach_script_with_ui_state(rate, config, None)
     }
 
-    pub fn attach_script_with_ui_state(&mut self, rate: u32, config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+    pub fn attach_script_with_ui_state(&mut self, rate: u32, mut config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
+        config.rate = f64::from(rate);
         let (thread, loaded) =
             scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
                 |reason| {
@@ -1004,21 +1009,23 @@ impl Translated {
                         .at(sampler_kontakt::Stage::ScriptCompile)
                 },
             )?;
+        engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
         if scripted::Script::handles_notes(&thread) {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
         }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
-        for finding in loaded.findings {
+        for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
                 location: "script".into(),
-                feature: finding.feature,
-                value: format!("{} (x{})", finding.value, finding.count),
+                feature: finding.feature.clone(),
+                value: finding.value.clone(),
                 reason: ir::Reason::NotModeled,
             });
         }
         let groups = self.groups.clone();
         Ok(Some(AttachedScript {
+            findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
         }))
@@ -1283,7 +1290,10 @@ fn assemble_streamed(
         scripts: true,
         ..Default::default()
     };
-    Ok(sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut streamed = sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+    streamed.loaded.plan = streamed.loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(streamed)
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
@@ -1423,7 +1433,7 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
         instrument.unsupported.push(ir::Unsupported {
             location: "script".into(),
             feature: finding.feature,
-            value: format!("{} (x{})", finding.value, finding.count),
+            value: finding.value,
             reason: ir::Reason::NotModeled,
         });
     }
@@ -1527,7 +1537,10 @@ fn assemble(
         pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(loaded)
 }
 
 #[cfg(all(test, feature = "library-access"))]
