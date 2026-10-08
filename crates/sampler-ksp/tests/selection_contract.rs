@@ -172,3 +172,18 @@ fn current_event_allow_group_changes_current_selection() {
         "current event sounded despite its mask"
     );
 }
+
+#[test]
+fn release_counter_reset_uses_current_clock_and_freezes_after_key_up() {
+    let mut rt = runtime("on init declare $id end on on note $id := $EVENT_ID end on on controller reset_rls_trig_counter($id) end on");
+    let n = note(&mut rt);
+    rt.render(&mut [[0.; 2]; 480]).unwrap();
+    assert_eq!(rt.release_counter_frames(n).unwrap(), 480);
+    let domain = rt.performance(0).unwrap();
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1).unwrap();
+    assert_eq!(rt.release_counter_frames(n).unwrap(), 0);
+    rt.render(&mut [[0.; 2]; 48]).unwrap();
+    rt.key_up(n, None).unwrap();
+    rt.render(&mut [[0.; 2]; 48]).unwrap();
+    assert_eq!(rt.release_counter_frames(n).unwrap(), 48);
+}

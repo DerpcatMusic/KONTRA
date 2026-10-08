@@ -100,6 +100,7 @@ pub enum Instruction {
     ReadEventId {
         local: u16,
     },
+    ResetReleaseCounter { event: u16 },
     ReadCallbackId {
         local: u16,
     },
@@ -571,6 +572,9 @@ impl Program {
             | Instruction::ReadModValue { event, id, local } = *op
             {
                 locals = locals.max(usize::from(event.max(id).max(local)) + 1);
+            }
+            if let Instruction::ResetReleaseCounter { event } = *op {
+                locals = locals.max(usize::from(event) + 1);
             }
             if let Instruction::StopWait { callback, disable } = *op {
                 locals = locals.max(usize::from(callback.max(disable)) + 1);
@@ -1626,6 +1630,13 @@ impl Runtime {
                 let cell = self.local_cell_mut(id, local)?;
                 let value = i32::try_from(*cell).map_err(|_| Error::ArithmeticOverflow)?;
                 *cell = i64::from(operation.apply(value));
+            }
+            Instruction::ResetReleaseCounter { event } => {
+                let event = *self.local_cell_mut(id, event)?;
+                let plan = self.behavior_plan(owner)?;
+                if let Ok(event) = i32::try_from(event) && let Some(note) = self.resolve_source_event(plan, event)? {
+                    self.reset_release_counter(note)?;
+                }
             }
             Instruction::ReadCallbackId { local } => {
                 *self.local_cell_mut(id, local)? =

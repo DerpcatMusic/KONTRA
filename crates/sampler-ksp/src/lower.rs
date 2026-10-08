@@ -1983,6 +1983,12 @@ impl Gen<'_, '_> {
                 self.set(dst, i64::from(id))?;
                 true
             }
+            ResetRlsTrigCounter => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::ResetReleaseCounter { event: dst })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
             StopWait => {
                 let disable = reg(dst, 1)?;
                 self.arg(args, 0, dst)?;
@@ -2044,7 +2050,6 @@ impl Gen<'_, '_> {
             | SetNoteController
             | SetRpn
             | SetNrpn
-            | ResetRlsTrigCounter
             | WillNeverTerminate
             | RedirectOutput
             | ResetKspTimer

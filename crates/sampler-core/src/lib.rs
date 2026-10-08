@@ -93,6 +93,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
 mod packed;
@@ -435,6 +436,7 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
+    source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
 }
@@ -781,6 +783,8 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            native_cycle: 0,
+            native_seed: 0,
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
@@ -1210,6 +1214,13 @@ impl Runtime {
             let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
             self.note_values[begin..begin + cells].fill(0);
         }
+        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+            let generation = self.plans.get_mut(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
+            generation.native_cycle = generation.native_cycle.wrapping_add(1);
+        }
         self.selections[id.index] = performance::NoteSelection {
             performance,
             snapshot: self.performance_state.capture(performance),
@@ -1431,6 +1442,7 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
+            source_zone: 0,
             quiet: 0,
         })?);
         self.cold_started += u64::from(cold);
