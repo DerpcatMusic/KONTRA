@@ -267,6 +267,49 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
 }
 
 #[test]
+fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
+    let Some(path) = find("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki") else {
+        return;
+    };
+    use ni_file::kontakt::objects::{BParScript, Program};
+    let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+    let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+    let raw: Vec<_> = program
+        .0
+        .children
+        .iter()
+        .filter(|c| c.id == 6)
+        .map(|c| BParScript::try_from(c).unwrap().params().unwrap())
+        .filter(|s| !s.bypass)
+        .flat_map(|s| s.persistent)
+        .collect();
+    assert_eq!(raw.len(), 257);
+    assert_eq!(raw.iter().filter(|s| s.starts_with('!')).count(), 13);
+    let translated = sampler_kontakt::read(&path).unwrap();
+    let saved: Vec<_> = translated
+        .instrument
+        .behaviors
+        .iter()
+        .flat_map(|s| &s.state)
+        .collect();
+    assert_eq!(saved.len(), 257);
+    assert_eq!(
+        saved
+            .iter()
+            .filter(|(_, v)| matches!(v, sampler_ir::Saved::Texts(_)))
+            .count(),
+        13
+    );
+    for raw in raw {
+        let name = raw.split_once(' ').unwrap().0;
+        assert!(
+            saved.iter().any(|(n, _)| n == name),
+            "saved value was not admitted"
+        );
+    }
+}
+
+#[test]
 fn vista_cellos_render_from_loose_ncw_samples() {
     let Some((ir, out)) = render_frames(
         "Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",

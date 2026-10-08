@@ -101,6 +101,7 @@ impl Runtime {
                     },
                     channels: scope.channels,
                     stage: p.stage,
+                    interaction: crate::WidgetInteraction::default(),
                 })
             });
             match self.start_plan_context(plan, p.program, context) {
@@ -136,6 +137,7 @@ impl Runtime {
                 },
                 channels: 1,
                 stage: p.stage,
+                interaction: crate::WidgetInteraction::default(),
             });
             let _ = self.start_plan_context(plan, p.program, context);
         }

@@ -125,6 +125,7 @@ fn reals_text_calls_store_controls_and_effects_run_without_heap() {
         .unwrap()
         .with_script_resources(vec![ScriptResources {
             texts: vec![String::new()],
+            text_properties: vec![],
             store: vec![],
             store_capacity: 4,
             controls: vec![Some(knob)],

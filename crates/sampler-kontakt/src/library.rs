@@ -48,7 +48,10 @@ pub fn read_with_snapshot(
     snapshot: &crate::SnapshotState,
 ) -> Result<Kontakt, LoadError> {
     let mut kontakt = read_overlaid(path, Some(snapshot))?;
-    crate::apply_snapshot(&mut kontakt, snapshot);
+    crate::apply_snapshot(&mut kontakt, snapshot).map_err(|e| LoadError::Invalid {
+        path: path.into(),
+        reason: format!("snapshot persistent values: {:?} at {}", e.kind, e.offset),
+    })?;
     Ok(kontakt)
 }
 
@@ -201,6 +204,7 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
+    let mut script_resources = crate::Resources::of(&path);
     for (slot, chunk) in program
         .0
         .children
@@ -212,18 +216,20 @@ fn translate(
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
         let location = format!("script slot {slot}");
-        match script.text {
+        let linked = script
+            .textfile_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .and_then(|name| script_resources.script(name));
+        match linked.or(script.text) {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
-                let state = saved(&script.persistent);
-                if state.len() < script.persistent.len() {
-                    out.unsupported(
-                        &location,
-                        "saved persistent text arrays",
-                        script.persistent.len() - state.len(),
-                        ir::Reason::NotModeled,
-                    );
-                }
+                let state = saved(&script.persistent).map_err(|e| {
+                    invalid(&format!(
+                        "script persistent values: {:?} at {}",
+                        e.kind, e.offset
+                    ))
+                })?;
                 out.ir.behaviors.push(ir::Behavior {
                     name: script
                         .description
@@ -1543,31 +1549,33 @@ mod survey {
     }
 }
 
-/// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
-/// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
-/// left out.
-pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
+/// Strict saved-entry reader. Numeric repeated tails are expanded by the KSP
+/// declaration, while LF string arrays preserve whitespace and empty cells.
+pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crate::Error> {
+    use crate::{SavedEntry, SavedValue};
     entries
         .iter()
-        .filter_map(|entry| {
-            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
-            let value = match name.as_bytes().first()? {
-                b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
-                b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
-                b'@' => ir::Saved::Text(rest.to_owned()),
-                b'%' => ir::Saved::Ints(
-                    rest.split_whitespace()
-                        .map(|n| n.parse().ok())
-                        .collect::<Option<_>>()?,
-                ),
-                b'?' => ir::Saved::Reals(
-                    rest.split_whitespace()
-                        .map(|n| n.parse().ok())
-                        .collect::<Option<_>>()?,
-                ),
-                _ => return None,
+        .map(|raw| {
+            let entry = SavedEntry::parse(
+                raw.as_bytes(),
+                None,
+                crate::Limits {
+                    bytes: 16 * 1024 * 1024,
+                    records: 1_000_000,
+                },
+            )?;
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            let value = match entry.value {
+                SavedValue::Int(v) | SavedValue::MenuIndex(v) => ir::Saved::Int(v.into()),
+                SavedValue::Real(v) => ir::Saved::Real(v),
+                SavedValue::Text(v) => ir::Saved::Text(text(v)),
+                SavedValue::Ints { values, .. } => {
+                    ir::Saved::Ints(values.iter().map(i64::from).collect())
+                }
+                SavedValue::Reals { values, .. } => ir::Saved::Reals(values.iter().collect()),
+                SavedValue::Texts(values) => ir::Saved::Texts(values.iter().map(text).collect()),
             };
-            Some((name.to_owned(), value))
+            Ok((entry.name.to_owned(), value))
         })
         .collect()
 }
@@ -1575,16 +1583,20 @@ pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
 #[cfg(test)]
 mod saved_tests {
     #[test]
+    fn malformed_saved_entry_is_a_fault() {
+        assert!(super::saved(&["$bad x".into()]).is_err());
+    }
+    #[test]
     fn saved_values_keep_their_types_and_arrays() {
         let entries = [
             "$level 17",
             "~mix 0.5",
             "@label two words",
             "%table 1 2 3",
-            "$bad x",
+            "!strings first line\n\nthird line\n",
         ]
         .map(String::from);
-        let saved = super::saved(&entries);
+        let saved = super::saved(&entries).unwrap();
         assert_eq!(
             saved,
             [
@@ -1595,6 +1607,14 @@ mod saved_tests {
                     sampler_ir::Saved::Text("two words".into())
                 ),
                 ("%table".to_owned(), sampler_ir::Saved::Ints(vec![1, 2, 3])),
+                (
+                    "!strings".to_owned(),
+                    sampler_ir::Saved::Texts(vec![
+                        "first line".into(),
+                        "".into(),
+                        "third line".into()
+                    ])
+                ),
             ]
         );
     }
