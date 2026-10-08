@@ -23,12 +23,14 @@ pub struct Face {
     assets: ir_view::Assets,
     pub presentation: Presentation,
     values: ir_view::Values,
+    native:Option<super::native_ui::State>,
 }
 
 impl Face {
     fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
         let face = ir_view::resolved(&from[shown]);
-        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default() };
+        let native=face.native_ui.as_ref().map(|n|super::native_ui::State::new(path,&n.entry,from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default(), native };
         out.sync();
         out
     }
@@ -48,10 +50,15 @@ impl Face {
 
     /// Decoded picture bytes the view keeps.
     pub fn bytes(&self) -> usize {
-        self.assets.bytes()
+        self.assets.bytes()+self.native.as_ref().map_or(0,|n|n.bytes())
     }
 
     fn sync(&mut self) {
+        let entry=self.face.native_ui.as_ref().map(|n|n.entry.as_str());
+        if self.native.as_ref().map(|n|n.entry())!=entry {
+            self.native=entry.map(|entry|super::native_ui::State::new(&self.path,entry,self.from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        }
+        if self.native.is_some() && self.presentation==Presentation::Bitmap {return;}
         self.assets.prepare(&self.path,&self.face,self.page,self.presentation,1.,&self.values);
     }
 }
@@ -170,7 +177,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.sync();
     }
 
-    let held = face.assets.bytes() as f64 / (1024. * 1024.);
+    let held = face.bytes() as f64 / (1024. * 1024.);
     bar.insert(bar.len() - 1, caption(format!("{held:.1} MB pictures")).fill(secondary()).lines(1).tip("Decoded artwork this view keeps in memory"));
     let mode = if a { crate::library::ViewMode::Original } else if b { crate::library::ViewMode::Vectorized } else if c { crate::library::ViewMode::Kontra } else { mode };
     let page = &face.face.pages[face.page.0];
@@ -185,9 +192,21 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     }) as Arc<dyn Fn(Option<u32>,u8)->[f32;2]+Send+Sync>);
     let current: Vec<_> = shared.as_ref().map(|p| p.display_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
-    face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale,&face.values);
+    if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}-", face.shown);
-    let view = if mode == crate::library::ViewMode::Kontra {
+    let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
+        let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
+        let view=native.view(ui,slot,scale,&face.face,&face.values);
+        for edit in native.edits() {
+            let admitted=match (edit.id,&edit.value,edit.index) {
+                (Some(id),ir::Value::Integer(n),None|Some(0))=>cx.p.shared.set_control_at(slot,generation,id,f64::from(*n)),
+                (Some(id),ir::Value::Real(n),None|Some(0))=>cx.p.shared.set_control_at(slot,generation,id,*n),
+                _=>false,
+            };
+            if !admitted {cx.state.notice="This authored widget edit could not be applied.".into();}
+        }
+        view
+    } else if mode == crate::library::ViewMode::Kontra {
         super::generated::view(ui, &namespace, &face.face, face.page, &face.assets, scale, &mut face.values)
     } else {
         ir_view::view(ui, &namespace, &face.face, face.page, &face.assets, face.presentation, scale, &mut face.values)

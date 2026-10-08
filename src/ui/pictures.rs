@@ -21,6 +21,9 @@ impl Source {
     pub(crate) fn read(&mut self, path: &str) -> Option<Vec<u8>> {
         match &self.uvi {Some(uvi)=>uvi.read(path),None=>self.kontakt.read(path)}
     }
+    pub(super) fn native_names(&mut self)->Vec<String> {
+        let mut names=self.kontakt.names("resources/native_ui/");names.extend(self.kontakt.names("native_ui/"));names.sort();names.dedup();names
+    }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
         moose::mui::mui::prelude::Font::new(self.read(&asset.path)?).ok()
     }
