@@ -914,6 +914,9 @@ impl Core for V2Core {
                 }
             }
             let aux = usize::from(c.aux) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+            if self.signal_trace_active && part.runtime.signal_trace_enabled() && aux {
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::AuxSend, out, [c.aux_gain; 2], true, usize::from(c.aux));
+            }
             for (bus, gain) in [(usize::from(c.output), 1.0), (usize::from(c.aux), c.aux_gain)].into_iter().take(1 + usize::from(aux)) {
                 let bus = bus.min(BUSES - 1);
                 self.written[bus] = true;
@@ -952,8 +955,8 @@ impl Core for V2Core {
         Rendered { buses: &self.buses, live: self.written }
     }
 
-    fn trace_master(&mut self, gains: &[f32]) {
-        if !self.signal_trace_active { return }
+    fn trace_master(&mut self, gains: &[f32]) -> bool {
+        if !self.signal_trace_active { return false }
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
             if !part.runtime.signal_trace_enabled() { continue }
@@ -967,6 +970,22 @@ impl Core for V2Core {
                         &self.buses[bus][0][..gains.len()], &self.buses[bus][1][..gains.len()],
                         [1.; 2], Some(gains), true, usize::from(self.mix.buses[bus].port));
                 }
+            }
+        }
+        true
+    }
+
+    fn trace_output(&mut self, port: usize, frames: &[[f32; 2]], channels: u8) {
+        if !self.signal_trace_active { return }
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            if !part.runtime.signal_trace_enabled() { continue }
+            let settings = self.mix.parts[index];
+            if (0..BUSES).any(|bus| self.written[bus] && usize::from(self.mix.buses[bus].port) == port
+                && (usize::from(settings.output).min(BUSES - 1) == bus
+                    || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                    || part.direct & (1 << bus) != 0)) {
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::Output(port, channels), frames, [1.; 2], true, port);
             }
         }
     }
@@ -1664,6 +1683,41 @@ mod tests {
     fn load(path: &Path) -> Option<Box<Part>> {
         let request = LoadRequest { path: path.into(), sample_rate: 48000.0, ..Default::default() };
         V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().part
+    }
+
+    #[test]
+    fn host_signal_trace_records_aux_and_physical_mono_sum_on_the_routed_port() {
+        let pcm = Pcm::new(48000, vec![[0.2, 0.4]; 512].into_boxed_slice()).unwrap();
+        let region = Region {sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+        let plan = Prepared::new(48000,vec![pcm],vec![region],1).unwrap().with_signal_trace(4096).unwrap();
+        let runtime = {let limits=limits(&plan).0; Runtime::new(plan, limits).unwrap()};
+        let reader = runtime.signal_trace_reader().unwrap();
+        let part = Box::new(Part::new(runtime,MixTree::instrument("fixture")).unwrap());
+        let mut core = V2Core::with_parts(1,48000.);
+        core.install(0,Some(part));
+        let mut mix = Mix::default();
+        mix.parts[0].gain = 0.5; mix.parts[0].output = 0; mix.parts[0].aux = 1; mix.parts[0].aux_gain = 0.25;
+        mix.buses[0].gain = 0.5; mix.buses[0].port = 2; mix.buses[1].port = 2;
+        core.set_mix(&mix);
+        core.event(0,Event::NoteOn {note:HostNote {port:0,channel:0,key:60,id:7,clap:true},velocity:1.,tune:0.});
+        let physical = {
+            let rendered = core.render(64);
+            std::array::from_fn::<_,64,_>(|i| {
+                let sum = (rendered.buses[0][0][i]+rendered.buses[0][1][i]
+                    +rendered.buses[1][0][i]+rendered.buses[1][1][i])*0.25;
+                [sum,0.]
+            })
+        };
+        assert!(core.trace_master(&[0.5;64]));
+        core.trace_output(2,&physical,1);
+        let rows = reader.drain();
+        let aux = rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_aux_send").unwrap();
+        assert!((aux.output.rms[0]-0.025).abs()<1e-6);
+        let output = rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_output").unwrap();
+        assert_eq!(output.identity.external_port,Some(2));
+        assert_eq!(output.identity.output_channels,Some(1));
+        assert!((output.output.rms[0]-0.05625).abs()<1e-6);
+        assert_eq!(output.output.rms[1],0.);
     }
 
     #[test]

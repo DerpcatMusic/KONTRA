@@ -319,7 +319,9 @@ pub trait Core: Send {
     /// Render `frames` (≤ [`MAX_BLOCK`]) onto the output pairs.
     fn render(&mut self, frames: usize) -> Rendered<'_>;
     /// Optional shared-engine trace of the host master gain, after rack mixing.
-    fn trace_master(&mut self, _gains: &[f32]) {}
+    fn trace_master(&mut self, _gains: &[f32]) -> bool { false }
+    /// Observe physical host channels after routing, summing and mono conversion.
+    fn trace_output(&mut self, _port: usize, _frames: &[[f32; 2]], _channels: u8) {}
     /// Whether anything still owns exact host note `note`. A note-on that
     /// created no owner ends at once.
     fn owns(&self, note: event::HostNote) -> bool;
