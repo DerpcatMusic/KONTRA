@@ -40,6 +40,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Controls,
     Modulation,
 }
 
@@ -505,6 +506,9 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
+    plan = plan
+        .with_engine_parameters(Vec::new(), source_engine_lookups(&instrument.source_indices))
+        .map_err(core(Stage::Controls, "source engine lookups"))?;
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -592,6 +596,8 @@ impl Lowering<'_> {
                 law: zone.pan.law,
             })));
         }
+        let mut taps = Vec::new();
+        let mut tail = 0u32;
         if let Some(chain) = zone.chain {
             let source_chain = chain;
             let chain = &self.ir.chains[chain.0];
@@ -623,11 +629,80 @@ impl Lowering<'_> {
                 chain.pre_amplitude.len(),
                 &chain.post_amplitude.iter().collect::<Vec<_>>(),
             )?);
+            for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                tail = tail.saturating_add(match processor {
+                    ir::Processor::Delay {
+                        time,
+                        feedback: 0.0,
+                        ..
+                    } => self.frames(*time),
+                    ir::Processor::StereoModeller { pseudo: true, .. } => {
+                        (self.rate / 100).min(1023)
+                    }
+                    _ => 0,
+                });
+            }
+            for tap in self
+                .ir
+                .voice_send_taps
+                .iter()
+                .filter(|t| t.chain == source_chain)
+            {
+                let (side, native_len, position, before) = match tap.position {
+                    ir::VoiceSendPosition::BeforeAmplitude(n) => {
+                        (&chain.pre_amplitude, pre.len(), n, true)
+                    }
+                    ir::VoiceSendPosition::AfterAmplitude(n) => {
+                        (&chain.post_amplitude, post.len(), n, false)
+                    }
+                };
+                let mut authored_len = 0;
+                let mut after = 0;
+                for (index, processor) in side.iter().enumerate() {
+                    let count = self.processors(&owner, *processor)?.len();
+                    authored_len += count;
+                    if index < position {
+                        after += count;
+                    }
+                }
+                let after = native_len - authored_len + after;
+                let parameter = |control: Option<ir::ControlRef>,
+                                 value: f64|
+                 -> Result<Parameter, LowerError> {
+                    let Some(control) = control else {
+                        return Ok(Parameter::Constant(value));
+                    };
+                    let authored = &self.ir.controls[control.0];
+                    let ir::ControlValue::Continuous { min, max, .. } = authored.value else {
+                        return Err(unsupported(&owner, Feature::Controls));
+                    };
+                    Ok(Parameter::Control(ControlRange {
+                        control: ir_control_id(&authored.key),
+                        low: min,
+                        high: max,
+                        ramp_frames: self.frames(tap.ramp),
+                    }))
+                };
+                taps.push(crate::VoiceSendTap {
+                    position: if before {
+                        crate::VoiceSendPosition::BeforeAmplitude(after)
+                    } else {
+                        crate::VoiceSendPosition::AfterAmplitude(after)
+                    },
+                    bus: tap.bus.0,
+                    gain: parameter(tap.gain_control, tap.gain.linear())?,
+                    bypass: parameter(tap.bypass_control, f64::from(tap.bypass))?,
+                });
+            }
         }
-        let chain = if pre.is_empty() && post.is_empty() {
+        let chain = if pre.is_empty() && post.is_empty() && taps.is_empty() {
             None
         } else {
-            Some(VoiceChain::new(pre, post, 0).map_err(core(Stage::VoiceChains, owner.clone()))?)
+            Some(
+                VoiceChain::new(pre, post, tail)
+                    .and_then(|chain| chain.with_taps(taps))
+                    .map_err(core(Stage::VoiceChains, owner.clone()))?,
+            )
         };
         let loop_range = |range: ir::LoopRange, mode| {
             let crossfade = range.crossfade.frames(asset_rate) as usize;

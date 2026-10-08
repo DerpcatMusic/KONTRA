@@ -1152,3 +1152,157 @@ fn processor_modulation_keeps_filter_identity_in_multiple_chains_and_cascades() 
         }
     }
 }
+
+#[test]
+fn authored_voice_taps_reach_summed_buses_and_real_engine_controls() {
+    use sampler_core::{EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("send probe")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            velocity: ir::VelocityResponse::None,
+            pitch: ir::KeyTracking::Fixed,
+            amplitude: Some(ir::ModulatorRef(0)),
+            chain: Some(ir::ChainRef(0)),
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        modulators: vec![ir::Modulator {
+            scope: ir::Scope::Voice,
+            source: ir::ModulationSource::Envelope(ir::Envelope {
+                sustain: 0.25,
+                ..Default::default()
+            }),
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::Linear(2.0))],
+            post_amplitude: vec![
+                ir::Processor::Gain(ir::Gain::Linear(3.0)),
+                ir::Processor::Gain(ir::Gain::Linear(0.0)),
+            ],
+        }],
+        buses: vec![ir::Bus {
+            name: "return".into(),
+            chain: None,
+            gain: ir::Gain::Linear(2.0),
+            output: ir::Output::Master,
+            sends: vec![],
+        }],
+        controls: vec![ir::Control {
+            key: "original/send/gain".into(),
+            label: "send".into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.0,
+                max: 1.0,
+                default: 0.5,
+                unit: ir::ControlUnit::None,
+            },
+            automation: ir::Automation::default(),
+        }],
+        voice_send_taps: vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0),
+            position: ir::VoiceSendPosition::BeforeAmplitude(1),
+            bus: ir::BusRef(0),
+            gain: ir::Gain::Linear(0.5),
+            bypass: false,
+            gain_control: Some(ir::ControlRef(0)),
+            bypass_control: None,
+            ramp: ir::Time::Seconds(0.0),
+        }],
+        ..Default::default()
+    };
+    let render = |instrument: &ir::Instrument| {
+        let plan = lower(instrument, 48000, vec![constant(1.0)], no_behaviors).unwrap();
+        let address = EngineParameterAddress {
+            parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SENDLEVEL_0").unwrap(),
+            group: 0,
+            slot: 3,
+            generic: 0,
+        };
+        let plan = plan
+            .with_engine_parameters(
+                vec![EngineParameterBinding {
+                    address,
+                    control: sampler_core::lower::ir_control_id("original/send/gain"),
+                    law: EngineParameterLaw::Linear {
+                        low: 0.0,
+                        high: 1.0,
+                    },
+                }],
+                vec![],
+            )
+            .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0; 2]; 64];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let before = out[32];
+        support::without_heap(|| {
+            rt.set_engine_parameter(address, 0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        assert_eq!(out[32], [0.0; 2]);
+        before
+    };
+    assert_eq!(render(&instrument), [2.0; 2]);
+    instrument.voice_send_taps[0].position = ir::VoiceSendPosition::AfterAmplitude(1);
+    assert_eq!(render(&instrument), [1.5; 2]);
+    instrument.voice_send_taps[0].position = ir::VoiceSendPosition::BeforeAmplitude(2);
+    assert!(matches!(
+        lower(&instrument, 48000, vec![constant(1.0)], no_behaviors),
+        Err(LowerError::Invalid(_))
+    ));
+}
+
+#[test]
+fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
+    for processor in [
+        ir::Processor::Delay {
+            time: ir::Time::Seconds(3.0 / 48000.0),
+            feedback: 0.0,
+            mix: 1.0,
+        },
+        ir::Processor::StereoModeller {
+            width: 0.5,
+            pan: 0.0,
+            pseudo: true,
+        },
+    ] {
+        let instrument = ir::Instrument {
+            assets: vec![asset("tail probe")],
+            zones: vec![ir::Zone {
+                velocity: ir::VelocityResponse::None,
+                pitch: ir::KeyTracking::Fixed,
+                chain: Some(ir::ChainRef(0)),
+                ..ir::Zone::new(ir::AssetRef(0))
+            }],
+            chains: vec![ir::Chain {
+                scope: ir::Scope::Voice,
+                pre_amplitude: vec![],
+                post_amplitude: vec![processor],
+            }],
+            ..Default::default()
+        };
+        let plan = lower(
+            &instrument,
+            48000,
+            vec![Pcm::new(48000, vec![[1.0; 2]].into_boxed_slice()).unwrap()],
+            no_behaviors,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(plan, limits()).unwrap();
+        let mut out = [[0.0; 2]; 128];
+        support::without_heap(|| {
+            rt.trigger(input(60), 60, 1.0).unwrap();
+            rt.render(&mut out).unwrap();
+        });
+        let (index, channel) = if matches!(processor, ir::Processor::Delay { .. }) {
+            (3, 0)
+        } else {
+            (60, 1)
+        };
+        assert_eq!(out[index][channel], 1.0);
+    }
+}

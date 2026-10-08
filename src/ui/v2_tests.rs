@@ -502,6 +502,21 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     tick(&mut ui,&face,&mut values,&mut host,Input::default());
     assert!(ui.scene().unwrap().surface("ir-1").is_some());
 }
+#[test]
+fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
+    use sampler_ui_ir::{self as ir, Interface, Widget, Rect, Page, PageRef, Kind};
+    let mut face = Interface { source: ir::Source::FalconLua, ..Default::default() };
+    face.pages.push(Page {size: ir::Size {width:200,height:100}, ..Default::default()});
+    for i in 0..7000 {
+        face.widgets.push(Widget::new(format!("w{i}"), PageRef(0), Rect::new(0,if i==0 {0} else {10000},20,20), Kind::Label));
+    }
+    let mut ui = theme::ui();
+    let root = ir_view::view(&mut ui, &face, PageRef(0), &ir_view::Assets::default(), ir::Presentation::Bitmap, 1., &mut ir_view::Values::default());
+    ui.frame(root, Some(Size::new(200.,100.)), Input::default(), 1./60.).unwrap();
+    assert_eq!(face.widgets.len(),7000);
+    assert!(ui.scene().unwrap().surface("ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("ir-1").is_none());
+}
 
 /// Audit-only gesture probe: the same renderer and input loop as the editor.
 fn audit_motion(face: &ir::Interface, target: usize, dx: f64, dy: f64) -> (f64, bool) {
@@ -993,6 +1008,7 @@ fn widget_text_draft_preserves_focus_and_refreshes_native_readback() {
     tick(&mut ui,&mut state,&mut values,enter());
     for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
     assert_eq!(state.edits.last().unwrap().value,ir::Value::Text("callback".into()),"unfocused draft must refresh after callback or rejected admission");
+
 }
 
 #[test]

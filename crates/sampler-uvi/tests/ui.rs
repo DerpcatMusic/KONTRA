@@ -75,7 +75,7 @@ fn callbacks_suppress_table_changes_and_ui_callbacks_cannot_yield() {
 }
 
 #[test]
-fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
+fn persistence_restores_custom_data_before_widgets_and_init() {
     let script = r#"
       trace='body'
       local k=Knob('Gain',0,0,1)
@@ -84,7 +84,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
       function onInit() trace=trace..'/init' end
       function onSave() return {a=true,text='ok',[2]={0.125}} end
       function onLoad(data)
-        assert(trace=='body/widget/init')
+        assert(trace=='body' and k.value==0)
         assert(data.a and data.text=='ok' and data[2][1]==0.125)
         trace=trace..'/load'
       end
@@ -97,7 +97,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
     let state = serde_json::from_str(&encoded).unwrap();
     let b =
         ScriptHost::new_with_ui_state(&xml(script), (), Config::default(), Some(&state)).unwrap();
-    assert_eq!(b.global_text("trace"), "body/widget/init/load");
+    assert_eq!(b.global_text("trace"), "body/load/widget/init");
     assert_eq!(b.control_values()[1].1, 0.);
     assert!(
         host("function onSave() local t={} t.self=t return t end")
