@@ -608,6 +608,8 @@ fn prepare_inner(
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
+                #[cfg(feature="scan")]
+                sampler_ksp::scan::attempt("runtime-preparation");
                 sampler_ksp::compile_with(&behavior.source, rate, limits, &[], &environment)
                     .map_err(|e| e.to_string())
             }
