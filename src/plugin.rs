@@ -299,7 +299,7 @@ pub(crate) struct PartShared {
     pub(crate) meter: [AtomicU32; 2],
     pub(crate) clip: AtomicBool,
     /// [`RuntimeProblems`] field by field, as the audio thread last saw them.
-    problems: [AtomicU64; 14],
+    problems: [AtomicU64; 19],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
@@ -362,7 +362,7 @@ impl PartShared {
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
-        let [a, b, c, d, e, f, g, h, silent_notes, s0, s1, s2, fault_program, fault_error] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
+        let [a, b, c, d, e, f, g, h, silent_notes, s0, s1, s2, fault_program, fault_error, stream_capacity, stream_disconnected, stream_failed, stream_errors, offline_failures] = self.problems.each_ref().map(|x| x.load(Ordering::Relaxed));
         RuntimeProblems {
             capacity_drops: a,
             underruns: b,
@@ -376,12 +376,13 @@ impl PartShared {
             silent: [s0, s1, s2],
             fault_program,
             fault_error,
+            stream_capacity, stream_disconnected, stream_failed, stream_errors, offline_failures,
         }
     }
 
     fn store_problems(&self, p: RuntimeProblems) {
         let values =
-            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts, p.silent_notes, p.silent[0], p.silent[1], p.silent[2], p.fault_program, p.fault_error];
+            [p.capacity_drops, p.underruns, p.nonfinite, p.script_overruns, p.narrowed_input, p.ignored_input, p.stolen_voices, p.refused_starts, p.silent_notes, p.silent[0], p.silent[1], p.silent[2], p.fault_program, p.fault_error, p.stream_capacity, p.stream_disconnected, p.stream_failed, p.stream_errors, p.offline_failures];
         for (atom, value) in self.problems.iter().zip(values) {
             atom.store(value, Ordering::Relaxed);
         }
@@ -1750,6 +1751,19 @@ moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn storage_failures_survive_the_plugin_report_without_heap_work() {
+        let shared = PartShared::default();
+        let expected = RuntimeProblems {
+            stream_capacity: 1, stream_disconnected: 2, stream_failed: 3,
+            stream_errors: 4, offline_failures: 5, ..Default::default()
+        };
+        assert_eq!(allocations(|| {
+            shared.store_problems(expected);
+            assert_eq!(shared.problems(), expected);
+        }), 0);
+    }
 
     /// Matches Kontakt's matched-level reference: a fresh instance's master is
     /// unity, so a full-scale neutral sample leaves at the level the core renders it.
