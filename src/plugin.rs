@@ -648,6 +648,8 @@ pub struct Shared {
     port_names: Mutex<routing::PortNames>,
     /// Bumped with each publication: format wrappers poll it and tell the host.
     port_names_revision: AtomicU64,
+    measure: crate::timing::Measure,
+    published: Mutex<(Option<Arc<crate::timing::Plan>>, Option<(f32, Instant)>)>,
     // Last: workers retire before the logging worker.
     _diagnostics: crate::diagnostics::DiagnosticLease,
     // The crash marker retires after every retained worker and diagnostics lease.
@@ -730,6 +732,8 @@ impl Default for Shared {
             discard: ArrayQueue::new(64),
             editor_watch: AtomicUsize::new(usize::MAX),
             reported: AtomicU32::new(0),
+            measure: Default::default(),
+            published: Mutex::default(),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -1470,9 +1474,11 @@ impl BackgroundTask for Load {
         shared.midi_thru.store(selection.midi_thru, Ordering::Release);
         poll_libraries(shared);
         route(params);
+        align(params);
         let push_mix = || {
             let selection = params.selection.read().unwrap();
             let mut mix = mix(&selection);
+            if let Some(plan) = &shared.published.lock().unwrap().0 { mix.timing = plan.clone(); }
             let view = shared.view.lock().unwrap();
             mix.articulation_routes = selection.parts.iter().enumerate().map(|(slot, p)| {
                 let instrument = view.parts.get(slot)?.instrument.as_deref()?;
@@ -1489,6 +1495,7 @@ impl BackgroundTask for Load {
             loaded |= load_part(params, slot, prepared);
         }
         if loaded {
+            align(params);
             // New trees: route their nodes and size their settings.
             route(params);
             push_mix();
@@ -2670,6 +2677,60 @@ mod settings_parity_tests {
     }
 }
 
+// Port v1 0cb7a8a0:src/plugin.rs:3286+: source-guarded completed jobs,
+// manual controls, readiness checks, fresh scripts and latency settling.
+const LATENCY_SETTLE:std::time::Duration=std::time::Duration::from_millis(1500);
+fn align(params:&SamplerParams) {
+    let shared=&params.shared;
+    let done=shared.measure.take();
+    if !done.is_empty() {
+        let mut statuses=Vec::new();let mut current=params.selection.write().unwrap();
+        for (slot,generation,source,result) in done {
+            if !shared.part(slot).is_some_and(|p| p.generation.load(Ordering::Acquire) == generation) { continue; }
+            let Some(p)=current.parts.get_mut(slot).filter(|p|crate::timing::source(&p.path,p.program,&p.snapshot)==source)else{continue};
+            let Some(result) = result else { statuses.push((slot, String::new())); continue; };
+            match result {
+                Ok(t)=>{p.timing=crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..t};statuses.push((slot,String::new()));}
+                Err(e)=>{p.timing=crate::timing::Timing{source,override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()};statuses.push((slot,format!("Timing not measured: {e}")));}
+            }
+        }
+        drop(current);let mut view=shared.view.lock().unwrap();for (slot,status)in statuses{if let Some(v)=view.parts.get_mut(slot){v.timing_status=status;}}
+    }
+    let selection=params.selection.read().unwrap().clone();
+    if !selection.auto_align {shared.measure.cancel();}
+    if selection.auto_align&&!shared.measure.busy() {
+        for (slot,part) in selection.parts.iter().enumerate() {
+            if part.path.is_empty()||part.timing.measured(&part.path,part.program,&part.snapshot){continue;}
+            let ready={let view=shared.view.lock().unwrap();view.parts.get(slot).is_some_and(|v|!v.loading&&v.attempted.as_ref().is_some_and(|(path,program,snapshot,..)|path==&part.path&&*program==part.program&&snapshot==&part.snapshot)&&v.report.is_some())};
+            if !ready {continue;}
+            let Some(atoms)=shared.part(slot)else{continue};let generation=atoms.generation.load(Ordering::Acquire);
+            let request=LoadRequest {
+                path:part.path.clone().into(),program:part.program,sample_rate:shared.rate(),snapshot:(!part.snapshot.is_empty()).then(||part.snapshot.clone().into()),
+                control_values:part.control_values.iter().map(|c|(c.id(),c.value)).collect(),
+                uvi_state:serde_json::from_str(&part.uvi_state).ok(),
+                dynamics_start:u8::try_from(part.dynamics).ok().filter(|v|*v<128),
+                // Like v1's fresh measuring engine: manager-channel takes;
+                // disk pages wait offline, and rendering uses one worker.
+                mpe:false,mpe_upper:false,streaming:Streaming::Auto,threads:Some(crate::sound::ThreadChoice::Fixed(1)),
+            };
+            let result=shared.measure.start(slot,generation,request,part.edits.clone(),move||atoms.generation.load(Ordering::Acquire)!=generation);
+            shared.view.lock().unwrap().parts[slot].timing_status=match result {Ok(())=>"Measuring timing…".into(),Err(e)=>format!("Timing not measured: {e}")};
+            break;
+        }
+    }
+    let plan=timing_plan(&selection);let mut published=shared.published.lock().unwrap();
+    let (sent,waiting)=&mut *published;
+    if sent.as_ref().is_some_and(|old|old.as_ref()==&plan){*waiting=None;return;}
+    let told=|p:&crate::timing::Plan|if p.on{p.latency_ms}else{0.};let now=Instant::now();
+    let settled=match (&sent,&waiting) {
+        (None,_)=>true,
+        (Some(s),_)if told(s)==told(&plan)=>true,
+        (_,Some((ms,since)))if *ms==told(&plan)=>now.duration_since(*since)>=LATENCY_SETTLE,
+        _=>{*waiting=Some((told(&plan),now));false;}
+    };
+    if settled {*sent=Some(Arc::new(plan));*waiting=None;shared.reported.store(told(sent.as_ref().unwrap()).to_bits(),Ordering::Relaxed);}
+}
+
 /// Port v1 timing_for/plan; stale patch and snapshot measurements are excluded.
 pub(crate) fn timing_for(p:&Part)->std::borrow::Cow<'_,crate::timing::Timing>{
     if p.timing.measured(&p.path,p.program,&p.snapshot){std::borrow::Cow::Borrowed(&p.timing)}else{std::borrow::Cow::Owned(crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()})}
@@ -2686,6 +2747,34 @@ fn timing_plan(s:&Selection)->crate::timing::Plan{
 #[cfg(test)]
 mod timing_loader_tests {
     use super::*;
+    #[test]
+    fn v1_auto_align_finished_jobs_reject_stale_generations_and_snapshots() {
+        let p=SamplerParams::new();
+        let atoms=p.shared.part(0).unwrap();atoms.generation.store(7,Ordering::Release);
+        let source=crate::timing::source("synthetic.nki",2,"saved.nksn");
+        p.selection.write().unwrap().parts=vec![Part{path:"synthetic.nki".into(),program:2,snapshot:"saved.nksn".into(),timing:crate::timing::Timing{override_ms:Some(95.),exclude:true,..Default::default()},..Default::default()}];
+        let result=crate::timing::Timing{source:source.clone(),declared:Some(47.),..Default::default()};
+        for (generation,identity) in [(6,source.clone()),(7,crate::timing::source("synthetic.nki",2,"other.nksn"))] {
+            p.shared.measure.done.lock().unwrap().push((0,generation,identity,Some(Ok(result.clone()))));
+            align(&p);assert!(p.selection.read().unwrap().parts[0].timing.source.is_empty(),"stale result changed this part");
+        }
+        p.shared.measure.done.lock().unwrap().push((0,7,source.clone(),Some(Ok(result))));
+        align(&p);let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        assert_eq!(t.source,source);assert_eq!(t.declared,Some(47.));assert_eq!(t.override_ms,Some(95.));assert!(t.exclude);
+    }
+    #[test]
+    fn v1_auto_align_publishes_changed_latency_only_after_settling() {
+        let p=SamplerParams::new();{
+            let mut s=p.selection.write().unwrap();s.auto_align=true;
+            s.parts=vec![Part{path:"synthetic.nki".into(),timing:crate::timing::Timing{override_ms:Some(10.),..Default::default()},..Default::default()}];
+        }
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
+        p.selection.write().unwrap().parts[0].timing.override_ms=Some(20.);
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
+        p.shared.published.lock().unwrap().1=Some((20.,Instant::now()-LATENCY_SETTLE));
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),20.);
+        assert_eq!(p.shared.published.lock().unwrap().0.as_ref().unwrap().latency_ms,20.);
+    }
     #[test]
     fn v1_auto_align_loader_measures_a_fresh_generated_wave_and_persists_it() {
         let dir=std::env::temp_dir().join(format!("kontra-timing-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();let path=dir.join("C3.wav");
