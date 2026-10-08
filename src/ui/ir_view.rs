@@ -773,20 +773,25 @@ pub(super) fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64,
     Some(col(rows).gap(0).w(w).h(h).scroll().fill(Role::Field).stroke(Role::Ink.alpha(0.3)).stroke_width(1).id(popup).at(x,y))
 }
 
-/// One OS gesture, targeting the same painted surface as pointer input.
-/// The caller forwards these edits together through native widget admission.
-pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
-    if paths.is_empty() {return None;}
+/// Detect the owning target before validating a payload, so an invalid batch
+/// cannot fall through into a rack/instrument drop.
+pub(super) fn file_drop_target(ui:&Ui,namespace:&str,face:&Interface,at:Point)->Option<WidgetRef> {
     let mut hit=moose::mui::mui::input::Hit::default();
     for surface in ui.scene()?.surfaces().filter(|s|(Id::is_named(&s.key)||s.pointer_states)&&!s.disabled) {
         if surface.hits.is_empty() {hit.push_placed(surface.key.clone(),None,&surface.path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
         for (tag,path) in &surface.hits {hit.push_placed(surface.key.clone(),Some(tag.clone()),path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
     }
     let winner=hit.at(at)?;
-    let n=face.widgets.iter().enumerate().find_map(|(n,w)| {
+    face.widgets.iter().enumerate().find_map(|(n,w)| {
         let n=WidgetRef(n);
         (matches!(w.kind,Kind::MouseArea)&&face.visible(n)&&w.enabled&&w.intercepts_mouse&&target(namespace,n)==winner).then_some(n)
-    })?;
+    })
+}
+
+/// One OS gesture; forward all returned edits in one admission transaction.
+pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
+    if paths.is_empty() {return None;}
+    let n=file_drop_target(ui,namespace,face,at)?;
     let mut counts=[0u32;3];
     let mut edits=Vec::with_capacity(paths.len().min(96));
     for (index,path) in paths.iter().enumerate() {
