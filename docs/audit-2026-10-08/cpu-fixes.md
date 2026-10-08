@@ -80,3 +80,66 @@ Each entry below is steady block median / p99 in microseconds. These runs retain
 | fx-256-cold | 258.395 / 551.561 | 187.534 / 332.799 | 167.254 / 254.675 | 0 / 4 / 4 |
 
 The 64-frame target is still unmet. Storage warm medians are piano 39.281, Vista 34.991, and ANALOG STRINGS 114.672 µs versus v1 6.920, 3.500, and 45.571 µs. Streaming robustness also remains unproven: this storage run has 14 piano cold/256, five ANALOG STRINGS warm/256, and four ANALOG STRINGS cold/256 underruns.
+
+## Finding 3: common streaming and DSP admission
+
+Checkpoint `aaa811db` reserves incoming cursor demand before voice stealing. Current voices and each newly requested page are protected together; storage refusal preserves live DSP voices, without audio allocation/free. Tests exercise incompatible assets, high pitch and crossfade source windows, refusal before stealing, and 300 distinct live assets without a hidden 256-voice ceiling. Plugin nominal streaming capacity is now 1024 voices, matching v1, with DSP growth and release reserves bounded by the same ceiling. The default sampler-kontakt API policy remains unchanged. Later pitch/control changes can still widen a live horizon and return a service capacity error; initial admission cannot predict future controls.
+
+Full sampler-core and sampler-pool-dependent tests pass; 27 sound seam tests pass (one ignored); default `cargo test --no-run` passed before pushing. Frozen admission binary SHA256 `eeb8f58eac6d2d7191c06e2f79554f89ed1a805e692779e7db55ee7801e66a58`. No voice-count reduction occurred on the audited cells. All 18 runs have zero event/render heap calls and cold file pages verify zero after eviction. This is a correctness improvement; these measurements do not establish CPU improvement.
+
+| Cell | Integrated baseline median / p99 | Admission median / p99 | Underruns before / after |
+|---|---:|---:|---:|
+| piano-32 | 14.371 / 34.811 | 16.370 / 34.001 | 0 / 0 |
+| piano-64 | 24.391 / 46.341 | 24.660 / 47.721 | 0 / 0 |
+| piano-256 | 80.182 / 117.203 | 90.862 / 140.342 | 0 / 0 |
+| strings-32 | 26.850 / 51.681 | 25.771 / 46.811 | 0 / 0 |
+| strings-64 | 36.810 / 60.472 | 37.821 / 78.042 | 0 / 0 |
+| strings-256 | 130.933 / 161.854 | 147.543 / 245.284 | 0 / 0 |
+| fx-32 | 48.131 / 110.763 | 47.001 / 103.202 | 0 / 0 |
+| fx-64 | 75.432 / 129.243 | 80.142 / 150.983 | 0 / 0 |
+| fx-256 | 175.543 / 253.096 | 177.623 / 256.015 | 0 / 0 |
+| piano-32-cold | 16.671 / 37.311 | 27.681 / 146.333 | 0 / 0 |
+| piano-64-cold | 23.380 / 43.701 | 38.791 / 346.046 | 0 / 0 |
+| piano-256-cold | 95.602 / 215.974 | 145.093 / 285.225 | 0 / 0 |
+| strings-32-cold | 37.900 / 113.862 | 25.560 / 44.691 | 0 / 0 |
+| strings-64-cold | 36.970 / 62.862 | 39.520 / 74.072 | 0 / 0 |
+| strings-256-cold | 126.112 / 158.013 | 136.682 / 225.565 | 0 / 0 |
+| fx-32-cold | 40.201 / 88.222 | 45.961 / 112.032 | 0 / 0 |
+| fx-64-cold | 64.221 / 113.413 | 118.313 / 394.567 | 0 / 0 |
+| fx-256-cold | 167.254 / 254.675 | 210.304 / 382.527 | 4 / 5 |
+
+## Admission regression gate: diagnosis and rejected intermediate
+
+`aaa811db` is held from landing. Audio-TID `perf cycles:u` profiles at 9999 Hz and source tracing identify extra per-start two-pass live demand service, a scalar 4096-frame incoming demand walk, sorted-key insertion/removal and decoder wakes. No new futex or memmove leaf was sampled; userspace-only cycles do not exclude syscalls. V1 (`0cb7a8a0`, engine/mod.rs:1865–1955) admitted a streamed voice through `free.pop()` of a preallocated ring slot and returned it at voice end.
+
+The replacement start uses geometric page credits and one total, then queues no page job or worker wake. Normal block service owns requests. Immutable residency generations replace audio-side locks; the last reader only decrements a counter and control collection destroys old PCM. Existing render completion loops refresh each live credit as its cursor advances; pitch edits refresh their affected projection before subsequent starts. A failing-first two-page-cache test caught the initial stale-credit implementation admitting a third page. Geometry accounts for the last read at N-1 rather than a phantom next output frame, and native step-one integer positions need no interpolation guard.
+
+The intermediate `admission-corrected2` (SHA256 `ecb1946d87ad2ca7f82eeccf42727e6d40af66e3b993acfeb1572299e00e0313`) keeps correctness but fails the CPU gate. Before/after binaries alternate in one window, with reverse order in repeat 2. All runs have zero event/render heap calls, identical peak voice counts, nonzero audio peaks and verified zero cold file pages after eviction. Numbers are steady median / p99 in microseconds.
+
+| Cell | Repeat | Integrated baseline | Corrected2 | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano cold/64 | 1 | 22.591 / 41.121 | 30.781 / 66.871 | 0 / 0 |
+| piano cold/64 | 2 | 22.990 / 44.081 | 23.190 / 50.011 | 0 / 0 |
+| piano cold/64 | 3 | 23.670 / 50.321 | 24.400 / 48.901 | 0 / 0 |
+| fx cold/64 | 1 | 77.231 / 169.404 | 70.272 / 121.553 | 0 / 0 |
+| fx cold/64 | 2 | 82.852 / 160.293 | 63.421 / 115.912 | 0 / 0 |
+| fx cold/64 | 3 | 81.151 / 174.353 | 80.131 / 148.043 | 0 / 0 |
+
+Median-of-run medians / median-of-run p99s: piano 22.990 / 44.081 → 24.400 / 50.011 (regresses); FX 81.151 / 169.404 → 70.272 / 121.553 (improves); total underruns zero on both sides. Warm FX/64 in the same window is 80.122 / 151.583 → 91.552 / 198.464, also a regression. This intermediate is not accepted. Redundant ownership lookups in each credit refresh are the next measured change; no claim that scheduler noise explains these results.
+
+## Corrected admission checkpoint
+
+The current implementation reuses the render loop's existing projected pitch instead of traversing family/note/expression ownership again for every credit update. All core/pool tests pass; Kontakt has 37 passed/3 ignored and the adapter has 27 passed/1 ignored; default `cargo test --no-run` passed. There are 12 stream-policy tests, including cursor advance, pitch edits, no-start-page-jobs, last-reader heap freedom, offline readiness and retries. Frozen binary SHA256 `66e04227bcc50c0b1fb449f3b5867f24a74eabc0d07ce6221dea0e31c313dac6`.
+
+| Cell | Repeat | Integrated baseline median / p99 | Corrected median / p99 | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano cold/64 | 1 | 23.660 / 42.311 | 23.531 / 42.341 | 0 / 0 |
+| piano cold/64 | 2 | 26.461 / 52.701 | 25.490 / 45.101 | 0 / 0 |
+| piano cold/64 | 3 | 27.241 / 52.161 | 35.391 / 92.502 | 0 / 0 |
+| fx cold/64 | 1 | 78.441 / 153.553 | 74.681 / 143.192 | 0 / 0 |
+| fx cold/64 | 2 | 82.072 / 159.433 | 73.451 / 145.612 | 2 / 0 |
+| fx cold/64 | 3 | 70.511 / 165.283 | 82.661 / 163.153 | 0 / 0 |
+
+Median-of-run medians / median-of-run p99s improve in this matched window: piano **26.461 / 52.161 → 25.490 / 45.101**, FX **78.441 / 159.433 → 74.681 / 145.612**. Total underruns are piano 0 → 0 and FX 2 → 0. Warm FX/64 is **79.341 / 149.183 → 81.001 / 148.963**, underruns 0 → 0. All event/render heap counts are zero; cold eviction has zero file pages remaining; peak voices stay 12 and 24.
+
+**HOLD remains:** repeat 3 regresses (piano median and p99, FX median), warm FX median increases, and the historical absolute baseline and v1 target are not met. These results do not prove every regression is scheduler noise. The corrected audio-TID piano profile has zero lost samples; protection falls to 1.82% of sampled userspace cycles, and admission/reservation no longer appears above the 1% leaf threshold. Function inlining and separate windows prohibit treating that threshold as a complete cost comparison.

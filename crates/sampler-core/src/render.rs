@@ -475,6 +475,9 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             if done[lane] {
                 self.end_voice(VoiceId(self.voices.id(i)));
+            } else {
+                let step = self.voices.slots[i].value.as_ref().unwrap().cursor.step();
+                self.refresh_stream_reservation(i, step);
             }
         }
     }
@@ -595,6 +598,7 @@ impl Runtime {
             ((u64::from(self.performance_state.current(self.selections[f.note.0.index].performance).controllers[controller])*127+u64::from(u32::MAX)/2)/u64::from(u32::MAX)) as u8
         } else {0};
         let controllers=if TRACE {[cc(1),cc(7),cc(11)]} else {[0;3]};
+        let stream_step = v.base_step * expression.rendered.ratio;
         // Prepared playback bounds and the cursor's contiguous spans stay
         // within immutable PCM; looping never changes asset ownership.
         let plan = self.plans.get_mut(n.plan.0).unwrap();
@@ -725,6 +729,8 @@ impl Runtime {
         }
         if done {
             self.end_voice(VoiceId(self.voices.id(i)));
+        } else {
+            self.refresh_stream_reservation(i, stream_step);
         }
     }
 }
