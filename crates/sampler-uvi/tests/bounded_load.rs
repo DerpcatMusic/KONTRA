@@ -18,7 +18,7 @@ fn exhausted_initialization() {
             &xml,
             (),
             sampler_uvi::script::Config {
-                load: Duration::from_millis(50),
+                load_work: 1000,
                 ..Default::default()
             },
         );
