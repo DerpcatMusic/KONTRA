@@ -126,13 +126,22 @@ fn load_from(
     if bytes.len() as u64 > ENTRY_LIMIT || Sha256::digest(&bytes).as_slice() != checksum {
         return None;
     }
-    let head: Head<'static> = serde_json::from_slice(&bytes).ok()?;
+    let len = usize::try_from(u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?)).ok()?;
+    let (head_bytes, tables) = bytes.get(8..)?.split_at_checked(len)?;
+    let head: Head<'static> = serde_json::from_slice(head_bytes).ok()?;
+    let (zones, physical) = crate::cache_zones::decode(tables)?;
     drop(bytes);
     if !current(&head.dependencies)
         || head.instrument.assets.len() != head.locations.len()
         || head.states.len() != head.instrument.behaviors.len()
         || head.control_values != controls
         || !head.instrument.impulses.is_empty()
+        || !head.instrument.zones.is_empty()
+        || head
+            .instrument
+            .kontakt_objects
+            .as_ref()
+            .is_some_and(|o| !o.zones.is_empty())
     {
         return None;
     }
@@ -145,6 +154,12 @@ fn load_from(
     }
     let mut samples = Samples::new(&head.root);
     let mut instrument = head.instrument.into_owned();
+    instrument.zones = zones;
+    if let Some(objects) = instrument.kontakt_objects.as_mut() {
+        objects.zones = physical;
+    } else if !physical.is_empty() {
+        return None;
+    }
     for recipe in head.recipes.iter() {
         let decoded = samples.decode(&recipe.source).ok()?;
         instrument.impulses.push(
@@ -337,6 +352,13 @@ fn store_in(
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let impulses = std::mem::take(&mut kontakt.instrument.impulses);
+    let zones = std::mem::take(&mut kontakt.instrument.zones);
+    let physical = kontakt
+        .instrument
+        .kontakt_objects
+        .as_mut()
+        .map(|o| std::mem::take(&mut o.zones))
+        .unwrap_or_default();
     let written = (|| -> Option<()> {
         let head = Head {
             dependencies,
@@ -356,7 +378,14 @@ fn store_in(
             hash: Sha256::new(),
             size: stamp.len() as u64 + 32,
         };
-        serde_json::to_writer(&mut writer, &head).ok()?;
+        let head = serde_json::to_vec(&head).ok()?;
+        writer.write_all(&(head.len() as u64).to_le_bytes()).ok()?;
+        writer.write_all(&head).ok()?;
+        drop(head);
+        let mut tables = Vec::new();
+        crate::cache_zones::encode(&zones, &physical, &mut tables).ok()?;
+        writer.write_all(&tables).ok()?;
+        drop(tables);
         writer.flush().ok()?;
         let checksum = writer.hash.clone().finalize();
         drop(writer);
@@ -367,6 +396,10 @@ fn store_in(
         Some(())
     })();
     kontakt.instrument.impulses = impulses;
+    kontakt.instrument.zones = zones;
+    if let Some(objects) = kontakt.instrument.kontakt_objects.as_mut() {
+        objects.zones = physical;
+    }
     if written.is_none() {
         let _ = std::fs::remove_file(&tmp);
     } else {
@@ -579,7 +612,13 @@ mod tests {
         );
         let encoded = std::fs::read(entry(&dir, &preset, 0, &[])).unwrap();
         let body = stamp(&preset, 0, &[]).unwrap().len() + 32;
-        let metadata: serde_json::Value = serde_json::from_slice(&encoded[body..]).unwrap();
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &encoded[body + 8
+                ..body
+                    + 8
+                    + u64::from_le_bytes(encoded[body..body + 8].try_into().unwrap()) as usize],
+        )
+        .unwrap();
         assert_eq!(metadata["instrument"]["impulses"], serde_json::json!([]));
         assert_eq!(metadata["recipes"].as_array().unwrap().len(), 1);
         let warm = load_from(&dir, &preset, 0, &[]).expect("recipe cache hit");
