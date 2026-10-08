@@ -87,7 +87,7 @@ pub struct PlanControl {
     growth: Producer<super::grow::Growth>,
     grown: Consumer<super::grow::Growth>,
     pressure: super::grow::Pressure,
-    note_pressure: super::grow::Pressure,
+    note_pressure: super::grow::NotePressure,
     /// Sizes of the plans the runtime may still hold, for growth.
     live: Vec<super::grow::Dims>,
     growing: bool,
@@ -96,7 +96,7 @@ pub struct PlanControl {
 impl PlanControl {
     pub fn note_params_capacity(&self) -> usize { self.note_params }
     pub fn note_params_bytes(&self) -> usize { std::mem::size_of::<crate::script_params::NoteParams>() }
-    pub fn note_pressure(&self) -> bool { self.note_pressure.load(std::sync::atomic::Ordering::Relaxed) }
+    pub fn note_pressure(&self) -> bool { self.note_pressure.load(std::sync::atomic::Ordering::Relaxed) >= self.note_params }
 
     /// Control side allocates new pages; audio adopts pointers and returns the
     /// emptied transfer for control-side destruction. Existing notes do not move.
@@ -109,7 +109,7 @@ impl PlanControl {
             .map_err(|_| PlanError::Capacity)?;
         let capacity = pages.capacity;
         self.growth.push(super::grow::Growth::note_params(pages)).map_err(|_| PlanError::Capacity)?;
-        self.note_pressure.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.note_pressure.store(0, std::sync::atomic::Ordering::Relaxed);
         self.growing = true;
         self.note_params = capacity;
         Ok(capacity)
@@ -235,7 +235,7 @@ impl PlanControl {
         let script = super::script_params::EngineLayers::new(&prepared);
         let sequences = super::variation::SequenceState::new(&prepared);
         let controls = super::control::ControlState::new(&prepared);
-        let scripts = prepared.script_initial.clone();
+        let scripts = prepared.script_initial.iter().map(super::ops::ScriptInitial::bank).collect();
         let dims = super::grow::Dims::of(request, &prepared);
         match self.pending.push(PlanTransfer {
             request,

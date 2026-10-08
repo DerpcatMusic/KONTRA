@@ -731,7 +731,7 @@ pub struct Runtime {
     growth: Option<grow::GrowthQueues>,
     /// Set on the audio side when the pool runs three quarters full.
     voice_pressure: grow::Pressure,
-    note_pressure: grow::Pressure,
+    note_pressure: grow::NotePressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
@@ -870,7 +870,7 @@ impl Runtime {
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
-            scripts: plan.script_initial.clone(),
+            scripts: plan.script_initial.iter().map(ops::ScriptInitial::bank).collect(),
             dsp: dsp::DspState::new(&plan, limits.voices, limits.expressions, 1)?,
             groups: groups::GroupState::new(plan.group_count, limits.notes, plan.stages.len())?,
             controllers: controller_event::ControllerState::new(&plan, limits.performances)?,

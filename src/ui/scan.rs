@@ -361,6 +361,67 @@ fn render(
         "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
 }
 
+// NONE is a display type: scripts can recolour mapped notes without changing it.
+fn audition_key(key: &sampler_ksp::model::Key) -> Option<bool> {
+    if key.kind == Some(1) || key.color == Some(17) {
+        Some(false)
+    } else if matches!(key.color, Some(16 | 18 | 19 | 20)) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn audition_candidate(
+    instrument: &sampler_ir::Instrument,
+    valid: &std::collections::BTreeSet<u8>,
+    invalid: &std::collections::BTreeSet<u8>,
+) -> Option<(u8, u8)> {
+    let switches: std::collections::BTreeSet<_> = instrument
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.iter().copied())
+        .collect();
+    (0..=127u8)
+        .filter(|k| !switches.contains(k) && !invalid.contains(k))
+        .filter_map(|key| {
+            let velocity = instrument
+                .zones
+                .iter()
+                .filter(|z| {
+                    (z.keys.low..=z.keys.high).contains(&key)
+                        && z.velocities.low <= z.velocities.high
+                        && z.velocities.high > 0
+                })
+                .map(|z| 64u8.clamp(z.velocities.low.max(1), z.velocities.high))
+                .min_by_key(|v| v.abs_diff(64))?;
+            let count = instrument
+                .zones
+                .iter()
+                .filter(|z| {
+                    (z.keys.low..=z.keys.high).contains(&key)
+                        && (z.velocities.low..=z.velocities.high).contains(&velocity)
+                })
+                .count();
+            Some((
+                valid.contains(&key),
+                std::cmp::Reverse(key.abs_diff(60)),
+                std::cmp::Reverse(velocity.abs_diff(64)),
+                count,
+                key,
+                velocity,
+            ))
+        })
+        .max()
+        .map(|(.., key, velocity)| (key, velocity))
+}
+
+fn audition_switch(instrument: &sampler_ir::Instrument, inactive: &std::collections::BTreeSet<u8>) -> Option<u8> {
+    instrument.articulations.iter().filter(|a|a.default)
+        .chain(instrument.articulations.iter().filter(|a|!a.default))
+        .flat_map(|a|a.switch_keys.iter().copied()).find(|key|!inactive.contains(key))
+}
+
 pub fn one(id: &str, out: &Path) -> Value {
     let mut first_audio_ms=None;
     let (path, program_name) = id
@@ -522,6 +583,17 @@ pub fn one(id: &str, out: &Path) -> Value {
         let failed_script = script_errors.get("script").copied().unwrap_or(0) > 0
             || script_errors.get("script interface").copied().unwrap_or(0) > 0;
         ui_error |= failed_script;
+        let inactive_switches: std::collections::BTreeSet<_> = loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).filter(|(_,k)|k.color==Some(17)).map(|(key,_)|key as u8).collect();
+        let declared_switch=loaded.instrument.as_ref().and_then(|i|audition_switch(i,&inactive_switches))
+            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
+        let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
+        core.event(0, Event::midi1(0xb0, 1, 100));
+        core.event(0, Event::midi1(0xb0, 11, 127));
+        if let Some(switch)=keyswitch {
+            core.event(0, Event::midi1(0x90,switch,64));
+            core.render(128);
+            core.event(0, Event::midi1(0x80,switch,0));
+        }
         let native = core.scan_lua(0);
         let mut native_valid: std::collections::BTreeSet<u8> = native
             .as_ref()
@@ -533,89 +605,30 @@ pub fn one(id: &str, out: &Path) -> Value {
             .unwrap_or_default();
         for view in &loaded.scripts.views {
             for (key, k) in view.model().interface.keys.iter().enumerate() {
-                if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                    native_invalid.insert(key as u8);
-                } else if matches!(k.color, Some(18 | 19)) {
-                    native_valid.insert(key as u8);
+                match audition_key(k) {
+                    Some(false) => { native_invalid.insert(key as u8); }
+                    Some(true) => { native_valid.insert(key as u8); }
+                    None => {}
                 }
             }
         }
-        let candidate = (|| {
-            loaded.instrument.as_ref().and_then(|i| {
-                let switch: std::collections::BTreeSet<_> = i
-                    .articulations
-                    .iter()
-                    .flat_map(|a| a.switch_keys.iter().copied())
-                    .collect();
-                let mut valid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_valid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                let mut invalid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_invalid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                for view in &loaded.scripts.views {
-                    for (key, k) in view.model().interface.keys.iter().enumerate() {
-                        if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                            invalid.insert(key as u8);
-                        } else if matches!(k.color, Some(18 | 19)) {
-                            valid.insert(key as u8);
-                        }
-                    }
-                }
-                let best = (0..=127u8)
-                    .filter(|k| !switch.contains(k) && !invalid.contains(k))
-                    .map(|k| {
-                        let n = i
-                            .zones
-                            .iter()
-                            .filter(|z| {
-                                (z.keys.low..=z.keys.high).contains(&k)
-                                    && (z.velocities.low..=z.velocities.high).contains(&64)
-                            })
-                            .count();
-                        (
-                            n > 0,
-                            valid.contains(&k),
-                            std::cmp::Reverse(k.abs_diff(60)),
-                            n,
-                            k,
-                        )
-                    })
-                    .max()
-                    .filter(|(mapped, ..)| *mapped)
-                    .map(|(.., k)| (k, 64));
-                best
-            })
-        })();
+        let candidate = loaded.instrument.as_ref().and_then(|i| audition_candidate(i, &native_valid, &native_invalid));
         let mut excluded = native_invalid.clone();
         if let Some(i)=&loaded.instrument { excluded.extend(i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied())); }
-        let pick = metrics::note(program as u32).or(candidate).or_else(||metrics::fallback_note(&excluded));
+        let pick = metrics::note(program as u32).filter(|(key,_)|!excluded.contains(key)).or(candidate).or_else(||metrics::fallback_note(&excluded));
         let pick_source = match pick {
-            Some((key, 64)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
+            Some((key, _)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
                 "native_declared"
             }
-            Some((_, 64)) if candidate==pick => "zone_coverage",
+            Some((_, _)) if candidate==pick => "zone_coverage",
             _ => "fallback",
         };
-        let declared_switch=loaded.instrument.as_ref().and_then(|i|i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied()).min())
-            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
-        let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
         let mut heard = false;
         result["stage"] = json!(format!("play program {program}"));
         metrics::checkpoint(out, &result);
         if let Some((key, velocity)) = pick {
-            core.event(0, Event::midi1(0xb0, 1, 100));
-            core.event(0, Event::midi1(0xb0, 11, 127));
-            if let Some(switch)=keyswitch {
-                core.event(0, Event::midi1(0x90,switch,64));
-                let audio=core.render(128);
-                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
-                core.event(0, Event::midi1(0x80,switch,0));
-            }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
@@ -658,7 +671,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "keyswitch":keyswitch,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
@@ -760,5 +773,77 @@ mod font_observation_tests {
         ready.insert(0); // First page.
         ready.insert(1); // Second page, whose preparation no longer holds font 0.
         assert_eq!(observed_font_styles(&styles,&ready),2);
+    }
+}
+
+#[cfg(test)]
+mod audition_tests {
+    use super::*;
+    #[test]
+    fn audition_selects_the_valid_authored_default_before_playing() {
+        let i=sampler_ir::Instrument {articulations:vec![
+            sampler_ir::Articulation{switch_keys:vec![24],..Default::default()},
+            sampler_ir::Articulation{switch_keys:vec![30],default:true,..Default::default()},
+        ],..Default::default()};
+        assert_eq!(audition_switch(&i,&Default::default()),Some(30));
+        assert_eq!(audition_switch(&i,&[30].into()),Some(24));
+        assert_eq!(audition_switch(&i,&[24,30].into()),None);
+    }
+    #[test]
+    fn mapped_audition_avoids_switches_controls_and_velocity_holes() {
+        let mut i = sampler_ir::Instrument::default();
+        i.articulations.push(sampler_ir::Articulation {
+            switch_keys: vec![59, 60],
+            ..Default::default()
+        });
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 59, high: 62 };
+        zone.velocities = sampler_ir::VelocityRange {
+            low: 100,
+            high: 127,
+        };
+        i.zones.push(zone);
+        assert_eq!(
+            audition_candidate(&i, &Default::default(), &[61].into()),
+            Some((62, 100))
+        );
+        assert_eq!(
+            audition_candidate(&i, &Default::default(), &[61, 62].into()),
+            None
+        );
+        i.articulations.clear();
+        i.zones[0].velocities = sampler_ir::VelocityRange { low: 1, high: 127 };
+        assert_eq!(
+            audition_candidate(&i, &[62].into(), &Default::default()),
+            Some((62, 64)),
+            "authored playable range wins over nearest uncoloured map"
+        );
+    }
+    #[test]
+    fn recoloured_playable_keys_survive_a_script_none_reset() {
+        let key = |kind, color| sampler_ksp::model::Key {
+            kind: Some(kind),
+            color: Some(color),
+            ..Default::default()
+        };
+        assert_eq!(
+            audition_key(&key(2, 16)),
+            Some(true),
+            "default-colour playable notes retain NONE after a blanket reset"
+        );
+        assert_eq!(audition_key(&key(2, 18)), Some(true));
+        assert_eq!(audition_key(&key(2, 19)), Some(true));
+        assert_eq!(audition_key(&key(2, 20)), Some(true));
+        assert_eq!(
+            audition_key(&key(2, 17)),
+            Some(false),
+            "inactive notes remain excluded"
+        );
+        assert_eq!(
+            audition_key(&key(1, 16)),
+            Some(false),
+            "control notes remain excluded even with a playable colour"
+        );
+        assert_eq!(audition_key(&key(1, 4)), Some(false));
     }
 }
