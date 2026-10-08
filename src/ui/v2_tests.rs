@@ -114,7 +114,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Arc<Image> {
 }
 
 fn picture(frames: Vec<Arc<Image>>) -> Arc<Picture> {
-    Arc::new(Picture { frames })
+    Arc::new(Picture::new(frames))
 }
 
 /// A wallpaper, a background panel picture, a 64-frame knob strip and a
@@ -461,6 +461,46 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
     super::replace_part(&mut part, "/x/New.nki".into());
     assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
     assert_eq!(part.dynamics, -1);
+}
+
+#[test]
+fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
+    let xml = "<UVI4><Program Name='P'><EventProcessors><ScriptProcessor Name='S'><script><![CDATA[
+        setSize(200,100)
+        clicks=0
+        local p=Panel{'P',bounds={0,0,200,100}}
+        local b=p:Button{'Fire',bounds={10,10,100,25}}
+        b.changed=function() clicks=clicks+1 end
+    ]]></script></ScriptProcessor></EventProcessors></Program></UVI4>";
+    let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
+    let mut face = host.interface();
+    let mut ui = theme::ui();
+    let mut values = ir_view::Values::default();
+    let assets = ir_view::Assets::default();
+    let tick = |ui: &mut Ui, face: &ir::Interface, values: &mut ir_view::Values,
+                host: &mut sampler_uvi::script::ScriptHost, input| {
+        let before = values.clone();
+        let root = ir_view::view(ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., values);
+        ui.frame(root, Some(Size::new(200.,100.)), input, 1./60.).unwrap();
+        for (&id,&value) in values.iter() {
+            if before.get(&id).copied().unwrap_or(0.) != value { host.set_control(id,value).unwrap(); }
+        }
+    };
+    tick(&mut ui,&face,&mut values,&mut host,Input::default());
+    let at = Point::new(50.,20.);
+    let pointer = |held| Input { pointer: PointerInput { pos:Some(at), buttons:if held {Buttons::PRIMARY}else{Buttons::default()}, ..Default::default() }, ..Default::default() };
+    for _ in 0..5 { tick(&mut ui,&face,&mut values,&mut host,pointer(true)); }
+    assert_eq!(host.global_text("clicks"),"0");
+    tick(&mut ui,&face,&mut values,&mut host,pointer(false));
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut host,Input::default()); }
+    assert_eq!(host.global_text("clicks"),"1");
+    ui.focus("ir-1");
+    tick(&mut ui,&face,&mut values,&mut host,Input { keys:vec![KeyPress {key:Key::Enter,mods:Default::default()}], ..Default::default() });
+    for _ in 0..3 { tick(&mut ui,&face,&mut values,&mut host,Input::default()); }
+    assert_eq!(host.global_text("clicks"),"2");
+    face.widgets[0].enabled=false;
+    tick(&mut ui,&face,&mut values,&mut host,Input::default());
+    assert!(ui.scene().unwrap().surface("ir-1").is_some());
 }
 
 /// Audit-only gesture probe: the same renderer and input loop as the editor.

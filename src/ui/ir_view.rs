@@ -21,6 +21,17 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct Picture {
     pub frames: Vec<Arc<Image>>,
+    indices: Vec<usize>,
+    count: usize,
+    /// Source rectangle represented by prepared pixels (wallpaper windows).
+    pub window: Option<[u32;4]>,
+}
+
+impl Picture {
+    pub fn new(frames:Vec<Arc<Image>>)->Self {let count=frames.len();Self{frames,indices:(0..count).collect(),count,window:None}}
+    pub(super) fn prepared(image:Arc<Image>,frame:usize,count:usize,window:Option<[u32;4]>)->Self {Self{frames:vec![image],indices:vec![frame],count,window}}
+    fn len(&self)->usize {self.count}
+    fn at(&self,n:usize)->Option<&Arc<Image>> {self.indices.iter().position(|&i|i==n.min(self.count.saturating_sub(1))).and_then(|i|self.frames.get(i)).or_else(||self.frames.first())}
 }
 
 /// The frame of `frames` a control at `value` in `min..=max` shows.
@@ -28,6 +39,28 @@ fn frame(value: f64, min: f64, max: f64, frames: usize) -> usize {
     let span = max - min;
     let t = if span == 0. { 0. } else { ((value - min) / span).clamp(0., 1.) };
     (t * frames.saturating_sub(1) as f64).round() as usize
+}
+
+/// UVI mappers operate on normalized positions, including drag and strip frames.
+fn mapped(range: &ir::Range, mapper: Option<&str>, value: f64, inverse: bool) -> f64 {
+    if range.max == range.min { return if inverse { 0. } else { range.min }; }
+    if mapper == Some("Exponential") && range.min > 0. && range.max > range.min {
+        return if inverse { (value.clamp(range.min,range.max)/range.min).ln()/(range.max/range.min).ln() }
+            else { range.min*(range.max/range.min).powf(value.clamp(0.,1.)) };
+    }
+    let power = match mapper {
+        Some("Quadratic")=>2.,Some("Cubic")=>3.,Some("Quartic")=>4.,Some("Quintic")=>5.,
+        Some("SquareRoot")=>0.5,Some("CubeRoot")=>1./3.,Some("QuarticRoot")=>0.25,Some("QuinticRoot")=>0.2,_=>1.,
+    };
+    if inverse { ((value-range.min)/(range.max-range.min)).clamp(0.,1.).powf(1./power) }
+    else { range.min+(range.max-range.min)*value.clamp(0.,1.).powf(power) }
+}
+fn drive_mapped(ui: &mut Ui, id: &str, value: &mut f64, range: &ir::Range, mapper: Option<&str>, vertical: bool) -> bool {
+    let mut position = mapped(range,mapper,*value,true);
+    let before = position;
+    let held = drive(ui,id,&mut position,&(0. ..=1.),TRAVEL,vertical,mapped(range,mapper,range.default,true));
+    if position != before { *value = mapped(range,mapper,position,false); }
+    held
 }
 
 /// The frame a switch or button shows: Kontakt's strips run off, on, then
@@ -40,10 +73,21 @@ fn switch_frame(on: bool, frames: usize) -> usize {
 #[derive(Default)]
 pub struct Assets {
     loaded: HashMap<usize, Option<Arc<Picture>>>,
+    fonts: HashMap<usize, Option<Font>>,
+    pub meter: Option<Arc<dyn Fn(Option<u32>,u8)->[f32;2] + Send + Sync>>,
     identities: HashMap<usize, ir::Asset>,
+    preparation: Option<super::picture_worker::Preparation>,
 }
 
 impl Assets {
+    pub fn prepare(&mut self,path:&std::path::Path,face:&Interface,page:PageRef,presentation:Presentation,scale:f64,values:&Values) {
+        if self.preparation.as_ref().is_none_or(|p|p.path()!=path) {self.preparation=Some(super::picture_worker::Preparation::new(path));}
+        let prepared=self.preparation.as_mut().unwrap().prepare(face,page,presentation,scale,values);
+        self.loaded.clear();self.fonts.clear();
+        for (n,picture,font) in prepared {if picture.is_some(){self.loaded.insert(n,picture);}if font.is_some(){self.fonts.insert(n,font);}}
+    }
+    pub fn pending(&self)->usize {self.preparation.as_ref().map_or(0,|p|p.pending())}
+
     /// Loads what `presentation` draws and releases everything else.
     pub fn sync(&mut self, ui: &Interface, presentation: Presentation, mut load: impl FnMut(&ir::Asset) -> Option<Arc<Picture>>) {
         let need = ui.needed_assets(presentation);
@@ -55,12 +99,22 @@ impl Assets {
         }
     }
 
+    pub fn sync_fonts(&mut self, face: &Interface, mut load: impl FnMut(&ir::Asset) -> Option<Font>) {
+        self.fonts.retain(|&i,_| face.assets.get(i).is_some_and(|a| matches!(a.kind,ir::AssetKind::TrueTypeFont)));
+        for (i,a) in face.assets.iter().enumerate().filter(|(_,a)| matches!(a.kind,ir::AssetKind::TrueTypeFont)) {
+            self.fonts.entry(i).or_insert_with(||load(a));
+        }
+    }
+
+    pub(super) fn font(&self, a: &ir::AssetRef) -> Option<Font> { self.fonts.get(&a.0)?.clone() }
+
     pub fn get(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
         self.loaded.get(&a.0)?.as_ref()
     }
 
     /// Bytes of decoded pixels held, each image counted once.
     pub fn bytes(&self) -> usize {
+        if let Some(p)=&self.preparation {return p.bytes();}
         let mut seen = std::collections::HashSet::new();
         self.loaded
             .values()
@@ -110,38 +164,42 @@ fn colour(c: ir::Rgba) -> Color {
 }
 
 fn picture(p: &Picture, n: usize) -> Option<Fill> {
-    let f = p.frames.get(n.min(p.frames.len().saturating_sub(1)))?;
+    let f = p.at(n)?;
     Some(Fill::Image(f.clone(), Fit::Fill))
 }
 
-/// Whether the art under the middle of `n` is light: the nearest containing
-/// panel's background picture there, else the wallpaper.
+/// Sample authored backgrounds in paint order, compositing alpha over page colour.
 fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
     let r = face.page_rect(n);
-    let (x, y) = (f64::from(r.x) + f64::from(r.width) / 2., f64::from(r.y) + f64::from(r.height) / 2.);
-    let luma = |img: &Image, u: f64, v: f64| {
-        if u < 0. || v < 0. || u >= f64::from(img.width) || v >= f64::from(img.height) {
-            return None;
-        }
-        let i = (v as usize * img.width as usize + u as usize) * 4;
-        let c = img.rgba.get(i..i + 4)?;
-        (c[3] >= 128).then(|| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]) > 140.)
+    let (x,y)=(r.x as f64+r.width as f64/2.,r.y as f64+r.height as f64/2.);
+    let page=&face.pages[face.widgets[n.0].page.0];
+    let base=page.background.color.unwrap_or(ir::Rgba::rgb(0x202020));
+    let mut rgb=[base.r as f32,base.g as f32,base.b as f32];
+    let blend=|rgb:&mut [f32;3],c:ir::Rgba| {let a=c.a as f32/255.;for (out,v) in rgb.iter_mut().zip([c.r,c.g,c.b]) {*out=*out*(1.-a)+v as f32*a;}};
+    let sample=|rgb:&mut [f32;3],img:&Image,u:f64,v:f64| {
+        if u<0. || v<0. || u>=img.width as f64 || v>=img.height as f64 {return;}
+        let i=(v as usize*img.width as usize+u as usize)*4;
+        if let Some(c)=img.rgba.get(i..i+4) {blend(rgb,ir::Rgba{r:c[0],g:c[1],b:c[2],a:c[3]});}
     };
-    let mut at = face.widgets[n.0].parent;
-    while let Some(p) = at {
-        let pr = face.page_rect(p);
-        if let Some(img) = face.widgets[p.0].image(Use::Background).and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
-            let u = (x - f64::from(pr.x)) / f64::from(pr.width.max(1)) * f64::from(img.width);
-            let v = (y - f64::from(pr.y)) / f64::from(pr.height.max(1)) * f64::from(img.height);
-            if let Some(l) = luma(img, u, v) {
-                return l;
-            }
+    if let Some(pic)=page.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {let [wx,wy,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);sample(&mut rgb,img,(x-wx as f64)*img.width as f64/sw.max(1) as f64,(y+page.background.offset_y as f64-wy as f64)*img.height as f64/sh.max(1) as f64);}
+    for at in face.draw_order(face.widgets[n.0].page) {
+        if at==n {break;}
+        if !face.visible(at) {continue;}
+        let w=&face.widgets[at.0];let r=face.page_rect(at);
+        if x<r.x as f64 || y<r.y as f64 || x>=(r.x as f64+r.width as f64) || y>=(r.y as f64+r.height as f64) {continue;}
+        if let Some(c)=w.colors.background {blend(&mut rgb,c);}
+        if w.hide.background {continue;}
+        if let Some(img)=w.images.iter().find(|i|i.role==Use::Background).and_then(|i|assets.get(i.asset).and_then(|p|p.at(i.frame.unwrap_or(0) as usize))) {
+            sample(&mut rgb,img,(x-r.x as f64)/r.width.max(1) as f64*img.width as f64,(y-r.y as f64)/r.height.max(1) as f64*img.height as f64);
         }
-        at = face.widgets[p.0].parent;
     }
-    let page = &face.pages[face.widgets[n.0].page.0];
-    let wall = page.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first());
-    wall.and_then(|img| luma(img, x, y + f64::from(page.background.offset_y))).unwrap_or(false)
+    0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2]>140.
+}
+
+fn art(face:&Interface, asset:ir::AssetRef,p:&Picture,n:usize,w:f64,h:f64,scale:f64)->El {
+    let Some(image)=p.at(n) else {return block(w,h)};
+    let meta=match face.assets[asset.0].kind {ir::AssetKind::Image(m)=>m,_=>ir::ImageMeta::default()};
+    super::render_art::sliced(image,meta,w,h,scale)
 }
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
@@ -185,9 +243,10 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
             w.placement = ir::Placement::Pixels;
         }
         if w.auto_size { (w.rect.width, w.rect.height) = default_size(&w.kind); w.auto_size = false; }
+        if face.source == ir::Source::FalconLua { continue }
         let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
             ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
-            ir::AssetKind::BitmapFont => None,
+            ir::AssetKind::BitmapFont | ir::AssetKind::TrueTypeFont => None,
         });
         if let Some((size, stretch)) = meta {
             if !stretch[0] { w.rect.width = size.width; }
@@ -210,9 +269,9 @@ pub fn view_state(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef,
     let ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
     layers.push(ground.at(0., 0.));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(img) = p.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
-        let (iw, ih) = (f64::from(img.width) * scale, f64::from(img.height) * scale);
-        layers.push(block(iw, ih).radius(0).fill(Fill::Image(img.clone(), Fit::Fill)).at(0., -f64::from(p.background.offset_y) * scale));
+    if let Some(pic)=p.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {
+        let [x,y,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);
+        layers.push(block(sw as f64*scale,sh as f64*scale).radius(0).fill(Fill::Image(img.clone(),Fit::Fill)).at(x as f64*scale,(y as f64-p.background.offset_y as f64)*scale));
     }
     for n in face.draw_order(page) {
         if !face.visible(n) {
@@ -220,8 +279,19 @@ pub fn view_state(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef,
         }
         let r = face.page_rect(n);
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        layers.push(widget_state(ui, namespace, face, n, assets, presentation, scale, values, input, ww, hh).at(x, y));
-
+        let mut el = widget_state(ui, namespace, face, n, assets, presentation, scale, values, input, ww, hh);
+        let (mut x,mut y)=(x,y);
+        let mut parent=face.widgets[n.0].parent;
+        while let Some(p)=parent {
+            if face.widgets[p.0].viewport.is_some() {
+                let r=face.page_rect(p);
+                let (px,py)=(r.x as f64*scale,r.y as f64*scale);
+                el=stack![el.at(x-px,y-py)].w(r.width as f64*scale).h(r.height as f64*scale).clip();
+                (x,y)=(px,py);
+            }
+            parent=face.widgets[p.0].parent;
+        }
+        layers.push(el.at(x,y));
     }
     if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) { layers.push(popup); }
     stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id(if namespace.is_empty() {"ir-view".to_owned()} else {format!("{namespace}-ir-view")})
@@ -281,6 +351,12 @@ pub(super) fn widget_state(
 
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
+    let hovered=ui.state(id.as_str()).hover>0.;
+    let state_picture=|on:bool| {
+        let hover=hovered;
+        let role=match (on,hover){(true,true)=>Use::HoverPressed,(true,false)=>Use::Pressed,(false,true)=>Use::Hover,_=>Use::Strip};
+        wd.image(role).and_then(|a|assets.get(a)).filter(|_|bitmap||wd.label_in_image()).or(strip)
+    };
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
     let control = match wd.binding {
         Binding::Control(c) => Some(c),
@@ -288,20 +364,29 @@ pub(super) fn widget_state(
     };
     let default = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => range.default,
-        _ => 0.,
+        _ => wd.initial_value,
     };
+    let mut enabled = wd.enabled;
+    let mut opacity = wd.opacity;
+    let mut parent = wd.parent;
+    for _ in 0..face.widgets.len() {
+        let Some(p) = parent.and_then(|p| face.widgets.get(p.0)) else { break };
+        enabled &= p.enabled;
+        opacity *= p.opacity;
+        parent = p.parent;
+    }
+    let can_edit = enabled && wd.intercepts_mouse;
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
     let before = v;
-    let text_size = wd.style.and_then(|s| face.styles[s.0].size).map_or(SMALL, f64::from) * scale;
-    // Text on our own (dark) control faces is ours; the source's colour is for
-    // text on its art: labels, and controls drawn by their pictures.
+    let style=wd.style.and_then(|s|face.styles.get(s.0));
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
-    let ink = match wd.style {
-        // A transparent colour is one the source left to its font (a custom bitmap font).
-        Some(s) if !own_face && face.styles[s.0].color.a > 0 => Fill::from(colour(face.styles[s.0].color)),
+    let ink=match style {
+        Some(s) if !own_face && s.color.a>0 => Fill::from(colour(s.color)),
+        _ if !own_face && light_under(face,assets,n) => Fill::from(Color::srgb(0.1,0.1,0.1)),
         _ => Fill::from(Role::Ink),
     };
-    let words = |t: String| caption(t).text_size(text_size).fill(ink.clone()).lines(1);
+    let words=|t:String| super::render_art::words(&t,style,assets,bitmap,ink.clone(),w,
+        style.and_then(|s|s.size).map_or(SMALL,f64::from)*scale*1.4,scale,None,false);
     let number = |x: f64, d: &ir::Display| {
         let x = x / if d.ratio == 0. { 1. } else { d.ratio };
         let x = if x.fract() == 0. { format!("{x}") } else { format!("{x:.2}") };
@@ -310,15 +395,16 @@ pub(super) fn widget_state(
 
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
-            let (vertical, travel) = gesture(wd, scale);
-            let held = wd.enabled && drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, true);
-            if wd.enabled && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {
-                v = quantized(v, range);
-            }
+            let (vertical,travel)=gesture(wd,scale);
+            let held=if can_edit {
+                if wd.mapper.is_some() {drive_mapped(ui,&id,&mut v,range,wd.mapper.as_deref(),vertical)}
+                else {drive_widget(ui,&id,&mut v,&(range.min..=range.max),travel,vertical,range.default,range.step,true)}
+            }else{false};
+            if can_edit && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {v=quantized(v,range);}
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
-            let unit = |x: f64| if range.max == range.min { 0. } else { ((x - range.min) / (range.max - range.min)).clamp(0., 1.) };
+            let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(v, range.min, range.max, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => art(face,wd.image(Use::Strip).unwrap(),p,fixed.unwrap_or_else(||frame(unit(v),0.,1.,p.len())),w,h,scale),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
@@ -346,26 +432,28 @@ pub(super) fn widget_state(
             .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
         Kind::Button { momentary: true } => {
-            if wd.enabled { v = if ui.get(id.as_str()).held { 1. } else { 0. }; }
-            match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+            // UVI Button is stateless: one callback per activation, including keyboard.
+            if can_edit {v=if face.source==ir::Source::FalconLua {if ui.get(id.as_str()).activated(){1.}else{0.}}else{if ui.get(id.as_str()).held{1.}else{0.}};}
+            let pressed = can_edit && ui.get(id.as_str()).held;
+            match state_picture(pressed) {
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(v > 0.5, p.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())].align(Align::Center).justify(Justify::Center).radius(1).fill(Role::Ink.alpha(0.08 + 0.2 * v as f32)),
             }
             .focusable()
             .a11y(A11y::Button)
         }
         Kind::Button { .. } | Kind::Switch => {
-            if wd.enabled && ui.get(id.as_str()).activated() {
+            if can_edit && ui.get(id.as_str()).activated() {
                 v = if v > 0.5 { 0. } else { 1. };
             }
             let on = v > 0.5;
-            match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+            match state_picture(on) {
+                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| switch_frame(on, p.len()))).unwrap_or(Fill::from(Role::Field))),
                 None => row![words(wd.text.clone())]
                     .align(Align::Center)
                     .justify(Justify::Center)
                     .radius(1)
-                    .fill(if on { Fill::from(value_ink(0.).with_alpha(0.35)) } else { Role::Ink.alpha(0.08) })
+                    .fill(if on { wd.colors.on.map_or(Fill::from(value_ink(0.).with_alpha(0.35)),|c|Fill::from(colour(c))) } else { wd.colors.off.map_or(Role::Ink.alpha(0.08),|c|Fill::from(colour(c))) })
                     .stroke(Role::Ink.alpha(if on { 0.6 } else { 0.2 }))
                     .stroke_width(1),
             }
@@ -373,12 +461,13 @@ pub(super) fn widget_state(
             .a11y(A11y::Toggle { on })
         }
         Kind::Menu { items } => {
-            if wd.enabled && ui.get(id.as_str()).activated() {
-                input.menu = if input.menu == Some(n) { None } else { Some(n) };
-            }
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
             // Drawing an unknown semantic value must not edit the script.
             let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
+            if can_edit && ui.get(id.as_str()).activated() && !shown.is_empty() {
+                if wd.menu_cycle { v=f64::from(shown[at.map_or(0,|a|(a+1)%shown.len())].value); }
+                else { input.menu = if input.menu == Some(n) {None} else {Some(n)}; }
+            }
             let label = at.map(|a| shown[a].text.clone()).unwrap_or_default();
             match strip {
                 Some(p) => stack![block(w, h).radius(0).fill(picture(p, 0).unwrap_or(Fill::from(Role::Field))), row![words(label)].align(Align::Center).pad((TIGHT * scale, 0.)).w(w).h(h)],
@@ -392,7 +481,7 @@ pub(super) fn widget_state(
         }
         Kind::ValueEdit { range, display, arrows } => {
             let response = ui.get(id.as_str());
-            if wd.enabled && (response.double_clicked || ui.keys(id.as_str()).iter().any(|k| k.key == Key::Enter)) {
+            if can_edit && (response.double_clicked || ui.keys(id.as_str()).iter().any(|k| k.key == Key::Enter)) {
                 input.typing = Some((n, format!("{}", v / if display.ratio == 0. {1.} else {display.ratio})));
             }
             if input.typing.as_ref().is_some_and(|(at,_)| *at == n) {
@@ -401,7 +490,7 @@ pub(super) fn widget_state(
                 let (_, text) = input.typing.as_mut().unwrap();
                 let field = text_edit(ui, edit_id.as_str(), text, TextOpts { blur_on_submit:true, ..Default::default() });
                 if !mounted { ui.focus(edit_id.as_str()); }
-                let cancel = !wd.enabled || ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
+                let cancel = !can_edit || ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
                 if cancel { input.typing = None; }
                 else if field.changed.submitted || mounted && !ui.focused(edit_id.as_str()) {
                     if let Ok(number) = text.trim().parse::<f64>() { if number.is_finite() { v = quantized(number * if display.ratio == 0. {1.} else {display.ratio}, range); } }
@@ -410,22 +499,71 @@ pub(super) fn widget_state(
                 row![field.el].align(Align::Center)
             } else {
                 let (vertical, travel) = gesture(wd, scale);
-                if wd.enabled { drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, false); }
+                if can_edit { drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, false); }
                 let mut parts = Vec::new();
                 if !wd.hide.title && !wd.text.is_empty() { parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0)); }
                 parts.push(words(wd.value_text.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| number(v, display))));
                 if *arrows {
                     let up = format!("{id}-up"); let down = format!("{id}-down");
-                    if wd.enabled && ui.get(up.as_str()).activated() { v = quantized(v + range.step.unwrap_or(1.),range); }
-                    if wd.enabled && ui.get(down.as_str()).activated() { v = quantized(v - range.step.unwrap_or(1.),range); }
+                    if can_edit && ui.get(up.as_str()).activated() { v = quantized(v + range.step.unwrap_or(1.),range); }
+                    if can_edit && ui.get(down.as_str()).activated() { v = quantized(v - range.step.unwrap_or(1.),range); }
                     parts.push(col![glyph(Icon::Up,TIGHT*scale,secondary()).focusable().id(up),glyph(Icon::Down,TIGHT*scale,secondary()).focusable().id(down)].gap(0));
                 }
                 row(parts).gap(TIGHT * scale).align(Align::Center).justify(Justify::Center).pad((TIGHT * scale, 0.)).fill(Role::Ink.alpha(0.06)).cursor(Cursor::ResizeV).focusable().a11y(A11y::Slider {value:v,min:range.min,max:range.max})
             }
         }
-        Kind::Label => row![caption(wd.text.clone()).text_size(text_size).fill(ink.clone())].align(Align::Center),
+        Kind::Label => super::render_art::words(&wd.text,style,assets,bitmap,ink.clone(),w,h,scale,wd.text_y,true),
+        Kind::Table { columns, range, cells, bipolar, steps_shown } if !wd.components.is_empty() => {
+            let bars=(0..*columns as usize).map(|c| {
+                let cid=wd.components.get(c).copied();
+                let mut value=cid.and_then(|id|values.get(&id).copied()).unwrap_or_else(||cells.get(c).copied().unwrap_or(0.));
+                let key=format!("{id}-cell-{c}");
+                if can_edit { drive(ui,&key,&mut value,&(range.min..=range.max),TRAVEL,true,range.default); }
+                if let Some(step)=range.step { value=(value/step).round()*step; }
+                if let Some(id)=cid {values.insert(id,value);}
+                let t=if range.max==range.min{0.}else{((value-range.min)/(range.max-range.min)).clamp(0.,1.)};
+                let zero=if *bipolar && range.max!=range.min {(-range.min/(range.max-range.min)).clamp(0.,1.)}else{0.};
+                let bar=wd.colors.bar.map_or(Role::Ink.alpha(0.6),|c|Fill::from(colour(c)));
+                let zero_ink=wd.colors.zero_line.map_or(Role::Ink.alpha(0.25),|c|Fill::from(colour(c)));
+                let steps=steps_shown.unwrap_or(0).min(128);
+                canvas(move |s| {
+                    let mut draws=vec![Draw::fill(rect(0.,s.height*(1.-t.max(zero)),s.width.max(1.),s.height*(t-zero).abs()),bar.clone())];
+                    draws.push(Draw::fill(rect(0.,s.height*(1.-zero),s.width,1.),zero_ink.clone()));
+                    for step in 1..steps {draws.push(Draw::fill(rect(0.,s.height*step as f64/steps as f64,s.width,1.),Role::Ink.alpha(0.1)));}
+                    draws
+                })
+                    .fill(Role::Ink.alpha(0.06)).flex(1).h(h).id(key).focusable()
+                    .named(format!("{} {}",wd.name,c+1)).a11y(A11y::Slider{value,min:range.min,max:range.max})
+            }).collect::<Vec<_>>();
+            row(bars).gap(1).w(w).h(h)
+        }
+        Kind::Xy { .. } if wd.components.len()==2 => {
+            let mut xy=[0.5;2];
+            let mut axes=Vec::new();
+            for axis in 0..2 {
+                let cid=wd.components[axis];
+                let target=face.widgets.iter().find(|w|w.binding==Binding::Control(cid));
+                let range=target.and_then(|w|match w.kind{Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..}=>Some(range),_=>None}).unwrap_or(ir::Range{min:0.,max:1.,default:0.5,step:None});
+                let mut value=values.get(&cid).copied().unwrap_or(range.default);
+                let mapper=target.and_then(|w|w.mapper.as_deref());
+                let key=format!("{id}-axis-{axis}");
+                if can_edit {
+                    drive_mapped(ui,&key,&mut value,&range,mapper,false);
+                    if ui.get(id.as_str()).held && let Some(p)=ui.local(&id) {
+                        let t=if axis==0 {(p.x/w.max(1.)).clamp(0.,1.)}else{(1.-p.y/(h-18.).max(1.)).clamp(0.,1.)};
+                        value=mapped(&range,mapper,t,false);
+                    }
+                }
+                if let Some(step)=range.step {value=(value/step).round()*step;}
+                values.insert(cid,value);
+                xy[axis]=mapped(&range,mapper,value,true);
+                axes.push(fader_face(xy[axis],0.,None,false,0.,ui.focus_visible(&key)).h(16).flex(1).id(key).focusable().named(format!("{} {}",wd.name,if axis==0{"X"}else{"Y"})).a11y(A11y::Slider{value,min:range.min,max:range.max}));
+            }
+            let pad=canvas(move |s|vec![Draw::fill(rect(xy[0]*(s.width-6.),(1.-xy[1])*(s.height-6.),6.,6.),Role::Ink.alpha(0.8))]).fill(Role::Ink.alpha(0.06)).w(w).h((h-18.).max(1.)).id(id.clone());
+            col![pad,row(axes).gap(2).h(16)].gap(2)
+        }
         Kind::LevelMeter { orientation } => {
-            let level = input.meters.get(&n).copied().unwrap_or(0.);
+            let level = input.meters.get(&n).copied().unwrap_or_else(|| { let (bus,channel)=match wd.binding {Binding::Meter{bus,channel}=>(bus,channel),_=>(None,0)}; assets.meter.as_ref().map_or(0., |read| f64::from(read(bus,channel)[0])) });
             let [lo,hi] = wd.meter_range.unwrap_or([0,1_000_000]);
             let unit = if lo == hi {0.} else {((level*1_000_000.-f64::from(lo))/f64::from(hi-lo)).clamp(0.,1.)};
             let vertical = *orientation == ir::Orientation::Vertical;
@@ -442,7 +580,7 @@ pub(super) fn widget_state(
             };
             samples.resize(*columns as usize,range.default);
             let response = ui.get(id.as_str());
-            if wd.enabled && (response.pressed || response.dragged) && !samples.is_empty() {
+            if can_edit && (response.pressed || response.dragged) && !samples.is_empty() {
                 if let Some(point) = ui.local(id.as_str()) {
                     let column = ((point.x/w.max(1.)).clamp(0.,1.)*samples.len() as f64).floor() as usize;
                     let column = column.min(samples.len()-1);
@@ -468,7 +606,7 @@ pub(super) fn widget_state(
             let mut points = match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Reals(v))=>v.clone(), _=>vec![0.; *cursors as usize*2]};
             points.resize(*cursors as usize*2,0.);
             let response=ui.get(id.as_str());
-            if wd.enabled && (response.pressed || response.dragged) && !points.is_empty() {
+            if can_edit && (response.pressed || response.dragged) && !points.is_empty() {
                 if let Some(point)=ui.local(id.as_str()) {
                     let (x,y)=((point.x/w.max(1.)).clamp(0.,1.),(1.-point.y/h.max(1.)).clamp(0.,1.));
                     let cursor=if response.pressed {
@@ -487,7 +625,7 @@ pub(super) fn widget_state(
         Kind::TextEdit => {
             let draft=input.drafts.entry(n).or_insert_with(||match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Text(v))=>v.clone(),_=>String::new()});
             let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
-            if wd.enabled && field.changed.submitted {
+            if can_edit && field.changed.submitted {
                 let text=ir::Value::Text(draft.clone());
                 input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods,cursor:0,event:1});
                 input.values.insert(n,text);
@@ -506,12 +644,12 @@ pub(super) fn widget_state(
             let up=format!("{id}-parent");
             let mut next=None;
             if path.parent().is_some() {
-                if wd.enabled && ui.get(up.as_str()).activated() {next=path.parent().map(std::path::Path::to_owned);}
+                if can_edit && ui.get(up.as_str()).activated() {next=path.parent().map(std::path::Path::to_owned);}
                 rows.push(caption("..").pad(TIGHT*scale).focusable().id(up));
             }
             for (at,path) in entries.iter().enumerate() {
                 let item=format!("{id}-file-{at}");
-                if wd.enabled && ui.get(item.as_str()).activated() {
+                if can_edit && ui.get(item.as_str()).activated() {
                     if path.is_dir() {next=Some(path.clone());}
                     else {
                         let value=ir::Value::Text(path.to_string_lossy().into_owned());
@@ -536,8 +674,8 @@ pub(super) fn widget_state(
         }
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
     };
-    if let Some(c) = control {
-        if wd.enabled && v.to_bits() != before.to_bits() {
+    if let Some(c) = control && wd.components.is_empty() {
+        if can_edit && v.to_bits() != before.to_bits() {
             let response = ui.get(id.as_str());
             let mods = if matches!(wd.kind,Kind::Menu{..}|Kind::ValueEdit{..}) {Mods::default()} else {response.mods};
             let value = match &wd.kind {
@@ -554,17 +692,19 @@ pub(super) fn widget_state(
     let plate = strip.is_none()
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
+    let face_el = if let Some(c)=wd.colors.background {face_el.fill(colour(c))}else{face_el};
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
+    let face_el=if can_edit{face_el}else{face_el.disabled()};
     let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. } | Kind::Table {..} | Kind::Xy {..} | Kind::FileSelector {..} | Kind::TextEdit | Kind::MouseArea);
     // MUI reserves slash-prefixed IDs for non-target decoration.
     let target = if interactive { id } else { format!("/{id}") };
-    let mut el = face_el.w(w).h(h).shrink(0).id(target).when(!wd.enabled, |e| e.disabled()).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
+    let mut el = face_el.w(w).h(h).shrink(0).opacity(opacity).id(target).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
     if !wd.tooltip.is_empty() {
         el = el.tip(wd.tooltip.clone());
     }
     let bg = wd.images.iter().find(|i| i.role == Use::Background);
     match bg.and_then(|i| assets.get(i.asset).and_then(|p| picture(p, i.frame.unwrap_or(0) as usize))) {
-        Some(bg) if !wd.hide.background => stack![block(w, h).radius(0).fill(bg), el].w(w).h(h).shrink(0),
+        Some(_) if !wd.hide.background => { let i=bg.unwrap();let p=assets.get(i.asset).unwrap();stack![art(face,i.asset,p,i.frame.unwrap_or(0) as usize,w,h,scale),el].w(w).h(h).shrink(0) },
         _ => el,
     }
 }
@@ -612,5 +752,69 @@ fn file_matches(path:&std::path::Path,files:ir::Files)->bool {
         ir::Files::Audio=>matches!(extension.as_str(),"wav"|"aif"|"aiff"|"flac"|"ogg"|"mp3"|"ncw"),
         ir::Files::Midi=>matches!(extension.as_str(),"mid"|"midi"),
         ir::Files::Data=>matches!(extension.as_str(),"nka"|"nkr"|"txt"),
+    }
+}
+
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod render_tests;
+/// Exercise the production asset loader, layout and CPU painter without a window.
+#[cfg(feature = "shots")]
+pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Value {
+    let mut source = super::pictures::Source::of(path);
+    let mut assets = Assets::default();
+    let (mut image_errors, mut font_errors) = (0, 0);
+    assets.sync(face, Presentation::Bitmap, |asset| {
+        if !matches!(asset.kind, ir::AssetKind::Image(_)) { return None; }
+        let picture = source.load(asset);
+        image_errors += usize::from(picture.is_none());
+        picture
+    });
+    assets.sync_fonts(face, |asset| {
+        let font = source.font(asset);
+        font_errors += usize::from(font.is_none());
+        font
+    });
+    let render = || -> Result<(), String> {
+        face.validate().map_err(|e| e.to_string())?;
+        let Some(page) = face.pages.first() else { return Err("no UI page".into()); };
+        let scale = (1100. / f64::from(page.size.width.max(1))).min(1.);
+        let (width, height) = ((f64::from(page.size.width) * scale).ceil().clamp(1., 1100.) as u16,
+            (f64::from(page.size.height) * scale).ceil().clamp(1., 4096.) as u16);
+        let mut values = Values::default();
+        let mut ui = super::theme::ui();
+        let face = resolved(face);
+        for _ in 0..2 {
+            let root = view(&mut ui, &face, PageRef(0), &assets, Presentation::Bitmap, scale, &mut values);
+            ui.frame(root, Some(Size::new(width.into(), height.into())), Input::default(), 1./60.)
+                .map_err(|e| e.to_string())?;
+        }
+        use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+        let mut ctx = RenderContext::new(width, height);
+        let mut resources = Resources::default();
+        vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut vello::Cache::default() },
+            ui.scene().ok_or("no scene")?, vello::kurbo::Affine::IDENTITY).map_err(|e| e.to_string())?;
+        ctx.flush();
+        ctx.render(&mut Pixmap::new(width, height), &mut resources);
+        Ok(())
+    };
+    // Never log a panic payload: library text/resources may be embedded in it.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(render));
+    let render_error = match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("render panic".into()) };
+    serde_json::json!({"image_errors":image_errors,"font_errors":font_errors,"render_error":render_error})
+}
+
+#[cfg(test)]
+mod mapper_tests {
+    use super::*;
+    #[test]
+    fn uvi_mapper_positions_round_trip_and_select_the_expected_strip_frame() {
+        let range=ir::Range{min:1.,max:10000.,default:100.,step:None};
+        assert!((mapped(&range,Some("Exponential"),0.5,false)-100.).abs()<1e-9);
+        assert_eq!(frame(mapped(&range,Some("Exponential"),100.,true),0.,1.,101),50);
+        for mapper in ["Linear","Exponential","Quadratic","Cubic","Quartic","Quintic","SquareRoot","CubeRoot","QuarticRoot","QuinticRoot"] {
+            let value=mapped(&range,Some(mapper),0.25,false);
+            assert!((mapped(&range,Some(mapper),value,true)-0.25).abs()<1e-9,"{mapper}");
+        }
     }
 }

@@ -35,6 +35,9 @@ use std::{
 #[derive(State, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Part {
+    /// Typed UVI widget/custom state, captured on the Lua worker.
+    pub uvi_state: String,
+    pub uvi_state_source: String,
     pub path: String,
     /// Program inside a bank file.
     pub program: u32,
@@ -86,6 +89,8 @@ pub struct Part {
 impl Default for Part {
     fn default() -> Self {
         Self {
+            uvi_state: String::new(),
+            uvi_state_source: String::new(),
             path: String::new(),
             program: 0,
             port: 0,
@@ -969,6 +974,10 @@ impl Shared {
 
     pub(crate) fn set_control_at(&self, slot: usize, epoch: u64, control: sampler_ui_ir::ControlId, value: f64) -> bool {
         let Some(part) = self.part(slot) else { return false };
+        if let Some(uvi) = &part.scripts.lock().unwrap().uvi {
+            if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
+            return uvi.edit(control,value);
+        }
         let mut ingress = part.ingress.lock().unwrap();
         if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
@@ -977,6 +986,13 @@ impl Shared {
     /// One authored gesture; XY axes and touched table cells stay one transaction.
     pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let Some(part) = self.part(slot) else { return false };
+        if part.scripts.lock().unwrap().uvi.is_some() {
+            return match (&widget.binding, edits.as_slice()) {
+                (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Integer(value))]) => self.set_control_at(slot,epoch,*id,f64::from(*value)),
+                (sampler_ui_ir::Binding::Control(id), [(0, sampler_ui_ir::Value::Real(value))]) => self.set_control_at(slot,epoch,*id,*value),
+                _=>false,
+            };
+        }
         let mut ingress = part.ingress.lock().unwrap();
         if part.generation.load(Ordering::Acquire) != epoch { return false; }
         ingress.as_mut().is_some_and(|ingress| ingress.submit_ui_widgets(source_slot, widget, edits, interaction))
@@ -1019,6 +1035,32 @@ impl Shared {
             if let Some(v) = self.view.lock().unwrap().parts.get_mut(slot).filter(|v| v.generation == epoch) {
                 for interface in interfaces { v.publish_interface(&interface); }
                 if v.keys != keys { v.keys = keys; v.ui_revision += 1; }
+            }
+        }
+    }
+
+    fn refresh_uvi(&self, params: &SamplerParams) {
+        let parts = self.parts.lock().unwrap().clone();
+        for (slot, part) in parts.iter().enumerate() {
+            let mut scripts = part.scripts.lock().unwrap();
+            let Some(uvi) = scripts.uvi.clone() else {
+                continue;
+            };
+            let revision = uvi.revision();
+            if revision == scripts.uvi_revision {
+                continue;
+            }
+            scripts.uvi_revision = revision;
+            if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
+                view.publish_interface(&uvi.interface());
+            }
+            if let Ok(state) = uvi.state()
+                && let Ok(state) = serde_json::to_string(&state)
+                && let Some(part) = params.selection.write().unwrap().parts.get_mut(slot)
+                && scripts.uvi_source.as_ref() == Some(&part.source())
+            {
+                part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
+                part.uvi_state = state;
             }
         }
     }
@@ -1145,6 +1187,7 @@ impl BackgroundTask for Load {
                 part.scalar_revision.fetch_add(1, Ordering::Release);
             }
         } });
+        shared.refresh_uvi(&params);
         shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -1270,7 +1313,16 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     trace.detail("instance_id", shared.instance_id);
     trace.detail("sample_rate", rate);
     trace.stage("prepare");
+    let state = if part.uvi_state.is_empty()
+        || part.uvi_state_source != serde_json::to_string(&source).unwrap() { Ok(None) }
+        else if part.uvi_state.len() > 8 << 20 {
+            Err(CoreError::Invalid("Saved UVI UI state exceeds 8 MiB".into()))
+        } else {
+            serde_json::from_str(&part.uvi_state).map(Some)
+                .map_err(|_| CoreError::Invalid("Saved UVI UI state is malformed".into()))
+        };
     let request = LoadRequest {
+        uvi_state: state.as_ref().ok().cloned().flatten(),
         path: part.path.clone().into(),
         program: part.program,
         sample_rate: rate,
@@ -1284,12 +1336,15 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = V2Loader.prepare(&request, &mut progress, &canceled);
+    let result = state.and_then(|_| V2Loader.prepare(&request, &mut progress, &canceled));
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
     match result {
         Ok(mut loaded) => {
+            if loaded.scripts.uvi.is_some() {
+                loaded.scripts.uvi_source = Some(source.clone());
+            }
             for line in loaded.report.lines().skip(1) {
                 trace.issue("translate", crate::diagnostics::code(&line), line);
             }

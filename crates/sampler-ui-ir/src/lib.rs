@@ -52,8 +52,13 @@ pub struct Interface {
     pub icon: Option<AssetRef>,
     /// The source hides the instrument icon (KSP `$INST_ICON_ID` `HIDE`).
     pub icon_hidden: bool,
+    /// A legacy authored NativeUI entry point, consumed by the editor frontend.
+    pub native_ui: Option<NativeUi>,
     pub unsupported: Vec<Unsupported>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeUi { pub entry: String }
 
 /// Which frontend produced the interface.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,6 +138,18 @@ pub struct Widget {
     pub style: Option<StyleRef>,
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
+    /// Table cell or XY axis controls, in component order.
+    pub components: Vec<ControlId>,
+    /// Scalar state for controls without a numeric range (toggles/menus).
+    pub initial_value: f64,
+    pub opacity: f32,
+    pub intercepts_mouse: bool,
+    /// Clip children and offset their origin (UVI Viewport).
+    pub viewport: Option<[i32; 2]>,
+    /// Source response curve, e.g. UVI Exponential.
+    pub mapper: Option<String>,
+    /// MultiStateButton advances on click; Menu opens a choice list.
+    pub menu_cycle: bool,
     /// Current source value for typed widgets; numeric controls use their service.
     pub value: Option<Value>,
     pub waveform: Option<Waveform>,
@@ -167,6 +184,13 @@ impl Widget {
             colors: Colors::default(),
             style: None,
             images: Vec::new(),
+            components: Vec::new(),
+            initial_value: 0.0,
+            opacity: 1.0,
+            intercepts_mouse: true,
+            viewport: None,
+            mapper: None,
+            menu_cycle: false,
             value: None,
             waveform: None,
             meter: None,
@@ -297,7 +321,13 @@ pub enum Kind {
     ValueEdit { range: Range, display: Display, arrows: bool },
     /// `cells`: initial values, one per column (may be shorter than `columns`);
     /// `steps_shown`: value steps drawn as grid lines (KSP `set_table_steps_shown`).
-    Table { columns: u32, range: Range, bipolar: bool, cells: Vec<i32>, steps_shown: Option<u32> },
+    Table {
+        columns: u32,
+        range: Range,
+        bipolar: bool,
+        cells: Vec<f64>,
+        steps_shown: Option<u32>,
+    },
     /// `sensitivity`: per-axis drag sensitivity in source units (KSP
     /// `MOUSE_BEHAVIOUR_X`/`_Y`); `mouse_mode`: the source's pointer mode,
     /// verbatim (KSP `MOUSE_MODE`), until its meanings are verified.
@@ -414,6 +444,9 @@ pub enum Role {
     Strip,
     /// A separately drawn moving part: slider handle, XY cursor, meter fill.
     Handle,
+    Pressed,
+    Hover,
+    HoverPressed,
 }
 
 impl Role {
@@ -436,6 +469,7 @@ pub enum AssetKind {
     Image(ImageMeta),
     /// A bitmap font (KSP `get_font_id` picture font).
     BitmapFont,
+    TrueTypeFont,
 }
 
 /// Layout of an image, from source metadata (KSP picture `.txt`, Lua args).
@@ -491,6 +525,7 @@ pub enum Font {
     Named(String),
     /// A bitmap font asset. [`Presentation::Vector`] draws [`Font::Default`] instead.
     Bitmap(AssetRef),
+    File(AssetRef),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -579,11 +614,11 @@ impl Interface {
                 }
             }
         }
-        if !vector {
-            for s in &self.styles {
-                if let Font::Bitmap(a) = s.font {
-                    mark(a);
-                }
+        for s in &self.styles {
+            match s.font {
+                Font::File(a) => mark(a),
+                Font::Bitmap(a) if !vector => mark(a),
+                _ => {}
             }
         }
         keep
@@ -610,9 +645,17 @@ impl Interface {
         let mut parent = self.widgets[widget.0].parent;
         for _ in 0..self.widgets.len() {
             let Some(p) = parent else { break };
-            let p = &self.widgets[p.0];
-            rect.x += p.rect.x;
-            rect.y += p.rect.y;
+            let Some(p) = self.widgets.get(p.0) else {
+                break;
+            };
+            rect.x = rect
+                .x
+                .saturating_add(p.rect.x)
+                .saturating_sub(p.viewport.map_or(0, |v| v[0]));
+            rect.y = rect
+                .y
+                .saturating_add(p.rect.y)
+                .saturating_sub(p.viewport.map_or(0, |v| v[1]));
             parent = p.parent;
         }
         rect
@@ -654,7 +697,7 @@ impl Interface {
             }
         }
         for s in &self.styles {
-            if let Font::Bitmap(a) = s.font {
+            if let Font::Bitmap(a) | Font::File(a) = s.font {
                 asset(a, false)?;
             }
         }
