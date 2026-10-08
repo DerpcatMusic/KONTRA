@@ -7,6 +7,9 @@
 //! larger storage to the audio thread through lock-free queues. Everything the
 //! audio thread replaces goes back to the loader to be dropped.
 
+mod automation;
+pub(crate) mod automation_ids;
+
 use crate::sound::{
     BUSES, BlockInfo, Core, CoreError, CoreLoader, LoadRequest, MAX_BLOCK, Progress, RACK_SLOTS, Rendered, TUNE_RANGE,
     Transport,
@@ -254,6 +257,8 @@ impl Selection {
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
+    #[nested(base = 0)]
+    pub host: automation::HostAutomation,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
     pub selection: RwLock<Selection>,
@@ -983,6 +988,14 @@ impl Shared {
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
     }
 
+    /// Main-thread host automation uses the same epoch admission and reply queue.
+    pub(crate) fn set_host_parameter_at(&self, slot: usize, epoch: u64, address: u16, value: f64) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|client| client.submit_host_parameter(address, value))
+    }
+
     /// One authored gesture; XY axes and touched table cells stay one transaction.
     pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let Some(part) = self.part(slot) else { return false };
@@ -1552,6 +1565,12 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
 
 /// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
 fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessContext, thru: bool) {
+    if let EventBody::ParamChange { id, value } = e.body {
+        if let Some(address) = automation::HostAutomation::address(id) {
+            if !s.core.host_parameter(address, value) { s.unsupported += 1; }
+        }
+        return;
+    }
     relay_typed_input(e, cx, thru);
     let shared = &p.shared;
     let lit = |note: u8, velocity: u8| shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed);

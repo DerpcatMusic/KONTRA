@@ -313,6 +313,12 @@ pub(crate) struct ControlIngress {
 }
 
 impl ControlIngress {
+    pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        self.client.submit(sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::HostParameter(self.context, address, value) }).is_ok()
+    }
+
     pub(crate) fn submit_ui_widgets(&mut self, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let definition = self.widgets.iter().find(|w| w.source_slot == source_slot && Some(w.ui_id) == widget.source_id)
             .or_else(|| self.widgets.iter().find(|w| matches!(widget.binding, sampler_ui_ir::Binding::Control(id) if matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control.0 == id.0))));
@@ -489,6 +495,19 @@ fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_
 }
 
 impl V2Core {
+    /// Called at the DAW event's sample boundary, on the runtime owner.
+    pub(crate) fn host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        let mut accepted = true;
+        for part in self.parts.iter_mut().flatten() {
+            let rt = &mut part.runtime;
+            let Ok(performance) = rt.performance(0) else { accepted = false; continue };
+            let context = ControlContext { performance, origin: WIRE, channels: 1 };
+            accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
+        }
+        accepted
+    }
+
     pub(crate) fn epoch(&self, slot: usize) -> u64 { self.parts.get(slot).and_then(Option::as_ref).map_or(0, |p| p.epoch) }
     pub(crate) fn ui_revision(&self, slot: usize) -> u64 {
         self.parts.get(slot).and_then(Option::as_ref).and_then(|p| p.runtime.control_revision(p.runtime.active_plan()).ok()).unwrap_or(0)
@@ -1459,6 +1478,16 @@ impl V2Loader {
                 timbre = Some(cc);
             }
             report.decoded.mpe = super::report::mpe_summary(&defaults);
+        }
+        for binding in prepared.automation_bindings() {
+            if let sampler_core::AutomationSource::HostParameter(address) = binding.source
+                && address >= super::HOST_AUTOMATION_SLOTS {
+                report.missing.push(super::report::Missing {
+                    location: format!("script slot {} UI {}", binding.source_slot, binding.ui_id),
+                    feature: "standalone-derived host automation capacity".into(), value: address.to_string(),
+                    reason: super::report::MissingReason::NotModeled,
+                });
+            }
         }
         let mut controls: Vec<_> = prepared
             .controls()

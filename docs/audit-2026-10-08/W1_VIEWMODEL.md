@@ -58,3 +58,11 @@ The first own-build quick15 used the older shared driver and matched integration
 ## Retained checks
 
 Four synthetic loop witnesses were flipped from assertions of defective behavior to expected behavior. Before production edits, those plus the Original-default and label-alias checks failed (six failures). Checks now also cover sparse/no-op publication, restored mode precedence, header three-mode selection/editor reopen, script/page/value continuity, stale effect rejection and both-axis zoom.
+
+### Integrated typed readback and host automation
+
+W1 `630e82f1` adds the existing-channel typed capture adapter: callback changes to arrays/text/XY reach persistent Face.input, rejected previews roll back and wake the view, and capture payloads recycle off the audio thread. The retained production two-part probe independently exercises focus, wheel and drag for the same widget ordinal across namespaced faces. Both pass. W3 `eb8dade0`, W2 `00c88076` and W7 final `0951f197` are merged; the persistent input state, per-source native updates, cursor/event/modifier grouping, UVI input and one pictures revision hash are preserved.
+
+CLAP/VST3 ParamChange events now map stable normalized plugin parameter IDs to saved native host addresses and invoke W7's callback route at the existing sample boundary. The main-thread HostParameter operation uses the same ControlClient admission/reply channel and generation-aware runtime API. Volume keeps its existing ID. Registered host addresses are 0..=2048 (2049 slots), following the verified Kontakt 8.13.1 standalone creation limit; native VST3's published capacity is unverified. Saved addresses above 2048 remain unchanged and generate an unsupported load finding. Program/Group remap delta wire fields are not decoded, so no delta or reader clamp is invented.
+
+Root `cargo test --features shots --no-run` passed. Integrated UI suite: 85 passed, 10 opt-in ignored; plugin loop suite: 5 passed; typed capture and host callback/epoch/revision/noheap checks passed. Stable slot/static metadata registration, address 2048, nonfinite input, and unchanged master parameter identity are retained checks. Raw logs: `~/.cache/kontakto-w1/{capture-final,host-check2}.log`. Native Conflux startup remains W3's explicit diagnostic/fidelity work; these checks do not claim that gate.
