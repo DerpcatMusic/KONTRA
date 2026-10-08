@@ -49,6 +49,7 @@ pub struct GroupSettings {
     pub values: Vec<(Param, f32)>,
     pub bindings: Vec<(Param, Binding)>,
     filters: Vec<ir::Filter>,
+    ladders: Vec<ir::LadderLP4>,
     rate: u32,
 }
 impl Param {
@@ -57,6 +58,21 @@ impl Param {
     }
 }
 impl GroupSettings {
+    fn ladder(&self, p: Param) -> Option<&ir::LadderLP4> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        self.ladders.iter().find(|f| f.address.is_some_and(|a| {
+            a.group == binding.address.group && a.slot == binding.address.slot && a.generic == binding.address.generic
+        }))
+    }
+
+    pub fn frequency(&self, p: Param, n: f32) -> Option<f32> {
+        let binding = self.bindings.iter().find(|(q, _)| *q == p)?.1;
+        let native = binding.law.decode((n * 1e6).round() as i32) as f32;
+        Some(if matches!(p, Param::Cutoff(_)) && self.ladder(p).is_some() {
+            sampler_core::LadderSettings::cutoff_hz(native)
+        } else { native })
+    }
+
     pub fn magnitude(&self, hz: f32) -> f32 {
         self.filters
             .iter()
@@ -114,7 +130,9 @@ impl GroupSettings {
                     .map_or(1., |b| b.magnitude(hz as f64));
                 (if poles == 4 { m * m } else { m }) as f32
             })
-            .product()
+            .product::<f32>()
+            * self.ladders.iter().map(|f| sampler_core::LadderSettings::magnitude(
+                [f.cutoff as f32, f.resonance as f32, f.gain as f32], hz, self.rate)).product::<f32>()
     }
 }
 #[derive(Clone, PartialEq)]
@@ -161,6 +179,7 @@ impl Model {
                 }),
                 _ => None,
             });
+        let admitted = bindings;
         let bindings: Vec<_> = bindings
             .iter()
             .copied()
@@ -191,11 +210,26 @@ impl Model {
                     })
                     .collect()
             });
+        let ladders = i.groups.get(g).and_then(|g| g.chain).and_then(|r| i.chains.get(r.0))
+            .map_or_else(Vec::new, |chain| chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .filter_map(|p| if let ir::Processor::LadderLP4(f) = p { Some(*f) } else { None })
+                .map(|mut f| {
+                    if let Some(a) = f.address {
+                        if let Some(binding) = admitted.iter().find(|b| b.address.group == a.group
+                            && b.address.slot == a.slot && b.address.generic == a.generic
+                            && Some(b.address.parameter) == sampler_core::engine_parameter_id("ENGINE_PAR_GAIN"))
+                        {
+                            if let Some((_, gain)) = values.iter().find(|(id, _)| id.0 == binding.control.0) { f.gain = *gain; }
+                        }
+                    }
+                    f
+                }).collect());
         let mut base = GroupSettings {
             envelope,
             values: vals,
             bindings,
             filters,
+            ladders,
             rate,
         };
         let mut playing = base.clone();
@@ -228,6 +262,15 @@ impl Model {
                                 ir::Curve::Exponential(native)
                             }
                         }
+                        _ => {}
+                    }
+                }
+                for ladder in &mut s.ladders {
+                    if !ladder.address.is_some_and(|a| a.group == b.address.group
+                        && a.slot == b.address.slot && a.generic == b.address.generic) { continue; }
+                    match p {
+                        Param::Cutoff(_) => ladder.cutoff = native,
+                        Param::Resonance(_) => ladder.resonance = native,
                         _ => {}
                     }
                 }
@@ -296,6 +339,7 @@ impl Model {
                 native / self.base.rate as f32
             }
             Param::Curve => n * 2. - 1.,
+            Param::Cutoff(_) | Param::Freq(..) => self.base.frequency(p, n).unwrap_or(native),
             Param::Resonance(_) => n,
             Param::Bandwidth(..) => ((0.5 / native).asinh() * 2. / std::f32::consts::LN_2),
             Param::Gain(..) => 20. * native.max(1e-10).log10(),
