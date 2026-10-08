@@ -218,6 +218,11 @@ impl Check<'_> {
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
                 }
+                Processor::LadderLP4(d) => {
+                    self.within(d.gain, 0.0..=1.0, "ladder gain")?;
+                    self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
+                }
                 Processor::Reverb(r) => {
                     for (v, field) in [
                         (r.decay_seconds, "reverb decay"),
