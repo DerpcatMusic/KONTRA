@@ -214,11 +214,17 @@ impl Check<'_> {
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::Rectify(_) => {}
+                Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
                     self.within(d.gain, 0.0..=1.0, "daft gain")?;
                     self.within(d.cutoff, 0.0..=1.0, "daft cutoff")?;
                     self.within(d.resonance, 0.0..=1.0, "daft resonance")?;
+                }
+                Processor::LadderLP4(d) => {
+                    self.within(d.gain, -1.0..=1.0, "ladder gain")?;
+                    self.within(d.cutoff, 0.0..=1.0, "ladder cutoff")?;
+                    self.within(d.resonance, 0.0..=1.0, "ladder resonance")?;
                 }
                 Processor::Reverb(r) => {
                     for (v, field) in [

@@ -205,6 +205,7 @@ fn translate(
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
         dynamic: false,
+        send_taps: Vec::new(),
     };
     match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
         Ok(records) => for record in records {
@@ -400,11 +401,12 @@ fn translate(
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
-        for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load)
-        {
+        let (notes, send_buses) =
+            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load);
+        for (at, (slot, feature, value, reason)) in notes {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
+        out.resolve_send_taps(&send_buses);
     }
     drop(span);
     let span = crate::audit::Span::new("translate_zones_sample_resolve");
@@ -518,6 +520,7 @@ struct Translation {
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
     dynamic: bool,
+    send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -564,6 +567,30 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    fn resolve_send_taps(&mut self, buses: &[(usize, ir::BusRef)]) {
+        for (chain, tap) in std::mem::take(&mut self.send_taps) {
+            for (send, level) in tap.levels.into_iter().enumerate() {
+                if !level.is_finite() || level < 0.0 {
+                    self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                        "send level", send.to_string(), ir::Reason::InvalidValue);
+                    continue;
+                }
+                let Some(&(_, bus)) = buses.iter().find(|(slot, _)| *slot == send) else {
+                    if level != 0.0 && !tap.bypass {
+                        self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                            "send return", send.to_string(), ir::Reason::NotModeled);
+                    }
+                    continue;
+                };
+                self.ir.voice_send_taps.push(ir::VoiceSendTap {
+                    chain, position: tap.position, bus,
+                    gain: ir::Gain::Linear(f64::from(level)), bypass: tap.bypass,
+                    gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+                });
+            }
+        }
+    }
+
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
     /// defined voice groups, then one voice limit per defined group.
     fn voice_groups(&mut self, data: &[u8]) -> Result<(), ni_file::Error> {
@@ -752,13 +779,13 @@ impl Translation {
                 crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
                 let dynamic = self.dynamic.then_some((index as i32, -1));
                 let (c, boundary) =
-                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic);
+                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic, index as i32);
                 let mut processors = c.processors;
                 filter_slots = c.filter_slots;
                 for (slot, feature, value, reason) in c.notes {
                     self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
                 }
-                if !processors.is_empty() {
+                if !processors.is_empty() || !c.send_taps.is_empty() {
                     let post_amplitude = processors.split_off(boundary);
                     self.ir.chains.push(ir::Chain {
                         scope: ir::Scope::Voice,
@@ -766,6 +793,7 @@ impl Translation {
                         post_amplitude,
                     });
                     chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
                 }
             }
             Err(error) => self.unsupported(
@@ -788,7 +816,7 @@ impl Translation {
                 }
                 let retrigger = params.unknown_flags[2] != 0;
                 let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.intensity == 1.0 && !t.invert
+                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
                         && t.slot.is_none() && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
@@ -915,7 +943,7 @@ impl Translation {
                 };
                 if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
                     && plain_volume(t)
-                    && t.intensity == 1.0
+                    && t.signed_intensity() == 1.0
                     && velocity == ir::VelocityResponse::None
                 {
                     // gain × velocity: the attenuate law at full intensity,
@@ -1065,11 +1093,11 @@ impl Translation {
         &mut self,
         at: &str,
         source: ir::ModulatorRef,
-        unipolar: bool,
+        _unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
         filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
-        let i = f64::from(target.intensity);
+        let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
             this.unsupported(
                 at,
@@ -1101,11 +1129,6 @@ impl Translation {
                 "modulation of a module parameter",
                 ir::Reason::NotModeled,
             );
-        }
-        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
-        // source maps onto it is not established.
-        if unipolar && target.unknown_flags & 0x02 != 0 {
-            return report(self, "signed modulation target", ir::Reason::UnknownLaw);
         }
         let (route_target, depth) = match target.param.as_str() {
             _ if cutoff.is_some() => (
@@ -1783,7 +1806,26 @@ mod modulation {
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
             dynamic: false,
+            send_taps: Vec::new(),
         }
+    }
+
+    #[test]
+    fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
+        let mut out = translation();
+        out.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: Vec::new(), post_amplitude: Vec::new() });
+        out.send_taps.push((ir::ChainRef(0), crate::effects::SendTap {
+            slot: 5, position: ir::VoiceSendPosition::AfterAmplitude(0),
+            levels: vec![0.0, 0.0, 0.0, 0.5], bypass: false,
+        }));
+        out.resolve_send_taps(&[(3, ir::BusRef(1))]);
+        assert_eq!(out.ir.voice_send_taps, vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0), position: ir::VoiceSendPosition::AfterAmplitude(0),
+            bus: ir::BusRef(1), gain: ir::Gain::Linear(0.5), bypass: false,
+            gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+        }]);
+        assert!(out.ir.unsupported.is_empty());
     }
 
     #[test]
@@ -1980,10 +2022,6 @@ mod modulation {
             target("pan", 1.0),
             target("cutoff", 1.0),
             ModTarget {
-                unknown_flags: 0x12,
-                ..target("pitch", 1.0)
-            },
-            ModTarget {
                 slot: Some(0),
                 ..target("cutoff", 1.0)
             },
@@ -1997,10 +2035,22 @@ mod modulation {
             [
                 ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled
             ]
         );
+    }
+
+    #[test]
+    fn saved_depth_sign_is_independent_of_invert_and_source_polarity() {
+        for unipolar in [false, true] {
+            for invert in [false, true] {
+                let mut t = translation();
+                let signed = ModTarget { unknown_flags: 0x12, invert, ..target("pitch", 0.25) };
+                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None).expect("signed pitch route");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Pitch(ir::Pitch::Semitones(-3.0)));
+                assert_eq!(t.ir.routes[0].invert, invert);
+            }
+        }
     }
 
     #[test]
