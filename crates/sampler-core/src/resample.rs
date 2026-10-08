@@ -1,4 +1,4 @@
-//! Control-prepared, table-interpolated low-pass kernel for resident rate conversion.
+//! Control-prepared, table-interpolated low-pass kernel for rate conversion.
 use std::{f64::consts::PI, sync::OnceLock};
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
@@ -137,7 +137,7 @@ fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     })
 }
 
-/// Stretches of the polyphase bank: eight per octave above unity.
+/// Bank spacing: eight stretches per octave through 2x, denser above 2x.
 const PER_OCTAVE: usize = 8;
 const HIGH_PER_OCTAVE: usize = 2 * PER_OCTAVE;
 const STRETCHES: usize = PER_OCTAVE + HIGH_PER_OCTAVE * (OCTAVES - 1);
