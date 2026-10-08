@@ -103,6 +103,8 @@ pub struct SourceIndices {
     pub modulators: Vec<SourceModulator>,
     /// Authored native mod/target names and physical lookup addresses, including omitted DSP.
     pub engine_lookups: Vec<SourceEngineLookup>,
+    /// Authored normalized getter values before script initialization, at physical addresses.
+    pub engine_values: Vec<SourceEngineValue>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -124,6 +126,15 @@ pub struct SourceEngineLookup {
     pub name: String,
     /// Physical modulator slot or authored target ordinal, never a runtime DSP index.
     pub index: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceEngineValue {
+    pub parameter: u16,
+    pub group: i32,
+    pub slot: i32,
+    pub generic: i32,
+    pub value: i32,
 }
 
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
