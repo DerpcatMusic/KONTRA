@@ -414,6 +414,12 @@ pub struct Streamer {
 }
 
 impl Streamer {
+    /// Clone the existing source for bounded control-worker reads. Opening or
+    /// decoding it belongs off the audio thread; this does not preload frames.
+    pub fn source(&self, asset: AssetId) -> Option<Arc<dyn AssetSource>> {
+        self.sources.get(&asset).cloned()
+    }
+
     /// Open every source as a streamed asset, timing an open plus first-page
     /// read on up to `probe` of them to size heads by `policy`.
     pub(crate) fn open(
