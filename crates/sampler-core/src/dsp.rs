@@ -22,6 +22,7 @@ pub struct Biquad {
     a: [f64; 2],
 }
 impl Biquad {
+    pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
     /// Prepare coefficients off audio. Frequency is strictly between DC and Nyquist;
     /// Q is positive, including for shelves: Q = 1/sqrt(2) gives RBJ shelf slope S=1.
     /// Larger Q permits resonant overshoot. Reject numerically unstable coefficients.
@@ -286,6 +287,7 @@ pub(super) struct RenderContext<'a> {
     pub filters: svf::FilterContext<'a>,
     pub at: u64,
     pub feeds: &'a mut [taps::TapFeed],
+    pub trace: Option<crate::trace::VoiceTrace<'a>>,
 }
 
 /// Serial stereo processing with an explicit envelope boundary.
@@ -490,7 +492,7 @@ impl PreparedVoiceChain {
     /// Render one voice block by block: every stage runs over the whole block
     /// before the next, with its coefficients and response chosen once. A
     /// nonfinite block drops that voice's block and resets its processor state.
-    pub(super) fn render(
+    pub(super) fn render<const TRACE: bool>(
         &self,
         voice: &mut Voice,
         pcm: &(impl crate::source::ReadFrames + ?Sized),
@@ -507,18 +509,27 @@ impl PreparedVoiceChain {
                 break;
             };
             let len = begun.len;
+            if TRACE { if let Some(t) = context.trace.as_mut() {
+                t.identity.source_metrics=crate::trace::metrics(&block,len);
+                t.record(t.nodes.source, &block, &block, len, [1.; 2], context.parameters);
+            } }
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
-            let mut fault = self.process_section(true, pre, &mut block, len, at, &mut context);
+            let mut fault = self.process_section::<TRACE>(true, pre, &mut block, len, at, &mut context);
             let levels = levels(voice, len);
+            let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
             let [left, right] = &mut block;
             for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
                 let gains = context.amplifier.map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
                 *l *= level * f64::from(gains[0]);
                 *r *= level * f64::from(gains[1]);
             }
-            fault |= self.process_section(false, post, &mut block, len, at, &mut context);
-            faults += u64::from(self.finish(
+            if TRACE { if let Some(t) = context.trace.as_mut() {
+                t.record(t.nodes.amp, &before_amp, &block, len,
+                    std::array::from_fn(|c| levels[..len].iter().enumerate().map(|(i,l)| l * f64::from(context.amplifier.map_or([1.;2],|r|r.gains_at(at+i as u64+1))[c])).sum::<f64>() / len.max(1) as f64), context.parameters);
+            } }
+            fault |= self.process_section::<TRACE>(false, post, &mut block, len, at, &mut context);
+            let finish_fault = self.finish(
                 voice,
                 begun,
                 &block,
@@ -526,7 +537,24 @@ impl PreparedVoiceChain {
                 states,
                 context.expression,
                 chunk,
-            ));
+            );
+            faults += u64::from(finish_fault);
+            if TRACE { if let Some(t) = context.trace.as_mut() {
+                let mut final_block = block;
+                for c in 0..2 { for i in 0..len {
+                    let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
+                        // finish has advanced the remaining tail by len.
+                        let remaining = voice.tail_remaining.unwrap_or(0) + len as u32 - i as u32;
+                        f64::from(initial) * f64::from(remaining) / f64::from(total)
+                    });
+                    final_block[c][i] *= f64::from(context.expression[c]) * fade;
+                    if finish_fault { final_block[c][i] = 0.; }
+                } }
+                t.record(t.nodes.output, &block, &final_block, len, context.expression.map(f64::from), context.parameters);
+                if t.graph.nodes[t.nodes.output].bus.is_none() {
+                    t.record(t.graph.master, &final_block, &final_block, len, [1.; 2], context.parameters);
+                }
+            } }
             rendered += len;
         }
         (rendered, faults)
@@ -719,7 +747,7 @@ impl ProcessorState {
 /// Run `len` frames of `block` through each stage in turn. Returns whether a
 /// stage observed a nonfinite value it does not keep in visible state.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn process(
+pub(super) fn process<const TRACE: bool>(
     stages: &[PreparedProcessor],
     states: &mut [ProcessorState],
     block: &mut Planar,
@@ -728,6 +756,7 @@ pub(super) fn process(
     at: u64,
     delay_samples: &mut [[f64; 2]],
     filters: &mut svf::FilterContext<'_>,
+    mut trace: Option<crate::trace::Section<'_>>,
 ) -> bool {
     let mut fault = false;
     let mut next = 0;
@@ -737,6 +766,9 @@ pub(super) fn process(
         let (stage, index) = (&stages[next], next);
         next += 1;
         let state = &mut states[index];
+        let input = if TRACE { *block } else { [[0.; BLOCK]; 2] };
+        let mut applied = [1.; 2];
+        let mut enabled = true;
         match stage {
             PreparedProcessor::Branch {
                 count,
@@ -749,15 +781,17 @@ pub(super) fn process(
                 if *first || split.is_none() {
                     split = Some((*block, [[0.; BLOCK]; 2]));
                 }
-                fault |= process(
+                fault |= process::<TRACE>(
                     &stages[inner.clone()],
-                    &mut states[inner],
+                    &mut states[inner.clone()],
                     block,
                     len,
                     parameters,
                     at,
                     delay_samples,
                     filters,
+                    if TRACE { trace.as_mut().map(|t| crate::trace::Section {
+                        recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
                 );
                 if let Some((entering, sum)) = split.as_mut() {
                     for c in 0..2 {
@@ -780,16 +814,23 @@ pub(super) fn process(
                 // state, such as a reverb tail, rests until the bypass lifts).
                 let off = bypass.value(at) >= 1. && bypass.value(last) >= 1.;
                 let dry_block = *block;
+                enabled = !off;
+                applied = [if off { 1. } else { wet.value(at) }; 2];
+                if TRACE && off { if let Some(t) = trace.as_mut() {
+                    for skipped in inner.clone() { t.record(skipped, &dry_block, &dry_block, len, [1.; 2], false, parameters); }
+                } }
                 if !off {
-                    fault |= process(
+                    fault |= process::<TRACE>(
                         &stages[inner.clone()],
-                        &mut states[inner],
+                        &mut states[inner.clone()],
                         block,
                         len,
                         parameters,
                         at,
                         delay_samples,
                         filters,
+                        if TRACE { trace.as_mut().map(|t| crate::trace::Section {
+                            recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
                     );
                 }
                 for c in 0..2 {
@@ -889,6 +930,7 @@ pub(super) fn process(
                 state.z[0][0] = f64::from(current);
             }
             PreparedProcessor::Gain(gain) => {
+                applied = [*gain; 2];
                 for channel in block.iter_mut() {
                     channel[..len].iter_mut().for_each(|v| *v *= gain);
                 }
@@ -923,6 +965,16 @@ pub(super) fn process(
                 state.z = [zl.map(flush), zr.map(flush)];
             }
         }
+        if TRACE { if let Some(t) = trace.as_mut() {
+            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::Mix { .. }) {
+                for c in 0..2 {
+                    let a: f64 = input[c][..len].iter().map(|v| v*v).sum();
+                    let b: f64 = block[c][..len].iter().map(|v| v*v).sum();
+                    applied[c] = if a > 0. { (b/a).sqrt() } else { 0. };
+                }
+            }
+            t.record(index, &input, block, len, applied, enabled, parameters);
+        } }
     }
     fault
 }
@@ -953,6 +1005,7 @@ pub(super) struct DspState {
     pub filters: Slab<svf::FilterBank>,
     pub buses: crate::bus::BusState,
     pub feeds: Box<[taps::TapFeed]>,
+    pub trace: Option<crate::trace::Recorder>,
 }
 impl DspState {
     pub fn new(
@@ -991,6 +1044,7 @@ impl DspState {
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
             feeds: allocate(feeds)?,
+            trace: plan.signal_trace.as_ref().map(|t| t.recorder()).transpose()?,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).
@@ -1096,8 +1150,8 @@ mod tests {
     ) -> [f64; 2] {
         let mut block = [[0.; BLOCK]; 2];
         (block[0][0], block[1][0]) = (value[0], value[1]);
-        assert!(!super::process(
-            stages, states, &mut block, 1, parameters, at, delay, filters
+        assert!(!super::process::<false>(
+            stages, states, &mut block, 1, parameters, at, delay, filters, None
         ));
         [block[0][0], block[1][0]]
     }
@@ -1282,5 +1336,31 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+impl PreparedVoiceChain {
+    pub(crate) fn trace_graph(&self, plan: &Prepared, graph: &mut crate::trace::TraceGraph,
+        zone: u32, group: Option<u32>, bus: Option<usize>, initial: &[ControlRamp]) -> crate::trace::VoiceNodes {
+        let source = graph.node("sample_source", "resampler", Some(zone), group, bus, vec![], 0);
+        let amp = graph.node("amplifier", "envelope_velocity_gain", Some(zone), group, bus, vec![], 0);
+        let output = graph.node("voice_output", "expression_fade", Some(zone), group, bus, vec![], 0);
+        let pre: Vec<_> = self.pre.iter().map(|s| graph.stage(s, "group_fx_pre", Some(zone), group, bus, plan, &plan.dsp_bindings, initial)).collect();
+        let post: Vec<_> = self.post.iter().map(|s| graph.stage(s, "group_fx_post", Some(zone), group, bus, plan, &plan.dsp_bindings, initial)).collect();
+        let parent = graph.connect(&self.pre, &pre, source);
+        graph.edge(parent, amp, "serial");
+        let parent = graph.connect(&self.post, &post, amp);
+        graph.edge(parent, output, "serial");
+        graph.edge(output, bus.map_or(graph.master, |b| graph.buses[b].input), "sum");
+        let taps = self.taps.iter().map(|tap| {
+            let (kind, parent) = match tap.position {
+                VoiceSendPosition::BeforeAmplitude(n) => ("send_pre", if n == 0 { source } else { pre[n-1] }),
+                VoiceSendPosition::AfterAmplitude(n) => ("send_post", if n == 0 { amp } else { post[n-1] }),
+            };
+            let parameters=vec![graph.parameter("level",tap.gain,plan,&plan.dsp_bindings,initial),graph.parameter("bypass",tap.bypass,plan,&plan.dsp_bindings,initial)];
+            let id = graph.node(kind, "send_level_bypass", Some(zone), group, Some(tap.bus), parameters, 0);
+            graph.edge(parent, id, "tap"); graph.edge(id, graph.buses[tap.bus].input, "send"); id
+        }).collect();
+        crate::trace::VoiceNodes { source, amp, output, pre, post, taps, region:0 }
     }
 }
