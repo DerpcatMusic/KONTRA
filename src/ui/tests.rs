@@ -2309,15 +2309,36 @@ fn shared_context_menu_never_fades_over_interactive_content() {
     }
 }
  pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
-    let start = std::time::Instant::now();
-    let mut h=Harness::new(p,1180.,760.);
-    h.idle(4);
-    let build_ms = start.elapsed().as_secs_f64() * 1000.;
-    std::thread::sleep(std::time::Duration::from_secs(4));
-    let status=std::fs::read_to_string("/proc/self/status").unwrap();
-    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
-    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
- }
+    let p = p.clone();
+    std::thread::Builder::new().stack_size(2 << 20).spawn(move || {
+        #[cfg(target_os="linux")]
+        let watermark = super::native_ui::stack_watermark();
+        let start = std::time::Instant::now();
+        for part in &mut p.selection.write().unwrap().parts {part.view=1;}
+        let mut h = Harness::new(&p,1180.,760.);
+        let expects_native=p.shared.view.lock().unwrap().parts.iter().any(|part|part.interfaces.iter().any(|face|face.native_ui.is_some()));
+        let has_native=|h:&Harness|h.ui.scene().unwrap().surfaces().any(|s|s.key.as_str().starts_with("nui-"));
+        while expects_native && !has_native(&h) && start.elapsed()<std::time::Duration::from_secs(5) {
+            h.idle(1); std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        h.idle(4);
+        let build_ms = start.elapsed().as_secs_f64() * 1000.;
+        #[cfg(target_os="linux")]
+        let peak = super::native_ui::stack_peak(watermark);
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let status=std::fs::read_to_string("/proc/self/status").unwrap();
+        let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+        let mut report = serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.,"native_expected":expects_native,"native_painted":has_native(&h)});
+        report["native_failure_categories"]=serde_json::json!(super::native_ui::audit_failures());
+        #[cfg(target_os="linux")]
+        {
+            assert!(peak < watermark.2-watermark.0-4096,"full-editor stack watermark saturated");
+            report["ui_stack_peak_bytes"] = peak.into();
+            report["ui_thread_stack_bytes"] = (2_u64 << 20).into();
+        }
+        report
+    }).unwrap().join().unwrap()
+}
 
 #[test]
 fn full_editor_native_frames_fit_a_plain_two_mib_thread() {
