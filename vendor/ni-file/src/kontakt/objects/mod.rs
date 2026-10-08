@@ -71,6 +71,7 @@ pub use program_list::*;
 pub use quick_browse_data::*;
 pub use save_settings::*;
 pub use slot_list::*;
+pub use src_mode::*;
 pub use start_criteria::*;
 pub use start_criteria_list::*;
 pub use voice_group::*;

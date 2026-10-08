@@ -7,14 +7,20 @@
 
 #[cfg(feature = "library-access")]
 mod access;
+mod automation;
+pub use automation::{program_automation, AutomationRecord};
 mod container;
 mod effects;
 pub mod keyswitch;
+mod keyswitch_ui;
 mod library;
 mod load;
 mod mapping;
+mod metadata;
+mod objects;
 pub mod nis;
 mod nks;
+mod persistence;
 mod resource_container;
 mod resources;
 mod samples;
@@ -28,10 +34,15 @@ pub use library::{Kontakt, read, read_program, read_with_snapshot};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
-    load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
+    compile_ui, load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
+pub use metadata::{
+    Bank, FileTable, Filename, FilenameEntry, FilenameSegment, ProgramList, ProgramResources,
+    QuickBrowse, SaveSettings, SlotList,
+};
 pub use nks::Nks42;
+pub use persistence::{ArrayTail, SavedEntry, SavedNumbers, SavedTexts, SavedValue};
 pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
@@ -230,6 +241,7 @@ pub enum ErrorKind {
     Truncated,
     TrailingData,
     InvalidBoolean,
+    InvalidSavedValue,
     UnsupportedLayout,
     UnsupportedVersion(u32),
     IncorrectId { expected: u16, actual: u16 },

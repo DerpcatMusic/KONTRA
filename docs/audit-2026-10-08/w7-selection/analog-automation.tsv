@@ -1,0 +1,288 @@
+offset	version	mode	address	soft_takeover	tag	ui_id	widget	saved_value	resolution
+77	0x71	2	0	false	pts_script_slider_2_210	33234	$macros__intensity0	568554	resolved slider ordinal
+130	0x71	2	1	false	pts_script_slider_2_211	33235	$macros__intensity1	337654	resolved slider ordinal
+183	0x71	2	2	false	pts_script_slider_2_212	33236	$macros__intensity2	214871	resolved slider ordinal
+236	0x71	2	3	false	pts_script_slider_2_213	33237	$macros__intensity3	802183	resolved slider ordinal
+289	0x71	2	4	false	pts_script_switch_2_3				unverified switch tag
+340	0x71	2	5	false	pts_script_slider_2_0	32801	$l1__volume	532558	resolved slider ordinal
+391	0x71	2	6	false	pts_script_switch_2_35				unverified switch tag
+443	0x71	2	7	false	pts_script_slider_2_82	32981	$l2__volume	525135	resolved slider ordinal
+495	0x71	2	8	false	pts_script_slider_2_18	32843	$l1__pan	500000	resolved slider ordinal
+547	0x71	2	9	false	pts_script_slider_2_19	32844	$l1__pan_spread	502870	resolved slider ordinal
+599	0x71	2	10	false	pts_script_slider_2_100	33023	$l2__pan	500000	resolved slider ordinal
+652	0x71	2	11	false	pts_script_slider_2_101	33024	$l2__pan_spread	502870	resolved slider ordinal
+705	0x71	2	12	false	pts_script_slider_2_1	32802	$l1__tune	500000	resolved slider ordinal
+756	0x71	2	13	false	pts_script_slider_2_83	32982	$l2__tune	500000	resolved slider ordinal
+808	0x71	2	14	false	pts_script_slider_2_17	32841	$l1__flutter__fade_in	0	resolved slider ordinal
+860	0x71	2	15	false	pts_script_slider_2_16	32840	$l1__flutter__freq	618717	resolved slider ordinal
+912	0x71	2	16	false	pts_script_slider_2_15	32839	$l1__flutter__amount	0	resolved slider ordinal
+964	0x71	2	17	false	pts_script_slider_2_99	33021	$l2__flutter__fade_in	0	resolved slider ordinal
+1016	0x71	2	18	false	pts_script_slider_2_98	33020	$l2__flutter__freq	618150	resolved slider ordinal
+1068	0x71	2	19	false	pts_script_slider_2_97	33019	$l2__flutter__amount	0	resolved slider ordinal
+1120	0x71	2	20	false	pts_script_slider_2_5	32826	$l1__amp_env__curve	413050	resolved slider ordinal
+1171	0x71	2	21	false	pts_script_slider_2_6	32827	$l1__amp_env__attack	0	resolved slider ordinal
+1222	0x71	2	22	false	pts_script_slider_2_7	32828	$l1__amp_env__decay	531765	resolved slider ordinal
+1273	0x71	2	23	false	pts_script_slider_2_8	32829	$l1__amp_env__sustain	1000000	resolved slider ordinal
+1324	0x71	2	24	false	pts_script_slider_2_9	32830	$l1__amp_env__release	329403	resolved slider ordinal
+1375	0x71	2	25	false	pts_script_slider_2_87	33006	$l2__amp_env__curve	411450	resolved slider ordinal
+1427	0x71	2	26	false	pts_script_slider_2_88	33007	$l2__amp_env__attack	702000	resolved slider ordinal
+1479	0x71	2	27	false	pts_script_slider_2_89	33008	$l2__amp_env__decay	531765	resolved slider ordinal
+1531	0x71	2	28	false	pts_script_slider_2_91	33010	$l2__amp_env__release	329403	resolved slider ordinal
+1583	0x71	2	29	false	pts_script_switch_2_7				unverified switch tag
+1634	0x71	2	30	false	pts_script_slider_2_10	32833	$l1__pitch_env__amount	500000	resolved slider ordinal
+1686	0x71	2	31	false	pts_script_slider_2_11	32834	$l1__pitch_env__attack	561250	resolved slider ordinal
+1738	0x71	2	32	false	pts_script_slider_2_12	32835	$l1__pitch_env__decay	531765	resolved slider ordinal
+1790	0x71	2	33	false	pts_script_slider_2_13	32836	$l1__pitch_env__sustain	1000000	resolved slider ordinal
+1842	0x71	2	34	false	pts_script_slider_2_14	32837	$l1__pitch_env__release	531765	resolved slider ordinal
+1894	0x71	2	35	false	pts_script_switch_2_39				unverified switch tag
+1946	0x71	2	36	false	pts_script_slider_2_92	33013	$l2__pitch_env__amount	500000	resolved slider ordinal
+1998	0x71	2	37	false	pts_script_slider_2_93	33014	$l2__pitch_env__attack	561250	resolved slider ordinal
+2050	0x71	2	38	false	pts_script_slider_2_94	33015	$l2__pitch_env__decay	533520	resolved slider ordinal
+2102	0x71	2	39	false	pts_script_slider_2_95	33016	$l2__pitch_env__sustain	1000000	resolved slider ordinal
+2154	0x71	2	40	false	pts_script_slider_2_96	33017	$l2__pitch_env__release	531765	resolved slider ordinal
+2206	0x71	2	41	false	pts_script_switch_2_8				unverified switch tag
+2257	0x71	2	42	false	pts_script_switch_2_9				unverified switch tag
+2308	0x71	2	43	false	pts_script_switch_2_40				unverified switch tag
+2360	0x71	2	44	false	pts_script_switch_2_41				unverified switch tag
+2412	0x71	2	45	false	pts_script_switch_2_10				unverified switch tag
+2464	0x71	2	46	false	pts_script_slider_2_20	32850	$l1__glide	0	resolved slider ordinal
+2516	0x71	2	47	false	pts_script_slider_2_21	32852	$l1__velocity_sensitivity	30	resolved slider ordinal
+2568	0x71	2	48	false	pts_script_switch_2_42				unverified switch tag
+2620	0x71	2	49	false	pts_script_slider_2_102	33030	$l2__glide	0	resolved slider ordinal
+2673	0x71	2	50	false	pts_script_slider_2_103	33032	$l2__velocity_sensitivity	30	resolved slider ordinal
+2726	0x71	2	51	false	pts_script_switch_2_4				unverified switch tag
+2777	0x71	2	52	false	pts_script_switch_2_5				unverified switch tag
+2828	0x71	2	53	false	pts_script_slider_2_4	32819	$l1__loop_rate	8	resolved slider ordinal
+2879	0x71	2	54	false	pts_script_switch_2_36				unverified switch tag
+2931	0x71	2	55	false	pts_script_switch_2_37				unverified switch tag
+2983	0x71	2	56	false	pts_script_slider_2_86	32999	$l2__loop_rate	8	resolved slider ordinal
+3035	0x71	2	57	false	pts_script_switch_2_23				unverified switch tag
+3087	0x71	2	58	false	pts_script_slider_2_44	32921	$l1__fx__filter__cutoff	0	resolved slider ordinal
+3139	0x71	2	59	false	pts_script_slider_2_45	32922	$l1__fx__filter__resonance	0	resolved slider ordinal
+3191	0x71	2	60	false	pts_script_slider_2_46	32923	$l1__fx__filter__velocity_sensitivity	500000	resolved slider ordinal
+3243	0x71	2	61	false	pts_script_switch_2_29				unverified switch tag
+3295	0x71	2	62	false	pts_script_slider_2_47	32927	$l1__fx__filter__env_amount	1000000	resolved slider ordinal
+3347	0x71	2	63	false	pts_script_slider_2_48	32928	$l1__fx__filter__env_attack	0	resolved slider ordinal
+3399	0x71	2	64	false	pts_script_slider_2_49	32929	$l1__fx__filter__env_decay	964900	resolved slider ordinal
+3451	0x71	2	65	false	pts_script_slider_2_50	32930	$l1__fx__filter__env_sustain	0	resolved slider ordinal
+3503	0x71	2	66	false	pts_script_slider_2_51	32931	$l1__fx__filter__env_release	1000000	resolved slider ordinal
+3555	0x71	2	67	false	pts_script_switch_2_55				unverified switch tag
+3607	0x71	2	68	false	pts_script_slider_2_126	33101	$l2__fx__filter__cutoff	0	resolved slider ordinal
+3660	0x71	2	69	false	pts_script_slider_2_127	33102	$l2__fx__filter__resonance	0	resolved slider ordinal
+3713	0x71	2	70	false	pts_script_slider_2_128	33103	$l2__fx__filter__velocity_sensitivity	500000	resolved slider ordinal
+3766	0x71	2	71	false	pts_script_switch_2_61				unverified switch tag
+3818	0x71	2	72	false	pts_script_slider_2_129	33107	$l2__fx__filter__env_amount	1000000	resolved slider ordinal
+3871	0x71	2	73	false	pts_script_slider_2_130	33108	$l2__fx__filter__env_attack	0	resolved slider ordinal
+3924	0x71	2	74	false	pts_script_slider_2_131	33109	$l2__fx__filter__env_decay	964900	resolved slider ordinal
+3977	0x71	2	75	false	pts_script_slider_2_132	33110	$l2__fx__filter__env_sustain	0	resolved slider ordinal
+4030	0x71	2	76	false	pts_script_slider_2_133	33111	$l2__fx__filter__env_release	1000000	resolved slider ordinal
+4083	0x71	2	77	false	pts_script_switch_2_24				unverified switch tag
+4135	0x71	2	78	false	pts_script_slider_2_52	32934	$l1__fx__eq__freq1	0	resolved slider ordinal
+4187	0x71	2	79	false	pts_script_slider_2_53	32935	$l1__fx__eq__gain1	500000	resolved slider ordinal
+4239	0x71	2	80	false	pts_script_slider_2_54	32936	$l1__fx__eq__q1	503685	resolved slider ordinal
+4291	0x71	2	81	false	pts_script_slider_2_55	32937	$l1__fx__eq__freq2	449280	resolved slider ordinal
+4343	0x71	2	82	false	pts_script_slider_2_56	32938	$l1__fx__eq__gain2	508950	resolved slider ordinal
+4395	0x71	2	83	false	pts_script_slider_2_57	32939	$l1__fx__eq__q2	508950	resolved slider ordinal
+4447	0x71	2	84	false	pts_script_slider_2_58	32940	$l1__fx__eq__freq3	1000000	resolved slider ordinal
+4499	0x71	2	85	false	pts_script_slider_2_59	32941	$l1__fx__eq__gain3	500000	resolved slider ordinal
+4551	0x71	2	86	false	pts_script_slider_2_60	32942	$l1__fx__eq__q3	508950	resolved slider ordinal
+4603	0x71	2	87	false	pts_script_switch_2_56				unverified switch tag
+4655	0x71	2	88	false	pts_script_slider_2_134	33114	$l2__fx__eq__freq1	0	resolved slider ordinal
+4708	0x71	2	89	false	pts_script_slider_2_135	33115	$l2__fx__eq__gain1	500000	resolved slider ordinal
+4761	0x71	2	90	false	pts_script_slider_2_136	33116	$l2__fx__eq__q1	503685	resolved slider ordinal
+4814	0x71	2	91	false	pts_script_slider_2_137	33117	$l2__fx__eq__freq2	466830	resolved slider ordinal
+4867	0x71	2	92	false	pts_script_slider_2_138	33118	$l2__fx__eq__gain2	500000	resolved slider ordinal
+4920	0x71	2	93	false	pts_script_slider_2_139	33119	$l2__fx__eq__q2	508950	resolved slider ordinal
+4973	0x71	2	94	false	pts_script_slider_2_140	33120	$l2__fx__eq__freq3	1000000	resolved slider ordinal
+5026	0x71	2	95	false	pts_script_slider_2_141	33121	$l2__fx__eq__gain3	298350	resolved slider ordinal
+5079	0x71	2	96	false	pts_script_slider_2_142	33122	$l2__fx__eq__q3	0	resolved slider ordinal
+5132	0x71	2	97	false	pts_script_switch_2_25				unverified switch tag
+5184	0x71	2	98	false	pts_script_switch_2_30				unverified switch tag
+5236	0x71	2	99	false	pts_script_slider_2_61	32944	$l1__fx__tube__saturation	650325	resolved slider ordinal
+5288	0x71	2	100	false	pts_script_slider_2_62	32945	$l1__fx__tube__gain	396280	resolved slider ordinal
+5340	0x71	2	101	false	pts_script_switch_2_31				unverified switch tag
+5392	0x71	2	102	false	pts_script_slider_2_63	32947	$l1__fx__drive__gain	500214	resolved slider ordinal
+5444	0x71	2	103	false	pts_script_slider_2_64	32948	$l1__fx__drive__dampening	0	resolved slider ordinal
+5496	0x71	2	104	false	pts_script_switch_2_32				unverified switch tag
+5548	0x71	2	105	false	pts_script_slider_2_65	32950	$l1__fx__lofi__bits	498070	resolved slider ordinal
+5600	0x71	2	106	false	pts_script_slider_2_66	32951	$l1__fx__lofi__sample_rate	499825	resolved slider ordinal
+5652	0x71	2	107	false	pts_script_switch_2_57				unverified switch tag
+5704	0x71	2	108	false	pts_script_switch_2_62				unverified switch tag
+5756	0x71	2	109	false	pts_script_slider_2_143	33124	$l2__fx__tube__saturation	597745	resolved slider ordinal
+5809	0x71	2	110	false	pts_script_slider_2_144	33125	$l2__fx__tube__gain	396933	resolved slider ordinal
+5862	0x71	2	111	false	pts_script_switch_2_63				unverified switch tag
+5914	0x71	2	112	false	pts_script_slider_2_145	33127	$l2__fx__drive__gain	482819	resolved slider ordinal
+5967	0x71	2	113	false	pts_script_slider_2_146	33128	$l2__fx__drive__dampening	754650	resolved slider ordinal
+6020	0x71	2	114	false	pts_script_switch_2_64				unverified switch tag
+6072	0x71	2	115	false	pts_script_slider_2_147	33130	$l2__fx__lofi__bits	554230	resolved slider ordinal
+6125	0x71	2	116	false	pts_script_slider_2_148	33131	$l2__fx__lofi__sample_rate	499825	resolved slider ordinal
+6178	0x71	2	117	false	pts_script_switch_2_26				unverified switch tag
+6230	0x71	2	118	false	pts_script_slider_2_67	32952	$l1__fx__compressor__threshold	922350	resolved slider ordinal
+6282	0x71	2	119	false	pts_script_slider_2_68	32953	$l1__fx__compressor__ratio	208650	resolved slider ordinal
+6334	0x71	2	120	false	pts_script_slider_2_69	32954	$l1__fx__compressor__attack	384150	resolved slider ordinal
+6386	0x71	2	121	false	pts_script_slider_2_70	32955	$l1__fx__compressor__release	276900	resolved slider ordinal
+6438	0x71	2	122	false	pts_script_slider_2_71	32956	$l1__fx__compressor__gain	396933	resolved slider ordinal
+6490	0x71	2	123	false	pts_script_switch_2_58				unverified switch tag
+6542	0x71	2	124	false	pts_script_slider_2_149	33132	$l2__fx__compressor__threshold	922350	resolved slider ordinal
+6595	0x71	2	125	false	pts_script_slider_2_150	33133	$l2__fx__compressor__ratio	214500	resolved slider ordinal
+6648	0x71	2	126	false	pts_script_slider_2_151	33134	$l2__fx__compressor__attack	384150	resolved slider ordinal
+6701	0x71	2	127	false	pts_script_slider_2_152	33135	$l2__fx__compressor__release	276900	resolved slider ordinal
+6754	0x71	2	128	false	pts_script_slider_2_153	33136	$l2__fx__compressor__gain	396933	resolved slider ordinal
+6807	0x71	2	129	false	pts_script_switch_2_27				unverified switch tag
+6859	0x71	2	130	false	pts_script_slider_2_72	32957	$l1__delay__time	8	resolved slider ordinal
+6911	0x71	2	131	false	pts_script_slider_2_73	32958	$l1__delay__feedback	400241	resolved slider ordinal
+6963	0x71	2	132	false	pts_script_slider_2_74	32959	$l1__delay__wet	301398	resolved slider ordinal
+7015	0x71	2	133	false	pts_script_switch_2_59				unverified switch tag
+7067	0x71	2	134	false	pts_script_slider_2_154	33137	$l2__delay__time	8	resolved slider ordinal
+7120	0x71	2	135	false	pts_script_slider_2_155	33138	$l2__delay__feedback	400241	resolved slider ordinal
+7173	0x71	2	136	false	pts_script_slider_2_156	33139	$l2__delay__wet	309783	resolved slider ordinal
+7226	0x71	2	137	false	pts_script_switch_2_28				unverified switch tag
+7278	0x71	2	138	false	pts_script_slider_2_75	32960	$l1__reverb__predelay	0	resolved slider ordinal
+7330	0x71	2	139	false	pts_script_slider_2_76	32961	$l1__reverb__size	500000	resolved slider ordinal
+7382	0x71	2	140	false	pts_script_slider_2_77	32962	$l1__reverb__wet	300813	resolved slider ordinal
+7434	0x71	2	141	false	pts_script_switch_2_60				unverified switch tag
+7486	0x71	2	142	false	pts_script_slider_2_157	33140	$l2__reverb__predelay	0	resolved slider ordinal
+7539	0x71	2	143	false	pts_script_slider_2_158	33141	$l2__reverb__size	500000	resolved slider ordinal
+7592	0x71	2	144	false	pts_script_slider_2_159	33142	$l2__reverb__wet	302763	resolved slider ordinal
+7645	0x71	2	145	false	pts_script_switch_2_67				unverified switch tag
+7697	0x71	2	146	false	pts_script_switch_2_74				unverified switch tag
+7749	0x71	2	147	false	pts_script_slider_2_164	33173	$gfx__hp__cutoff	0	resolved slider ordinal
+7802	0x71	2	148	false	pts_script_slider_2_165	33174	$gfx__hp__resonance	0	resolved slider ordinal
+7855	0x71	2	149	false	pts_script_switch_2_75				unverified switch tag
+7907	0x71	2	150	false	pts_script_slider_2_166	33176	$gfx__lp__cutoff	1000000	resolved slider ordinal
+7960	0x71	2	151	false	pts_script_slider_2_167	33177	$gfx__lp__resonance	0	resolved slider ordinal
+8013	0x71	2	152	false	pts_script_switch_2_68				unverified switch tag
+8065	0x71	2	153	false	pts_script_slider_2_168	33180	$gfx__eq__freq1	0	resolved slider ordinal
+8118	0x71	2	154	false	pts_script_slider_2_169	33181	$gfx__eq__gain1	501429	resolved slider ordinal
+8171	0x71	2	155	false	pts_script_slider_2_170	33182	$gfx__eq__q1	0	resolved slider ordinal
+8224	0x71	2	156	false	pts_script_slider_2_171	33183	$gfx__eq__freq2	659880	resolved slider ordinal
+8277	0x71	2	157	false	pts_script_slider_2_172	33184	$gfx__eq__gain2	508950	resolved slider ordinal
+8330	0x71	2	158	false	pts_script_slider_2_173	33185	$gfx__eq__q2	508950	resolved slider ordinal
+8383	0x71	2	159	false	pts_script_slider_2_174	33186	$gfx__eq__freq3	1000000	resolved slider ordinal
+8436	0x71	2	160	false	pts_script_slider_2_175	33187	$gfx__eq__gain3	372852	resolved slider ordinal
+8489	0x71	2	161	false	pts_script_slider_2_176	33188	$gfx__eq__q3	0	resolved slider ordinal
+8542	0x71	2	162	false	pts_script_switch_2_69				unverified switch tag
+8594	0x71	2	163	false	pts_script_slider_2_177	33189	$gfx__jump__gain	500000	resolved slider ordinal
+8647	0x71	2	164	false	pts_script_slider_2_178	33190	$gfx__jump__bass	500000	resolved slider ordinal
+8700	0x71	2	165	false	pts_script_slider_2_179	33191	$gfx__jump__middle	500000	resolved slider ordinal
+8753	0x71	2	166	false	pts_script_slider_2_180	33192	$gfx__jump__treble	500000	resolved slider ordinal
+8806	0x71	2	167	false	pts_script_switch_2_70				unverified switch tag
+8858	0x71	2	168	false	pts_script_switch_2_76				unverified switch tag
+8910	0x71	2	169	false	pts_script_slider_2_181	33194	$gfx__compressor__threshold	828399	resolved slider ordinal
+8963	0x71	2	170	false	pts_script_slider_2_182	33195	$gfx__compressor__ratio	214500	resolved slider ordinal
+9016	0x71	2	171	false	pts_script_slider_2_183	33196	$gfx__compressor__attack	407550	resolved slider ordinal
+9069	0x71	2	172	false	pts_script_slider_2_184	33197	$gfx__compressor__release	351000	resolved slider ordinal
+9122	0x71	2	173	false	pts_script_slider_2_185	33198	$gfx__compressor__gain	560434	resolved slider ordinal
+9175	0x71	2	174	false	pts_script_switch_2_77				unverified switch tag
+9227	0x71	2	175	false	pts_script_slider_2_186	33200	$gfx__limiter__input_gain	500011	resolved slider ordinal
+9280	0x71	2	176	false	pts_script_slider_2_187	33201	$gfx__limiter__release	0	resolved slider ordinal
+9333	0x71	2	177	false	pts_script_switch_2_71				unverified switch tag
+9385	0x71	2	178	false	pts_script_switch_2_78				unverified switch tag
+9437	0x71	2	179	false	pts_script_slider_2_188	33203	$gfx__phaser__depth	500175	resolved slider ordinal
+9490	0x71	2	180	false	pts_script_slider_2_189	33204	$gfx__phaser__speed	454545	resolved slider ordinal
+9543	0x71	2	181	false	pts_script_slider_2_190	33205	$gfx__phaser__feedback	400140	resolved slider ordinal
+9596	0x71	2	182	false	pts_script_slider_2_191	33206	$gfx__phaser__wet	303543	resolved slider ordinal
+9649	0x71	2	183	false	pts_script_switch_2_79				unverified switch tag
+9701	0x71	2	184	false	pts_script_slider_2_192	33208	$gfx__chorus__depth	500175	resolved slider ordinal
+9754	0x71	2	185	false	pts_script_slider_2_193	33209	$gfx__chorus__speed	454935	resolved slider ordinal
+9807	0x71	2	186	false	pts_script_slider_2_194	33210	$gfx__chorus__phase	444015	resolved slider ordinal
+9860	0x71	2	187	false	pts_script_slider_2_195	33211	$gfx__chorus__wet	0	resolved slider ordinal
+9913	0x71	2	188	false	pts_script_switch_2_72				unverified switch tag
+9965	0x71	2	189	false	pts_script_switch_2_80				unverified switch tag
+10017	0x71	2	190	false	pts_script_slider_2_196	33213	$gfx__delay1__time	8	resolved slider ordinal
+10070	0x71	2	191	false	pts_script_slider_2_197	33214	$gfx__delay1__feedback	400241	resolved slider ordinal
+10123	0x71	2	192	false	pts_script_slider_2_198	33215	$gfx__delay1__pan	1000000	resolved slider ordinal
+10176	0x71	2	193	false	pts_script_slider_2_199	33216	$gfx__delay1__wet	343419	resolved slider ordinal
+10229	0x71	2	194	false	pts_script_switch_2_81				unverified switch tag
+10281	0x71	2	195	false	pts_script_slider_2_200	33218	$gfx__delay2__time	8	resolved slider ordinal
+10334	0x71	2	196	false	pts_script_slider_2_201	33219	$gfx__delay2__feedback	400241	resolved slider ordinal
+10387	0x71	2	197	false	pts_script_slider_2_202	33220	$gfx__delay2__pan	1000000	resolved slider ordinal
+10440	0x71	2	198	false	pts_script_slider_2_203	33221	$gfx__delay2__wet	397143	resolved slider ordinal
+10493	0x71	2	199	false	pts_script_switch_2_73				unverified switch tag
+10545	0x71	2	200	false	pts_script_slider_2_204	33222	$gfx__reverb__predelay	552630	resolved slider ordinal
+10598	0x71	2	201	false	pts_script_slider_2_205	33223	$gfx__reverb__size_er	118950	resolved slider ordinal
+10651	0x71	2	202	false	pts_script_slider_2_206	33224	$gfx__reverb__size_lr	503100	resolved slider ordinal
+10704	0x71	2	203	false	pts_script_slider_2_207	33227	$gfx__reverb__high_pass	291330	resolved slider ordinal
+10757	0x71	2	204	false	pts_script_slider_2_208	33228	$gfx__reverb__low_pass	1000000	resolved slider ordinal
+10810	0x71	2	205	false	pts_script_slider_2_209	33229	$gfx__reverb__wet	208581	resolved slider ordinal
+10863	0x71	2	206	false	pts_script_switch_2_14				unverified switch tag
+10915	0x71	2	207	false	pts_script_switch_2_13				unverified switch tag
+10967	0x71	2	208	false	pts_script_slider_2_22	32860	$l1__r1__send_vol	803010	resolved slider ordinal
+11019	0x71	2	209	false	pts_script_slider_2_23	32861	$l1__r1__send_pan	500000	resolved slider ordinal
+11071	0x71	2	210	false	pts_script_slider_2_24	32862	$l1__r1__send_cutoff	500000	resolved slider ordinal
+11123	0x71	2	211	false	pts_script_slider_2_25	32863	$l1__r1__send_reso	500000	resolved slider ordinal
+11175	0x71	2	212	false	pts_script_slider_2_26	32864	$l1__r1__send_tube	500000	resolved slider ordinal
+11227	0x71	2	213	false	pts_script_slider_2_27	32865	$l1__r1__send_bite	500000	resolved slider ordinal
+11279	0x71	2	214	false	pts_script_slider_2_28	32866	$l1__r1__send_bits	500000	resolved slider ordinal
+11331	0x71	2	215	false	pts_script_slider_2_29	32867	$l1__r1__send_sample_rate	500000	resolved slider ordinal
+11383	0x71	2	216	false	pts_script_switch_2_17				unverified switch tag
+11435	0x71	2	217	false	pts_script_slider_2_32	32875	$l1__r1__wave__fade_in	0	resolved slider ordinal
+11487	0x71	2	218	false	pts_script_slider_2_31	32874	$l1__r1__wave__phase	0	resolved slider ordinal
+11539	0x71	2	219	false	pts_script_switch_2_19				unverified switch tag
+11591	0x71	2	220	false	pts_script_switch_2_18				unverified switch tag
+11643	0x71	2	221	false	pts_script_slider_2_33	32885	$l1__r2__send_vol	803010	resolved slider ordinal
+11695	0x71	2	222	false	pts_script_slider_2_34	32886	$l1__r2__send_pan	500000	resolved slider ordinal
+11747	0x71	2	223	false	pts_script_slider_2_35	32887	$l1__r2__send_cutoff	500000	resolved slider ordinal
+11799	0x71	2	224	false	pts_script_slider_2_36	32888	$l1__r2__send_reso	500000	resolved slider ordinal
+11851	0x71	2	225	false	pts_script_slider_2_37	32889	$l1__r2__send_tube	500000	resolved slider ordinal
+11903	0x71	2	226	false	pts_script_slider_2_38	32890	$l1__r2__send_bite	500000	resolved slider ordinal
+11955	0x71	2	227	false	pts_script_slider_2_39	32891	$l1__r2__send_bits	500000	resolved slider ordinal
+12007	0x71	2	228	false	pts_script_slider_2_40	32892	$l1__r2__send_sample_rate	500000	resolved slider ordinal
+12059	0x71	2	229	false	pts_script_switch_2_22				unverified switch tag
+12111	0x71	2	230	false	pts_script_slider_2_43	32900	$l1__r2__wave__fade_in	0	resolved slider ordinal
+12163	0x71	2	231	false	pts_script_slider_2_42	32899	$l1__r2__wave__phase	0	resolved slider ordinal
+12215	0x71	2	232	false	pts_script_switch_2_46				unverified switch tag
+12267	0x71	2	233	false	pts_script_switch_2_45				unverified switch tag
+12319	0x71	2	234	false	pts_script_slider_2_104	33040	$l2__r1__send_vol	803010	resolved slider ordinal
+12372	0x71	2	235	false	pts_script_slider_2_105	33041	$l2__r1__send_pan	500000	resolved slider ordinal
+12425	0x71	2	236	false	pts_script_slider_2_106	33042	$l2__r1__send_cutoff	500000	resolved slider ordinal
+12478	0x71	2	237	false	pts_script_slider_2_107	33043	$l2__r1__send_reso	500000	resolved slider ordinal
+12531	0x71	2	238	false	pts_script_slider_2_108	33044	$l2__r1__send_tube	500000	resolved slider ordinal
+12584	0x71	2	239	false	pts_script_slider_2_109	33045	$l2__r1__send_bite	500000	resolved slider ordinal
+12637	0x71	2	240	false	pts_script_slider_2_110	33046	$l2__r1__send_bits	500000	resolved slider ordinal
+12690	0x71	2	241	false	pts_script_slider_2_111	33047	$l2__r1__send_sample_rate	500000	resolved slider ordinal
+12743	0x71	2	242	false	pts_script_switch_2_49				unverified switch tag
+12795	0x71	2	243	false	pts_script_slider_2_114	33055	$l2__r1__wave__fade_in	0	resolved slider ordinal
+12848	0x71	2	244	false	pts_script_slider_2_113	33054	$l2__r1__wave__phase	0	resolved slider ordinal
+12901	0x71	2	245	false	pts_script_switch_2_51				unverified switch tag
+12953	0x71	2	246	false	pts_script_switch_2_50				unverified switch tag
+13005	0x71	2	247	false	pts_script_slider_2_115	33065	$l2__r2__send_vol	803010	resolved slider ordinal
+13058	0x71	2	248	false	pts_script_slider_2_116	33066	$l2__r2__send_pan	500000	resolved slider ordinal
+13111	0x71	2	249	false	pts_script_slider_2_117	33067	$l2__r2__send_cutoff	500000	resolved slider ordinal
+13164	0x71	2	250	false	pts_script_slider_2_118	33068	$l2__r2__send_reso	500000	resolved slider ordinal
+13217	0x71	2	251	false	pts_script_slider_2_119	33069	$l2__r2__send_tube	500000	resolved slider ordinal
+13270	0x71	2	252	false	pts_script_slider_2_120	33070	$l2__r2__send_bite	500000	resolved slider ordinal
+13323	0x71	2	253	false	pts_script_slider_2_121	33071	$l2__r2__send_bits	500000	resolved slider ordinal
+13376	0x71	2	254	false	pts_script_slider_2_122	33072	$l2__r2__send_sample_rate	500000	resolved slider ordinal
+13429	0x71	2	255	false	pts_script_switch_2_54				unverified switch tag
+13481	0x71	2	256	false	pts_script_slider_2_125	33080	$l2__r2__wave__fade_in	0	resolved slider ordinal
+13534	0x71	2	257	false	pts_script_slider_2_124	33079	$l2__r2__wave__phase	0	resolved slider ordinal
+13587	0x71	2	258	false	pts_script_switch_2_33				unverified switch tag
+13639	0x71	2	259	false	pts_script_slider_2_78	32969	$l1__arp__rate	14	resolved slider ordinal
+13691	0x71	2	260	false	pts_script_slider_2_79	32972	$l1__arp__duration	70	resolved slider ordinal
+13743	0x71	2	261	false	pts_script_slider_2_80	32973	$l1__arp__swing	0	resolved slider ordinal
+13795	0x71	2	262	false	pts_script_slider_2_81	32974	$l1__arp__octaves	0	resolved slider ordinal
+13847	0x71	2	263	false	pts_script_switch_2_34				unverified switch tag
+13899	0x71	2	264	false	pts_script_switch_2_65				unverified switch tag
+13951	0x71	2	265	false	pts_script_slider_2_160	33149	$l2__arp__rate	14	resolved slider ordinal
+14004	0x71	2	266	false	pts_script_slider_2_161	33152	$l2__arp__duration	70	resolved slider ordinal
+14057	0x71	2	267	false	pts_script_slider_2_162	33153	$l2__arp__swing	0	resolved slider ordinal
+14110	0x71	2	268	false	pts_script_slider_2_163	33154	$l2__arp__octaves	0	resolved slider ordinal
+14163	0x71	2	269	false	pts_script_switch_2_66				unverified switch tag
+14215	0x71	2	270	false	pts_script_slider_2_30	32869	$l1__r1__rate	3	resolved slider ordinal
+14267	0x71	2	271	false	pts_script_slider_2_41	32894	$l1__r2__rate	17	resolved slider ordinal
+14319	0x71	2	272	false	pts_script_slider_2_112	33049	$l2__r1__rate	3	resolved slider ordinal
+14372	0x71	2	273	false	pts_script_slider_2_123	33074	$l2__r2__rate	17	resolved slider ordinal
+14425	0x71	2	274	false	pts_script_slider_2_90	33009	$l2__amp_env__sustain	1000000	resolved slider ordinal
+14477	0x71	2	275	false	pts_script_slider_2_3	32810	$l1__loop_initial_offset	0	resolved slider ordinal
+14528	0x71	2	276	false	pts_script_slider_2_2	32809	$l1__loop_start	0	resolved slider ordinal
+14579	0x71	2	277	false	pts_script_slider_2_85	32990	$l2__loop_initial_offset	0	resolved slider ordinal
+14631	0x71	2	278	false	pts_script_slider_2_84	32989	$l2__loop_start	0	resolved slider ordinal
+14683	0x71	2	279	false	pts_script_slider_2_214	33244	$flux__rate0	8	resolved slider ordinal
+14736	0x71	2	280	false	pts_script_slider_2_215	33245	$flux__rate1	14	resolved slider ordinal
+14789	0x71	2	281	false	pts_script_slider_2_216	33246	$flux__rate2	-1	resolved slider ordinal
+14842	0x71	2	282	false	pts_script_slider_2_217	33247	$flux__rate3	-1	resolved slider ordinal
+14895	0x71	2	283	false	pts_script_slider_2_218	33248	$flux__rate4	-1	resolved slider ordinal
+14948	0x71	2	284	false	pts_script_slider_2_219	33249	$flux__rate5	-1	resolved slider ordinal
+15001	0x71	2	285	false	pts_script_slider_2_220	33250	$flux__rate6	-1	resolved slider ordinal
+15054	0x71	2	286	false	pts_script_slider_2_221	33251	$flux__rate7	-1	resolved slider ordinal
