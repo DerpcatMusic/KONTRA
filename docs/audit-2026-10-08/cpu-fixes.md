@@ -172,3 +172,18 @@ Before is frozen integrated `94448100…`; after is `c2cfa510`, frozen `66e04227
 This full matrix **fails acceptance**: several CPU cells and FX/256 underruns regress. The cold64 historical spikes are reduced but no noise-only conclusion is established. Do not land this checkpoint. The remaining sorted page-index shifts in normal block service are the next admission mechanism to measure and remove.
 
 The synthetic `page_admission` probe excludes decoding from its request timer and asserts zero allocations/frees across request, decode ownership transfer and completion. Before removing vector shifts, 768 slots have fill 0.150 / 1.310 µs and churn 0.200 / 0.290 µs; 6144 slots have fill 0.870 / 2.450 µs and churn 0.900 / 1.690 µs. Frozen probe SHA256 `f14d6b5d7ec0a34c5c38ea98dc31eaf703382f8ff3507f63c4e3b28c0e29d4cc`. Synthetic logical fill/churn is separate from the library warm/cold disk-cache cells above.
+
+## Fixed page index (finding 7, admission gate remains held)
+
+The sorted key vector is replaced by a fixed bucket table with intrusive slot links. Insert and removal visit only a bucket, with expected amortized O(1) work; neither shifts other resident keys. A per-epoch protected count makes saturated refusal constant work. The existing installed rustc-hash dependency avoids SipHash on process-owned asset/page keys. Collision-chain removal/reuse, repeated hits, saturated refusal, stale completions and existing heap guards pass. Full sampler-core tests and default `cargo test --no-run` passed for the final hash implementation.
+
+| Pool slots / phase | Sorted vector median / p99 µs | Fixed index median / p99 µs | Heap calls before / after |
+|---|---:|---:|---:|
+| 768 / fill | 0.150 / 1.310 | 0.040 / 1.120 | 0 / 0 |
+| 768 / churn | 0.200 / 0.290 | 0.050 / 0.090 | 0 / 0 |
+| 6144 / fill | 0.870 / 2.450 | 0.040 / 1.330 | 0 / 0 |
+| 6144 / churn | 0.900 / 1.690 | 0.050 / 0.140 | 0 / 0 |
+
+A preliminary DefaultHasher build was profiled on the cold64 audio TID: piano 958 samples / 318.9M cycles, DSP 25.32%, filtered source 9.45%, bus 9.42%, hashing 1.78%; FX approximately 3K samples / 1,365.6M cycles, behavior VM 18.60%, DSP 11.77%, bus 6.41%, SipHash 1.68% and bucket 1.58%. These profiles have zero lost samples. They motivated using the existing faster hasher, but do not prove the final library CPU gate. That preliminary build measured piano 24.310 / 47.981 and FX 123.172 / 570.841 µs steady median / p99, both zero underruns and zero event/render heap calls; it is rejected.
+
+The preliminary paired run failed with exit 124 in the **before** integrated warm FX binary after a 90-second timeout, with no stderr. Its failure is retained, not scored as a successful comparison or attributed to the new index. Final fixed-index warm/cold pairs are running consecutively inside bounded heavy shards, reversing binary order in repeat 2, with the audit's original collectors and cold-cache helper. Every failure remains visible. **HOLD remains; v1 and the historical cold64 targets are not met.** The canonical frozen v1 reference currently has no CPU-audit adapter binary; the audit's historical v1 medians/p99 remain the comparison until that original binary can be recovered without rebuilding v1.

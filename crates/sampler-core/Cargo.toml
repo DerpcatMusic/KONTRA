@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 realfft = "3.5"
 rtrb = "=0.4.0"
+rustc-hash = "=2.1.3"
 sampler-ir = { path = "../sampler-ir" }
 sampler-simd = { path = "../sampler-simd" }
 sampler-pool = { path = "../sampler-pool" }

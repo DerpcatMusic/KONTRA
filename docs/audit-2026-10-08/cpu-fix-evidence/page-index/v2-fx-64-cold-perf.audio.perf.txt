@@ -1,0 +1,37 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'cycles:u'
+# Event count (approx.): 1365560605
+#
+# Overhead  Command          Shared Object      Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+# ........  ...............  .................  ............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    18.60%  admission-index  admission-indexed  [.] <sampler_core::Runtime>::drain_behavior
+    11.77%  admission-index  admission-indexed  [.] sampler_core::dsp::process
+     6.41%  admission-index  admission-indexed  [.] <sampler_core::bus::BusState>::render
+     4.74%  admission-index  admission-indexed  [.] sampler_simd::dispatch::v3::<(), sampler_simd::dispatch::run_fused<(&mut sampler_core::source::Cursor, &mut [[f32; 2]], &mut sampler_core::envelope::EnvelopeState), (), <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#3}, <sampler_core::source::Cursor>::render_run<sampler_core::source::PagedFrames>::{closure#4}>::{closure#0}>
+     3.81%  admission-index  admission-indexed  [.] sampler_simd::dispatch::v3::<(), sampler_core::dsp::convolution::mac::{closure#0}>
+     3.45%  admission-index  admission-indexed  [.] <sampler_core::Runtime>::render_voice
+     2.82%  admission-index  admission-indexed  [.] <sampler_core::Runtime>::service_streaming
+     2.52%  admission-index  admission-indexed  [.] <sampler_core::envelope::EnvelopeState>::level
+     1.99%  admission-index  admission-indexed  [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+     1.88%  admission-index  admission-indexed  [.] <sampler_core::Runtime>::prepare_voice
+     1.82%  admission-index  admission-indexed  [.] <sampler_core::voice_mod::VoiceModState>::mix
+     1.68%  admission-index  admission-indexed  [.] <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write
+     1.68%  admission-index  admission-indexed  [.] <sampler_core::Runtime>::render_split
+     1.66%  admission-index  admission-indexed  [.] sampler_core::source::mix::<core::slice::iter::Iter<[f32; 2]>>
+     1.65%  admission-index  admission-indexed  [.] <sampler_core::voice_mod::VoiceModState>::evaluate
+     1.58%  admission-index  admission-indexed  [.] sampler_core::stream::bucket
+     1.51%  admission-index  admission-indexed  [.] <sampler_core::stream::StreamCache>::find
+     1.41%  admission-index  admission-indexed  [.] <sampler_core::integer::IntegerBinary>::apply
+     1.40%  admission-index  admission-indexed  [.] <sampler_core::dsp::PreparedVoiceChain>::finish
+     1.21%  admission-index  admission-indexed  [.] <sampler_core::dsp::PreparedVoiceChain>::begin::<sampler_core::source::PagedFrames>
+     1.17%  admission-index  admission-indexed  [.] <sampler_core::envelope::EnvelopeState>::next
+
+
+#
+# (Tip: To record callchains for each sample: perf record -g)
+#
