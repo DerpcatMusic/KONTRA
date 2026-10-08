@@ -435,6 +435,19 @@ pub(super) fn compile_processors(
 }
 
 impl PreparedVoiceChain {
+    pub(crate) fn filter_indices(&self, stages: std::ops::Range<usize>) -> Vec<u32> {
+        self.pre
+            .iter()
+            .chain(&self.post)
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                PreparedProcessor::StateVariable(filter) if stages.contains(&i) => {
+                    u32::try_from(*filter).ok()
+                }
+                _ => None,
+            })
+            .collect()
+    }
     pub(super) fn stages(&self) -> usize {
         self.pre.len() + self.post.len()
     }
