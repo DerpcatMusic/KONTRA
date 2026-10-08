@@ -440,7 +440,7 @@ cd /home/derpcat/.t3/worktrees/KONTAKTO/audit-ui-loop
 # /home/derpcat/.cache/kontra-scan/bin/README.md
 ```
 
-Cache: `~/.cache/kontakto-audit-ui-loop/` contains sanitized JSON, probe and validation logs, and six screenshots of our renderer. No decrypted source, sample or source image bytes are saved. Screenshot total remains below 50 MB. Validation: optimized real-library run **5/5 passed**, and `cargo test --no-run` passed before the final scalar witness was strengthened to assert a known cell actually changed. That last synthetic rerun/build is queued and will be reported after the coordinator-requested immediate push. Exact build and corpus receipts below; counts are stable only against these source/binary/manifest revisions.
+Cache: `~/.cache/kontakto-audit-ui-loop/` contains sanitized JSON, probe and validation logs, and six screenshots of our renderer. No decrypted source, sample or source image bytes are saved. Screenshot total remains below 50 MB. Validation: optimized real-library run **5/5 passed**. After strengthening the idle-wake witness to assert a known scalar cell actually changed, the final synthetic rerun **4/4 passed** (one real-library test intentionally ignored on that rerun) and final `cargo test --no-run` passed. `git diff --check` passed; only pre-existing compiler warnings remain. Logs: `probes-final.log` and `validation-final.log` in the audit cache. Exact build and corpus receipts below; counts are stable only against these source/binary/manifest revisions.
 
 - `conflux.json` SHA-256 `e9b091dba32d22b8ec2618110e7433a83069d8c25b4852ce7d8833705ad6761d`
 - `items.tsv` SHA-256 `8469c259dc38a94c57d3e1db0a631b7e7c8abea0695fbed3e231e9fc214057e4`
