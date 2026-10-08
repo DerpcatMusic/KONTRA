@@ -67,3 +67,41 @@ fn invalid_native_menu_index_selects_first_item() {
         WidgetValue::Int(20)
     );
 }
+
+#[test]
+fn persistence_callback_completion_is_observable_without_fault_text() {
+    use sampler_ksp::model::{EvaluationFailure, PersistenceCompletion};
+    let complete = compile(
+        "on init declare $x end on on persistence_changed $x:=2 exit end on",
+        &Environment::default(),
+    );
+    assert_eq!(
+        complete.model().persistence_completion,
+        PersistenceCompletion::Completed
+    );
+    let failed = compile(
+        "on init declare $x end on on persistence_changed while(1=1) inc($x) end while end on",
+        &Environment {
+            evaluation_budget: Some(32),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        failed.model().persistence_completion,
+        PersistenceCompletion::Failed {
+            category: EvaluationFailure::Budget,
+            ..
+        }
+    ));
+}
+#[test]
+fn snapshot_modes_keep_the_four_native_policies() {
+    for mode in 0..4 {
+        let script = compile(
+            &format!("on init set_snapshot_type({mode}) end on"),
+            &Environment::default(),
+        );
+        assert_eq!(script.model().snapshot_mode.reruns_init(), mode % 2 == 0);
+        assert_eq!(script.model().snapshot_mode.saves_engine(), mode < 2);
+    }
+}
