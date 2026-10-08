@@ -32,6 +32,7 @@ pub(super) struct State {
     canceled: Arc<AtomicBool>,
     package: Option<Arc<Package>>,
     failed: bool,
+    failure: Option<String>,
     started: bool,
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
@@ -68,6 +69,7 @@ impl State {
             canceled,
             package: None,
             failed: false,
+            failure: None,
             started: false,
             entry: entry.into(),
             seed: controls,
@@ -95,6 +97,24 @@ impl State {
     pub fn authored(&self) -> Size {
         self.size
     }
+    #[cfg(feature = "shots")]
+    pub fn scan(&self) -> super::pictures::Scan {
+        self.package
+            .as_ref()
+            .map_or(Default::default(), |p| p.images.scan())
+    }
+    #[cfg(feature = "shots")]
+    pub fn failures(&self) -> Vec<String> {
+        self.package
+            .as_ref()
+            .map_or(Vec::new(), |p| p.images.failures())
+    }
+    #[cfg(feature = "shots")]
+    pub fn diagnostic(&self) -> Option<String> {
+        self.failure
+            .as_ref()
+            .map(|e| crate::scan_metrics::message(e))
+    }
     pub fn entry(&self) -> &str {
         &self.entry
     }
@@ -105,12 +125,16 @@ impl State {
         scale: f64,
         face: &ir::Interface,
         values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
     ) -> El {
         let slot = self.id as usize;
         if let Ok(result) = self.loading.try_recv() {
             match result {
                 Ok(package) => self.package = Some(package),
-                Err(_) => self.failed = true,
+                Err(error) => {
+                    self.failed = true;
+                    self.failure = Some(error.to_string());
+                }
             }
         }
         if self.failed {
@@ -145,7 +169,7 @@ impl State {
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
             let session = &local.session;
-            session.update_view(face, values);
+            session.update_view(face, values, input);
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
@@ -171,8 +195,9 @@ impl State {
         });
         match result {
             Ok(el) => el,
-            Err(_) => {
+            Err(error) => {
                 self.failed = true;
+                self.failure = Some(error.to_string());
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)

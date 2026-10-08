@@ -24,6 +24,8 @@ struct ImageCache {
     touch: HashMap<String, u64>,
     tick: u64,
     bytes: usize,
+    #[cfg(feature = "shots")]
+    scan: super::pictures::Scan,
 }
 pub(super) struct Images {
     cache: Arc<Mutex<ImageCache>>,
@@ -56,6 +58,20 @@ impl Images {
     pub fn bytes(&self) -> usize {
         self.cache.lock().map_or(0, |c| c.bytes)
     }
+    #[cfg(feature = "shots")]
+    pub fn scan(&self) -> super::pictures::Scan {
+        self.cache.lock().map_or(Default::default(), |c| c.scan)
+    }
+    #[cfg(feature = "shots")]
+    pub fn failures(&self) -> Vec<String> {
+        self.cache.lock().map_or(Vec::new(), |c| {
+            c.loaded
+                .iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(k, _)| blake3::hash(k.as_bytes()).to_hex().to_string())
+                .collect()
+        })
+    }
 }
 impl Package {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
@@ -63,12 +79,14 @@ impl Package {
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
         let mut total = 0;
+        let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
             let relative = name
                 .strip_prefix("resources/native_ui/")
                 .or_else(|| name.strip_prefix("native_ui/"))
                 .unwrap_or(&name)
                 .to_lowercase();
+            resource_paths.insert(relative.clone(), name.clone());
             if !(relative.ends_with(".nui")
                 || relative.ends_with(".ttf")
                 || relative.ends_with(".otf"))
@@ -100,6 +118,8 @@ impl Package {
             touch: HashMap::new(),
             tick: 0,
             bytes: 0,
+            #[cfg(feature = "shots")]
+            scan: source.scan,
         }));
         let worker_cache = Arc::downgrade(&cache);
         std::thread::Builder::new()
@@ -107,7 +127,10 @@ impl Package {
             .spawn(move || {
                 while let Ok(name) = jobs.recv() {
                     let asset = ir::Asset {
-                        path: format!("Resources/native_ui/{name}"),
+                        path: resource_paths
+                            .get(&name)
+                            .cloned()
+                            .unwrap_or_else(|| format!("Resources/native_ui/{name}")),
                         kind: ir::AssetKind::Image(ir::ImageMeta::default()),
                     };
                     let image = source
@@ -133,6 +156,10 @@ impl Package {
                             cache.bytes -= image.rgba.len();
                         }
                         cache.touch.remove(&old);
+                    }
+                    #[cfg(feature = "shots")]
+                    {
+                        cache.scan = source.scan;
                     }
                     cache.bytes += bytes;
                     cache.pending.remove(&name);
@@ -541,7 +568,12 @@ impl Session {
             fuel,
         })
     }
-    pub fn update_view(&self, face: &ir::Interface, values: &super::ir_view::Values) {
+    pub fn update_view(
+        &self,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        input: &super::ir_view::InputState,
+    ) {
         let mut bridge = self.bridge.lock().unwrap();
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
@@ -550,6 +582,14 @@ impl Session {
                 && &bridge.controls[at] != w
             {
                 bridge.controls[at].clone_from(w);
+            }
+            if source == face.source {
+                if let Some(value) = input.values.get(&ir::WidgetRef(index)) {
+                    bridge.controls[at].value = Some(value.clone());
+                }
+                if let Some(level) = input.meters.get(&ir::WidgetRef(index)) {
+                    bridge.meters.insert(at, *level);
+                }
             }
             let w = &mut bridge.controls[at];
             if let ir::Binding::Control(c) = w.binding
