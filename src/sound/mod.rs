@@ -26,6 +26,7 @@ pub mod mix;
 pub mod report;
 pub mod tree;
 pub mod v2;
+pub(crate) mod waveform;
 
 use std::fmt;
 

@@ -55,6 +55,7 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 pub struct Part {
     runtime: Runtime,
     pub(crate) epoch: u64,
+    pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     mpe: Mpe,
     tune: f32,
@@ -182,6 +183,7 @@ impl Part {
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
+            waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
             mpe,
@@ -313,6 +315,7 @@ pub(crate) struct ControlIngress {
 }
 
 impl ControlIngress {
+    pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
         self.client.submit(sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
@@ -1518,6 +1521,19 @@ impl V2Loader {
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
+        let mut waveform_sources = std::collections::HashMap::new();
+        if interfaces.iter().any(|face| face.widgets.iter().any(|w| matches!(w.kind, sampler_ui_ir::Kind::Waveform))) {
+            if let Some(inst) = &instrument {
+                for id in 1..=inst.source_indices.zones.len() {
+                    let Some(id) = u32::try_from(id).ok() else { break; };
+                    if let Some(pcm) = prepared.source_zone_region(id).and_then(|region| prepared.region_asset(region)) {
+                        waveform_sources.insert(id, super::waveform::Source {
+                            pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
+                        });
+                    }
+                }
+            }
+        }
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
         // A source whose first window is not resident starts silent and fades in
@@ -1544,6 +1560,7 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.waveform_sources = waveform_sources;
         part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);

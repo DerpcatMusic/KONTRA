@@ -353,6 +353,7 @@ pub(crate) struct PartShared {
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
@@ -450,6 +451,19 @@ impl PartShared {
             }
             if changed { self.scalar_revision.fetch_add(1, Ordering::Release); }
         }
+    }
+
+    pub(crate) fn widget_waveforms(&self, face: &sampler_ui_ir::Interface, epoch: u64, pixel_scale: f64) -> Vec<(sampler_ui_ir::WidgetRef, crate::sound::waveform::Envelope)> {
+        let plan = self.ingress.lock().unwrap().as_ref().map(|ingress| ingress.plan());
+        let provider = self.waveforms.lock().unwrap();
+        if self.generation.load(Ordering::Acquire) != epoch { return Vec::new(); }
+        let Some(provider) = provider.as_ref().filter(|provider| Some(provider.plan) == plan) else { return Vec::new(); };
+        face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            if !face.visible(sampler_ui_ir::WidgetRef(n)) { return None; }
+            let zone = u32::try_from(widget.waveform.as_ref()?.zone).ok().filter(|id| *id > 0)?;
+            let bins = (f64::from(face.page_rect(sampler_ui_ir::WidgetRef(n)).width) * pixel_scale).ceil().clamp(1., 4096.) as usize;
+            Some((sampler_ui_ir::WidgetRef(n), provider.get(zone, bins)?))
+        }).collect()
     }
 
     pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
@@ -1340,6 +1354,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *ingress = None;
         atoms.engine_meters.lock().unwrap().clear();
+        *atoms.waveforms.lock().unwrap() = None;
         epoch
     };
     if part.path.is_empty() {
@@ -1413,6 +1428,14 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
+                if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
+                    let wake = Arc::downgrade(&atoms);
+                    *atoms.waveforms.lock().unwrap() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
+                        if let Some(atoms) = wake.upgrade() && atoms.generation.load(Ordering::Acquire) == generation {
+                            atoms.scalar_revision.fetch_add(1, Ordering::Release);
+                        }
+                    }).ok();
+                }
                 *atoms.ingress.lock().unwrap() = part.ui_controls.take();
             }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
