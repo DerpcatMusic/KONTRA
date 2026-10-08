@@ -266,62 +266,77 @@ impl Prepared {
     /// physical modulator slot. Defaults are authored native values, never a
     /// script-write mirror. Values are consumed when a voice starts.
     pub fn with_group_envelope_parameters(
-        mut self,
+        self,
         group: u32,
         physical_group: i32,
         slot: i32,
         authored: crate::Envelope,
     ) -> Result<Self, Error> {
-        if group >= self.group_count || physical_group < 0 || slot < 0 {
-            return Err(Error::InvalidInput);
+        self.with_group_envelope_parameters_batch([(group, physical_group, slot, authored)])
+    }
+
+    /// Port v1 bank::Builder's single control-thread group construction pass;
+    /// validate the completed schema once rather than once per envelope.
+    pub fn with_group_envelope_parameters_batch(
+        mut self,
+        envelopes: impl IntoIterator<Item = (u32, i32, i32, crate::Envelope)>,
+    ) -> Result<Self, Error> {
+        let mut envelopes = envelopes.into_iter().peekable();
+        if envelopes.peek().is_none() {
+            return Ok(self);
         }
         let mut controls = self.controls.to_vec();
         let mut bindings = self.engine_parameters.to_vec();
         let mut lanes = self.envelope_controls.to_vec();
         lanes.resize(self.group_count as usize, [None; 6]);
-        for (index, stage) in ENVELOPE_STAGES.into_iter().enumerate() {
-            if lanes[group as usize][index].is_some() {
+        for (group, physical_group, slot, authored) in envelopes {
+            if group >= self.group_count || physical_group < 0 || slot < 0 {
                 return Err(Error::InvalidInput);
             }
-            let parameter = engine_parameter_id(
-                [
-                    "ENGINE_PAR_ATTACK",
-                    "ENGINE_PAR_HOLD",
-                    "ENGINE_PAR_DECAY",
-                    "ENGINE_PAR_SUSTAIN",
-                    "ENGINE_PAR_RELEASE",
-                    "ENGINE_PAR_ATK_CURVE",
-                ][index],
-            )
-            .unwrap();
-            let id = ControlId(
-                (0x454e56u128 << 104)
-                    | (u128::from(index as u8) << 96)
-                    | (u128::from(physical_group as u32) << 64)
-                    | (u128::from(slot as u32) << 32),
-            );
-            let law = EngineParameterLaw::envelope(stage, self.rate);
-            let (min, max) = match stage {
-                crate::EnvelopeStage::Sustain => (0., 1.),
-                crate::EnvelopeStage::AttackCurve => (-32., 32.),
-                _ => (0., u32::MAX as f64),
-            };
-            controls.push(crate::ControlDefinition {
-                id,
-                domain: crate::ControlDomain::Real { min, max },
-                default: ControlValue::Real(authored.control_value(stage)),
-            });
-            lanes[group as usize][index] = Some(id);
-            bindings.push(EngineParameterBinding {
-                address: EngineParameterAddress {
-                    parameter,
-                    group: physical_group,
-                    slot,
-                    generic: -1,
-                },
-                control: id,
-                law,
-            });
+            for (index, stage) in ENVELOPE_STAGES.into_iter().enumerate() {
+                if lanes[group as usize][index].is_some() {
+                    return Err(Error::InvalidInput);
+                }
+                let parameter = engine_parameter_id(
+                    [
+                        "ENGINE_PAR_ATTACK",
+                        "ENGINE_PAR_HOLD",
+                        "ENGINE_PAR_DECAY",
+                        "ENGINE_PAR_SUSTAIN",
+                        "ENGINE_PAR_RELEASE",
+                        "ENGINE_PAR_ATK_CURVE",
+                    ][index],
+                )
+                .unwrap();
+                let id = ControlId(
+                    (0x454e56u128 << 104)
+                        | (u128::from(index as u8) << 96)
+                        | (u128::from(physical_group as u32) << 64)
+                        | (u128::from(slot as u32) << 32),
+                );
+                let law = EngineParameterLaw::envelope(stage, self.rate);
+                let (min, max) = match stage {
+                    crate::EnvelopeStage::Sustain => (0., 1.),
+                    crate::EnvelopeStage::AttackCurve => (-32., 32.),
+                    _ => (0., u32::MAX as f64),
+                };
+                controls.push(crate::ControlDefinition {
+                    id,
+                    domain: crate::ControlDomain::Real { min, max },
+                    default: ControlValue::Real(authored.control_value(stage)),
+                });
+                lanes[group as usize][index] = Some(id);
+                bindings.push(EngineParameterBinding {
+                    address: EngineParameterAddress {
+                        parameter,
+                        group: physical_group,
+                        slot,
+                        generic: -1,
+                    },
+                    control: id,
+                    law,
+                });
+            }
         }
         let lookups = self.engine_lookups.to_vec();
         self = self.with_controls(controls)?;
