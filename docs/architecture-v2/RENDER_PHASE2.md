@@ -378,3 +378,30 @@ completed-key byte pairs. Native-package views report this legacy-worker object
 as null. W10's eleven real UVI timeouts remain **UNATTRIBUTED** pending its
 Winds Arcs Short/Attack candidate witness; zero service counters alone do not
 prove a cache-budget branch. No authored names or resource bytes are persisted.
+
+### Vista/Pacific inventory parked; exact gate routing (2026-10-09)
+
+The complete installed Kontakt folder inventory has 12 NKR containers, nine
+NICNT files and 112 loose PNGs. Twenty containers index; Vista's NICNT rejects
+its physically short payload. Its one bounded table name was also compared in
+RAM. All three unresolved switch/label/menu request names have zero basename,
+stem or case/extension matches. Both libraries' own NKR art resolves normally.
+The unresolved label is hidden; the switch and menu are visible and do not hide
+their backgrounds. Frozen v1 also reports missing images for all 56 combined
+Vista/Pacific rows. Per coordinator, these cases are parked pending a Kontakt
+reference; no image is invented and production resolution stays unchanged.
+
+Plain `wc -c`, filesystem size and EOF seek independently agree on 514,346
+bytes for Vista's NICNT. Its payload starts at 514,240: 106 physical bytes remain
+against 54,344 declared. This is an on-disk extent mismatch, not our short read.
+Strict payload validation remains intact; only the ignored numeric inventory
+probe inspects that rejected file's bounded name table.
+
+Exact `3f49a9a1` routing accounts for all nine non-Original cells: three Big
+Screen cache-condition cells, addressed by the binding/Canvas/caption READY
+chain, and six Vista cells now parked. It contains no W5 semantic-fault cells
+and no further render/resource item. Three separate audio cells are typed
+`NotAuditioned` (no safe key), outside render ownership. Updated full-gate totals
+are unmeasured; W0 owns that gate. Numeric receipts and three-line parked notes
+are under `~/.cache/kontakto-w3/{vista,pacific}-resolution/`, with the route
+reconciliation in `~/.cache/kontakto-w3/residual-cells-3f49.json`.
