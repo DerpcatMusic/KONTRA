@@ -7,7 +7,7 @@ The report worker writes `signal-trace.json` and `signal-trace.svg` under the ru
 Schema 1 contains:
 
 - `graph`: sample rate, fixed node table, parent/child edges and a topological node order. Labels are public processor kinds; identities are numeric. Nodes cover raw resampled sources, pre-amplifier FX, envelope/velocity gain, post-amplifier FX, zone output, bus sums, ordered bus FX, faders, sends and the runtime master. Plugin adapters also record the part fader, rack bus fader and per-frame master gain.
-- `records`: absolute frame offset, block length, input/output stereo peak, RMS and DC, applied multiplier, algorithmic latency, enable/bypass state, live parameter values and native readbacks when the parameter has an address/law.
+- `records`: absolute frame offset, block length, input/output stereo peak, RMS and DC, applied multiplier, algorithmic latency, enable/bypass state, live parameter values and native readbacks when the parameter has an address/law. Amplifier rows use the playing voice’s envelope times and curvatures, including script changes; encoded time readbacks reflect whole-frame quantization.
 - `contribution: true`: a single voice at the zone-to-layer boundary. Its numeric identity includes zone, group, layer bus, sample, family/generation, RR sequence/take, pitch ratio, source/start frame, note velocity, CC1/7/11, region/velocity/crossfade gains, script/note gains, envelope level and actual amplifier control gain. Other records are coherent per-node sums. Do not add contribution rows to those sums a second time.
 - `dropped`: bounded-buffer overflow count. A nonzero count invalidates a complete time-series comparison. `complete` becomes true after the render writer is retired and drained.
 
