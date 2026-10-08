@@ -51,6 +51,14 @@ def number(value):
         return None
 
 
+def signed_number(value):
+    try:
+        n = float(value)
+        return n if math.isfinite(n) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def compare(old, new, optimum=None):
     old, new = number(old), number(new)
     return 'UNKNOWN' if old is None or new is None else 'PASS' if new < old or old == new == optimum else 'FAIL'
@@ -62,6 +70,17 @@ def rows(run, version, condition):
         return {}
     with path.open() as f:
         return {row['path']: row for row in csv.DictReader(f, delimiter='\t')}
+
+
+def trace_statuses(run, version, condition):
+    result = {}
+    folder = run / version / condition
+    for cached in folder.glob('cache/*.json'):
+        evidence = folder / 'items' / cached.stem / 'signal-traces.json'
+        if not evidence.exists(): continue
+        traces = json.loads(evidence.read_text()).get('traces', [])
+        result[json.loads(cached.read_text())['path']] = 'complete' if traces and all(t.get('status') == 'VALID' for t in traces) else 'unknown'
+    return result
 
 
 def append_ledger(root, run, result):
@@ -87,6 +106,7 @@ def summarize(run, complete=False):
     totals = {version: {'rows': 0, 'original_ok': 0, 'audible': 0} for version in ['v1', 'v2']}
     for condition in manifest.get('conditions', ['cold', 'os-warm']):
         pair = {v: rows(run, v, condition) for v in ['v1', 'v2']}
+        traces = {v: trace_statuses(run, v, condition) for v in ['v1', 'v2']}
         for path in paths:
             old, new = pair['v1'].get(path, {}), pair['v2'].get(path, {})
             item = hashlib.sha256(path.encode()).hexdigest()
@@ -111,6 +131,9 @@ def summarize(run, complete=False):
                     a = a if old.get('loads') == 'yes' else None
                     b = b if new.get('loads') == 'yes' else None
                 state = compare(a, b, 0 if metric in ['underruns', 'nonfinite'] else None)
+                if metric == 'signal_graph_trace':
+                    a, b = (traces[v].get(path, 'unknown') for v in ['v1', 'v2'])
+                    state = 'PASS' if b == 'complete' else 'UNKNOWN'
                 if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb']:
                     state='UNKNOWN'  # trace specialization changes performance; diagnostic only
                 if metric in ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'cpu_p50_us', 'cpu_p99_us']:
@@ -211,9 +234,13 @@ def diff(run, previous):
                     if node not in nodes or not isinstance(frames,int) or frames<=0: continue
                     # Voice contributions and coherent sums are separate observations.
                     key=(node,record.get('contribution') is True)
-                    stats=accumulated.setdefault(key,{'frames':0,'peak':[0.,0.],'energy':[0.,0.],'dc':[0.,0.],'enabled_frames':0,'latency_samples':0})
+                    stats=accumulated.setdefault(key,{'frames':0,'peak':[0.,0.],'energy':[0.,0.],'dc':[0.,0.],'enabled_frames':0,'latency_samples':0,'gain_frames':0,'gain':[0.,0.]})
                     metrics=record.get('output',{})
-                    if any(not isinstance(metrics.get(k),list) or len(metrics[k])!=2 or any(number(v) is None for v in metrics[k]) for k in ['peak','rms','dc']): continue
+                    if any(not isinstance(metrics.get(k),list) or len(metrics[k])!=2 or any((signed_number(v) if k=='dc' else number(v)) is None for v in metrics[k]) for k in ['peak','rms','dc']): continue
+                    gain=record.get('gain',[])
+                    if isinstance(gain,list) and len(gain)==2 and all(signed_number(v) is not None for v in gain):
+                        stats['gain_frames']+=frames
+                        for ch in range(2): stats['gain'][ch]+=gain[ch]*frames
                     stats['frames']+=frames
                     for ch in range(2):
                         stats['peak'][ch]=max(stats['peak'][ch],metrics['peak'][ch])
@@ -233,10 +260,13 @@ def diff(run, previous):
                         target[f'{address}/dc/{ch}']=stats['dc'][ch]/frames
                     target[address+'/enabled_fraction']=stats['enabled_frames']/frames
                     target[address+'/latency_samples']=stats['latency_samples']
+                    if stats['gain_frames']:
+                        measurement=public.get('gain_measurement','unknown')
+                        for ch in range(2): target[f'{address}/gain/{measurement}/{ch}']=stats['gain'][ch]/stats['gain_frames']
         return result
     before_stages, after_stages = stages(previous), stages(run)
     text += ['', '## Per-stage signal graph changes', '', '| Item | Condition | Stage/metric | Previous | Current | Delta |', '| --- | --- | --- | ---: | ---: | ---: |']
-    text.append('Only schema1, complete, zero-drop traces are compared. RMS/DC are frame-weighted block observations; peaks are maxima. Voice contributions remain separate from coherent sums; RR identities are not matched.')
+    text.append('Only schema1, complete, zero-drop traces are compared. RMS/DC are frame-weighted block observations; peaks are maxima. Gain averages are qualified by gain_measurement (unknown on older graphs). Voice contributions remain separate from coherent sums; RR identities are not matched.')
     changes = 0
     for (condition, item), values in after_stages.items():
         for address, value in values.items():
