@@ -15,6 +15,14 @@ use crate::{
 use sampler_ir as ir;
 use std::fmt;
 
+/// Retain native lookup identity independently of which DSP nodes were lowered.
+pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLookup> {
+    source.engine_lookups.iter().map(|lookup| crate::EngineLookup {
+        group: lookup.group, owner: lookup.owner, target: lookup.target,
+        name: lookup.name.clone(), index: lookup.index,
+    }).collect()
+}
+
 /// Seed for random sequences; fixed so renders are reproducible.
 const SEED: u64 = 0x5eed_1a7e;
 /// Decay allowance for bus filters after their input stops, in seconds.

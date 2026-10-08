@@ -176,6 +176,8 @@ pub enum EventInfo {
     /// The event's velocity, 0..=127.
     Velocity,
     ReleaseVelocity,
+    /// 1 for a live note event, 0 for an unknown or retired event.
+    Status,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).

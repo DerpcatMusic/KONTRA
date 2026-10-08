@@ -1296,6 +1296,7 @@ pub fn fold(hir: &Hir, e: &Expr) -> Option<Const> {
                 },
                 Builtin::NumElements => match args.first()? {
                     Arg::Var(v, _) => Int(hir.vars[v.0 as usize].len? as i32),
+                    Arg::SysArray(SysArray::GroupsAffected) => return None,
                     Arg::SysArray(a) if a.drop_kind().is_none() => Int(a.len() as i32),
                     _ => return None,
                 },

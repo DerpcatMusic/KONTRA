@@ -837,6 +837,21 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
+    /// Control-side lookup; zero, omitted zones and absent source maps return None.
+    /// No fallback to runtime region ordinals.
+    pub fn source_zone_region(&self, zone_id: u32) -> Option<usize> {
+        if zone_id == 0 {
+            return None;
+        }
+        self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The immutable prepared sample asset behind a region, for control-side peak work.
+    pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
+        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+    }
+
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
