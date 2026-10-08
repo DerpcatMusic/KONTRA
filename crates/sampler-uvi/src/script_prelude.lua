@@ -128,7 +128,7 @@ local function mapped(w, x, inverse)
     if inverse then return math.log(x/w.min)/math.log(w.max/w.min) end
     return w.min * (w.max/w.min)^x
   end
-  local powers = {Quadratic=2,Cubic=3,Quartic=4,Quintic=5,SquareRoot=0.5,CubeRoot=1/3,QuarticRoot=0.25}
+  local powers = {Quadratic=2,Cubic=3,Quartic=4,Quintic=5,SquareRoot=0.5,CubeRoot=1/3,QuarticRoot=0.25,QuinticRoot=0.2}
   local power = powers[m] or 1
   if inverse then return ((x-w.min)/(w.max-w.min))^(1/power) end
   return w.min + (w.max-w.min)*x^power
@@ -182,7 +182,7 @@ widget = function(kind, ...)
   local basekind = string.gsub(kind, "^Param", "")
   local size = sizes[basekind] or {100,100}
   local d = {kind=kind,name=name or named.name or kind,value=value or 0,min=lo or 0,max=hi or 1,
-    integer=integer==true,x=0,y=0,width=size[1],height=size[2],alpha=1,visible=true,enabled=true,
+    default=value or 0,integer=integer==true,x=0,y=0,width=size[1],height=size[2],alpha=1,visible=true,enabled=true,
     persistent=true,exported=false,text="",tooltip=name or "",displayName=name or "",showLabel=true,
     interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
   local w = setmetatable({__data=d}, widget_mt)

@@ -28,6 +28,11 @@ fn geometry_and_typed_edits_reach_the_script_and_parameters() {
       local v=Viewport{'Scroll',bounds={300,0,100,100}}
       v:setViewPosition(10,20); v:Panel('Contents')
       local positioned=Label{'Positioned',x=11,y=13}; assert(positioned.x==11 and positioned.y==13)
+      local mapped=Knob{'Mapped',100,1,10000,mapper=Mapper.Exponential}
+      mapped:setValueNormalized(0.5,false); assert(math.abs(mapped.value-100)<1e-9)
+      mapped.mapper=Mapper.QuinticRoot; mapped.min=0; mapped.max=1
+      mapped:setValueNormalized(0.03125,false); assert(math.abs(mapped.value-0.5)<1e-9)
+      assert(mapped.default==100)
     "#,
     );
     let face = h.interface();
