@@ -336,6 +336,14 @@ impl ControlIngress {
                     sampler_core::WidgetStorage::Control(id) if self.definitions.iter().any(|d| d.id == id && matches!(d.domain, ControlDomain::Integer { .. } | ControlDomain::Toggle)) => sampler_core::WidgetValue::Integer(value.round() as i64),
                     _ => sampler_core::WidgetValue::Real(value),
                 },
+                sampler_ui_ir::Value::DropPath { kind, path } => {
+                    let Ok(path) = sampler_core::Text::try_new(&path) else { return false };
+                    sampler_core::WidgetValue::DropPath { kind: match kind {
+                        sampler_ui_ir::DropKind::Audio => sampler_core::WidgetDropKind::Audio,
+                        sampler_ui_ir::DropKind::Midi => sampler_core::WidgetDropKind::Midi,
+                        sampler_ui_ir::DropKind::Array => sampler_core::WidgetDropKind::Array,
+                    }, path }
+                }
                 sampler_ui_ir::Value::Text(value) => { let text = sampler_core::Text::new(&value); if text.as_str() != value { return false; } sampler_core::WidgetValue::Text(text) },
                 _ => return false,
             };
@@ -373,7 +381,7 @@ impl ControlIngress {
         let Some(widget) = self.widgets.iter().find(|w| w.id == first.id) else { return false };
         if edits.len() > sampler_core::WIDGET_EDIT_CAPACITY || edits.iter().any(|e| e.id != first.id || ui_value(e.value).is_none()) { return false; }
         let id = sampler_ui_ir::ControlId(first.id.0);
-        let preview: Vec<_> = edits.iter().map(|e| (e.index, ui_value(e.value).unwrap())).collect();
+        let preview: Vec<_> = edits.iter().filter(|e| !matches!(e.value, sampler_core::WidgetValue::DropPath { .. })).map(|e| (e.index, ui_value(e.value).unwrap())).collect();
         let scalar = match widget.storage { sampler_core::WidgetStorage::Control(control) => Some(sampler_ui_ir::ControlId(control.0)), _ => None };
         let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
             operation: sampler_core::ControlOperation::InvokeWidget(self.context, edits) };
@@ -441,6 +449,7 @@ impl ControlIngress {
     }
 
     fn accept_value(&mut self, edit: &sampler_core::WidgetEdit) -> bool {
+        if matches!(edit.value, sampler_core::WidgetValue::DropPath { .. }) { return false; }
         let Some(value) = ui_value(edit.value) else { return false };
         let Some(current) = self.widget_values.get_mut(&sampler_ui_ir::ControlId(edit.id.0)) else { return false };
         match (current, value) {
@@ -481,6 +490,11 @@ fn ui_value(value: sampler_core::WidgetValue) -> Option<sampler_ui_ir::Value> {
         sampler_core::WidgetValue::Integer(value) => sampler_ui_ir::Value::Integer(value.try_into().ok()?),
         sampler_core::WidgetValue::Real(value) if value.is_finite() => sampler_ui_ir::Value::Real(value),
         sampler_core::WidgetValue::Text(value) => sampler_ui_ir::Value::Text(value.as_str().into()),
+        sampler_core::WidgetValue::DropPath { kind, path } => sampler_ui_ir::Value::DropPath { kind: match kind {
+            sampler_core::WidgetDropKind::Audio => sampler_ui_ir::DropKind::Audio,
+            sampler_core::WidgetDropKind::Midi => sampler_ui_ir::DropKind::Midi,
+            sampler_core::WidgetDropKind::Array => sampler_ui_ir::DropKind::Array,
+        }, path: path.as_str().into() },
         _ => return None,
     })
 }
@@ -506,6 +520,11 @@ impl V2Core {
             accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
         }
         accepted
+    }
+
+    pub(crate) fn widget_meter(&self, slot: usize, address: sampler_core::EngineMeterAddress) -> Option<f32> {
+        let part = self.parts.get(slot)?.as_ref()?;
+        part.runtime.engine_meter(part.runtime.active_plan(), address).ok()
     }
 
     pub(crate) fn epoch(&self, slot: usize) -> u64 { self.parts.get(slot).and_then(Option::as_ref).map_or(0, |p| p.epoch) }
