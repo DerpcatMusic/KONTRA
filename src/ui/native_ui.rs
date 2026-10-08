@@ -161,6 +161,7 @@ impl State {
         face: &ir::Interface,
         values: &super::ir_view::Values,
         typed: &HashMap<ir::WidgetRef, ir::Value>,
+        meters: &HashMap<ir::WidgetRef, f64>,
     ) {
         for (source, index, widget) in &mut self.seed {
             if *source == face.source
@@ -176,7 +177,7 @@ impl State {
             if let Some(local) = local.borrow().get(&self.id) {
                 local
                     .session
-                    .update_view(face, values, typed, &HashMap::new());
+                    .update_view(face, values, typed, meters);
             }
         });
     }
@@ -1128,13 +1129,13 @@ mod tests {
             .map(move |(n,w)|(f.source,n,w.clone()))).collect();
         let package=Arc::new(Package::load(&path).unwrap());
         let session=Session::new(package,&entry,controls.clone()).unwrap();
-        let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String)>::new()));
+        let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String,String)>::new()));
         let trace=reads.clone();
         session.lua().globals().set("__audit_parameter",session.lua().create_function(
-            move |_,(name,binding,path):(String,i64,String)| {
+            move |_,(name,binding,path,access):(String,i64,String,String)| {
                 if binding>=0 && (name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {
                     let mut trace=trace.lock().unwrap();
-                    if trace.len()<16384 {trace.push((name,binding as usize,path));}
+                    if trace.len()<16384 {trace.push((name,binding as usize,path,access));}
                 }
                 Ok(())
             }
@@ -1176,12 +1177,12 @@ mod tests {
         }
         let mut kinds=HashMap::new();node_kinds(&graph,&mut kinds);
         let mut seen=std::collections::BTreeSet::new();
-        for (name,binding,path) in reads.lock().unwrap().iter() {
+        for (name,binding,path,access) in reads.lock().unwrap().iter() {
             if !(name.starts_with("Edit__Synth__Src__") || name.starts_with("Edit__Synth__Shp__")) {continue;}
             let kind=kinds.get(path).map(String::as_str).unwrap_or("Component");
-            if !seen.insert((name.clone(),kind.to_owned(),*binding)) {continue;}
+            if !seen.insert((name.clone(),kind.to_owned(),*binding,access.clone())) {continue;}
             let (source,_,widget)=controls.get(*binding).expect("binding addresses a published control");
-            println!("NATIVE_BINDING node={kind} parameter={name} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
+            println!("NATIVE_BINDING node={kind} parameter={name} access={access} source={source:?} ui_id={:?} binding={:?}",widget.source_id,widget.binding);
         }
         assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
     }
