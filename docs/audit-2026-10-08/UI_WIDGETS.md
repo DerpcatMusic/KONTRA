@@ -65,7 +65,7 @@ must distinguish a pointer defect from missing runtime control definitions.
 
 **Native witness measurements (this branch):** 3 compiled script views, 434 total widgets and 390 native scalar definitions. The main view (source slot 2) has 411 widgets: 233 knobs, 1 slider, 16 buttons, 38 switches, 14 menus, 11 value edits, 34 labels, 46 panels, 6 tables, 6 level meters and 6 text edits. Its 78 visible continuous widgets are knobs with no explicit `Widget.drag` override. Across all three views, all 81 visible continuous controls are bound, all 81 native edits were admitted, and all 81 returned the edited value. Therefore the slider-axis defect does **not** explain most main-view Conflux knobs, and missing scalar definitions/admission are ruled out for this initialized witness.
 
-**Proven Conflux capture failure (downstream effect; upstream cause pending):** **78 visible main-view knobs; 46 capture and change on a 30px vertical drag; 32 never capture; zero change horizontally**. Targets **378–409** all resolve to the same stock 85×52 rectangle at **(0,0)**. Their center (42.5,26) presses **`ir-410`**, the last overlapping knob, every time. Binding exists for every target. `ui.rs:424` defaults absent positions to zero, `ir_view.rs:149` assigns stock size, and `ir_view.rs:184` draws every visible widget in flattened paint order. The pointer engine chooses the topmost named surface. This is a concrete reproduction of immovable controls caused by collapsed geometry and occlusion, not a claim that every authored Conflux dial is immovable.
+**Proven Conflux capture failure:** **78 visible main-view knobs; 46 capture and change on a 30px vertical drag; 32 never capture; zero change horizontally**. Targets **378–409** all resolve to the same stock 85×52 rectangle at **(0,0)**. Their center (42.5,26) presses **`ir-410`**, the last overlapping knob, every time. Binding exists for every target. `ui.rs:424` defaults absent positions to zero, `ir_view.rs:149` assigns stock size, and `ir_view.rs:184` draws every visible widget in flattened paint order. The pointer engine chooses the topmost named surface. This is a concrete reproduction of immovable controls caused by collapsed geometry and occlusion, not a claim that every authored Conflux dial is immovable.
 
 **Second, independent systemic capture defect:** `ir_view.rs:370` assigns a gesture ID to every widget, including labels/panels. At pinned MUI `822b192`, `crates/mui/src/ui/mod.rs:1180` registers every named surface as a pointer target, regardless of focusability, and later targets win. The owned synthetic overlay fixture proves a label captures `ir-1` and prevents the knob beneath from moving. That fixture proves the passive hit-policy defect; the 32 measured Conflux misses above are blocked by another knob, not a label.
 
@@ -80,9 +80,13 @@ or exact Kontakt sensitivity calibration.
 
 **Native callback-block validation:** all **81/81** edits also return the requested value after a 64-frame render block. This rules out an immediate callback reset in this initialized probe, not every delayed/live-host effect.
 
-**Upstream ownership, pending trace:** the 32 missed targets receive no distinct placement or hiding in the initialized model. The input renderer correctly selects the topmost interactive knob for those overlapping rectangles. The missing application belongs to KSP init/property/placement lowering (**params/init owner**) if absent before publication; to **loop/publication owner** if a valid initialized model is dropped during effect publication. The widget renderer owns passive hit-through policy and fractional grab accumulation. W2 must not patch Conflux ordinals or merely force all knobs to win hits. Trace property application order, macro/family placement and publication before assigning the upstream defect more precisely.
+**Upstream cause confirmed: assumed controls without an authored view.** The selected real NCKP parses **378 controls, zero skipped types**, and its raw hierarchy also has **378 distinct control paths**. The initialized main model adds **33 knobs (378–410)** with **zero properties**, no position and no hide write. None of their names matches a parsed control (case-insensitive exact or suffix), a raw qualified path, a raw leaf ID, or any raw JSON string. The script contains **no `ui_knob` declaration token**. Sixteen tail names have explicit retained “assumed” diagnostics; `compile_with` sorts and truncates diagnostics at 1,000 (`sampler-ksp/src/lib.rs:788`), so the other seventeen missing diagnostics are not a negative result.
 
-**Editor-tree check:** target 18 captured and changed the shared scalar value in Original. The first immediately repeated Vector gesture was confounded by the double-click reset interval; rerun with 30 idle frames between gestures is pending. This remains a separate gate from native DAW interaction.
+The creation path is `sampler-ksp/src/sema.rs:476–507`: after `load_performance_view`, an unresolved `$` name is synthesized as a knob. `model.rs:62–78` gives that assumed control range 0..1,000,000 and **empty properties**. `sema.rs:423` allocates its UI/native scalar identity. The real view's property pass (`eval.rs:631`) only applies properties to described controls, so these names never acquire placement or hiding. `ui.rs:424` then supplies visible zero-position/default sizing, producing the overlapping stock knobs. The owned `missing_performance_description_creates_visible_unsized_knob` test reproduces the same path without library data.
+
+**Owner: W2 (KSP widget/view lowering).** Genuinely undescribed fallbacks must remain hidden/unplaced and diagnostically explicit; they must not become stacked clickable knobs. Preserve legitimate source values/callback identities. For this selected NCKP, the 33 names are absent rather than authored geometry dropped by publication or a case/path lookup. The collapse is already present in `load_read` before any shared editor publication, so **W1 publication is not the cause of this initial failure**. W8's removal of two empty-view init runs addresses a separate load/order problem; its candidate should still prove the real-view model has no visible phantom tail. A different dynamically selected view or Kontakt-generated alias remains a reference-host question; this probe does not claim every resource/version is equivalent.
+
+**Editor-tree validation:** target 18 captures and changes the shared value by **166,666.67** on a 30px vertical gesture in **both Original and Vector**. The probe uses the real asset loader and waits 30 idle frames between gestures to avoid double-click reset. The four audit input checks pass in **83.04s**; the existing native UI callback regression also passes. These establish baseline headless editor behavior, not native DAW parity.
 
 ## Exhaustive widget matrix
 
@@ -158,13 +162,12 @@ source modifier getters, typed DnD and table edited-index context.
 The exact sensitivity law and wheel conventions require a Kontakt reference
 trace; the sign error does not.
 
+For the reported label/panel case, the first cause is simpler: authored labels render as a passive single caption and tables as a canvas, with **no inner scrolling component or wheel handler**. Their wheel reaches the rack because the child never consumes it. `ui_panel` supplies containment metadata, not a scrollable view. Fix the missing child behavior before interpreting every rack scroll as an arbitration failure.
+
 The custom rack wheel path is evaluated during tree construction, before MUI
 settles native scroll nodes. At pinned MUI `822b192`, `Ui::wheel` returns the raw
 response and registers a claim (`crates/mui/src/ui/scroll.rs:144`);
-`land_wheel` arbitrates native nodes afterward (`:277`). A child native scroller
-can therefore consume its own wheel while the custom rack has already changed
-its offset. This is a code-level cause for the reported parent wheel behavior;
-a real nested rack fixture should quantify it before claiming every panel fails.
+`land_wheel` arbitrates native nodes afterward (`:277`). A child native scroller can therefore consume its own wheel while the custom rack has already changed its offset. This is an additional code-level ordering risk where such a child exists; a real nested rack fixture should quantify it. The baseline authored label has no child scroller to arbitrate.
 
 ## Whole-corpus measurement
 
@@ -172,14 +175,14 @@ Manifest: `~/.cache/kontakto-corpus/items.tsv`: **781 NKI + 53 NKM = 834 Kontakt
 files**, alongside 660 UVI programs outside this scope. NKM usage unions all
 contained programs once per file. The directory was verified mounted.
 
-`tools/widget-audit.py` runs metadata reads in separate <=240-second
+`tools/widget-audit.py` runs container/script metadata reads in separate <=240-second
 `kontakto-heavy` shards, with <=20 seconds per item and resumable hash-keyed JSON
-in `~/.cache/kontakto-audit-ui-widgets/corpus/`. It excludes strings/comments and
+in `~/.cache/kontakto-audit-ui-widgets/corpus-raw/`. It excludes strings/comments and
 stores only identifier-presence counts, item size/mtime identity, timing/status and error hashes. Decrypted
 scripts, samples, resource images and saved strings are never written. Reader
 errors/timeouts are reported as unknown coverage, not as zero use.
 
-**Results: pending.** Initialized NCKP-only controls and dynamically generated
+**Results: pending final shard.** The raw decoder reuses `read_chunks`, `Program`/`Bank` and `BParScript::params`, matching active inline-script selection in `library.rs:213` while avoiding the reader's unrelated two KSP init executions. The abandoned translated-reader attempt had timeouts; its counts are not used below. Initialized NCKP-only controls and dynamically generated
 resource behavior are not captured by source token presence. The census auditor's
 initialized/rendered measurements should complement these usage denominators.
 Do not quote the older 2,741-instrument source census as this manifest's size.
@@ -192,7 +195,7 @@ promise that all counted instruments become fully compatible. Mechanisms overlap
 
 | Rank | Severity / mechanism | Concrete files/approach | Effort | Reach and test that proves it |
 |---|---|---|---|---|
-| 1 | P0 collapsed geometry and passive surfaces steal capture | `ui.rs`, `ir_view.rs`; preserve source placement/hide/default sizing, use deliberate passive hit policy, retain legitimate topmost interactive controls | S/M | Real Conflux targets 378–409 currently fail; overlap fixture must give label-through capture and correct panel hierarchy; initialized source/reference must agree on which origin controls should be visible |
+| 1 | P0 visible phantom controls and passive surfaces steal capture | `sema.rs`/`model.rs`/`ui.rs`: keep undescribed assumed controls hidden/unplaced; `ir_view.rs`: deliberate passive hit-through policy | S/M | Conflux has33 phantom tail knobs; no origin ghost is visible/hittable after fix. Owned missing-view and label-overlay fixtures invert; preserve all378 authored NCKP controls and valid callbacks |
 | 2 | P0 authored slider gestures lost | `sampler-ksp/src/ui.rs`, `ui/ir_view.rs`; correct sign, consume direction/speed, preserve fallback geometry policy | S | Slider-use items; synthetic negative/positive trajectories change intended axis only |
 | 3 | P0 duplicate widget IDs across parts | `ui/part.rs`, `ui/ir_view.rs`; existing MUI namespaces keyed by part/script identity | S | Any two simultaneous faces; same widget ordinal edits only hovered part, focus/wheel/capture remain isolated |
 | 4 | P0 render-time menu writes | Reuse popup work on prior branch; retain semantic value while idle | S | Menu-use items; nonconsecutive values, hidden entries, unmatched value and passive 100-frame run |
@@ -249,7 +252,7 @@ text-edit, mouse-area and XY paths according to the prior parity audit.
 1. Native Kontakt sensitivity law, zero `MOUSE_BEHAVIOUR`, fine modifiers, wheel
    step and picture-relative scaling: same NKI/version, controlled pixel trajectories,
    log only resulting values and geometry; compare against this branch's probe.
-2. Why the initialized model leaves Conflux targets 378–410 visible at zero: distinguish source-default placement from incomplete init/Komplete-resource handling using a Kontakt reference and init trace. The overlapping hit winner is proven; the upstream source-layout cause is not. Repeat the sweep after source page/tab changes and in a DAW.
+2. Reference-host handling of undescribed controls/aliases and dynamic resource choice: compare this exact selected NCKP/version, source tab changes and Kontakt runtime. The baseline fallback creation, empty model and absence from the selected raw view are proven; whether another host synthesizes aliases is unmeasured.
 3. Tiny steps under production audio readback: feed Shift moves below one integer
    step, process host blocks between moves, inspect final raw value and acknowledgements.
 4. Complete typed/source callback family: table/XY/string/path fixtures with
@@ -269,11 +272,11 @@ text-edit, mouse-area and XY paths according to the prior parity audit.
 ~/.cache/kontakto-heavy cargo test --no-run --lib
 ~/.cache/kontakto-heavy cargo test --lib audit_widget_negative_mouse_behaviour_baseline -- --nocapture --test-threads=1
 KONTRA_AUDIT_WIDGET_PATCH='/path/to/Conflux.nki' ~/.cache/kontakto-heavy cargo test --lib audit_widget_real_input -- --ignored --nocapture --test-threads=1
-python3 tools/widget-audit.py /path/to/widget_audit ~/.cache/kontakto-audit-ui-widgets/corpus
+python3 tools/widget-audit.py /path/to/widget_audit ~/.cache/kontakto-audit-ui-widgets/corpus-raw
 ```
 
 The negative-axis check intentionally records the broken baseline. After the
 systemic fix, invert its axis/value expectations to become the regression gate.
 Gesture deltas start at the declared midpoint, avoiding clamp-boundary false negatives; initial saved-value correctness is a separate obligation. No product behavior is changed by these tests.
 
-Checkpoint validation: native example build and lexer check passed; root `cargo test --locked --no-run --lib` passed after the final probe edit. The prior gesture run passed all four audit checks: negative axis, passive overlay, rounded substeps and real Conflux sweep (68.99s). The rerun outside the double-click window plus existing native callback regression is pending. Full corpus results and upstream placement trace are pending and will be appended in follow-up commits. This checkpoint is the W2 input-work gate, not a completed compatibility claim.
+Checkpoint validation: native example build and lexer check passed; root `cargo test --locked --no-run --lib` passed after the final editor-probe edit. The final gesture run passed all four audit checks: negative axis, passive overlay, rounded substeps and real Conflux sweep/editor tree (83.04s). The existing native callback regression passed (0.06s). Both native example checks passed, including undescribed-view fallback. `python3 tools/widget-audit.py --self-check` passed. The upstream metadata/raw-resource result above is complete. Whole-corpus totals remain pending in this follow-up; native DAW/reference-host parity remains unmeasured.
