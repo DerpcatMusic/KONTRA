@@ -769,3 +769,173 @@ fn a_voice_chain_mix_block_follows_slot_controls_per_voice() {
         assert!((run(&mut rt, 20) - 0.5 * n).abs() < 1e-5, "silent wet");
     }
 }
+
+#[test]
+fn voice_send_taps_preserve_amplifier_position_and_sum_before_return_dsp_without_heap() {
+    const SEND: ControlId = ControlId(22);
+    let bypass = slot_control(SlotKind::Bypass, 0, 0, -1);
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_SENDLEVEL_0").unwrap(),
+        group: 0,
+        slot: 0,
+        generic: -1,
+    };
+    let bypass_address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_EFFECT_BYPASS").unwrap(),
+        ..address
+    };
+    for block in [1, 7, 64, 129] {
+        let prepared = Prepared::new(
+            48000,
+            vec![Pcm::new(48000, vec![[1.0; 2]; 512].into_boxed_slice()).unwrap()],
+            vec![Region {
+                sample: 0,
+                key_low: 60,
+                key_high: 60,
+                root_key: None,
+                velocity_low: 0.0,
+                velocity_high: 1.0,
+                gain: 0.5,
+                envelope: Envelope::new(0, 0, 0, 0.25, 0).unwrap(),
+                playback: Playback::default(),
+            }],
+            1,
+        )
+        .unwrap()
+        .with_controls(vec![
+            ControlDefinition {
+                id: SEND,
+                domain: ControlDomain::Real { min: 0.0, max: 4.0 },
+                default: ControlValue::Real(0.5),
+            },
+            ControlDefinition {
+                id: bypass,
+                domain: ControlDomain::Real { min: 0.0, max: 1.0 },
+                default: ControlValue::Real(0.0),
+            },
+        ])
+        .unwrap()
+        .with_buses(
+            vec![
+                Bus {
+                    processors: vec![Processor::Gain(2.0)],
+                    sends: vec![send(None, 1.0)],
+                    tail_frames: 0,
+                },
+                Bus {
+                    processors: vec![Processor::Delay(
+                        Delay::new(3, [[0.0; 2]; 2], 0.0, 1.0).unwrap(),
+                    )],
+                    sends: vec![send(None, 1.0)],
+                    tail_frames: 3,
+                },
+            ],
+            vec![None],
+        )
+        .unwrap()
+        .with_voice_chains(
+            vec![
+                VoiceChain::new(
+                    vec![Processor::Gain(2.0)],
+                    vec![Processor::Gain(3.0), Processor::Gain(0.0)],
+                    0,
+                )
+                .unwrap()
+                .with_taps(vec![
+                    VoiceSendTap {
+                        position: VoiceSendPosition::BeforeAmplitude(1),
+                        bus: 0,
+                        gain: Parameter::Control(ControlRange {
+                            control: SEND,
+                            low: 0.0,
+                            high: 4.0,
+                            ramp_frames: 0,
+                        }),
+                        bypass: Parameter::Control(ControlRange {
+                            control: bypass,
+                            low: 0.0,
+                            high: 1.0,
+                            ramp_frames: 0,
+                        }),
+                    },
+                    VoiceSendTap {
+                        position: VoiceSendPosition::AfterAmplitude(1),
+                        bus: 1,
+                        gain: Parameter::Constant(0.5),
+                        bypass: Parameter::Constant(0.0),
+                    },
+                ])
+                .unwrap(),
+            ],
+            vec![Some(0)],
+        )
+        .unwrap()
+        .with_engine_parameters(
+            vec![EngineParameterBinding {
+                address,
+                control: SEND,
+                law: EngineParameterLaw::CubicGain { unity: 396851.0 },
+            }],
+            vec![],
+        )
+        .unwrap();
+        let mut runtime = Runtime::new(prepared, limits()).unwrap();
+        let mut audio = [[0.0; 2]; 128];
+        support::without_heap(|| {
+            runtime.trigger(input(1), 60, 1.0).unwrap();
+            runtime.trigger(input(2), 60, 1.0).unwrap();
+            for chunk in audio.chunks_mut(block) {
+                runtime.render(chunk).unwrap();
+            }
+        });
+        for (i, sample) in audio.into_iter().enumerate() {
+            near(sample, [if i < 3 { 4.0 } else { 4.75 }; 2]);
+        }
+        support::without_heap(|| {
+            runtime.set_engine_parameter(address, 396851).unwrap();
+            let mut next = [[0.0; 2]; 8];
+            runtime.render(&mut next).unwrap();
+            for sample in next {
+                near(sample, [8.75; 2]);
+            }
+            runtime.set_engine_parameter(bypass_address, 1).unwrap();
+            runtime.render(&mut next).unwrap();
+            for sample in next {
+                near(sample, [0.75; 2]);
+            }
+        });
+    }
+}
+
+#[test]
+fn voice_modulation_gain_is_at_the_amplifier_between_send_taps() {
+    for block in [1, 7, 64, 129] {
+        let prepared = plan(vec![[1.0; 2]; 256], 1)
+            .with_buses(vec![
+                Bus { processors: vec![], sends: vec![send(None, 1.0)], tail_frames: 0 },
+                Bus { processors: vec![], sends: vec![send(None, 1.0)], tail_frames: 0 },
+            ], vec![None]).unwrap()
+            .with_voice_chains(vec![VoiceChain::new(
+                vec![Processor::Gain(2.0)],
+                vec![Processor::Gain(3.0), Processor::Gain(0.0)], 0,
+            ).unwrap().with_taps(vec![
+                VoiceSendTap { position: VoiceSendPosition::BeforeAmplitude(1), bus: 0, gain: Parameter::Constant(1.0), bypass: Parameter::Constant(0.0) },
+                VoiceSendTap { position: VoiceSendPosition::AfterAmplitude(1), bus: 1, gain: Parameter::Constant(1.0), bypass: Parameter::Constant(0.0) },
+            ]).unwrap()], vec![Some(0)]).unwrap()
+            .with_voice_modulation(vec![ModProgram {
+                breakpoints: vec![],
+                sources: vec![ModSource::Envelope(Envelope::new(64, 0, 0, 1.0, 0).unwrap())],
+                routes: vec![ModRoute::new(0, ModTarget::Attenuate, 1.0)],
+                shapes: vec![],
+            }], vec![Some(0)], vec![0]).unwrap();
+        let mut runtime = Runtime::new(prepared, limits()).unwrap();
+        let mut audio = [[0.0; 2]; 128];
+        support::without_heap(|| {
+            runtime.trigger(input(1), 60, 1.0).unwrap();
+            for chunk in audio.chunks_mut(block) { runtime.render(chunk).unwrap(); }
+        });
+        for (i, sample) in audio.into_iter().enumerate() {
+            near(sample, [2.0 + 6.0 * ((i + 1) as f32 / 64.0).min(1.0); 2]);
+        }
+    }
+}

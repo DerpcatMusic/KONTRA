@@ -1,6 +1,6 @@
 [package]
 name = "kontakto"
-version = "0.3.208"
+version = "0.3.225"
 edition = "2024"
 rust-version = "1.92"
 license = "Apache-2.0"
@@ -14,12 +14,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 default = ["plugin", "clap", "vst3", "library-access"]
 # Opens encrypted library content with the library's own .nicnt access data.
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
-plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg"]
+plugin = ["sampler-kontakt/native-ui", "dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg", "dep:mlua", "dep:image-webp", "dep:resvg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
-shots = ["plugin", "dep:mui"]
+shots = ["plugin", "dep:mui", "sampler-ksp/scan", "sampler-kontakt/scan", "sampler-uvi/scan"]
 
 [dependencies]
 sampler-core = { path = "crates/sampler-core" }
@@ -32,6 +32,9 @@ sampler-ui-ir = { path = "crates/sampler-ui-ir" }
 rustc-hash = "=2.1.3"
 anyhow = "1"
 png = { version = "0.18", optional = true }
+mlua = { version = "0.12.2", optional = true, features = ["luau", "error-send"] }
+image-webp = { version = "0.2.4", optional = true }
+resvg = { version = "0.46.0", default-features = false, optional = true }
 ni-file = { path = "vendor/ni-file", features = ["serde"] }
 ncw = { path = "vendor/ncw" }
 crossbeam-queue = "0.3"
@@ -73,6 +76,10 @@ libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Wdk_System_SystemServices", "Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_LibraryLoader"] }
+
+[[bin]]
+name = "kontakto"
+path = "src/create_library.rs"
 
 [[bin]]
 name = "kontakto-standalone"
@@ -164,3 +171,7 @@ resolver = "3"
 [profile.ci]
 inherits = "release"
 lto = false
+
+[[example]]
+name = "uvi_ui_health"
+required-features = ["shots"]
