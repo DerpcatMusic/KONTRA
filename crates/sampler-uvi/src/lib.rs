@@ -495,6 +495,7 @@ impl Translation {
             auxes.push((name, bus));
         }
         let program_output = self.insert_bus(program, ir::Output::Master)?;
+        self.ir.input_bus = if let ir::Output::Bus(bus) = program_output { Some(bus) } else { None };
         for (_, bus) in &auxes {
             self.ir.buses[bus.0].output = program_output;
         }
