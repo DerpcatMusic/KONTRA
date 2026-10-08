@@ -15,6 +15,10 @@ mod builtins;
 mod diag;
 mod eval;
 mod hir;
+#[cfg(feature = "cache")]
+mod init_cache;
+#[cfg(feature = "cache")]
+pub use init_cache::{CachedInit, restore_initialized};
 mod lexer;
 mod lower;
 pub mod model;

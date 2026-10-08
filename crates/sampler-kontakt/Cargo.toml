@@ -15,13 +15,15 @@ library-access = ["dep:aes"]
 native-ui = []
 
 [dependencies]
-sampler-ir = { path = "../sampler-ir" }
+sampler-ir = { path = "../sampler-ir", features = ["cache"] }
 sampler-core = { path = "../sampler-core" }
-sampler-ksp = { path = "../sampler-ksp" }
+sampler-ksp = { path = "../sampler-ksp", features = ["cache"] }
 sampler-ui-ir = { path = "../sampler-ui-ir" }
 ni-file = { path = "../../vendor/ni-file" }
 ncw = { path = "../../vendor/ncw" }
 dirs = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 aes = { version = "0.8", optional = true }
 
 [lints.rust]
