@@ -17,7 +17,7 @@ fn main() {
         generic: args.next().unwrap().parse().unwrap(),
     });
     let mut results = Vec::new();
-    for bypass in [false, true] {
+    for (bypass, unity_output) in [(false, false), (true, false), (false, true)] {
         let mut kontakt = sampler_kontakt::read(Path::new(&path)).expect("read");
         if let Some(address) = static_address {
             // Explicit metadata-verified physical address: expose a static
@@ -110,9 +110,16 @@ fn main() {
         let mut initial = Vec::new();
         let mut buffer = [[0.0; 2]; 64];
         for at in (0..rate as usize / 2).step_by(buffer.len()) {
-            if at != 0 && bypass {
+            if at != 0 && (bypass || unity_output) {
                 for &address in &addresses {
-                    runtime.set_engine_parameter(address, 1).unwrap();
+                    if bypass {
+                        runtime.set_engine_parameter(address, 1).unwrap();
+                    } else {
+                        runtime.set_engine_parameter(EngineParameterAddress {
+                            parameter: engine_parameter_id("ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN").unwrap(),
+                            ..address
+                        }, 396_851).unwrap();
+                    }
                 }
             }
             ingress
@@ -148,7 +155,7 @@ fn main() {
         let rms = (power / frames as f64).sqrt();
         assert!(rms > 1e-8);
         results.push(
-            serde_json::json!({"forced_compressor_bypass":bypass,"initial_compressors":initial,
+            serde_json::json!({"forced_compressor_bypass":bypass,"forced_unity_output":unity_output,"initial_compressors":initial,
             "rate":rate,"key":60,"velocity":64,"cc1":100,"cc11":127,"frames":frames,"rms":rms}),
         );
     }
