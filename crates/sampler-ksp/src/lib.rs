@@ -745,6 +745,8 @@ pub fn compile_initialized(
     let slot = initialized.environment.slot;
     #[cfg(feature = "scan")]
     scan::restore(initialized.observation.clone());
+    #[cfg(feature = "scan")]
+    scan::stage("lower");
     let result = compile_initialized_inner(source, rate, limits, controls, initialized);
     #[cfg(feature = "scan")]
     scan::record(&result, source, slot);

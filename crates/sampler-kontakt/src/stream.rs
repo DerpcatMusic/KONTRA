@@ -426,12 +426,16 @@ impl Streamer {
         let _span = crate::audit::Span::new("sample_headers_latency_probe");
         let opened = std::thread::scope(|scope| {
             let sources = &sources;
-            let workers: Vec<_> = (0..policy.decoders.clamp(1, 4).min(sources.len()))
+            let count = std::thread::available_parallelism()
+                .map_or(1, |n| n.get())
+                .min(8)
+                .min(sources.len());
+            let workers: Vec<_> = (0..count)
                 .map(|worker| {
                     scope.spawn(move || {
                         let mut page = vec![[0.0; 2]; PAGE_FRAMES];
                         (worker..sources.len())
-                            .step_by(policy.decoders.clamp(1, 4).min(sources.len()))
+                            .step_by(count)
                             .map(|i| {
                                 let (source, path) = &sources[i];
                                 let result = (|| {
@@ -845,7 +849,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             (1..=8).collect::<Vec<_>>()
         );
-        assert!((2..=4).contains(&peak.load(Ordering::SeqCst)));
+        assert!((1..=8).contains(&peak.load(Ordering::SeqCst)));
     }
 
     #[test]

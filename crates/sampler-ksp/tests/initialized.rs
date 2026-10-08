@@ -30,3 +30,42 @@ fn initialization_uses_authored_control_ranges_and_is_consumed_at_the_host_rate(
         (Some(91), Some(42))
     );
 }
+
+#[cfg(feature = "scan")]
+#[test]
+fn deferred_lowering_keeps_each_slots_initializer_observation() {
+    use sampler_ksp::scan;
+    scan::begin();
+    scan::attempt("runtime-preparation");
+    let source = "on init\nend on\non persistence_changed\nend on";
+    let first = sampler_ksp::initialize(
+        source,
+        Limits::LIBRARY,
+        &Environment {
+            slot: 7,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let note_only = "on note\nend on";
+    let second = sampler_ksp::initialize(
+        note_only,
+        Limits::LIBRARY,
+        &Environment {
+            slot: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    sampler_ksp::compile_initialized(source, 44100, Limits::LIBRARY, &[], first).unwrap();
+    assert!(sampler_ksp::compile_initialized(note_only, 0, Limits::LIBRARY, &[], second).is_err());
+    let records = scan::take();
+    let first = records.iter().find(|r| r.slot == 7).unwrap();
+    assert_eq!(first.attempt, "runtime-preparation");
+    assert_eq!(first.init.completion, "completed");
+    assert_eq!(first.persistence_changed.completion, "completed");
+    let second = records.iter().find(|r| r.slot == 8).unwrap();
+    assert_eq!(second.init.present, Some(false));
+    assert_eq!(second.persistence_changed.present, Some(false));
+    assert_eq!(second.error.as_ref().unwrap().phase, "lower");
+}
