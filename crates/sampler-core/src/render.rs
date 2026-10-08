@@ -148,6 +148,7 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let start = std::time::Instant::now();
+        self.stream_fault = None;
         self.render_inner(output, outs)?;
         let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.render_time = [
@@ -179,6 +180,7 @@ impl Runtime {
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
             self.render_segment(segment, outs, offset);
+            if self.stream_fault.is_some() { return Err(Error::NotReady); }
             for frame in segment {
                 if !frame.iter().all(|x| x.is_finite()) {
                     *frame = [0.0; 2];
@@ -223,6 +225,7 @@ impl Runtime {
                 g.dsp.buses.begin();
             }
             self.render_voices(output, at);
+            if self.stream_fault.is_some() { return; }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
                 let faults = g
@@ -236,6 +239,20 @@ impl Runtime {
     }
 
     fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+        if self.offline {
+            // Modulation advance is cached on the absolute control grid. Prepare
+            // the exact steps before requesting pages; rendering at the same
+            // clock reads that ramp without advancing its sources again.
+            let mut next = self.voices.first;
+            while let Some(i) = next {
+                next = self.voices.slots[i].next;
+                self.prepare_voice(i, at, output.len());
+            }
+            if let Err(error) = self.wait_streaming(output.len().min(u32::MAX as usize) as u32, std::time::Duration::from_secs(5)) {
+                self.stream_fault = Some(error);
+                return;
+            }
+        }
         if self.render_voices_parallel(output, at) {
             return;
         }
@@ -255,6 +272,7 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
+                    if self.stream_fault.is_some() { return; }
                     let key = self.batch_key(i, output.len());
                     if key.is_none() || key != batch.0 || batch.2 == VOICES {
                         self.render_run(&batch.1[..batch.2], output, at);
