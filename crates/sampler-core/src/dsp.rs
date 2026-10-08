@@ -768,6 +768,7 @@ pub(super) fn process<const TRACE: bool>(
         let state = &mut states[index];
         let input = if TRACE { *block } else { [[0.; BLOCK]; 2] };
         let mut applied = [1.; 2];
+        let mut trace_output = None;
         let mut enabled = true;
         match stage {
             PreparedProcessor::Branch {
@@ -799,6 +800,7 @@ pub(super) fn process<const TRACE: bool>(
                             sum[c][i] += gain * block[c][i];
                         }
                     }
+                    if TRACE { trace_output = Some(*sum); applied = [*gain; 2]; }
                     *block = if *last { *sum } else { *entering };
                 }
                 if *last {
@@ -966,14 +968,14 @@ pub(super) fn process<const TRACE: bool>(
             }
         }
         if TRACE { if let Some(t) = trace.as_mut() {
-            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::Mix { .. }) {
+            if !matches!(stage, PreparedProcessor::Gain(_) | PreparedProcessor::Mix { .. } | PreparedProcessor::Branch { .. }) {
                 for c in 0..2 {
                     let a: f64 = input[c][..len].iter().map(|v| v*v).sum();
                     let b: f64 = block[c][..len].iter().map(|v| v*v).sum();
                     applied[c] = if a > 0. { (b/a).sqrt() } else { 0. };
                 }
             }
-            t.record(index, &input, block, len, applied, enabled, parameters);
+            t.record(index, &input, trace_output.as_ref().unwrap_or(block), len, applied, enabled, parameters);
         } }
     }
     fault
