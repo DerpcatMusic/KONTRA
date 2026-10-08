@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Resumable small-shard native-slot census; launch each shard with kontakto-heavy."""
-import argparse, hashlib, json, subprocess
+import argparse, hashlib, json, subprocess, time
 from pathlib import Path
 p=argparse.ArgumentParser()
 p.add_argument('--engine',required=True);p.add_argument('--list',required=True);p.add_argument('--out',required=True)
@@ -8,7 +8,12 @@ p.add_argument('--start',type=int,default=0);p.add_argument('--count',type=int,d
 a=p.parse_args();out=Path(a.out);out.mkdir(parents=True,exist_ok=True)
 items=[line.split('\t',1)[-1] for line in Path(a.list).read_text().splitlines() if line and not line.startswith('#')]
 engine_sha=hashlib.sha256(Path(a.engine).read_bytes()).hexdigest()
+shard_started=time.monotonic()
 for item in items[a.start:a.start+a.count]:
+    # Leave at most one 80-second worker after 200 seconds to keep FIFO shards under five minutes.
+    if time.monotonic()-shard_started>=200:
+        print('Yielded native-reader shard for the next FIFO job',flush=True)
+        break
     if (Path.home()/'.cache/kontra-quiet-request').exists():
         print('Paused for quiet request before next native-reader worker',flush=True)
         break
