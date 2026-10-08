@@ -45,3 +45,23 @@ The follow-up ports `0cb7a8a0:src/audio.rs` predictive 64-frame blocks, with saf
 Numeric `stream_head_owners` diagnostics count distinct assets, head assets/spans, planned source frames/native bytes, predictive spans/frames and actual stored bytes. RSS/swap and original-instrument timing are pending. A smooth stereo i24 fixture failed before the codec port (`head-packed-red.log`, status101); 48 targeted checks PASS: packing3, compressed ring render3, Kontakt stream/preload12, header cache1, AIFF1, cold-chain10, cold-offset2, paged render16. Root `cargo test --no-run` PASS. Logs are `head-model-check-3.log` and `head-model-neighbors.log`, both status0. The previous exact raw-size assertion now verifies both compression-disabled raw sizing and the smaller predictive representation; a noisy fixture that correctly fell back to native PCM was replaced with a smooth nonzero-residual fixture to exercise the predictor. Next is ordinary-wrapper ownership/RSS/swap measurement, followed by quiet A/B only if RSS fits the exact 52438 baseline.
 
 The v1 full-bank UI probe (`0cb7a8a0:src/ui/audit.rs:737`) uses 512 MiB, while the frozen CPU adapter uses the product `MEMORY_LIMIT` of 1 GiB. Scanner and CPU-adapter RSS must retain that provenance; the candidate still must meet the exact 52438 RSS ceiling and zero swap. The upcoming ownership probe records the CPU adapter’s actual head bytes, sample count and chosen preload alongside v2’s detailed counts.
+
+## 368d2654 ownership verdict — RSS FAIL, no quiet window
+
+Normal-wrapper, OS-warm ownership probes (timing UNKNOWN; other work recorded) used the frozen candidate, exact 52438 and frozen v1 CPU adapter. Receipt: `/mnt/Windows11/DEV_WORKSPACE/kontra-runs/w9-head-owners/summary.json`. Source 368d2654; frozen binary SHA256 `b3239c67f8ae7e10debf1217eaa13929cd9eb164141f11adc08acd9684bdcf1b`.
+
+| Metric | 52438 | 368d2654 | Frozen v1 CPU adapter |
+|---|---:|---:|---:|
+| Loaded RSS, MiB | 380.16 | 819.92 | 765.15 |
+| Final RSS, MiB | 387.86 | 875.13 | 812.38 |
+| Probe-process peak VmSwap, MiB | 0 | 0 | 0 |
+| Storage underruns, this unscored run | 24 | 0 | 0 |
+| Stream capacity errors | 912 | 0 | UNKNOWN (not exposed) |
+| Actual head payload, bytes | 0 | 498,620,047 | 498,608,156 |
+| Preload, frames | 616 (lazy old path) | 3670 | 3664 |
+
+The candidate plans **41,334 distinct assets and head spans**, **166,617,354 source frames**, **999,704,124 native bytes**. All spans/frames use predictive packing, holding **498,620,047 bytes** (49.88% less than the native plan). Every source plans at six bytes per stereo frame. Rings remain 67,108,864 virtual bytes. The v1 adapter’s `head_bytes=565,717,020` includes its 64 MiB ring reservation; subtracting that gives the head payload above. Full-bank payload parity is within 11,891 bytes. Compared with d826’s 800,308,908-byte raw heads, stored heads fall by 287.71 MiB, but the old swapped RSS row is not a valid physical-memory comparison.
+
+The probe descendants each recorded zero VmSwap. The ordinary wrapper unit separately reached 7.1 MiB swap, which includes persistent helper processes; zero-swap release acceptance still requires the quiet gate. No new quiet request was made because candidate RSS fails the required exact-52438 ceiling.
+
+**Reference-stage correction:** the 307.10 MiB gate scanner row explicitly reports an “initial streaming bank”. Its pinned `src/ui/scan.rs:250` calls `Bank::load_bare`, not the full-bank UI benchmark’s separate 512 MiB path. Product v1 first publishes that no-head bank, then fills resident heads on a worker. The CPU adapter instead finishes the full 1 GiB load. Both provenance and numbers remain explicit; the required RSS ceiling is not silently changed. The optional heap-retention probe was stopped before completion: the packed payload alone exceeds the total RSS ceiling, so trimming cannot change the verdict. Next: resolve initial-vs-completed-bank residency policy with the coordinator; prepare the deferred held-note slow-attack fixture in source-only time. Streaming remains HOLD.
