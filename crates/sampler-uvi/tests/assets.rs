@@ -43,6 +43,7 @@ fn visible_authored_images_resolve_and_count_missing_inactive_resources() {
                     let reason = match result {
                         Ok(None) => "missing",
                         Err(e) => match e {
+                            sampler_uvi::ResourceError::ContainerMissing => "container_missing",
                             sampler_uvi::ResourceError::InvalidPath => "invalid",
                             sampler_uvi::ResourceError::Ambiguous => "ambiguous",
                             sampler_uvi::ResourceError::Corrupt => "corrupt",
