@@ -1,0 +1,10 @@
+{
+  "status": "REJECTED: mixed cold64 gate, not committed",
+  "source_sha256": {
+    "crates/sampler-core/src/lib.rs": "41cb721a56c0e9801f76684b3d433deb4b9036ba6ad7cbf941fdd73919753cb0",
+    "crates/sampler-core/src/stream.rs": "d57625fa16721a9aa38e26cce4634a0cec9b8c993db5a49fef112aae0bfb5159",
+    "crates/sampler-core/src/source/demand.rs": "a4b561d3e2fbf41dc426888ece40617170ac2516749eb8029ebc7a5bffa77863",
+    "crates/sampler-core/tests/stream_policy.rs": "0db34ee1409b56276666c761b8b466f4d68ac6de35d3fa12f16d1fb775d62257"
+  },
+  "binary_sha256": "0c2b496e8a2eff414b5181820cd40c9180c76cc3f03551da155a7b311939c0d8"
+}
