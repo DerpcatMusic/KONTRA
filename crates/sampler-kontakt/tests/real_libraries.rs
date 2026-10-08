@@ -936,3 +936,36 @@ fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone:
     out
 }
 
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_formant_offline_ab_changes_the_gate_spectrum() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else { return; };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, filters) = library.instrument.zones.iter().find_map(|z| {
+            let chain = &library.instrument.chains[z.chain?.0];
+            let filters: Vec<_> = chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .filter(|p| matches!(p, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(15.) }, .. })))
+                .cloned().collect();
+            (filters.len() == 3).then(|| (z.clone(), filters))
+        }).expect("gate item must execute its three-band Formant I model");
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters.into_iter().chain([ir::Processor::Gain(ir::Gain::Linear(0.25))]).collect() } else { vec![] },
+            post_amplitude: vec![] });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let energy = |frames: &[[f32; 2]]| frames.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let derivative = |frames: &[[f32; 2]]| frames.windows(2).map(|w| (0..2).map(|c| f64::from(w[1][c]-w[0][c]).powi(2)).sum::<f64>()).sum::<f64>();
+    let dry_shape = derivative(&dry) / energy(&dry).max(1e-30);
+    let wet_shape = derivative(&wet) / energy(&wet).max(1e-30);
+    let shape_delta_db = 10. * (wet_shape / dry_shape).log10();
+    println!("W15 formant dry_rms={:?} wet_rms={:?} normalized_hf_delta_db={shape_delta_db}",
+        reference::levels(&dry, 0.1, 0.45).rms, reference::levels(&wet, 0.1, 0.45).rms);
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+    assert!(shape_delta_db.is_finite() && shape_delta_db.abs() > 0.05, "Formant must change spectral shape, independent of level");
+}
