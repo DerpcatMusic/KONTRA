@@ -22,6 +22,7 @@ pub(crate) mod parameters;
 pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
+const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization time budget exceeded";
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
@@ -78,7 +79,7 @@ impl Files for () {
 pub struct Config {
     /// Time one callback may run before it is aborted.
     pub callback: Duration,
-    /// Time loading the scripts (their data tables) may take.
+    /// Total time constructing the graph and initializing all scripts may take.
     pub load: Duration,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
@@ -411,7 +412,10 @@ impl Shared {
 
     /// Start a time budget for the code about to run.
     fn arm(&self, budget: Duration) {
-        self.deadline.set(Some(Instant::now() + budget));
+        // All initialization phases share the original deadline.
+        if !self.initializing.get() {
+            self.deadline.set(Some(Instant::now() + budget));
+        }
     }
 
     fn next_id(&self) -> u64 {
@@ -486,7 +490,11 @@ fn element(
     node: roxmltree::Node,
     parent: Option<&Table>,
     insert: bool,
+    deadline: Instant,
 ) -> mlua::Result<Table> {
+    if Instant::now() >= deadline {
+        return Err(mlua::Error::runtime(INIT_BUDGET));
+    }
     let table = lua.create_table()?;
     let id = tree.params.len();
     tree.params.push(
@@ -533,7 +541,7 @@ fn element(
         let list = lua.create_table()?;
         list.set_metatable(Some(lua.globals().raw_get("__list_mt")?))?;
         for child in container.children().filter(|n| n.is_element()) {
-            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts")?)?;
+            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", deadline)?)?;
         }
         table.raw_set(field, list)?;
     }
@@ -664,9 +672,14 @@ impl ScriptHost {
             cc: RefCell::new([0; 128]),
         });
         let host = Self { lua, shared };
-        host.install().map_err(lua_error)?;
-        host.build_program(&doc).map_err(lua_error)?;
-        host.load_scripts(&doc, state)?;
+        let initialized = host.install()
+            .and_then(|_| host.build_program(&doc))
+            .map_err(lua_error)
+            .and_then(|_| host.load_scripts(&doc, state));
+        if host.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+            return Err(INIT_BUDGET.into());
+        }
+        initialized?;
         host.shared.initializing.set(false);
         Ok(host)
     }
@@ -692,7 +705,7 @@ impl ScriptHost {
             }
         }
         let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), kinds: Vec::new(), layers: 0 };
-        let root = element(&self.lua, &mut tree, program, None, false)?;
+        let root = element(&self.lua, &mut tree, program, None, false, self.shared.deadline.get().unwrap())?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
@@ -1267,6 +1280,11 @@ impl ScriptHost {
             let batch = std::mem::take(&mut *self.shared.deferred.borrow_mut());
             if batch.is_empty() { break; }
             for (thread, args, note) in batch {
+                if self.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+                    self.shared.deferred.borrow_mut().clear();
+                    self.shared.find("lua error", "time budget exceeded");
+                    return;
+                }
                 resume(&self.shared, thread, args, note);
             }
         }
@@ -1630,6 +1648,19 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initialization_phases_cannot_renew_an_expired_deadline() {
+        let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default()).unwrap();
+        let expired = std::time::Instant::now();
+        h.shared.initializing.set(true);
+        h.shared.deadline.set(Some(expired));
+        h.shared.arm(std::time::Duration::from_secs(20));
+        assert_eq!(h.shared.deadline.get(), Some(expired));
+        h.shared.initializing.set(false);
+        h.shared.arm(std::time::Duration::from_secs(20));
+        assert!(h.shared.deadline.get().unwrap() > expired);
+    }
+
     use super::*;
 
     fn host(script: &str) -> ScriptHost {
