@@ -38,7 +38,7 @@ pub enum LoopShape {
 }
 
 /// Half-open sample-frame range. One-frame loops are valid.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Loop {
     pub start: usize,
     pub end: usize,
@@ -81,13 +81,13 @@ impl Loop {
 }
 
 /// One physical native loop slot. Tuning applies to repeated traversals.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopSlot {
     pub range: Loop,
     pub tuning: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct LoopSlots {
     slots: [Option<LoopSlot>; 8],
     exits: [Option<u64>; 8],
@@ -249,6 +249,60 @@ struct ReadAddress {
 }
 
 impl Cursor {
+    pub(super) fn same_stream_path(&self, other: &Self) -> bool {
+        self.start == other.start && self.end == other.end && self.direction == other.direction
+            && self.loop_range == other.loop_range && self.loops == other.loops && self.exit == other.exit
+    }
+
+    pub(super) fn stream_read(&self) -> u64 {
+        // Keep the largest supported kernel guard through live pitch changes.
+        self.position.saturating_sub(crate::read_radius(MAX_STEP) as u64)
+    }
+
+    pub(super) fn stream_end(&self, frames: u32) -> u64 {
+        let tuning = self.loops.map_or(1., |s| s.slots.iter().flatten()
+            .map(|s| s.tuning).fold(1., f64::max));
+        self.position.saturating_add((f64::from(frames) * self.step * tuning).ceil() as u64)
+            .saturating_add(crate::read_radius(MAX_STEP) as u64 + 1)
+    }
+    pub(super) fn stream_limit(&self) -> u64 { self.limit().unwrap_or(u64::MAX) }
+
+    pub(super) fn resident_stream_end(&self, head: &[(usize, crate::Packed)], from: u64) -> u64 {
+        if self.loops.is_some() { return from; }
+        let mut at = *self; at.position = from;
+        let Some(address) = at.address(i128::from(from)) else { return from; };
+        if address.crossfade.is_some() { return from; }
+        let n = head.partition_point(|(start, _)| *start <= address.primary);
+        let Some((start, frames)) = n.checked_sub(1).and_then(|i| head.get(i)) else { return from; };
+        if address.primary - start >= frames.len() { return from; }
+        let (_, contiguous, direction) = at.span();
+        let resident = match direction {
+            Direction::Forward => start + frames.len() - address.primary,
+            Direction::Reverse => address.primary - start + 1,
+        };
+        // Stop before the next loop seam; blend guards remain worker-mapped.
+        let fade = at.loop_range.map_or(0, |l| match l.shape {
+            LoopShape::Crossfade { frames } | LoopShape::EqualPowerCrossfade { frames } => frames,
+            _ => 0,
+        });
+        from.saturating_add(resident.min(contiguous.saturating_sub(fade)) as u64)
+    }
+
+    pub(super) fn stream_frame(&self, position: u64,
+        frame: &mut impl FnMut(usize) -> Result<Frame, crate::DecodeFailure>)
+        -> Result<Frame, crate::DecodeFailure>
+    {
+        let Some(address) = self.address(i128::from(position)) else { return Ok([0.;2]); };
+        let a = frame(address.primary)?;
+        match address.crossfade {
+            None => Ok(a),
+            Some((partner, [ga, gb])) => {
+                let b = frame(partner)?;
+                Ok(std::array::from_fn(|c| (ga * f64::from(a[c]) + gb * f64::from(b[c])) as f32))
+            }
+        }
+    }
+
     /// Start within the original view, measured in source time, never pitch time.
     /// Offsets at/past the view end are silent. Starting past a loop's outward
     /// edge bypasses it; starting inside retains its original boundaries/count.
@@ -624,6 +678,9 @@ impl Cursor {
 
     /// Read the virtual source before resampling: both legs use the same phase.
     fn read(&self, pcm: &(impl ReadFrames + ?Sized), position: i128) -> Option<Frame> {
+        if pcm.traversed() {
+            return usize::try_from(position).ok().map_or(Some([0.;2]), |at| pcm.frame(at));
+        }
         match self.address(position) {
             None => Some([0.; 2]),
             Some(ReadAddress {
@@ -724,7 +781,10 @@ impl Cursor {
         if self.step() == 1.0 && self.fraction == 0.0 && self.fade_in == 0 && !self.crossfaded() {
             let mut offset = 0;
             while offset < output.len() && !self.done() && !envelope.done() {
-                let (index, count, direction) = self.span();
+                let (index, count, direction) = if pcm.traversed() {
+                    (self.position as usize, self.limit().unwrap_or(u64::MAX)
+                        .saturating_sub(self.position).min(usize::MAX as u64) as usize, Direction::Forward)
+                } else { self.span() };
                 let count = count.min(output.len() - offset).min(envelope.remaining());
                 let range = match direction {
                     Direction::Forward => index..index + count,
@@ -846,7 +906,11 @@ impl Cursor {
             let radius = kernel.window(self.step());
             let left = self.index(position - i128::from(radius));
             let right = self.index(position + i128::from(radius));
-            let contiguous = if self.crossfaded() {
+            let contiguous = if pcm.traversed() {
+                usize::try_from(position - i128::from(radius)).ok()
+                    .zip(usize::try_from(position + i128::from(radius) + 1).ok())
+                    .and_then(|(left,right)| pcm.span(left..right)).map(|s| (s,false))
+            } else if self.crossfaded() {
                 None
             } else {
                 match (left, right) {
@@ -929,9 +993,10 @@ impl Cursor {
         // Upper bound on the frames advanced by `count` steps.
         let advance = (count as f64 * self.step()).ceil() as i64 + 1;
         let position = i128::from(self.position);
+        let physical = |p| if pcm.traversed() { usize::try_from(p).ok() } else { self.index(p) };
         let (Some(left), Some(right)) = (
-            self.index(position - i128::from(radius)),
-            self.index(position + i128::from(advance + radius) + (width - taps) as i128),
+            physical(position - i128::from(radius)),
+            physical(position + i128::from(advance + radius) + (width - taps) as i128),
         ) else {
             return 0;
         };
@@ -1449,6 +1514,8 @@ pub use demand::SampleDemand;
 const GATHER: usize = 1024;
 
 pub(super) trait ReadFrames {
+    /// A per-voice ring has already mapped reverse and loop blend legs.
+    fn traversed(&self) -> bool { false }
     fn frame(&self, index: usize) -> Option<Frame>;
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]>;
     /// Copy `range` into `out` (its length), across storage boundaries;
@@ -1501,6 +1568,7 @@ pub(super) struct PagedFrames<'a> {
     pub cache: crate::stream::PageReader<'a>,
     pub asset: crate::AssetId,
     pub head: &'a [(usize, crate::Packed)],
+    pub traversal: Option<(Cursor, Option<sampler_pool::RingRead<'a>>)>,
 }
 impl PagedFrames<'_> {
     /// The resident range holding frame `index`, and its first frame.
@@ -1511,13 +1579,33 @@ impl PagedFrames<'_> {
     }
 }
 impl ReadFrames for PagedFrames<'_> {
+    fn traversed(&self) -> bool { self.traversal.is_some() }
     fn frame(&self, index: usize) -> Option<Frame> {
+        if let Some((cursor, ring)) = &self.traversal {
+            let mut head = |at| self.range(at).map(|(start,frames)| frames.frame(at-start))
+                .ok_or(crate::DecodeFailure::Unavailable);
+            return cursor.stream_frame(index as u64, &mut head).ok()
+                .or_else(|| ring.as_ref()?.frame(index as u64));
+        }
         match self.range(index) {
             Some((start, frames)) => Some(frames.frame(index - start)),
             None => self.cache.frame(self.asset, index),
         }
     }
     fn span(&self, range: std::ops::Range<usize>) -> Option<&[Frame]> {
+        if let Some((cursor, ring)) = &self.traversal {
+            if !range.is_empty() {
+                let first = cursor.address(range.start as i128)?;
+                let last = cursor.address((range.end-1) as i128)?;
+                if first.crossfade.is_none() && last.crossfade.is_none()
+                    && last.primary.checked_sub(first.primary) == Some(range.len()-1)
+                    && let Some((start,frames)) = self.range(first.primary)
+                    && let Some(span) = frames.frames().and_then(|f|
+                        f.get(first.primary-start..last.primary-start+1)) { return Some(span); }
+            }
+            let [first,second] = ring.as_ref()?.runs(range.start as u64..range.end as u64)?;
+            return second.is_empty().then_some(first);
+        }
         if !range.is_empty()
             && let Some((start, frames)) = self.range(range.start)
         {
@@ -1527,6 +1615,13 @@ impl ReadFrames for PagedFrames<'_> {
         self.cache.span(self.asset, range)
     }
     fn copy(&self, range: std::ops::Range<usize>, out: &mut [Frame]) -> bool {
+        if let Some((_,ring)) = &self.traversal {
+            if ring.as_ref().is_some_and(|r| r.copy(range.start as u64..range.end as u64,out)) { return true; }
+            for (at,frame) in range.zip(out) {
+                let Some(value) = self.frame(at) else { return false; }; *frame=value;
+            }
+            return true;
+        }
         let mut at = range.start;
         while at < range.end {
             let o = at - range.start;
