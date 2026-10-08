@@ -24,6 +24,8 @@ mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 pub mod script;
+mod resources;
+pub use resources::Resources;
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -989,11 +991,15 @@ impl Translated {
         rate: u32,
         config: script::Config,
     ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+        self.attach_script_with_ui_state(rate, config, None)
+    }
+
+    pub fn attach_script_with_ui_state(&mut self, rate: u32, config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
         let (thread, loaded) =
-            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config).map_err(
+            scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
                 |reason| {
                     sampler_kontakt::LoadError::Invalid { path: "script".into(), reason }
                         .at(sampler_kontakt::Stage::ScriptCompile)
