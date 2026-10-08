@@ -1192,8 +1192,7 @@ mod tests {
     fn native_saved_text_reaches_authored_field_without_host_insets() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
         let mut source = sampler_kontakt::read(&path).unwrap().instrument;
-        source.zones.clear();
-        source.source_indices.zones.clear();
+        source.retain_zones(|_|false);
         source.assets.clear();
         let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
             library: Some(path.clone()), ..Default::default()

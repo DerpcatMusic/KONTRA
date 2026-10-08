@@ -1,0 +1,139 @@
+domain	id	name	dispatch	owner	observed_versions
+Kontakt	0x00	BParModBase	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x01	BAutomationObject	name/raw only	gpt-format-gaps	not observed
+Kontakt	0x02	OutputPartition	name/raw only	gpt-format-gaps	not observed
+Kontakt	0x03	Bank	typed wrapper	gpt-format-gaps	0x73,0x76
+Kontakt	0x04	BGroup	name/raw only	gpt-format-objects	0x95,0x96
+Kontakt	0x05	BLoop	name/raw only	gpt-format-objects	0x60
+Kontakt	0x06	BParScript	typed wrapper	gpt-decipher-persist	0x60
+Kontakt	0x07	BParEnv	name/raw only	gpt-format-fxmod	0x90
+Kontakt	0x08	BParLFO	name/raw only	gpt-format-fxmod	0x71,0x73
+Kontakt	0x09	BParArp	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x0a	BParEnvF	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x0b	BParGlide	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x0c	BParExternalMod	name/raw only	gpt-format-fxmod	0x100,0x101,0x102,0x103,0x104
+Kontakt	0x0d	BParInternalMod	typed wrapper	gpt-format-fxmod	0x80,0x81
+Kontakt	0x0e	BParSrcMode	name/raw only	gpt-format-objects	not observed
+Kontakt	0x0f	BParStartCriteria	name/raw only	gpt-format-objects	not observed
+Kontakt	0x10	BParFXDelay	typed wrapper	gpt-format-fxmod	0x51
+Kontakt	0x11	BParFXChorus	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x12	BParFXFlanger	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x13	BParFXGainer	name/raw only	gpt-format-fxmod	0x50
+Kontakt	0x14	BParFXPhaser	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x15	BParFXReverb	name/raw only	gpt-format-fxmod	0x50
+Kontakt	0x16	BParFXIRC	name/raw only	gpt-format-fxmod	0x70
+Kontakt	0x17	BParFXSendLevel	typed wrapper	gpt-format-fxmod	0x51
+Kontakt	0x18	BParFXFilter	name/raw only	gpt-format-fxmod	0x92,0x95
+Kontakt	0x19	BParFXCompressor	name/raw only	gpt-format-fxmod	0x70
+Kontakt	0x1a	BParFXInverter	name/raw only	gpt-format-fxmod	0x60
+Kontakt	0x1b	BParFXDYX	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x1c	BParFXLimiter	name/raw only	gpt-format-fxmod	0x60
+Kontakt	0x1d	BParFXSurroundPanner	name/raw only	gpt-format-fxmod	0x80
+Kontakt	0x1e	BParFXDistortion	name/raw only	gpt-format-fxmod	0x60
+Kontakt	0x1f	BParFXStereoSpread	name/raw only	gpt-format-fxmod	0x70
+Kontakt	0x20	BParFXLofi	name/raw only	gpt-format-fxmod	0x70
+Kontakt	0x21	BParFXSkreamer	name/raw only	gpt-format-fxmod	0x50
+Kontakt	0x22	BParFXRotator	name/raw only	gpt-format-fxmod	0x50
+Kontakt	0x23	BParFXTwang	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x24	BParFXCabinet	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x25	BParFX	typed wrapper	gpt-format-fxmod	0x50
+Kontakt	0x26	BDyxMorphGroup	name/raw only	gpt-format-objects	not observed
+Kontakt	0x27	BDyxMorphMap	name/raw only	gpt-format-objects	not observed
+Kontakt	0x28	Program	typed wrapper	gpt-format-objects	0xa8,0xab,0xae,0xb1,0xb3,0xb5
+Kontakt	0x29	BProgramContainer	typed wrapper	gpt-format-gaps	0x51
+Kontakt	0x2a	BSample	name/raw only	gpt-format-objects	not observed
+Kontakt	0x2b	VoiceGroup	typed wrapper	gpt-format-objects	0x60
+Kontakt	0x2c	BZone	name/raw only	gpt-format-objects	0x98,0x99,0x9a,0x9c
+Kontakt	0x2d	BZoneLevelEnv	name/raw only	gpt-format-objects	not observed
+Kontakt	0x2e	BZoneArraySer	name/raw only	gpt-format-objects	not observed
+Kontakt	0x2f	BGroupCompleteSer	name/raw only	gpt-format-objects	not observed
+Kontakt	0x30	PresetImpl	name/raw only	gpt-format-gaps	not observed
+Kontakt	0x31	unmapped/reserved	name/raw only	gpt-format-gaps	not observed
+Kontakt	0x32	VoiceGroups	typed wrapper	gpt-format-objects	0x60
+Kontakt	0x33	GroupList	typed wrapper	gpt-format-objects	list
+Kontakt	0x34	ZoneList	typed wrapper	gpt-format-objects	list
+Kontakt	0x35	PrivateRawObject	typed wrapper	gpt-format-gaps	not observed
+Kontakt	0x36	ProgramList	typed wrapper	gpt-format-gaps	list
+Kontakt	0x37	SlotList	typed wrapper	gpt-format-gaps	mask64
+Kontakt	0x38	StartCriteriaList	typed wrapper	gpt-format-objects	not observed
+Kontakt	0x39	LoopArray	typed wrapper	gpt-format-objects	mask8
+Kontakt	0x3a	BParameterArraySerBParFX8	typed wrapper	gpt-format-fxmod	0x12,0x13
+Kontakt	0x3b	BParameterArraySerBParInternalMod16	typed wrapper	gpt-format-fxmod	0x12,0x13
+Kontakt	0x3c	BParameterArraySerBParExternalMod32	name/raw only	gpt-format-fxmod	0x12,0x13
+Kontakt	0x3d	FileNameListPreK51	typed wrapper	gpt-format-legacy	not observed
+Kontakt	0x3e	BOutputConfiguration	name/raw only	gpt-format-gaps	0x0
+Kontakt	0x3f	BParEnvAhdsr	name/raw only	gpt-format-fxmod	0x11
+Kontakt	0x40	BParEnvFm7	name/raw only	gpt-format-fxmod	0x11,0x12
+Kontakt	0x41	BParEnvDbd	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x42	BParFXTape	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x43	BParFXTrans	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x44	BParFXSSLGEQ	name/raw only	gpt-format-fxmod	0x10,0x11
+Kontakt	0x45	BInsertBus	typed wrapper	gpt-format-fxmod	0x11,0x12
+Kontakt	0x46	BParFXSSLGBusComp	name/raw only	gpt-format-fxmod	0x12
+Kontakt	0x47	SaveSettings	typed wrapper	gpt-format-gaps	0x10
+Kontakt	0x48	unmapped/reserved	name/raw only	gpt-format-gaps	unestablished:0xff00,unframed
+Kontakt	0x49	unmapped/reserved	name/raw only	gpt-format-gaps	unframed
+Kontakt	0x4a	BParGroupDynamics	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x4b	FNTableImpl	typed wrapper	gpt-format-gaps	2,3
+Kontakt	0x4c	BParFXFBComp	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x4d	BParFXJump	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x4e	QuickBrowseData	typed wrapper	gpt-format-gaps	0x1
+Kontakt	0x4f	BSnapshot	name/raw only	gpt-decipher-persist	0x1,0x3
+Kontakt	0x50	BGroupSnapshot	name/raw only	gpt-decipher-persist	0x2,0x4
+Kontakt	0x51	BSnapshotMetaData	name/raw only	gpt-decipher-persist	0x1
+Kontakt	0x52	BParFXVan51	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x53	BParFXACBox	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x54	BParFXHotSolo	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x55	BParFXCat	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x56	BParFXDStortion	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x57	BParFXPlateReverb	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x58	BParFXCryWah	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x59	BParFXGaloisReverb	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x5a	BParFXReplikaDelay	name/raw only	gpt-format-fxmod	0x12
+Kontakt	0x5b	BParFXPhasis	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x5c	BParFXFlair	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x5d	BParFXChoral	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x5e	BParFXCoreCell	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x5f	BParFXHilbertLimiter	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x60	BParFXSupercharger	name/raw only	gpt-format-fxmod	0x51
+Kontakt	0x61	BParFXBassPro	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x62	unmapped/reserved	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x63	BParFXPsycheDelay	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x64	BParFXRingModulator	name/raw only	gpt-format-fxmod	not observed
+Kontakt	0x65	unmapped/reserved	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x66	unmapped/reserved	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x68	unmapped/reserved	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x69	unmapped/reserved	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x6a	unmapped/reserved	name/raw only	gpt-format-fxmod	0x10
+Kontakt	0x72	unmapped/reserved	name/raw only	gpt-format-fxmod	0x1
+Kontakt	0x74	unmapped/reserved	name/raw only	gpt-format-fxmod	0x1
+NISD	0x01	Item	framed; see property source	gpt-format-gaps	see census
+NISD	0x64	Bank	framed; see property source	gpt-format-gaps	see census
+NISD	0x65	Preset	framed; see property source	gpt-format-gaps	see census
+NISD	0x66	BankContainer	framed; see property source	gpt-format-gaps	see census
+NISD	0x67	PresetContainer	framed; see property source	gpt-format-gaps	see census
+NISD	0x68	BinaryChunkItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x6a	Authorization	framed; see property source	gpt-format-gaps	see census
+NISD	0x6c	SoundInfoItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x6d	PresetChunkItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x6e	ExternalFileReference	framed; see property source	gpt-format-gaps	see census
+NISD	0x6f	Resources	framed; see property source	gpt-format-gaps	see census
+NISD	0x70	AudioSampleItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x71	InternalResourceReferenceItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x72	PictureItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x73	SubtreeItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x74	EncryptionItem	framed; see property source	gpt-format-gaps	see census
+NISD	0x75	AppSpecific	framed; see property source	gpt-format-gaps	see census
+NISD	0x76	RepositoryRoot	framed; see property source	gpt-format-gaps	see census
+NISD	0x78	AutomationParameters	framed; see property source	gpt-format-gaps	see census
+NISD	0x79	ControllerAssignments	framed; see property source	gpt-format-gaps	see census
+NISD	0x7a	Module	framed; see property source	gpt-format-gaps	see census
+NISD	0x7b	ModuleBank	framed; see property source	gpt-format-gaps	see census
+NIK4	0x03	BNISoundPreset	framed; see property source	gpt-format-gaps	see census
+NIK4	0x04	BNISoundHeader	framed; see property source	gpt-format-gaps	see census
+RKTR	0x01	ReaktorBankContainer	framed; see property source	outside Kontakt scope	see census
+RKTR	0x02	ReaktorBank	framed; see property source	outside Kontakt scope	see census
+RKTR	0x03	ReaktorInstrumentBankContainer	framed; see property source	outside Kontakt scope	see census
+RKTR	0x04	ReaktorEnsembleBankContainer	framed; see property source	outside Kontakt scope	see census
+RKTR	0x05	ReaktorEnsemble	framed; see property source	outside Kontakt scope	see census
+RKTR	0x06	ReaktorLastPresetContainer	framed; see property source	outside Kontakt scope	see census
