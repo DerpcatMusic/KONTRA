@@ -7,17 +7,28 @@ use sampler_ui_ir as ir;
 use std::{path::Path, sync::Arc};
 
 /// Where an instrument's resources come from.
-pub struct Source(sampler_kontakt::Resources);
+pub struct Source {
+    kontakt: sampler_kontakt::Resources,
+    uvi: Option<sampler_uvi::Resources>,
+}
 
 impl Source {
     pub fn of(instrument: &Path) -> Self {
-        Self(sampler_kontakt::Resources::of(instrument))
+        let uvi = instrument.ancestors().any(|p|p.extension().is_some_and(|e|e.eq_ignore_ascii_case("ufs")||e.eq_ignore_ascii_case("uvip"))).then(||sampler_uvi::Resources::of(instrument));
+        Self {kontakt:sampler_kontakt::Resources::of(instrument),uvi}
+    }
+
+    fn read(&mut self, path: &str) -> Option<Vec<u8>> {
+        match &self.uvi {Some(uvi)=>uvi.read(path),None=>self.kontakt.read(path)}
+    }
+    pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
+        moose::mui::mui::prelude::Font::new(self.read(&asset.path)?).ok()
     }
 
     /// `asset` decoded and cut into its frames.
     pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
         let ir::AssetKind::Image(meta) = &asset.kind else { return None };
-        let image = crate::artwork::decode(&self.0.read(&asset.path)?)?;
+        let image = crate::artwork::decode(&self.read(&asset.path)?)?;
         let n = meta.frames.max(1);
         let vertical = meta.axis == ir::Orientation::Vertical;
         let (fw, fh) = if vertical { (image.width, image.height / n) } else { (image.width / n, image.height) };
