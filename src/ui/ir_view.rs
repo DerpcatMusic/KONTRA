@@ -72,6 +72,32 @@ impl Assets {
 /// Values the interface shows, by control.
 pub type Values = HashMap<ControlId, f64>;
 
+/// Runtime snapshots and pending widget edits, retained by the owning Face.
+#[derive(Default)]
+pub struct InputState {
+    pub values: HashMap<WidgetRef, ir::Value>,
+    pub meters: HashMap<WidgetRef, f64>,
+    pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
+    pub edits: Vec<Edit>,
+    menu: Option<WidgetRef>,
+    typing: Option<(WidgetRef, String)>,
+    drafts: HashMap<WidgetRef, String>,
+    cursors: HashMap<WidgetRef, usize>,
+    files: HashMap<WidgetRef, (std::path::PathBuf, Vec<std::path::PathBuf>)>,
+}
+
+pub struct Edit {
+    pub widget: WidgetRef,
+    pub index: u32,
+    pub value: ir::Value,
+    pub mods: Mods,
+}
+
+fn target(namespace: &str, n: WidgetRef) -> String {
+    if namespace.is_empty() { format!("ir-{}", n.0) } else { format!("{namespace}-ir-{}", n.0) }
+}
+
+
 fn colour(c: ir::Rgba) -> Color {
     Color::srgba(f32::from(c.r) / 255., f32::from(c.g) / 255., f32::from(c.b) / 255., f32::from(c.a) / 255.)
 }
@@ -172,6 +198,11 @@ pub fn resolved(face: &Interface) -> Interface {
 
 /// `page` at `scale` points per source pixel; `face` already [`resolved`].
 pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values) -> El {
+    view_state(ui, "", face, page, assets, presentation, scale, values, &mut InputState::default())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn view_state(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef, assets: &Assets, presentation: Presentation, scale: f64, values: &mut Values, input: &mut InputState) -> El {
     let Some(p) = face.pages.get(page.0) else { return caption("No interface").fill(secondary()) };
     let (w, h) = (f64::from(p.size.width) * scale, f64::from(height(face, page)) * scale);
     let mut layers = Vec::new();
@@ -188,9 +219,10 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
         }
         let r = face.page_rect(n);
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
-        layers.push(widget(ui, face, n, assets, presentation, scale, values, ww, hh).at(x, y));
+        layers.push(widget_state(ui, namespace, face, n, assets, presentation, scale, values, input, ww, hh).at(x, y));
     }
-    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id("ir-view")
+    if let Some(popup) = menu_popup(ui, namespace, face, scale, values, input, w, h) { layers.push(popup); }
+    stack(layers).w(w).h(h).shrink(0).clip().a11y(A11y::Group).named("Instrument interface").id(if namespace.is_empty() {"ir-view".to_owned()} else {format!("{namespace}-ir-view")})
 }
 
 /// The page's height, reaching down to its lowest visible control: a control
@@ -227,19 +259,21 @@ fn quantized(value: f64, range: &ir::Range) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn widget(
+pub(super) fn widget_state(
     ui: &mut Ui,
+    namespace: &str,
     face: &Interface,
     n: WidgetRef,
     assets: &Assets,
     presentation: Presentation,
     scale: f64,
     values: &mut Values,
+    input: &mut InputState,
     w: f64,
     h: f64,
 ) -> El {
     let wd = &face.widgets[n.0];
-    let id = format!("ir-{}", n.0);
+    let id = target(namespace, n);
     let bitmap = presentation == Presentation::Bitmap;
     let strip = wd.image(Use::Strip).filter(|_| bitmap || wd.label_in_image()).and_then(|a| assets.get(a));
     let fixed = wd.images.iter().find(|i| i.role == Use::Strip).and_then(|i| i.frame).map(|f| f as usize);
@@ -271,7 +305,7 @@ fn widget(
     let face_el: El = match &wd.kind {
         Kind::Knob { range, .. } | Kind::Slider { range, .. } => {
             let (vertical, travel) = gesture(wd, scale);
-            let held = wd.enabled && drive(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default);
+            let held = wd.enabled && drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, true);
             if wd.enabled && (ui.get(id.as_str()).dragged || ui.get(id.as_str()).wheel != Vec2::ZERO || !ui.keys(id.as_str()).is_empty()) {
                 v = quantized(v, range);
             }
@@ -333,6 +367,9 @@ fn widget(
             .a11y(A11y::Toggle { on })
         }
         Kind::Menu { items } => {
+            if wd.enabled && ui.get(id.as_str()).activated() {
+                input.menu = if input.menu == Some(n) { None } else { Some(n) };
+            }
             let shown: Vec<&ir::MenuItem> = items.iter().filter(|i| i.visible).collect();
             // Drawing an unknown semantic value must not edit the script.
             let at = shown.iter().position(|i| f64::from(i.value) == v).or((!shown.is_empty()).then_some(0));
@@ -347,36 +384,149 @@ fn widget(
             .focusable()
             .a11y(A11y::Button)
         }
-        Kind::ValueEdit { range, display, .. } => {
-            drive(ui, &id, &mut v, &(range.min..=range.max), TRAVEL, true, range.default);
-            // Kontakt's value edit: its name, then the value.
-            let mut parts = Vec::new();
-            if !wd.hide.title && !wd.text.is_empty() {
-                parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0));
+        Kind::ValueEdit { range, display, arrows } => {
+            let response = ui.get(id.as_str());
+            if wd.enabled && (response.double_clicked || ui.keys(id.as_str()).iter().any(|k| k.key == Key::Enter)) {
+                input.typing = Some((n, format!("{}", v / if display.ratio == 0. {1.} else {display.ratio})));
             }
-            parts.push(words(wd.value_text.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| number(v, display))));
-            row(parts)
-                .gap(TIGHT * scale)
-                .align(Align::Center)
-                .justify(Justify::Center)
-                .pad((TIGHT * scale, 0.))
-                .fill(Role::Ink.alpha(0.06))
-                .cursor(Cursor::ResizeV)
-                .focusable()
-                .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
+            if input.typing.as_ref().is_some_and(|(at,_)| *at == n) {
+                let edit_id = format!("{id}-type");
+                let mounted = ui.scene().is_some_and(|s| s.surface(&edit_id).is_some());
+                let (_, text) = input.typing.as_mut().unwrap();
+                let field = text_edit(ui, edit_id.as_str(), text, TextOpts { blur_on_submit:true, ..Default::default() });
+                if !mounted { ui.focus(edit_id.as_str()); }
+                let cancel = !wd.enabled || ui.keys(edit_id.as_str()).iter().any(|k| k.key == Key::Escape);
+                if cancel { input.typing = None; }
+                else if field.changed.submitted || mounted && !ui.focused(edit_id.as_str()) {
+                    if let Ok(number) = text.trim().parse::<f64>() { if number.is_finite() { v = quantized(number * if display.ratio == 0. {1.} else {display.ratio}, range); } }
+                    input.typing = None;
+                }
+                row![field.el].align(Align::Center)
+            } else {
+                let (vertical, travel) = gesture(wd, scale);
+                if wd.enabled { drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, false); }
+                let mut parts = Vec::new();
+                if !wd.hide.title && !wd.text.is_empty() { parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0)); }
+                parts.push(words(wd.value_text.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| number(v, display))));
+                if *arrows {
+                    let up = format!("{id}-up"); let down = format!("{id}-down");
+                    if wd.enabled && ui.get(up.as_str()).activated() { v = quantized(v + range.step.unwrap_or(1.),range); }
+                    if wd.enabled && ui.get(down.as_str()).activated() { v = quantized(v - range.step.unwrap_or(1.),range); }
+                    parts.push(col![glyph(Icon::Up,TIGHT*scale,secondary()).focusable().id(up),glyph(Icon::Down,TIGHT*scale,secondary()).focusable().id(down)].gap(0));
+                }
+                row(parts).gap(TIGHT * scale).align(Align::Center).justify(Justify::Center).pad((TIGHT * scale, 0.)).fill(Role::Ink.alpha(0.06)).cursor(Cursor::ResizeV).focusable().a11y(A11y::Slider {value:v,min:range.min,max:range.max})
+            }
         }
         Kind::Label => row![caption(wd.text.clone()).text_size(text_size).fill(ink.clone())].align(Align::Center),
-        Kind::LevelMeter { .. } => meter_v(|| [0.; 2]),
-        Kind::Table { columns, .. } => {
-            let columns = (*columns).max(1) as usize;
+        Kind::LevelMeter { orientation } => {
+            let level = input.meters.get(&n).copied().unwrap_or(0.);
+            let [lo,hi] = wd.meter_range.unwrap_or([0,1_000_000]);
+            let unit = if lo == hi {0.} else {((level*1_000_000.-f64::from(lo))/f64::from(hi-lo)).clamp(0.,1.)};
+            let vertical = *orientation == ir::Orientation::Vertical;
             canvas(move |s| {
-                let bw = s.width / columns as f64;
-                (0..columns).map(|c| Draw::fill(rect(c as f64 * bw, s.height - 1., (bw - 1.).max(1.), 1.), Role::Ink.alpha(0.5))).collect()
-            })
-            .fill(Role::Ink.alpha(0.06))
+                let area = if vertical {rect(0.,s.height*(1.-unit),s.width,s.height*unit)} else {rect(0.,0.,s.width*unit,s.height)};
+                vec![Draw::fill(area,signal())]
+            }).fill(Role::Ink.alpha(0.12))
+        },
+        Kind::Table { columns, range, cells, .. } => {
+            let mut samples = match input.values.get(&n).or(wd.value.as_ref()) {
+                Some(ir::Value::Integers(v)) => v.iter().map(|v|f64::from(*v)).collect::<Vec<_>>(),
+                Some(ir::Value::Reals(v)) => v.clone(),
+                _ => cells.iter().map(|v|*v as f64).collect(),
+            };
+            samples.resize(*columns as usize,range.default);
+            let response = ui.get(id.as_str());
+            if wd.enabled && (response.pressed || response.dragged) && !samples.is_empty() {
+                if let Some(point) = ui.local(id.as_str()) {
+                    let column = ((point.x/w.max(1.)).clamp(0.,1.)*samples.len() as f64).floor() as usize;
+                    let column = column.min(samples.len()-1);
+                    let value = quantized(range.min+(1.-point.y/h.max(1.)).clamp(0.,1.)*(range.max-range.min),range);
+                    samples[column]=value;
+                    let value = if range.step == Some(1.) {ir::Value::Integer(value as i32)} else {ir::Value::Real(value)};
+                    input.edits.push(Edit{widget:n,index:column as u32,value,mods:response.mods});
+                    input.values.insert(n,ir::Value::Reals(samples.clone()));
+                }
+            }
+            let range = *range;
+            canvas(move |s| {
+                let bw = s.width/samples.len().max(1) as f64;
+                let unit = |v:f64| if range.max == range.min {0.} else {((v-range.min)/(range.max-range.min)).clamp(0.,1.)};
+                let zero=s.height*(1.-unit(0.));
+                samples.iter().enumerate().map(|(c,v)| {
+                    let y=s.height*(1.-unit(*v));
+                    Draw::fill(rect(c as f64*bw,y.min(zero),(bw-1.).max(1.),(y-zero).abs().max(1.)),value_ink(0.))
+                }).collect()
+            }).fill(Role::Ink.alpha(0.06)).cursor(Cursor::Crosshair).focusable()
         }
-        Kind::Xy { .. } | Kind::Waveform | Kind::Wavetable { .. } | Kind::FileSelector { .. } | Kind::TextEdit => {
-            row![words(wd.text.clone())].align(Align::Center).pad((TIGHT * scale, 0.)).fill(Role::Ink.alpha(0.06)).stroke(Role::Ink.alpha(0.15)).stroke_width(1)
+        Kind::Xy { cursors, .. } => {
+            let mut points = match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Reals(v))=>v.clone(), _=>vec![0.; *cursors as usize*2]};
+            points.resize(*cursors as usize*2,0.);
+            let response=ui.get(id.as_str());
+            if wd.enabled && (response.pressed || response.dragged) && !points.is_empty() {
+                if let Some(point)=ui.local(id.as_str()) {
+                    let (x,y)=((point.x/w.max(1.)).clamp(0.,1.),(1.-point.y/h.max(1.)).clamp(0.,1.));
+                    let cursor=if response.pressed {
+                        let nearest=points.chunks_exact(2).enumerate().min_by(|(_,a),(_,b)| ((a[0]-x).powi(2)+(a[1]-y).powi(2)).total_cmp(&((b[0]-x).powi(2)+(b[1]-y).powi(2)))).map_or(0,|(i,_)|i);
+                        input.cursors.insert(n,nearest); nearest
+                    } else {input.cursors.get(&n).copied().unwrap_or(0)};
+                    for (index,value) in [(cursor*2,x),(cursor*2+1,y)] {
+                        points[index]=value;
+                        input.edits.push(Edit{widget:n,index:index as u32,value:ir::Value::Real(value),mods:response.mods});
+                    }
+                    input.values.insert(n,ir::Value::Reals(points.clone()));
+                }
+            }
+            canvas(move |s|points.chunks_exact(2).map(|point|Draw::fill(rect(point[0]*s.width-3.,(1.-point[1])*s.height-3.,6.,6.),value_ink(0.))).collect()).fill(Role::Ink.alpha(0.06)).cursor(Cursor::Crosshair).focusable()
+        }
+        Kind::TextEdit => {
+            let draft=input.drafts.entry(n).or_insert_with(||match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Text(v))=>v.clone(),_=>String::new()});
+            let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
+            if wd.enabled && field.changed.submitted {
+                let text=ir::Value::Text(draft.clone());
+                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods});
+                input.values.insert(n,text);
+            }
+            field.el
+        }
+        Kind::FileSelector {base_path,files,..} => {
+            let directory=base_path.as_deref().unwrap_or(".");
+            let (path,entries)=input.files.entry(n).or_insert_with(|| {
+                let path=std::path::PathBuf::from(directory);
+                // ponytail: one directory read per navigation; move to a worker if large folders stall.
+                let mut entries=std::fs::read_dir(&path).into_iter().flatten().filter_map(Result::ok).map(|e|e.path()).filter(|p|p.is_dir() || file_matches(p,*files)).collect::<Vec<_>>();
+                entries.sort(); (path,entries)
+            });
+            let mut rows=Vec::new();
+            let up=format!("{id}-parent");
+            let mut next=None;
+            if path.parent().is_some() {
+                if wd.enabled && ui.get(up.as_str()).activated() {next=path.parent().map(std::path::Path::to_owned);}
+                rows.push(caption("..").pad(TIGHT*scale).focusable().id(up));
+            }
+            for (at,path) in entries.iter().enumerate() {
+                let item=format!("{id}-file-{at}");
+                if wd.enabled && ui.get(item.as_str()).activated() {
+                    if path.is_dir() {next=Some(path.clone());}
+                    else {
+                        let value=ir::Value::Text(path.to_string_lossy().into_owned());
+                        input.edits.push(Edit{widget:n,index:0,value:value.clone(),mods:ui.get(item.as_str()).mods});
+                        input.values.insert(n,value);
+                    }
+                }
+                rows.push(caption(path.file_name().unwrap_or_default().to_string_lossy().into_owned()).pad(TIGHT*scale).focusable().id(item));
+            }
+            if let Some(next)=next {
+                let mut entries=std::fs::read_dir(&next).into_iter().flatten().filter_map(Result::ok).map(|e|e.path()).filter(|p|p.is_dir() || file_matches(p,*files)).collect::<Vec<_>>();
+                entries.sort(); input.files.insert(n,(next,entries));
+            }
+            col(rows).gap(0).scroll().fill(Role::Ink.alpha(0.06))
+        }
+        Kind::Waveform | Kind::Wavetable {..} => {
+            let peaks=input.peaks.get(&n).cloned().unwrap_or_default();
+            canvas(move |s| {
+                let width=s.width/peaks.len().max(1) as f64;
+                peaks.iter().enumerate().map(|(i,(lo,hi))|Draw::fill(rect(i as f64*width,(1.-f64::from(*hi))*s.height/2.,width.max(1.),f64::from(hi-lo)*s.height/2.),Role::Ink)).collect()
+            }).fill(Role::Ink.alpha(0.06))
         }
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
     };
@@ -390,7 +540,7 @@ fn widget(
         && !matches!(wd.kind, Kind::Label | Kind::Panel | Kind::Image | Kind::MouseArea)
         && light_under(face, assets, n);
     let face_el = if plate { face_el.radius(2).fill(Color::oklch(0.2, 0., 0.).with_alpha(0.85)) } else { face_el };
-    let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. });
+    let interactive = matches!(wd.kind, Kind::Knob { .. } | Kind::Slider { .. } | Kind::Button { .. } | Kind::Switch | Kind::Menu { .. } | Kind::ValueEdit { .. } | Kind::Table {..} | Kind::Xy {..} | Kind::FileSelector {..} | Kind::TextEdit | Kind::MouseArea);
     // MUI reserves slash-prefixed IDs for non-target decoration.
     let target = if interactive { id } else { format!("/{id}") };
     let mut el = face_el.w(w).h(h).shrink(0).id(target).when(!wd.enabled, |e| e.disabled()).named(wd.automation.name.clone().unwrap_or_else(|| wd.name.clone()));
@@ -401,5 +551,41 @@ fn widget(
     match bg.and_then(|i| assets.get(i.asset).and_then(|p| picture(p, i.frame.unwrap_or(0) as usize))) {
         Some(bg) if !wd.hide.background => stack![block(w, h).radius(0).fill(bg), el].w(w).h(h).shrink(0),
         _ => el,
+    }
+}
+
+
+#[allow(clippy::too_many_arguments)]
+fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64, values:&mut Values, input:&mut InputState, width:f64, height:f64) -> Option<El> {
+    let n = input.menu?;
+    let wd = face.widgets.get(n.0)?;
+    let Kind::Menu {items} = &wd.kind else { input.menu=None; return None };
+    let anchor = target(namespace,n);
+    let popup = format!("{anchor}-popup");
+    if !wd.enabled || !face.visible(n) || ui.dismissed(&[popup.as_str(),anchor.as_str()]) { input.menu=None; return None; }
+    let mut rows = Vec::new();
+    for (at,item) in items.iter().enumerate().filter(|(_,item)|item.visible) {
+        let id = format!("{anchor}-item-{at}");
+        if ui.get(id.as_str()).activated() {
+            if let Binding::Control(control) = wd.binding { values.insert(control,f64::from(item.value)); }
+            input.menu=None;
+        }
+        rows.push(caption(item.text.clone()).pad((TIGHT*scale,SPACE*scale)).fill(Role::Ink).focusable().a11y(A11y::Button).id(id));
+    }
+    let r = face.page_rect(n);
+    let w = (f64::from(r.width)*scale).max(120.).min(width);
+    let h = (rows.len() as f64 * CONTROL*scale).min(height);
+    let x = (f64::from(r.x)*scale).clamp(0.,(width-w).max(0.));
+    let y = (f64::from(r.y+r.height as i32)*scale).clamp(0.,(height-h).max(0.));
+    Some(col(rows).gap(0).w(w).h(h).scroll().fill(Role::Field).stroke(Role::Ink.alpha(0.3)).stroke_width(1).id(popup).at(x,y))
+}
+
+fn file_matches(path:&std::path::Path,files:ir::Files)->bool {
+    let extension=path.extension().and_then(|x|x.to_str()).unwrap_or("").to_ascii_lowercase();
+    match files {
+        ir::Files::Any=>true,
+        ir::Files::Audio=>matches!(extension.as_str(),"wav"|"aif"|"aiff"|"flac"|"ogg"|"mp3"|"ncw"),
+        ir::Files::Midi=>matches!(extension.as_str(),"mid"|"midi"),
+        ir::Files::Data=>matches!(extension.as_str(),"nka"|"nkr"|"txt"),
     }
 }
