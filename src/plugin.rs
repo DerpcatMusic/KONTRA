@@ -2490,6 +2490,19 @@ pub(crate) mod tests {
         }
     }
 
+    /// Source and instruction-layout sizes without exporting authored script text.
+    #[test]
+    #[ignore]
+    fn probe_ksp_sizes() {
+        let path = std::path::PathBuf::from(std::env::var("PROBE_PATH").expect("PROBE_PATH"));
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let source_bytes: Vec<_> = kontakt.instrument.behaviors.iter()
+            .filter(|b| b.language == sampler_ir::Language::Ksp)
+            .map(|b| b.source.len()).collect();
+        println!("AUDIT {}", serde_json::json!({"stage":"ksp_sizes", "source_bytes":source_bytes,
+            "instruction_bytes":std::mem::size_of::<sampler_core::Instruction>()}));
+    }
+
     /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
     #[test]
     #[ignore]
