@@ -118,3 +118,86 @@ fn format_tabs_retain_independent_preset_scroll_positions() {
     h.press("bank-uvi");
     assert!((h.ui.scene().unwrap().surface("instrument-70").unwrap().frame.y - uvi_y).abs() < 1.);
 }
+
+#[test]
+fn w14_library_artwork_fills_the_browser_width() {
+    for (width, height) in [(1180., 760.), (900., 600.)] {
+        let p = catalog();
+        let mut h = Harness::new(&p, width, height);
+        h.settle_art();
+        h.press("library-0");
+        h.idle(30);
+        let scene = h.ui.scene().unwrap();
+        let card = scene.surface("library-0").unwrap().frame;
+        assert!(card.size.height > 80., "full-width artwork and its label must fit: {card:?}");
+        let viewport = scene.surface("browser-sources-false").unwrap().frame;
+        assert!(card.y >= viewport.y - 0.5 && card.y + card.size.height <= viewport.y + viewport.size.height + 0.5,
+            "the chosen library panel is fully visible at {width}: {card:?}, {viewport:?}");
+        let image = scene.surface("library-0-art").unwrap().frame;
+        assert!(image.size.width > 250.);
+        assert!((image.size.width / image.size.height - 4.).abs() < 0.01, "the full artwork keeps its aspect ratio");
+    }
+}
+
+/// One provider per heavy shard; artwork only, never instrument/sample loading.
+#[test]
+#[ignore]
+#[cfg(feature = "shots")]
+fn w14_real_library_art_shots() {
+    let Some(provider) = std::env::var("KONTRA_ART_PROVIDER").ok().filter(|p| p == "Kontakt" || p == "UVI") else { return };
+    let root = PathBuf::from(format!("/mnt/MAIN_STORAGE/Libraries/{provider}"));
+    if !root.is_dir() { return; }
+    let p = Arc::new(SamplerParams::new());
+    p.shared.libraries.add_root(&root, false);
+    let deadline = Instant::now() + Duration::from_secs(220);
+    let (generation, scanned) = loop {
+        if let Some((generation, Some(scanned))) = p.shared.libraries.poll(0) { break (generation, scanned) }
+        assert!(Instant::now() < deadline, "artwork shard exceeded its bound");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(!scanned.shelf.libraries.is_empty());
+    println!("ART provider={provider} libraries={} own_panels={}", scanned.shelf.libraries.len(), scanned.artwork.len());
+    for (index, library) in scanned.shelf.libraries.iter().enumerate() {
+        if scanned.artwork.contains_key(&library.name) { continue; }
+        let mut resources = std::collections::BTreeMap::<String, usize>::new();
+        // Search the entire library, including sample folders, before any absence verdict.
+        for entry in walkdir::WalkDir::new(&library.dir).follow_links(false).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+            let extension = entry.path().extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+            if ["png", "jpg", "jpeg", "webp", "bmp", "svg", "nicnt", "nkr", "ufs"].contains(&extension.as_str()) {
+                *resources.entry(extension).or_default() += 1;
+            }
+        }
+        println!("ART_SEARCH library_index={index} resources={resources:?}");
+    }
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.shelf = scanned.shelf;
+        view.files = scanned.files;
+        view.artwork = scanned.artwork;
+        view.scanned = generation;
+    }
+    let mut harness = Harness::new(&p, 1180., 760.);
+    if provider == "UVI" { harness.press("bank-uvi"); }
+    harness.settle_art();
+    harness.idle(30);
+    let out = PathBuf::from(std::env::var_os("KONTRA_BROWSER_SHOTS").expect("receipt directory"));
+    std::fs::create_dir_all(&out).unwrap();
+    moose::core::screenshot::save_png(&out.join(format!("real-{provider}.png")), &pixels(&harness.ui, 1180, 760), 1180, 760);
+    harness.press("library-0");
+    harness.idle(30);
+    moose::core::screenshot::save_png(&out.join(format!("real-{provider}-selected.png")), &pixels(&harness.ui, 1180, 760), 1180, 760);
+}
+
+#[test]
+fn oversized_library_panel_reveals_its_top() {
+    let p = catalog();
+    p.shared.view.lock().unwrap().artwork.insert("Library 00".into(), Arc::new(
+        moose::mui::mui::scene::Image::rgba(256, 512, [40, 60, 80, 255].repeat(256 * 512)).unwrap()));
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("library-0");
+    h.idle(30);
+    let scene = h.ui.scene().unwrap();
+    let card = scene.surface("library-0").unwrap().frame;
+    let viewport = scene.surface("browser-sources-false").unwrap().frame;
+    assert!((card.y - viewport.y).abs() < 0.5, "an oversized panel must reveal its top: {card:?}, {viewport:?}");
+}
