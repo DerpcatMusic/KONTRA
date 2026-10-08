@@ -6479,5 +6479,23 @@
     "not_auditioned_count": 123,
     "v1_audible_v2_not_audible_ids": [],
     "v1_raw_sigils_status": "unknown; decoded source slots independent of saved table"
+  },
+  "shared_cli_uvi_j_handoff": {
+    "observed_at_utc": "2026-10-08T10:47:26.133065+00:00",
+    "shared_source_revision": "01178ba443e2b409c23282509f57d35a60753c36",
+    "kontakt_rust_source_revision": "abf248cd0b99d884b9f2456914362a7bd8e81869",
+    "v1_rust_adapter_revision": "44d03cecbd3b5e47b1564d17ac239239dc2ba4ea",
+    "v1_common_cli_adapter_revision": "59c6cbbbcc72cc38efda00fbde8cf9c2be8b4076",
+    "uvi_sidecar_source_revision": "026bdbb49f29a5ad752b3470a5f6f64a20a8957d",
+    "uvi_product_base": "4bffbb18",
+    "binary_sha256": {
+      "kontra-scan-v1": "870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e",
+      "kontra-scan-v2": "d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a",
+      "kontra-scan-v1-uvi": "34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1"
+    },
+    "forced_worker_environment": {
+      "KONTRA_UVI_STATIC_PCM_CACHE": "0"
+    },
+    "status": "installed; complete paired1494 coverage pending, no UVI playback conclusions in Kontakt audit"
   }
 }
