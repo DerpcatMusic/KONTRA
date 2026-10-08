@@ -241,6 +241,27 @@ pub struct Finding {
     pub count: usize,
 }
 
+/// Scanner-only diagnostics. Raw messages stay in memory; the scanner sanitizes them.
+#[cfg(feature = "scan")]
+#[derive(Clone, Debug, Default)]
+pub struct ScanFaults {
+    pub init_count: usize,
+    pub init_first: Option<String>,
+    pub runtime_count: usize,
+    pub runtime_first: Option<String>,
+    pub budget_hits: usize,
+    pub native_valid_keys: Vec<u8>,
+    pub native_invalid_keys: Vec<u8>,
+    pub native_key_conflicts: usize,
+}
+
+#[cfg(feature = "scan")]
+static SCAN_LOAD_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+#[cfg(feature = "scan")]
+pub fn scan_load_error() -> Option<String> { SCAN_LOAD_ERROR.lock().unwrap().take() }
+#[cfg(feature = "scan")]
+pub(crate) fn scan_failed_load(error: &str) { *SCAN_LOAD_ERROR.lock().unwrap() = Some(error.to_owned()); }
+
 struct Waiting {
     thread: Thread,
     due: f64,
@@ -250,6 +271,12 @@ struct Waiting {
 }
 
 struct Shared {
+    #[cfg(feature = "scan")]
+    scan: RefCell<ScanFaults>,
+    #[cfg(feature = "scan")]
+    initializing: Cell<bool>,
+    #[cfg(feature="scan")]
+    key_declarations: RefCell<BTreeMap<u8,u8>>,
     now: Cell<f64>,
     ids: Cell<u64>,
     seq: Cell<u64>,
@@ -281,6 +308,18 @@ struct Shared {
 
 impl Shared {
     fn find(&self, feature: &str, value: &str) {
+        #[cfg(feature = "scan")]
+        if feature == "lua error" {
+            let mut scan = self.scan.borrow_mut();
+            if self.initializing.get() {
+                scan.init_count += 1;
+                scan.init_first.get_or_insert_with(|| value.to_owned());
+            } else {
+                scan.runtime_count += 1;
+                scan.runtime_first.get_or_insert_with(|| value.to_owned());
+            }
+            scan.budget_hits += usize::from(value.contains("time budget exceeded"));
+        }
         let mut findings = self.findings.borrow_mut();
         match findings.get_mut(feature) {
             Some(f) => f.count += 1,
@@ -493,6 +532,12 @@ impl ScriptHost {
         .map_err(lua_error)?;
         lua.set_memory_limit(config.memory).map_err(lua_error)?;
         let shared = Rc::new(Shared {
+            #[cfg(feature = "scan")]
+            scan: RefCell::new(ScanFaults::default()),
+            #[cfg(feature = "scan")]
+            initializing: Cell::new(true),
+            #[cfg(feature="scan")]
+            key_declarations: RefCell::new(BTreeMap::new()),
             now: Cell::new(0.0),
             ids: Cell::new(0),
             seq: Cell::new(0),
@@ -518,6 +563,8 @@ impl ScriptHost {
         host.install().map_err(lua_error)?;
         host.build_program(&doc).map_err(lua_error)?;
         host.load_scripts(&doc)?;
+        #[cfg(feature = "scan")]
+        host.shared.initializing.set(false);
         Ok(host)
     }
 
@@ -685,6 +732,15 @@ impl ScriptHost {
                 }
             })?,
         )?;
+        #[cfg(feature="scan")]
+        {let s=shared.clone();native.set("scanKey",lua.create_function(move |_,(name,args):(String,Table)|{
+            let Some(note)=args.raw_get::<Value>(1).ok().as_ref().and_then(number).filter(|n|n.is_finite()&&*n>=0.&&*n<=127.&&n.fract()==0.) else{return Ok(())};
+            let mut keys=s.key_declarations.borrow_mut();
+            if name=="resetKeyColour" {keys.remove(&(note as u8));}
+            else if let Ok(Value::String(c))=args.raw_get::<Value>(2) {let c=c.to_string_lossy();let state=if c.eq_ignore_ascii_case("#00FFFFFF"){1}else if c.eq_ignore_ascii_case("#00000000"){2}else{0};
+                keys.entry(note as u8).and_modify(|old|{if *old!=state{*old=3;}}).or_insert(state);}
+            let mut scan=s.scan.borrow_mut();scan.native_valid_keys=keys.iter().filter(|(_,c)|**c==1).map(|(k,_)|*k).collect();scan.native_invalid_keys=keys.iter().filter(|(_,c)|**c==2).map(|(k,_)|*k).collect();scan.native_key_conflicts=keys.values().filter(|c|**c==3).count();Ok(())
+        })?)?;}
         globals.raw_set("__native", native)?;
         let s = shared.clone();
         globals.raw_set(
@@ -1232,6 +1288,8 @@ impl ScriptHost {
     pub fn findings(&self) -> Vec<Finding> {
         self.shared.findings.borrow().values().cloned().collect()
     }
+    #[cfg(feature = "scan")]
+    pub fn scan_faults(&self) -> ScanFaults { self.shared.scan.borrow().clone() }
 
     pub fn memory(&self) -> usize {
         self.lua.used_memory()
