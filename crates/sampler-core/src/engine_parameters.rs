@@ -5,7 +5,7 @@ use crate::{
 };
 use std::fmt::Write;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct EngineParameterAddress {
     pub parameter: u16,
     pub group: i32,
@@ -62,7 +62,7 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 }
 
 /// Module owners bind the same controls the DSP reads. No private write mirror.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub enum EngineParameterLaw {
     /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
     SignedNormalized,
@@ -93,6 +93,31 @@ pub enum EngineParameterLaw {
     },
 }
 impl EngineParameterLaw {
+    /// Shared authored/read/write conversion for native AHDSR stage values.
+    /// Times are frames at `rate`; use 1000 for authored milliseconds.
+    /// Sustain and the short Attack/Hold law port v1 `src/engine/params.rs`.
+    pub fn envelope(stage: crate::EnvelopeStage, rate: u32) -> Self {
+        match stage {
+            crate::EnvelopeStage::Sustain => Self::Linear { low: 0., high: 1. },
+            crate::EnvelopeStage::AttackCurve => Self::AhdsrCurve,
+            _ => {
+                let scale = f64::from(rate) / 1000.;
+                Self::ShiftedExponential {
+                    low: 2. * scale,
+                    high: if matches!(
+                        stage,
+                        crate::EnvelopeStage::Attack | crate::EnvelopeStage::Hold
+                    ) {
+                        15002. * scale
+                    } else {
+                        25002. * scale
+                    },
+                    offset: 2. * scale,
+                }
+            }
+        }
+    }
+
     fn valid(self) -> bool {
         match self {
             Self::SignedNormalized => true,
@@ -275,22 +300,7 @@ impl Prepared {
                     | (u128::from(physical_group as u32) << 64)
                     | (u128::from(slot as u32) << 32),
             );
-            let law = match stage {
-                crate::EnvelopeStage::Sustain => EngineParameterLaw::CubicGain { unity: 1000000. },
-                crate::EnvelopeStage::AttackCurve => EngineParameterLaw::AhdsrCurve,
-                _ => {
-                    let scale = self.rate as f64 / 1000.;
-                    EngineParameterLaw::ShiftedExponential {
-                        low: 2. * scale,
-                        high: if stage == crate::EnvelopeStage::Attack {
-                            15002. * scale
-                        } else {
-                            25002. * scale
-                        },
-                        offset: 2. * scale,
-                    }
-                }
-            };
+            let law = EngineParameterLaw::envelope(stage, self.rate);
             let (min, max) = match stage {
                 crate::EnvelopeStage::Sustain => (0., 1.),
                 crate::EnvelopeStage::AttackCurve => (-32., 32.),

@@ -88,9 +88,10 @@ font-service category; it does not silently use a different font.
 
 The initial Native Edit graph reads values from `Edit__Synth__Src__WTSelect`,
 `SPLSelect` and `WTShaper` parameters, all from KSP slot 2 (UI IDs 32809, 32820,
-32815). Their three aliases are not read through `Parameter.value()` in this
-active graph. Option-list/property authority and picker writes are not yet
-traced, so this does not classify their complete interaction intent. The
+32815). Their three aliases are not read through `Parameter.value()` or
+`ksp_control_property` in this active graph (extended probe: 127.33 seconds).
+Picker writes and other states remain untested, so this does not classify
+their complete interaction intent. The
 `Edit__Synth__Shp__SelectAlias` state remains unclassified. This RAM-only probe
 invokes the authored tab callback and records primitive kinds plus binding
 metadata; it does not certify pointer gestures or native-host stacking.
@@ -108,3 +109,192 @@ Arc; selected views retain only their bounded pixels. The synthetic check
 covers both strip axes, frame clamping, window overflow, downscale, cancellation
 and alpha preservation. The merged UI suite passes 94 tests with 11 ignored.
 Whole-worker memory and corpus acceptance remain open as listed above.
+
+The fresh common-driver **debug** capture at `d0354672` loads Conflux but aborts
+the Native graph at its unchanged 250 ms time guard, before image decoding.
+There is no updated Native screenshot from that run. Its fixed diagnostic is
+`NativeUI graph, NativeUI time budget exceeded`, digest `669a58cce2375280`.
+The optimized three-item results above apply only to their recorded earlier
+adapter, not to the latest branch. No guard was relaxed for the fixture.
+
+Native readback now applies only to the addressed source and gives its typed
+snapshot precedence over scalar fallback. A conflicting scalar value formerly
+replaced the synthetic typed text and rewrote other script slots; that check
+fails before the fix and passes after it. Native meter maps use the existing
+per-source `PartShared.widget_meters` provider. The only new non-owned seam
+edit is the meter-map argument at the Native loop in `src/ui/part.rs`.
+
+## Pacific shared witness and current validation hold
+
+The render auditor's `audit/ui-render-20261008@9791421e` consumes the shared
+49-ID Pacific witness at product `9993db69`. Pinned v1 digest is
+`870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`;
+v2 digest is
+`19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751`.
+These supersede the installed scanner versions for future comparisons; the
+earlier three-item results above keep their original provenance.
+
+All 49 v2 views are legacy-authored: 45 missing-images and four original-ok.
+253 requested lookups resolve 196 images, and all 196 decodes succeed. The
+57 failed lookups comprise 33 instruments with one miss and 12 with two.
+The four successful instruments are the Cluster Risers for 10 Cellos,
+12 Violas, 16 Violins and 8 Basses. Per-ID audio/note outcomes match; no sound
+regression follows from the four silent pairs.
+
+W3 inspected the existing example cache records, not the library resources.
+Their `assets` field is a count; missing references are hashes. This cannot
+establish physical absence or an own-index namespace mismatch. Shared frontend
+`Source::read` currently discards backend resource errors through the `Option`
+API, so the fixed `lookup-not-found` counter also cannot distinguish invalid,
+ambiguous, inaccessible or corrupt resource lookup. No replacement or alias
+artwork is justified. Structured failure propagation and own-index attribution
+remain open; the shared collector is unchanged.
+
+Exact available disk space fell to 19.83 GiB, below the required 25 GiB floor.
+No W3 heavy job is active and its incremental directories have been pruned.
+`f8621061` remains the latest pushed, gated checkpoint. Local `bf4b139a` bounds
+rejected Native image-request metadata and cancels package member reads; its
+failing-first queue-growth check is recorded, but the green check/build gate
+must run after disk headroom returns. Do not integrate that local WIP.
+
+The auditor's follow-up `661bd9d2` confirms no retained own-index/namespace
+observations exist in the supplemental historical 7e82 cache either. Its
+different path hashes are not equated with current 9993 request identities.
+The 57 current failures remain **reported lookup-not-found**, not clean absence.
+
+W10 supplies typed UVI resource errors at `4f033c79`, with origin prerequisites
+bundled in `6cfcad4b`. Import through the owner-resolved integration ancestry
+`ab818e2d`, not a standalone cherry-pick or a second Bank resolver. W3's local
+Source-side preparation calls both providers' Result APIs, preserves absence
+separately from invalid/ambiguous/corrupt/limit/read/unavailable errors, and emits
+those fixed categories through the existing scanner adapter. Native module
+lookup errors retain only fixed category messages. The common collector is
+unchanged. A synthetic two-provider found/absent/invalid/failed-authority test
+is prepared; integration, compilation and test execution remain pending below
+the disk floor. This does not reclassify any frozen Pacific observation.
+
+## Cache/resource checkpoint rebased onto 73e6089b
+
+The pending changes from `822812aa` were rebased onto integration
+`73e6089b16ca4d396965ecc305b2ca18ebd166ba`. The scanner conflict preserves
+integration's Native font counts, unknown values, source presentation and paint
+observations, and adds the fixed typed lookup categories. This supersedes the
+validation hold above. The current disk rule permits builds down to 18 GiB;
+25 GiB is a prune trigger.
+
+Focused checks pass: root library `cargo test --features shots --no-run`, the
+Native queue/cancellation/readback fixture, the two-provider resource Result
+fixture, and the one-frame worker fixture. The frozen failing-first queue check
+retained 5,001 names after 5,000 rejected requests; the green check retains one.
+The real Conflux field-fit test passes with `RUST_MIN_STACK=33554432`, matching
+the scanner thread stack: all six complete seven-character names have a 44 px
+viewport, 44 px advance and zero host insets. Its initial run with the default
+test-thread stack aborted during layout; no Native runtime budget was changed.
+
+Paired focused scans use the frozen integration scanner at `73e6089b` and the
+rebased candidate, both with the unchanged shared driver/collector. Baseline
+binary SHA-256 is `adc880df63739f623cde612f4ca5275a3ca24c2a118a295ab7581e45f9ca02a5`;
+candidate binary is `0af5624f9fe0a86bc7292ddf36710358643b2d13dc8c3c9b1bb80a424e2f8494`.
+Driver SHA-256 remains `a4157d712f47cb41f3af4ef008ef5b634cbe21aaba1865ab471452a0f8a9aeb7`.
+The `ci` scanner build and shared Python scanner checks pass.
+
+| Candidate item | Condition | Original | Load ms | Peak RSS MiB |
+| --- | --- | --- | ---: | ---: |
+| Conflux | cold | original-ok | 413.7 | 343.88 |
+| Conflux | os-warm | original-ok | 464.2 | 344.34 |
+| Big Screen | cold | error, unchanged from baseline | 685.9 | 409.66 |
+| Big Screen | os-warm | error, unchanged from baseline | 729.3 | 404.09 |
+
+All eight baseline/candidate item-condition cells load and audition audibly.
+Both Native Conflux cold/os-warm paints have zero missing images and the same
+0.00041924 white fraction; no 250 ms Native budget hit recurred. Every retained
+PNG hash matches baseline in its corresponding condition: three Conflux and
+seven Big Screen images per cell. Big Screen's first Native program still fails
+with `NativeUI meter unavailable`, diagnostic hash `b488581add938231`, on both
+binaries in both conditions. Its second Native program paints successfully.
+This is a pre-existing blocker, not complete Original UI acceptance.
+
+Evidence and frozen binary/driver receipts live under
+`~/.cache/kontakto-w3/cache-ready-73e6/{manifest,evidence}.json`; focused test logs
+are in the parent cache directory. The private product cache was empty and
+writable before each cell and has been removed. OS page cache is uncontrolled;
+these timings do not establish a performance improvement. Screenshots total
+7.02 MiB. No full gate, release build or installation was run.
+
+Expected direct repair coverage of the coordinator's frozen 389 missing-image
+items is **0/389**: 337 Augmented Orchestra, 45 Pacific, seven Vista. The pending
+patch changes request bookkeeping, cancellation and error classification, not
+resource search paths. It must not be credited with resolving those resources.
+Their root-cause investigation is a separate follow-up: UVI resolver findings
+go to W10; Kontakt resolver defects remain W3's scope.
+
+
+## Native lowering stack safety
+
+The default 2 MiB Conflux field-fit test aborted before painting. GDB found
+recursive `native_ui::draw` frames reserving 103,480 bytes each in debug,
+plus iterator/collect frames; the old 32 MiB diagnostic thread measured
+3,058,256 bytes during draw/layout. Resource resolution and image decoding
+were outside that overflowing call chain.
+
+Lowering now uses a heap work stack, heap completed-child results and boxed
+modifier continuations. It preserves child order, inherited style, primitive
+construction before decorator callbacks, and background/overlay/popover order.
+The VM's node/depth limits are retained. No real UI thread stack was enlarged.
+Changed owner files: `src/ui/native_ui.rs`; numeric audit observations only in
+`src/ui/scan.rs`. No sampler, plugin shim or other owner's file changed.
+
+Linux plugin and standalone frames run through baseview's plain `thread::spawn`
+(`vendor/moose-baseview/src/platform/x11/window_thread.rs:136`), with Rust's
+2 MiB default unless the environment overrides it. Its event loop calls
+`handler.on_frame` at `x11/event_loop.rs:226`. CLAP parent setup calls
+`editor.open` at `vendor/moose-clap/src/lib.rs:4845`; VST3 does so at
+`vendor/moose-vst3/src/lib.rs:3402`. Windows creates its window on the caller
+thread (`win/window.rs:960`) and paints in its message handler (`:387`). macOS
+requires the main thread (`macos/window.rs:38`). Their host/main-thread stacks
+are outside our control; these are source findings, not host-stack guarantees.
+
+The frozen shared census identified 51 Native item IDs, all in Conflux.
+The unchanged shared driver measured every ID with the numeric depth extension:
+51 rendered program graphs tie at **24 primitive/decorator edges**. Another
+50 first programs fail at the existing meter service before producing a graph;
+their depth and stack remain unknown. Conflux itself and Big Screen program 1
+are tied deepest measurable representatives, not proof about unavailable graphs.
+
+Linux watermark measurements include Native Session initialization, Lua graph
+generation and four draw/layout passes on the normal test stack:
+
+| Program | Debug peak bytes | Optimized CI peak bytes | Depth |
+| --- | ---: | ---: | ---: |
+| Conflux, program 0 | 836,960 | 204,071 | 24 |
+| Big Screen, program 1 | 836,960 | 204,071 | 24 |
+
+No watermark saturated. The marked range leaves guard pages and 64 KiB below
+the live measuring frame untouched; both peaks exceed that unmarked interval.
+Debug uses about 40% of 2 MiB, leaving about 1.20 MiB. Optimized shared-scanner
+UI/CPU-paint paths additionally measured 204,119 bytes for every successful
+Native graph. The scanner's debug Conflux view hit its unchanged 250 ms VM
+budget, so that failed paint is not presented as a complete debug stack probe.
+These observations do not measure live host/GPU callbacks or arbitrary popup
+states; they remove the identified depth-multiplied Rust lowering frames.
+
+Acceptance: the synthetic 64-level graph aborted on an explicit 2 MiB thread
+before the fix, and passes on that same explicit stack in debug and optimized
+CI. The real six-field Conflux fit test now passes on the default test stack,
+with complete saved values and 44 px frame/viewport/advance. Focused real stack
+probes and root shots `cargo test --lib --features shots --no-run` pass.
+
+Cold and OS-warm optimized Conflux and Big Screen scanner probes use the frozen
+shared driver and baseline READY cache binary. All **20 PNG SHA-256 hashes**
+match byte-for-byte: ten in each condition. Conflux remains Original OK with
+zero missing images and white fraction 0.00041924398625429554. Big Screen
+program 1 paints; program 0 retains meter diagnosis `b488581add938231` on both
+builds. OS cache was uncontrolled; these are product-cache condition labels,
+not flushed-cache performance claims. No big gate, release or install ran.
+
+Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
+`depth-ranking-final.json`, `png-parity-{cold,os-warm}.json` and focused
+`stack-*-watermark-final.log` / `stack-synthetic-*-green.log` in the W3 cache.
+The shared collector CLI/metrics and driver stayed unchanged. The scanner was
+built at 74718ad7; later commits add tests/reporting only, with unchanged
+production lowering and scanner code.

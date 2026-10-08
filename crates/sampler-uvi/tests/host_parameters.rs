@@ -1,6 +1,35 @@
 use sampler_uvi::script::{Config, ScriptHost};
 
 #[test]
+fn named_parameter_checks_and_writes_do_not_build_full_catalogs() {
+    let xml = r#"<UVI4><Program><Inserts><OnePole/><OnePole Custom='text'/></Inserts><EventProcessors><ScriptProcessor><script>
+      local e=Program.inserts[1]
+      assert(e:hasParameter('Freq') and not e:hasParameter('Missing'))
+      e:setParameter('Freq',99999); assert(e:getParameter('Freq')==20000)
+      e:setParameter('Bypass',1); assert(e:getParameter('Bypass')==false)
+      assert(e.numParams==4)
+      local id=Program.inserts[2].parameterDefinitions.Freq.id
+      e:setParameter(id,100); assert(e:getParameter(id)==100 and e:hasParameter(id))
+      for _,invalid in ipairs({0,-1,0.5,1000000}) do
+        assert(not e:hasParameter(invalid) and not pcall(function() e:getParameter(invalid) end))
+      end
+      assert(rawget(e,'parameterDefinitions')==nil)
+      local custom=Program
+      assert(custom:hasParameter('Custom')); custom:setParameter('Custom','retained')
+      assert(custom:getParameter('Custom')=='retained' and rawget(custom,'parameterDefinitions')==nil)
+      local defs=e.parameterDefinitions
+      assert(defs.Freq.type=='float' and defs.Bypass.type=='bool')
+      local originalMin=defs.Freq.min
+      Program.inserts[2].parameterDefinitions.Freq.min=originalMin+1
+      assert(defs.Freq.min==originalMin)
+      e:setParameter(defs.Freq.id,100); assert(e:getParameter(defs.Freq.id)==100)
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let xml=xml.replace("<Program>","<Program Custom='text'>");
+    let h=ScriptHost::new(&xml,(),Config::default()).unwrap();
+    assert!(h.fault_counts().init.is_empty(), "{:?}", h.fault_counts());
+}
+
+#[test]
 fn unchanged_scalar_writes_and_restoration_do_not_notify() {
     let xml=r#"<UVI4><Program><EventProcessors><ScriptProcessor K='0'><script>
       local k=Knob('K',0,0,1)
@@ -181,4 +210,19 @@ fn mismatched_parameter_scalar_types_are_ignored_without_aborting_lua() {
     assert_eq!(findings.len(),3);
     assert!(findings.iter().all(|f|f.count==1));
     assert!(h.findings().iter().filter(|f|f.setter_type_mismatch.is_some()).all(|f|f.value.is_empty()));
+}
+
+#[test]
+fn unused_leaf_collections_are_lazy_and_keep_identity_when_requested() {
+    let xml=r#"<UVI4><Program><Layers><Layer><Keygroups><Keygroup><Oscillators><SamplePlayer/></Oscillators></Keygroup></Keygroups></Layer></Layers><EventProcessors><ScriptProcessor><script>
+      local leaf=Program.layers[1].keygroups[1].oscillators[1]
+      assert(rawget(leaf,'inserts')==nil)
+      assert(#leaf.inserts==0 and leaf.inserts==leaf.inserts)
+      assert(leaf.mods==leaf.modulations and #leaf.mods==0)
+      assert(leaf.inserts~=leaf.parent.inserts)
+      assert(Program.layers[1].parent==Program and leaf.parent==Program.layers[1].keygroups[1])
+      assert(Program.children[1]==Program.layers[1] and Program.synthChildren[1]==Program.layers[1])
+    </script></ScriptProcessor></EventProcessors></Program></UVI4>"#;
+    let h=ScriptHost::new(xml,(),Config::default()).unwrap();
+    assert!(h.fault_counts().init.is_empty(),"{:?}",h.fault_counts());
 }

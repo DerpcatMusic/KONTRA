@@ -653,11 +653,15 @@ impl Translation {
                         .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
                         .collect::<Result<_, _>>()?
                 } else {
-                    InternalModArray16::try_from(chunk)?
-                        .slots()?
-                        .into_iter()
-                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
-                        .collect::<Result<_, _>>()?
+                    let mut names = Vec::new();
+                    for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
+                        let params = modulator.params()?;
+                        if let Modulator::Ahdsr(envelope) = &params.modulator {
+                            Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
+                        }
+                        names.push((slot, params.name, params.targets));
+                    }
+                    names
                 };
                 for (slot, name, targets) in names {
                     self.source_modulator(index, slot, external, name, &targets);
@@ -665,6 +669,54 @@ impl Translation {
             }
         }
         Ok(())
+    }
+
+    fn source_envelope(
+        source: &mut ir::SourceIndices,
+        group: usize,
+        slot: usize,
+        envelope: &ni_file::kontakt::objects::EnvelopeAhdsr,
+    ) {
+        use sampler_core::{EngineParameterLaw, EnvelopeStage};
+        let (ir::Curve::Exponential(curve), _) = ahdsr_curves(envelope.attack_curve) else {
+            unreachable!()
+        };
+        for (name, stage, native) in [
+            (
+                "ENGINE_PAR_ATTACK",
+                EnvelopeStage::Attack,
+                f64::from(envelope.attack_ms),
+            ),
+            (
+                "ENGINE_PAR_HOLD",
+                EnvelopeStage::Hold,
+                f64::from(envelope.hold_ms),
+            ),
+            (
+                "ENGINE_PAR_DECAY",
+                EnvelopeStage::Decay,
+                f64::from(envelope.decay_ms),
+            ),
+            (
+                "ENGINE_PAR_SUSTAIN",
+                EnvelopeStage::Sustain,
+                f64::from(envelope.sustain),
+            ),
+            (
+                "ENGINE_PAR_RELEASE",
+                EnvelopeStage::Release,
+                f64::from(envelope.release_ms),
+            ),
+            ("ENGINE_PAR_ATK_CURVE", EnvelopeStage::AttackCurve, curve),
+        ] {
+            source.engine_values.push(ir::SourceEngineValue {
+                parameter: sampler_core::engine_parameter_id(name).unwrap(),
+                group: group as i32,
+                slot: slot as i32,
+                generic: -1,
+                value: EngineParameterLaw::envelope(stage, 1000).encode(native),
+            });
+        }
     }
 
     fn source_modulator(
@@ -1674,6 +1726,154 @@ pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crat
 
 #[cfg(test)]
 mod saved_tests {
+    use super::*;
+    #[test]
+    fn authored_envelope_init_values_keep_physical_slots_and_native_laws() {
+        let mut indices = ir::SourceIndices::default();
+        let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {
+            attack_ms: 80.,
+            hold_ms: 2.,
+            decay_ms: 25000.,
+            sustain: 0.4,
+            release_ms: 120.,
+            attack_curve: 0.75,
+            unknown_flag: 1,
+            unknown_tail: vec![0; 52],
+        };
+        Translation::source_envelope(&mut indices, 7, 12, &envelope);
+        let values = &indices.engine_values;
+        assert_eq!(values.len(), 6);
+        assert_eq!(
+            values
+                .iter()
+                .find(|value| sampler_core::engine_parameter_name(value.parameter)
+                    == Some("$ENGINE_PAR_SUSTAIN"))
+                .unwrap()
+                .value,
+            400000
+        );
+        assert!(
+            values
+                .iter()
+                .all(|value| value.group == 7 && value.slot == 12 && value.generic == -1)
+        );
+        let source = values
+            .iter()
+            .map(|value| {
+                format!(
+                    "set_engine_par({},get_engine_par({},7,12,-1),7,12,-1)\n",
+                    sampler_core::engine_parameter_name(value.parameter).unwrap(),
+                    sampler_core::engine_parameter_name(value.parameter).unwrap()
+                )
+            })
+            .collect::<String>();
+        let behavior = ir::Behavior {
+            name: "authored getter feedback".into(),
+            language: ir::Language::Ksp,
+            source: format!("on init\n{source}end on"),
+            slot: Some(0),
+            state: vec![],
+            requires: vec![],
+        };
+        let environment = crate::load::script_environment(
+            &behavior,
+            0,
+            vec![String::new(); 8],
+            &indices,
+            Default::default(),
+        );
+        let writes =
+            sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                .unwrap()
+                .engine_pars();
+        assert_eq!(writes.len(), 6);
+        for value in values {
+            assert!(
+                writes
+                    .iter()
+                    .any(|write| sampler_core::engine_parameter_id(&write.parameter)
+                        == Some(value.parameter)
+                        && write.group == 7
+                        && write.slot == 12
+                        && write.generic == -1
+                        && write.value == value.value)
+            );
+        }
+        for (stage, native) in [
+            (sampler_core::EnvelopeStage::Attack, 80.),
+            (sampler_core::EnvelopeStage::Decay, 25000.),
+        ] {
+            let ms = sampler_core::EngineParameterLaw::envelope(stage, 1000).encode(native);
+            let frames = sampler_core::EngineParameterLaw::envelope(stage, 48000).encode(native * 48.);
+            assert_eq!(
+                ms, frames,
+                "authored init and DSP binding must use the same law"
+            );
+        }
+    }
+
+    #[test]
+    fn dolce_sustain_getter_feedback_is_observable_without_exporting_source() {
+        let path = std::path::Path::new(
+            "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki",
+        );
+        if !path.is_file() {
+            return;
+        }
+        let kontakt = super::read(path)
+            .unwrap_or_else(|_| panic!("instrument read failed; authored diagnostics omitted"));
+        let instrument = &kontakt.instrument;
+        let parameter = sampler_core::engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap();
+        let mut changed = 0;
+        for (index, behavior) in instrument.behaviors.iter().enumerate() {
+            let mut environment = crate::load::script_environment(
+                behavior,
+                index,
+                instrument
+                    .groups
+                    .iter()
+                    .map(|group| group.name.clone())
+                    .collect(),
+                &instrument.source_indices,
+                Default::default(),
+            );
+            environment.engine_values.clear();
+            let cold =
+                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+                    .engine_pars();
+            for group in 0..instrument.groups.len() {
+                environment
+                    .engine_values
+                    .insert([i32::from(parameter), group as i32, 1, -1], 1_000_000);
+            }
+            let authored =
+                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+                    .engine_pars();
+            for write in authored
+                .iter()
+                .filter(|write| write.parameter == "$ENGINE_PAR_SUSTAIN" && write.slot == 1)
+            {
+                if cold.iter().any(|prior| {
+                    prior.parameter == write.parameter
+                        && prior.group == write.group
+                        && prior.slot == write.slot
+                        && prior.generic == write.generic
+                        && prior.value == 0
+                }) && write.value == 1_000_000
+                {
+                    changed += 1;
+                }
+            }
+        }
+        assert_eq!(
+            changed, 36,
+            "changing only authored getter input must reach physical sustain setters"
+        );
+        println!("DOLCE_INIT_FEEDBACK sustain_setters_changed={changed}");
+    }
+
     #[test]
     fn translated_script_prefers_the_link_then_falls_back_to_saved_source() {
         use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};

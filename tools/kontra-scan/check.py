@@ -70,4 +70,30 @@ with tempfile.TemporaryDirectory() as tmp:
 timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
 assert timing['first_audio_ms']==12.5 and timing['ui_first_frame_ms']==18. and timing['cache_state']=='cold'
 assert fallback['first_audio_ms']=='unknown' and fallback['ui_first_frame_ms']=='unknown'
+missing=scanner.extra_columns({'loads':'yes','ui':'missing-images','reason':'loaded','programs':[{'views':[{'missing_images':2,'asset_failure_reasons':{'lookup-not-found':2},'renders':[{'ok':True}]}]}]})
+assert 'lookup-not-found=2' in missing['reason']
+assert scanner.extra_columns(missing)['reason']==missing['reason']
+pending=scanner.extra_columns({'loads':'yes','ui':'original-ok','ui_first_frame_ms':None,'programs':[{'views':[{'source_presentation':'native-package','font_declared':None,'renders':[{'ok':True,'ui_first_frame_ms':3.0}]}]}]})
+assert pending['ui']=='error' and pending['paint_ok']=='no' and pending['ui_first_frame_ms']=='unknown'
+native=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'source_presentation':'native-package','font_declared':0,'native_diagnostic':'Native runtime; time-budget#safe','renders':[{'ok':True}]}]}]})
+assert native['ui']=='budget-hit' and 'time-budget#safe' not in native['reason']
+partial=scanner.extra_columns({'loads':'no','ui':'missing-images','reason':'audio audible','programs':[{'stage':'import','error_hash':'opaque'},{'loaded':True}]})
+assert 'admission: 1/2 embedded programs failed import/plan construction' in partial['reason']
+before=partial['reason'];scanner.extra_columns(partial);assert partial['reason']==before
+assert 'opaque' not in partial['reason']
+
+# Actual requested font failures are separate from unrequested style inventory.
+for status in ['original-ok','missing-images']:
+    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'asset_failure_reasons':{'font-service-unavailable':1},'renders':[{'ok':True}]}]}]})
+    assert font_only['ui']=='missing_font'
+    assert 'font-service-unavailable=1' in font_only['reason']
+for status in ['error','blank','budget-hit','missing-images']:
+    unchanged=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':2,'font_success':2,'renders':[{'ok':True}]}]}]})
+    assert unchanged['ui']==status
+failed_paint=scanner.extra_columns({'ui':'error','programs':[{'views':[{'font_declared':3,'font_success':2,'renders':[{'ok':False}]}]}]})
+assert failed_paint['ui']=='error'
+
+unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':0,'renders':[{'ok':True}]}]}]})
+assert unrequested['ui']=='original-ok'
+
 print('shared scanner checks passed')
