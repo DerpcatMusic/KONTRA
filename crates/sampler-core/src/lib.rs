@@ -552,6 +552,10 @@ impl<T> Arena<T> {
     }
 
     fn insert(&mut self, value: T) -> Result<Handle, Error> {
+        self.insert_below(value, self.slots.len())
+    }
+
+    fn insert_below(&mut self, value: T, capacity: usize) -> Result<Handle, Error> {
         if self.available() == 0 {
             return Err(Error::Capacity);
         }
@@ -560,8 +564,12 @@ impl<T> Arena<T> {
         let (word, bits) = self
             .free
             .iter_mut()
+            .take(capacity.div_ceil(64))
             .enumerate()
-            .find(|(_, bits)| **bits != 0)
+            .find(|(word, bits)| {
+                let mask = if (*word + 1) * 64 > capacity { (1u64 << (capacity % 64)) - 1 } else { u64::MAX };
+                **bits & mask != 0
+            })
             .ok_or(Error::Capacity)?;
         let index = word * 64 + bits.trailing_zeros() as usize;
         *bits &= *bits - 1;
@@ -723,6 +731,7 @@ pub struct Runtime {
     growth: Option<grow::GrowthQueues>,
     /// Set on the audio side when the pool runs three quarters full.
     voice_pressure: grow::Pressure,
+    note_pressure: grow::Pressure,
     steal_releases: bool,
     cold_starts: bool,
     cold_started: u64,
@@ -756,7 +765,7 @@ pub struct Runtime {
     behavior_locals: Box<[i64]>,
     note_stride: usize,
     note_values: Box<[i64]>,
-    note_params: Box<[script_params::NoteParams]>,
+    note_params: script_params::NoteParamsPool,
     /// Set once a script writes a voice parameter; voices then render in chunks.
     // ponytail: sticky for the runtime's life; count live layers if chunking costs show up.
     script_params: bool,
@@ -801,8 +810,13 @@ impl Runtime {
         RuntimeId(self.notes.runtime)
     }
 
-    pub fn new(mut plan: Prepared, limits: Limits) -> Result<Self, Error> {
+    pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
+        Self::new_with_note_params(plan, limits, limits.notes)
+    }
+
+    fn new_with_note_params(mut plan: Prepared, limits: Limits, initial_notes: usize) -> Result<Self, Error> {
         trace_report::configure(&mut plan)?;
+        if initial_notes == 0 || initial_notes > limits.notes { return Err(Error::InvalidInput); }
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
@@ -901,6 +915,7 @@ impl Runtime {
             growth_failures: 0,
             growth: None,
             voice_pressure: Arc::default(),
+            note_pressure: Arc::default(),
             steal_releases: false,
             cold_starts: false,
             cold_started: 0,
@@ -933,8 +948,7 @@ impl Runtime {
             // Keep cold payload allocation after the frequently traversed pools.
             note_stride,
             note_values: vec![0; note_cells].into_boxed_slice(),
-            note_params: vec![script_params::NoteParams::default(); limits.notes]
-                .into_boxed_slice(),
+            note_params: script_params::NoteParamsPool::new(limits.notes, initial_notes),
             script_params: false,
             input_keys: 0,
             deferred: Vec::with_capacity(limits.notes),
@@ -1266,7 +1280,8 @@ impl Runtime {
         if let Some(input) = input {
             self.input_keys |= 1 << (input.key & 127);
         }
-        let id = match self.notes.insert(Note {
+        self.note_note_pressure();
+        let id = match self.notes.insert_below(Note {
             input,
             input_down: input.is_some(),
             address,
@@ -1297,7 +1312,7 @@ impl Runtime {
             expression,
             families: 0,
             children: 0,
-        }) {
+        }, self.note_params.capacity()) {
             Ok(id) => id,
             Err(error) => {
                 self.drop_expression(expression);
