@@ -18,7 +18,7 @@ use super::VoiceGroup;
 /// - Kontakt 7:      BProgram::readVoiceGroups()
 /// - KontaktIO:      VoiceGroups
 ///
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceGroups {
     pub voice_limit: VoiceLimit,
     /// Exactly 128 slots; clear mask bits remain None, without inferred defaults.

@@ -108,7 +108,7 @@ impl WavetableSource {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GroupParams {
     pub name: String,
     /// Linear amplitude ratio (0.5 is -6 dB).
@@ -132,6 +132,7 @@ pub struct GroupParams {
     // Children: InternalModArray16 0x3B, ExternalModArray32 0x3C,
     // BParGroupDynamics 0x4A (256 zero bytes in every local preset).
     pub start_criteria: StartCriteriaList,
+    pub unknown_tail: Vec<u8>,
 }
 
 /// Group private data: 136 records of `(u32 8, u32 flags, u32 0)`, then 24
@@ -176,6 +177,14 @@ impl Group {
         Ok((reader, flag))
     }
 
+    /// Full versioned source parameters, followed by retained private state.
+    pub fn source_params(&self) -> Result<(super::BParSrcMode, &[u8]), Error> {
+        let (mut reader, _) = self.source_reader()?;
+        let params = super::BParSrcMode::read(&mut reader)?;
+        let tail = &reader.get_ref()[reader.position() as usize..];
+        Ok((params, tail))
+    }
+
     /// Read only the seven-byte identity whose location is verified in legacy
     /// v0x102/0x103/0x104 groups and Kontakt 8 v0x106 groups. Their remaining private bytes
     /// remain opaque; this does not establish their source-record length or
@@ -186,7 +195,7 @@ impl Group {
             return Err(Error::Static("Unsupported structured group source identity"));
         }
         let version = reader.read_u16_le()?;
-        if !matches!(version, 0x102 | 0x103 | 0x104 | 0x106) {
+        if !matches!(version, 0x100..=0x106) {
             return Err(Error::Generic(format!("Unsupported group source identity version 0x{version:x}")));
         }
         Ok(SourceIdentity { flag, structured: false, version, mode: reader.read_u32_le()? })
@@ -246,6 +255,7 @@ impl Group {
                 .find_first(0x38)
                 .ok_or(Error::Static("Group has no start criteria list"))?
                 .try_into()?,
+            unknown_tail: reader.read_all()?,
         })
     }
 }
@@ -311,7 +321,7 @@ mod tests {
         private.extend([0xde, 0xad]); // Unknown remaining source fields.
         let mut group = Group(StructuredObject { version: 1, private_data: private,
             public_data: Vec::new(), children: Vec::new() });
-        for version in [0x102u16, 0x103, 0x104, 0x106] {
+        for version in 0x100u16..=0x106 {
             for mode in [0u32, 3, 9] {
                 group.0.private_data[source + 1..source + 3].copy_from_slice(&version.to_le_bytes());
                 group.0.private_data[source + 3..source + 7].copy_from_slice(&mode.to_le_bytes());
@@ -325,7 +335,7 @@ mod tests {
         group.0.private_data.truncate(source + 6);
         assert!(group.source_identity().is_err());
         group.0.private_data.resize(source + 7, 0);
-        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x105u16.to_le_bytes());
+        group.0.private_data[source + 1..source + 3].copy_from_slice(&0x107u16.to_le_bytes());
         assert!(group.source_identity().is_err());
         group.0.private_data[source + 1..source + 3].copy_from_slice(&0x104u16.to_le_bytes());
         group.0.private_data[source] = 1;
