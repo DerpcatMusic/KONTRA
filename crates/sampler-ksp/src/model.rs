@@ -87,6 +87,8 @@ pub struct MenuItem {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Widget {
+    /// Unbound source handle; never a visible performance-view widget.
+    pub unresolved: bool,
     /// Script variable, including its type prefix.
     pub name: String,
     pub kind: WidgetKind,
@@ -271,6 +273,7 @@ pub(crate) fn assemble(
             _ => WidgetValue::None,
         };
         widgets.push(Widget {
+            unresolved: ui.unresolved,
             name: var.name.to_string(),
             kind: ui.kind,
             ui_id,

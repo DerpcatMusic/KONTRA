@@ -502,3 +502,150 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     tick(&mut ui,&face,&mut values,&mut host,Input::default());
     assert!(ui.scene().unwrap().surface("ir-1").is_some());
 }
+
+/// Audit-only gesture probe: the same renderer and input loop as the editor.
+fn audit_motion(face: &ir::Interface, target: usize, dx: f64, dy: f64) -> (f64, bool) {
+    audit_motion_readback(face, target, dx, dy, false)
+}
+
+fn audit_motion_readback(face: &ir::Interface, target: usize, dx: f64, dy: f64, round_each_frame: bool) -> (f64, bool) {
+    let assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let ir::Binding::Control(control) = face.widgets[target].binding else { return (0., false) };
+    let start = match &face.widgets[target].kind {
+        ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. } => (range.min + range.max) / 2.,
+        _ => 0.,
+    };
+    values.insert(control, start);
+    let mut ui = settle(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))), |ui| {
+        ir_view::view(ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+    });
+    let id = format!("ir-{target}");
+    let Some(surface) = ui.scene().unwrap().surface(&id) else {
+        if dx == 0. { println!("AUDIT_MISS target={target} page={}", face.widgets[target].page.0); }
+        return (0., false)
+    };
+    let at = Point::new(surface.frame.x + surface.frame.size.width / 2., surface.frame.y + surface.frame.size.height / 2.);
+    let mut pressed = false;
+    let steps = if round_each_frame { 30 } else { 1 };
+    let events = [(at, false), (at, true)].into_iter()
+        .chain((1..=steps).map(|n| (Point::new(at.x + dx * f64::from(n) / f64::from(steps), at.y + dy * f64::from(n) / f64::from(steps)), true)))
+        .chain([(Point::new(at.x + dx, at.y + dy), false)]);
+    for (point, down) in events {
+        for _ in 0..2 {
+            let el = ir_view::view(&mut ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values);
+            ui.frame(el, Some(Size::new(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))))), Input {
+                pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() },
+                ..Default::default()
+            }, 1. / 60.).unwrap();
+            pressed |= ui.get(id.as_str()).held;
+            if round_each_frame { values.values_mut().for_each(|value| *value = value.round()); }
+            if dx == 0. && point == at && down && !ui.get(id.as_str()).held {
+                let winners: Vec<_> = ui.scene().unwrap().surfaces().filter(|s| ui.get(s.key.as_str()).held).map(|s| s.key.to_string()).collect();
+                println!("AUDIT_OCCLUDED target={target} x={} y={} held={winners:?}", at.x, at.y);
+            }
+        }
+    }
+    (*values.get(&control).unwrap() - start, pressed)
+}
+
+#[test]
+fn widget_negative_mouse_behaviour() {
+    let script = sampler_ksp::compile("on init\n declare ui_slider $s(0,1000000)\n set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,-1000)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    assert_eq!(face.widgets[0].drag.unwrap().axis, ir::Orientation::Vertical);
+    let (vertical, pressed) = audit_motion(&face, 0, 0., -30.);
+    let (horizontal, _) = audit_motion(&face, 0, 30., 0.);
+    assert!(pressed);
+    assert!(vertical > 0.);
+    assert_eq!(horizontal, 0.);
+}
+
+#[test]
+fn widget_passive_overlay_passes_knob() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,1000000,1)\n declare ui_label $l(1,1)\n move_control_px($k,20,20)\n move_control_px($l,20,20)\n set_control_par(get_ui_id($l),$CONTROL_PAR_WIDTH,85)\n set_control_par(get_ui_id($l),$CONTROL_PAR_HEIGHT,52)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (delta, captured) = audit_motion(&face, 0, 0., -30.);
+    assert!(captured);
+    assert!(delta > 0.);
+}
+
+#[test]
+fn widget_integer_readback_retains_substeps() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,2,1)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (free, captured) = audit_motion_readback(&face, 0, 0., -60., false);
+    let (rounded, _) = audit_motion_readback(&face, 0, 0., -60., true);
+    assert!(captured && free > 0.5);
+    assert!(rounded >= 1., "fractional drags must survive integer feedback: {rounded}");
+}
+
+
+#[test]
+fn widget_menu_passive_value_is_unchanged() {
+    let script = sampler_ksp::compile("on init\n declare ui_menu $m\n add_menu_item($m,\"Ten\",10)\n add_menu_item($m,\"Forty\",40)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let ir::Binding::Control(control) = face.widgets[0].binding else { panic!("binding") };
+    let mut values = ir_view::Values::from([(control, -1.)]);
+    let assets = ir_view::Assets::default();
+    settle(633., 100., |ui| ir_view::view(ui, "", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
+    assert_eq!(values[&control], -1.);
+}
+
+#[test]
+fn widget_disabled_knob_does_not_edit() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,100,1)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face = ir_view::resolved(&script.ui(&|_|None).unwrap());
+    face.widgets[0].enabled = false;
+    let (delta, captured) = audit_motion(&face,0,0.,-30.);
+    assert_eq!(delta,0.);
+    assert!(!captured);
+}
+
+#[test]
+#[ignore = "requires locally owned Conflux NKI; counts and input only"]
+fn widget_conflux_placement_and_capture() {
+    use std::collections::BTreeSet;
+    fn names(raw: &serde_json::Value, path: &str, out: &mut BTreeSet<String>) {
+        for control in raw.as_array().into_iter().flatten() {
+            let value = &control["value"];
+            let id = value["common"]["id"].as_str().unwrap_or_default();
+            let name = if path.is_empty() { id.to_owned() } else { format!("{path}_{id}") };
+            let prefix = match control["index"].as_i64().unwrap() { 9 => '%',10 => '@', _ => '$' };
+            out.insert(format!("{prefix}{name}"));
+            names(&value["controls"],&name,out);
+        }
+    }
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+    let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+    let mut resources = sampler_kontakt::Resources::of(&path);
+    for behavior in &source.behaviors {
+        if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
+            let bytes = resources.read(&format!("Resources/performance_view/{name}.nckp")).unwrap();
+            let raw: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let mut raw_names = BTreeSet::new();
+            names(&raw["value"]["performanceView"]["controls"],"",&mut raw_names);
+            let (parsed, skipped) = sampler_ksp::nckp::parse(&bytes).unwrap();
+            let parsed_names = parsed.controls.iter().map(|c|c.name.clone()).collect::<BTreeSet<_>>();
+            assert!(skipped.is_empty());
+            assert_eq!(raw_names.len(),parsed_names.len());
+            assert!(raw_names == parsed_names,"raw hierarchy and reader names disagree");
+            println!("CONFLUX_NCKP raw={} parsed={}",raw_names.len(),parsed_names.len());
+        }
+    }
+    source.zones.clear();
+    source.assets.clear();
+    let loaded = sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path), ..Default::default()}).unwrap();
+    let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f|f.widgets.len()).unwrap());
+    assert_eq!(face.widgets.len(),378,"unresolved handles must not publish widgets");
+    let mut count = [0;3];
+    for (n, _) in face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..})) {
+        let (delta,captured) = audit_motion(&face,n,0.,-30.);
+        count[0] += 1;
+        count[1] += usize::from(captured);
+        count[2] += usize::from(delta>0.);
+    }
+    println!("CONFLUX_CAPTURE visible={} captured={} increase={}",count[0],count[1],count[2]);
+    assert_eq!(count[0],count[1]);
+    assert_eq!(count[0],count[2]);
+}
