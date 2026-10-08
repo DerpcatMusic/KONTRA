@@ -1306,3 +1306,22 @@ fn lower_retains_pure_delay_and_pseudo_stereo_after_source_end() {
         assert_eq!(out[index][channel], 1.0);
     }
 }
+
+#[test]
+fn stale_physical_zone_maps_return_invalid_instead_of_panicking() {
+    for runtime in [0, usize::MAX] {
+        let mut instrument = instrument();
+        instrument.source_indices.zones = vec![None, Some(ir::ZoneRef(runtime))];
+        instrument.zones.clear();
+        instrument.assets.clear();
+        assert!(matches!(
+            rejected(&instrument, vec![]),
+            LowerError::Invalid(ir::ValidationError::Dangling { owner, .. })
+                if owner == "source zone 1"
+        ));
+    }
+    let mut holes = ir::Instrument::default();
+    holes.source_indices.zones = vec![None, None];
+    assert!(lower(&holes, 48000, vec![], no_behaviors).is_ok());
+
+}
