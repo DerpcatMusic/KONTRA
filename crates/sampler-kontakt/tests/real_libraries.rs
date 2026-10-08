@@ -1073,3 +1073,34 @@ fn w15_authored_native_cutoff_offline_ab_reaches_ladder_and_daft() {
         assert!(residual_db > -40., "authored normalized cutoff route must change audio");
     }
 }
+
+#[test]
+#[ignore = "requires installed Morphology; run through kontakto-heavy"]
+fn w15_zero_multi_offline_ab_reaches_the_bipolar_volume_consumer() {
+    use sampler_ir as ir;
+    let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki") else { return; };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, mut route) = library.instrument.zones.iter().find_map(|z| {
+            z.routes.iter().find_map(|r| {
+                let route = library.instrument.routes[r.0];
+                matches!(library.instrument.modulators[route.source.0].source,
+                    ir::ModulationSource::Lfo(lfo) if lfo.shape == ir::LfoShape::Zero)
+                    .then(|| (z.clone(), route))
+            })
+        }).expect("the authored zero-wave LFO must have a retained runtime source");
+        // Exercise this saved source through the native bipolar volume law.
+        route.target = ir::Target::Amplitude; route.depth = ir::Depth::Normalized(1.);
+        route.invert = false; route.shape = None; route.scale = None; route.smoothing = ir::Time::ZERO;
+        zone.routes = if enabled { vec![ir::RouteRef(library.instrument.routes.len())] } else { vec![] };
+        library.instrument.routes.push(route); zone.chain = None;
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false); let wet = render(true);
+    let energy = |v: &[[f32;2]]| v.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let delta_db = 10. * (energy(&wet) / energy(&dry)).log10();
+    println!("W15 zero_multi volume_delta_db={delta_db}");
+    assert!(energy(&dry) > 1e-8);
+    assert!((delta_db - 20. * 0.5f64.log10()).abs() < 1e-5);
+    assert!(dry.iter().zip(&wet).all(|(d,w)| (0..2).all(|c| w[c] == d[c] * 0.5)));
+}
