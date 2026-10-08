@@ -138,3 +138,17 @@ os.environ['KONTRA_SCAN_FAMILY_REPEATS']='32'
 assert scanner.signature('absent-instrument','r')!=timing_signature
 if old_repeats is None:os.environ.pop('KONTRA_SCAN_FAMILY_REPEATS')
 else:os.environ['KONTRA_SCAN_FAMILY_REPEATS']=old_repeats
+
+# Audit seed participates in metrics-cache identity, including explicit seed zero.
+import os
+old_seed=os.environ.get('KONTRA_UVI_AUDIT_SEED')
+try:
+    os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    plain=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='0'
+    zero=scanner.signature('/absent/audit-item','revision')
+    os.environ['KONTRA_UVI_AUDIT_SEED']='42'
+    assert len({plain,zero,scanner.signature('/absent/audit-item','revision')})==3
+finally:
+    if old_seed is None: os.environ.pop('KONTRA_UVI_AUDIT_SEED',None)
+    else: os.environ['KONTRA_UVI_AUDIT_SEED']=old_seed
