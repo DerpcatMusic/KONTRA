@@ -6,8 +6,8 @@
 //! With the `library-access` feature, installed UVI banks open through [`Bank`]
 //! (ported from v1 `src/uvi/{access,crypto,ufs}.rs` and `src/library/uvi.rs`):
 //! reader namespaces come from the user's own installed, hash-verified UVI
-//! Workstation and a bank's content state lives only in v1's owner-only private
-//! cache; neither is embedded, logged, printed or returned in an error. Every
+//! Workstation and bank access state is kept only in memory; neither is
+//! embedded, logged, printed or returned in an error. Every
 //! module this translator does not model is listed in `Instrument::unsupported`.
 
 #[cfg(feature = "library-access")]
