@@ -593,7 +593,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
-            CurrentScriptSlot => self.env.slot.into(),
+            CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
         }
     }

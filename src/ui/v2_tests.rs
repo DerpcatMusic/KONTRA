@@ -322,7 +322,7 @@ fn articulations_switch_by_their_keys() {
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
         inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
         for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
             let mut z = sir::Zone::new(sir::AssetRef(0));
             z.group = Some(sir::GroupRef(n));
@@ -374,7 +374,7 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
     }
     inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
     assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
@@ -425,7 +425,7 @@ fn imported_switching_survives_the_first_ui_sync() {
                 let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
                 inst.switching = sir::Switching { owner, driver, keys };
                 for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
-                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                    inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
                 }
                 inst.assign_alternatives(32);
                 let p = Arc::new(crate::plugin::SamplerParams::new());
