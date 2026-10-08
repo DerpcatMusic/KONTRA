@@ -215,6 +215,7 @@ pub(crate) fn process(
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
             | PreparedProcessor::Daft(_)
+            | PreparedProcessor::LadderLP4 { .. }
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")
             }
