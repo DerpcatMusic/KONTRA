@@ -341,6 +341,15 @@ impl EnvelopeState {
         }
     }
 
+    /// A note released before its storage onset enters release from sustain;
+    /// its source and release clock still wait for the first complete window.
+    pub(super) fn release_onset(&mut self) {
+        if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
+            self.release_level = self.shape.sustain;
+            self.enter(Phase::Release);
+        }
+    }
+
     /// Capture any curved stage's next level, then apply a non-extending linear fade.
     pub(super) fn choke(&mut self, frames: u32) {
         if (self.shape.one_shot || matches!(self.phase, Phase::Release | Phase::Done))
