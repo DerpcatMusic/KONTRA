@@ -172,3 +172,58 @@ lookup errors retain only fixed category messages. The common collector is
 unchanged. A synthetic two-provider found/absent/invalid/failed-authority test
 is prepared; integration, compilation and test execution remain pending below
 the disk floor. This does not reclassify any frozen Pacific observation.
+
+## Cache/resource checkpoint rebased onto 73e6089b
+
+The pending changes from `822812aa` were rebased onto integration
+`73e6089b16ca4d396965ecc305b2ca18ebd166ba`. The scanner conflict preserves
+integration's Native font counts, unknown values, source presentation and paint
+observations, and adds the fixed typed lookup categories. This supersedes the
+validation hold above. The current disk rule permits builds down to 18 GiB;
+25 GiB is a prune trigger.
+
+Focused checks pass: root library `cargo test --features shots --no-run`, the
+Native queue/cancellation/readback fixture, the two-provider resource Result
+fixture, and the one-frame worker fixture. The frozen failing-first queue check
+retained 5,001 names after 5,000 rejected requests; the green check retains one.
+The real Conflux field-fit test passes with `RUST_MIN_STACK=33554432`, matching
+the scanner thread stack: all six complete seven-character names have a 44 px
+viewport, 44 px advance and zero host insets. Its initial run with the default
+test-thread stack aborted during layout; no Native runtime budget was changed.
+
+Paired focused scans use the frozen integration scanner at `73e6089b` and the
+rebased candidate, both with the unchanged shared driver/collector. Baseline
+binary SHA-256 is `adc880df63739f623cde612f4ca5275a3ca24c2a118a295ab7581e45f9ca02a5`;
+candidate binary is `0af5624f9fe0a86bc7292ddf36710358643b2d13dc8c3c9b1bb80a424e2f8494`.
+Driver SHA-256 remains `a4157d712f47cb41f3af4ef008ef5b634cbe21aaba1865ab471452a0f8a9aeb7`.
+The `ci` scanner build and shared Python scanner checks pass.
+
+| Candidate item | Condition | Original | Load ms | Peak RSS MiB |
+| --- | --- | --- | ---: | ---: |
+| Conflux | cold | original-ok | 413.7 | 343.88 |
+| Conflux | os-warm | original-ok | 464.2 | 344.34 |
+| Big Screen | cold | error, unchanged from baseline | 685.9 | 409.66 |
+| Big Screen | os-warm | error, unchanged from baseline | 729.3 | 404.09 |
+
+All eight baseline/candidate item-condition cells load and audition audibly.
+Both Native Conflux cold/os-warm paints have zero missing images and the same
+0.00041924 white fraction; no 250 ms Native budget hit recurred. Every retained
+PNG hash matches baseline in its corresponding condition: three Conflux and
+seven Big Screen images per cell. Big Screen's first Native program still fails
+with `NativeUI meter unavailable`, diagnostic hash `b488581add938231`, on both
+binaries in both conditions. Its second Native program paints successfully.
+This is a pre-existing blocker, not complete Original UI acceptance.
+
+Evidence and frozen binary/driver receipts live under
+`~/.cache/kontakto-w3/cache-ready-73e6/{manifest,evidence}.json`; focused test logs
+are in the parent cache directory. The private product cache was empty and
+writable before each cell and has been removed. OS page cache is uncontrolled;
+these timings do not establish a performance improvement. Screenshots total
+7.02 MiB. No full gate, release build or installation was run.
+
+Expected direct repair coverage of the coordinator's frozen 389 missing-image
+items is **0/389**: 337 Augmented Orchestra, 45 Pacific, seven Vista. The pending
+patch changes request bookkeeping, cancellation and error classification, not
+resource search paths. It must not be credited with resolving those resources.
+Their root-cause investigation is a separate follow-up: UVI resolver findings
+go to W10; Kontakt resolver defects remain W3's scope.
