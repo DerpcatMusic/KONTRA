@@ -260,3 +260,61 @@ The branch is updated to integration `9993db69`, preserving the cancelable lazy-
 A new failing-first check establishes an integration/admission interaction for native tuned repeats: the old fallback reserves **3** pages while the source reads **15**. Admission now takes the maximum possible rate and physical-leg bound across the fixed eight slots, clipped to the source view's page count. This remains constant work in horizon length, allocation free and conservative; uncommon multi-slot sources can reserve more pages than their immediate exact footprint. Serial wrap/crossfade/ping-pong slots, tuning 0.5/4/16, finite passes, both directions and release exits cover every actual read in the regression property. The 14 targeted native core tests pass; 46 source/page-render/cache/policy tests, Kontakt no-run and default root no-run pass.
 
 New frozen sound-seam candidate SHA256 `8e264ab72e60495206af8749ea9e4668faec0649f5e1af953db5c48612003fb3`. Fresh piano/Vista/FX 64-frame warm/cold pairs are pending. The comparison includes the integration graph/selection/load changes and therefore cannot isolate W9's native-slot credit correction. CPU and streaming acceptance remain **HOLD**, including the earlier eight-underrun failure. The original frozen pre-admission binary remains intact.
+
+## Foundation comparison: integration 9993db69
+
+Frozen `88b89722` / integration `1ed8c470` before versus W9 `f3093c08` / integration `9993db69` after. This includes other owners’ routing, gain, selection, lazy-head, and load fixes, so it is **not an isolated admission comparison**. Three alternating repeats (before/after, after/before, before/after), original audit collectors and cache eviction. All 36 runs completed and report zero event/render heap calls; cold file-cache eviction reports zero pages after eviction.
+
+| Cell | Repeat | Before median / p99 µs | After median / p99 µs | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 25.031 / 47.781 | 43.651 / 65.291 | 0 / 0 |
+| piano-64-cold | 2 | 26.580 / 48.741 | 46.000 / 80.531 | 0 / 0 |
+| piano-64-cold | 3 | 26.390 / 54.031 | 44.061 / 72.571 | 0 / 0 |
+| piano-64-warm | 1 | 23.980 / 50.441 | 45.041 / 66.611 | 0 / 0 |
+| piano-64-warm | 2 | 24.930 / 49.151 | 37.981 / 59.411 | 0 / 0 |
+| piano-64-warm | 3 | 39.321 / 305.476 | 64.422 / 108.152 | 0 / 0 |
+| strings-64-cold | 1 | 38.071 / 67.261 | UNKNOWN (no steady voices) | 0 / 0 |
+| strings-64-cold | 2 | 56.321 / 287.655 | UNKNOWN (no steady voices) | 0 / 0 |
+| strings-64-cold | 3 | 55.731 / 233.285 | UNKNOWN (no steady voices) | 0 / 0 |
+| strings-64-warm | 1 | 35.020 / 56.921 | UNKNOWN (no steady voices) | 0 / 0 |
+| strings-64-warm | 2 | 55.381 / 88.821 | UNKNOWN (no steady voices) | 0 / 4 |
+| strings-64-warm | 3 | 58.991 / 163.873 | UNKNOWN (no steady voices) | 0 / 0 |
+| fx-64-cold | 1 | 81.461 / 162.433 | 43.651 / 96.472 | 0 / 0 |
+| fx-64-cold | 2 | 70.931 / 141.913 | 44.761 / 88.522 | 0 / 0 |
+| fx-64-cold | 3 | 65.341 / 119.242 | 76.672 / 256.475 | 0 / 0 |
+| fx-64-warm | 1 | 70.371 / 137.013 | 48.141 / 98.372 | 0 / 0 |
+| fx-64-warm | 2 | 70.032 / 118.272 | 48.481 / 105.232 | 0 / 0 |
+| fx-64-warm | 3 | 87.301 / 196.124 | 51.731 / 121.922 | 0 / 0 |
+
+**HOLD.** Piano median-of-run median / p99 regresses: cold 26.390 / 48.741 → 44.061 / 72.571 µs; warm 24.930 / 50.441 → 45.041 / 66.611 µs. ANALOG STRINGS improves in aggregate (cold 70.931 / 141.913 → 44.761 / 96.472; warm 70.371 / 137.013 → 48.481 / 105.232), but cold repeat 3 regresses and the v1 warm target remains unmet. Piano and ANALOG STRINGS have zero underruns in these runs.
+
+Vista after has no sustained voices during the audit steady interval in all six runs: peak voices 64, mean ~0.901 versus before peak 80, mean ~9.565; output peak ~0.003 versus ~0.108. Warm repeat 2 after has four underruns. This is a functional regression requiring the owning signal-graph trace, **not a CPU win**. W6 and coordinator have been notified. Piano peak also changes slightly; ANALOG STRINGS peak approximately halves. No PCM or native fidelity certification follows from this comparison.
+
+Evidence: `~/.cache/kontakto-fix-cpu/integrated-9993-pairs/{1,2,3}/{before,after}/`. Frozen after binary SHA256 `8e264ab72e60495206af8749ea9e4668faec0649f5e1af953db5c48612003fb3`. A subsequent isolated optimization must compare against this same foundation.
+
+## Exact neutral filter-factor projection
+
+Isolated candidate after `f3093c08`, binary `admission-filter-identity` SHA256 `52eb977d48d61d86fee060eaaf1d2913d682952f6bace4705e7e80deb13c9317`. The measured before audio-thread profile spends 15.62% in full-bank projection, 14.32% in `pow`, and 9.36% in `exp2`; stream service is 2.11%. The candidate returns exact unity for zero accumulated modulation and preserves all nonzero f64 math. This is a performance change; its failing-before witness is the audited timing/profile, not a claimed failing semantic test. A new unit fixture checks midpoint summation, cancelling routes and voice reset. Existing filter/modulation/lowering tests pass (38 passed, one unrelated ignored), and default `cargo test --no-run` passes.
+
+Original audit64 collectors, three alternating A/B repeats on the same foundation. Values are median / p99 µs. All24 runs have zero event/render heap calls; all cold evictions report zero file pages after eviction.
+
+| Cell | Repeat | Before median / p99 | After median / p99 | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 47.701 / 85.041 | 32.640 / 54.481 | 0 / 0 |
+| piano-64-cold | 2 | 45.941 / 76.161 | 30.181 / 58.471 | 0 / 0 |
+| piano-64-cold | 3 | 47.081 / 86.412 | 31.400 / 53.321 | 0 / 0 |
+| piano-64-warm | 1 | 62.921 / 104.632 | 29.591 / 52.711 | 0 / 0 |
+| piano-64-warm | 2 | 45.051 / 73.362 | 31.730 / 56.111 | 0 / 0 |
+| piano-64-warm | 3 | 45.511 / 71.731 | 29.941 / 53.561 | 0 / 0 |
+| fx-64-cold | 1 | 48.591 / 120.652 | 57.461 / 118.722 | 0 / 0 |
+| fx-64-cold | 2 | 53.131 / 114.732 | 54.101 / 113.282 | 0 / 0 |
+| fx-64-cold | 3 | 50.931 / 118.253 | 54.711 / 116.732 | 0 / 0 |
+| fx-64-warm | 1 | 53.061 / 112.862 | 51.291 / 112.772 | 0 / 0 |
+| fx-64-warm | 2 | 51.131 / 108.242 | 51.361 / 106.432 | 0 / 0 |
+| fx-64-warm | 3 | 52.431 / 112.522 | 51.501 / 115.912 | 0 / 0 |
+
+**HOLD.** Piano improves consistently but still exceeds the historical `1ed8c470` cold baseline (23.380 / 43.701 µs). ANALOG STRINGS does not establish an aggregate CPU improvement. The whole-bank factor walk remains for the next profile to assess. Vista is unscorable on this foundation and has not been relabeled as a timing success; remaining audited32/256 cells are not measured for this candidate.
+
+Evidence: `/home/derpcat/.cache/kontakto-fix-cpu/filter-identity-pairs/{1,2,3}/{before,after}/`.
+
+Follow-up exact audio-TID profile: approximate sampled cycles 510,499,115 → 350,520,014; no lost samples in either run. `pow` and `exp2` are absent above the 1% reporting threshold; `fill_filter_factors` remains 8.88%. This is explanatory profiling, not an acceptance substitute for the paired timings. Profile evidence: `~/.cache/kontakto-fix-cpu/{integrated-9993-profile,filter-identity-profile}/`.
