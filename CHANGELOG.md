@@ -8,11 +8,11 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
-### Alpha integration release — 0.3.301
+### Fixed after 0.3.224
 
 The user explicitly authorized shipping this alpha now. The former all-axis v1
 parity release hold is superseded for this release. Falcon/UVI stays always on.
-The version ledger accepts 76 additional logical fixes after 0.3.225; diagnostic
+The version ledger accepts 77 additional logical fixes after 0.3.225; diagnostic
 features and follow-up commits do not increment the version separately.
 
 - Restore authored Native UI text/arrays, bindings, Canvas budgets, caption types,
@@ -22,14 +22,14 @@ features and follow-up commits do not increment the version separately.
 - Reduce startup arenas, share script text/code, compact playback templates and
   construct group envelopes once. Analog's shared KSP code saves about 406 MiB.
 - Restore Sound editor controls, native ladder laws, chain ownership, offset-cache
-  ownership and validated timing alignment. Add persistent catalog metadata and
+  ownership and validated timing alignment and articulation routes through rack growth. Add persistent catalog metadata and
   separate Kontakt/Falcon browser hierarchies.
 - Port v1 cubic interpolation and unchanged pitch-ratio reuse; add native Pan,
   Formant I and LoFi processing. Include UVI bounded initialization, typed host
   lookups, Assistant font resources and immediate host-save capture.
 - Improve GPU recovery, diagnostics and embedded native-window teardown.
 
-Known alpha gaps:
+### Known limits for 0.3.302
 
 - CPU/RSS/load parity with v1 is incomplete. W6 PCM is bit-exact but its quiet CPU
   improvement is unmeasured. W5 fresh A/B passes 8/9 cells; Conflux/256 remains
