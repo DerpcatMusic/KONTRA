@@ -483,6 +483,26 @@ fn fit(playback: &mut ir::Playback, frames: u64, report: &mut Vec<(&'static str,
         ));
         return false;
     }
+    if let ir::Looping::Slots(mut slots) = playback.looping {
+        for slot in &mut slots {
+            if let Some(value) = slot {
+                let mut view = *playback;
+                view.looping = if value.until_release {
+                    ir::Looping::UntilRelease(value.range)
+                } else {
+                    ir::Looping::Continuous(value.range)
+                };
+                fit(&mut view, frames, report);
+                match view.looping {
+                    ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) => {
+                        value.range = range
+                    }
+                    _ => *slot = None,
+                }
+            }
+        }
+        playback.looping = ir::Looping::Slots(slots);
+    }
     if let ir::Looping::Continuous(range) | ir::Looping::UntilRelease(range) = &mut playback.looping
     {
         if range.start < playback.start || range.end > end || range.start >= range.end {
@@ -532,13 +552,14 @@ pub(crate) fn script_environment(
     behavior: &ir::Behavior,
     index: usize,
     groups: Vec<String>,
+    source: &ir::SourceIndices,
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
         evaluation_budget: None,
         groups,
         engine_values: Default::default(),
-        engine_lookups: Vec::new(),
+        engine_lookups: sampler_core::lower::source_engine_lookups(source),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted: behavior
@@ -615,7 +636,7 @@ pub fn compile_ui(
                 }),
             }
         }
-        let mut environment = script_environment(behavior, index, groups.clone(), performance_view);
+        let mut environment = script_environment(behavior, index, groups.clone(), &instrument.source_indices, performance_view);
         environment.control_values.extend(
             options
                 .control_values
@@ -727,10 +748,30 @@ fn prepare_inner(
             resources,
         });
     }
+    let mut automation = Vec::new();
+    for binding in &instrument.script_automation {
+        let target = compiled.iter().find(|script| script.view().slot() == binding.source_slot)
+            .and_then(|script| script.model().interface.widgets.iter()
+                .filter(|w| w.kind == sampler_ksp::model::WidgetKind::Slider)
+                .nth(binding.slider as usize));
+        if let Some(widget) = target {
+            automation.push(sampler_core::AutomationBinding {
+                source: match binding.source {
+                    ir::ScriptAutomationSource::Controller(cc) => sampler_core::AutomationSource::Controller(cc),
+                    ir::ScriptAutomationSource::HostParameter(address) => sampler_core::AutomationSource::HostParameter(address),
+                },
+                source_slot: binding.source_slot, ui_id: widget.ui_id,
+                low: binding.low, high: binding.high, soft_takeover: binding.soft_takeover,
+            });
+        } else {
+            instrument.unsupported.push(ir::Unsupported { location: format!("script slot {}",binding.source_slot),
+                feature: "saved automation slider".into(), value: binding.slider.to_string(), reason: ir::Reason::InvalidValue });
+        }
+    }
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
     let lowered =
         sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
-            sampler_ksp::bind_modules(compiled, plan).map_err(|e| LowerError::Behavior {
+            sampler_ksp::bind_modules(compiled, plan).and_then(|plan| plan.with_automation_bindings(automation)).map_err(|e| LowerError::Behavior {
                 module: "KSP".into(),
                 message: e.to_string(),
             })
@@ -876,5 +917,56 @@ mod dynamics_tests {
         assert_eq!(power_on(&ir, None), vec![(1, 0.0)]);
         assert_eq!(power_on(&ir, Some(127)), vec![(1, 1.0)]);
         assert!(power_on(&ir, Some(64))[0].1 > 0.5);
+    }
+}
+
+#[cfg(test)]
+mod automation_tests {
+    use super::*;
+    #[test]
+    fn saved_target_counts_only_sliders_in_its_physical_slot() {
+        let mut instrument = ir::Instrument::default();
+        instrument.behaviors.push(ir::Behavior {
+            name: "learn".into(), language: ir::Language::Ksp, slot: Some(3), state: vec![], requires: vec![],
+            source: "on init declare ui_label $label(1,1) declare ui_slider $unused(0,127) declare ui_knob $knob(0,100,1) declare ui_slider $target(20,100) declare $observed end on on ui_control($target) $observed := $target end on".into(),
+        });
+        instrument.script_automation.push(ir::ScriptAutomation {
+            source: ir::ScriptAutomationSource::Controller(21), source_slot: 3, slider: 1,
+            low: 0., high: 1., soft_takeover: false,
+        });
+        let loaded = prepare(instrument, vec![], &Options::default()).unwrap();
+        let limits = sampler_core::Limits::for_plan(&loaded.plan, 4, 8);
+        let mut rt = sampler_core::Runtime::new(loaded.plan, limits).unwrap();
+        rt.dispatch_controller(rt.performance(0).unwrap(), sampler_core::ChannelAddress {
+            protocol: sampler_core::Protocol::Native, port: 0, group: 0, channel: 0,
+        }, 1, 21, (u64::from(u32::MAX)*64/127) as u32).unwrap();
+        let id = rt.widget_id(rt.active_plan(), 3, 32771).unwrap();
+        assert_eq!(rt.widget_value(rt.active_plan(),id,0),Ok(sampler_core::WidgetValue::Integer(60)));
+        assert_eq!(rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),1),Ok(60));
+    }
+}
+
+#[cfg(test)]
+mod native_lookup_tests {
+    use super::*;
+    #[test]
+    fn physical_mod_and_target_names_resolve_during_init_and_note() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups = ["muted", "hole", "live"].into_iter().map(|name| ir::Group { name:name.into(), ..Default::default() }).collect();
+        instrument.source_indices.engine_lookups = vec![
+            ir::SourceEngineLookup {group:2,owner:-1,target:false,name:"Source".into(),index:12},
+            ir::SourceEngineLookup {group:2,owner:12,target:true,name:"Cutoff".into(),index:3},
+        ];
+        instrument.behaviors.push(ir::Behavior { name:"lookup".into(),language:ir::Language::Ksp,slot:Some(3),state:vec![],requires:vec![],
+            source:"on init declare $mod := get_mod_idx(2,\"source\") declare $target := get_target_idx(2,$mod,\"cutoff\") declare $group := find_group(\"live\") declare $note_mod declare $note_target end on on note $note_mod := get_mod_idx(2,\"SOURCE\") $note_target := get_target_idx(2,$note_mod,\"CUTOFF\") end on".into() });
+        let lookups = sampler_core::lower::source_engine_lookups(&instrument.source_indices);
+        let loaded = prepare(instrument,vec![],&Options::default()).unwrap();
+        let plan=loaded.plan.with_engine_parameters(vec![],lookups).unwrap();
+        let limits=sampler_core::Limits::for_plan(&plan,4,8);
+        let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
+        let cell=|rt:&sampler_core::Runtime,index| rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index);
+        assert_eq!(cell(&rt,0),Ok(12)); assert_eq!(cell(&rt,1),Ok(3)); assert_eq!(cell(&rt,2),Ok(2));
+        rt.trigger(sampler_core::Input { protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None },60,1.).unwrap();
+        assert_eq!(cell(&rt,3),Ok(12)); assert_eq!(cell(&rt,4),Ok(3));
     }
 }
