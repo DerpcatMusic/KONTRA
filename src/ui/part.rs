@@ -38,6 +38,7 @@ impl Face {
     fn sync(&mut self) {
         let source = &mut self.source;
         self.assets.sync(&self.face, self.presentation, |a| source.load(a));
+        self.assets.sync_fonts(&self.face, |a| source.font(a));
     }
 }
 
@@ -53,11 +54,18 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
     let stale = cx.state.faces.get(&slot).is_none_or(|f| !Arc::ptr_eq(&f.from, &from));
     if stale {
+        if let Some(face)=cx.state.faces.get_mut(&slot)
+            && from[main].source==ir::Source::FalconLua
+            && face.face.assets==from[main].assets {
+            face.from=from.clone();
+            face.face=ir_view::resolved(&from[face.shown]);
+        } else {
         // ponytail: reads and decodes on the UI thread, once per load; move to the
         // loader's worker when big libraries make the first frame stall.
         // Vector unless the source needed something we only approximate.
         let start = if from[main].unsupported.is_empty() { Presentation::Vector } else { Presentation::Bitmap };
         cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, start));
+        }
     }
     let face = cx.state.faces.get_mut(&slot)?;
 
@@ -103,6 +111,10 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let scale = (avail / f64::from(page.size.width.max(1))).clamp(0.5, 1.0);
     // The core's values (scripts change them too); edits go back as widget edits.
     let shared = cx.p.shared.part(slot);
+    face.assets.meter=shared.clone().map(|part|Arc::new(move |_bus: Option<u32>,channel: u8| {
+        let levels=part.meter.each_ref().map(|v|f32::from_bits(v.load(std::sync::atomic::Ordering::Relaxed)));
+        if channel==0 {levels}else{[levels[(channel as usize).min(1)];2]}
+    }) as Arc<dyn Fn(Option<u32>,u8)->[f32;2]+Send+Sync>);
     let current: Vec<_> = shared.as_ref().map(|p| p.control_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
     let view = ir_view::view(ui, &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);

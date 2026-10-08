@@ -378,7 +378,7 @@ pub fn interface(
                         step: Some(1.0),
                     },
                     bipolar: r < 0,
-                    cells,
+                    cells: cells.into_iter().map(f64::from).collect(),
                     steps_shown: int("table_steps_shown").and_then(|n| u32::try_from(n).ok()),
                 }
             }
