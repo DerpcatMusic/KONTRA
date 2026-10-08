@@ -431,6 +431,7 @@ pub struct Session {
     root: Function,
     bridge: Arc<Mutex<Bridge>>,
     fuel: Arc<AtomicUsize>,
+    deadline: Arc<Mutex<std::time::Instant>>,
 }
 impl Session {
     pub fn new(
@@ -456,18 +457,24 @@ impl Session {
         for name in ["loadstring", "collectgarbage", "getfenv", "setfenv"] {
             lua.globals().set(name, LuaValue::Nil)?;
         }
-        let fuel = Arc::new(AtomicUsize::new(5_000_000));
+        // Luau interrupts fire at calls/backedges, unlike Lua instruction hooks.
+        let fuel = Arc::new(AtomicUsize::new(500_000));
+        let deadline = Arc::new(Mutex::new(
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        ));
+        let hook_deadline = deadline.clone();
         let hook_fuel = fuel.clone();
         lua.set_interrupt(move |_| {
             if hook_fuel
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    n.checked_sub(10_000)
-                })
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_err()
             {
-                return Err(mlua::Error::external(
-                    "NativeUI instruction budget exceeded",
-                ));
+                return Err(mlua::Error::external("NativeUI interrupt budget exceeded"));
+            }
+            if hook_fuel.load(Ordering::Relaxed) % 256 == 0
+                && std::time::Instant::now() > *hook_deadline.lock().unwrap()
+            {
+                return Err(mlua::Error::external("NativeUI time budget exceeded"));
             }
             Ok(mlua::VmState::Continue)
         });
@@ -491,7 +498,14 @@ impl Session {
             .controls
             .iter()
             .enumerate()
-            .map(|(i, c)| (c.name.trim_start_matches(['$', '%', '@']).to_owned(), i))
+            .map(|(i, c)| {
+                (
+                    c.name
+                        .trim_start_matches(['$', '%', '@', '~', '?', '!'])
+                        .to_owned(),
+                    i,
+                )
+            })
             .collect::<std::collections::HashMap<_, _>>();
         let parameters = bridge.clone();
         let kontakt = lua.create_table()?;
@@ -518,7 +532,9 @@ impl Session {
                     .unwrap()
                     .controls
                     .iter()
-                    .position(|w| w.name.trim_start_matches(['$', '%', '@']) == identifier)
+                    .position(|w| {
+                        w.name.trim_start_matches(['$', '%', '@', '~', '?', '!']) == identifier
+                    })
                     .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
@@ -554,7 +570,9 @@ impl Session {
                 return Ok(existing);
             }
             let source = package.source(&name).map_err(mlua::Error::external)?;
-            let source = syntax::translate(source).map_err(mlua::Error::external)?;
+            let source = syntax::translate(source).map_err(|error| {
+                mlua::Error::external(format!("NativeUI syntax translation: {error}"))
+            })?;
             let value: LuaValue = lua.load(&source).set_name(format!("{name}.nui")).eval()?;
             loaded.set(name, value.clone())?;
             Ok(value)
@@ -566,13 +584,15 @@ impl Session {
             root,
             bridge,
             fuel,
+            deadline,
         })
     }
     pub fn update_view(
         &self,
         face: &ir::Interface,
         values: &super::ir_view::Values,
-        input: &super::ir_view::InputState,
+        typed: &HashMap<ir::WidgetRef, ir::Value>,
+        meters: &HashMap<ir::WidgetRef, f64>,
     ) {
         let mut bridge = self.bridge.lock().unwrap();
         for at in 0..bridge.controls.len() {
@@ -584,10 +604,10 @@ impl Session {
                 bridge.controls[at].clone_from(w);
             }
             if source == face.source {
-                if let Some(value) = input.values.get(&ir::WidgetRef(index)) {
+                if let Some(value) = typed.get(&ir::WidgetRef(index)) {
                     bridge.controls[at].value = Some(value.clone());
                 }
-                if let Some(level) = input.meters.get(&ir::WidgetRef(index)) {
+                if let Some(level) = meters.get(&ir::WidgetRef(index)) {
                     bridge.meters.insert(at, *level);
                 }
             }
@@ -615,7 +635,9 @@ impl Session {
         bridge.meters.extend(values);
     }
     pub fn render(&self) -> anyhow::Result<Table> {
-        self.fuel.store(5_000_000, Ordering::Relaxed);
+        self.fuel.store(100_000, Ordering::Relaxed);
+        *self.deadline.lock().unwrap() =
+            std::time::Instant::now() + std::time::Duration::from_millis(250);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
             anyhow::bail!("NativeUI canvas: {error}");
         }
@@ -629,7 +651,9 @@ impl Session {
         &self.lua
     }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
-        self.fuel.store(5_000_000, Ordering::Relaxed);
+        self.fuel.store(100_000, Ordering::Relaxed);
+        *self.deadline.lock().unwrap() =
+            std::time::Instant::now() + std::time::Duration::from_millis(250);
         function.call(args)
     }
     pub fn event(
@@ -686,7 +710,7 @@ mod tests {
             return function()
                 p:set_value(0.75)
                 return @ui.ZStack { @ui.Text {text="Authored",}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
-            end"#.as_slice()))]),fonts:BTreeMap::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0}))}});
+            end"#.as_slice()))]),fonts:BTreeMap::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
         let mut widget = ir::Widget::new(
             "$gain",
             ir::PageRef(0),
@@ -710,6 +734,30 @@ mod tests {
             vec![(ir::Source::Ksp { slot: 2 }, 0, widget)],
         )
         .unwrap();
+        let source = ir::Interface {
+            source: ir::Source::Ksp { slot: 2 },
+            widgets: vec![session.bridge.lock().unwrap().controls[0].clone()],
+            ..Default::default()
+        };
+        session.update_view(
+            &source,
+            &Default::default(),
+            &HashMap::from([(
+                ir::WidgetRef(0),
+                ir::Value::Text("callback readback".into()),
+            )]),
+            &Default::default(),
+        );
+        assert_eq!(
+            session.bridge.lock().unwrap().controls[0].value,
+            Some(ir::Value::Text("callback readback".into()))
+        );
+        session.update_view(
+            &source,
+            &Default::default(),
+            &HashMap::from([(ir::WidgetRef(0), ir::Value::Integer(20))]),
+            &Default::default(),
+        );
         let graph = session.render().unwrap();
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
         let edits = session.take_edits();
