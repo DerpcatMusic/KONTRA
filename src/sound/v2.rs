@@ -809,7 +809,7 @@ impl V2Core {
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
             parts: (0..parts).map(|_| None).collect(),
-            align: crate::timing::Align::with_slots(parts),
+            align: crate::timing::Align::with_slots(parts, mix.timing.clone()),
             holding: false,
             aligned_buses: Box::new([[[0.;MAX_BLOCK];2];BUSES]),
             aligned_tap: Box::new([0.;MAX_BLOCK]),
@@ -3197,14 +3197,69 @@ fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -
 #[cfg(test)]
 mod timing_parity_tests {
     use super::*;
-    #[test]
-    fn v1_auto_align_reports_real_hold_and_preserves_host_ownership() {
+    fn aligned_core() -> V2Core {
         let pcm=Pcm::new(48000,vec![[0.25;2];48000].into_boxed_slice()).unwrap();
         let plan=Prepared::new(48000,vec![pcm],vec![Region{sample:0,key_low:0,key_high:127,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()}],128).unwrap();
         let limits=Limits::for_plan(&plan,128,8);let rt=Runtime::new(plan,limits).unwrap();
         let mut c=V2Core::with_parts(1,48000.);c.install(0,Some(Box::new(Part::new(rt,MixTree::instrument("Timing")).unwrap())));
         let mut mix=Mix::default();mix.timing=Arc::new(crate::timing::Plan{on:true,latency_ms:10.,parts:vec![Arc::new(crate::timing::Holds::of(&crate::timing::Timing{override_ms:Some(0.),..Default::default()},&[],10.))],..Default::default()});
-        c.set_mix(&mix);c.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        c.set_mix(&mix);
+        c
+    }
+    #[test]
+    fn v1_auto_align_transport_flush_and_replacement_keep_exact_note_end() {
+        let mut core = aligned_core();
+        let note=HostNote{port:0,channel:0,key:60,id:23,clap:true};
+        core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        core.event(0,Event::NoteOn{note,velocity:0.8,tune:0.});
+        let mut changed=core.mix.clone();
+        changed.timing=Arc::new(crate::timing::Plan{on:false,..Default::default()});
+        core.set_mix(&changed);
+        core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        assert!(core.render(1).buses[0][0][0]>0.1,"disabling alignment flushes an already accepted queued note");
+        let _retired=core.install(0,None);
+        let mut attempts=Vec::new();
+        assert_eq!(core.end_block(1,&mut |n|{attempts.push(n);false}),1);
+        assert_eq!(attempts,vec![note]);assert!(core.owns(note),"refused NOTE_END retains its exact owner");
+        assert_eq!(core.end_block(1,&mut |n|{assert_eq!(n,note);true}),0);
+        assert!(!core.owns(note));
+        assert_eq!(core.end_block(1,&mut |_|panic!("duplicate NOTE_END")),0);
+        let mut core=aligned_core();
+        core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        core.event(0,Event::NoteOn{note,velocity:0.8,tune:0.});
+        let _retired=core.install(0,None);
+        assert!(core.render(128).buses[0][0][..128].iter().all(|v|*v==0.),"replacement cancels queued audio");
+        assert_eq!(core.end_block(128,&mut |_|false),1);
+        assert!(core.owns(note));
+        assert_eq!(core.end_block(128,&mut |n|{assert_eq!(n,note);true}),0);
+        assert!(!core.owns(note));
+    }
+    #[test]
+    fn v1_auto_align_master_trace_follows_the_assembled_buffer_and_gain_ramp() {
+        let pcm=Pcm::new(48000,vec![[0.25;2];512].into_boxed_slice()).unwrap();
+        let plan=Prepared::new(48000,vec![pcm],vec![Region{sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()}],128).unwrap().with_signal_trace(4096).unwrap();
+        let limits=Limits::for_plan(&plan,128,8);let rt=Runtime::new(plan,limits).unwrap();
+        let reader=rt.signal_trace_reader().unwrap();let mut core=aligned_core();
+        let _old=core.install(0,Some(Box::new(Part::new(rt,MixTree::instrument("trace")).unwrap())));
+        core.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
+        core.event(0,Event::NoteOn{note:HostNote{port:0,channel:0,key:60,id:31,clap:true},velocity:1.,tune:0.});
+        for _ in 0..3 {let _=core.render(128);}
+        let mut gains=[0.;128];gains[96..].fill(1.);
+        let expected={let output=core.render(128);(output.buses[0][0].iter().zip(gains).map(|(x,g)|f64::from(*x*g).powi(2)).sum::<f64>()/128.).sqrt()};
+        assert!(expected>0.1);assert!(core.trace_master(&gains));
+        let rows=reader.drain();let master=rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_master").unwrap();
+        assert!((master.output.rms[0]-expected).abs()<1e-6,"trace must use the assembled aligned frame positions: {:?} vs {expected}",master.output.rms);
+    }
+    #[test]
+    fn v1_auto_align_first_plan_swap_never_frees_on_audio() {
+        let mut core = V2Core::with_parts(1, 48000.);
+        let mix = Mix::default();
+        let calls = crate::plugin::tests::allocations(|| core.set_mix(&mix));
+        assert_eq!(calls, 0, "initial timing plan must remain owned off audio");
+    }
+    #[test]
+    fn v1_auto_align_reports_real_hold_and_preserves_host_ownership() {
+        let mut c=aligned_core();c.begin_block(&BlockInfo{frames:128,offline:true,..Default::default()});
         assert_eq!(c.latency(),480,"the actual hold is reported to the host");
         let note=HostNote{port:0,channel:0,key:60,id:17,clap:true};c.event(0,Event::NoteOn{note,velocity:0.7654321,tune:0.123456789});
         assert!(c.owns(note),"queued host notes already own their exact tuple");assert_eq!(c.voices().active,0);
