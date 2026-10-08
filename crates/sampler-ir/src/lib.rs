@@ -936,6 +936,8 @@ pub struct Lfo {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
+    /// A zero-weight Multi remains a bipolar source, with output 0.
+    Zero,
     /// Starts at 0 rising.
     Sine,
     /// Starts at 0 rising.
