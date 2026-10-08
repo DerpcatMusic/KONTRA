@@ -136,7 +136,9 @@ impl EventLoop {
 
     #[inline]
     fn drain_xcb_events(&mut self) -> Result<bool, ConnectionError> {
-        if self.window.main_thread_shared.callbacks_revoked() {
+        if self.window.xcb_window.is_destroyed()
+            || self.window.main_thread_shared.callbacks_revoked()
+        {
             return Ok(false);
         }
         let mut event_received = false;
@@ -145,7 +147,9 @@ impl EventLoop {
         // handlers see one repeated key-down instead of release + fresh press.
         let mut pending_release: Option<KeyReleaseEvent> = None;
         while let Some(event) = self.window.connection.conn.poll_for_event()? {
-            if self.window.main_thread_shared.callbacks_revoked() {
+            if self.window.xcb_window.is_destroyed()
+                || self.window.main_thread_shared.callbacks_revoked()
+            {
                 break;
             }
             event_received = true;
@@ -211,7 +215,9 @@ impl EventLoop {
     }
 
     fn handle_redraw(&mut self) {
-        if self.window.main_thread_shared.callbacks_revoked() {
+        if self.window.xcb_window.is_destroyed()
+            || self.window.main_thread_shared.callbacks_revoked()
+        {
             return;
         }
         if !self.exposed {
@@ -234,7 +240,9 @@ impl EventLoop {
     }
 
     fn handle_coalesced_resize_events(&mut self) -> Result<(), FatalError> {
-        if self.window.main_thread_shared.callbacks_revoked() {
+        if self.window.xcb_window.is_destroyed()
+            || self.window.main_thread_shared.callbacks_revoked()
+        {
             return Ok(());
         }
         let mut comes_from_parent = false;
@@ -404,10 +412,14 @@ impl EventLoop {
 
     pub fn run(mut self, mut inner: calloop::EventLoop<Self>) -> Result<(), PlatformError> {
         self.drain_xcb_events()?;
-        inner.run(None, &mut self, Self::handle_idle)?;
+        if !self.window.xcb_window.is_destroyed() {
+            inner.run(None, &mut self, Self::handle_idle)?;
+        }
 
         if !self.window.main_thread_shared.callbacks_revoked() {
-            self.release_forwarded_keys();
+            if !self.window.xcb_window.is_destroyed() {
+                self.release_forwarded_keys();
+            }
             self.handle_event(Event::Window(WindowEvent::WillClose));
         }
 
@@ -555,7 +567,10 @@ impl EventLoop {
                 }
             }
 
-            XEvent::Expose(e) if e.window == self.window.raw_id() => self.exposed = true,
+            XEvent::Expose(e) if e.window == self.window.raw_id() => {
+                self.exposed = true;
+                self.handle_event(Event::Window(WindowEvent::RedrawRequested));
+            }
 
             ////
             // mouse
@@ -696,7 +711,15 @@ impl EventLoop {
                 if let Some(window_id) = NonZero::new(e.window) {
                     self.window
                         .visibility_state
-                        .window_destroyed(window_id, &self.window.connection)
+                        .window_destroyed(window_id, &self.window.connection);
+                    if window_id == self.window.xcb_window.id() {
+                        // The host may destroy its parent without first closing
+                        // the editor. Stop callbacks before any pending resize or
+                        // frame can use the deleted drawable; run() still closes
+                        // the handler normally.
+                        self.window.xcb_window.mark_destroyed();
+                        self.stop_now();
+                    }
                 }
             }
 

@@ -44,8 +44,7 @@ impl<V: ViewImpl> View<V> {
         frame: CGRect, inner: V,
         init: impl FnOnce(ViewRef<V>) -> Result<(), crate::platform::PlatformError>,
     ) -> Result<Retained<View<V>>, crate::platform::PlatformError> {
-        // SAFETY: We don't access this reference after this function
-        let class = unsafe { implementation::create_view_class::<V>() };
+        let class = implementation::create_view_class::<V>();
 
         // SAFETY: This function is valid to call, and Allocated<View> is the correct type for the
         // returned pointer
@@ -148,7 +147,7 @@ impl<V> Deref for ViewRef<'_, V> {
     }
 }
 
-pub trait ViewImpl: Sized {
+pub trait ViewImpl: Sized + 'static {
     fn become_first_responder(this: ViewRef<Self>) -> bool;
     fn resign_first_responder(this: ViewRef<Self>) -> bool;
 

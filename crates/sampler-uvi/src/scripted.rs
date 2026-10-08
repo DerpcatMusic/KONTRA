@@ -14,7 +14,7 @@ use sampler_core::{
     Stealing,
 };
 use std::collections::HashMap;
-pub use thread::{Loaded, ScriptThread};
+pub use thread::{Loaded, ScriptThread, UiBridge};
 
 /// What the driver needs of a script runtime: a [`ScriptHost`] run inline (offline,
 /// deterministic), or a [`ScriptThread`] that keeps Lua off the audio thread.
@@ -150,7 +150,7 @@ pub struct Driver<S: Script> {
     /// Script event / voice id -> core note.
     notes: HashMap<u64, NoteId>,
     /// Sounding physical notes by key (script event id).
-    held: HashMap<u8, u64>,
+    held: HashMap<u8, std::collections::VecDeque<u64>>,
     next: u64,
     /// Plays that asked for something the runtime does not model.
     unmodeled: Vec<&'static str>,
@@ -171,6 +171,11 @@ pub struct Driver<S: Script> {
 
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
 const TRACKED: usize = 1024;
+
+#[cfg(feature = "scan")]
+impl Driver<ScriptThread> {
+    pub fn scan_faults(&self) -> crate::script::ScanFaults { self.host.scan_faults() }
+}
 
 impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
@@ -234,7 +239,7 @@ impl<S: Script> Driver<S> {
         let id = self.next;
         self.next += 1;
         self.notes.insert(id, note);
-        self.held.insert(key, id);
+        self.held.entry(key).or_default().push_back(id);
         self.host.set_time(self.now_ms(rt));
         self.host.note_on(id, key, (velocity * 127.0).round() as u8);
         if !self.host.handles_notes() {
@@ -245,7 +250,7 @@ impl<S: Script> Driver<S> {
     }
 
     pub fn note_off(&mut self, rt: &mut Runtime, key: u8) -> Result<(), Error> {
-        let Some(id) = self.held.remove(&key) else {
+        let Some(id) = self.held.get_mut(&key).and_then(|ids| ids.pop_front()) else {
             return Ok(());
         };
         self.host.set_time(self.now_ms(rt));
@@ -308,6 +313,14 @@ impl<S: Script> Driver<S> {
         }
         for command in inbox.drain(..) {
             match command {
+                Command::EngineParameter { address, value } => {
+                    if rt.set_engine_parameter(address, value).is_err() {
+                        let category = "insert parameter without a DSP lane";
+                        if !self.unmodeled.contains(&category) && self.unmodeled.len() < self.unmodeled.capacity() {
+                            self.unmodeled.push(category);
+                        }
+                    }
+                }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
                     if let Some(note) = self.notes.get(&id).copied() {
@@ -321,14 +334,14 @@ impl<S: Script> Driver<S> {
                     voice,
                     at_ms,
                 } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
-                Command::Change { id, what, value, relative, .. } => {
+                Command::Change { id, what, value, relative, immediate, .. } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let target = match what {
                             Change::Decibels => ModTarget::Decibels,
                             Change::Pan => ModTarget::Pan,
                             Change::Tune => ModTarget::Pitch,
                         };
-                        match rt.set_note_param(note, target, value, relative) {
+                        match rt.set_note_param_with_immediate(note, target, value, relative, immediate) {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
@@ -336,10 +349,13 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
-                Command::Fade { id, from, to, ms, kill, .. } => {
+                Command::Fade { id, from, to, ms, kill, layer, .. } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let frames = self.frames(ms);
-                        match rt.fade_note(note, from, to, frames, kill && to <= 0.0) {
+                        let result=if layer==0 { rt.fade_note(note,from,to,frames,kill && to<=0.0) } else {
+                            self.groups.iter().filter(|g|g.layer==layer).try_for_each(|g|rt.fade_note_group(note,g.group,from,to,frames,kill && to<=0.0))
+                        };
+                        match result {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
@@ -371,24 +387,37 @@ impl<S: Script> Driver<S> {
         value: f64,
         authored: f64,
     ) -> Result<(), Error> {
-        let group = match scope {
-            Scope::Program => -1,
-            Scope::Layer(layer) => match self.groups.iter().find(|g| g.layer == layer && g.osc == 1) {
-                Some(g) => i64::from(g.group),
-                None => {
-                    if !self.unmodeled.contains(&"setParameter on a layer without a group") {
-                        self.unmodeled.push("setParameter on a layer without a group");
-                    }
-                    return Ok(());
-                }
-            },
-        };
+        if scope != Scope::Program {
+            for i in 0..self.groups.len() {
+                let g = self.groups[i];
+                if match scope {
+                    Scope::Layer(layer) => g.layer == layer,
+                    Scope::Keygroup(id) => g.keygroup == id,
+                    Scope::Oscillator(id) => g.oscillator == id,
+                    Scope::Program => false,
+                } { self.group_parameter(rt, i64::from(g.group), param, value, authored)?; }
+            }
+            return Ok(());
+        }
+        self.group_parameter(rt, -1, param, value, authored)
+    }
+
+    fn group_parameter(&mut self, rt: &mut Runtime, group: i64, param: Param, value: f64, authored: f64) -> Result<(), Error> {
         match param {
             Param::Gain => {
                 let db = 20.0 * (value.max(1e-6) / authored.max(1e-6)).log10();
-                rt.set_group_param(group, ModTarget::Decibels, db, false)
+                rt.set_group_param(group, ModTarget::Decibels, db, true)
             }
-            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, false),
+            Param::Pan => rt.set_group_param(group, ModTarget::Pan, value - authored, true),
+            Param::Pitch => {
+                let address = sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id("ENGINE_PAR_TUNE").ok_or(Error::InvalidInput)?,
+                    group: group as i32, slot: -1, generic: -1,
+                };
+                let previous = rt.engine_parameter(address)?;
+                let semitones = 12. * (value.max(1e-9) / authored.max(1e-9)).log2();
+                rt.set_engine_parameter(address, previous + (semitones * 100_000. / 7.2).round() as i32)
+            },
             Param::Polyphony => {
                 let slots = rt.voice_slots();
                 let wanted = (value.round().max(1.0) as usize).min(slots);
@@ -503,6 +532,13 @@ impl<S: Script> Driver<S> {
     }
 
     fn play(&mut self, rt: &mut Runtime, play: &Play, closing: bool) -> Result<(), Error> {
+        // Forwarding a physical event keeps its identity and reuses its gate.
+        if play.parent == Some(play.id) {
+            if let Some(note) = self.notes.get(&play.id).copied() {
+                self.select(rt, note, play)?;
+                return stale_ok(rt.forward_attack(note).map(|_| ()));
+            }
+        }
         if self.notes.len() >= TRACKED {
             return Ok(());
         }
@@ -663,4 +699,9 @@ impl Player {
         }
         Ok(())
     }
+}
+
+impl Driver<ScriptThread> {
+    pub fn ui(&self) -> &std::sync::Arc<UiBridge> { self.host.ui() }
+    pub fn set_control(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool { self.host.set_control(id, value) }
 }

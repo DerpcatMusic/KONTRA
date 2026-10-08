@@ -523,6 +523,15 @@ fn draw(ui: &mut Ui, state: &mut State, params: &Arc<SamplerParams>) -> El {
         }
     }
     let mut content = vec![section_bar("Logs", vec![copy_el.when(state.copy_thread.is_some(), El::disabled), export_el, open_el, refresh_el])];
+    for (index, report) in sampler_core::trace_report::reports().iter().enumerate() {
+        let (show, button) = action(ui, format!("logs-signal-trace-{index}"), "Open signal chart", false);
+        if show { state.folder_picker.ask(picker::Ask::Reveal(report.chart.clone())); }
+        let (show_json, json_button) = action(ui, format!("logs-signal-json-{index}"), "Open trace JSON", false);
+        if show_json { state.folder_picker.ask(picker::Ask::Reveal(report.json.clone())); }
+        content.push(section_bar("Signal trace", vec![button,json_button]));
+        content.push(caption(format!("{} records · {} dropped · {}", report.records, report.dropped,
+            report.error.as_deref().unwrap_or(if report.complete { "complete" } else { "recording" }))).fill(secondary()).lines(2));
+    }
     if let Some(receipt) = &state.receipt {
         let mut summary = vec![
             caption(receipt.status.clone())

@@ -832,6 +832,7 @@ fn play(subject: Subject, pick: Pick, diagnose: bool, ccs: &[(u8, u8)]) -> Resul
                     sampler_ir::Looping::OneShot => "one-shot",
                     sampler_ir::Looping::Continuous(_) => "continuous",
                     sampler_ir::Looping::UntilRelease(_) => "until-release",
+                    sampler_ir::Looping::Slots(_) => "slots",
                 };
                 let group = z.group.and_then(|g| ir.groups.get(g.0)).map_or_else(String::new, |g| g.name.clone());
                 let layer = layers.iter().position(|l| *l == (z.velocities.low, z.velocities.high)).unwrap_or(0);

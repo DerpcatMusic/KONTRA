@@ -1,5 +1,8 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
+mod script_state;
+pub use script_state::{ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue};
+
 use super::{Error, Instruction, PlanId, Prepared, Runtime};
 mod transfer;
 pub(super) use transfer::ControlQueues;
@@ -82,6 +85,7 @@ pub(super) struct ControlEvent {
     pub origin: crate::ChannelAddress,
     pub channels: u16,
     pub stage: usize,
+    pub interaction: crate::WidgetInteraction,
 }
 impl ControlEvent {
     pub fn scope(self) -> crate::ChannelScope {
@@ -95,18 +99,49 @@ impl ControlEvent {
 }
 
 pub(super) struct ControlState {
-    values: Box<[ControlValue]>,
-    revision: u64,
+    pub(super) values: Box<[ControlValue]>,
+    // Port v1 Bank::base/settings: scripts own base, player offsets affect DSP.
+    pub(super) base: Box<[ControlValue]>,
+    pub(super) offsets: Box<[f32]>,
+    pub(super) engine_index: Box<[usize]>,
+    pub(super) automation: Box<[crate::automation::AutomationState]>,
+    pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
     pub(super) pending: usize,
 }
 impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
+        let mut engine_index = vec![usize::MAX; plan.controls.len()];
+        for (binding, b) in plan.engine_parameters.iter().enumerate() {
+            engine_index[plan.control_index(b.control).unwrap()] = binding;
+        }
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
+            base: plan.controls.iter().map(|c| c.default).collect(),
+            offsets: vec![0.; plan.controls.len()].into_boxed_slice(),
+            engine_index: engine_index.into_boxed_slice(),
+            automation: vec![crate::automation::AutomationState::default(); plan.automation.len()].into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
+    }
+}
+
+impl ControlState {
+    pub(super) fn playing(&self, prepared: &Prepared, index: usize) -> ControlValue {
+        let base = self.base[index];
+        let offset = self.offsets[index];
+        if offset == 0. { return base; }
+        let ControlValue::Real(base) = base else { return base };
+        let binding = &prepared.engine_parameters[self.engine_index[index]];
+        let norm = binding.law.encode(base);
+        // The admitted law owns its normalized bounds, including bipolar gains.
+        let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
+        let mut value = binding.law.decode(to);
+        if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
+            value = value.clamp(min, max);
+        }
+        ControlValue::Real(value)
     }
 }
 
@@ -126,6 +161,8 @@ impl Prepared {
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
         }
+        for binding in &self.engine_parameters {self.control_index(binding.control)?;}
+        for control in self.envelope_controls.iter().flatten().flatten() {self.control_index(*control)?;}
         Ok(self)
     }
 
@@ -186,6 +223,23 @@ impl Prepared {
 }
 
 impl Runtime {
+    pub(crate) fn controlled_envelope(&self, plan: PlanId, group: Option<u32>, envelope: crate::Envelope) -> crate::Envelope {
+        let generation = self.plans.get(plan.0).unwrap();
+        let mut envelope = generation.script.envelope(group,envelope);
+        if let Some(controls) = group.and_then(|g|generation.prepared.envelope_controls.get(g as usize)) {
+            for (stage,id) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
+                if let Some(id) = id {
+                    let index=generation.prepared.control_index(*id).unwrap();
+                    let value=generation.controls.values[index];
+                    if value != generation.prepared.controls[index].default {
+                        if let ControlValue::Real(value)=value {envelope=envelope.with_control(stage,value);}
+                    }
+                }
+            }
+        }
+        envelope
+    }
+
     /// Apply an interaction and start its prepared handler as one admission. Full
     /// callback capacity rejects before changing the value. Handler faults are
     /// retained outcomes; a committed edit is not rolled back after execution.
@@ -214,6 +268,7 @@ impl Runtime {
                 origin: context.origin,
                 channels: context.channels,
                 stage: binding.stage,
+                interaction: crate::WidgetInteraction::default(),
             })
         });
         if let Some(binding) = binding {
@@ -232,7 +287,19 @@ impl Runtime {
         Ok(generation.controls.values[generation.prepared.control_index(id)?])
     }
 
+    /// The authored/script value before the player's editor offsets. Use this
+    /// for host persistence so recalling an offset cannot apply it twice.
+    pub fn control_base_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok(generation.controls.base[generation.prepared.control_index(id)?])
+    }
+
     /// The control's id, domain and default in `plan`.
+    /// The immutable schema of an addressed generation, for an off-audio producer.
+    pub fn control_definitions(&self, plan: PlanId) -> Result<&[ControlDefinition], Error> {
+        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.controls)
+    }
+
     pub fn control_definition(
         &self,
         plan: PlanId,
@@ -360,10 +427,10 @@ impl Runtime {
         for write in writes {
             // All lookups/values validated above; one writer, no reentrancy.
             let index = definitions.control_index(write.id).unwrap();
-            generation.controls.values[index] = write.value;
-            generation
-                .dsp
-                .edit_control(definitions, index, write.value, self.now);
+            generation.controls.base[index] = write.value;
+            let playing = generation.controls.playing(definitions, index);
+            generation.controls.values[index] = playing;
+            generation.dsp.edit_control(definitions, index, playing, self.now);
         }
         generation.controls.revision = revision;
         Ok(revision)
