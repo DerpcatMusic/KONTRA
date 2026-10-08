@@ -1420,18 +1420,18 @@ mod tests {
         let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
             .map(move |(n, w)| (f.source, n, w.clone()))).collect();
         let package = Arc::new(Package::load(&path).unwrap());
+        let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let graph = session.render().unwrap();
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
-        let watermark = stack_watermark();
         for _ in 0..4 {
             let el = draw(&mut ui, &graph, &package, &session, 0, 1., Style::default(), &mut drafts).unwrap();
             ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
         }
         let peak = stack_peak(watermark);
         assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
-        println!("NATIVE_STACK program={program} depth={} draw_and_layout_peak_bytes={peak} unmarked_top_bytes={}",
+        println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
             graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
     }
 
