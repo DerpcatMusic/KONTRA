@@ -1387,6 +1387,20 @@ impl Runtime {
         Ok((n.pitch.key(), n.velocity, n.gate()))
     }
 
+    /// Merge live engine gates, including generated notes; release tails are unpressed.
+    pub fn pressed_keys(&self, keys: &mut [u8; 128]) {
+        let mut next = self.notes.first;
+        while let Some(index) = next {
+            let slot = &self.notes.slots[index];
+            next = slot.next;
+            let note = slot.value.as_ref().unwrap();
+            if note.gate() {
+                let key = &mut keys[usize::from(note.pitch.key())];
+                *key = (*key).max((note.velocity * 127.).round().clamp(1., 127.) as u8);
+            }
+        }
+    }
+
     pub fn note_pitch(&self, id: NoteId) -> Result<NotePitch, Error> {
         Ok(self.notes.get(id.0).ok_or(Error::StaleHandle)?.pitch)
     }
