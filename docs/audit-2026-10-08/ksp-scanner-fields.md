@@ -2,7 +2,7 @@
 
 Handoff for `tools/kontra-scan@54f7ea57` extension. Source references below use v2 `7e82b152` or pinned v1 `0cb7a8a0`; measurement evidence is on `audit/ksp-20261008`. This specifies scanner instrumentation, not product fixes. All counters belong to the shared collector.
 
-Current installed implementation: `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`, superseding `9dcf05e5`; the shared README confirms these extensions. The current paired production witness is recorded in [ksp.md](ksp.md#current-shared-scanner-paired-phase-witness-e340c39a). Await completed shared coverage for corpus rates.
+Current installed implementation: `tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`, superseding `e340c39a`/`9dcf05e5`. Current section J evidence and the v1 raw saved-table observation defect are recorded in [ksp.md](ksp.md#current-shared-scanner-section-j-f7b2a8cd). Await validated completed shared coverage for corpus rates.
 
 ## Slot admission and ownership
 
@@ -15,7 +15,7 @@ Suggested mutually exclusive raw categories:
 | Field | Exact definition |
 |---|---|
 | `slots_seen` | Every Script chunk encountered, including a chunk whose parameter decoding fails. |
-| `slots_decode_failed` | Parameter/record decoding failed; do not classify it as empty. |
+| `slots_decode_failed` | BParScript/source parameter decoding failed; do not classify it as empty. Independent saved-table framing failure/unsupported framing does not change this category. |
 | `slots_bypassed` | Successfully decoded `params.bypass == true`; bypass takes precedence over text/link state. |
 | `slots_inline_nonempty` | Not bypassed, `params.text.is_some()` and `!text.trim().is_empty()`. |
 | `slots_linked_only` | Not bypassed, no nonempty inline text, and a nonempty trimmed `textfile_name`. |
