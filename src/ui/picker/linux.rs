@@ -223,6 +223,10 @@ fn request(ask: &Ask, parent: Option<Parent>) -> Result<DialogRequest, String> {
             Some(from.clone()),
             None,
         ),
+        Ask::Snapshot { from, .. } => (
+            "Load a snapshot for this instrument", open, Some(from.clone()),
+            Some(("Kontakt snapshot", vec!["nksn".into()])),
+        ),
         Ask::Artwork { library } => (
             "A picture for the library's cover",
             open,
@@ -262,6 +266,7 @@ fn selected(ask: Ask, path: Option<PathBuf>) -> Option<Picked> {
             library,
             picture: path,
         },
+        Ask::Snapshot { slot, source, .. } => Picked::Snapshot { slot, source, path },
         Ask::Multi { .. } => Picked::Multi(path),
         Ask::Reveal(path) => Picked::Revealed(crate::ui::menu::reveal(&path)),
     })
