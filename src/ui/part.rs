@@ -204,7 +204,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
         face.input.meters = shared.widget_meters(&face.face, generation);
-        face.input.peaks = shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.)).into_iter().map(|(widget, envelope)| (widget, envelope.peaks)).collect();
+        let waveforms = shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
+        face.input.wave_duration_us = waveforms.iter().map(|(widget, envelope)| (*widget, envelope.duration_us)).collect();
+        face.input.peaks = waveforms.into_iter().map(|(widget, envelope)| (widget, envelope.peaks)).collect();
     }
     if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
