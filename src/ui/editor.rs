@@ -41,6 +41,7 @@ enum Lower {
 /// The editor's state across frames.
 #[derive(Default)]
 pub struct State {
+    part: Option<(usize, usize)>,
     lower: Lower,
     /// A value being typed in: which, and the text so far.
     typing: Option<(Param, String)>,
@@ -202,6 +203,12 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize) -> El {
         .flex(1);
     };
 
+    let identity = (slot, Arc::as_ptr(&instrument) as usize);
+    if cx.state.editor.part != Some(identity) {
+        cx.state.editor.part = Some(identity);
+        cx.state.editor.typing = None;
+        cx.state.editor.grab = None;
+    }
     let (_, curves) = curves(cx, slot, group, &instrument);
     // An edit shows this frame, not the next.
     let (key, curves) = if interact(ui, cx, slot, curves.model.group, &curves) {
