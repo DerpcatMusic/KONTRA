@@ -1205,3 +1205,5 @@ impl Cx<'_> {
 pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(all(test, feature = "library-access"))]
+mod uvi_audit;
