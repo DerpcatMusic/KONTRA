@@ -642,8 +642,15 @@ mod tests {
         assert_eq!(keys.instrument.name, "Keys");
         assert_eq!(keys.instrument.zones.len(), 8);
         assert_eq!(keys.instrument.groups.len(), 2);
-        assert_eq!(keys.instrument.zones.iter().filter(|z| loop_range(z).is_some()).count(), 1);
-        let looped = keys.instrument.zones.iter().find_map(loop_range).unwrap().0;
+        let slots: Vec<_> = keys.instrument.zones.iter().filter_map(|z| match z.playback.looping {
+            ir::Looping::Slots(slots) if slots.iter().any(Option::is_some) => Some(slots),
+            _ => None,
+        }).collect();
+        assert_eq!(slots.len(), 1, "exactly one created zone has an authored loop");
+        assert!(slots[0][1..].iter().all(Option::is_none), "creator keeps physical loop holes");
+        let authored = slots[0][0].expect("creator writes physical loop slot zero");
+        assert!(!authored.until_release);
+        let looped = authored.range;
         assert_eq!((looped.start, looped.end), (1000, 5001));
         let sfz = std::fs::read_to_string(kontakt.join("Instruments/Keys.sfz")).unwrap();
         assert_eq!(sfz.matches("<region>").count(), 8);
