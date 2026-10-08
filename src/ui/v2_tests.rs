@@ -671,8 +671,8 @@ fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
     let root = ir_view::view(&mut ui, &face, PageRef(0), &ir_view::Assets::default(), ir::Presentation::Bitmap, 1., &mut ir_view::Values::default());
     ui.frame(root, Some(Size::new(200.,100.)), Input::default(), 1./60.).unwrap();
     assert_eq!(face.widgets.len(),7000);
-    assert!(ui.scene().unwrap().surface("ir-0").is_some());
-    assert!(ui.scene().unwrap().surface("ir-1").is_none());
+    assert!(ui.scene().unwrap().surface("/ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("/ir-1").is_none());
 }
 
 /// Audit-only gesture probe: the same renderer and input loop as the editor.
