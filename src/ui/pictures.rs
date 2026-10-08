@@ -12,6 +12,7 @@ pub struct Source {
     uvi: Option<sampler_uvi::Resources>,
     #[cfg(feature = "shots")]
     pub scan: Scan,
+
 }
 
 #[cfg(feature = "shots")]
@@ -23,6 +24,7 @@ pub struct Scan {
     pub decode_ok: usize,
     pub fonts: usize,
     pub font_ok: usize,
+
 }
 
 impl Source {
@@ -41,6 +43,7 @@ impl Source {
             #[cfg(feature = "shots")]
             scan: Scan::default(),
         }
+
     }
 
     pub(crate) fn read(&mut self, path: &str) -> Option<Vec<u8>> {
@@ -72,6 +75,7 @@ impl Source {
             self.scan.font_ok += usize::from(font.is_some());
         }
         font
+
     }
 
     /// Compatibility probe: one frame, never an eagerly decoded strip.
@@ -91,13 +95,16 @@ impl Source {
             ir::AssetKind::Image(m) => m,
             ir::AssetKind::BitmapFont => ir::ImageMeta::default(),
             _ => return None,
+
         };
         let image = super::picture_decode::decode(&bytes, meta, frame, target, window, canceled);
+
         #[cfg(feature = "shots")]
         {
             self.scan.decodes += 1;
             self.scan.decode_ok += usize::from(image.is_some());
         }
+
         let image = image?;
         if matches!(asset.kind, ir::AssetKind::BitmapFont) {
             let sidecar = format!("{}.txt", asset.path.rsplit_once('.')?.0);
@@ -113,6 +120,7 @@ impl Source {
             meta.frames.max(1) as usize,
             window,
         )))
+
     }
 }
 
