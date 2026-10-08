@@ -71,3 +71,7 @@ menus use real popup item clicks. Passive meters/panels/images and disabled cont
 have no edit obligation. Navigation-only targets remain explicit failures until their
 view-state obligation has its own witness. These are headless production editor
 receipts; they do not certify OS/DAW capture, IME or native Kontakt calibration.
+
+`live_host.py GATE V2_CLAP V2_CLI LIVE_HOST OUTPUT` measures loaded libraries through `vendor/moose-clap/tests/live_performance.cpp`. Build that native host outside the quiet window, then run the driver through `kontakto-heavy` as the quiet owner after other builds finish. Frozen v1 is run without rebuilding. The supplied plugin's adjacent `BUILD.json` must identify its full source SHA, `ci` or `release` profile, path, and plugin/CLI/host hashes; alpha release artifacts are now authorized through W0.
+
+The native host takes `PLUGIN STATE BLOCK SECONDS READY_FLAG EVENT_TSV EXPECTED_PARTS READBACK_STATE`. It saves CLAP state on the main thread after audition, outside CPU/streaming measurements. The driver verifies saved native Selection source/program, MIDI/output/gain/aux and part order against the authored state. Raw readback stays in private tmpfs; receipts retain only its hash and verdict. Missing/mismatched readback, silence, incomplete events or contention means UNKNOWN. This identity/routing proof does not certify scripted widget/custom-state recall or VST3. `check-live-host.py` and the native host's `--self-check` cover receipt admission and bounded streams.
