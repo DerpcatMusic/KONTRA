@@ -2107,6 +2107,16 @@
       ],
       "validation": "Eight CI unit checks,24 nightly publication scenarios and actionlint pass; real readelf accepts GLIBC2.34 and rejects the installed GLIBC2.39 plugin. Actual packaged KONTRA ABI is enforced by CI; the user local release intentionally uses the host toolchain.",
       "accepted": true
+    },
+    {
+      "id": "program-change-selector-input-accounting",
+      "summary": "Route MIDI 1 and MIDI 2 Program Change through authored selectors and count unhandled input as ignored",
+      "source_commits": [
+        "27b51c6d6ccdf17a394115737311e7ac0cf1fd14",
+        "76f5469487cb3278de3922a9bb9e588290f9574f"
+      ],
+      "validation": "Integration 67dafc61 root no-run, all three test shards, NI reader15/compat32, thirteen keyswitch tests and App-menu pixel check pass. MIDI1/MIDI2 selectors change selection with ignored_input zero; absent selectors increment ignored_input. Fresh final-scanner quick15 versus frozen f1105599 has zero load/UI/binding/audio regressions across fourteen matched auditions; Afflatus is not auditioned. The keyswitch panel is a feature and adds no second defect count.",
+      "accepted": true
     }
   ]
 }
