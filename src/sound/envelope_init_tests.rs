@@ -42,6 +42,10 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
             .unwrap_or_else(|_| panic!("production load failed; authored diagnostics omitted"));
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, loaded.part);
+        core.begin_block(&BlockInfo {
+            frames: 128,
+            ..Default::default()
+        });
         if case == 4 {
             core.parts[0]
                 .as_mut()
@@ -55,6 +59,10 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
         let mut peak = 0f64;
         let mut voices = 0;
         for _ in 0..180 {
+            core.begin_block(&BlockInfo {
+                frames: 128,
+                ..Default::default()
+            });
             let rendered = core.render(128);
             for bus in rendered.buses {
                 for channel in bus {
@@ -64,6 +72,7 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
                 }
             }
             voices = voices.max(core.parts[0].as_ref().unwrap().runtime.voice_count());
+            core.end_block(128, &mut |_| true);
             std::thread::sleep(std::time::Duration::from_millis(3));
         }
         if case == 4 {
@@ -89,6 +98,11 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
         assert!(
             voices > 0,
             "case {case}: one-shot stages must not retire before source playback"
+        );
+        assert_eq!(
+            core.problems(0).fault_program,
+            0,
+            "case {case}: callbacks must finish without a fault"
         );
         assert_eq!(
             core.parts[0]
