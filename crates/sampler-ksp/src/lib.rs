@@ -386,12 +386,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut instances = Vec::new();
     let mut resources = Vec::new();
     // The plan's effect slot controls stay beside the scripts' own.
-    let mut controls: Vec<_> = plan
-        .controls()
-        .iter()
-        .filter(|c| sampler_core::is_slot_control(c.id))
-        .copied()
-        .collect();
+    let mut controls = plan.controls().to_vec();
     let mut callbacks = Vec::new();
     let mut widgets = Vec::new();
     let mut stages = Vec::new();
