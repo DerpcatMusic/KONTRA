@@ -17,7 +17,7 @@ pub enum SelectionPolicy {
 }
 
 /// Physical input key consumed by a native latched articulation switch.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Keyswitch {
     pub key: u8,
     pub articulation: u32,

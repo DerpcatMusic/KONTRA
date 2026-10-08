@@ -651,6 +651,7 @@ fn prepare_inner(
             }),
         }
     }
+    super::keyswitch_ui::normalize(&mut instrument, &interfaces, &compiled);
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
     if compiled.is_empty() && !instrument.behaviors.is_empty() {

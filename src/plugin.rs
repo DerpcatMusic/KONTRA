@@ -77,6 +77,7 @@ pub struct Part {
     /// How articulations are selected, as `sampler_ir::Switching::to_bits`
     /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
     pub switching: u8,
+    pub articulation_overlay: crate::sound::articulation::Overlay,
 }
 
 impl Default for Part {
@@ -103,6 +104,7 @@ impl Default for Part {
             dynamics: -1,
             bend_range: 0,
             switching: 0,
+            articulation_overlay: Default::default(),
         }
     }
 }
@@ -120,6 +122,15 @@ impl StateField for NodeMix {
     }
     fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
         Some(serde_json::from_str(&String::read_field(cursor)?).unwrap_or_default())
+    }
+}
+
+impl StateField for crate::sound::articulation::Overlay {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        serde_json::to_string(self).unwrap_or_default().write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        serde_json::from_str(&String::read_field(cursor)?).ok()
     }
 }
 
@@ -413,6 +424,8 @@ pub struct Shared {
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
+    pub(crate) learn_target: AtomicU32,
+    pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
     pub(crate) keyboard: ArrayQueue<(usize, Play)>,
     /// The pitch wheel (0..=16383, centre 8192) and mod wheel (0..=127) as
@@ -422,6 +435,7 @@ pub struct Shared {
     pub(crate) controls: ArrayQueue<Mix>,
     /// Widget edits for the audio thread: rack slot, control, value.
     control_edits: ArrayQueue<(usize, sampler_ui_ir::ControlId, f64)>,
+    pub(crate) articulation_edits: ArrayQueue<(usize, usize)>,
     /// Script effects from the audio thread: rack slot, script instance, effect.
     effects: ArrayQueue<(usize, usize, sampler_core::Effect)>,
     /// Peak meters the audio thread keeps current; read them at paint time.
@@ -536,6 +550,9 @@ impl Default for Shared {
             modulation: AtomicU32::new(0),
             controls: ArrayQueue::new(1),
             control_edits: ArrayQueue::new(256),
+            articulation_edits: ArrayQueue::new(128),
+            learn_target: AtomicU32::new(0),
+            learned_note: AtomicU64::new(0),
             effects: ArrayQueue::new(1024),
             meters: Meters::default(),
             scope: Scope::default(),
@@ -682,6 +699,7 @@ pub(crate) fn mix(selection: &Selection) -> Mix {
     let slots = selection.parts.len().max(RACK_SLOTS);
     Mix {
         parts: rack_controls(selection),
+        articulation_routes: Vec::new(),
         buses: std::array::from_fn(|n| {
             let b = selection.bus(n);
             BusControls {
@@ -853,9 +871,21 @@ impl Shared {
         *self.multi_request.lock().unwrap() = Some(path);
     }
 
-    /// Start `note` on `slot` (or [`EVERY_PART`]) at `velocity` (1..=127) from the on-screen keyboard.
-    /// A key already down (the mouse and a computer key on one note) is let
-    /// go first: every note-on has its note-off, so one release stops it.
+    /// Retain even a note pressed and released between editor frames.
+    pub(crate) fn record_learn(&self, port: u8, channel: u8, key: u8) {
+        let target = self.learn_target.load(Ordering::Relaxed);
+        let wanted_channel = (target >> 16) & 31;
+        if key < 128 && channel < 16 && target >> 31 != 0 && (target >> 8) as u8 == port && (wanted_channel == 0 || wanted_channel == u32::from(channel) + 1) {
+            let _ = self.learned_note.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some((n.wrapping_add(256) & !255) | u64::from(key)));
+        }
+    }
+
+    /// Select the source articulation independently of editable input mappings.
+    pub(crate) fn select_articulation(&self, slot: usize, identity: usize) {
+        let _ = self.articulation_edits.push((slot, identity));
+    }
+
+    /// Start a key on a slot; a repeated press releases the previous onset first.
     pub(crate) fn press_key(&self, slot: usize, note: u8, velocity: u8) {
         self.release_key(note);
         let velocity = velocity.clamp(1, 127);
@@ -1038,7 +1068,15 @@ impl BackgroundTask for Load {
         poll_libraries(shared);
         route(params);
         let push_mix = || {
-            let _ = shared.controls.force_push(mix(&params.selection.read().unwrap()));
+            let selection = params.selection.read().unwrap();
+            let mut mix = mix(&selection);
+            let view = shared.view.lock().unwrap();
+            mix.articulation_routes = selection.parts.iter().enumerate().map(|(slot, p)| {
+                let instrument = view.parts.get(slot)?.instrument.as_deref()?;
+                let (keys, switching) = p.articulation_overlay.routing(instrument, p.switching).ok()?;
+                Some(Arc::new(crate::sound::articulation::Routing { keys, switching }))
+            }).collect();
+            let _ = shared.controls.force_push(mix);
         };
         push_mix();
         let mut loaded = false;
@@ -1371,8 +1409,8 @@ fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessC
     let shared = &p.shared;
     let lit = |note: u8, velocity: u8| shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed);
     match e.body {
-        EventBody::NoteOn { note, velocity, .. } => lit(note, velocity.max(1)),
-        EventBody::NoteOn2 { note, velocity, .. } => lit(note, ((velocity >> 9) as u8).max(1)),
+        EventBody::NoteOn { channel, note, velocity, .. } => { shared.record_learn(e.port, channel, note); lit(note, velocity.max(1)); },
+        EventBody::NoteOn2 { channel, note, velocity, .. } => { shared.record_learn(e.port, channel, note); lit(note, ((velocity >> 9) as u8).max(1)); },
         EventBody::NoteOff { note, .. } | EventBody::NoteOff2 { note, .. } => lit(note, 0),
         EventBody::ControlChange { cc: 120 | 123, .. } => (0..128).for_each(|note| lit(note, 0)),
         EventBody::ControlChange { cc: 1, value, .. } => shared.modulation.store(u32::from(value), Ordering::Relaxed),
@@ -1394,6 +1432,7 @@ fn feed_exact_input(s: &mut Dsp, p: &SamplerParams, event: CoreEvent, port: u8, 
     s.core.event(port, event);
     match event {
         CoreEvent::NoteOn { note, velocity, .. } => {
+            p.shared.record_learn(port, note.channel, note.key);
             heard[usize::from(note.key)].store(((velocity * 127.).round() as u8).max(1), Ordering::Relaxed);
             if note.clap && !s.core.owns(note) && !end_host_note(cx, note, offset) {
                 s.end_rejections += 1;
@@ -1582,6 +1621,9 @@ impl PluginLogic for Sampler {
             shared.reset_midi();
             s.core.panic();
             s.audition.fill((0, 0));
+        }
+        while let Some((slot, articulation)) = shared.articulation_edits.pop() {
+            s.core.select_articulation(slot, articulation);
         }
         while let Some((slot, control, value)) = shared.control_edits.pop() {
             s.core.set_control(slot, control, value);
