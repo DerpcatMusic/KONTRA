@@ -63,6 +63,7 @@ impl BusControls {
 /// Everything the mixer sets, handed to the audio thread in one piece.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mix {
+    pub timing:std::sync::Arc<crate::timing::Plan>,
     pub parts: Vec<PartControls>,
     pub editor_offsets: Vec<std::sync::Arc<[sampler_core::EngineParameterOffset]>>,
     pub articulation_routes: Vec<Option<std::sync::Arc<super::articulation::Routing>>>,
@@ -74,6 +75,7 @@ pub struct Mix {
 impl Default for Mix {
     fn default() -> Self {
         Self {
+            timing:std::sync::Arc::default(),
             parts: vec![PartControls::default(); RACK_SLOTS],
             articulation_routes: Vec::new(),
             editor_offsets: Vec::new(),
