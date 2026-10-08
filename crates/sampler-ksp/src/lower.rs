@@ -184,7 +184,10 @@ impl<'h> Unit<'h> {
         let texts: Vec<&str> = g.texts.iter().map(String::as_str).collect();
         Program::new(g.code)
             .and_then(|p| p.with_texts(&texts))
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| {
+                p.with_wait_lifetime(WaitLifetime::Callback)
+                    .with_source_slot(g.u.slot)
+            })
             .map_err(|e| Fault {
                 span,
                 builtin: None,
@@ -298,7 +301,10 @@ impl<'h> Unit<'h> {
         g.emit(I::Wait(480))?;
         g.emit(I::Jump { target: top })?;
         Program::new(g.code)
-            .map(|p| p.with_wait_lifetime(WaitLifetime::Callback))
+            .map(|p| {
+                p.with_wait_lifetime(WaitLifetime::Callback)
+                    .with_source_slot(g.u.slot)
+            })
             .map_err(|e| Fault {
                 span,
                 builtin: None,
@@ -870,7 +876,8 @@ impl Gen<'_, '_> {
     fn sys(&mut self, s: SysVar, dst: u16) -> Result<()> {
         let note = self.note_context();
         let op = match s {
-            SysVar::EventId | SysVar::CallbackId if note => I::ReadEventId { local: dst },
+            SysVar::EventId if note => I::ReadEventId { local: dst },
+            SysVar::CallbackId => I::ReadCallbackId { local: dst },
             SysVar::EventNote if note => I::ReadKey { local: dst },
             SysVar::EventVelocity if note => I::ReadVelocity7 { local: dst },
             SysVar::NoteHeld if note => I::ReadKeyDown { local: dst },
@@ -929,6 +936,7 @@ impl Gen<'_, '_> {
         match array {
             SysArray::Cc | SysArray::KeyDown => true,
             SysArray::EventPar => self.ui_id.is_some(),
+            SysArray::GroupsAffected => self.note_context(),
             SysArray::CcTouched => self.ctx == Context::Controller,
             _ => false,
         }
@@ -946,6 +954,10 @@ impl Gen<'_, '_> {
             }
             SysArray::KeyDown => self.emit(I::ReadKeyHeld { local: at }),
             SysArray::EventPar => self.emit(I::Op(Op::ReadWidgetEventParameter { local: at })),
+            SysArray::GroupsAffected => self.emit(I::ReadAffectedGroup {
+                index: Some(at),
+                local: at,
+            }),
             // Kontakt marks the controllers that changed for this callback:
             // here, the one that triggered it.
             SysArray::CcTouched => {
@@ -1529,6 +1541,16 @@ impl Gen<'_, '_> {
                 }))?;
                 true
             }
+            NumElements
+                if matches!(args.first(), Some(Arg::SysArray(SysArray::GroupsAffected)))
+                    && self.note_context() =>
+            {
+                self.emit(I::ReadAffectedGroup {
+                    index: None,
+                    local: dst,
+                })?;
+                true
+            }
             NumElements => {
                 if let Some(Arg::SysArray(array)) = args.first()
                     && let Some(kind) = array.drop_kind()
@@ -1629,20 +1651,12 @@ impl Gen<'_, '_> {
                 if self.const_int(args, 1) == Some(b::event_par::SOURCE)
                     && !self.selects_many(builtin, args, 0) =>
             {
-                // -1 for a host event, else the creating script's slot (ponytail:
-                // the reading script's own slot; notes carry no creator slot).
                 self.arg(args, 0, dst)?;
                 self.emit(I::ReadEventInfo {
                     event: dst,
                     info: sampler_core::EventInfo::Source,
                     local: dst,
                 })?;
-                let host = self.jump_if_zero(dst)?;
-                self.set(dst, i64::from(self.u.slot))?;
-                let end = self.jump()?;
-                self.land(host);
-                self.set(dst, -1)?;
-                self.land(end);
                 true
             }
             GetEventPar
@@ -1653,6 +1667,7 @@ impl Gen<'_, '_> {
                             | b::event_par::MIDI_CHANNEL
                             | b::event_par::NOTE
                             | b::event_par::VELOCITY
+                            | b::event_par::REL_VELOCITY
                     )
                 ) && !self.selects_many(builtin, args, 0) =>
             {
@@ -1660,6 +1675,7 @@ impl Gen<'_, '_> {
                     Some(b::event_par::ZONE_ID) => sampler_core::EventInfo::ZoneId,
                     Some(b::event_par::NOTE) => sampler_core::EventInfo::Key,
                     Some(b::event_par::VELOCITY) => sampler_core::EventInfo::Velocity,
+                    Some(b::event_par::REL_VELOCITY) => sampler_core::EventInfo::ReleaseVelocity,
                     _ => sampler_core::EventInfo::MidiChannel,
                 };
                 self.arg(args, 0, dst)?;
@@ -1824,29 +1840,108 @@ impl Gen<'_, '_> {
                 self.land(end);
                 true
             }
-            // "From script" modulator values (Kontakt 6.6+), per source event.
-            SetEventParArr | GetEventParArr
-                if self.const_int(args, 1) == Some(b::event_par::MOD_VALUE_ID)
-                    && !self.selects_many(builtin, args, 0) =>
+            EventStatus => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::ReadEventInfo {
+                    event: dst,
+                    info: sampler_core::EventInfo::Status,
+                    local: dst,
+                })?;
+                true
+            }
+            GetEventIds => {
+                if let Some(Arg::Var(v, _)) = args.first()
+                    && let Home::Cells { offset, len } = self.var(*v).home
+                {
+                    self.emit(I::ReadEventIds {
+                        array: ScriptArray { offset, len },
+                    })?;
+                }
+                true
+            }
+            SetEventMark | DeleteEventMark | GetEventMark
+                if !self.selects_many(builtin, args, 0) =>
             {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, t)?;
+                self.emit(if builtin == GetEventMark {
+                    I::ReadEventMark {
+                        event: dst,
+                        mark: t,
+                        local: dst,
+                    }
+                } else {
+                    I::WriteEventMark {
+                        event: dst,
+                        mark: t,
+                        delete: builtin == DeleteEventMark,
+                    }
+                })?;
+                true
+            }
+            GetEventParArr if self.const_int(args, 1) == Some(b::event_par::ALLOW_GROUP) => {
+                self.arg(args, 0, dst)?;
+                self.arg(args, 2, t)?;
+                self.emit(I::ReadEventGroup {
+                    event: dst,
+                    group: t,
+                    local: dst,
+                })?;
+                true
+            }
+            SetEventParArr | GetEventParArr
+                if matches!(
+                    self.const_int(args, 1),
+                    Some(b::event_par::CUSTOM | b::event_par::MOD_VALUE_ID)
+                ) && !self.selects_many(builtin, args, 0) =>
+            {
+                let custom = self.const_int(args, 1) == Some(b::event_par::CUSTOM);
                 let id = reg(dst, 2)?;
+                let bound = reg(dst, 3)?;
                 self.arg(args, 0, dst)?;
                 if builtin == SetEventParArr {
                     self.arg(args, 2, t)?;
-                    self.arg(args, 3, id)?;
-                    self.emit(I::WriteModValue {
+                }
+                self.arg(args, if builtin == SetEventParArr { 3 } else { 2 }, id)?;
+                // Validate before adding the storage base; invalid indexes cannot alias another namespace.
+                self.set(bound, 0)?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: id,
+                    comparison: Cmp::LessEqual,
+                })?;
+                let negative = self.jump_if_zero(bound)?;
+                self.set(bound, if custom { 16 } else { 1001 })?;
+                self.emit(I::CompareLocal {
+                    lhs: bound,
+                    rhs: id,
+                    comparison: Cmp::Greater,
+                })?;
+                let beyond = self.jump_if_zero(bound)?;
+                if custom {
+                    self.emit(I::AddLocal {
+                        local: id,
+                        value: i64::from(sampler_core::USER_EVENT_PAR),
+                    })?;
+                }
+                self.emit(if builtin == SetEventParArr {
+                    I::WriteModValue {
                         event: dst,
                         id,
                         local: t,
-                    })?;
+                    }
                 } else {
-                    self.arg(args, 2, id)?;
-                    self.emit(I::ReadModValue {
+                    I::ReadModValue {
                         event: dst,
                         id,
                         local: dst,
-                    })?;
-                }
+                    }
+                })?;
+                let end = self.jump()?;
+                self.land(negative);
+                self.land(beyond);
+                self.set(dst, 0)?;
+                self.land(end);
                 true
             }
             // The four user parameters ($EVENT_PAR_0..3) a script keeps on an
@@ -1858,14 +1953,16 @@ impl Gen<'_, '_> {
                     && !self.selects_many(builtin, args, 0) =>
             {
                 let id = reg(dst, 2)?;
+                self.arg(args, 0, dst)?;
+                if builtin == SetEventPar {
+                    self.arg(args, 2, t)?;
+                }
                 self.set(
                     id,
                     i64::from(sampler_core::USER_EVENT_PAR)
                         + i64::from(self.const_int(args, 1).unwrap()),
                 )?;
-                self.arg(args, 0, dst)?;
                 if builtin == SetEventPar {
-                    self.arg(args, 2, t)?;
                     self.emit(I::WriteModValue {
                         event: dst,
                         id,
@@ -1970,6 +2067,23 @@ impl Gen<'_, '_> {
                 self.set(dst, i64::from(id))?;
                 true
             }
+            ResetRlsTrigCounter => {
+                self.arg(args, 0, dst)?;
+                self.emit(I::ResetReleaseCounter { event: dst })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
+            StopWait => {
+                let disable = reg(dst, 1)?;
+                self.arg(args, 0, dst)?;
+                self.arg(args, 1, disable)?;
+                self.emit(I::StopWait {
+                    callback: dst,
+                    disable,
+                })?;
+                self.cover(builtin, Coverage::Native);
+                return self.set(dst, 0);
+            }
             SetControlParStr | SetControlParStrArr => {
                 self.property_key(
                     args,
@@ -2039,15 +2153,11 @@ impl Gen<'_, '_> {
             | FadeOut
             | SetEventPar
             | SetEventParArr
-            | SetEventMark
-            | DeleteEventMark
             | SetNoteController
             | SetRpn
             | SetNrpn
-            | ResetRlsTrigCounter
             | WillNeverTerminate
             | RedirectOutput
-            | StopWait
             | SetZonePar
             | SetVoiceLimit
             | LoadIrSample
@@ -2169,10 +2279,17 @@ impl Gen<'_, '_> {
             return self.emit(write(false));
         };
         if let Some(flag) = self.const_int(args, arg) {
-            return self.emit(write(flag != 0));
+            return self.emit(write(flag == 1));
         }
         let flag = reg(index, 2)?;
         self.arg(args, arg, flag)?;
+        let one = reg(index, 3)?;
+        self.set(one, 1)?;
+        self.emit(I::CompareLocal {
+            lhs: flag,
+            rhs: one,
+            comparison: Cmp::Equal,
+        })?;
         let absolute = self.jump_if_zero(flag)?;
         self.emit(write(true))?;
         let end = self.jump()?;
@@ -2507,7 +2624,18 @@ impl Gen<'_, '_> {
         } else {
             self.set(dst, 0)?;
             self.arg(args, 1, value)?;
-            self.set(end, i64::from(len) - 1)?;
+            if matches!(array, Err(SysArray::GroupsAffected)) {
+                self.emit(I::ReadAffectedGroup {
+                    index: None,
+                    local: end,
+                })?;
+                self.emit(I::AddLocal {
+                    local: end,
+                    value: -1,
+                })?;
+            } else {
+                self.set(end, i64::from(len) - 1)?;
+            }
         }
         let start = self.here();
         self.set(t, 0)?;

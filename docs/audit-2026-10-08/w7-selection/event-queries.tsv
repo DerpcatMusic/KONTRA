@@ -1,0 +1,10 @@
+contract	before	expected	after	verdict
+active_event_status_is_note_queue	0	1	1	PASS
+get_event_ids_contains_current_event	-1	0	0	PASS
+event_mark_is_readable	0	1	1	PASS
+current_event_group_allow_state_is_readable	0	1	1	PASS
+custom_event_array_parameters_roundtrip	0	42	42	PASS
+thirteen_script_modulator_ids_roundtrip	0	42	42	PASS
+affected_groups_have_dynamic_size	4096	1	1	PASS
+relative_mode_two_is_absolute	-9000	-3000	-3000	PASS
+pan_mode_two_is_absolute	0	-1000	-1000	PASS

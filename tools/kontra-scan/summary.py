@@ -22,7 +22,7 @@ for version in ['v1', 'v2']:
         versions[version] = list(csv.DictReader(f, delimiter='\t'))
 
 text = ['# Shared scanner results', '', 'Coverage is partial until every manifest ID has a row from the installed binary revision. Original authored view only. `loads=yes` means importer and initial playable bank/plan construction returned successfully; UI and sound are separate outcomes.', '',
-        'Timeouts are bounded probe failures, not proof of an intrinsically unsupported library. `silent` means one mapped note was not audible during the 0.5-second probe with CC1=100 and CC11=127.', '',
+        'Timeouts are bounded probe failures, not proof of an intrinsically unsupported library. `silent` means an actual selected note was not audible during the 0.5-second probe with CC1=100 and CC11=127. No-safe-key rows are not auditioned; fallback-note rows are excluded from parity comparisons.', '',
         '| Build | Rows | Loads yes | Loads no | Original OK | Missing images | Blank | No UI | UI error | Budget hit | Audible | Silent |',
         '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
 taxonomy = {}
