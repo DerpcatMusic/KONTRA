@@ -163,6 +163,34 @@ impl Bank {
         Ok((text, path))
     }
 
+    /// Read a UI asset relative to its preset or the bank resource root. UVI
+    /// scripts commonly name Resources/... from a shared Scripts folder.
+    /// Ambiguous suffixes and references to another bank are never accepted.
+    pub fn ui_resource(&self, program: &str, path: &str) -> Result<Vec<u8>, String> {
+        let read = || -> Result<Vec<u8>> {
+            let path = path.replace('\\', "/");
+            let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name)?;
+            let member = resource(program, path, |p| self.resolve(p)).or_else(|_| {
+                let normalized = normalize(path)?;
+                if let Ok(member) = self.resolve(&normalized) {
+                    return Ok(member);
+                }
+                let suffix = format!("/{}", normalized.to_ascii_lowercase());
+                let mut matches = self.directory.files.iter().filter(|m| {
+                    m.path
+                        .as_ref()
+                        .is_some_and(|p| p.to_ascii_lowercase().ends_with(&suffix))
+                });
+                let first = matches.next().context("UI resource missing")?;
+                ensure!(matches.next().is_none(), "Ambiguous UI resource");
+                Ok(first)
+            })?;
+            ensure!(member.size <= 32 << 20, "UI resource exceeds 32 MiB");
+            self.read(member)
+        };
+        read().map_err(|e| access::failure_reason(&e))
+    }
+
     /// Decode a bank-local audio resource relative to `program_path`. A starred
     /// filename is a bundle of mono channels. Returns raw encoded file bytes.
     pub fn resource(&self, program_path: &str, path: &str) -> Result<Vec<Vec<u8>>, AccessError> {
