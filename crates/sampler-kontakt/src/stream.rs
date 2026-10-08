@@ -1,6 +1,4 @@
-//! Streamed instruments: random-access sample reads, resident heads sized from
-//! measured read latency, and the decode worker thread behind the core's
-//! page cache. Only heads and a bounded page pool are resident.
+//! Streamed instruments: v1 resident start spans and source-time voice rings.
 
 use crate::{
     LoadError,
@@ -8,6 +6,8 @@ use crate::{
 };
 use sampler_core::{AssetId, DecodeFailure, PAGE_FRAMES, Pcm, StreamCache, StreamWorker};
 use sampler_ir as ir;
+mod preload;
+mod decoded;
 use std::{
     collections::HashMap,
     fs::File,
@@ -272,8 +272,7 @@ pub struct StreamReport {
     pub latency_p50: Duration,
     pub latency_p95: Duration,
     pub latency_p99: Duration,
-    /// Output frames each start keeps resident (times its zone's step in
-    /// source frames): the measured latency budget.
+    /// Source frames resident beyond each preloaded start, fitted to the budget.
     pub head_frames: usize,
     pub head_bytes: usize,
     /// Bytes every asset would take fully decoded, as `load` holds them.
@@ -297,7 +296,7 @@ pub struct StreamPolicy {
     /// inside a block is first serviced before the next one, so its head must
     /// also cover that whole block before its next page can even be requested.
     pub block_frames: usize,
-    /// Voices that can stream at once; each needs a few pool pages.
+    /// Voices that can stream at once; each owns an 8192-frame source-time ring.
     pub voices: usize,
     /// Decode threads.
     pub decoders: usize,
@@ -316,9 +315,9 @@ impl Default for StreamPolicy {
             max_step: 4.0,
             slack: Duration::from_millis(10),
             block_frames: 64,
-            voices: 256,
+            voices: 1024,
             decoders: 4,
-            head_budget: usize::MAX,
+            head_budget: 1 << 30,
             lazy: false,
             resident_budget: None,
         }
@@ -334,73 +333,6 @@ const PAGES_PER_VOICE: usize = 3;
 /// given a service horizon of at least the head) to its decode.
 pub(crate) fn head_frames(latency: Duration, rate: u32, policy: &StreamPolicy) -> usize {
     ((latency + policy.slack).as_secs_f64() * f64::from(rate)).ceil() as usize + policy.block_frames
-}
-
-/// Fastest a zone reads its asset, in source frames per output frame: its
-/// highest key plus `policy.headroom`, its and its group's tuning, and the
-/// asset's rate against the engine's.
-fn zone_step(zone: &ir::Zone, groups: &[ir::Group], ratio: f64, policy: &StreamPolicy) -> f64 {
-    let keys = match zone.pitch {
-        ir::KeyTracking::Tracked { root } => f64::from(zone.keys.high) - f64::from(root),
-        ir::KeyTracking::Scaled {
-            root,
-            cents_per_key,
-        } => {
-            let span = f64::from(zone.keys.high) - f64::from(root);
-            let low = f64::from(zone.keys.low) - f64::from(root);
-            (span * f64::from(cents_per_key)).max(low * f64::from(cents_per_key)) / 100.0
-        }
-        ir::KeyTracking::Fixed => 0.0,
-    };
-    let group = zone.group.map_or(0.0, |g| groups[g.0].tune.semitones());
-    let semitones = keys + zone.tune.semitones() + group + policy.headroom;
-    (ratio * (semitones / 12.0).exp2()).min(policy.max_step)
-}
-
-/// Frame ranges of each asset that zone starts read before streaming catches
-/// up (`head` output frames at the zone's step, plus a guard): forward from
-/// the start, or back from the end when reversed. Ascending and merged.
-pub(crate) fn start_ranges(
-    instrument: &ir::Instrument,
-    assets: &[Pcm],
-    rate: u32,
-    head: usize,
-    policy: &StreamPolicy,
-) -> Vec<Vec<Range<usize>>> {
-    let mut ranges = vec![Vec::new(); assets.len()];
-    for zone in &instrument.zones {
-        let (asset, playback) = (zone.asset.0, &zone.playback);
-        let pcm = &assets[asset];
-        let ratio = f64::from(pcm.sample_rate()) / f64::from(rate);
-        let step = zone_step(zone, &instrument.groups, ratio, policy);
-        // The resampling window reads this far either side of the position.
-        let guard = sampler_core::read_radius(step) as u64 + 1;
-        let frames = (head as f64 * step).ceil() as u64 + 2 * guard;
-        let length = pcm.frame_count() as u64;
-        let end = playback.end.unwrap_or(length).min(length);
-        let (from, to) = if playback.reverse {
-            (end.saturating_sub(frames), end)
-        } else {
-            let from = playback.start.min(length).saturating_sub(guard);
-            (from, (from + frames).min(length))
-        };
-        if from < to {
-            ranges[asset].push(from as usize..to as usize);
-        }
-    }
-    for list in &mut ranges {
-        list.sort_unstable_by_key(|r| r.start);
-        let mut merged: Vec<Range<usize>> = Vec::with_capacity(list.len());
-        for range in list.drain(..) {
-            match merged.last_mut() {
-                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
-                _ => merged.push(range),
-            }
-        }
-        *list = merged;
-    }
-    if let Some(room) = policy.resident_budget { keep_whole(assets, &mut ranges, room); }
-    ranges
 }
 
 // Port from v1 0cb7a8a0:src/engine/bank.rs (Builder::keep_whole).
@@ -433,8 +365,6 @@ pub(crate) struct Opened {
     pub assets: Vec<Pcm>,
     pub sources: HashMap<AssetId, Arc<dyn AssetSource>>,
     pub report: StreamReport,
-    pub head: usize,
-    pub rate: u32,
     pub policy: StreamPolicy,
 }
 
@@ -452,8 +382,7 @@ fn load_ranges(pcm: &Pcm, reader: &mut SampleReader, ranges: &[Range<usize>]) ->
 }
 
 /// Control side: where every streamed asset lives, its start ranges, and the
-/// decode thread. Purge and reload start ranges here; the runtime owns the
-/// page cache.
+/// decode threads. Purge and reload start ranges here; the runtime owns voice rings.
 pub struct Streamer {
     sources: Arc<HashMap<AssetId, Arc<dyn AssetSource>>>,
     ranges: Arc<HashMap<AssetId, Vec<Range<usize>>>>,
@@ -579,8 +508,6 @@ impl Streamer {
             assets,
             sources: registry,
             report,
-            head,
-            rate,
             policy: *policy,
         })
     }
@@ -609,8 +536,8 @@ impl Streamer {
         drop(span);
         let sources = Arc::new(sources);
         let stop = Arc::new(AtomicBool::new(false));
-        // Several decoders overlap reads, so one slow read does not hold up
-        // the pages queued behind it; they share the single worker endpoint.
+        // ponytail: fairness is within one part; port shared-bank scheduling with a multi-part probe.
+        // Decoders overlap reads through one worker endpoint.
         let worker = Arc::new(Mutex::new(worker));
         let mut streamer = Self {
             sources,
@@ -738,78 +665,43 @@ impl Drop for Streamer {
     }
 }
 
-/// Open readers kept per decode thread between pages of the same assets
-/// (each holds a 16 KiB read buffer).
-const OPEN_READERS: usize = 16;
-
 fn decode(
     worker: &Mutex<StreamWorker>,
     sources: &HashMap<AssetId, Arc<dyn AssetSource>>,
     stop: &AtomicBool,
 ) {
-    let worker = || {
-        worker
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    // ponytail: linear LRU over a few dozen readers; a map if that shows up.
-    let mut readers: Vec<(AssetId, SampleReader, u64)> = Vec::new();
-    let mut tick = 0u64;
+    let worker = || worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut decoded = decoded::Decoded::default();
     let mut held = None;
     while !stop.load(Ordering::Relaxed) {
+        let voice_job = worker().next_voice_job();
+        if let Some(mut job) = voice_job {
+            let asset = job.asset();
+            let result = sources.get(&asset).ok_or(DecodeFailure::Unavailable)
+                .and_then(|source| job.fill(|at| decoded.frame(asset, source, at)));
+            worker().complete_voice(job, result);
+            continue;
+        }
         let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
-            // The runtime unparks decoders after queuing requests and Drop
-            // unparks them to stop; an unpark before this park is not lost.
-            std::thread::park();
+            // Failed rings retry on their deadline; idle workers remain parked as in v1.
+            let retry = worker().voice_retry_delay();
+            match retry { Some(delay) => std::thread::park_timeout(delay), None => std::thread::park() }
             continue;
         };
-        tick += 1;
         let asset = job.key().asset;
-        let index = match readers.iter().position(|(id, ..)| *id == asset) {
-            Some(i) => Some(i),
-            None => sources.get(&asset).and_then(|s| s.open_stream().ok()).map(|r| {
-                if readers.len() == OPEN_READERS {
-                    let oldest = (0..readers.len()).min_by_key(|&i| readers[i].2).unwrap();
-                    readers.swap_remove(oldest);
-                }
-                readers.push((asset, r, tick));
-                readers.len() - 1
-            }),
-        };
-        let result = match index {
-            Some(i) => {
-                readers[i].2 = tick;
-                let start = job.range().start;
-                readers[i]
-                    .1
-                    .read(start, job.frames_mut())
-                    .map_err(|error| match error.kind() {
-                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => DecodeFailure::InvalidSamples,
-                        _ => DecodeFailure::Unavailable,
-                    })
-            }
-            None => Err(DecodeFailure::Unavailable),
-        };
-        if result == Err(DecodeFailure::Unavailable) {
-            if let Some(i) = index { readers.swap_remove(i); }
-        }
-        let completed = worker().complete(job, result);
-        if let Err(rejected) = completed {
-            if rejected.reason != sampler_core::StreamError::Capacity {
-                return;
-            }
-            // The audio side has not drained completions yet: retry later.
+        let result = sources.get(&asset).ok_or(DecodeFailure::Unavailable)
+            .and_then(|source| decoded.read(asset, source, job.range().start, job.frames_mut()));
+        if let Err(rejected) = worker().complete(job, result) {
+            if rejected.reason != sampler_core::StreamError::Capacity { return; }
             held = Some(rejected.job);
             std::thread::sleep(Duration::from_micros(500));
         }
     }
 }
 
-/// A streamed load: the plan's assets hold only heads; `cache` goes to the
-/// runtime (`Runtime::with_stream_cache`), which must call
-/// `service_streaming` every block with a horizon of at least
-/// `report.head_frames` plus the block length: a page is then requested no
-/// later than the latency budget before a voice reads it.
+/// A streamed load with merged resident onsets and one source-time ring per voice.
+/// The runtime services live voice demand each block; workers fill urgent voices
+/// before speculative top-ups, up to v1's 8192-frame lead.
 pub struct Streamed {
     pub loaded: crate::Loaded,
     pub assets: Vec<Pcm>,
@@ -830,18 +722,20 @@ impl Streamed {
             assets,
             sources,
             mut report,
-            head,
-            rate,
             policy,
         } = opened;
         let invalid = |reason: String| LoadError::Invalid {
             path: "stream cache".into(),
             reason,
         };
-        let (mut cache, worker) =
-            StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
+        let (mut cache, worker) = StreamCache::voice_rings(policy.voices, policy.decoders)
+            .map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
-        let ranges = start_ranges(&loaded.instrument, &kept, rate, head, &policy);
+        report.pool_pages = report.pool_bytes / (PAGE_FRAMES * size_of::<Frame>());
+        let (mut ranges, preload) = preload::plan(&loaded.instrument, &kept,
+            &loaded.plan.preload_start_offsets(), policy.head_budget);
+        if let Some(room) = policy.resident_budget { keep_whole(&kept, &mut ranges, room); }
+        report.head_frames = preload;
         let (streamer, bytes) = Streamer::start(
             sources,
             &kept,
@@ -875,6 +769,39 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v1_resident_head_and_voice_ring_worker_render_the_complete_source_offline() {
+        struct Ramp;
+        impl AssetSource for Ramp {
+            fn open(&self) -> io::Result<SampleReader> {
+                Ok(SampleReader::custom(48000,20000,|start,out| {
+                    for (i,f) in out.iter_mut().enumerate() { *f=[(start+i) as f32/32768.;2]; }
+                    Ok(())
+                }))
+            }
+        }
+        let instrument=ir::Instrument {
+            assets:vec![ir::Asset {location:ir::AssetLocation::Path("ramp".into()),
+                encoding:ir::Encoding::Unknown,root_key:None,loops:vec![]}],
+            zones:vec![ir::Zone::new(ir::AssetRef(0))],..Default::default()
+        };
+        let streamed=crate::stream_instrument(instrument,vec![Arc::new(Ramp)],vec!["ramp".into()],
+            &crate::Options::default(),&StreamPolicy {voices:1,decoders:1,..Default::default()}).unwrap();
+        assert_eq!(streamed.report.head_frames,preload::PRELOAD);
+        assert_eq!(streamed.assets[0].head_frames(),preload::PRELOAD);
+        assert_eq!(streamed.cache.bytes(),8192*size_of::<Frame>());
+        let limits=sampler_core::Limits::for_plan(&streamed.loaded.plan,1,1);
+        let mut rt=sampler_core::Runtime::new(streamed.loaded.plan,limits).unwrap().with_stream_cache(streamed.cache);
+        rt.set_offline(true);
+        rt.trigger(sampler_core::Input {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+        let mut output=vec![[0.;2];12000];
+        for block in output.chunks_mut(32) {rt.render(block).unwrap();}
+        assert_eq!(rt.take_stream_fault(),None);
+        assert_eq!(rt.stream_underruns(),0);
+        for (i,f) in output.into_iter().enumerate() {assert_eq!(f,[i as f32/32768.;2],"frame {i}");}
+        drop(streamed.streamer);
+    }
 
     #[test]
     fn headers_open_in_bounded_parallel_workers_and_keep_asset_order() {
