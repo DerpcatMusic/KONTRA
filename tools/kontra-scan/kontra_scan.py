@@ -20,7 +20,7 @@ V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls']
 
 
 def library(item):
@@ -62,9 +62,14 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    for p in programs:
+        if p.get('loaded') is True and 'pick' in p and p['pick'] is None:p['plays_note']='no'
+    if r.get('loads')=='yes' and programs and all('pick' in p and p['pick'] is None for p in programs):
+        r['plays_note']='no'
+        if '; no safe audition key' not in r.get('reason',''):r['reason']=r.get('reason','')+'; no safe audition key'
     # A sidecar's override label is not the origin of the common audition pick.
     common = {}
-    if r.get('path') and V2_SHA and any(p.get('pick_source')=='shared-note-plan' for p in programs):
+    if r.get('path') and V2_SHA and r.get('revision')!=V2_SHA and bool(programs):
         witness=NOTE_ROOT.parent/'results/v2/cache'/(signature(r['path'],V2_SHA)+'.json')
         if witness.is_file():
             common={p.get('program',i):p for i,p in enumerate(json.loads(witness.read_text()).get('programs',[]))}
@@ -73,6 +78,12 @@ def extra_columns(r):
             p['adapter_pick_source']='shared-note-plan'
             origin=common.get(p.get('program',i),{})
             p['pick_source']=origin.get('pick_source','unknown') if origin.get('pick')==p.get('pick') else 'unknown'
+    actual=[p for p in programs if isinstance(p.get('pick'),list)]
+    r['fallback_note']=int(any(p.get('fallback_note') or p.get('pick_source')=='fallback' or common.get(p.get('program',i),{}).get('pick_source')=='fallback' for i,p in enumerate(actual)))
+    if r['fallback_note'] and r.get('audition_status')=='matched-note-plan':r['audition_status']='fallback-note'
+    r['zero_zone_reason']=json.dumps({str(p.get('program',i)):p.get('zero_zone_reason') for i,p in enumerate(programs)},separators=(',',':'))
+    r['keyswitch_picked']=json.dumps({str(p.get('program',i)):p.get('keyswitch','unknown') for i,p in enumerate(programs)},separators=(',',':'))
+    r['phantom_free_controls']='unknown' # baseline compiler does not retain inferred-widget origin
     for p in programs:
         if p.get('source')=='uvi' and 'views' in r:p.setdefault('views',r['views'])
         if p.get('source')=='uvi' and 'sample_resident_bytes' in r:p.setdefault('sample_resident_bytes',r['sample_resident_bytes'])
@@ -91,9 +102,9 @@ def extra_columns(r):
         r[target] = count(lua,key) if lua else 'n/a' if all(p.get('source')=='kontakt' for p in programs) and programs else 'unknown'
     for target,key in [('lua_init_first','init_first'),('lua_runtime_first','runtime_first')]:
         r[target]=next((x[key] for x in lua if x.get(key)), '')
-    for key in ['controls_declared','controls_bound_declared','asset_lookup_requested','asset_lookup_ok','asset_decode_requested','asset_decode_ok','font_declared','font_success']:
+    for key in ['controls_declared','controls_bound_declared','asset_lookup_requested','asset_lookup_ok','asset_decode_requested','asset_decode_ok','font_declared','font_success','bound_typed']:
         r[key]=count(views,key)
-    for key in ['sample_resident_bytes','underruns']:
+    for key in ['sample_resident_bytes','underruns','sample_zone_count']:
         r[key]=count(programs,key)
     def status(key):
         vals=[x[key] for x in ksp if key in x]
@@ -231,7 +242,15 @@ def probe(engine, item, work, timeout, shots):
             fcntl.flock(note_lock,fcntl.LOCK_EX)
             if not plan_path.exists(): atomic(plan_path,{'programs':picks,'policy':'declared-keys-then-zone-v1'})
             plan=json.loads(plan_path.read_text())
-            r['audition_status']='matched-note-plan' if plan.get('programs')==picks else 'audition-mismatch'
+            # Upgrade numeric plan metadata without changing a previously frozen key/velocity.
+            if engine.name=='kontra-scan-v2':
+                for i,p in enumerate(r.get('programs',[])):
+                    target=plan.get('programs',{}).get(str(p.get('program',i)))
+                    if target is not None and 'keyswitch' in p:target['keyswitch']=p['keyswitch']
+                plan['selection_source']={str(p.get('program',i)):p.get('pick_source','unknown') for i,p in enumerate(r.get('programs',[]))}
+                atomic(plan_path,plan)
+            wanted={k:{'key':v['key'],'velocity':v['velocity']} for k,v in plan.get('programs',{}).items()}
+            r['audition_status']='matched-note-plan' if wanted==picks else 'audition-mismatch'
             r['note_policy']=plan.get('policy','unknown')
     else: r['audition_status']='not-auditioned'
     # stdout is metrics only; keep one canonical cached record, not a second copy.
