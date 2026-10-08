@@ -15,6 +15,8 @@ import time
 NOTE_ROOT = Path.home()/'.cache/kontra-scan/notes'
 SIDECAR = NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'
 SIDECAR_SHA = hashlib.sha256(SIDECAR.read_bytes()).hexdigest() if SIDECAR.is_file() else None
+V2_ENGINE = NOTE_ROOT.parent/'bin/kontra-scan-v2'
+V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file() else None
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
@@ -60,6 +62,17 @@ def atomic(path, value):
 def extra_columns(r):
     """Unknown is distinct from zero, including old cache records and failed admissions."""
     programs = r.get('programs', [])
+    # A sidecar's override label is not the origin of the common audition pick.
+    common = {}
+    if r.get('path') and V2_SHA and any(p.get('pick_source')=='shared-note-plan' for p in programs):
+        witness=NOTE_ROOT.parent/'results/v2/cache'/(signature(r['path'],V2_SHA)+'.json')
+        if witness.is_file():
+            common={p.get('program',i):p for i,p in enumerate(json.loads(witness.read_text()).get('programs',[]))}
+    for i,p in enumerate(programs):
+        if p.get('pick_source')=='shared-note-plan':
+            p['adapter_pick_source']='shared-note-plan'
+            origin=common.get(p.get('program',i),{})
+            p['pick_source']=origin.get('pick_source','unknown') if origin.get('pick')==p.get('pick') else 'unknown'
     for p in programs:
         if p.get('source')=='uvi' and 'views' in r:p.setdefault('views',r['views'])
         if p.get('source')=='uvi' and 'sample_resident_bytes' in r:p.setdefault('sample_resident_bytes',r['sample_resident_bytes'])

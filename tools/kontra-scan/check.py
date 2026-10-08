@@ -54,4 +54,12 @@ with tempfile.TemporaryDirectory() as tmp:
     before=scanner.signature(item,'r')
     scanner.atomic(scanner.note_path(item),{'programs':{'0':{'key':62,'velocity':64}},'policy':'declared-keys-then-zone-v1'})
     assert before!=scanner.signature(item,'r')
+    scanner.NOTE_ROOT=Path(tmp)/'notes'; scanner.V2_SHA='v2'
+    cache=Path(tmp)/'results/v2/cache'; cache.mkdir(parents=True)
+    scanner.atomic(cache/(scanner.signature(item,'v2')+'.json'),{'programs':[{'program':0,'pick':[62,64],'pick_source':'native_declared'}]})
+    row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[62,64],'pick_source':'shared-note-plan'}]})
+    assert json.loads(row['pick_source'])=={'0':'native_declared'}
+    assert row['programs'][0]['adapter_pick_source']=='shared-note-plan'
+    row=scanner.extra_columns({'path':item,'ui':'no-ui','programs':[{'source':'uvi','program':0,'pick':[40,64],'pick_source':'shared-note-plan'}]})
+    assert json.loads(row['pick_source'])=={'0':'unknown'} # unequal notes never inherit native-valid provenance
 print('shared scanner checks passed')
