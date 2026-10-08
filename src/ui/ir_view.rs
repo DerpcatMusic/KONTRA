@@ -84,6 +84,8 @@ impl Assets {
         }
     }
 
+    pub(super) fn font(&self, a: &ir::AssetRef) -> Option<Font> { self.fonts.get(&a.0)?.clone() }
+
     pub fn get(&self, a: ir::AssetRef) -> Option<&Arc<Picture>> {
         self.loaded.get(&a.0)?.as_ref()
     }
@@ -113,34 +115,38 @@ fn picture(p: &Picture, n: usize) -> Option<Fill> {
     Some(Fill::Image(f.clone(), Fit::Fill))
 }
 
-/// Whether the art under the middle of `n` is light: the nearest containing
-/// panel's background picture there, else the wallpaper.
+/// Sample authored backgrounds in paint order, compositing alpha over page colour.
 fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
     let r = face.page_rect(n);
-    let (x, y) = (f64::from(r.x) + f64::from(r.width) / 2., f64::from(r.y) + f64::from(r.height) / 2.);
-    let luma = |img: &Image, u: f64, v: f64| {
-        if u < 0. || v < 0. || u >= f64::from(img.width) || v >= f64::from(img.height) {
-            return None;
-        }
-        let i = (v as usize * img.width as usize + u as usize) * 4;
-        let c = img.rgba.get(i..i + 4)?;
-        (c[3] >= 128).then(|| 0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2]) > 140.)
+    let (x,y)=(r.x as f64+r.width as f64/2.,r.y as f64+r.height as f64/2.);
+    let page=&face.pages[face.widgets[n.0].page.0];
+    let base=page.background.color.unwrap_or(ir::Rgba::rgb(0x202020));
+    let mut rgb=[base.r as f32,base.g as f32,base.b as f32];
+    let blend=|rgb:&mut [f32;3],c:ir::Rgba| {let a=c.a as f32/255.;for (out,v) in rgb.iter_mut().zip([c.r,c.g,c.b]) {*out=*out*(1.-a)+v as f32*a;}};
+    let sample=|rgb:&mut [f32;3],img:&Image,u:f64,v:f64| {
+        if u<0. || v<0. || u>=img.width as f64 || v>=img.height as f64 {return;}
+        let i=(v as usize*img.width as usize+u as usize)*4;
+        if let Some(c)=img.rgba.get(i..i+4) {blend(rgb,ir::Rgba{r:c[0],g:c[1],b:c[2],a:c[3]});}
     };
-    let mut at = face.widgets[n.0].parent;
-    while let Some(p) = at {
-        let pr = face.page_rect(p);
-        if let Some(img) = face.widgets[p.0].image(Use::Background).and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first()) {
-            let u = (x - f64::from(pr.x)) / f64::from(pr.width.max(1)) * f64::from(img.width);
-            let v = (y - f64::from(pr.y)) / f64::from(pr.height.max(1)) * f64::from(img.height);
-            if let Some(l) = luma(img, u, v) {
-                return l;
-            }
+    if let Some(img)=page.background.image.and_then(|a|assets.get(a)).and_then(|p|p.frames.first()) {sample(&mut rgb,img,x,y+page.background.offset_y as f64);}
+    for at in face.draw_order(face.widgets[n.0].page) {
+        if at==n {break;}
+        if !face.visible(at) {continue;}
+        let w=&face.widgets[at.0];let r=face.page_rect(at);
+        if x<r.x as f64 || y<r.y as f64 || x>=(r.x as f64+r.width as f64) || y>=(r.y as f64+r.height as f64) {continue;}
+        if let Some(c)=w.colors.background {blend(&mut rgb,c);}
+        if w.hide.background {continue;}
+        if let Some(img)=w.images.iter().find(|i|i.role==Use::Background).and_then(|i|assets.get(i.asset).and_then(|p|p.frames.get(i.frame.unwrap_or(0).min(p.frames.len().saturating_sub(1) as u32) as usize))) {
+            sample(&mut rgb,img,(x-r.x as f64)/r.width.max(1) as f64*img.width as f64,(y-r.y as f64)/r.height.max(1) as f64*img.height as f64);
         }
-        at = face.widgets[p.0].parent;
     }
-    let page = &face.pages[face.widgets[n.0].page.0];
-    let wall = page.background.image.and_then(|a| assets.get(a)).and_then(|pic| pic.frames.first());
-    wall.and_then(|img| luma(img, x, y + f64::from(page.background.offset_y))).unwrap_or(false)
+    0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2]>140.
+}
+
+fn art(face:&Interface, asset:ir::AssetRef,p:&Picture,n:usize,w:f64,h:f64,scale:f64)->El {
+    let Some(image)=p.frames.get(n.min(p.frames.len().saturating_sub(1))) else {return block(w,h)};
+    let meta=match face.assets[asset.0].kind {ir::AssetKind::Image(m)=>m,_=>ir::ImageMeta::default()};
+    super::render_art::sliced(image,meta,w,h,scale)
 }
 
 /// Kontakt's layout grid (`move_control`): column and row pitch, and the
@@ -329,20 +335,15 @@ fn widget(
     }
     let can_edit = enabled && wd.intercepts_mouse;
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
-    let text_size = wd.style.and_then(|s| face.styles[s.0].size).map_or(SMALL, f64::from) * scale;
-    // Text on our own (dark) control faces is ours; the source's colour is for
-    // text on its art: labels, and controls drawn by their pictures.
+    let style=wd.style.and_then(|s|face.styles.get(s.0));
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
-    let ink = match wd.style {
-        // A transparent colour is one the source left to its font (a custom bitmap font).
-        Some(s) if !own_face && face.styles[s.0].color.a > 0 => Fill::from(colour(face.styles[s.0].color)),
+    let ink=match style {
+        Some(s) if !own_face && s.color.a>0 => Fill::from(colour(s.color)),
+        _ if !own_face && light_under(face,assets,n) => Fill::from(Color::srgb(0.1,0.1,0.1)),
         _ => Fill::from(Role::Ink),
     };
-    let words = |t: String| {
-        let el=caption(t).text_size(text_size).fill(ink.clone()).lines(1);
-        let font=wd.style.and_then(|s|match face.styles[s.0].font { ir::Font::File(a)=>assets.fonts.get(&a.0)?.clone(),_=>None });
-        match font { Some(font)=>el.font(font), None=>el }
-    };
+    let words=|t:String| super::render_art::words(&t,style,assets,bitmap,ink.clone(),w,
+        style.and_then(|s|s.size).map_or(SMALL,f64::from)*scale*1.4,scale,None,false);
     let number = |x: f64, d: &ir::Display| {
         let x = x / if d.ratio == 0. { 1. } else { d.ratio };
         let x = if x.fract() == 0. { format!("{x}") } else { format!("{x:.2}") };
@@ -359,7 +360,7 @@ fn widget(
             let lift = ui.state(id.as_str()).hover.max(if held { 1. } else { 0. }) as f32;
             let unit = |x: f64| mapped(range,wd.mapper.as_deref(),x,true);
             match strip {
-                Some(p) => block(w, h).radius(0).fill(picture(p, fixed.unwrap_or_else(|| frame(unit(v), 0., 1., p.frames.len()))).unwrap_or(Fill::from(Role::Field))),
+                Some(p) => art(face,wd.image(Use::Strip).unwrap(),p,fixed.unwrap_or_else(||frame(unit(v),0.,1.,p.frames.len())),w,h,scale),
                 // A slider about as tall as wide was drawn as a knob by its strip.
                 // Kontakt's stock knob: its name over the dial, the value under it.
                 None if matches!(wd.kind, Kind::Knob { .. }) => {
@@ -456,15 +457,13 @@ fn widget(
                 .focusable()
                 .a11y(A11y::Slider { value: v, min: range.min, max: range.max })
         }
-        Kind::Label => row![words(wd.text.clone())].align(Align::Center).justify(match wd.style.map(|s|face.styles[s.0].align) {
-            Some(ir::Align::Center)=>Justify::Center,Some(ir::Align::Right)=>Justify::End,_=>Justify::Start,
-        }),
+        Kind::Label => super::render_art::words(&wd.text,style,assets,bitmap,ink.clone(),w,h,scale,wd.text_y,true),
         Kind::LevelMeter { .. } => {
             let source=assets.meter.clone();
             let (bus,channel)=match wd.binding{Binding::Meter{bus,channel}=>(bus,channel),_=>(None,0)};
             meter_v(move ||source.as_ref().map(|s|s(bus,channel)).unwrap_or([0.;2]))
         },
-        Kind::Table { columns, range, cells, .. } => {
+        Kind::Table { columns, range, cells, bipolar, steps_shown } => {
             let bars=(0..*columns as usize).map(|c| {
                 let cid=wd.components.get(c).copied();
                 let mut value=cid.and_then(|id|values.get(&id).copied()).unwrap_or_else(||cells.get(c).copied().unwrap_or(0.));
@@ -473,7 +472,16 @@ fn widget(
                 if let Some(step)=range.step { value=(value/step).round()*step; }
                 if let Some(id)=cid {values.insert(id,value);}
                 let t=if range.max==range.min{0.}else{((value-range.min)/(range.max-range.min)).clamp(0.,1.)};
-                canvas(move |s| vec![Draw::fill(rect(0.,s.height*(1.-t),s.width.max(1.),s.height*t),Role::Ink.alpha(0.6))])
+                let zero=if *bipolar && range.max!=range.min {(-range.min/(range.max-range.min)).clamp(0.,1.)}else{0.};
+                let bar=wd.colors.bar.map_or(Role::Ink.alpha(0.6),|c|Fill::from(colour(c)));
+                let zero_ink=wd.colors.zero_line.map_or(Role::Ink.alpha(0.25),|c|Fill::from(colour(c)));
+                let steps=steps_shown.unwrap_or(0).min(128);
+                canvas(move |s| {
+                    let mut draws=vec![Draw::fill(rect(0.,s.height*(1.-t.max(zero)),s.width.max(1.),s.height*(t-zero).abs()),bar.clone())];
+                    draws.push(Draw::fill(rect(0.,s.height*(1.-zero),s.width,1.),zero_ink.clone()));
+                    for step in 1..steps {draws.push(Draw::fill(rect(0.,s.height*step as f64/steps as f64,s.width,1.),Role::Ink.alpha(0.1)));}
+                    draws
+                })
                     .fill(Role::Ink.alpha(0.06)).flex(1).h(h).id(key).focusable()
                     .named(format!("{} {}",wd.name,c+1)).a11y(A11y::Slider{value,min:range.min,max:range.max})
             }).collect::<Vec<_>>();
@@ -528,11 +536,14 @@ fn widget(
     }
     let bg = wd.images.iter().find(|i| i.role == Use::Background);
     match bg.and_then(|i| assets.get(i.asset).and_then(|p| picture(p, i.frame.unwrap_or(0) as usize))) {
-        Some(bg) if !wd.hide.background => stack![block(w, h).radius(0).fill(bg), el].w(w).h(h).shrink(0),
+        Some(_) if !wd.hide.background => { let i=bg.unwrap();let p=assets.get(i.asset).unwrap();stack![art(face,i.asset,p,i.frame.unwrap_or(0) as usize,w,h,scale),el].w(w).h(h).shrink(0) },
         _ => el,
     }
 }
 
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod render_tests;
 /// Exercise the production asset loader, layout and CPU painter without a window.
 #[cfg(feature = "shots")]
 pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Value {
