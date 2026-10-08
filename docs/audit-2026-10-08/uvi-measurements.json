@@ -1701,20 +1701,20 @@
     "v1_sidecar_budget_hit": "unknown"
   },
   "current_shared_scanner": {
-    "source": "abf248cd0b99d884b9f2456914362a7bd8e81869",
+    "source": "01178ba443e2b409c23282509f57d35a60753c36",
     "v2_product_base": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
     "v2_sha256": "d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a",
     "pinned_v1_adapter": "44d03cecbd3b5e47b1564d17ac239239dc2ba4ea",
     "v1_dispatcher_sha256": "870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e",
-    "v1_uvi_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
-    "coverage_status": "Kontakt pass restarted; full1494 paired pending",
+    "v1_uvi_sha256": "34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1",
+    "coverage_status": "serial Kontakt834 pass; automatic UVI660 paired pass follows; full1494 pending",
     "audio_comparison_policy": [
       "matching actual key and velocity required",
       "fallback excluded from parity",
       "no safe key: plays_note=no",
       "old null-pick audio discarded"
     ],
-    "sidecar_changed": false,
+    "sidecar_changed": true,
     "missing_sidecar_fields": "unknown, not zero",
     "unchanged_uvi_note_helper": {
       "accepts": [
@@ -1725,7 +1725,7 @@
       "explicit_no_audition_command": "not implemented in sidecar",
       "without_numeric_override": "local selection fallback; require paired actual-pick checks"
     },
-    "verified_at_utc": "2026-10-08T09:02:19.778748+00:00",
+    "verified_at_utc": "2026-10-08T10:50:59.511126+00:00",
     "sample_zone_count": "retained instrument IR count; unknown if unavailable",
     "decoded_zone_count": "raw decoded count; separate JSON",
     "runtime_purge_gating": "not inferred from mapping counts",
@@ -1734,7 +1734,12 @@
     "onset_detection": "finite exactly nonzero, separate from1e-5 audible",
     "paint_audio": "concurrent",
     "schema_columns": 72,
-    "raw_saved_sigils": "unknown when incomplete; separate from decoded source disposition"
+    "raw_saved_sigils": "unknown when incomplete; separate from decoded source disposition",
+    "rust_source": "abf248cd0b99d884b9f2456914362a7bd8e81869",
+    "driver_delta": "CLI cache environment and README only",
+    "driver_product_pcm_cache_env": "KONTRA_UVI_STATIC_PCM_CACHE=0",
+    "v1_uvi_source": "026bdbb49f29a5ad752b3470a5f6f64a20a8957d",
+    "installed_binary_aliases_verified": true
   },
   "shared_scanner_e340c39a": {
     "source": "e340c39a6666752866015b5ee8f06a3cc978c416",
@@ -1774,7 +1779,6 @@
     "product_base": "4bffbb18b867b0a8e84b435d11684784b237693c",
     "binary": "/home/derpcat/.cache/kontakto-audit-uvi/staged/kontra-scan-v1-uvi-onset-026bdbb4",
     "binary_sha256": "34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1",
-    "installed_sidecar_sha256_at_check": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
     "install_owner": "shared scanner owner; not installed by auditor",
     "build": "kontakto-heavy cargo build --release --example kontra_scan --features shots,uvi",
     "fields": {
@@ -1811,7 +1815,11 @@
     },
     "corpus_collector": "none",
     "raw_data_persisted": false,
-    "status": "ready; owner installation pending"
+    "status": "installed by shared owner; canonical executable and auditor alias independently digest-verified",
+    "installed_binary_sha256": "34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1",
+    "installed_executable": "/home/derpcat/.cache/kontra-scan/bin/kontra-scan-v1-uvi",
+    "installed_alias": "/home/derpcat/.cache/kontra-scan/bin/kontra-scan-v1uvi",
+    "historical_installed_sidecar_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1"
   },
   "shared_scanner_2355155b": {
     "source": "2355155b56a5ae26add8bdbc287d46d42e7825f2",
@@ -1925,5 +1933,42 @@
     "corpus_collector": "none",
     "installed_by_auditor": false,
     "status": "historical95a1f01b; superseded for f7b2 onset acceptance"
+  },
+  "shared_scanner_abf248cd": {
+    "source": "abf248cd0b99d884b9f2456914362a7bd8e81869",
+    "v2_product_base": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
+    "v2_sha256": "d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a",
+    "pinned_v1_adapter": "44d03cecbd3b5e47b1564d17ac239239dc2ba4ea",
+    "v1_dispatcher_sha256": "870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e",
+    "v1_uvi_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "coverage_status": "Kontakt pass restarted; full1494 paired pending",
+    "audio_comparison_policy": [
+      "matching actual key and velocity required",
+      "fallback excluded from parity",
+      "no safe key: plays_note=no",
+      "old null-pick audio discarded"
+    ],
+    "sidecar_changed": false,
+    "missing_sidecar_fields": "unknown, not zero",
+    "unchanged_uvi_note_helper": {
+      "accepts": [
+        "key",
+        "velocity"
+      ],
+      "keyswitch_execution": "unknown; not read by compiled helper",
+      "explicit_no_audition_command": "not implemented in sidecar",
+      "without_numeric_override": "local selection fallback; require paired actual-pick checks"
+    },
+    "verified_at_utc": "2026-10-08T09:02:19.778748+00:00",
+    "sample_zone_count": "retained instrument IR count; unknown if unavailable",
+    "decoded_zone_count": "raw decoded count; separate JSON",
+    "runtime_purge_gating": "not inferred from mapping counts",
+    "no_safe_key": "not auditioned",
+    "onset_clock": "first production import; excludes metadata prepass and isolated worker startup",
+    "onset_detection": "finite exactly nonzero, separate from1e-5 audible",
+    "paint_audio": "concurrent",
+    "schema_columns": 72,
+    "raw_saved_sigils": "unknown when incomplete; separate from decoded source disposition",
+    "status": "Rust binaries retained; driver superseded by01178ba4"
   }
 }
