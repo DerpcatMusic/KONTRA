@@ -2351,9 +2351,11 @@ fn audit_ui_toggle_and_nested_wheel() {
     h.idle(8);
     let pos=center(&h.ui,"art-0-4");
     let before=h.ui.scroll("arts-0");
+    let rack_before=h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
     h.tick(Input{pointer:PointerInput{pos:Some(pos),..Default::default()},wheel:Vec2::new(0.,80.),..Default::default()});
     h.idle(30);
     let after=h.ui.scroll("arts-0");
-    println!("AUDIT_REPRO nested_scroll_before={before:?} after={after:?} rack={:?}",h.ui.scroll("rack-view"));
+    let rack_after=h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    println!("AUDIT_REPRO nested_scroll_before={before:?} after={after:?} rack_top_before={rack_before:.3} after={rack_after:.3}");
     assert!(after[1]>before[1],"nested runtime scroll can move even when rack manually takes the same wheel");
 }
