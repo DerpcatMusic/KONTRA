@@ -195,6 +195,10 @@ mod tests {
         assert_eq!(parsed.0,"decoded");assert_eq!(parsed.1.get("!"),Some(&1));
         table.pop();assert_eq!(crate::ui::scan::strict_table(&table,0x50).0,"malformed");
         sampler_ksp::scan::begin();
+        // Full-suite peers also compile scripts into the process-wide capture.
+        sampler_ksp::scan::attempt("scanner-phase-test");
+        let take = || sampler_ksp::scan::take().into_iter()
+            .filter(|o| o.attempt == "scanner-phase-test").collect::<Vec<_>>();
         sampler_ksp::compile(
             "on init\ndeclare $x := 1\nend on",
             48000,
@@ -202,13 +206,15 @@ mod tests {
             &[],
         )
         .unwrap();
-        let ok = sampler_ksp::scan::take();
+        let ok = take();
+        assert_eq!(ok.len(), 1);
         assert!(ok.iter().any(|o| o.compile_ok && o.init_ok == Some(true)));
         assert!(
             sampler_ksp::compile("this is not KSP", 48000, sampler_ksp::Limits::LIBRARY, &[])
                 .is_err()
         );
-        let failed = sampler_ksp::scan::take();
+        let failed = take();
+        assert_eq!(failed.len(), 1);
         assert!(failed.iter().any(|o| !o.compile_ok && o.init_ok.is_none()));
         sampler_ksp::compile(
             "on init\ndeclare $x\nend on\non persistence_changed\nwhile(1)\nend while\nend on",
@@ -217,7 +223,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        let callback = sampler_ksp::scan::take();
+        let callback = take();
+        assert_eq!(callback.len(), 1);
         assert_eq!(callback[0].init.completion, "completed");
         assert_eq!(callback[0].persistence_changed.completion, "failed");
         assert_eq!(
@@ -229,6 +236,7 @@ mod tests {
                 .category,
             "fuel-budget"
         );
+        sampler_ksp::scan::attempt("standalone");
         let xml = "<UVI4><Program><ScriptProcessor><script><![CDATA[function onInit() error('private init') end function onNote(e) error('private runtime') end]]></script></ScriptProcessor></Program></UVI4>";
         let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
         assert_eq!(host.scan_faults().init_count, 1);
