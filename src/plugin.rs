@@ -330,6 +330,8 @@ impl SamplerParams {
                 part.control_values = captured.control_values;
                 part.script_state = captured.script_state;
                 part.script_state_source = captured.script_state_source;
+                part.uvi_state = captured.uvi_state;
+                part.uvi_state_source = captured.uvi_state_source;
             }
         }
     }
@@ -1112,7 +1114,15 @@ impl Shared {
                     part.script_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.script_state = state;
                 }
-
+                let scripts = atoms.scripts.lock().unwrap();
+                if scripts.uvi_source.as_ref() == Some(&part.source())
+                    && let Some(uvi) = &scripts.uvi
+                    && let Ok(state) = uvi.state()
+                    && let Ok(state) = serde_json::to_string(&state)
+                {
+                    part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.uvi_state = state;
+                }
             }
         }
     }
@@ -1208,6 +1218,9 @@ impl Shared {
             let Some(uvi) = scripts.uvi.clone() else {
                 continue;
             };
+            if scripts.uvi_source != params.selection.read().unwrap().parts.get(slot).map(Part::source) {
+                continue;
+            }
             let revision = uvi.revision();
             if revision == scripts.uvi_revision {
                 continue;
@@ -1215,14 +1228,6 @@ impl Shared {
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
                 view.publish_interface(&uvi.interface());
-            }
-            if let Ok(state) = uvi.state()
-                && let Ok(state) = serde_json::to_string(&state)
-                && let Some(part) = params.selection.write().unwrap().parts.get_mut(slot)
-                && scripts.uvi_source.as_ref() == Some(&part.source())
-            {
-                part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
-                part.uvi_state = state;
             }
         }
     }
