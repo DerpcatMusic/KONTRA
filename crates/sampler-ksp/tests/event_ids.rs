@@ -349,13 +349,24 @@ fn ui_can_stop_stored_events_and_stale_ids_cannot_stop_a_reused_slot() {
         assert_eq!(rt.note_count(), 0);
     });
     assert!(compile("on note note_off(1,0,1) end on").is_err());
-    // v2: init-time and multi-event note_off compile with a warning, no effect.
-    for warned in [
-        "on init note_off(1) end on",
-        "on note note_off($ALL_EVENTS) end on",
-        "on note note_off(by_marks(1)) end on",
-    ] {
-        assert!(!compile(warned).unwrap().warnings().is_empty(), "{warned}");
+    assert!(!compile("on init note_off(1) end on").unwrap().warnings().is_empty());
+    for (selector, keep_second) in [("$ALL_EVENTS", false), ("by_marks($MARK_1)", true)] {
+        let script = compile(&format!("on note
+            if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1)
+            else note_off({selector}) end if
+            end on")).unwrap();
+        assert!(script.warnings().is_empty(), "implemented selector: {selector}");
+        let mut rt = runtime_script(script);
+        support::without_heap(|| {
+            let marked = rt.trigger(input(60), 60, 1.).unwrap();
+            let second = rt.trigger(input(61), 61, 1.).unwrap();
+            assert_eq!(rt.key_down(marked), Ok(false));
+            assert_eq!(rt.key_down(second), Ok(keep_second));
+            rt.flush_behaviors(|_, _, outcome| {
+                assert_eq!(outcome, Outcome::Finished);
+                true
+            });
+        });
     }
     let mut rt = runtime("on note note_off($EVENT_ID,-1) end on");
     let original = rt.trigger(input(60), 60, 1.).unwrap();
