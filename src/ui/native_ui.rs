@@ -118,7 +118,7 @@ impl State {
         let _ = std::thread::Builder::new()
             .name("native-resources".into())
             .spawn(move || {
-                let result = Package::load(&path).map(Arc::new);
+                let result = Package::load_cancel(&path,||cancel.load(Ordering::Acquire)).map(Arc::new);
                 if !cancel.load(Ordering::Acquire) {
                     let _ = done.send(result);
                     super::picture_worker::completed();
