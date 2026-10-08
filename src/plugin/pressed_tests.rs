@@ -58,6 +58,8 @@ fn reset_hard_cuts_held_notes_and_release_tails() {
     exact(&mut dsp,&p,off(60));
     Sampler::reset(&mut dsp,&p,&AudioConfig::new(48000.,64));
     assert_eq!(dsp.core.voices().active,0);
+    assert_eq!(p.shared.voices.load(Ordering::Relaxed),0,"hard reset must publish zero voices without another audio block");
+    assert_eq!(p.shared.audible.load(Ordering::Relaxed),0);
     assert!(p.shared.heard.iter().chain(&p.shared.played).all(|v|v.load(Ordering::Relaxed)==0));
 }
 
@@ -150,3 +152,24 @@ fn keyboard_mouse_up_outside_releases_real_voice_and_visual() { pointer_release(
 #[cfg(feature="shots")]
 #[test]
 fn keyboard_drag_across_keys_releases_real_voices_and_visuals() { pointer_release(true); }
+
+#[cfg(feature="clap")]
+#[test]
+fn clap_reset_and_deactivate_clear_pressed_state_through_real_vtable() {
+    let result=moose_clap::lifecycle_reset_smoke::<Plugin>(|p| {
+        p.shared.press_key(EVERY_PART,60,100);
+        p.shared.heard[60].store(100,Ordering::Relaxed);
+    },|p|p.shared.played.iter().chain(&p.shared.heard).all(|v|v.load(Ordering::Relaxed)==0));
+    assert!(result[0],"CLAP reset must clear engine and keyboard ownership");
+    assert!(result[1],"CLAP deactivate must invoke the same hard reset");
+}
+
+#[test]
+fn explicit_panic_hard_cuts_held_notes_and_tails() {
+    let (p,mut dsp)=fixture(None);
+    exact(&mut dsp,&p,on(60));process(&mut dsp,&p,true);
+    p.shared.panic.store(true,Ordering::Release);
+    process(&mut dsp,&p,true);
+    assert_eq!(dsp.core.voices().active,0);
+    assert!(p.shared.heard.iter().chain(&p.shared.played).all(|v|v.load(Ordering::Relaxed)==0));
+}

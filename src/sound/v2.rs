@@ -42,6 +42,9 @@ use super::{
     RACK_SLOTS, Rendered, Voices,
 };
 
+#[cfg(test)]
+mod pressed_tests;
+
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
 /// Notes a part holds at once, sounding or awaiting NOTE_END.
