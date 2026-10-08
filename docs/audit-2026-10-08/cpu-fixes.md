@@ -624,3 +624,24 @@ Synthetic preloaded source aggregates from3 alternating pairs; these are not col
 | 64 | paged | 16 | 2336.404 / 8905.688 | 649.143 / 3247.921 |
 
 64-voice paged medians improve at high rates, but8x p99 regresses2576.008→2847.683µs. Per-run records, including earlier single-probe outliers and setup times, remain in `~/.cache/kontakto-fix-cpu/streamed-resample-{micro,matrix}/` and streamed-resample-check.log. No rows are excluded.
+
+### Tail follow-up: repeated adverse cells and matched audio-TID profiles
+
+| Cell | Repeat | Before median/p99 µs | After median/p99 µs | Underruns before/after | Deadlines before/after |
+|---|---:|---:|---:|---:|---:|
+| v2-piano-32-cold | 2 | 16.891/34.111 | 18.770/37.080 | 0/0 | 0/0 |
+| v2-piano-32-cold | 3 | 18.531/36.121 | 17.771/36.701 | 0/0 | 0/0 |
+| v2-piano-32 | 2 | 16.271/33.060 | 17.820/38.081 | 0/0 | 0/0 |
+| v2-piano-32 | 3 | 20.550/45.601 | 18.080/47.041 | 0/0 | 0/0 |
+| v2-fx-256-cold | 2 | 180.623/261.055 | 176.073/287.836 | 0/0 | 0/0 |
+| v2-fx-256-cold | 3 | 175.253/266.025 | 179.734/250.645 | 0/0 | 0/0 |
+
+Repeated32-frame piano aggregate cold18.531/36.121→18.770/37.080µs; warm20.550/45.601→18.080/47.041. ColdFX256 aggregate180.623/266.025→179.734/287.836; its initial two after underruns remain counted even though repeats2/3 have none. The p99 gate remains failed.
+
+Matched piano cold profiles use9999Hz cycles:u with the exact audio TID and zero lost samples.32-frame approximate cycles382,861,145→415,606,759: sample_window5.70%→8.50%, new out-of-line polyphase1.72%.64-frame cycles314,831,920→310,651,961: sample_window8.98%→9.58%, polyphase2.19%. Profile median/p99 µs32:18.360/40.331→20.271/39.961;64:28.381/55.371→29.950/51.961. All profile heap/underrun/deadline counters zero. These explanatory profiles do not replace the unprofiled acceptance runs.
+
+Instruction annotation establishes a concrete added cost: the56-entry iter.find is fully unrolled into an approximately1.6KiB out-of-line function. Most sampled instructions are early quality/rate guards; the common narrow-rate loop now calls that function. This does not prove the95µs initial outlier is caused by lookup or exclude cache/page-fault effects. Evidence:~/.cache/kontakto-fix-cpu/high-rate-polyphase-annotate.txt and streamed-resample-profile/.
+
+ColdFX256 metadata tracing, three alternating pairs of frozen8c→4c binaries, reports no underruns or new stream error/capacity counters on either side; all diagnostic_stream_trace arrays are empty. Original underruns therefore remain unresolved. No reduced prefetch horizon or demand radius is introduced: demand uses the unchanged long48×step radius, which covers every new short-bank window including chunk padding. Runtime::new prepares the bank before timed note input; all measured first-note event/render heap counters are zero. Neither lazy first-note initialization nor audio allocation is established in this probe. Evidence:~/.cache/kontakto-fix-cpu/streamed-resample-underrun-trace/.
+
+Next candidate preserves the original inline eight-entry lookup through2x and isolates higher-rate selection in a non-inlined bounded binary search. Its new unit compares every bank boundary with the preceding linear selection (including invalid ratios) and asserts each padded read window fits the existing streaming demand radius.44 area checks and default root no-run pass. Optimized candidate and original40-cell gate are pending; **HOLD, no W0 release handoff.**
