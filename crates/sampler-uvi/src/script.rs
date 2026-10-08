@@ -9,6 +9,7 @@
 use mlua::{
     Function, Lua, LuaOptions, MultiValue, StdLib, Table, Thread, Value, Variadic, VmState,
 };
+use sampler_kontakt::audit::Span;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -22,6 +23,7 @@ pub(crate) mod parameters;
 pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
+const INIT_BUDGET: &str = "uvi_lua_init unsupported: initialization time budget exceeded";
 /// Where `require` finds a module: a bank's script members.
 pub trait Files {
     fn script(&self, module: &str) -> Option<String>;
@@ -78,7 +80,7 @@ impl Files for () {
 pub struct Config {
     /// Time one callback may run before it is aborted.
     pub callback: Duration,
-    /// Time loading the scripts (their data tables) may take.
+    /// Total time constructing the graph and initializing all scripts may take.
     pub load: Duration,
     /// Bytes the Lua state may allocate.
     pub memory: usize,
@@ -314,6 +316,10 @@ struct Waiting {
 
 struct Shared {
     #[cfg(feature = "scan")]
+    init_api: RefCell<BTreeMap<&'static str, (u64, Duration)>>,
+    #[cfg(feature = "scan")]
+    audit_init: bool,
+    #[cfg(feature = "scan")]
     scan: RefCell<ScanFaults>,
     initializing: Cell<bool>,
     faults: RefCell<FaultCounts>,
@@ -352,6 +358,26 @@ struct Shared {
     playing: Cell<bool>,
     beat_anchor: Cell<(f64, f64)>,
     cc: RefCell<[u8; 128]>,
+}
+
+#[cfg(feature = "scan")]
+struct ApiTimer<'a>(&'a Shared, &'static str, Option<Instant>);
+#[cfg(feature = "scan")]
+impl Drop for ApiTimer<'_> {
+    fn drop(&mut self) {
+        if let Some(start) = self.2 {
+            let mut timings = self.0.init_api.borrow_mut();
+            let entry = timings.entry(self.1).or_default();
+            entry.0 += 1;
+            entry.1 += start.elapsed();
+        }
+    }
+}
+#[cfg(feature = "scan")]
+impl Shared {
+    fn api_timer(&self, name: &'static str) -> ApiTimer<'_> {
+        ApiTimer(self, name, (self.audit_init && self.initializing.get()).then(Instant::now))
+    }
 }
 
 impl Shared {
@@ -411,7 +437,10 @@ impl Shared {
 
     /// Start a time budget for the code about to run.
     fn arm(&self, budget: Duration) {
-        self.deadline.set(Some(Instant::now() + budget));
+        // All initialization phases share the original deadline.
+        if !self.initializing.get() {
+            self.deadline.set(Some(Instant::now() + budget));
+        }
     }
 
     fn next_id(&self) -> u64 {
@@ -486,7 +515,13 @@ fn element(
     node: roxmltree::Node,
     parent: Option<&Table>,
     insert: bool,
+    deadline: Instant,
+    class: &Table,
+    list_class: &Table,
 ) -> mlua::Result<Table> {
+    if Instant::now() >= deadline {
+        return Err(mlua::Error::runtime(INIT_BUDGET));
+    }
     let table = lua.create_table()?;
     let id = tree.params.len();
     tree.params.push(
@@ -515,8 +550,9 @@ fn element(
     if let Some(parent) = parent {
         table.raw_set("parent", parent.clone())?;
     }
-    let class: Table = lua.globals().raw_get("__element_mt")?;
-    table.set_metatable(Some(class))?;
+    table.set_metatable(Some(class.clone()))?;
+    let fields = ["layers", "keygroups", "oscillators", "inserts", "auxs", "sends", "modulations", "eventProcessors", "connections"];
+    let mut lists: [Option<Table>; 9] = std::array::from_fn(|_| None);
     for container in node.children().filter(|n| n.is_element()) {
         let field = match container.tag_name().name() {
             "Layers" => "layers",
@@ -531,29 +567,28 @@ fn element(
             _ => continue,
         };
         let list = lua.create_table()?;
-        list.set_metatable(Some(lua.globals().raw_get("__list_mt")?))?;
+        list.set_metatable(Some(list_class.clone()))?;
         for child in container.children().filter(|n| n.is_element()) {
-            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts")?)?;
+            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", deadline, class, list_class)?)?;
         }
-        table.raw_set(field, list)?;
+        table.raw_set(field, list.clone())?;
+        lists[fields.iter().position(|f| *f == field).unwrap()] = Some(list);
     }
     let children = lua.create_table()?;
-    let synthesis = lua.create_table()?;
-    for field in ["layers", "keygroups", "oscillators", "inserts", "auxs", "sends", "modulations", "eventProcessors", "connections"] {
-        let list = match table.raw_get::<Table>(field) {
-            Ok(list) => list,
-            Err(_) => { let list = lua.create_table()?; table.raw_set(field, list.clone())?; list },
-        };
+    let synthesis = (matches!(node.tag_name().name(), "Program" | "Layer" | "Keygroup") || lists[0].is_some() || lists[1].is_some()).then(|| lua.create_table()).transpose()?;
+    for (field, list) in fields.into_iter().zip(lists) {
+        // v1 host.rs builds only collections present on leaf processors.
+        let Some(list) = list else { continue };
         for child in list.sequence_values::<Table>().flatten() {
             let name: String = child.raw_get("name")?;
             if !name.is_empty() { children.raw_set(name, child.clone())?; }
-            if matches!(field, "layers" | "keygroups") { synthesis.raw_push(child.clone())?; }
+            if matches!(field, "layers" | "keygroups") && let Some(synthesis) = &synthesis { synthesis.raw_push(child.clone())?; }
             children.raw_push(child)?;
         }
     }
     table.raw_set("children", children)?;
-    table.raw_set("synthChildren", synthesis)?;
-    table.raw_set("mods", table.raw_get::<Table>("modulations")?)?;
+    if let Some(synthesis) = synthesis { table.raw_set("synthChildren", synthesis)?; }
+    if let Some(list) = table.raw_get::<Option<Table>>("modulations")? { table.raw_set("mods", list)?; }
     Ok(table)
 }
 
@@ -621,15 +656,24 @@ impl ScriptHost {
             nodes_limit: 4_000_000,
             ..Default::default()
         };
-        let doc =
-            roxmltree::Document::parse_with_options(xml, options).map_err(|e| e.to_string())?;
-        let lua = Lua::new_with(
+        let doc = {
+            let _span = Span::new("uvi_lua_xml");
+            roxmltree::Document::parse_with_options(xml, options).map_err(|e| e.to_string())?
+        };
+        let lua = {
+            let _span = Span::new("uvi_lua_vm");
+            Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::COROUTINE | StdLib::BIT,
             LuaOptions::new(),
         )
-        .map_err(lua_error)?;
+            .map_err(lua_error)?
+        };
         lua.set_memory_limit(config.memory).map_err(lua_error)?;
         let shared = Rc::new(Shared {
+            #[cfg(feature = "scan")]
+            init_api: RefCell::new(BTreeMap::new()),
+            #[cfg(feature = "scan")]
+            audit_init: std::env::var_os("KONTRA_AUDIT_LOAD").is_some(),
             #[cfg(feature = "scan")]
             scan: RefCell::new(ScanFaults::default()),
             initializing: Cell::new(true),
@@ -664,14 +708,24 @@ impl ScriptHost {
             cc: RefCell::new([0; 128]),
         });
         let host = Self { lua, shared };
-        host.install().map_err(lua_error)?;
-        host.build_program(&doc).map_err(lua_error)?;
-        host.load_scripts(&doc, state)?;
+        let initialized = host.install()
+            .and_then(|_| host.build_program(&doc))
+            .map_err(lua_error)
+            .and_then(|_| host.load_scripts(&doc, state));
+        #[cfg(feature = "scan")]
+        for (name, (calls, elapsed)) in host.shared.init_api.borrow().iter() {
+            eprintln!("AUDIT {{\"stage\":\"{name}\",\"ms\":{},\"calls\":{calls}}}", elapsed.as_secs_f64() * 1000.);
+        }
+        if host.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+            return Err(INIT_BUDGET.into());
+        }
+        initialized?;
         host.shared.initializing.set(false);
         Ok(host)
     }
 
     fn build_program(&self, doc: &roxmltree::Document) -> mlua::Result<()> {
+        let _span = Span::new("uvi_lua_graph");
         let program = doc
             .descendants()
             .find(|n| n.has_tag_name("Program"))
@@ -692,7 +746,10 @@ impl ScriptHost {
             }
         }
         let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), kinds: Vec::new(), layers: 0 };
-        let root = element(&self.lua, &mut tree, program, None, false)?;
+        // Port v1 host.rs's shared metatable handles outside the object loop.
+        let class: Table = self.lua.globals().raw_get("__element_mt")?;
+        let list_class: Table = self.lua.globals().raw_get("__list_mt")?;
+        let root = element(&self.lua, &mut tree, program, None, false, self.shared.deadline.get().unwrap(), &class, &list_class)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
@@ -702,7 +759,7 @@ impl ScriptHost {
         tree.kinds.push("Part".into());
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
-        part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
+        part.set_metatable(Some(class))?;
         root.raw_set("parent", part.clone())?;
         root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
@@ -713,6 +770,7 @@ impl ScriptHost {
     }
 
     fn install(&self) -> mlua::Result<()> {
+        let _span = Span::new("uvi_lua_host_install");
         let lua = &self.lua;
         // Only table/string/math/coroutine are loaded (no io, os, debug,
         // package); `lua.sandbox` would give every coroutine its own proxy
@@ -770,25 +828,78 @@ impl ScriptHost {
             lua.create_function(move |_, name: String| Ok(s.saved.borrow().get(&name).cloned()))?,
         )?;
         let s = shared.clone();
-        native.set("definitions", lua.create_function(move |lua, id: usize| {
+        // Port v1 host.rs's direct named lookup; preserve v2's typed catalog laws.
+        native.set("paramCount", lua.create_function(move |_, id: usize| {
             let kinds = s.kinds.borrow();
+            let defs = parameters::definitions(kinds.get(id).map_or("", String::as_str));
+            Ok(defs.len() + s.params.borrow().get(id).map_or(0, |params| params.iter().filter(|(name, _)| !defs.iter().any(|p| p.name == *name)).count()))
+        })?)?;
+        let s = shared.clone();
+        native.set("paramName", lua.create_function(move |_, (id, parameter): (usize, f64)| {
+            if !parameter.is_finite() || parameter < 1. || parameter.fract() != 0. { return Ok(None); }
+            let kinds = s.kinds.borrow();
+            let defs = parameters::definitions(kinds.get(id).map_or("", String::as_str));
+            let index = parameter as usize - 1;
+            if let Some(p) = defs.get(index) { return Ok(Some(p.name.to_owned())); }
+            Ok(s.params.borrow().get(id).and_then(|params| params.iter().filter(|(name, _)| !defs.iter().any(|p| p.name == *name)).nth(index - defs.len())).map(|(name, _)| name.clone()))
+        })?)?;
+        let s = shared.clone();
+        native.set("hasParameter", lua.create_function(move |_, (id, name): (usize, String)| {
+            #[cfg(feature = "scan")]
+            let _timer = s.api_timer("uvi_lua_api_has_param");
+            Ok(parameters::definitions(s.kinds.borrow().get(id).map_or("", String::as_str)).iter().any(|p| p.name == name)
+                || s.params.borrow().get(id).is_some_and(|params| params.iter().any(|(key, _)| *key == name)))
+        })?)?;
+        let s = shared.clone();
+        native.set("definition", lua.create_function(move |_, (id, name): (usize, String)| {
+            #[cfg(feature = "scan")]
+            let _timer = s.api_timer("uvi_lua_api_definition");
+            if let Some(p) = parameters::definitions(s.kinds.borrow().get(id).map_or("", String::as_str)).iter().find(|p| p.name == name) {
+                return Ok((Some(match p.kind { "integer" => "int", "boolean" => "bool", kind => kind }), Some(p.min), Some(p.max)));
+            }
+            let params = s.params.borrow();
+            let kind = params.get(id).and_then(|params| params.iter().find(|(key, _)| *key == name))
+                .map(|(_, value)| if value.parse::<f64>().is_ok() { "float" } else { "string" });
+            Ok((kind, None, None))
+        })?)?;
+        let s = shared.clone();
+        // v1 host.rs keeps inventories in Lua; retain one private scalar schema per kind.
+        let schemas = lua.create_table()?;
+        let retained_fields = lua.create_table()?;
+        let clone_table: Function = globals.raw_get::<Table>("table")?.raw_get("clone")?;
+        native.set("definitions", lua.create_function(move |lua, id: usize| {
+            #[cfg(feature = "scan")]
+            let _timer = s.api_timer("uvi_lua_api_definitions");
+            let kinds = s.kinds.borrow();
+            let kind = kinds.get(id).map_or("", String::as_str);
+            let schema = match schemas.raw_get::<Value>(kind)? {
+                Value::Table(schema) => schema,
+                _ => {
+                    let schema = lua.create_table()?;
+                    for (i, p) in parameters::definitions(kind).iter().enumerate() {
+                        let d = lua.create_table()?;
+                        d.raw_set("id", i + 1)?;
+                        d.raw_set("name", p.name)?;
+                        d.raw_set("type", match p.kind {"integer"=>"int", "boolean"=>"bool", kind=>kind})?;
+                        d.raw_set("displayName", p.name)?;
+                        d.raw_set("description", "")?;
+                        d.raw_set("readOnly", false)?;
+                        d.raw_set("serialize", true)?;
+                        let value = |n| if p.kind == "boolean" {Value::Boolean(n != 0.)} else {Value::Number(n)};
+                        d.raw_set("min", value(p.min))?;
+                        d.raw_set("max", value(p.max))?;
+                        d.raw_set("default", value(p.default))?;
+                        d.raw_set("unit", p.unit)?;
+                        d.raw_set("mapper", if p.unit == "Hz" && p.min > 0. {"Exponential"} else {"Linear"})?;
+                        schema.raw_push(d)?;
+                    }
+                    schemas.raw_set(kind, schema.clone())?;
+                    schema
+                }
+            };
             let defs = lua.create_table()?;
-            for (i, p) in parameters::definitions(kinds.get(id).map_or("", String::as_str)).iter().enumerate() {
-                let d = lua.create_table()?;
-                d.set("id", i + 1)?;
-                d.set("name", p.name)?;
-                d.set("type", match p.kind {"integer"=>"int", "boolean"=>"bool", kind=>kind})?;
-                d.set("displayName", p.name)?;
-                d.set("description", "")?;
-                d.set("readOnly", false)?;
-                d.set("serialize", true)?;
-                let value = |n| if p.kind == "boolean" {Value::Boolean(n != 0.)} else {Value::Number(n)};
-                d.set("min", value(p.min))?;
-                d.set("max", value(p.max))?;
-                d.set("default", value(p.default))?;
-                d.set("unit", p.unit)?;
-                // Hz controls have a logarithmic UI mapping; stored values remain Hz.
-                d.set("mapper", if p.unit == "Hz" && p.min > 0. {"Exponential"} else {"Linear"})?;
+            for (p, template) in parameters::definitions(kind).iter().zip(schema.sequence_values::<Table>()) {
+                let d: Table = clone_table.call(template?)?;
                 defs.raw_set(p.name, d.clone())?;
                 defs.raw_push(d)?;
             }
@@ -798,15 +909,25 @@ impl ScriptHost {
             if let Some(params) = s.params.borrow().get(id) {
                 for (name,value) in params {
                     if !defs.raw_get::<Value>(name.as_str())?.is_nil() { continue; }
-                    let d=lua.create_table()?;
+                    let kind = if value.parse::<f64>().is_ok() {"float"} else {"string"};
+                    let key = format!("{kind}:{name}");
+                    let template = match retained_fields.raw_get::<Value>(key.as_str())? {
+                        Value::Table(template) => template,
+                        _ => {
+                            let template = lua.create_table()?;
+                            template.raw_set("name",name.as_str())?;
+                            template.raw_set("displayName",name.as_str())?;
+                            template.raw_set("description","")?;
+                            template.raw_set("readOnly",false)?;
+                            template.raw_set("serialize",true)?;
+                            template.raw_set("type",kind)?;
+                            template.raw_set("provenance","retained-xml")?;
+                            retained_fields.raw_set(key.as_str(),template.clone())?;
+                            template
+                        }
+                    };
+                    let d: Table = clone_table.call(template)?;
                     d.set("id",defs.raw_len()+1)?;
-                    d.set("name",name.as_str())?;
-                    d.set("displayName",name.as_str())?;
-                    d.set("description","")?;
-                    d.set("readOnly",false)?;
-                    d.set("serialize",true)?;
-                    d.set("type",if value.parse::<f64>().is_ok() {"float"}else{"string"})?;
-                    d.set("provenance","retained-xml")?;
                     defs.raw_set(name.as_str(),d.clone())?;
                     defs.raw_push(d)?;
                 }
@@ -817,6 +938,8 @@ impl ScriptHost {
         native.set(
             "paramNames",
             lua.create_function(move |lua, id: usize| {
+                #[cfg(feature = "scan")]
+                let _timer = s.api_timer("uvi_lua_api_param_names");
                 let names = lua.create_table()?;
                 if let Some(p) = s.params.borrow().get(id) {
                     for (k, _) in p {
@@ -830,6 +953,8 @@ impl ScriptHost {
         native.set(
             "setParam",
             lua.create_function(move |_, (id, name, value): (usize, String, f64)| {
+                #[cfg(feature = "scan")]
+                let _timer = s.api_timer("uvi_lua_api_set_param");
                 let processor = s.nodes.borrow().get(id).copied()
                     .filter(|(_, insert)| *insert)
                     .and_then(|(node, _)| crate::engine_parameters::binding(node, s.kinds.borrow().get(id)?.as_str(), &name));
@@ -871,6 +996,8 @@ impl ScriptHost {
         native.set(
             "param",
             lua.create_function(move |lua, (id, name): (usize, String)| {
+                #[cfg(feature = "scan")]
+                let _timer = s.api_timer("uvi_lua_api_get_param");
                 let kinds = s.kinds.borrow();
                 let definition = parameters::definitions(kinds.get(id).map_or("", String::as_str)).iter().find(|p| p.name == name);
                 let found = s
@@ -924,7 +1051,8 @@ impl ScriptHost {
         native.set(
             "compile",
             lua.create_function(move |lua, (source, name): (mlua::LuaString, String)| {
-                s.note_assigned(&source.to_string_lossy());
+                let _span = Span::new("uvi_lua_module_compile");
+                {let _span=Span::new("uvi_lua_module_names");s.note_assigned(&source.to_string_lossy());}
                 let name = s.files.script_path(&name).unwrap_or(name);
                 match lua
                     .load(source.as_bytes().as_ref())
@@ -1219,6 +1347,7 @@ impl ScriptHost {
     }
 
     fn load_scripts(&self, doc: &roxmltree::Document, state: Option<&UiState>) -> Result<(), String> {
+        let _span = Span::new("uvi_lua_scripts");
         for script in doc.descendants().filter(|n| n.has_tag_name("script")) {
             if script.ancestors().any(|n| n.has_tag_name("ScriptProcessor") && n.attribute("Bypass").is_some_and(|v| v == "1" || v == "true")) { continue; }
             let text: String = script.text().unwrap_or_default().to_owned();
@@ -1227,15 +1356,22 @@ impl ScriptHost {
             }
             self.shared.note_assigned(&text);
             self.shared.arm(self.shared.config.load);
-            let function = self
+            let function = {
+                let _span = Span::new("uvi_lua_root_compile");
+                self
                 .lua
                 .load(&text)
                 .set_name("script")
                 .into_function()
-                .map_err(lua_error)?;
+                .map_err(lua_error)?
+            };
             let thread = self.lua.create_thread(function).map_err(lua_error)?;
-            resume(&self.shared, thread, MultiValue::new(), None);
-            self.cycle();
+            {
+                let _span = Span::new("uvi_lua_script_body");
+                resume(&self.shared, thread, MultiValue::new(), None);
+                self.cycle();
+            }
+            let restored = Span::new("uvi_lua_restore");
             // Initial load sees constructor values; explicit restoration below
             // uses the opposite order and never reruns onInit.
             if let Some(state) = state {
@@ -1256,6 +1392,8 @@ impl ScriptHost {
                 }
             }
             if let Some(state) = state { self.restore_ui_values(state)?; }
+            drop(restored);
+            let _span = Span::new("uvi_lua_on_init");
             self.call("onInit", None);
         }
         Ok(())
@@ -1267,6 +1405,11 @@ impl ScriptHost {
             let batch = std::mem::take(&mut *self.shared.deferred.borrow_mut());
             if batch.is_empty() { break; }
             for (thread, args, note) in batch {
+                if self.shared.deadline.get().is_some_and(|d| Instant::now() >= d) {
+                    self.shared.deferred.borrow_mut().clear();
+                    self.shared.find("lua error", "time budget exceeded");
+                    return;
+                }
                 resume(&self.shared, thread, args, note);
             }
         }
@@ -1630,6 +1773,19 @@ fn parse_play(shared: &Shared, args: &[Value]) -> Play {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initialization_phases_cannot_renew_an_expired_deadline() {
+        let h = super::ScriptHost::new("<UVI4><Program/></UVI4>", (), super::Config::default()).unwrap();
+        let expired = std::time::Instant::now();
+        h.shared.initializing.set(true);
+        h.shared.deadline.set(Some(expired));
+        h.shared.arm(std::time::Duration::from_secs(20));
+        assert_eq!(h.shared.deadline.get(), Some(expired));
+        h.shared.initializing.set(false);
+        h.shared.arm(std::time::Duration::from_secs(20));
+        assert!(h.shared.deadline.get().unwrap() > expired);
+    }
+
     use super::*;
 
     fn host(script: &str) -> ScriptHost {
