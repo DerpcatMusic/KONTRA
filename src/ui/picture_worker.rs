@@ -252,7 +252,7 @@ impl Preparation {
         if let Some(p) = face.pages.get(page.0)
             && let Some(a) = p.background.image
         {
-            let y = p.background.offset_y.max(0) as u32;
+            let y = p.background.origin_y.saturating_add(p.background.offset_y.max(0) as u32);
             let size = match face.assets[a.0].kind {
                 ir::AssetKind::Image(m) => m.size,
                 _ => None,
@@ -264,7 +264,7 @@ impl Preparation {
             if w > 0 && h > 0 {
                 add(
                     a,
-                    0,
+                    p.background.frame as usize,
                     [w, h].map(|n| (n as f64 * scale.clamp(0.01, 1.)).ceil().max(1.) as u32),
                     Some([0, y, w, h]),
                 );
@@ -327,7 +327,7 @@ impl Preparation {
                 let target = size.map(|n| (n as f64 * factor).ceil().max(1.) as u32);
                 add(image.asset, frame, target, None);
             }
-            if let Some(s) = w.style.and_then(|s| face.styles.get(s.0)) {
+            for s in w.style.into_iter().chain(w.state_styles.into_iter().flatten()).filter_map(|s| face.styles.get(s.0)) {
                 match s.font {
                     ir::Font::Bitmap(a) if presentation == ir::Presentation::Bitmap => {
                         add(a, 0, [u32::MAX; 2], None)

@@ -342,14 +342,14 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         }
     };
     if let Some(pic) = page.background.image.and_then(|a| assets.get(a))
-        && let Some(img) = pic.at(0)
+        && let Some(img) = pic.at(page.background.frame as usize)
     {
         let [wx, wy, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
         sample(
             &mut rgb,
             img,
             (x - wx as f64) * img.width as f64 / sw.max(1) as f64,
-            (y + page.background.offset_y as f64 - wy as f64) * img.height as f64
+            (y + page.background.origin_y as f64 + page.background.offset_y.max(0) as f64 - wy as f64) * img.height as f64
                 / sh.max(1) as f64,
         );
     }
@@ -462,8 +462,12 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
             w.placement = ir::Placement::Pixels;
         }
         if w.auto_size {
-            (w.rect.width, w.rect.height) = default_size(&w.kind);
+            let defaults = default_size(&w.kind);
+            let axes = if w.default_axes == [false; 2] { [true; 2] } else { w.default_axes };
+            if axes[0] { w.rect.width = defaults.0; }
+            if axes[1] { w.rect.height = defaults.1; }
             w.auto_size = false;
+            w.default_axes = [false; 2];
         }
         if face.source == ir::Source::FalconLua {
             continue;
@@ -538,7 +542,7 @@ pub fn view_state(
     layers.push(ground.at(0., 0.));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
     if let Some(pic) = p.background.image.and_then(|a| assets.get(a))
-        && let Some(img) = pic.at(0)
+        && let Some(img) = pic.at(p.background.frame as usize)
     {
         let [x, y, sw, sh] = pic.window.unwrap_or([0, 0, img.width, img.height]);
         layers.push(
@@ -547,7 +551,7 @@ pub fn view_state(
                 .fill(Fill::Image(img.clone(), Fit::Fill))
                 .at(
                     x as f64 * scale,
-                    (y as f64 - p.background.offset_y as f64) * scale,
+                    (y as f64 - p.background.origin_y as f64 - p.background.offset_y.max(0) as f64) * scale,
                 ),
         );
     }
@@ -728,7 +732,10 @@ pub(super) fn widget_state(
     let mut v = control
         .and_then(|c| values.get(&c).copied())
         .unwrap_or(default);
-    let style = wd.style.and_then(|s| face.styles.get(s.0));
+    let state = usize::from(v > 0.5) + if ui.get(id.as_str()).held { 2 } else if hovered { 4 } else { 0 };
+    let style = if matches!(wd.kind, Kind::Button { .. } | Kind::Switch | Kind::Menu { .. }) {
+        wd.state_styles[state].or(wd.style)
+    } else { wd.style }.and_then(|s| face.styles.get(s.0));
     let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
@@ -1027,12 +1034,9 @@ pub(super) fn widget_state(
                 if !wd.hide.title && !wd.text.is_empty() {
                     parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0));
                 }
-                parts.push(words(
-                    wd.value_text
-                        .clone()
-                        .filter(|t| !t.is_empty())
-                        .unwrap_or_else(|| number(v, display)),
-                ));
+                if !wd.hide.value {
+                    parts.push(super::render_art::words(wd.value_text.as_deref().filter(|t| !t.is_empty()).unwrap_or(&number(v, display)), style, assets, bitmap, ink.clone(), w, h, scale, wd.value_y, false));
+                }
                 if *arrows {
                     let up = format!("{id}-up");
                     let down = format!("{id}-down");
