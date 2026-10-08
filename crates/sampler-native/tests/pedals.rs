@@ -204,6 +204,7 @@ fn with_script(
         mut instrument,
         locations,
         mut samples,
+        ..
     } = sampler_kontakt::read(path).unwrap();
     instrument.behaviors = vec![sampler_ir::Behavior {
         name: "pedal test".into(),

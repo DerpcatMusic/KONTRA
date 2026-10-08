@@ -1,11 +1,11 @@
 //! Read local library artwork once, on the import worker. No copies on disk.
 use moose::mui::mui::scene::Image;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fs::File,
     io::{Cursor, Read},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 /// Each library's own artwork, by library name: a `wallpaper.png`, else
@@ -37,38 +37,60 @@ pub fn scan(libraries: &[crate::library::Library]) -> HashMap<String, Arc<Image>
                 candidates.extend(containers);
             }
             for path in candidates {
-                // A `.nicnt` names its pictures: the library's browser image,
-                // else its artwork, plugin picture or logo, read in memory.
-                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt")) {
-                    if let Some(image) = nicnt_picture(&path) {
-                        return Some((name, Arc::new(image)));
+                if let Some(image) = cached_header(&path, || {
+                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nicnt") || e.eq_ignore_ascii_case("nkr")) {
+                        return nicnt_picture(&path);
                     }
-                    continue;
-                }
-                let mut bytes = Vec::new();
-                if File::open(path)
-                    .and_then(|mut f| f.read_to_end(&mut bytes))
-                    .is_err()
-                {
-                    continue;
-                }
-                // NICNT product wallpaper is a complete PNG following the product metadata.
-                for (start, _) in bytes
-                    .windows(8)
-                    .enumerate()
-                    .filter(|(_, b)| *b == b"\x89PNG\r\n\x1a\n")
-                {
-                    if let Some(image) = decode(&bytes[start..]) {
-                        if image.width >= 180 && image.height >= 60 {
-                            return Some((name, Arc::new(image)));
-                        }
-                    }
+                    let image = decode(&read_file(&path).ok()?)?;
+                    (image.width >= 180 && image.height >= 60).then_some(image)
+                }) {
+                    return Some((name, image));
                 }
             }
             None
         })
         .collect()
 }
+// Library scanning already runs on its import worker (library::Index::rescan).
+// Keep small display copies there, never full wallpapers in the editor cache.
+const HEADER_CACHE_BYTES: usize = 8 << 20;
+type HeaderKey = (PathBuf, u64, std::time::SystemTime);
+#[derive(Default)]
+struct HeaderCache(VecDeque<(HeaderKey, Arc<Image>)>);
+impl HeaderCache {
+    fn get(&mut self, key: &HeaderKey) -> Option<Arc<Image>> {
+        let at = self.0.iter().position(|(k, _)| k == key)?;
+        let entry = self.0.remove(at)?;
+        let image = entry.1.clone();
+        self.0.push_back(entry);
+        Some(image)
+    }
+    fn insert(&mut self, key: HeaderKey, image: Arc<Image>) {
+        let bytes = image.rgba.len();
+        if bytes > HEADER_CACHE_BYTES { return; }
+        self.0.retain(|(k, _)| k.0 != key.0);
+        while self.0.iter().map(|(_, i)| i.rgba.len()).sum::<usize>() + bytes > HEADER_CACHE_BYTES {
+            self.0.pop_front();
+        }
+        self.0.push_back((key, image));
+    }
+}
+fn cached_header(path: &Path, decode: impl FnOnce() -> Option<Image>) -> Option<Arc<Image>> {
+    static CACHE: Mutex<HeaderCache> = Mutex::new(HeaderCache(VecDeque::new()));
+    let meta = std::fs::metadata(path).ok()?;
+    let key = (path.canonicalize().ok()?, meta.len(), meta.modified().ok()?);
+    if let Some(image) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&key) { return Some(image); }
+    // Decode outside the cache lock; scans and instances do not block each other.
+    let image = Arc::new(header_size(decode()?)?);
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, image.clone());
+    Some(image)
+}
+fn header_size(image: Image) -> Option<Image> {
+    let scale = (1024. / f64::from(image.width)).min(512. / f64::from(image.height)).min(1.);
+    if scale == 1. { return Some(image); }
+    resample(&image, (f64::from(image.width) * scale).round().max(1.) as u32, (f64::from(image.height) * scale).round().max(1.) as u32, 0., 0., f64::from(image.width), f64::from(image.height))
+}
+
 /// The widest wallpaper-sized picture `nicnt` names, preferring its browser image.
 fn nicnt_picture(nicnt: &Path) -> Option<Image> {
     let mut container = sampler_kontakt::ResourceContainer::open(nicnt).ok()?;
@@ -146,7 +168,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>, String> {
 
 /// A PNG or JPEG picture the player chose, at most 32 MiB.
 pub fn decode_file(path: &Path) -> Option<Image> {
-    decode_report(&read_file(path).ok()?).ok()
+    header_size(decode_report(&read_file(path).ok()?).ok()?)
 }
 
 
@@ -424,6 +446,20 @@ fn oklab(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn header_artwork_is_downscaled_and_cache_bytes_are_bounded() {
+        let large = super::Image::rgba(2048, 1024, vec![255; 2048 * 1024 * 4]).unwrap();
+        let small = std::sync::Arc::new(super::header_size(large).unwrap());
+        assert_eq!((small.width, small.height), (1024, 512));
+        let mut cache = super::HeaderCache::default();
+        for i in 0..8 {
+            cache.insert((format!("{i}").into(), 1, std::time::UNIX_EPOCH), small.clone());
+        }
+        assert_eq!(cache.0.len(), 4);
+        assert!(cache.0.iter().map(|(_, image)| image.rgba.len()).sum::<usize>() <= super::HEADER_CACHE_BYTES);
+        assert!(cache.get(&("0".into(), 1, std::time::UNIX_EPOCH)).is_none());
+    }
+
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
     #[test]
     fn a_nicnt_names_its_library_picture() {
