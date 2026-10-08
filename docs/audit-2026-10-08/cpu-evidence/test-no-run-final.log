@@ -1,0 +1,89 @@
+warning: unused `Result` that must be used
+   --> vendor/xim-rs/src/client.rs:145:13
+    |
+145 |             handler.handle_reset_ic(client, input_method_id, input_context_id, &preedit_string);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+145 |             let _ = handler.handle_reset_ic(client, input_method_id, input_context_id, &preedit_string);
+    |             +++++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/xim-rs/src/client.rs:315:28
+    |
+315 |     fn build_ic_attributes(&self) -> AttributeBuilder;
+    |                            ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                            |
+    |                            the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+315 |     fn build_ic_attributes(&self) -> AttributeBuilder<'_>;
+    |                                                      ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/xim-rs/src/client.rs:316:28
+    |
+316 |     fn build_im_attributes(&self) -> AttributeBuilder;
+    |                            ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                            |
+    |                            the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+316 |     fn build_im_attributes(&self) -> AttributeBuilder<'_>;
+    |                                                      ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/xim-rs/src/client.rs:370:28
+    |
+370 |     fn build_ic_attributes(&self) -> AttributeBuilder {
+    |                            ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                            |
+    |                            the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+370 |     fn build_ic_attributes(&self) -> AttributeBuilder<'_> {
+    |                                                      ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/xim-rs/src/client.rs:374:28
+    |
+374 |     fn build_im_attributes(&self) -> AttributeBuilder {
+    |                            ^^^^^     ^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |                            |
+    |                            the lifetime is elided here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+    |
+374 |     fn build_im_attributes(&self) -> AttributeBuilder<'_> {
+    |                                                      ++++
+
+warning: `zed-xim` (lib) generated 5 warnings (run `cargo fix --lib -p zed-xim` to apply 4 suggestions)
+   Compiling kontakto v0.3.208 (/home/derpcat/.t3/worktrees/KONTAKTO/audit-cpu)
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> src/sound/v2.rs:1295:62
+     |
+1295 |                     self.prepare_on_worker(request, &mut |p| drop(tx.send(p)), canceled)
+     |                                                              ^^^^^----------^
+     |                                                                   |
+     |                                                                   argument has type `std::result::Result<(), SendError<sound::Progress>>`
+     |
+     = note: use `let _ = ...` to ignore the expression or result
+     = note: `#[warn(dropping_copy_types)]` on by default
+
+warning: `kontakto` (lib) generated 1 warning
+warning: `kontakto` (lib test) generated 1 warning (1 duplicate)
+    Finished `corpus` profile [optimized] target(s) in 1m 26s
+  Executable unittests src/lib.rs (/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-cpu/corpus/deps/kontakto-e2425529d4ffb412)
+  Executable tests/mpe_uvi.rs (/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-cpu/corpus/deps/mpe_uvi-ce76fe2faa650e7a)
+  Executable tests/one_rack.rs (/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-cpu/corpus/deps/one_rack-13cd3a02a7b42261)

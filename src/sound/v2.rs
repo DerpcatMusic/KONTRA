@@ -701,6 +701,13 @@ impl Core for V2Core {
         let mut refused = 0;
         for (index, part) in parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
+            part.runtime.flush_behaviors_at(|_, _, outcome, program| {
+                if let sampler_core::Outcome::Fault(error) = outcome {
+                    part.problems.fault_program = program as u64 + 1;
+                    part.problems.fault_error = sampler_core::Error::ALL.iter().position(|e| *e == error).unwrap_or(0) as u64;
+                }
+                true
+            });
             part.runtime.flush_ended(|input| {
                 let Some(at) = held.iter().position(|h| h.part == index && h.input == input) else { return true };
                 if held[at].note.clap && last(held, at) && !end(held[at].note) {
@@ -1351,6 +1358,32 @@ mod tests {
     fn load(path: &Path) -> Option<Box<Part>> {
         let request = LoadRequest { path: path.into(), sample_rate: 48000.0, ..Default::default() };
         V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().part
+    }
+
+    #[test]
+    fn scripted_callbacks_retire_through_sound_seam_before_note_end() {
+        use sampler_core::{Instruction, Program};
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap()
+            .with_programs(vec![Program::new(vec![Instruction::End]).unwrap()], Some(0)).unwrap();
+        let limits = Limits::for_plan(&plan, 128, 8);
+        let runtime = Runtime::new(plan, limits).unwrap();
+        let part = Part::new(runtime, MixTree::default()).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.);
+        core.install(0, Some(Box::new(part)));
+        let calls = crate::plugin::tests::allocations(|| {
+        for id in 0..32 {
+            let note = HostNote { port: 0, channel: 0, key: 60, id, clap: true };
+            core.event(0, on(note));
+            core.event(0, Event::NoteOff(HostPattern { port: -1, channel: -1, key: -1, id, clap: true }));
+            core.render(64);
+            assert_eq!(core.end_block(64, &mut |_| false), 1);
+            let mut ended = 0;
+            assert_eq!(core.end_block(64, &mut |n| { assert_eq!(n, note); ended += 1; true }), 0);
+            assert_eq!(ended, 1);
+            assert_eq!(core.parts[0].as_ref().unwrap().runtime.note_count(), 0);
+        }
+        });
+        assert_eq!(calls, 0, "callback retirement allocated or freed");
     }
 
     #[test]
