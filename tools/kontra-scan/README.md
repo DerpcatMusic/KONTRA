@@ -102,3 +102,18 @@ load_ms is unchanged: pinned v1 includes script import/init and the deferred ini
 Decoded source-slot disposition is independent of saved-table integrity. Only actual record/parameter errors count as decode_failed; an unknown saved-table format keeps its successfully decoded bypass/inline/link/empty category and an incomplete raw histogram.
 
 The UVI J sidecar uses production Worker::start after the metadata/assets prepass, includes required pre-audition native snapshots, and paints concurrently with audio observation. Its load_ms retains the earlier legacy origin. The shared worker environment forces KONTRA_UVI_STATIC_PCM_CACHE=0, disabling persistent decoded PCM caching; cache_state=cold describes this product condition, not OS cache. Historical1c198e60/d565 sidecar remains frozen separately.
+
+## Deterministic UVI audit renders
+
+Scan/shot builds accept `--audit-seed 42`, or per-job
+`KONTRA_UVI_AUDIT_SEED=42` (u32). This seeds Luau math before authored scripts,
+seeds runtime random operations/native cycles, and synchronizes the Lua owner at
+each audited virtual clock before draining generated commands. Due coroutines
+are drained at that clock, including command/event queue backpressure. Normal
+plugin builds and unseeded scan jobs keep their RNG and asynchronous scheduling.
+The seed is never a user preference or saved preset setting. Cache identity
+includes the seed, and records retain `audit_seed`. Frozen old adapters do not
+implement this protocol; do not infer seeded parity from their unchanged output.
+`uvi_audit_pcm` is a four-second numeric hash witness using the production loader;
+it never retains authored PCM. Other engine selection/modulation randomness is
+already deterministic from per-plan seeds and the virtual note/frame sequence.
