@@ -208,6 +208,11 @@ impl Mpe {
         (self.ranges[0], self.ranges[1])
     }
 
+    /// Manager channel for a part's keyboard and shared performance controls.
+    pub fn manager_channel(&self) -> u8 {
+        self.zone.manager()
+    }
+
     /// Apply at the current sample boundary, after due native work. Only this
     /// adapter should admit external notes in its configured input domain.
     pub fn apply(
