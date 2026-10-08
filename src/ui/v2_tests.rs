@@ -619,3 +619,14 @@ fn keyswitch_replacing_a_preset_clears_its_user_overlay() {
     super::replace_part(&mut part, "/new.nki".into());
     assert_eq!(part.articulation_overlay, Default::default());
 }
+
+#[test]
+fn v1_mixer_view_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("tab-mixer");
+    h.idle(4);
+    for id in ["mix-narrow", "mix-wide", "mix-spectrum-off", "mix-spectrum-part", "mix-spectrum-master"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 control missing: {id}");
+    }
+}

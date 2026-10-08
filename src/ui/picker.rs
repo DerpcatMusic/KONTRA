@@ -14,6 +14,7 @@ pub(crate) use linux::Runtime;
 
 /// What the editor asks for.
 pub enum Ask {
+    Snapshot { slot: usize, source: (String, u32, String), from: PathBuf },
     /// Open a validated native folder/file path without a blocking UI call.
     Reveal(PathBuf),
     /// A library folder (`single`), or a folder of libraries, from `from`.
@@ -26,6 +27,7 @@ pub enum Ask {
 
 /// What came back.
 pub enum Picked {
+    Snapshot { slot: usize, source: (String, u32, String), path: PathBuf },
     DialogError(String),
     Revealed(Result<(), String>),
     Folder(PathBuf, bool),
@@ -154,6 +156,12 @@ fn show(ask: Ask) -> Option<Picked> {
             .add_filter("Pictures", &["png", "jpg", "jpeg"])
             .pick_file()
             .map(|picture| Picked::Artwork { library, picture }),
+        Ask::Snapshot { slot, source, from } => rfd::FileDialog::new()
+            .set_title("Load a snapshot for this instrument")
+            .set_directory(from)
+            .add_filter("Kontakt snapshot", &["nksn"])
+            .pick_file()
+            .map(|path| Picked::Snapshot { slot, source, path }),
         Ask::Multi { from, name } => {
             let _ = std::fs::create_dir_all(&from);
             rfd::FileDialog::new()

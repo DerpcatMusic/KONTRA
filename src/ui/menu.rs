@@ -2,7 +2,7 @@
 //! asked for, closed by a pick, a click elsewhere or Escape.
 
 use super::{Cx, theme::*};
-use crate::sound::BUSES;
+use crate::sound::{BUSES, Streaming};
 use moose::mui::mui::prelude::*;
 use std::path::Path;
 
@@ -19,6 +19,7 @@ pub enum Target {
     LibrarySort,
     /// A rack slot.
     Part(usize),
+    Snapshots(usize),
     View(usize),
     /// A key on the keyboard.
     Key(u8),
@@ -47,6 +48,12 @@ pub struct Menu {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Art(usize, super::inside::ArtAction),
+    Streaming(Streaming),
+    PartStreaming(usize, Option<Streaming>),
+    LoadSnapshot(usize),
+    SelectSnapshot { slot: usize, source: (String, u32, String), path: String },
+    DefaultView(usize, crate::library::ViewMode),
+    MpeZone(usize, u8),
     Open(String),
     View(usize, u8),
     OpenNew(String),
@@ -166,11 +173,35 @@ pub fn open_under(ui: &Ui, cx: &mut Cx, target: Target, anchor: &str) {
 
 fn items(cx: &Cx, target: &Target) -> Vec<Item> {
     match target {
+        Target::Snapshots(slot) => {
+            let Some(part) = cx.selection.parts.get(*slot).filter(|p| p.snapshot_base()) else { return Vec::new(); };
+            let mut items = Vec::new();
+            if let Some(catalog) = cx.view.shelf.snapshots.get(Path::new(&part.path)) {
+                for path in &catalog.paths {
+                    let label = super::header::stem(&path.to_string_lossy());
+                    let category = path.parent().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+                    items.push(Item::Act {
+                        label: format!("{label} · {category}"),
+                        hint: "",
+                        on: path == Path::new(&part.snapshot),
+                        command: Command::SelectSnapshot { slot: *slot, source: part.source(), path: path.to_string_lossy().into_owned() },
+                    });
+                }
+            }
+            if !items.is_empty() { items.push(Item::Rule); }
+            items.push(check("Original instrument", part.snapshot.is_empty(), Command::SelectSnapshot { slot: *slot, source: part.source(), path: String::new() }));
+            items.push(act("Load snapshot…", "", Command::LoadSnapshot(*slot)));
+            items
+        }
         Target::View(slot) => {
             let mode = super::part::mode(cx, *slot);
-            vec![check("Original", mode == crate::library::ViewMode::Original, Command::View(*slot, 1)),
+            let mut items = vec![check("Original", mode == crate::library::ViewMode::Original, Command::View(*slot, 1)),
                  check("Vector", mode == crate::library::ViewMode::Vectorized, Command::View(*slot, 3)),
-                 check("KONTRA", mode == crate::library::ViewMode::Kontra, Command::View(*slot, 2))]
+                 check("KONTRA", mode == crate::library::ViewMode::Kontra, Command::View(*slot, 2))];
+            if mode != cx.settings.view_mode {
+                items.extend([Item::Rule, act(format!("Make {} the default", mode.label()), "", Command::DefaultView(*slot, mode))]);
+            }
+            items
         }
         Target::ArtDriver(slot) => {
             use super::inside::ArtAction;
@@ -293,6 +324,22 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 check("Solo", part.solo, Command::Solo(slot)),
                 Item::Rule,
             ];
+            // Where its samples play from, the rack's way unless it has its own.
+            let rack = match cx.selection.streaming {
+                Streaming::Auto => "Samples as the rack (streaming)",
+                Streaming::RamOnly => "Samples as the rack (all in RAM)",
+            };
+            items.extend([
+                check(rack, part.streaming.is_none(), Command::PartStreaming(slot, None)),
+                check("Stream from disk", part.streaming == Some(Streaming::Auto), Command::PartStreaming(slot, Some(Streaming::Auto))),
+                check("Load all into RAM", part.streaming == Some(Streaming::RamOnly), Command::PartStreaming(slot, Some(Streaming::RamOnly))),
+                Item::Rule,
+            ]);
+            if part.snapshot_base() { items.insert(1, act("Load snapshot…", "", Command::LoadSnapshot(slot))); }
+            items.extend([Item::Info("MPE".into()),
+                check("MPE off", !part.mpe, Command::MpeZone(slot, 0)),
+                check("Lower zone", part.mpe && !part.mpe_upper, Command::MpeZone(slot, 1)),
+                check("Upper zone", part.mpe && part.mpe_upper, Command::MpeZone(slot, 2)), Item::Rule]);
             if position.is_some_and(|p| p > 0) {
                 items.push(act("Move up", "", Command::Move(slot, -1)));
             }
@@ -308,7 +355,8 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
             items
         }
         Target::Key(note) => {
-            let mut items = vec![Item::Info(format!("{} · MIDI {note}", note_name(*note)))];
+            let mut items = vec![Item::Info(key_info(cx, *note))];
+            if let Some(what) = cx.view.parts.get(cx.state.selected).and_then(|v| v.keys.get(*note as usize)).and_then(|k| k.name.clone()).filter(|n| !n.is_empty()) { items.push(Item::Info(what)); }
             items.push(Item::Rule);
             items.push(act(format!("Audition {}", note_name(*note)), "", Command::Audition(*note)));
             items
@@ -371,6 +419,14 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 items.extend([act("Save multi…", "", Command::SaveMulti), Item::Rule]);
             }
             items.push(act("All notes off", "", Command::Panic));
+            let rack = cx.selection.streaming;
+            items.extend([
+                Item::Rule,
+                Item::Info("Performance".into()),
+                check("Disk streaming: Auto", rack == Streaming::Auto, Command::Streaming(Streaming::Auto)),
+                check("Load all into RAM", rack == Streaming::RamOnly, Command::Streaming(Streaming::RamOnly)),
+            ]);
+
             items.extend([
                 Item::Rule, Item::Info("Appearance".into()),
             ]);
@@ -404,6 +460,15 @@ fn bus_item(cx: &Cx, n: usize) -> String {
         name if name == own => name,
         name => format!("{own} · {name}"),
     }
+}
+
+fn key_info(cx: &Cx, note: u8) -> String {
+    let mapped = cx.view.parts.get(cx.state.selected).and_then(|v| v.report.as_ref()).is_some_and(|r| r.decoded.maps(note));
+    format!(
+        "{} · MIDI {note} · {}",
+        note_name(note),
+        if mapped { "plays samples" } else { "no samples" }
+    )
 }
 
 /// The open menu, if any, positioned inside `window`; runs what was picked.
@@ -544,6 +609,23 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             cx.show(slot);
             cx.state.renaming = Some((slot, super::rack::name(cx, slot)));
         }
+        Command::SelectSnapshot { slot, source, path } => {
+            if cx.selection.parts.get(slot).is_some_and(|part| part.source() == source) {
+                cx.snapshot(slot, path);
+            } else {
+                cx.state.notice = "Snapshot ignored: the base instrument changed while its menu was open.".into();
+            }
+        }
+        Command::LoadSnapshot(slot) => {
+            if let Some(part) = cx.selection.parts.get(slot) {
+                let from = Path::new(if part.snapshot.is_empty() { &part.path } else { &part.snapshot })
+                    .parent().unwrap_or(Path::new(".")).to_path_buf();
+                let ask = super::picker::Ask::Snapshot { slot, source: part.source(), from };
+                if !cx.state.picker.ask(ask) {
+                    cx.state.notice = "No file dialog here: drop a .nksn snapshot onto this instrument's header.".into();
+                }
+            }
+        }
         Command::Mute(slot) => cx.selection.parts[slot].mute ^= true,
         Command::Solo(slot) => cx.selection.parts[slot].solo ^= true,
         Command::Move(slot, by) => cx.move_by(slot, by),
@@ -604,6 +686,23 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
         Command::Appearance(look) => cx.selection.appearance = look as u8,
         Command::ArtworkBlur => cx.selection.sharp_artwork ^= true,
         Command::StickyHeaders => cx.selection.sticky_off ^= true,
+        Command::Streaming(mode) => cx.selection.streaming = mode,
+        Command::PartStreaming(slot, mode) => {
+            if let Some(part) = cx.selection.parts.get_mut(slot) {
+                part.streaming = mode;
+            }
+        }
+        Command::MpeZone(slot, zone) => {
+            let part = &mut cx.selection.parts[slot];
+            part.mpe = zone != 0;
+            part.mpe_upper = zone == 2;
+            if part.mpe && part.bend_range == 0 { part.bend_range = 48; }
+        }
+        Command::DefaultView(slot, mode) => {
+            shared.libraries.edit(|s| s.view_mode = mode);
+            cx.selection.parts[slot].view = 0;
+            shared.libraries.edit(|s| { s.instrument_views.remove(&cx.selection.parts[slot].path); });
+        }
         Command::MemoryBudget(mb) => cx.selection.memory_budget_mb = mb,
         Command::Keyboard => cx.state.keyboard ^= true,
         Command::Panic => shared.panic.store(true, std::sync::atomic::Ordering::Release),

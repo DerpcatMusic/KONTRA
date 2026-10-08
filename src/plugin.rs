@@ -14,6 +14,7 @@ use crate::sound::{
     mix::{BusControls, Mix, NO_AUX, PartControls, db_gain},
     report::{LoadReport, RuntimeProblems},
     tree::{MixTree, NodeMix},
+    Streaming,
     v2::{Part as CorePart, Retired as CoreRetired, V2Core, V2Loader},
 };
 use crate::{library, routing};
@@ -80,6 +81,12 @@ pub struct Part {
     /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
     pub switching: u8,
     pub articulation_overlay: crate::sound::articulation::Overlay,
+    /// Where samples play from; None follows the rack. Ported from v1.
+    pub streaming: Option<Streaming>,
+    /// Upper MPE zone: manager on channel 16.
+    pub mpe_upper: bool,
+    /// Snapshot applied to path, which remains the explicit base NKI.
+    pub snapshot: String,
 }
 
 impl Default for Part {
@@ -108,17 +115,43 @@ impl Default for Part {
             bend_range: 0,
             switching: 0,
             articulation_overlay: Default::default(),
+            streaming: None,
+            mpe_upper: false,
+            snapshot: String::new(),
         }
     }
 }
 
 impl Part {
     /// What the loader prepares for this part.
-    fn source(&self) -> (String, u32) {
-        (self.path.clone(), self.program)
+    pub(crate) fn source(&self) -> (String, u32, String) {
+        (self.path.clone(), self.program, self.snapshot.clone())
+    }
+
+    pub fn streaming(&self, rack: Streaming) -> Streaming {
+        self.streaming.unwrap_or(rack)
+    }
+
+    pub(crate) fn snapshot_base(&self) -> bool {
+        self.program == 0 && Path::new(&self.path).extension().is_some_and(|e| e.eq_ignore_ascii_case("nki"))
+    }
+
+    pub(crate) fn select_snapshot(&mut self, path: String) {
+        self.snapshot = path;
     }
 }
 
+impl StateField for Streaming {
+    fn write_field(&self, buf: &mut Vec<u8>) {
+        u8::from(*self == Streaming::RamOnly).write_field(buf);
+    }
+    fn read_field(cursor: &mut moose::core::custom_state::StateCursor) -> Option<Self> {
+        Some(match u8::read_field(cursor)? {
+            1 => Streaming::RamOnly,
+            _ => Streaming::Auto,
+        })
+    }
+}
 impl StateField for NodeMix {
     fn write_field(&self, buf: &mut Vec<u8>) {
         serde_json::to_string(self).unwrap_or_default().write_field(buf);
@@ -201,6 +234,8 @@ pub struct Selection {
     /// samples idle for [`IDLE_SECONDS`] read from disk again when played.
     /// 0 keeps everything.
     pub memory_budget_mb: u32,
+    /// Ported v1 rack sample mode; changing it reloads affected parts.
+    pub streaming: Streaming,
 }
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
@@ -334,6 +369,7 @@ pub(crate) struct PartShared {
     clock: AtomicU64,
     /// Bytes of samples the part holds in memory, and would hold fully decoded.
     pub(crate) resident_bytes: AtomicU64,
+    keep_resident: AtomicBool,
     pub(crate) full_bytes: AtomicU64,
 }
 
@@ -469,6 +505,7 @@ pub struct Shared {
     pub(crate) panic: AtomicBool,
     pub(crate) midi_thru: AtomicBool,
     pub(crate) multi_request: Mutex<Option<String>>,
+    snapshot_request: Mutex<Option<SnapshotRequest>>,
     /// The app's library folders and the scan of them.
     pub(crate) libraries: library::Scanner,
     /// Dialog and file-operation workers retire at plugin teardown, not GUI close.
@@ -507,7 +544,7 @@ pub(crate) struct PartView {
     pub(crate) ui_revision: u64,
     pub(crate) updates: Arc<[sampler_ui_ir::InterfacePatch]>,
     /// The source and sample rate (bits) last prepared or being prepared.
-    pub(crate) attempted: Option<(String, u32, u64, bool, i16)>,
+    pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
     pub(crate) status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
@@ -600,6 +637,7 @@ impl Default for Shared {
             panic: AtomicBool::new(false),
             midi_thru: AtomicBool::new(false),
             multi_request: Mutex::new(None),
+            snapshot_request: Mutex::new(None),
             libraries: library::Scanner::default(),
             #[cfg(all(feature = "plugin", target_os = "linux"))]
             dialog_runtime: Arc::default(),
@@ -822,6 +860,19 @@ fn route(params: &SamplerParams) {
 }
 
 impl Shared {
+    /// Queue a snapshot against this exact source. Parsing and mutation stay
+    /// on the existing worker; a later source request cancels its result.
+    pub(crate) fn queue_snapshot(&self, slot: usize, part: &Part, path: String) -> bool {
+        if !part.snapshot_base()
+        { return false; }
+        let mut request = self.snapshot_request.lock().unwrap();
+        let Some(atoms) = self.part(slot) else { return false };
+        let generation = atoms.generation.load(Ordering::Acquire);
+        *request = Some(SnapshotRequest { slot, source: part.source(), path, generation });
+        true
+    }
+
+
     /// Editor/loader only. Audio reads its prepared registry without this lock.
     pub(crate) fn with_parts<T>(&self, read: impl FnOnce(&[Arc<PartShared>]) -> T) -> T {
         read(&self.parts.lock().unwrap())
@@ -992,7 +1043,7 @@ impl Shared {
             parts.iter().filter_map(|p| Some((p, p.stream.lock().unwrap().clone()?))).collect();
         let share = u64::from(budget_mb) * (1 << 20) / streams.len().max(1) as u64;
         for (part, stream) in streams {
-            if budget_mb > 0 {
+            if budget_mb > 0 && !part.keep_resident.load(Ordering::Relaxed) {
                 stream.trim(share, part.clock.load(Ordering::Relaxed).saturating_sub(idle));
             }
             part.resident_bytes.store(stream.resident_bytes(), Ordering::Relaxed);
@@ -1090,6 +1141,104 @@ impl SavedMulti {
     }
 }
 
+// Port from v1 0cb7a8a0:src/plugin.rs; prepared v2 part stays off audio until validation.
+pub(crate) struct SnapshotRequest {
+    slot: usize,
+    source: (String, u32, String),
+    path: String,
+    generation: u64,
+}
+
+/// Validate on the loader before replacing any saved or playing state.
+fn prepare_snapshot(params: &SamplerParams) -> Option<(usize, (String, u32, String), crate::sound::Loaded<Option<Box<CorePart>>>)> {
+    let request = {
+        let mut pending = params.shared.snapshot_request.lock().unwrap();
+        if pending.as_ref()?.slot >= params.shared.grown.load(Ordering::Acquire) as usize { return None }
+        pending.take()?
+    };
+    let mut trace = crate::diagnostics::LoadTrace::new(Path::new(&request.source.0), request.source.1, Some(request.slot));
+    trace.detail("instance_id", params.shared.instance_id);
+    trace.detail("operation", "snapshot_validation");
+    trace.detail("snapshot", request.path.clone());
+    trace.detail("scope", "container parsing, explicit base matching and supported state import; audio not installed");
+    trace.stage("snapshot_parse_and_validation");
+    let current = || {
+        params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
+            && params.selection.read().unwrap().parts.get(request.slot)
+                .is_some_and(|p| p.source() == request.source)
+            && params.shared.snapshot_request.lock().unwrap().is_none()
+    };
+    if !current() {
+        trace.detail("cancellation", "Source changed or a newer snapshot was requested");
+        trace.finish("canceled");
+        return None;
+    }
+    params.shared.view.lock().unwrap().parts[request.slot].status = "Loading snapshot…".into();
+    let part = params.selection.read().unwrap().parts[request.slot].clone();
+    let rack_streaming = params.selection.read().unwrap().streaming;
+    let load = LoadRequest {
+        path: part.path.clone().into(), program: part.program, sample_rate: params.shared.rate(),
+        snapshot: (!request.path.is_empty()).then(|| request.path.clone().into()),
+        mpe: part.mpe, mpe_upper: part.mpe_upper, streaming: part.streaming(rack_streaming),
+        dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
+        threads: match params.shared.libraries.settings().threads {
+            library::ThreadSetting::Single => None,
+            library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),
+            library::ThreadSetting::Fixed(n) => Some(crate::sound::ThreadChoice::Fixed(n.into())),
+        },
+    };
+    let result = V2Loader.prepare(&load, &mut |_| {}, &|| !current());
+    if !current() {
+        trace.detail("cancellation", "Source changed or a newer snapshot was requested during validation");
+        trace.finish("canceled");
+        return None;
+    }
+    match result {
+        Ok(instrument) => {
+            let mut selection = params.selection.write().unwrap();
+            let pending = params.shared.snapshot_request.lock().unwrap();
+            let valid = pending.is_none()
+                && params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation;
+            let Some(part) = selection.parts.get_mut(request.slot).filter(|p| valid && p.source() == request.source) else {
+                drop(pending);
+                drop(selection);
+                trace.detail("cancellation", "Source changed or a newer snapshot was requested before commit");
+                trace.finish("canceled");
+                return None;
+            };
+            part.select_snapshot(request.path);
+            let source = part.source();
+            drop(pending);
+            drop(selection);
+            trace.finish("validated");
+            Some((request.slot, source, instrument))
+        }
+        Err(error) => {
+            let selection = params.selection.read().unwrap();
+            let pending = params.shared.snapshot_request.lock().unwrap();
+            let valid = params.shared.part(request.slot).unwrap().generation.load(Ordering::Acquire) == request.generation
+                && selection.parts.get(request.slot).is_some_and(|p| p.source() == request.source)
+                && pending.is_none();
+            if !valid {
+                drop(pending);
+                drop(selection);
+                trace.detail("cancellation", "Source changed or a newer snapshot was requested before reporting failure");
+                trace.finish("canceled");
+                return None;
+            }
+            let message = format!("{error:#}");
+            // Linearize rejection against source changes and newer requests.
+            // LoadTrace only enqueues its journal record; it does no file IO.
+            trace.fail(&message);
+            let report = trace.finish("failed");
+            let mut view = params.shared.view.lock().unwrap();
+            view.parts[request.slot].status = format!("Snapshot was not loaded: {message}");
+            view.parts[request.slot].trace = Some(report);
+            None
+        }
+    }
+}
+
 /// The loader: serialized, polled by the audio thread about ten times a second.
 pub struct Load;
 
@@ -1122,9 +1271,11 @@ impl BackgroundTask for Load {
             let _ = shared.controls.force_push(mix);
         };
         push_mix();
+        let mut snapshot = prepare_snapshot(params);
         let mut loaded = false;
         for slot in 0..shared.grown.load(Ordering::Acquire) as usize {
-            loaded |= load_part(params, slot);
+            let prepared = if snapshot.as_ref().is_some_and(|(s, source, _)| *s == slot && params.selection.read().unwrap().parts[slot].source() == *source) { snapshot.take().map(|(_, _, loaded)| loaded) } else { None };
+            loaded |= load_part(params, slot, prepared);
         }
         if loaded {
             // New trees: route their nodes and size their settings.
@@ -1187,12 +1338,16 @@ fn poll_libraries(shared: &Shared) {
 
 /// Prepare `slot`'s part when its source or the sample rate changed and hand
 /// it to the audio thread. Returns whether a load finished.
-fn load_part(params: &SamplerParams, slot: usize) -> bool {
+fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound::Loaded<Option<Box<CorePart>>>>) -> bool {
     let shared = &params.shared;
     let atoms = shared.part(slot).unwrap();
-    let part = params.selection.read().unwrap().parts.get(slot).cloned().unwrap_or_default();
+    let (part, rack_streaming) = {
+        let selection = params.selection.read().unwrap();
+        (selection.parts.get(slot).cloned().unwrap_or_default(), selection.streaming)
+    };
+    let streaming = part.streaming(rack_streaming);
     let rate = shared.rate();
-    let target = (part.path.clone(), part.program, rate.to_bits(), part.mpe, part.dynamics);
+    let target = (part.path.clone(), part.program, part.snapshot.clone(), rate.to_bits(), part.mpe, part.mpe_upper, part.dynamics, streaming);
     {
         let mut view = shared.view.lock().unwrap();
         let v = &mut view.parts[slot];
@@ -1207,6 +1362,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             ..Default::default()
         };
     }
+    atoms.keep_resident.store(streaming == Streaming::RamOnly, Ordering::Relaxed);
     atoms.load_progress.store(0, Ordering::Relaxed);
     // Serialize epoch changes with off-audio producers.
     let generation = {
@@ -1225,7 +1381,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
     }
     let source = part.source();
     let canceled = || {
-        params.selection.read().unwrap().parts.get(slot).is_none_or(|p| p.source() != source)
+        ({ let selection = params.selection.read().unwrap(); selection.parts.get(slot).is_none_or(|p| p.source() != source || p.streaming(selection.streaming) != streaming || p.mpe != part.mpe || p.mpe_upper != part.mpe_upper || p.dynamics != part.dynamics) })
             || atoms.generation.load(Ordering::Acquire) != generation
             || shared.rate.load(Ordering::Acquire) != rate.to_bits()
     };
@@ -1238,6 +1394,9 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         program: part.program,
         sample_rate: rate,
         mpe: part.mpe,
+        mpe_upper: part.mpe_upper,
+        streaming,
+        snapshot: (!part.snapshot.is_empty()).then(|| part.snapshot.clone().into()),
         dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
         threads: match shared.libraries.settings().threads {
             crate::library::ThreadSetting::Single => None,
@@ -1246,7 +1405,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = V2Loader.prepare(&request, &mut progress, &canceled);
+    let result = match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) };
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
@@ -2039,3 +2198,59 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod loop_audit;
+
+#[cfg(test)]
+mod settings_parity_tests {
+    use super::*;
+    #[test]
+    fn v1_snapshot_requests_validate_before_mutating() {
+        let part = Part { path: "/unavailable-kontakto/base.nki".into(), snapshot: "/unavailable-kontakto/old.nksn".into(), gain: -4., channel: 3, ..Default::default() };
+        let p = SamplerParams::new();
+        p.selection.write().unwrap().parts = vec![part.clone()];
+        let generation = p.shared.part(0).unwrap().generation.load(Ordering::Acquire);
+        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/missing.nksn".into()));
+        assert_eq!(p.shared.part(0).unwrap().generation.load(Ordering::Acquire), generation, "an unvalidated request cannot invalidate the active bank's services");
+        assert!(prepare_snapshot(&p).is_none());
+        assert!(p.selection.read().unwrap().parts[0] == part);
+        let report = p.shared.view.lock().unwrap().parts[0].trace.clone().unwrap();
+        assert_eq!(report["details"]["operation"], "snapshot_validation");
+        assert_eq!(report["status"], "failed");
+        assert!(report["failure"].is_string());
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.load_id.as_deref() == report["load_id"].as_str() && event.event == "load_finished"
+                && event.details["status"] == "failed"), "failed validation is retained in the diagnostic journal");
+        assert!(p.shared.view.lock().unwrap().parts[0].status.contains("Snapshot was not loaded"));
+        assert!(p.shared.queue_snapshot(0, &part, "/unavailable-kontakto/stale.nksn".into()));
+        p.selection.write().unwrap().parts[0].snapshot = "replacement.nksn".into();
+        p.shared.view.lock().unwrap().parts[0].status = "replacement".into();
+        assert!(prepare_snapshot(&p).is_none());
+        assert_eq!(p.shared.view.lock().unwrap().parts[0].status, "replacement");
+        crate::diagnostics::flush(std::time::Duration::from_secs(5)).unwrap();
+        assert!(crate::diagnostics::snapshot().events.iter().any(|event|
+            event.event == "load_finished" && event.details["status"] == "canceled"
+                && event.details["details"]["snapshot"] == "/unavailable-kontakto/stale.nksn"));
+        let multi = Part { path: "ensemble.nkm".into(), ..Default::default() };
+        assert!(!p.shared.queue_snapshot(0, &multi, "preset.nksn".into()));
+        let program = Part { program: 1, ..part };
+        assert!(!p.shared.queue_snapshot(0, &program, "preset.nksn".into()));
+    }
+
+
+
+    #[test]
+    fn v1_part_playback_choices_survive_v2_state() {
+        // Unknown fields were silently discarded before restoring these controls.
+        let input = serde_json::json!({"streaming": "RamOnly", "mpe_upper": true,
+            "snapshot": "/library/Snapshots/Soft.nksn"});
+        let part: Part = serde_json::from_value(input.clone()).unwrap();
+        let saved = serde_json::to_value(&part).unwrap();
+        for key in ["streaming", "mpe_upper", "snapshot"] {
+            assert_eq!(saved.get(key), input.get(key), "lost {key}");
+        }
+        let mut buf = Vec::new();
+        part.write_field(&mut buf);
+        let restored = Part::read_field(&mut moose::core::custom_state::StateCursor::new(&buf)).unwrap();
+        assert!(part == restored);
+    }
+}

@@ -20,6 +20,7 @@
 //! without reloading.
 
 use std::path::{Path, PathBuf};
+use anyhow::{Context, ensure};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -982,6 +983,26 @@ fn number(value: ControlValue) -> f64 {
 #[derive(Default)]
 pub struct V2Loader;
 
+/// Free (available) and total RAM in bytes, from `/proc/meminfo`.
+fn ram_free() -> Option<(usize, usize)> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let field = |name: &str| -> Option<usize> {
+        let line = info.lines().find(|l| l.starts_with(name))?;
+        let kib: usize = line[name.len()..].trim().trim_end_matches("kB").trim().parse().ok()?;
+        Some(kib << 10)
+    };
+    Some((field("MemAvailable:")?, field("MemTotal:")?))
+}
+
+// Port from v1 bank::load_cancelable: reserve 1 GiB + one eighth of RAM.
+fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
+    let resident_budget = (request.streaming == super::Streaming::RamOnly).then(|| {
+        // ponytail: v1's /proc/meminfo probe; other systems keep its 8 GiB ceiling.
+        ram_free().map_or(8 << 30, |(free, total)| free.saturating_sub((1 << 30) + total / 8))
+    });
+    sampler_kontakt::StreamPolicy { resident_budget, ..Default::default() }
+}
+
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -1178,7 +1199,15 @@ fn kontakt(
     };
     let extension = |e: &str| request.path.extension().is_some_and(|x| x.eq_ignore_ascii_case(e));
     // A snapshot is the saved state of an instrument found beside it in the library.
-    let snapshot = if extension("nksn") {
+    let snapshot = if let Some(snapshot) = &request.snapshot {
+        let state = sampler_kontakt::read_snapshot(snapshot).map_err(load)?;
+        let identity = snapshot_instrument(snapshot).and_then(|name| {
+            ensure!(name == snapshot_base_name(&request.path)?, "Snapshot requires base instrument {name:?}");
+            Ok(())
+        });
+        identity.map_err(|e| CoreError::Load(LoadFailure::message(e.to_string())))?;
+        Some((request.path.clone(), state))
+    } else if extension("nksn") {
         let state = sampler_kontakt::read_snapshot(&request.path).map_err(load)?;
         let parent = snapshot_parent(&request.path, &state.instrument).ok_or_else(|| {
             CoreError::Load(LoadFailure::message(format!("no instrument \"{}\" found for snapshot", state.instrument)))
@@ -1213,7 +1242,8 @@ fn kontakt(
     if canceled() {
         return Err(CoreError::Canceled);
     }
-    let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
+    let policy = stream_policy(request);
+    let streamed = sampler_kontakt::load_read_streamed(source, &options, &policy, progress).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
@@ -1244,7 +1274,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     let attached = t.attach_script(rate, sampler_uvi::script::Config::realtime()).map_err(|e| load(&e))?;
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &stream_policy(request)).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     let driver = attached.map(|a| {
@@ -1399,6 +1429,9 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        if request.mpe_upper {
+            part.mpe = Mpe::new(&part.runtime, WIRE.port, WIRE.group, Zone::Upper, 15, NOTES).map_err(core)?;
+        }
         part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
@@ -1680,6 +1713,25 @@ mod tests {
         assert_eq!(ended, [note]);
         core.event(0, Event::Ump([0x40c3_0000, 0]));
         assert_eq!(core.problems(0).ignored_input, 1, "program change is counted, not dropped silently");
+    }
+
+    #[test]
+    fn v1_upper_mpe_zone_uses_channel_sixteen_as_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("upper.wav"); sine(&path);
+        let request = LoadRequest { path, sample_rate: 48000.0, mpe: true, mpe_upper: true, ..Default::default() };
+        let loaded = V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        let mut mix = Mix::default(); mix.parts[0].mpe = true; mix.parts[0].bend_range = 12;
+        core.set_mix(&mix); core.install(0, loaded.part);
+        core.event(0, on(HostNote { port: 0, channel: 1, key: 60, id: 1, clap: true }));
+        core.event(0, on(HostNote { port: 0, channel: 2, key: 64, id: 2, clap: true }));
+        core.event(0, Event::midi1(0xef, 127, 127));
+        let part = core.parts[0].as_ref().unwrap();
+        for held in &core.held[..2] {
+            let expression = part.runtime.expression_id(held.id).unwrap();
+            assert!(part.runtime.expression(expression).unwrap().pitch_semitones > 1.0, "upper manager bends every member");
+        }
     }
 
     #[test]
@@ -2497,3 +2549,40 @@ mod send_tests {
 #[cfg(test)]
 #[path = "keyswitch_tests.rs"]
 mod keyswitch_tests;
+
+// Port from v1 0cb7a8a0:src/import.rs; v2 containers retain native metadata.
+/// Container identity only, for the off-thread snapshot catalog. Snapshot
+/// metadata names its base instrument, not the snapshot itself; the latter's
+/// authored name is its file stem (as in `read_snapshot`).
+pub(crate) fn snapshot_instrument(path: &Path) -> anyhow::Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = sampler_kontakt::read_chunks(path)?;
+        c.find_first(0x4f).context("Snapshot state missing")?;
+        let names = ni_file::kontakt::objects::snapshot_metadata_names(
+            c.find_first(0x51).context("Snapshot metadata missing")?,
+        )?;
+        Ok(snapshot_binding_name(&names, None)?.to_owned())
+    }).map_err(|_| anyhow::anyhow!("Malformed snapshot metadata"))?
+}
+
+/// The same exact base identity used by snapshot validation, without loading
+/// zones, samples, scripts or artwork.
+pub(crate) fn snapshot_base_name(path: &Path) -> anyhow::Result<String> {
+    std::panic::catch_unwind(|| {
+        let c = sampler_kontakt::read_chunks(path)?;
+        let program = ni_file::kontakt::objects::Program::try_from(c.find_first(0x28).context("Base program missing")?)?;
+        Ok(program.params()?.name)
+    }).map_err(|_| anyhow::anyhow!("Malformed base instrument metadata"))?
+}
+
+// A factory snapshot may retain Kontakt's generic template name. Only use
+// its second embedded name when it also exactly names the supplied NKI file;
+// the program name, group/source/slot identities are still validated below.
+fn snapshot_binding_name<'a>(names: &'a (String, String), base: Option<&Path>) -> anyhow::Result<&'a str> {
+    if names.0 != "Kontakt" || names.1.is_empty() { return Ok(&names.0); }
+    if let Some(base) = base {
+        ensure!(base.file_stem().and_then(|s| s.to_str()) == Some(names.1.as_str()),
+            "Generic snapshot requires base filename {:?}", names.1);
+    }
+    Ok(&names.1)
+}
