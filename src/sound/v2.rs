@@ -37,6 +37,9 @@ use super::event::{Event, HostNote, NoteExpression};
 use super::mix::{Mix, PartControls, Peaks, balance};
 use super::report::{LoadReport, Missing, RuntimeProblems};
 use super::tree::{self, MixNode, MixTree, NodeKind, NodeMix, NodeOutput};
+
+#[cfg(test)]
+mod dolce_diagnostic;
 use super::{
     BUSES, Block, BlockInfo, Core, CoreError, CoreLoader, Description, LoadFailure, LoadRequest, Loaded, ScriptUi, Stream, MAX_BLOCK, Progress,
     RACK_SLOTS, Rendered, Voices,
