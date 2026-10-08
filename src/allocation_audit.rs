@@ -1,7 +1,7 @@
 //! Test-only, numeric allocation stacks across loader threads. No sample/script data.
 use std::{cell::Cell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 const MIN_BYTES: usize = 4096;
-const CAPACITY: usize = 65536;
+const CAPACITY: usize = 524288;
 const DEPTH: usize = 48;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static NEXT: AtomicUsize = AtomicUsize::new(0);
