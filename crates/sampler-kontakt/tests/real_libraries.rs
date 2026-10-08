@@ -1104,3 +1104,53 @@ fn w15_zero_multi_offline_ab_reaches_the_bipolar_volume_consumer() {
     assert!((delta_db - 20. * 0.5f64.log10()).abs() < 1e-5);
     assert!(dry.iter().zip(&wet).all(|(d,w)| (0..2).all(|c| w[c] == d[c] * 0.5)));
 }
+
+#[test]
+#[ignore = "requires installed gate libraries; run through kontakto-heavy"]
+fn w15_authored_native_q_gain_offline_ab_reaches_ladder_and_daft() {
+    use sampler_ir as ir;
+    for ladder in [true, false] {
+      for parameter in [ir::ProcessorParameter::Resonance, ir::ProcessorParameter::Gain] {
+        let path = find(if ladder { "Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki" }
+            else { "ANALOG STRINGS/Instruments/ANALOG STRINGS.nki" }).expect("installed gate item");
+        let render = |enabled| {
+            let mut library = sampler_kontakt::read(&path).unwrap();
+            let (mut zone, route, processor) = [parameter, ir::ProcessorParameter::Cutoff].into_iter().find_map(|wanted| library.instrument.zones.iter().find_map(|z| {
+                z.routes.iter().find_map(|r| {
+                    let route = library.instrument.routes[r.0];
+                    let ir::Target::Processor { chain, index, parameter: target } = route.target else { return None; };
+                    if target != wanted { return None; }
+                    let c = &library.instrument.chains[chain.0];
+                    let p = *c.pre_amplitude.iter().chain(&c.post_amplitude).nth(index)?;
+                    let native = if ladder { matches!(p, ir::Processor::LadderLP4(_)) } else { matches!(p, ir::Processor::Daft(_)) };
+                    (native && matches!(route.depth, ir::Depth::Normalized(_))).then(|| (z.clone(), *r, p))
+                })
+            })).expect("gate must retain an authored native route for this filter");
+            let saved = match (processor, parameter) {
+                (ir::Processor::LadderLP4(p), ir::ProcessorParameter::Gain) => p.gain,
+                (ir::Processor::LadderLP4(p), _) => p.resonance,
+                (ir::Processor::Daft(p), ir::ProcessorParameter::Gain) => p.gain,
+                (ir::Processor::Daft(p), _) => p.resonance,
+                _ => unreachable!(),
+            };
+            let r = &mut library.instrument.routes[route.0];
+            println!("W15 native_q_gain ladder={ladder} exercised={parameter:?} saved_target={:?}", r.target);
+            r.target = ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter };
+            r.depth = ir::Depth::Normalized(if enabled { if saved > 0.6 { -0.4 } else { 0.4 } } else { 0. });
+            zone.routes = vec![route];
+            zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+            library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
+            w15_render_one_authored_zone(library, zone)
+        };
+        let dry = render(false); let wet = render(true);
+        let energy = |x: &[[f32; 2]]| x.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        let residual = dry.iter().zip(&wet).flat_map(|(a,b)| (0..2).map(move |c| f64::from(a[c] - b[c]).powi(2))).sum::<f64>();
+        let level_delta_db = 10. * (energy(&wet) / energy(&dry)).log10();
+        let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+        println!("W15 native_q_gain ladder={ladder} parameter={parameter:?} level_delta_db={level_delta_db} residual_db={residual_db}");
+        assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+        assert!(wet.iter().flatten().all(|v| v.is_finite()));
+        assert!(residual_db > -40., "native Q/Gain route must affect audio");
+      }
+    }
+}

@@ -1161,37 +1161,27 @@ impl Translation {
         };
         // Native Ladder/Daft use normalized knob addition (v1 filter.rs);
         // the generic filter fallback retains its octave law.
-        let cutoff = match (target.slot, target.param.as_str()) {
-            (None, _) => None,
-            (Some(slot), "filterCutoff") => filters.and_then(|(chain, slots)| {
-                slots
-                    .iter()
-                    .find(|(s, _)| *s == usize::from(slot))
-                    .map(|&(_, index)| ir::Target::Processor {
-                        chain,
-                        index,
-                        parameter: ir::ProcessorParameter::Cutoff,
-                    })
-            }),
-            _ => None,
-        };
-        if target.slot.is_some() && cutoff.is_none() {
-            return report(
-                self,
-                "modulation of a module parameter",
-                ir::Reason::NotModeled,
-            );
+        let addressed = filters.and_then(|(chain, slots)| {
+            let slot = target.slot?;
+            let (_, index) = slots.iter().find(|(s, _)| *s == usize::from(slot))?;
+            let native = self.ir.chains.get(chain.0).and_then(|c| c.pre_amplitude.iter()
+                .chain(&c.post_amplitude).nth(*index))
+                .is_some_and(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)));
+            let parameter = match target.param.as_str() {
+                "filterCutoff" => ir::ProcessorParameter::Cutoff,
+                "filterQ" if native => ir::ProcessorParameter::Resonance,
+                "Gain" if native => ir::ProcessorParameter::Gain,
+                _ => return None,
+            };
+            let depth = if native { ir::Depth::Normalized(i) }
+                else { ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)) };
+            Some((ir::Target::Processor { chain, index: *index, parameter }, depth))
+        });
+        if target.slot.is_some() && addressed.is_none() {
+            return report(self, "modulation of a module parameter", ir::Reason::NotModeled);
         }
         let (route_target, depth) = match target.param.as_str() {
-            _ if cutoff.is_some() => (
-                cutoff.unwrap_or(ir::Target::Amplitude),
-                if matches!(cutoff, Some(ir::Target::Processor { chain, index, .. })
-                    if self.ir.chains.get(chain.0).and_then(|c| c.pre_amplitude.iter()
-                        .chain(&c.post_amplitude).nth(index))
-                        .is_some_and(|p| matches!(p, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)))) {
-                    ir::Depth::Normalized(i)
-                } else { ir::Depth::Pitch(ir::Pitch::Semitones(120.0 * i)) },
-            ),
+            _ if addressed.is_some() => addressed.unwrap(),
             "volume" => (ir::Target::Amplitude, ir::Depth::Normalized(i)),
             "pitch" => (
                 ir::Target::Pitch,
@@ -2222,6 +2212,23 @@ mod modulation {
             t.route("g", source, true, &cutoff, Some((chain, &[])))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn native_filter_q_and_gain_routes_add_normalized_depth() {
+        for processor in [ir::Processor::LadderLP4(ir::LadderLP4 { address: None, gain: -0.25,
+            cutoff: 0.5, resonance: 0., record_version: 0x92 }),
+            ir::Processor::Daft(ir::Daft { gain: 0., cutoff: 0.5, resonance: 0., highpass: false })] {
+            for (name, parameter) in [("filterQ", ir::ProcessorParameter::Resonance), ("Gain", ir::ProcessorParameter::Gain)] {
+                let mut t = translation();
+                t.ir.chains.push(ir::Chain { scope: ir::Scope::Voice, pre_amplitude: vec![processor], post_amplitude: vec![] });
+                let target = ModTarget { slot: Some(5), ..target(name, -0.25) };
+                t.route("g", ir::ModulatorRef(0), true, &target, Some((ir::ChainRef(0), &[(5, 0)])))
+                    .expect("v1 executes native normalized Q/Gain routes");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(-0.25));
+                assert_eq!(t.ir.routes[0].target, ir::Target::Processor { chain: ir::ChainRef(0), index: 0, parameter });
+            }
+        }
     }
 
     #[test]

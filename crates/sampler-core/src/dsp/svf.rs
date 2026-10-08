@@ -311,7 +311,7 @@ pub(crate) struct FilterBank {
     /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
-    addressed_modulation: Box<[[f64; 2]]>,
+    addressed_modulation: Box<[[f64; 4]]>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -349,8 +349,8 @@ impl FilterBank {
             stride,
             modulation: [1.0; 2],
             addressed_modulation: filters.iter().map(|f| if matches!(f, PreparedFilter::NativeControl) {
-                [0.; 2]
-            } else { [1.; 2] }).collect(),
+                [0.; 4]
+            } else { [1., 1., 0., 0.] }).collect(),
         })
     }
 }
@@ -381,7 +381,7 @@ impl FilterBank {
             |i| matches!(self.scopes[i], Scope::NativeControl));
     }
 
-    pub(crate) fn native_cutoff(&self, index: usize) -> [f64; 2] {
+    pub(crate) fn native_knobs(&self, index: usize) -> [f64; 4] {
         self.addressed_modulation[index]
     }
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
