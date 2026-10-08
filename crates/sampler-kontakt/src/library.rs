@@ -478,6 +478,11 @@ fn translate(
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
+    // Match v1 bank::Builder's content-sized storage after skipped zones are known.
+    out.ir.zones.shrink_to_fit();
+    if let Some(objects) = &mut out.ir.kontakt_objects {
+        objects.zones.shrink_to_fit();
+    }
     Ok(Kontakt {
         instrument: out.ir,
         locations: out.locations,
@@ -2407,6 +2412,23 @@ mod curved_shaper_tests {
 
 #[cfg(test)]
 mod census {
+    /// Numeric metadata only; no authored names, source or heap contents.
+    #[test]
+    #[ignore]
+    fn probe_zone_capacity() {
+        let path = std::path::PathBuf::from(std::env::var("PROBE_PATH").expect("PROBE_PATH"));
+        let kontakt = super::read(&path)
+            .unwrap_or_else(|_| panic!("instrument read failed; authored diagnostics omitted"));
+        let i = &kontakt.instrument;
+        let (objects, object_capacity) = i
+            .kontakt_objects
+            .as_ref()
+            .map_or((0, 0), |o| (o.zones.len(), o.zones.capacity()));
+        println!("AUDIT {{\"stage\":\"zone_capacity\",\"zones\":{},\"zone_capacity\":{},\"zone_bytes\":{},\"source_zones\":{},\"object_capacity\":{},\"object_bytes\":{}}}",
+            i.zones.len(), i.zones.capacity(), size_of::<sampler_ir::Zone>(),
+            objects, object_capacity, size_of::<sampler_ir::kontakt::Zone>());
+    }
+
     #[test]
     #[ignore]
     fn mic_census() {
