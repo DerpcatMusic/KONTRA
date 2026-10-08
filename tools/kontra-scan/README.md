@@ -38,7 +38,7 @@ Canonical sweep directories: ../results/v1 and ../results/v2. Publishing script 
 
 ## Binary digests
 
-- kontra-scan-v1 SHA-256 `732d890172d8d4d865bc7ecb8b6aa807a977f9a06ce75ed746a3d8f5b40fbc04`
+- kontra-scan-v1 SHA-256 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`
 - kontra-scan-v2 SHA-256 `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`
 - kontra-scan-v1-uvi SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`
 
