@@ -73,6 +73,26 @@ fn render(rt: &mut Runtime, frames: usize, block: usize) -> Vec<Frame> {
 }
 
 #[test]
+fn zero_multi_keeps_bipolar_volume_shape_and_voice_reuse_without_heap() {
+    for block in [1, 7, 64, 137] {
+        let source = ModSource::Lfo(Lfo { shape: LfoShape::Zero, rate: LfoRate::Hertz(4.),
+            phase: 0.75, delay: 100, fade: 100, retrigger: true, shared: false });
+        let p = modulated(plan(1024, Envelope::default()),
+            program(vec![source], vec![ModRoute::new(0, ModTarget::Attenuate, 1.)]), 0);
+        let mut rt = Runtime::new(p, limits()).unwrap();
+        for id in [1, 2] {
+            support::without_heap(|| { rt.trigger(input(id), 60, 1.).unwrap(); });
+            let audio = render(&mut rt, 512, block);
+            for (i, frame) in audio.iter().enumerate() {
+                assert_eq!(*frame, [i as f32 / 1000. * 0.5, 0.25]);
+            }
+            support::without_heap(|| { rt.note_off(input(id), None).unwrap(); rt.render(&mut [[0.; 2]; 128]).unwrap(); });
+            assert_eq!(rt.voice_count(), 0);
+        }
+    }
+}
+
+#[test]
 fn envelope_attenuation_ramps_exactly_under_any_partition_without_heap() {
     // A 64-frame linear attack read through Kontakt's attenuate law at depth 1.
     let attack = Envelope::new(64, 0, 0, 1., 0).unwrap();
