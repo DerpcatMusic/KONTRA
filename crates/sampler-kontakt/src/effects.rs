@@ -780,6 +780,7 @@ pub(crate) fn chain_with(
                 let values = [extra[0], *cutoff, *resonance];
                 if values.iter().all(|v| v.is_finite()) && (-1.0..=1.0).contains(&values[0])
                     && values[1..].iter().all(|v| (0.0..=1.0).contains(v)) {
+                    out.filter_slots.push((fx.slot, out.processors.len() + filters.len()));
                     filters.push(sampler_ir::Processor::LadderLP4(sampler_ir::LadderLP4 {
                         address: Some(sampler_ir::SlotAddress { group: physical.0, slot: fx.slot as i32, generic: physical.1 }),
                         gain: f64::from(values[0]), cutoff: f64::from(values[1]), resonance: f64::from(values[2]),
@@ -799,9 +800,9 @@ pub(crate) fn chain_with(
             }) if matches!(kind, 70 | 71) && !extra.is_empty() => {
                 // The Daft (stored 70 low pass, 71 high pass): DSP_SYSTEM_INVENTORY
                 // "Daft parameter laws and scheduling". The leading value is the
-                // Gain control. No filter_slots entry: modulation routes do not
-                // reach it.
+                // Gain control; modulation adds to the saved normalized knob.
                 // ponytail: unverified - 70/71 as Daft rests on v1's stored-ID table.
+                out.filter_slots.push((fx.slot, out.processors.len() + filters.len()));
                 filters.push(sampler_ir::Processor::Daft(sampler_ir::Daft {
                     gain: f64::from(extra[0]).clamp(0.0, 1.0),
                     cutoff: f64::from(*cutoff).clamp(0.0, 1.0),
@@ -1455,6 +1456,24 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     use ni_file::kontakt::Chunk;
+    #[test]
+    fn ladder_and_daft_cutoff_routes_retain_the_authored_physical_slot() {
+        for kind in [33i32, 70, 71] {
+            let mut public = kind.to_le_bytes().to_vec();
+            if kind == 33 { public.push(0); }
+            public.extend(kind.to_le_bytes());
+            for value in [0.2f32, 0.5, 0.3] { public.extend(value.to_le_bytes()); }
+            let slot = super::Slot { slot: 5, module: 0x18, version: 0x92,
+                bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+            for dynamic in [None, Some((7, -1))] {
+                let chain = super::chain_with(std::slice::from_ref(&slot), super::Scope::Voice, None, dynamic, (7, -1));
+                let index = usize::from(dynamic.is_some());
+                assert_eq!(chain.filter_slots, vec![(5, index)], "native filter {kind} loses its addressed cutoff consumer");
+                assert!(matches!(chain.processors[index], sampler_ir::Processor::LadderLP4(_) | sampler_ir::Processor::Daft(_)));
+            }
+        }
+    }
+
     #[test]
     fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
         let mut public = 33i32.to_le_bytes().to_vec();
