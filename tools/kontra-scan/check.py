@@ -70,4 +70,18 @@ with tempfile.TemporaryDirectory() as tmp:
 timing=scanner.extra_columns({'loads':'yes','ui':'original-ok','first_audio_ms':12.5,'cache_state':'cold','programs':[{'source':'kontakt','views':[{'renders':[{'ok':True,'ui_first_frame_ms':20.},{'ok':True,'ui_first_frame_ms':18.}]}]}]})
 assert timing['first_audio_ms']==12.5 and timing['ui_first_frame_ms']==18. and timing['cache_state']=='cold'
 assert fallback['first_audio_ms']=='unknown' and fallback['ui_first_frame_ms']=='unknown'
+
+# Actual requested font failures are separate from unrequested style inventory.
+for status in ['original-ok','missing-images']:
+    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'renders':[{'ok':True}]}]}]})
+    assert font_only['ui']=='missing_font'
+for status in ['error','blank','budget-hit','missing-images']:
+    unchanged=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':2,'font_success':2,'renders':[{'ok':True}]}]}]})
+    assert unchanged['ui']==status
+failed_paint=scanner.extra_columns({'ui':'error','programs':[{'views':[{'font_declared':3,'font_success':2,'renders':[{'ok':False}]}]}]})
+assert failed_paint['ui']=='error'
+
+unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':0,'renders':[{'ok':True}]}]}]})
+assert unrequested['ui']=='original-ok'
+
 print('shared scanner checks passed')
