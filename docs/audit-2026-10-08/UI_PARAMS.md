@@ -18,7 +18,9 @@ The master list contains **781 Kontakt NKI + 53 Kontakt NKM = 834 paths**, plus 
 
 The single-instrument helper skips KSP comments and string literals, canonicalizes historical leading-underscore builtin aliases, and counts whole tokens, including inactive preprocessor branches and unreachable functions. It separates bypassed-script counters and traverses bank/program script records. Source hashes are ephemeral Rust `DefaultHasher` identities, not cryptographic proofs. No sources, saved values, picture/font/audio bytes or access data are exported; panic payloads are suppressed. The helper is available to the shared scanner owner; it has no corpus runner or cache implementation.
 
-**Whole-corpus incidence remains incomplete.** Current scanner source is `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`; pinned v1 adapter is `788f41fafa7e21ddf7b1917bc4cf43e0a83876b8`. The 2026-10-08 08:58 UTC published snapshot contains **53 matched IDs: 50 Kontakt NKI and three UVI**, with zero NKM. This scope's coverage is **50/834 Kontakt paths**, with metadata and lexical counts measured for all 50: **250 raw slots, all decoded**. The v2 digest is `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`; v1 is `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`. Old cache revisions and null-pick auditions are excluded. The full paired sweep is owned by the census agent; no duplicate sweep or independent collector runs here.
+**Whole-corpus incidence remains incomplete.** The frozen incidence snapshot below uses scanner source `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`; pinned v1 adapter is `788f41fafa7e21ddf7b1917bc4cf43e0a83876b8`. The 2026-10-08 08:58 UTC published snapshot contains **53 matched IDs: 50 Kontakt NKI and three UVI**, with zero NKM. This scope's coverage is **50/834 Kontakt paths**, with metadata and lexical counts measured for all 50: **250 raw slots, all decoded**. The v2 digest is `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`; v1 is `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`. Other cache revisions and null-pick auditions are excluded from this frozen snapshot. The full paired sweep is owned by the census agent; no duplicate sweep or independent collector runs here.
+
+The installed section J scanner is now `tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`, with pinned v1 adapter `11db26e72650f373465b6534d6ddb3684e1e9970`. Its v2 digest is `2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0`; v1 is `bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438`. The full **1,494-ID paired sweep remains pending** after this revision change. Do not combine its partial cache with the older published TSV rows or the 08:58 incidence snapshot. The strict native saved-table parser is connected in scanner telemetry; this scanner-only change does not repair the frozen product's persistence implementation. UVI section J sidecar staging remains pending and is outside this scope.
 
 Individual parameter/builtin/widget-declaration cells consume **`results/v2/symbol-aggregates.tsv`**, using `nki_active`/`nkm_active` with its declared coverage, metadata, lexical, and digest fields. Fix reach uses the union of embedded-slot symbol presence per ID from the corresponding current-revision detailed cache; owner/program/wire-slot identity is retained, bypassed symbols are separate. Nonzero cells remain lower bounds on whole-corpus exposure, not counts of broken or unlocked instruments. Widget declaration tokens remain distinct from initialized/rendered NCKP widget counts. Raw/admitted saved sigils and actual phase completion are reported separately.
 
@@ -40,9 +42,9 @@ Validation: the two relevant packages pass `cargo test --no-run`; **6/6 authored
 
 ## Conflux first witness: facts within this scope
 
-The current matched Conflux record uses v2 binary SHA-256 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`. It reports **loads yes, audible audition yes, Original UI missing-images, 107/113 visible interactive bindings and one missing image**. The main page is 970×592 and nonuniform. Its declared background is **RGBA (240,239,228,255)**; **93.8985%** of pixels match that cream background within the scanner's tolerance. Its pure-white fraction is 0.0. The earlier pure-white metric alone does **not** rule out the user's predominantly plain, near-white appearance. The render scope must explain that appearance, the missing picture and actual paint/input behavior; scalar binding readback does not certify gestures.
+The 08:58 incidence-snapshot Conflux record uses v2 binary SHA-256 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`. It reports **loads yes, audible audition yes, Original UI missing-images, 107/113 visible interactive bindings and one missing image**. The main page is 970×592 and nonuniform. Its declared background is **RGBA (240,239,228,255)**; **93.8985%** of pixels match that cream background within the scanner's tolerance. Its pure-white fraction is 0.0. The earlier pure-white metric alone does **not** rule out the user's predominantly plain, near-white appearance. The render scope must explain that appearance, the missing picture and actual paint/input behavior; scalar binding readback does not certify gestures.
 
-| Current Conflux extension measurement | Observed |
+| 08:58 Conflux extension measurement | Observed |
 |---|---|
 | Raw wire-slot partition | 5 total: 3 inline, 2 empty; 0 bypassed, linked-only or decode-failed |
 | Empty source kinds | wire 0 absent; wire 1 whitespace-only |
@@ -59,7 +61,7 @@ The current matched Conflux record uses v2 binary SHA-256 `742c24e295358a7631fd5
 
 The **13 raw string-array entries missing from admitted state** directly corroborate F6's production type omission. These are entry counts, not leaked values, distinct variables unlocked, or a successful lifecycle test. All Conflux init/persistence callbacks completing refutes fatal load-callback failure for this observed run, while F1/F2/F4's runtime semantic defects remain. Completion is taken from final runtime-preparation slot records; three import-harvest attempts and one dynamic-rack attempt are retained separately and are **not** added to the three runtime admissions. V1 retains all 13 string-array entries in admitted state; v2 retains none under the same raw-record identity. V1 main persistence callback is observed waiting, while its second callback completed; that is not a fault or proof it can never complete. V1 compacts wire slots 2/3/4 to runtime slots 0/1/2, whereas v2 retains runtime 2/3/4. Compare by wire ownership, not runtime index alone.
 
-Current **matched single-item Conflux comparison** from the published pair:
+**08:58 matched single-item Conflux comparison** from the published pair:
 
 | Measurement | v1 `0cb7a8a0` | v2 `7e82b152` |
 |---|---:|---:|
@@ -78,6 +80,22 @@ Current **matched single-item Conflux comparison** from the published pair:
 | Phantom-free controls | unknown | unknown |
 
 Both use the shared per-ID note plan; neither is a fallback audition. V1 measures an initial streaming bank and v2 includes asset metadata during load, per the shared README. Load/RSS are one-run corroboration for the performance scope, not a corpus benchmark. Different widget inventories and binding criteria prevent interpreting those fractions as matched gesture/native fidelity. In particular, typed admission does not repair F2/F10's live typed edit/callback gaps, and completion counts must preserve waiting versus fault status. The later UVI v1 sidecar uses a separate base and is excluded from this KSP comparison.
+
+The **section J Conflux pair**, consumed from the shared detailed cache at 10:18 UTC using the new digests above, records the same MIDI 60/velocity 64 `zone_coverage` plan and matched audible auditions. Scalar bindings remain 78/78 versus 107/113, typed admissions 5 versus 6, and actual init/persistence completion counts remain 3/1 versus 3/2 (v1 also retains one waiting persistence callback).
+
+| Section J single-item measurement | v1 | v2 |
+|---|---:|---:|
+| `load_ms` | 263.68 ms | 8,020.02 ms |
+| `first_audio_ms` | 277.08 ms | 8,060.11 ms |
+| `ui_first_frame_ms` | 903.43 ms | 8,064.81 ms |
+| Product cache condition | cold | cold |
+| Raw saved histogram completeness | unknown in all 5 slots | complete in all 5 slots |
+| Raw saved entries | unknown | 257, including 13 `!` |
+| Loader-admitted saved entries | 257, including 13 `!` | 244, with no `!` |
+
+`first_audio_ms` starts at the first production program import and ends at the first finite, exactly nonzero output block; its criterion differs from the separate 1e-5 audible-audition threshold. `ui_first_frame_ms` ends at CPU Original-paint completion before image hashing/encoding. Audio and paint run concurrently in the isolated shared worker. Metadata prepass and worker startup are outside the clock; multi programs share the item clock. `load_ms` is unchanged and v1 includes its deferred initial sample-bank preload. `cold` describes product cache use, not the metrics cache or uncontrolled OS page cache. These are one-run observations for the performance owner, not native-host scheduling or corpus timing conclusions; absent onset measurements remain unknown.
+
+The new v1 raw records explicitly report `saved_table_integrity=unknown`, `saved_entries_total=null` and `saved_histogram_complete=false` in all five slots, while three scripts compile/initialize and 257 entries enter loader state. Its flattened `saved_entry_sigils={}` and `slots_decode_failed=5` therefore establish neither an empty saved table nor five product script failures. This revision-specific scanner discrepancy was sent to the coordinator. The older raw v1 histogram above remains historical evidence; the new pair independently confirms v2's 13-entry string-array admission loss using its complete raw histogram and the v1 loader-admitted inventory.
 
 The baseline main script is slot 2. It compiled in **1,869 ms**, producing **411 widgets, 313 scalar controls, 279 UI-control callbacks, four asset references and 220 unsupported property entries**. Slots 3 and 4 compiled in 12 ms and <1 ms, with 22 and one widgets, respectively; slot 3 has 13 callbacks. Compilation timing is one debug run and excludes container translation, queue wait, image resolution and rendering; asset metadata was intentionally omitted from `Script::ui` in this parameter probe.
 
