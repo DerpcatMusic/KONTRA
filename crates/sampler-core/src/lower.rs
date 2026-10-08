@@ -970,6 +970,10 @@ impl Lowering<'_> {
                         unsupported(owner.clone(), Feature::ModulationRoute(route.target))
                     })?;
                     match (parameter, depth) {
+                        (ir::ProcessorParameter::Cutoff, ir::Depth::Normalized(d))
+                            if matches!(**processor, ir::Processor::LadderLP4(_) | ir::Processor::Daft(_)) => {
+                            (ModTarget::ProcessorNativeCutoff(first), d)
+                        }
                         (ir::ProcessorParameter::Cutoff, ir::Depth::Pitch(p)) => {
                             (ModTarget::ProcessorCutoff(first), p.semitones())
                         }
@@ -1043,6 +1047,7 @@ impl Lowering<'_> {
                 let target = match native.target {
                     ModTarget::ProcessorCutoff(_) => ModTarget::ProcessorCutoff(index),
                     ModTarget::ProcessorResonance(_) => ModTarget::ProcessorResonance(index),
+                    ModTarget::ProcessorNativeCutoff(_) => ModTarget::ProcessorNativeCutoff(index),
                     _ => unreachable!(),
                 };
                 program.routes.push(ModRoute { target, ..native });
