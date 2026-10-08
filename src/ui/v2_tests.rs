@@ -590,7 +590,12 @@ fn widget_conflux_placement_and_capture() {
             assert!(skipped.is_empty());
             assert_eq!(raw_names.len(),parsed_names.len());
             assert!(raw_names == parsed_names,"raw hierarchy and reader names disagree");
-            println!("CONFLUX_NCKP raw={} parsed={}",raw_names.len(),parsed_names.len());
+            fn raw_knobs(raw: &serde_json::Value) -> usize {
+                raw.as_array().into_iter().flatten().map(|c| usize::from(c["index"] == 3) + raw_knobs(&c["value"]["controls"])).sum()
+            }
+            let knobs = raw_knobs(&raw["value"]["performanceView"]["controls"]);
+            assert_eq!(knobs,parsed.controls.iter().filter(|c| c.kind == sampler_ksp::model::WidgetKind::Knob).count());
+            println!("CONFLUX_NCKP raw={} parsed={} raw_knobs={knobs}",raw_names.len(),parsed_names.len());
         }
     }
     source.zones.clear();
@@ -598,9 +603,13 @@ fn widget_conflux_placement_and_capture() {
     let loaded = sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path), ..Default::default()}).unwrap();
     let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f|f.widgets.len()).unwrap());
     assert_eq!(face.widgets.len(),378,"unresolved handles must not publish widgets");
+    let all_knobs = face.widgets.iter().filter(|w| matches!(w.kind,ir::Kind::Knob{..})).count();
+    let origins = face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..}) && face.page_rect(ir::WidgetRef(*n)).x == 0 && face.page_rect(ir::WidgetRef(*n)).y == 0).count();
+    println!("CONFLUX_PLACEMENT widgets={} all_knobs={all_knobs} visible_knobs_at_origin={origins}",face.widgets.len());
+    assert_eq!(origins,0);
     let mut count = [0;3];
     for (n, _) in face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..})) {
-        let (delta,captured) = audit_motion(&face,n,0.,-30.);
+        let (delta,captured) = audit_motion(&face,n,0.,-100.);
         count[0] += 1;
         count[1] += usize::from(captured);
         count[2] += usize::from(delta>0.);
@@ -608,4 +617,89 @@ fn widget_conflux_placement_and_capture() {
     println!("CONFLUX_CAPTURE visible={} captured={} increase={}",count[0],count[1],count[2]);
     assert_eq!(count[0],count[1]);
     assert_eq!(count[0],count[2]);
+}
+
+#[test]
+fn widget_menu_selects_semantic_value_and_value_edit_accepts_typing() {
+    let script = sampler_ksp::compile("on init\n declare ui_menu $m\n add_menu_item($m,\"first\",7)\n add_menu_item($m,\"second\",23)\n declare ui_value_edit $v(0,100,10)\n move_control_px($v,100,30)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let ir::Binding::Control(menu) = face.widgets[0].binding else {panic!()};
+    let ir::Binding::Control(value) = face.widgets[1].binding else {panic!()};
+    let mut values = ir_view::Values::from([(menu,99.),(value,30.)]);
+    let mut state = ir_view::InputState::default();
+    let assets = ir_view::Assets::default();
+    let mut ui = theme::ui();
+    let tick = |ui:&mut Ui,values:&mut ir_view::Values,state:&mut ir_view::InputState,input:Input| {
+        let el = ir_view::view_state(ui,"probe",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,values,state);
+        ui.frame(el,Some(Size::new(633.,300.)),input,1./60.).unwrap();
+    };
+    let key = |key| Input{keys:vec![KeyPress{key,mods:Mods::default()}],..Default::default()};
+    for _ in 0..4 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    assert_eq!(values[&menu],99.,"passive paint preserves unknown semantic values");
+    ui.focus("probe-ir-0");
+    tick(&mut ui,&mut values,&mut state,key(Key::Enter));
+    for _ in 0..3 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    assert!(ui.scene().unwrap().surface("probe-ir-0-popup").is_some());
+    ui.focus("probe-ir-0-item-1");
+    tick(&mut ui,&mut values,&mut state,key(Key::Enter));
+    for _ in 0..3 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    assert_eq!(values[&menu],23.);
+    ui.focus("probe-ir-1");
+    tick(&mut ui,&mut values,&mut state,key(Key::Enter));
+    for _ in 0..3 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    assert!(ui.scene().unwrap().surface("probe-ir-1-type").is_some());
+    tick(&mut ui,&mut values,&mut state,Input{keys:vec![KeyPress{key:Key::Char('a'),mods:Mods{ctrl:true,..Default::default()}}],..Default::default()});
+    tick(&mut ui,&mut values,&mut state,Input{text:"3.7".into(),..Default::default()});
+    tick(&mut ui,&mut values,&mut state,key(Key::Enter));
+    for _ in 0..3 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    assert_eq!(values[&value],37.,"typed display units are converted to authored units");
+}
+
+#[test]
+fn widget_keyboard_uses_authored_step() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,1000,1)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face = ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let ir::Kind::Knob{range,..} = &mut face.widgets[0].kind else {panic!()};
+    range.step=Some(7.);
+    let ir::Binding::Control(control)=face.widgets[0].binding else {panic!()};
+    let mut values=ir_view::Values::from([(control,140.)]);
+    let assets=ir_view::Assets::default();
+    let mut ui=settle(633.,100.,|ui|ir_view::view(ui,&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values));
+    ui.focus("ir-0");
+    for input in [Input{keys:vec![KeyPress{key:Key::Up,mods:Mods::default()}],..Default::default()},Input::default(),Input::default()] {
+        let el=ir_view::view(&mut ui,&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values);
+        ui.frame(el,Some(Size::new(633.,100.)),input,1./60.).unwrap();
+    }
+    assert_eq!(values[&control],147.);
+}
+
+#[test]
+fn widget_ids_keep_two_instances_focus_and_capture_separate() {
+    let script=sampler_ksp::compile("on init\n declare ui_knob $k(0,1000,1)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let ir::Binding::Control(control)=face.widgets[0].binding else {panic!()};
+    let mut a=ir_view::Values::from([(control,500.)]);
+    let mut b=a.clone();
+    let mut sa=ir_view::InputState::default(); let mut sb=ir_view::InputState::default();
+    let assets=ir_view::Assets::default();
+    let mut ui=theme::ui();
+    let tick=|ui:&mut Ui,a:&mut ir_view::Values,b:&mut ir_view::Values,sa:&mut ir_view::InputState,sb:&mut ir_view::InputState,input:Input| {
+        let left=ir_view::view_state(ui,"part-a",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,a,sa);
+        let right=ir_view::view_state(ui,"part-b",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,b,sb);
+        ui.frame(row![left,right],Some(Size::new(1266.,100.)),input,1./60.).unwrap();
+    };
+    for _ in 0..4 {tick(&mut ui,&mut a,&mut b,&mut sa,&mut sb,Input::default());}
+    let surface=ui.scene().unwrap().surface("part-a-ir-0").unwrap();
+    let at=Point::new(surface.frame.x+surface.frame.size.width/2.,surface.frame.y+surface.frame.size.height/2.);
+    for (pos,down) in [(at,false),(at,true),(Point::new(at.x,at.y-30.),true),(Point::new(at.x,at.y-30.),false)] {
+        for _ in 0..2 {tick(&mut ui,&mut a,&mut b,&mut sa,&mut sb,Input{pointer:PointerInput{pos:Some(pos),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()});}
+    }
+    assert!(a[&control]>500.);
+    assert_eq!(b[&control],500.);
+    let was=a[&control];
+    ui.focus("part-b-ir-0");
+    tick(&mut ui,&mut a,&mut b,&mut sa,&mut sb,Input{keys:vec![KeyPress{key:Key::Up,mods:Mods::default()}],..Default::default()});
+    for _ in 0..3 {tick(&mut ui,&mut a,&mut b,&mut sa,&mut sb,Input::default());}
+    assert_eq!(a[&control],was);
+    assert_eq!(b[&control],501.);
 }
