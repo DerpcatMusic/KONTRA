@@ -25,6 +25,53 @@ struct Local {
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
+#[cfg(all(test, feature = "shots"))]
+thread_local! {static GATE_PAINTED:std::cell::RefCell<HashMap<usize,u64>>=std::cell::RefCell::new(HashMap::new());}
+#[cfg(all(test, feature = "shots"))]
+thread_local! {static GATE_DIAGNOSTICS:std::cell::RefCell<HashMap<usize,String>>=std::cell::RefCell::new(HashMap::new());}
+#[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_clear() {
+    GATE_PAINTED.with(|state| state.borrow_mut().clear());
+    GATE_DIAGNOSTICS.with(|state| state.borrow_mut().clear());
+}
+#[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_diagnostics() -> Vec<String> {
+    GATE_DIAGNOSTICS.with(|state| state.borrow().values().cloned().collect())
+}
+#[cfg(all(test, feature = "shots"))]
+pub(super) fn gate_targets(slot: usize) -> Vec<(String, &'static str)> {
+    fn visit(node: &Table, slot: u64, out: &mut Vec<(String, &'static str)>) {
+        let kind = string(node, "kind");
+        let modifiers = tables(node, "modifiers").unwrap_or_default();
+        let action = if kind == "TextInput" { Some("text") }
+            else if modifiers.iter().any(|m| string(m, "name") == "on_drag_gesture") { Some("drag") }
+            else if modifiers.iter().any(|m| string(m, "name") == "on_tap_gesture") { Some("click") }
+            else { None };
+        if let Some(action) = action {
+            out.push((format!("nui-{slot}-{}{}", string(node, "path"), if action == "text" { "-text" } else { "" }), action));
+        }
+        for child in tables(node, "children").unwrap_or_default() { visit(&child, slot, out); }
+        for modifier in modifiers {
+            if let Ok(child) = modifier.get::<Table>("value") {
+                match string(&modifier, "name").as_str() {
+                    "background" | "overlay" => visit(&child, slot, out),
+                    "popover" => if let Ok(content) = child.get::<Table>("content") { visit(&content, slot, out); },
+                    _ => {},
+                }
+            }
+        }
+    }
+    LOCAL.with(|local| {
+        let mut out = Vec::new();
+        let id = GATE_PAINTED.with(|painted| painted.borrow().get(&slot).copied());
+        if let Some(id) = id {
+            if let Some(graph) = local.borrow().get(&id).and_then(|local| local.graph.clone()) {
+                visit(&graph, id, &mut out);
+            }
+        }
+        out
+    })
+}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub(super) struct State {
     id: u64,
@@ -241,6 +288,10 @@ impl State {
                 }
             }
         }
+        #[cfg(all(test, feature = "shots"))]
+        if let Some(diagnostic) = self.diagnostic() {
+            GATE_DIAGNOSTICS.with(|state| { state.borrow_mut().insert(_slot, diagnostic); });
+        }
         if self.failed {
             return caption("The authored native interface could not start.")
                 .lines(2)
@@ -297,6 +348,8 @@ impl State {
             .clip()
             .named("NativeUI performance view");
             local.graph = Some(graph);
+            #[cfg(all(test, feature = "shots"))]
+            GATE_PAINTED.with(|painted| { painted.borrow_mut().insert(_slot, self.id); });
             Ok(el)
         });
         match result {
@@ -304,6 +357,10 @@ impl State {
             Err(error) => {
                 self.failed = true;
                 self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
+                #[cfg(all(test, feature = "shots"))]
+                if let Some(diagnostic) = self.diagnostic() {
+                    GATE_DIAGNOSTICS.with(|state| { state.borrow_mut().insert(_slot, diagnostic); });
+                }
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
@@ -1274,6 +1331,28 @@ pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "shots")]
+    #[test]
+    fn widget_gate_uses_the_painted_session_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.path().join("Resources/native_ui/main.nui"), b"return function() return nil end").unwrap();
+        let package = Arc::new(Package::load(&dir.path().join("fixture.nki")).unwrap());
+        let session = Session::new(package, "main", vec![]).unwrap();
+        let graph = session.lua().create_table().unwrap();
+        graph.set("kind", "TextInput").unwrap(); graph.set("path", "root").unwrap();
+        for field in ["children", "modifiers"] { graph.set(field, session.lua().create_table().unwrap()).unwrap(); }
+        let lifetime = Arc::new(AtomicBool::new(false));
+        LOCAL.with(|local| { local.borrow_mut().insert(97, Local {
+            lifetime: Arc::downgrade(&lifetime), session, graph: Some(graph), hovered: Default::default(), drafts: Default::default(),
+        }); });
+        GATE_PAINTED.with(|painted| { painted.borrow_mut().insert(0, 97); });
+        assert_eq!(gate_targets(0), vec![("nui-97-root-text".into(), "text")]);
+        assert!(gate_targets(1).is_empty());
+        gate_clear(); assert!(gate_targets(0).is_empty());
+        LOCAL.with(|local| { local.borrow_mut().remove(&97); });
+    }
+
     #[test]
     fn native_graph_lowering_fits_a_plain_two_mib_thread() {
         std::thread::Builder::new()
@@ -1523,5 +1602,29 @@ mod tests {
         modifiers.push(missing).unwrap();
         let error=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut drafts).err().unwrap();
         assert!(failure(&error,"graph").starts_with("graph, NativeUI font service unavailable:"));
+    }
+}
+
+#[cfg(all(test, feature = "shots"))]
+#[test]
+#[ignore = "Conflux alias ownership: resources and identifiers stay in RAM"]
+fn native_alias_menus_are_legacy_skin_proxies() {
+    let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+    let mut source = sampler_kontakt::read(&path).unwrap().instrument;
+    source.retain_zones(|_| false); source.assets.clear();
+    let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+        library: Some(path.clone()), ..Default::default()
+    }).unwrap();
+    let package = Package::load(&path).unwrap();
+    let aliases: Vec<_> = loaded.interfaces.iter().flat_map(|f| &f.widgets)
+        .filter(|w| matches!(w.kind, ir::Kind::Menu {..}) && w.name.ends_with("Alias")).collect();
+    assert_eq!(aliases.len(), 4);
+    // A NativeUI module cannot bind these names indirectly without even the
+    // Alias suffix occurring in its immutable module sources.
+    assert_eq!(package.audit_token_count("Alias"), 0, "NativeUI mentions aliases; classify its actual binding before excluding them");
+    for (n, alias) in aliases.into_iter().enumerate() {
+        let underlying = alias.name.trim_start_matches('$').trim_end_matches("Alias");
+        assert!(package.audit_token_count(underlying) > 0, "native skin must bind the corresponding original selector");
+        println!("NATIVE_ALIAS_BY_DESIGN index={n} native_alias_references=0 underlying_selector_present=true");
     }
 }
