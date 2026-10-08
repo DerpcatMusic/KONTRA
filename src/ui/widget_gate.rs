@@ -199,6 +199,21 @@ fn persistence_receipt_requires_each_changed_parameter() {
     assert!(!retained(&[], &a, &b));
 }
 
+fn source_range(total: usize, selected: Option<usize>) -> Option<std::ops::Range<usize>> {
+    match selected {
+        Some(source) if source < total => Some(source..source + 1),
+        Some(_) => None,
+        None => Some(0..total),
+    }
+}
+
+#[test]
+fn source_shards_reject_unknown_sources_and_preserve_full_default() {
+    assert_eq!(source_range(2, None), Some(0..2));
+    assert_eq!(source_range(2, Some(1)), Some(1..2));
+    assert_eq!(source_range(2, Some(2)), None);
+}
+
 fn load_failure(status: &str) -> &'static str {
     if !status.starts_with("Load failed:") { "none" }
     else if status.contains("schema changed") { "script-schema-changed" }
@@ -239,7 +254,9 @@ fn original_widget_gestures() {
     let initial_load_failure = load_failure(&gate.params.shared.view.lock().unwrap().parts[0].status);
     let mut initial_faults = gate.faults() + usize::from(initial_load_failure != "none");
     let mut exhausted = false;
-    for source in 0..sources {
+    let requested_source = std::env::var("KONTRA_WIDGET_GATE_SOURCE").ok().map(|s| s.parse::<usize>().expect("numeric gate source required"));
+    let source_scope = source_range(sources, requested_source).expect("gate source out of range");
+    for source in source_scope {
         gate.current_target = None;
         let selector = format!("face-0-{source}");
         if gate.editor.ui.scene().unwrap().surface(&selector).is_some() { gate.editor.press(&selector); gate.settle(); }
@@ -303,9 +320,9 @@ fn original_widget_gestures() {
     let rows: Vec<_> = results.into_iter().map(|(row, _)| row).collect();
     let passed = rows.iter().filter(|r| r["reason"] == "passed").count();
     let total = rows.len();
-    let status = if faults > 0 || reload_failed { "FAIL" } else if exhausted || total == 0 { "UNKNOWN" } else if passed == total { "PASS" } else { "FAIL" };
+    let status = if faults > 0 || reload_failed { "FAIL" } else if exhausted || total == 0 || requested_source.is_some() { "UNKNOWN" } else if passed == total { "PASS" } else { "FAIL" };
     let problems = reloaded.core.problems(0);
-    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "coverage_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "fault_events": fault_events, "reload_fault_events": reloaded.fault_events, "reload_problem_counters": {"nonfinite": problems.nonfinite, "script_overruns": problems.script_overruns, "lua_faults": problems.lua_faults}, "native_diagnostics": native_diagnostics, "first_native_diagnostic_frame_and_target": first_native_diagnostic, "reload_first_native_diagnostic_frame_and_target": reloaded.first_native_diagnostic, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "initial_load_failure": initial_load_failure, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
+    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "requested_source": requested_source, "sources_total": sources, "scope_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "coverage_complete": requested_source.is_none() && !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "fault_events": fault_events, "reload_fault_events": reloaded.fault_events, "reload_problem_counters": {"nonfinite": problems.nonfinite, "script_overruns": problems.script_overruns, "lua_faults": problems.lua_faults}, "native_diagnostics": native_diagnostics, "first_native_diagnostic_frame_and_target": first_native_diagnostic, "reload_first_native_diagnostic_frame_and_target": reloaded.first_native_diagnostic, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "initial_load_failure": initial_load_failure, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
 }
 
 use sha2::Digest;
