@@ -462,3 +462,144 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
     assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
     assert_eq!(part.dynamics, -1);
 }
+
+/// Audit-only gesture probe: the same renderer and input loop as the editor.
+fn audit_motion(face: &ir::Interface, target: usize, dx: f64, dy: f64) -> (f64, bool) {
+    audit_motion_readback(face, target, dx, dy, false)
+}
+
+fn audit_motion_readback(face: &ir::Interface, target: usize, dx: f64, dy: f64, round_each_frame: bool) -> (f64, bool) {
+    let assets = ir_view::Assets::default();
+    let mut values = ir_view::Values::default();
+    let ir::Binding::Control(control) = face.widgets[target].binding else { return (0., false) };
+    let start = match &face.widgets[target].kind {
+        ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. } => (range.min + range.max) / 2.,
+        _ => 0.,
+    };
+    values.insert(control, start);
+    let mut ui = settle(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))), |ui| {
+        ir_view::view(ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+    });
+    let id = format!("ir-{target}");
+    let Some(surface) = ui.scene().unwrap().surface(&id) else {
+        if dx == 0. { println!("AUDIT_MISS target={target} page={}", face.widgets[target].page.0); }
+        return (0., false)
+    };
+    let at = Point::new(surface.frame.x + surface.frame.size.width / 2., surface.frame.y + surface.frame.size.height / 2.);
+    let mut pressed = false;
+    let steps = if round_each_frame { 30 } else { 1 };
+    let events = [(at, false), (at, true)].into_iter()
+        .chain((1..=steps).map(|n| (Point::new(at.x + dx * f64::from(n) / f64::from(steps), at.y + dy * f64::from(n) / f64::from(steps)), true)))
+        .chain([(Point::new(at.x + dx, at.y + dy), false)]);
+    for (point, down) in events {
+        for _ in 0..2 {
+            let el = ir_view::view(&mut ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values);
+            ui.frame(el, Some(Size::new(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))))), Input {
+                pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() },
+                ..Default::default()
+            }, 1. / 60.).unwrap();
+            pressed |= ui.get(id.as_str()).held;
+            if round_each_frame { values.values_mut().for_each(|value| *value = value.round()); }
+            if dx == 0. && point == at && down && !ui.get(id.as_str()).held {
+                let winners: Vec<_> = ui.scene().unwrap().surfaces().filter(|s| ui.get(s.key.as_str()).held).map(|s| s.key.to_string()).collect();
+                println!("AUDIT_OCCLUDED target={target} x={} y={} held={winners:?}", at.x, at.y);
+            }
+        }
+    }
+    (*values.get(&control).unwrap() - start, pressed)
+}
+
+#[test]
+fn audit_widget_negative_mouse_behaviour_baseline() {
+    let script = sampler_ksp::compile("on init\n declare ui_slider $s(0,1000000)\n set_control_par(get_ui_id($s),$CONTROL_PAR_MOUSE_BEHAVIOUR,-1000)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    // These assertions record the broken baseline; invert them when fixing it.
+    assert_eq!(face.widgets[0].drag.unwrap().axis, ir::Orientation::Horizontal);
+    let (vertical, pressed) = audit_motion(&face, 0, 0., -30.);
+    let (horizontal, _) = audit_motion(&face, 0, 30., 0.);
+    assert!(pressed);
+    assert_eq!(vertical, 0.);
+    assert!(horizontal > 0.);
+}
+
+#[test]
+fn audit_widget_passive_overlay_blocks_knob_baseline() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,1000000,1)\n declare ui_label $l(1,1)\n move_control_px($k,20,20)\n move_control_px($l,20,20)\n set_control_par(get_ui_id($l),$CONTROL_PAR_WIDTH,85)\n set_control_par(get_ui_id($l),$CONTROL_PAR_HEIGHT,52)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (delta, captured) = audit_motion(&face, 0, 0., -30.);
+    assert!(!captured);
+    assert_eq!(delta, 0.);
+}
+
+#[test]
+fn audit_widget_integer_readback_loses_substep_motion_baseline() {
+    let script = sampler_ksp::compile("on init\n declare ui_knob $k(0,2,1)\nend on", 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_| None).unwrap());
+    let (free, captured) = audit_motion_readback(&face, 0, 0., -60., false);
+    let (rounded, _) = audit_motion_readback(&face, 0, 0., -60., true);
+    assert!(captured && free > 0.5);
+    assert_eq!(rounded, 0.);
+}
+
+#[test]
+#[ignore = "metadata and input audit of a locally owned KONTRA_AUDIT_WIDGET_PATCH"]
+fn audit_widget_real_input() {
+    let patch = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+    let loaded = sampler_kontakt::load(&patch, &sampler_kontakt::Options { keys: 0..=0, library: Some(patch.clone()), ..Default::default() }, |_| {}).unwrap();
+    let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f| f.widgets.len()).unwrap());
+    let mut count = [0usize; 5];
+    for (n, w) in face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind, ir::Kind::Knob {..} | ir::Kind::Slider {..})) {
+        count[0] += 1;
+        let (vertical, pressed) = audit_motion(&face, n, 0., -30.);
+        let (horizontal, _) = audit_motion(&face, n, 30., 0.);
+        count[1] += usize::from(pressed);
+        count[2] += usize::from(vertical != 0.);
+        count[3] += usize::from(horizontal != 0.);
+        count[4] += usize::from(matches!(w.binding, ir::Binding::Control(id) if loaded.plan.controls().iter().any(|c| c.id.0 == id.0)));
+        println!("AUDIT_WIDGET index={n} held={pressed} vertical={vertical} horizontal={horizontal} drag={:?}", w.drag);
+    }
+    println!("AUDIT_WIDGET_SUMMARY visible={} captured={} vertical_changes={} horizontal_changes={} bound={}", count[0], count[1], count[2], count[3], count[4]);
+    assert!(count[0] > 0);
+
+    // Exercise the actual editor tree and shared scalar queue, without a DAW.
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: patch.to_string_lossy().into_owned(), ..Default::default() });
+    p.shared.ensure_parts(1);
+    let atoms = p.shared.part(0).unwrap();
+    *atoms.controls.lock().unwrap() = loaded.plan.controls().iter().map(|c| {
+        let value = match c.default {
+            sampler_core::ControlValue::Integer(v) => v as f64,
+            sampler_core::ControlValue::Real(v) => v,
+            sampler_core::ControlValue::Toggle(v) => if v { 1. } else { 0. },
+        };
+        crate::plugin::ControlCell::audit_new(ir::ControlId(c.id.0), value)
+    }).collect();
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        let part = &mut view.parts[0];
+        part.active = loaded.instrument.name.clone();
+        part.tree = Some(Arc::new(crate::sound::tree::MixTree::instrument(&loaded.instrument.name)));
+        part.interfaces = loaded.interfaces.into();
+        part.instrument = Some(Arc::new(loaded.instrument));
+    }
+    let mut h = Harness::new(&p, 1180., 1600.);
+    h.idle(8);
+    for mode in ["face-original-0", "face-vector-0"] {
+        h.press(mode);
+        h.idle(30); // Keep the next gesture outside the double-click reset window.
+        let ir::Binding::Control(control) = face.widgets[18].binding else { panic!("scalar binding") };
+        let before = atoms.control_values().into_iter().find(|(id, _)| *id == control).unwrap().1;
+        let id = "ir-18";
+        let surface = h.ui.scene().unwrap().surface(id).unwrap();
+        let at = Point::new(surface.frame.x + surface.frame.size.width / 2., surface.frame.y + surface.frame.size.height / 2.);
+        let mut captured = false;
+        for (point, down) in [(at, false), (at, true), (Point::new(at.x, at.y - 30.), true), (Point::new(at.x, at.y - 30.), false)] {
+            for _ in 0..2 {
+                h.tick(Input { pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() }, ..Default::default() });
+                captured |= h.ui.get(id).held;
+            }
+        }
+        let after = atoms.control_values().into_iter().find(|(id, _)| *id == control).unwrap().1;
+        println!("AUDIT_EDITOR mode={mode} target=18 captured={captured} shared_delta={}", after - before);
+    }
+}

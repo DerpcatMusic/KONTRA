@@ -327,6 +327,11 @@ pub(crate) struct ControlCell {
 }
 
 impl ControlCell {
+    #[cfg(test)]
+    pub(crate) fn audit_new(id: sampler_ui_ir::ControlId, value: f64) -> Self {
+        Self { id, value: AtomicU64::new(value.to_bits()) }
+    }
+
     pub(crate) fn value(&self) -> f64 {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
