@@ -995,7 +995,7 @@ impl<'a> NativeGesture<'a> {
                 ir::Value::Text(v)=>sampler_core::WidgetValue::Text(sampler_core::Text::try_new(&v).unwrap()),
                 _=>panic!("unexpected array edit"),
             };
-            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
+            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,mouse_over:edit.mouse_over,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
             let context=sampler_core::ControlContext {performance:self.runtime.performance(0).unwrap(),origin:sampler_core::ChannelAddress {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0},channels:1};
             self.runtime.invoke_widget(context,plan,None,&[sampler_core::WidgetEdit {id,index:edit.index,value,interaction}]).unwrap();
         }
@@ -1344,4 +1344,112 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
         assert!(!matches.is_empty(),"complete footer text missing from rendered native graph");matched+=1;
     }
     assert_eq!(matched,6);
+}
+
+#[test]
+fn widget_mouse_area_press_release_reaches_native_callback_without_drop_configuration() {
+    let instrument=sampler_ir::Instrument {behaviors:vec![sampler_ir::Behavior {name:String::new(),language:sampler_ir::Language::Ksp,source:"on init declare ui_mouse_area $area declare $calls declare $event declare $over end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE $over := $NI_MOUSE_OVER_CONTROL end on".into(),slot:Some(0),state:vec![],requires:vec![]}],..Default::default()};
+    let loaded=sampler_kontakt::prepare(instrument,vec![],&Default::default()).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let mut face=loaded.interfaces.into_iter().next().unwrap();face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    let mut h=NativeGesture {face,script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+    h.sync();h.settle();
+    let plan=h.runtime.active_plan();let cell=|h:&NativeGesture<'_>,index|h.runtime.script_cell(plan,sampler_core::ScriptInstanceId(0),index).unwrap();
+    h.pointer(Point::new(50.,50.),false);h.pointer(Point::new(50.,50.),true);
+    assert_eq!(cell(&h,1),1,"MouseArea press must run ui_control once");assert_eq!(cell(&h,2),0);assert_eq!(cell(&h,3),1);
+    h.pointer(Point::new(50.,50.),true);assert_eq!(cell(&h,1),1,"holding must not repeat press");
+    h.pointer(Point::new(150.,150.),false);
+    assert_eq!(cell(&h,1),2,"captured release outside must run ui_control once");assert_eq!(cell(&h,2),1);assert_eq!(cell(&h,3),0);
+    assert_eq!(h.read(0),sampler_core::WidgetValue::Integer(0),"button metadata must retain the MouseArea handle value");
+}
+
+#[test]
+fn widget_missing_feedback_keeps_current_authored_value_separate_from_reset_default() {
+    let script=sampler_ksp::compile("on init declare ui_knob $k(0,2,1) $k := 1 set_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE,0) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    assert_eq!(face.widgets[0].value,Some(ir::Value::Integer(1)));
+    let ir::Binding::Control(control)=face.widgets[0].binding else {panic!()};
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();
+    let mut tick=|p:Point,down:bool,values:&mut ir_view::Values,state:&mut ir_view::InputState| {for _ in 0..2 {let el=ir_view::view_state(&mut ui,"missing-feedback",&face,ir::PageRef(0),&Default::default(),ir::Presentation::Vector,1.,values,state);ui.frame(el,Some(Size::new(200.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();}};
+    tick(Point::new(50.,50.),false,&mut values,&mut state);
+    assert_eq!(values[&control],1.,"missing readback must seed current authored value, not reset default");
+    assert!(state.edits.is_empty(),"passive paint must not produce a widget edit");
+    tick(Point::new(50.,50.),true,&mut values,&mut state);tick(Point::new(50.,30.),true,&mut values,&mut state);
+    assert!(state.edits.is_empty(),"sub-step drag must stay at current1, never jump to reset0");
+    tick(Point::new(50.,-50.),true,&mut values,&mut state);
+    assert_eq!(values[&control],2.,"unrounded accumulator must eventually cross a step from authored current value");
+}
+
+#[test]
+fn v1_mixer_view_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("tab-mixer");
+    h.idle(4);
+    for id in ["mix-narrow", "mix-wide", "mix-spectrum-off", "mix-spectrum-part", "mix-spectrum-master"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 control missing: {id}");
+    }
+}
+
+#[test]
+fn v1_ram_and_disk_readouts_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let h = Harness::new(&p, 1180., 780.);
+    shoot(&h.ui, 1180, 780, "settings-telemetry.png");
+    for id in ["readout-ram", "readout-disk"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 readout missing: {id}");
+    }
+}
+
+#[test]
+fn v1_mixer_aux_and_host_bus_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = vec![crate::plugin::Part { path: "/synthetic/Piano.nki".into(), output: 1, aux: 0, ..Default::default() }];
+        selection.order = vec![0];
+    }
+    let mut h = Harness::new(&p, 1180., 780.); h.press("tab-mixer"); h.idle(4);
+    for id in ["mt-aux-65536", "mt-send-65536", "mt-strip-1", "mt-strip-2"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 mixer control missing: {id}");
+    }
+    h.press("mt-out-2"); h.press("mt-pick-2-3");
+    assert_eq!(p.selection.read().unwrap().bus(1).port, 3, "bus remaps to host 7/8");
+    h.press("mt-aux-65536"); h.press("menu-item-4");
+    assert_eq!(p.selection.read().unwrap().parts[0].aux, 2);
+    assert!(h.ui.scene().unwrap().surface("mt-strip-3").is_some(), "send destination has a strip");
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface("mt-rename-2").is_some());
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "Piano dry".into(), ..Default::default() });
+    h.press("mt-rename-2");
+    assert_eq!(p.selection.read().unwrap().bus(1).name, "Piano dry");
+    p.selection.write().unwrap().bus_mut(1).gain = -9.; h.idle(2);
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-1");
+    let selection = p.selection.read().unwrap();
+    let bus = selection.bus(1);
+    assert_eq!((bus.gain, bus.port, bus.name.as_str()), (0., 3, "Piano dry"), "reset preserves name and host routing");
+    let mut bytes = Vec::new();
+    use moose::core::custom_state::{StateCursor, StateField};
+    selection.write_field(&mut bytes);
+    let restored = crate::plugin::Selection::read_field(&mut StateCursor::new(&bytes)).unwrap();
+    assert!(restored == *selection);
+    shoot(&h.ui, 1180, 780, "settings-routing.png");
+}
+
+#[test]
+fn v1_sample_folder_creator_is_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.); h.press("app-menu");
+    assert!(h.ui.scene().unwrap().surfaces().any(|s| s.text_value.as_deref() == Some("Create library from folder…")), "v1 library creator menu is missing");
 }

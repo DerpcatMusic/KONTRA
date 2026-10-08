@@ -178,3 +178,20 @@ fn engine_objects_are_not_widget_options_and_logical_values_keep_their_type() {
     );
     h.set_control(control_id(3, 0), 0.375).unwrap();
 }
+
+#[test]
+fn script_thread_publishes_runtime_faults_without_widget_changes() {
+    use sampler_uvi::scripted::Script;
+    let source=xml("function onNote(e) error('first runtime fault') end");
+    let (mut thread,loaded)=sampler_uvi::scripted::ScriptThread::spawn(source,(),Config::default()).unwrap();
+    let revision=loaded.ui.revision();
+    thread.note_on(1,60,100);
+    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(1);
+    while loaded.ui.revision()==revision && std::time::Instant::now()<deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(loaded.ui.revision()>revision,"runtime findings must wake report consumers");
+    assert_eq!(loaded.ui.runtime_faults(),(1,0));
+    assert_eq!(loaded.ui.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Lua],1);
+    assert!(loaded.ui.findings().iter().any(|f|f.feature=="lua error" && f.count==1 && f.value.contains("first runtime fault")));
+}

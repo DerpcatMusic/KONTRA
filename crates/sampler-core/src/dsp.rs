@@ -143,6 +143,8 @@ pub enum Processor {
     StereoModeller(StereoSettings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
+    /// Pinned v1 native Ladder LP4, with separate preallocated family state.
+    LadderLP4(LadderSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -183,6 +185,7 @@ impl Processor {
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::Daft(settings) => settings.valid(),
+            Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -198,6 +201,9 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
+mod ladder_kernel;
+mod ladder;
+pub use ladder::LadderSettings;
 mod delay;
 mod stereo;
 mod taps;
@@ -239,6 +245,7 @@ pub(super) enum PreparedProcessor {
     },
     Decimate(Decimator),
     Daft(daft::Daft),
+    LadderLP4 { ladder: ladder::Ladder, offset: usize },
     StereoModeller {
         stereo: stereo::Stereo,
         offset: usize,
@@ -399,6 +406,11 @@ pub(super) fn compile_processors(
                 },
                 Processor::Daft(settings) => {
                     PreparedProcessor::Daft(settings.compile(rate, bindings))
+                }
+                Processor::LadderLP4(settings) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
+                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -627,11 +639,10 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
-                        | PreparedProcessor::Gainer { .. }
-                        | PreparedProcessor::StereoModeller { .. }
                         | PreparedProcessor::Daft(_)
+                        | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
-                )
+                ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
     }
 
@@ -842,6 +853,9 @@ pub(super) fn process(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::LadderLP4 { ladder, offset } => {
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+            }
             PreparedProcessor::StereoModeller { stereo, offset } => {
                 stereo.process(
                     state,
@@ -1056,6 +1070,19 @@ impl DspState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {
+        for pseudo in [false, true] {
+            let chain = VoiceChain::new(vec![
+                Processor::Gainer { dry: 0.1, gain: Parameter::Constant(0.8) },
+                Processor::StereoModeller(StereoSettings {
+                    width: Parameter::Constant(0.7), pan: Parameter::Constant(-0.2), pseudo,
+                }),
+            ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            assert_eq!(chain.batches(), !pseudo);
+        }
+    }
 
     /// One frame through `stages` as a one-frame block.
     fn process(

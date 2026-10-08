@@ -35,7 +35,7 @@ fn pointer(pos: Point, down: bool) -> Input {
     }
 }
 
-fn center(ui: &Ui, id: &str) -> Point {
+pub(super) fn center(ui: &Ui, id: &str) -> Point {
     let r = ui
         .scene()
         .unwrap()
@@ -1612,7 +1612,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     let meters = Meters::default();
-    let mut watch = Watch::default();
+    static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
+    let mut watch = Watch { disk_counter: Some(&IDLE_DISK), ..Default::default() };
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");
@@ -2307,3 +2308,13 @@ fn shared_context_menu_never_fades_over_interactive_content() {
         assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
     }
 }
+ pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    let start = std::time::Instant::now();
+    let mut h=Harness::new(p,1180.,760.);
+    h.idle(4);
+    let build_ms = start.elapsed().as_secs_f64() * 1000.;
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status=std::fs::read_to_string("/proc/self/status").unwrap();
+    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
+ }

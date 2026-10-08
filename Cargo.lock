@@ -3815,12 +3815,15 @@ name = "sampler-kontakt"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "anyhow",
+ "dirs",
  "ncw",
  "ni-file",
  "sampler-core",
  "sampler-ir",
  "sampler-ksp",
  "sampler-ui-ir",
+ "symphonia",
 ]
 
 [[package]]

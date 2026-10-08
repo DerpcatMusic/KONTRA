@@ -13,6 +13,13 @@ pub struct EngineParameterAddress {
     pub generic: i32,
 }
 
+/// A native FX lane keeps its complete physical address, without hashing.
+pub fn engine_parameter_control(address: EngineParameterAddress) -> ControlId {
+    ControlId((0x4658u128 << 112) | (u128::from(address.parameter) << 96)
+        | (u128::from(address.group as u32) << 64)
+        | (u128::from(address.slot as u32) << 32) | u128::from(address.generic as u32))
+}
+
 /// Completion metadata for script service calls. Unsupported addresses stay
 /// observable without stopping later authored writes; no fault text is stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +56,8 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 /// Module owners bind the same controls the DSP reads. No private write mirror.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineParameterLaw {
+    /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
+    SignedNormalized,
     Linear {
         low: f64,
         high: f64,
@@ -78,6 +87,7 @@ pub enum EngineParameterLaw {
 impl EngineParameterLaw {
     fn valid(self) -> bool {
         match self {
+            Self::SignedNormalized => true,
             Self::Linear { low, high } => low.is_finite() && high.is_finite() && high >= low,
             Self::Exponential { low, high } => {
                 low.is_finite() && high.is_finite() && low > 0. && high >= low
@@ -107,7 +117,7 @@ impl EngineParameterLaw {
         if !self.valid() || !value.is_finite() {
             return Err(Error::InvalidInput);
         }
-        let (a, b) = (self.decode(0), self.decode(1_000_000));
+        let (a, b) = (self.decode(if self == Self::SignedNormalized { -1_000_000 } else { 0 }), self.decode(1_000_000));
         let (low, high) = (a.min(b), a.max(b));
         if !low.is_finite() || !high.is_finite() || value < low || value > high {
             return Err(Error::InvalidInput);
@@ -118,8 +128,10 @@ impl EngineParameterLaw {
     /// Convert the normalized service range to a native DSP value. Use a law
     /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
     pub fn decode(self, value: i32) -> f64 {
+        if self == Self::SignedNormalized { return f64::from(value.clamp(-1_000_000, 1_000_000)) / 1e6; }
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
+            Self::SignedNormalized => unreachable!(),
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
             Self::Exponential { low, high } => (low.ln() + (high.ln() - low.ln()) * v / 1e6).exp(),
             Self::ShiftedExponential { low, high, offset } => {
@@ -143,7 +155,9 @@ impl EngineParameterLaw {
     /// Convert a finite native DSP value to the normalized service range.
     /// Frontends should use normalized_value to validate authored input.
     pub fn encode(self, value: f64) -> i32 {
+        if self == Self::SignedNormalized { return (value * 1e6).round().clamp(-1e6, 1e6) as i32; }
         (match self {
+            Self::SignedNormalized => unreachable!(),
             Self::Linear { low, high } => {
                 if low == high {
                     0.
