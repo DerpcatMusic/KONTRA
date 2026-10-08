@@ -193,7 +193,7 @@ def extra_columns(r):
     if r.get('loads')=='no' and failed:
         base+='; admission: '+str(failed)+'/'+str(len(programs))+' embedded programs failed import/plan construction'
     r['reason']=base
-    if r.get('ui') in ['blank','missing-images','error','budget-hit']:
+    if r.get('ui') in ['blank','missing-images','missing_font','error','budget-hit']:
         detail=r['ui']
         failure_counts=combine(views,'asset_failure_reasons')
         positive=[f'{k}={failure_counts[k]}' for k in ['lookup-not-found','decode-failed','font-service-unavailable'] if failure_counts.get(k,0)>0]
