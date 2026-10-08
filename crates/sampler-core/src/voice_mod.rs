@@ -424,6 +424,40 @@ impl VoiceModulation {
         }
         (fraction.clamp(0.0, 1.0) * f64::from(self.start_ranges[region])) as u32
     }
+
+    pub(crate) fn start_range_key(&self, region: usize) -> Option<(u32,u32)> {
+        Some((self.program(region)?,self.start_ranges[region]))
+    }
+
+    /// Port v1 0cb7a8a0:src/engine/params.rs start_offset_range.
+    pub(crate) fn start_offset_range(&self, region: usize, cc: &[u32;128], bounds: [u8;4]) -> (u32,u32) {
+        let Some(id) = self.program(region) else { return (0,0); };
+        let program = &self.programs[id as usize];
+        if !program.start { return (0,0); }
+        let reads = |accept: fn(Prepared)->bool| program.routes.iter()
+            .filter(|route| route.target==ModTarget::SampleStart)
+            .any(|route| accept(program.sources[route.source])
+                || route.scale.is_some_and(|scale|accept(program.sources[scale.source])));
+        // These inputs are not pinned by controller initialization. Keep their
+        // full reach; a later script offset still uses the same streaming path.
+        if reads(|s| matches!(s,Prepared::Random|Prepared::Script(_)|Prepared::ReleaseCounter(_)
+            |Prepared::Lfo(Lfo { shape:LfoShape::Random|LfoShape::SampleAndHold,.. }))) {
+            return (0,self.start_ranges[region]);
+        }
+        let keys = if reads(|s|matches!(s,Prepared::Key)) { bounds[0]..=bounds[1] } else { bounds[0]..=bounds[0] };
+        let velocities = if reads(|s|matches!(s,Prepared::Velocity)) { bounds[2]..=bounds[3] } else { bounds[2]..=bounds[2] };
+        let script = crate::script_params::ModValues::default();
+        let (mut low,mut high) = (u32::MAX,0);
+        for key in keys {
+            for velocity in velocities.clone() {
+                let inputs = Inputs { key:f64::from(key)/127.,velocity:f64::from(velocity)/127.,
+                    controllers:cc,pressure:0,timbre:0,held:0,script:&script,bend:0. };
+                let frames = self.start_offset(region,&inputs,0);
+                (low,high) = (low.min(frames),high.max(frames));
+            }
+        }
+        (low,high)
+    }
 }
 
 impl Prepared {

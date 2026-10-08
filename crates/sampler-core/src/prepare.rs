@@ -841,6 +841,19 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Control-side preload reach with saved/script-initialized controllers held.
+    /// Unknown future offsets remain valid playback starts, served by streaming.
+    pub fn preload_start_offsets(&self) -> Vec<(u32,u32)> {
+        let mut cc = [0;128];
+        for &(controller,value) in &self.initial_controllers { cc[usize::from(controller)] = value; }
+        // Port v1 0cb7a8a0:src/engine/bank.rs Builder::reachable cache.
+        let mut seen = std::collections::HashMap::new();
+        self.regions.iter().enumerate().map(|(region,r)| {
+            let Some(program) = self.voice_modulation.start_range_key(region) else { return (0,0); };
+            *seen.entry((program,r.bounds)).or_insert_with(||
+                self.voice_modulation.start_offset_range(region,&cc,r.bounds))
+        }).collect()
+    }
     /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
     /// Control-side lookup; zero, omitted zones and absent source maps return None.
     /// No fallback to runtime region ordinals.
