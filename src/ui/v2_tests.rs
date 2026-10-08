@@ -879,7 +879,7 @@ fn widget_conflux_native_gestures_and_readback() {
     let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
     let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
     let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
-    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources};
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
     let mut counts=std::collections::BTreeMap::<&str,usize>::new();
     let mut scalar_unresolved=0;
     for authored in loaded.interfaces {
