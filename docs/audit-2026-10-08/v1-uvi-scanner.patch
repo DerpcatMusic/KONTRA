@@ -27,6 +27,13 @@ index d3dd6cf6..5162b23c 100644
 +pub(crate) mod scan_metrics;
 +#[cfg(all(feature="shots",feature="uvi"))]
 +pub use uvi::scan::one as scan_one;
+diff --git a/src/plugin/uvi_ui.rs b/src/plugin/uvi_ui.rs
+index 23debf70..09b677b8 100644
+--- a/src/plugin/uvi_ui.rs
++++ b/src/plugin/uvi_ui.rs
+@@ -17 +17 @@ impl KeyColours {
+-    fn merge(snapshots: &[UiSnapshot]) -> Self {
++    pub(crate) fn merge(snapshots: &[UiSnapshot]) -> Self {
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
 index 6f42afef..20a39f8e 100644
 --- a/src/ui/mod.rs
@@ -118,10 +125,10 @@ index 6abc6718..47c5b75f 100644
 +pub(crate) mod scan;
 diff --git a/src/uvi/scan.rs b/src/uvi/scan.rs
 new file mode 100644
-index 00000000..c522e2a0
+index 00000000..5c6422f3
 --- /dev/null
 +++ b/src/uvi/scan.rs
-@@ -0,0 +1,318 @@
+@@ -0,0 +1,320 @@
 +//! v1-UVI adapter to the existing shared scanner. Decrypted content stays in memory.
 +use super::{
 +    access,
@@ -237,6 +244,7 @@ index 00000000..c522e2a0
 +        r["loads"] = json!("yes");
 +        r["load_ms"] = json!(t.elapsed().as_secs_f64() * 1000.);
 +        let mut views = Vec::new();
++        let mut snapshots = Vec::new();
 +        let (mut visible, mut bound, mut ui_error, mut blank) = (0, 0, false, false);
 +        r["stage"] = json!("Original UI");
 +        metrics::checkpoint(out, &r);
@@ -254,30 +262,6 @@ index 00000000..c522e2a0
 +                            views.push(json!({"snapshot_error":true}));
 +                        }
 +                        Ok(snapshot) => {
-+                            if let Some(colours) = &snapshot.root.key_colours {
-+                                if colours
-+                                    .get(&pick.0)
-+                                    .is_some_and(|c| c.eq_ignore_ascii_case("#00000000"))
-+                                {
-+                                    if let Some(key) = colours
-+                                        .iter()
-+                                        .filter(|(k, c)| {
-+                                            c.eq_ignore_ascii_case("#00FFFFFF")
-+                                                && program.program.sample_zones.iter().any(|z| {
-+                                                    !z.bypassed
-+                                                        && !z.purged
-+                                                        && (z.low_key..=z.high_key).contains(k)
-+                                                        && (z.low_velocity..=z.high_velocity)
-+                                                            .contains(&64)
-+                                                })
-+                                        })
-+                                        .min_by_key(|(k, _)| k.abs_diff(60))
-+                                        .map(|(&k, _)| k)
-+                                    {
-+                                        pick = (key, 64);
-+                                    }
-+                                }
-+                            }
 +                            let interactive = snapshot
 +                                .widgets
 +                                .iter()
@@ -308,6 +292,7 @@ index 00000000..c522e2a0
 +                                crate::ui::scan_uvi::paint(&snapshot, &mut assets, reply.stamp);
 +                            ui_error |= paint.is_err();
 +                            views.push(json!({"widgets":snapshot.widgets.len(),"visible":shown,"interactive":interactive,"bound":interactive,"render":paint.unwrap_or_else(|e|metrics::error("Original paint",e))}));
++                            snapshots.push(snapshot);
 +                        }
 +                    }
 +                    break;
@@ -319,6 +304,28 @@ index 00000000..c522e2a0
 +                std::thread::sleep(Duration::from_millis(1));
 +            }
 +        }
++        let colours = crate::plugin::uvi_ui::KeyColours::merge(&snapshots);
++        let native_valid_keys: Vec<u8> = colours.colours.iter()
++            .filter(|(_, c)| c.eq_ignore_ascii_case("#00FFFFFF"))
++            .map(|(&k, _)| k).collect();
++        let native_preferred = native_valid_keys.iter().copied()
++            .filter(|k| program.program.sample_zones.iter().any(|z|
++                !z.bypassed && !z.purged && (z.low_key..=z.high_key).contains(k)
++                    && (z.low_velocity..=z.high_velocity).contains(&64)))
++            .min_by_key(|k| k.abs_diff(60)).map(|k| (k, 64));
++        r["native_valid_keys"] = json!(native_valid_keys);
++        r["native_key_conflicts"] = json!(colours.conflicts);
++        r["native_preferred_note"] = json!(native_preferred);
++        let planned = metrics::note(0);
++        let pick_source = if planned.is_some() { "shared-note-plan" }
++            else if native_preferred.is_some() { "native-valid-keys" }
++            else { "active-zone-nearest60-fallback" };
++        if let Some(note) = planned.or(native_preferred) { pick = note; }
++        r["pick_source"] = json!(pick_source);
++        r["pick"] = json!(pick);
++        r["programs"] = json!([{"source":"uvi","program":0,"pick":pick,"pick_source":pick_source,
++            "native_valid_keys":native_valid_keys,"native_preferred_note":native_preferred,
++            "load_path":"v1 UVI production worker; full PCM"}]);
 +        let diag = assets.diagnostics();
 +        r["ui"] = json!(if ui_error {
 +            "error"
@@ -333,6 +340,7 @@ index 00000000..c522e2a0
 +        });
 +        r["controls_bound"] = json!(format!("{bound}/{visible}"));
 +        r["views"] = json!(views);
++        r["programs"][0]["views"] = r["views"].clone();
 +        r["asset_failures"] = json!(diag.failed);
 +        r["font_failures"] = json!(diag.font_failed);
 +        r["asset_limit"] = json!(diag.limited);
@@ -417,6 +425,7 @@ index 00000000..c522e2a0
 +        drop(port);
 +        let stats = worker.stats();
 +        r["sample_resident_bytes"] = json!(stats.resource_resident_pcm_bytes);
++        r["programs"][0]["sample_resident_bytes"] = r["sample_resident_bytes"].clone();
 +        r["render_ns"] = json!(stats.render_ns);
 +        r["render_cpu_ns"] = json!(stats.render_cpu_ns);
 +        r["render_deadline_misses"] = json!(stats.render_deadline_misses);
@@ -465,10 +474,10 @@ index 00000000..f666cde7
 +}
 diff --git a/tools/kontra-scan/metrics.rs b/tools/kontra-scan/metrics.rs
 new file mode 100644
-index 00000000..46303157
+index 00000000..ff76a3fd
 --- /dev/null
 +++ b/tools/kontra-scan/metrics.rs
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,80 @@
 +use serde_json::{Value, json};
 +use std::{collections::BTreeMap, path::Path};
 +
@@ -525,6 +534,16 @@ index 00000000..46303157
 +pub fn error(stage: &str, e: impl std::fmt::Display) -> Value {
 +    // Error strings may quote decrypted source/values. Keep only a stage and a digest.
 +    json!({"stage":stage,"error_hash":blake3::hash(e.to_string().as_bytes()).to_hex().to_string()})
++}
++
++pub fn note(program: u32) -> Option<(u8, u8)> {
++    let path = std::env::var_os("KONTRA_SCAN_NOTE_PLAN")?;
++    let value: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
++    let p = &value["programs"][program.to_string()];
++    Some((
++        u8::try_from(p["key"].as_u64()?).ok()?.min(127),
++        u8::try_from(p["velocity"].as_u64()?).ok()?.clamp(1, 127),
++    ))
 +}
 +
 +#[cfg(test)]
