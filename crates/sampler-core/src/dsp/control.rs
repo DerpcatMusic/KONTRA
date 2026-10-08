@@ -140,22 +140,31 @@ fn normalized(domain: ControlDomain, value: ControlValue) -> f64 {
 
 /// One trajectory per prepared binding, shared by all voices in that generation.
 /// Evaluation is a function of absolute sample time, never voice/render call count.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ControlRamp {
     from: f64,
     target: f64,
     start: u64,
     frames: u32,
+    modulation: Option<(f64, [f64; 2])>,
 }
 impl ControlRamp {
     pub(crate) fn value(self, at: u64) -> f64 {
         let elapsed = at.saturating_sub(self.start);
-        if elapsed >= u64::from(self.frames) {
+        let value = if elapsed >= u64::from(self.frames) {
             self.target
         } else {
             (self.from + (self.target - self.from) * (elapsed as f64 / f64::from(self.frames)))
                 .clamp(self.from.min(self.target), self.from.max(self.target))
+        };
+        match self.modulation {
+            None => value,
+            Some((delta, [low, high])) => (value + delta).clamp(low, high),
         }
+    }
+    pub(crate) fn add_modulation(&mut self, delta: f64, binding: ControlRange) {
+        let sum = self.modulation.map_or(0., |(delta, _)| delta) + delta;
+        self.modulation = Some((sum, [binding.low.min(binding.high), binding.low.max(binding.high)]));
     }
     fn set(&mut self, at: u64, target: f64, frames: u32) {
         if target != self.target {
@@ -187,6 +196,7 @@ pub(crate) fn initial_parameters(plan: &Prepared, bindings: &[ControlRange]) -> 
                 target,
                 start: 0,
                 frames: 0,
+                modulation: None,
             }
         })
         .collect()
@@ -234,5 +244,26 @@ fn edit_parameters(
     for &(_, lane) in &controls[from..until] {
         let binding = bindings[lane];
         parameters[lane].set(at, binding.target(value), binding.ramp_frames);
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    #[test]
+    fn projection_clamps_after_the_base_ramp_and_ordered_route_sum() {
+        let base = ControlRamp { from: 0., target: 2., start: 0, frames: 100, modulation: None };
+        let binding = ControlRange { control: ControlId(1), low: 0., high: 2., ramp_frames: 0 };
+        let mut projected = base;
+        projected.add_modulation(-1., binding);
+        assert_eq!(projected.value(25), 0.);
+        assert_eq!(projected.value(75), 0.5);
+        assert_eq!(base.value(75), 1.5);
+        projected.add_modulation(1., binding);
+        assert_eq!(projected.value(25), base.value(25));
+        let mut projected = base;
+        for delta in [1., 2f64.powi(-54), -1.] { projected.add_modulation(delta, binding); }
+        assert_eq!(projected.value(0), 0., "saved route order cannot be reassociated");
     }
 }
