@@ -999,6 +999,18 @@ impl Gen<'_, '_> {
 
     fn append(&mut self, e: &Expr, dst: TextRef, free: u16) -> Result<()> {
         let part = match &e.kind {
+            ExprKind::SysElem(array, index) if array.drop_kind().is_some() => {
+                self.value(index, free)?;
+                let scratch = self.scratch();
+                self.emit(I::Op(Op::ReadWidgetDropText {
+                    ui: self.ui_id.unwrap_or(0),
+                    kind: array.drop_kind().unwrap(),
+                    index: free,
+                    text: scratch,
+                }))?;
+                self.tdepth -= 1;
+                TextPart::Text(scratch)
+            }
             ExprKind::Str(s) => TextPart::Constant(self.constant(s)),
             ExprKind::Concat(parts) => {
                 for p in parts {
@@ -1214,7 +1226,10 @@ impl Gen<'_, '_> {
             if usize::from(count) == sampler_core::EFFECT_ARGS {
                 break;
             }
-            self.arg(args, i, reg(dst, count)?)?;
+            if i == 0 && matches!(builtin, Builtin::SetText | Builtin::AddTextLine | Builtin::SetKnobLabel | Builtin::SetKnobUnit | Builtin::SetKnobDefval | Builtin::SetControlHelp | Builtin::MoveControl | Builtin::MoveControlPx | Builtin::HidePart | Builtin::AddMenuItem | Builtin::SetTableStepsShown) {
+                if let Some(ui) = self.ui_index(args, 0) { self.set(reg(dst, count)?, i64::from(crate::builtins::FIRST_UI_ID + ui as i32))?; }
+                else { self.arg(args, i, reg(dst, count)?)?; }
+            } else { self.arg(args, i, reg(dst, count)?)?; }
             count += 1;
         }
         let service = self.u.service(builtin);
@@ -1537,6 +1552,16 @@ impl Gen<'_, '_> {
                 true
             }
             NumElements => {
+                if let Some(Arg::SysArray(array)) = args.first()
+                    && let Some(kind) = array.drop_kind()
+                {
+                    self.emit(I::Op(Op::ReadWidgetDropCount {
+                        ui: self.ui_id.unwrap_or(0),
+                        kind,
+                        local: dst,
+                    }))?;
+                    return Ok(());
+                }
                 let len = match args.first() {
                     Some(Arg::Var(v, _)) => self.var(*v).len.unwrap_or(1),
                     Some(Arg::SysArray(a)) => a.len(),
@@ -2153,6 +2178,8 @@ impl Gen<'_, '_> {
             | SetMenuItemVisibility
             | SetMenuItemValue
             | SetTableStepsShown
+            | SetSkinOffset
+            | SetUiColor
             | AttachZone
             | SetUiWfProperty
             | FsNavigate
@@ -2188,7 +2215,7 @@ impl Gen<'_, '_> {
                     IgnoreController => "outside on controller is ignored",
                     MakePersistent | MakeInstrPersistent | ReadPersistentVar | LoadNativeUi
                     | LoadPerformanceView | MakePerfview | ExposeControls | SetSnapshotType
-                    | ShowLibraryTab | SetSkinOffset | SetUiColor | SetUiHeight | SetUiHeightPx
+                    | ShowLibraryTab | SetUiHeight | SetUiHeightPx
                     | SetUiWidthPx | SetScriptTitle | GetFontId => "only takes effect in on init",
                     _ => "is not executed at runtime; result 0",
                 };
@@ -3205,6 +3232,8 @@ fn host_service(builtin: Builtin) -> Coverage {
         | SetMenuItemVisibility
         | SetMenuItemValue
         | SetTableStepsShown
+            | SetSkinOffset
+            | SetUiColor
         | SetUiWfProperty
         | AttachLevelMeter
         | FsNavigate
