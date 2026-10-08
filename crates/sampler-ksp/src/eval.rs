@@ -1217,7 +1217,16 @@ impl Eval<'_> {
                     self.int(args, 2)?,
                     self.int(args, 3)?,
                 ];
-                V::I(self.st.engine.get(&key).copied().unwrap_or(0))
+                // Unwritten group volume, pan and tune read their neutral value.
+                let neutral = match (key[2], key[3], symbol_name(self.hir, key[0])) {
+                    (-1, -1, Some(n)) => match n.trim_start_matches('$') {
+                        "ENGINE_PAR_VOLUME" => 630_957,
+                        "ENGINE_PAR_PAN" | "ENGINE_PAR_TUNE" => 500_000,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                V::I(self.st.engine.get(&key).copied().unwrap_or(neutral))
             }
             GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
             GroupName => {
