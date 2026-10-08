@@ -204,12 +204,10 @@ impl Runtime {
         index: u32,
     ) -> Result<WidgetValue, Error> {
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        let w = generation
-            .prepared
-            .widgets
-            .iter()
-            .find(|w| w.id == id)
-            .ok_or(Error::InvalidInput)?;
+        let widgets = &generation.prepared.widgets;
+        let w = &widgets[widgets
+            .binary_search_by_key(&id, |w| w.id)
+            .map_err(|_| Error::InvalidInput)?];
         let bank = &generation.scripts[usize::from(w.instance.0)];
         Ok(match w.storage {
             WidgetStorage::Control(control) if index == 0 => {
@@ -257,12 +255,10 @@ impl Runtime {
         let performance = self.performance_index(context.performance)?;
         self.apply_due();
         let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
-        let w = *generation
-            .prepared
-            .widgets
-            .iter()
-            .find(|w| w.id == edits[0].id)
-            .ok_or(Error::InvalidInput)?;
+        let widgets = &generation.prepared.widgets;
+        let w = widgets[widgets
+            .binary_search_by_key(&edits[0].id, |w| w.id)
+            .map_err(|_| Error::InvalidInput)?];
         let revision = self.control_revision(plan)?;
         if expected_revision.is_some_and(|r| r != revision) {
             return Err(Error::RevisionConflict);
