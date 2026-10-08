@@ -20,6 +20,7 @@ mod nks;
 mod resource_container;
 mod resources;
 mod samples;
+mod pcm;
 mod script;
 mod snapshot;
 mod stream;

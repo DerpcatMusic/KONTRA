@@ -684,3 +684,10 @@ fn v1_mixer_aux_and_host_bus_controls_are_reachable() {
     assert!(restored == *selection);
     shoot(&h.ui, 1180, 780, "settings-routing.png");
 }
+
+#[test]
+fn v1_sample_folder_creator_is_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.); h.press("app-menu");
+    assert!(h.ui.scene().unwrap().surfaces().any(|s| s.text_value.as_deref() == Some("Create library from folder…")), "v1 library creator menu is missing");
+}
