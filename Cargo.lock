@@ -3828,10 +3828,10 @@ dependencies = [
  "sampler-ir",
  "sampler-ksp",
  "sampler-ui-ir",
- "symphonia",
  "serde",
  "serde_json",
  "sha2",
+ "symphonia",
 ]
 
 [[package]]
