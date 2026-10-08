@@ -1955,7 +1955,7 @@ pub(crate) mod tests {
                 LIVE.with(|n| n.set(0)); PEAK.with(|n| n.set(0));
                 let begin = Instant::now();
                 COUNTING.with(|c| c.set(true));
-                let initialized = sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment).unwrap();
+                let _initialized = sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment).unwrap();
                 COUNTING.with(|c| c.set(false));
                 println!("AUDIT {}", serde_json::json!({"stage":"init_allocations", "slot":slot, "real_view":real, "ms":begin.elapsed().as_secs_f64()*1000., "calls":CALLS.with(Cell::get), "allocated_bytes":ALLOCATED.with(Cell::get), "freed_bytes":FREED.with(Cell::get), "live_bytes":LIVE.with(Cell::get), "peak_live_bytes":PEAK.with(Cell::get)}));
 
