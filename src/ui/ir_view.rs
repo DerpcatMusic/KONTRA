@@ -91,6 +91,10 @@ pub struct Edit {
     pub index: u32,
     pub value: ir::Value,
     pub mods: Mods,
+    /// Even XY coordinate index, or the active table column.
+    pub cursor: u32,
+    /// W5 WidgetEventType: down=0, up=1, drag=2, drop=3.
+    pub event: i32,
 }
 
 fn target(namespace: &str, n: WidgetRef) -> String {
@@ -286,6 +290,7 @@ pub(super) fn widget_state(
         _ => 0.,
     };
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
+    let before = v;
     let text_size = wd.style.and_then(|s| face.styles[s.0].size).map_or(SMALL, f64::from) * scale;
     // Text on our own (dark) control faces is ours; the source's colour is for
     // text on its art: labels, and controls drawn by their pictures.
@@ -443,7 +448,7 @@ pub(super) fn widget_state(
                     let value = quantized(range.min+(1.-point.y/h.max(1.)).clamp(0.,1.)*(range.max-range.min),range);
                     samples[column]=value;
                     let value = if range.step == Some(1.) {ir::Value::Integer(value as i32)} else {ir::Value::Real(value)};
-                    input.edits.push(Edit{widget:n,index:column as u32,value,mods:response.mods});
+                    input.edits.push(Edit{widget:n,index:column as u32,value,mods:response.mods,cursor:column as u32,event:if response.dragged {2} else {0}});
                     input.values.insert(n,ir::Value::Reals(samples.clone()));
                 }
             }
@@ -471,7 +476,7 @@ pub(super) fn widget_state(
                     } else {input.cursors.get(&n).copied().unwrap_or(0)};
                     for (index,value) in [(cursor*2,x),(cursor*2+1,y)] {
                         points[index]=value;
-                        input.edits.push(Edit{widget:n,index:index as u32,value:ir::Value::Real(value),mods:response.mods});
+                        input.edits.push(Edit{widget:n,index:index as u32,value:ir::Value::Real(value),mods:response.mods,cursor:(cursor*2) as u32,event:if response.dragged {2} else {0}});
                     }
                     input.values.insert(n,ir::Value::Reals(points.clone()));
                 }
@@ -483,7 +488,7 @@ pub(super) fn widget_state(
             let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
             if wd.enabled && field.changed.submitted {
                 let text=ir::Value::Text(draft.clone());
-                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods});
+                input.edits.push(Edit{widget:n,index:0,value:text.clone(),mods:ui.get(id.as_str()).mods,cursor:0,event:1});
                 input.values.insert(n,text);
             }
             field.el
@@ -509,7 +514,7 @@ pub(super) fn widget_state(
                     if path.is_dir() {next=Some(path.clone());}
                     else {
                         let value=ir::Value::Text(path.to_string_lossy().into_owned());
-                        input.edits.push(Edit{widget:n,index:0,value:value.clone(),mods:ui.get(item.as_str()).mods});
+                        input.edits.push(Edit{widget:n,index:0,value:value.clone(),mods:ui.get(item.as_str()).mods,cursor:0,event:0});
                         input.values.insert(n,value);
                     }
                 }
@@ -531,6 +536,15 @@ pub(super) fn widget_state(
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
     };
     if let Some(c) = control {
+        if wd.enabled && v.to_bits() != before.to_bits() {
+            let response = ui.get(id.as_str());
+            let mods = if matches!(wd.kind,Kind::Menu{..}|Kind::ValueEdit{..}) {Mods::default()} else {response.mods};
+            let value = match &wd.kind {
+                Kind::Knob{range,..}|Kind::Slider{range,..}|Kind::ValueEdit{range,..} if range.step != Some(1.) => ir::Value::Real(v),
+                _ => ir::Value::Integer(v.round() as i32),
+            };
+            input.edits.push(Edit{widget:n,index:0,value,mods,cursor:0,event:if response.dragged {2} else {0}});
+        }
         values.insert(c, v);
     }
     // Our faces are light-on-dark: a control without its own picture sits on
@@ -556,7 +570,7 @@ pub(super) fn widget_state(
 
 
 #[allow(clippy::too_many_arguments)]
-fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64, values:&mut Values, input:&mut InputState, width:f64, height:f64) -> Option<El> {
+pub(super) fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64, values:&mut Values, input:&mut InputState, width:f64, height:f64) -> Option<El> {
     let n = input.menu?;
     let wd = face.widgets.get(n.0)?;
     let Kind::Menu {items} = &wd.kind else { input.menu=None; return None };
@@ -567,16 +581,26 @@ fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64, values:&mu
     for (at,item) in items.iter().enumerate().filter(|(_,item)|item.visible) {
         let id = format!("{anchor}-item-{at}");
         if ui.get(id.as_str()).activated() {
-            if let Binding::Control(control) = wd.binding { values.insert(control,f64::from(item.value)); }
+            if let Binding::Control(control) = wd.binding {
+                values.insert(control,f64::from(item.value));
+                input.edits.push(Edit{widget:n,index:0,value:ir::Value::Integer(item.value),mods:Mods::default(),cursor:0,event:0});
+            }
             input.menu=None;
         }
         rows.push(caption(item.text.clone()).pad((TIGHT*scale,SPACE*scale)).fill(Role::Ink).focusable().a11y(A11y::Button).id(id));
     }
     let r = face.page_rect(n);
-    let w = (f64::from(r.width)*scale).max(120.).min(width);
+    let root = if namespace.is_empty() {"ir-view".to_owned()} else {format!("{namespace}-ir-view")};
+    let positioned = ui.scene().and_then(|scene| {
+        let anchor=scene.surface(&anchor)?.frame;
+        let root=scene.surface(&root)?.frame;
+        Some((anchor.x-root.x,anchor.y-root.y,anchor.size.width,anchor.size.height))
+    });
+    let (ax,ay,aw,ah)=positioned.unwrap_or((f64::from(r.x)*scale,f64::from(r.y)*scale,f64::from(r.width)*scale,f64::from(r.height)*scale));
+    let w = aw.max(120.).min(width);
     let h = (rows.len() as f64 * CONTROL*scale).min(height);
-    let x = (f64::from(r.x)*scale).clamp(0.,(width-w).max(0.));
-    let y = (f64::from(r.y+r.height as i32)*scale).clamp(0.,(height-h).max(0.));
+    let x = ax.clamp(0.,(width-w).max(0.));
+    let y = (ay+ah).clamp(0.,(height-h).max(0.));
     Some(col(rows).gap(0).w(w).h(h).scroll().fill(Role::Field).stroke(Role::Ink.alpha(0.3)).stroke_width(1).id(popup).at(x,y))
 }
 

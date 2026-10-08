@@ -653,6 +653,33 @@ fn widget_menu_selects_semantic_value_and_value_edit_accepts_typing() {
     tick(&mut ui,&mut values,&mut state,key(Key::Enter));
     for _ in 0..3 {tick(&mut ui,&mut values,&mut state,Input::default());}
     assert_eq!(values[&value],37.,"typed display units are converted to authored units");
+    assert!(state.edits.iter().any(|e| e.widget == ir::WidgetRef(0) && e.value == ir::Value::Integer(23)));
+    assert!(state.edits.iter().any(|e| e.widget == ir::WidgetRef(1) && e.value == ir::Value::Integer(37)));
+}
+
+#[test]
+fn widget_generated_menu_popup_anchors_to_scene() {
+    let script = sampler_ksp::compile("on init\n declare ui_menu $m\n add_menu_item($m,\"first\",7)\nend on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face = ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let mut values = ir_view::Values::default();
+    let mut state = ir_view::InputState::default();
+    let assets = ir_view::Assets::default();
+    let mut ui = theme::ui();
+    let tick = |ui:&mut Ui, values:&mut ir_view::Values, state:&mut ir_view::InputState, input:Input| {
+        let widget = ir_view::widget_state(ui,"generated",&face,ir::WidgetRef(0),&assets,ir::Presentation::Vector,1.,values,state,130.,30.).at(300.,100.);
+        let mut layers = vec![widget];
+        if let Some(popup) = ir_view::menu_popup(ui,"generated",&face,1.,values,state,500.,250.) {layers.push(popup);}
+        let generated = stack(layers).w(500).h(250).id("generated-ir-view").at(40.,30.);
+        ui.frame(stack![generated],Some(Size::new(633.,400.)),input,1./60.).unwrap();
+    };
+    for _ in 0..4 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    ui.focus("generated-ir-0");
+    tick(&mut ui,&mut values,&mut state,Input{keys:vec![KeyPress{key:Key::Enter,mods:Mods::default()}],..Default::default()});
+    for _ in 0..4 {tick(&mut ui,&mut values,&mut state,Input::default());}
+    let scene = ui.scene().unwrap();
+    let root = scene.surface("generated-ir-view").unwrap().frame;
+    let popup = scene.surface("generated-ir-0-popup").unwrap().frame;
+    assert_eq!((popup.x-root.x,popup.y-root.y),(300.,130.));
 }
 
 #[test]
