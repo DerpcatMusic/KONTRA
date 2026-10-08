@@ -25,8 +25,6 @@ struct Local {
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
-#[cfg(feature = "shots")]
-thread_local! {static GRAPH_DEPTH:std::cell::Cell<usize>=const {std::cell::Cell::new(0)};}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub(super) struct State {
     id: u64,
@@ -280,6 +278,8 @@ impl State {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
             let graph = session.render()?;
+            #[cfg(feature = "shots")]
+            { self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(graph_depth(&graph)?)); }
             let authored = authored_size(&graph);
             self.size = authored;
             let el = draw(
@@ -296,8 +296,6 @@ impl State {
             .h(authored.height * scale)
             .clip()
             .named("NativeUI performance view");
-            #[cfg(feature = "shots")]
-            { self.graph_depth = Some(self.graph_depth.unwrap_or(0).max(GRAPH_DEPTH.get())); }
             local.graph = Some(graph);
             Ok(el)
         });
@@ -315,6 +313,34 @@ impl State {
 }
 fn tables(t: &Table, key: &str) -> mlua::Result<Vec<Table>> {
     t.get::<Table>(key)?.sequence_values::<Table>().collect()
+}
+#[cfg(feature = "shots")]
+fn graph_depth(root: &Table) -> anyhow::Result<usize> {
+    let mut work = vec![(root.clone(), 0)];
+    let (mut nodes, mut maximum) = (0, 0);
+    while let Some((node, depth)) = work.pop() {
+        nodes += 1;
+        anyhow::ensure!(
+            nodes <= 16384 && depth <= 192,
+            "NativeUI graph budget exceeded"
+        );
+        maximum = maximum.max(depth);
+        work.extend(
+            tables(&node, "children")?
+                .into_iter()
+                .map(|child| (child, depth + 1)),
+        );
+        for modifier in tables(&node, "modifiers")? {
+            if let Value::Table(value) = val(&modifier, "value") {
+                match string(&modifier, "name").as_str() {
+                    "background" | "overlay" => work.push((value, depth + 1)),
+                    "popover" => work.push((value.get("content")?, depth + 1)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(maximum)
 }
 fn number(t: &Table, key: &str) -> Option<f64> {
     match t.get::<Value>(key).ok()? {
@@ -510,13 +536,12 @@ fn draw(
     }
     let mut work = vec![Work::Enter(node.clone(), style, 0)];
     let mut results = Vec::new();
-    let (mut nodes, mut max_depth) = (0, 0);
+    let mut nodes = 0;
     while let Some(job) = work.pop() {
         let (progress, depth) = match job {
             Work::Enter(node, style, depth) => {
                 nodes += 1;
                 anyhow::ensure!(nodes <= 16384 && depth <= 192, "NativeUI graph budget exceeded");
-                max_depth = max_depth.max(depth);
                 let props = node.get("props")?;
                 let modifiers = tables(&node, "modifiers")?;
                 let style = draw_style(package, &modifiers, style)?;
@@ -542,8 +567,6 @@ fn draw(
             }
         }
     }
-    #[cfg(feature = "shots")]
-    GRAPH_DEPTH.set(max_depth);
     Ok(results.pop().expect("the root produces one element"))
 }
 fn draw_style(package: &Package, modifiers: &[Table], mut style: Style) -> anyhow::Result<Style> {
@@ -1221,13 +1244,19 @@ pub(super) fn stack_watermark() -> (usize, usize, usize) {
     // Only unused storage on this test thread is painted; leave guard pages
     // and 64 KiB below the active frame untouched.
     unsafe {
-        assert_eq!(libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()), 0);
-        assert_eq!(libc::pthread_attr_getstack(attr.as_ptr(), &mut base, &mut size), 0);
+        assert_eq!(
+            libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()),
+            0
+        );
+        assert_eq!(
+            libc::pthread_attr_getstack(attr.as_ptr(), &mut base, &mut size),
+            0
+        );
         assert_eq!(libc::pthread_attr_destroy(attr.as_mut_ptr()), 0);
         let marker = 0_u8;
         let end = (&marker as *const u8 as usize) - (64 << 10);
         let start = (base as usize + 2 * libc::sysconf(libc::_SC_PAGESIZE) as usize)
-                .max(end.saturating_sub(2 << 20));
+            .max(end.saturating_sub(2 << 20));
         assert!(start < end && end < base as usize + size);
         std::ptr::write_bytes(start as *mut u8, 0xa5, end - start);
         (start, end, base as usize + size)
@@ -1241,37 +1270,62 @@ pub(super) fn stack_peak((start, end, top): (usize, usize, usize)) -> usize {
     top - (start + bytes.iter().position(|&b| b != 0xa5).unwrap_or(bytes.len()))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn native_graph_lowering_fits_a_plain_two_mib_thread() {
-        std::thread::Builder::new().stack_size(2 << 20).spawn(|| {
-            let dir=std::env::temp_dir().join(format!("kontra-native-stack-{}",std::process::id()));
-            std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
-            std::fs::write(dir.join("Resources/native_ui/main.nui"),b"return function() return nil end").unwrap();
-            let package=Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
-            let session=Session::new(package.clone(),"main",vec![]).unwrap();
-            let lua=session.lua();
-            let node=|kind:&str,child:Option<Table>| {
-                let node=lua.create_table().unwrap();
-                node.set("kind",kind).unwrap();
-                node.set("props",lua.create_table().unwrap()).unwrap();
-                node.set("modifiers",lua.create_table().unwrap()).unwrap();
-                let children=lua.create_table().unwrap();
-                if let Some(child)=child {children.push(child).unwrap();}
-                node.set("children",children).unwrap();node
-            };
-            let mut graph=node("Rectangle",None);
-            for _ in 0..64 {graph=node("Group",Some(graph));}
-            let mut ui=super::super::theme::ui();
-            let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut HashMap::new()).unwrap();
-            ui.frame(el,Some(Size::new(16.,16.)),Input::default(),1./60.).unwrap();
-            assert!(ui.scene().is_some());
-            std::fs::remove_dir_all(dir).unwrap();
-        }).unwrap().join().unwrap();
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                let dir = std::env::temp_dir()
+                    .join(format!("kontra-native-stack-{}", std::process::id()));
+                std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+                std::fs::write(
+                    dir.join("Resources/native_ui/main.nui"),
+                    b"return function() return nil end",
+                )
+                .unwrap();
+                let package = Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+                let session = Session::new(package.clone(), "main", vec![]).unwrap();
+                let lua = session.lua();
+                let node = |kind: &str, child: Option<Table>| {
+                    let node = lua.create_table().unwrap();
+                    node.set("kind", kind).unwrap();
+                    node.set("props", lua.create_table().unwrap()).unwrap();
+                    node.set("modifiers", lua.create_table().unwrap()).unwrap();
+                    let children = lua.create_table().unwrap();
+                    if let Some(child) = child {
+                        children.push(child).unwrap();
+                    }
+                    node.set("children", children).unwrap();
+                    node
+                };
+                let mut graph = node("Rectangle", None);
+                for _ in 0..64 {
+                    graph = node("Group", Some(graph));
+                }
+                let mut ui = super::super::theme::ui();
+                let el = draw(
+                    &mut ui,
+                    &graph,
+                    &package,
+                    &session,
+                    0,
+                    1.,
+                    Style::default(),
+                    &mut HashMap::new(),
+                )
+                .unwrap();
+                ui.frame(el, Some(Size::new(16., 16.)), Input::default(), 1. / 60.)
+                    .unwrap();
+                assert!(ui.scene().is_some());
+                std::fs::remove_dir_all(dir).unwrap();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
