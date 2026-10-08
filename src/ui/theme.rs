@@ -294,6 +294,8 @@ pub enum Icon {
     Keys,
     /// A clock face: what was opened lately.
     Recent,
+    /// A landscape: the authored performance view.
+    Picture,
     /// A five-pin DIN socket with an arrow in, or out: MIDI routing.
     MidiIn,
     #[allow(dead_code, reason = "the mixer's routing")]
@@ -401,6 +403,11 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(8., 10.8), (8., 14.8)]),
             ],
             Icon::Check => vec![line(&[(3.5, 8.5), (6.5, 11.5), (12.5, 4.5)])],
+            Icon::Picture => vec![
+                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[(2.5, 11.), (6., 7.5), (8.5, 10.), (10., 8.5), (13.5, 11.5)]),
+                dot(10.5, 6.),
+            ],
             Icon::Recent => vec![
                 Draw::stroke(arc(ox + 8. * u, oy + 8. * u, 5.5 * u, 0., 2. * PI), ink.clone(), weight),
                 line(&[(8., 5.), (8., 8.), (10.5, 9.5)]),

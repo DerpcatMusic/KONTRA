@@ -12,6 +12,9 @@ use std::sync::Arc;
 pub struct Face {
     /// The interfaces it was made from, to notice a reload.
     from: Arc<[ir::Interface]>,
+    path: std::path::PathBuf,
+    generation: u64,
+    bytes: usize,
     /// Which of them is shown.
     pub shown: usize,
     face: ir::Interface,
@@ -22,22 +25,23 @@ pub struct Face {
 }
 
 impl Face {
-    fn new(path: &std::path::Path, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
+    fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
         let source = pictures::Source::of(path);
         let face = ir_view::resolved(&from[shown]);
-        let mut out = Self { from, shown, face, source, assets: Default::default(), presentation, values: Default::default() };
+        let mut out = Self { from, path: path.into(), generation, bytes: 0, shown, face, source, assets: Default::default(), presentation, values: Default::default() };
         out.sync();
         out
     }
 
     /// Decoded picture bytes the view keeps.
     pub fn bytes(&self) -> usize {
-        self.assets.bytes()
+        self.bytes
     }
 
     fn sync(&mut self) {
         let source = &mut self.source;
         self.assets.sync(&self.face, self.presentation, |a| source.load(a));
+        self.bytes = self.assets.bytes();
     }
 }
 
@@ -46,20 +50,47 @@ fn main_face(faces: &[ir::Interface]) -> Option<usize> {
     (0..faces.len()).filter(|&n| !faces[n].widgets.is_empty()).max_by_key(|&n| faces[n].widgets.len())
 }
 
+/// The persisted authored presentation; old generated-panel choices use vector
+/// controls until that separate frontend is restored.
+pub fn presentation(cx: &Cx, slot: usize) -> Presentation {
+    match cx.selection.parts[slot].view {
+        1 => Presentation::Bitmap,
+        2 | 3 => Presentation::Vector,
+        _ if cx.settings.view_mode == crate::library::ViewMode::Original => Presentation::Bitmap,
+        _ => Presentation::Vector,
+    }
+}
+
+pub fn available(cx: &Cx, slot: usize) -> bool {
+    main_face(&cx.view.parts[slot].interfaces).is_some()
+}
+
 /// `slot`'s library interface, when its scripts declare one.
 fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
     let from = cx.view.parts.get(slot)?.interfaces.clone();
     let main = main_face(&from)?;
     let path = std::path::PathBuf::from(&cx.selection.parts[slot].path);
-    let stale = cx.state.faces.get(&slot).is_none_or(|f| !Arc::ptr_eq(&f.from, &from));
+    let generation = cx.p.shared.part(slot).map_or(0, |p| p.generation.load(std::sync::atomic::Ordering::Relaxed));
+    let stale = cx.state.faces.get(&slot).is_none_or(|f| f.path != path || f.generation != generation);
+    let presentation = presentation(cx, slot);
     if stale {
         // ponytail: reads and decodes on the UI thread, once per load; move to the
         // loader's worker when big libraries make the first frame stall.
-        // Vector unless the source needed something we only approximate.
-        let start = if from[main].unsupported.is_empty() { Presentation::Vector } else { Presentation::Bitmap };
-        cx.state.faces.insert(slot, Face::new(&path, from.clone(), main, start));
+        cx.state.faces.insert(slot, Face::new(&path, generation, from.clone(), main, presentation));
     }
     let face = cx.state.faces.get_mut(&slot)?;
+    if !Arc::ptr_eq(&face.from, &from) {
+        if !from.get(face.shown).is_some_and(|f| !f.widgets.is_empty()) { face.shown = main; }
+        let updated = ir_view::resolved(&from[face.shown]);
+        if updated.assets != face.face.assets { face.assets = Default::default(); }
+        face.face = updated;
+        face.from = from.clone();
+        face.sync();
+    }
+    if face.presentation != presentation {
+        face.presentation = presentation;
+        face.sync();
+    }
 
     // Which script's view, when several have one, and how it is drawn.
     let mut bar: Vec<El> = lead.into_iter().collect();
@@ -83,21 +114,12 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         bar.push(segmented(tabs));
     }
     bar.push(spacer());
-    let original = face.presentation == Presentation::Bitmap;
-    let (a, orig) = latch(ui, format!("face-original-{slot}"), "Original", "The library's own artwork", original);
-    let (b, vect) = latch(ui, format!("face-vector-{slot}"), "Vector", "The library's background with KONTRA's controls; frees the control pictures", !original);
-    bar.push(segmented(vec![orig, vect]));
     if let Some(n) = pick.filter(|&n| n != face.shown) {
         let presentation = face.presentation;
-        *face = Face::new(&path, from.clone(), n, presentation);
+        *face = Face::new(&path, generation, from.clone(), n, presentation);
     }
-    if a || b {
-        face.presentation = if b { Presentation::Vector } else { Presentation::Bitmap };
-        face.sync();
-    }
-
-    let held = face.assets.bytes() as f64 / (1024. * 1024.);
-    bar.insert(bar.len() - 1, caption(format!("{held:.1} MB pictures")).fill(secondary()).lines(1).tip("Decoded artwork this view keeps in memory"));
+    let held = face.bytes() as f64 / (1024. * 1024.);
+    bar.push(caption(format!("{held:.1} MB pictures")).fill(secondary()).lines(1).tip("Decoded artwork this view keeps in memory"));
     let page = &face.face.pages[0];
     let avail = ui.scene().and_then(|s| s.surface(&format!("face-{slot}"))).map_or(f64::from(page.size.width), |s| s.frame.size.width);
     let scale = (avail / f64::from(page.size.width.max(1))).clamp(0.5, 1.0);
@@ -105,13 +127,23 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let shared = cx.p.shared.part(slot);
     let current: Vec<_> = shared.as_ref().map(|p| p.control_values()).unwrap_or_default();
     face.values.extend(current.iter().copied());
-    let view = ir_view::view(ui, &format!("part-{slot}-script-{}-", face.shown), &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);
+    let namespace = format!("part-{slot}-script-{}-", face.shown);
+    let menu_request = face.face.widgets.iter().enumerate().find_map(|(n,w)| {
+        if matches!(w.kind, ir::Kind::Menu { .. }) && face.face.visible(ir::WidgetRef(n)) {
+            let id = format!("{namespace}ir-{n}");
+            ui.get(id.as_str()).activated().then_some((face.shown, n, id))
+        } else { None }
+    });
+    let view = ir_view::view(ui, &namespace, &face.face, ir::PageRef(0), &face.assets, face.presentation, scale, &mut face.values);
     for &(id, was) in &current {
         if let Some(&now) = face.values.get(&id)
             && now != was
         {
             cx.p.shared.set_control(slot, id, now);
         }
+    }
+    if let Some((script, widget, id)) = menu_request {
+        super::menu::open_under(ui, cx, super::menu::Target::ScriptMenu { part: slot, script, widget, generation }, &id);
     }
     Some(
         col![

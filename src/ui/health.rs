@@ -9,8 +9,11 @@ pub fn survey(
     instrument: &mut sampler_ir::Instrument,
     options: &sampler_kontakt::Options,
     shots: Option<&Path>,
+    benchmark: bool,
 ) -> Value {
+    let setup = std::time::Instant::now();
     let (scripts, faces, mut resources) = sampler_kontakt::compile_ui(instrument, options);
+    let compile_ms = setup.elapsed().as_secs_f64() * 1000.;
     let mut source =
         pictures::Source::of(options.library.as_deref().expect("survey instrument path"));
     let resource_locations = resources
@@ -58,6 +61,7 @@ pub fn survey(
         let initial_values = values.clone();
         let face = ir_view::resolved(face);
         let mut missing = Vec::new();
+        let asset_started = std::time::Instant::now();
         let mut assets = ir_view::Assets::default();
         assets.sync(&face, ir::Presentation::Bitmap, |a| {
             let loaded = source.load(a);
@@ -66,6 +70,7 @@ pub fn survey(
             }
             loaded
         });
+        let assets_ms = asset_started.elapsed().as_secs_f64() * 1000.;
         let mut layout = Vec::new();
         let mut unbound = Vec::new();
         let mut unsupported_widgets = BTreeSet::new();
@@ -149,6 +154,7 @@ pub fn survey(
                 let w = face.pages[p].size.width.clamp(1, 4096) as u16;
                 let h = ir_view::height(&face, ir::PageRef(p)).clamp(1, 4096) as u16;
                 let name = format!("slot-{slot}-page-{p}-{mode:?}.png");
+                let timings = benchmark.then(|| frame_times(&face, &assets, mode, ir::PageRef(p), w, h, &initial_values));
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<(), String> {
                         let mut ui = theme::ui();
@@ -203,7 +209,7 @@ pub fn survey(
                         Ok(())
                     },
                 ));
-                renders.push(json!({"presentation": format!("{mode:?}"), "page": p, "ok": matches!(result, Ok(Ok(()))), "error": match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("renderer panic".into()) }, "shot": shots.map(|d| d.join(&name).display().to_string())}));
+                renders.push(json!({"presentation": format!("{mode:?}"), "page": p, "ok": matches!(result, Ok(Ok(()))), "error": match result { Ok(Ok(())) => None, Ok(Err(e)) => Some(e), Err(_) => Some("renderer panic".into()) }, "timings":timings,"shot": shots.map(|d| d.join(&name).display().to_string())}));
             }
         }
         let unsupported: Vec<_> = face.unsupported.iter().map(|u| json!({"feature":u.feature,"widget":u.widget.map(|w| face.widgets[w.0].name.clone())})).collect();
@@ -219,7 +225,7 @@ pub fn survey(
             })
             .collect();
         let rendered = renders.iter().all(|r| r["ok"] == true);
-        views.push(json!({"slot":slot,"frontend":frontend,"loaded":true,"widgets":face.widgets.len(),"visible_widgets":face.widgets.iter().enumerate().filter(|(n,_)| face.visible(ir::WidgetRef(*n))).count(),"missing_resources":missing,"font_resources":font_resources,"layout_errors":layout,"passive_value_changes":passive,"unbound_controls":unbound,"unsupported_widgets":unsupported_widgets,"unsupported_properties":unsupported,"renders":renders,"usable":rendered && passive.is_empty() && unbound.is_empty() && unsupported_widgets.is_empty(),"complete":rendered && passive.is_empty() && missing.is_empty() && layout.is_empty() && unbound.is_empty() && unsupported_widgets.is_empty() && unsupported.is_empty()}));
+        views.push(json!({"assets_ms":assets_ms,"background":face.pages.first().map(|p|json!({"color":p.background.color.map(|c|[c.r,c.g,c.b,c.a]),"offset_y":p.background.offset_y})),"assets":face.assets.iter().map(|a|a.path.clone()).collect::<Vec<_>>(),"slot":slot,"frontend":frontend,"loaded":true,"widgets":face.widgets.len(),"visible_widgets":face.widgets.iter().enumerate().filter(|(n,_)| face.visible(ir::WidgetRef(*n))).count(),"missing_resources":missing,"font_resources":font_resources,"layout_errors":layout,"passive_value_changes":passive,"unbound_controls":unbound,"unsupported_widgets":unsupported_widgets,"unsupported_properties":unsupported,"renders":renders,"usable":rendered && passive.is_empty() && unbound.is_empty() && unsupported_widgets.is_empty(),"complete":rendered && passive.is_empty() && missing.is_empty() && layout.is_empty() && unbound.is_empty() && unsupported_widgets.is_empty() && unsupported.is_empty()}));
     }
     let errors: Vec<_> = instrument
         .unsupported
@@ -243,7 +249,66 @@ pub fn survey(
         let frontend = if b.source.contains("load_komplete_ui") { "komplete_ui" } else if b.source.contains("load_performance_view") { "creator_tools" } else if b.source.contains("CONTROL_PAR_PICTURE") || b.source.contains("set_skin_offset") { "bitmap_ksp" } else { "stock_ksp" };
         json!({"slot":slot,"frontend":frontend,"loaded":frontend != "komplete_ui" && views.iter().any(|v| v["slot"] == slot)})
     }).collect();
-    json!({"resource_locations":resource_locations,"expected_frontends":expected,"authored":authored,"loaded":!faces.is_empty(),"usable":errors.is_empty() && expected.iter().all(|e| e["loaded"] == true) && (!authored || views.iter().any(|v| v["widgets"].as_u64().unwrap_or(0)>0)) && views.iter().all(|v| v["usable"] == true),"views":views,"errors":errors,"recall":"source persistent state applied before UI; host recall not probed"})
+    json!({"compile_ui_ms":compile_ms,"resource_locations":resource_locations,"expected_frontends":expected,"authored":authored,"loaded":!faces.is_empty(),"usable":errors.is_empty() && expected.iter().all(|e| e["loaded"] == true) && (!authored || views.iter().any(|v| v["widgets"].as_u64().unwrap_or(0)>0)) && views.iter().all(|v| v["usable"] == true),"views":views,"errors":errors,"recall":"source persistent state applied before UI; host recall not probed"})
+}
+
+/// Offscreen CPU timings, with 8 warm frames then 24 samples. Changing frames
+/// change one scalar render input; callback/audio costs are measured separately.
+fn frame_times(face: &ir::Interface, assets: &ir_view::Assets, mode: ir::Presentation,
+    page: ir::PageRef, width: u16, height: u16, initial: &ir_view::Values) -> Value {
+    use std::time::Instant;
+    let change = face.draw_order(page).into_iter().filter(|&n| face.visible(n)).find_map(|n| {
+        let w = &face.widgets[n.0];
+        let ir::Binding::Control(id) = w.binding else { return None };
+        match w.kind {
+            ir::Kind::Knob { range, .. } | ir::Kind::Slider { range, .. } | ir::Kind::ValueEdit { range, .. } => Some((id, range.min, range.max)),
+            _ => None,
+        }
+    });
+    let mut results = Vec::new();
+    for changing in [false, true] {
+        if changing && change.is_none() { continue; }
+        let mut ui = theme::ui();
+        let mut values = initial.clone();
+        let mut ctx = vello::vello_cpu::RenderContext::new(width, height);
+        let mut resources = vello::vello_cpu::Resources::default();
+        let mut cache = vello::Cache::default();
+        let mut pix = vello::vello_cpu::Pixmap::new(width, height);
+        let mut times: [Vec<f64>; 6] = Default::default();
+        let mut first_ms = 0.;
+        for frame in 0..32 {
+            if changing && let Some((id, lo, hi)) = change { values.insert(id, if frame % 2 == 0 { lo } else { hi }); }
+            let start = Instant::now();
+            let tree = ir_view::view(&mut ui, "bench-", face, page, assets, mode, 1., &mut values);
+            let built = Instant::now();
+            if let Err(e) = ui.frame(tree, Some(Size::new(width as f64, height as f64)), Input::default(), 1./60.) {
+                return json!({"error":format!("{e:?}")});
+            }
+            let layout = Instant::now();
+            let scene = ui.scene().unwrap().clone();
+            let cloned = Instant::now();
+            ctx.reset();
+            if let Err(e) = vello::paint(&mut vello::Cpu { ctx: &mut ctx, resources: &mut resources, cache: &mut cache }, &scene, vello::kurbo::Affine::IDENTITY) {
+                return json!({"error":format!("{e:?}")});
+            }
+            ctx.flush();
+            let painted = Instant::now();
+            ctx.render(&mut pix, &mut resources);
+            let raster = Instant::now();
+            if frame == 0 { first_ms = (raster-start).as_secs_f64()*1000.; }
+            if frame >= 8 {
+                for (samples, (a,b)) in times.iter_mut().zip([(start,built),(built,layout),(layout,cloned),(cloned,painted),(painted,raster),(start,raster)]) {
+                    samples.push((b-a).as_secs_f64()*1000.);
+                }
+            }
+        }
+        let stats: Vec<_> = ["build","layout","scene_clone","cpu_paint","cpu_raster","total"].into_iter().zip(times).map(|(stage,mut t)| {
+            t.sort_by(f64::total_cmp);
+            json!({"stage":stage,"n":t.len(),"mean_ms":t.iter().sum::<f64>()/t.len() as f64,"median_ms":t[t.len()/2],"p99_ms":t[t.len()-1]})
+        }).collect();
+        results.push(json!({"changing":changing,"first_frame_ms":first_ms,"stages":stats}));
+    }
+    json!({"renderer":"offscreen CPU","size":[width,height],"warmup":8,"samples":24,"scalar_change_without_callback":true,"frames":results})
 }
 
 #[cfg(test)]
@@ -259,7 +324,7 @@ mod tests {
         };
         let report = super::survey(&mut instrument, &sampler_kontakt::Options {
             library: Some(std::env::temp_dir().join("komplete-ui-survey.nki")), ..Default::default()
-        }, None);
+        }, None, false);
         assert_eq!(report["authored"], true);
         assert_eq!(report["expected_frontends"][0]["frontend"], "komplete_ui");
         assert_eq!(report["expected_frontends"][0]["loaded"], false);
