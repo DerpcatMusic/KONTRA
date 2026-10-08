@@ -34,6 +34,7 @@ pub(super) struct Images {
 }
 impl Images {
     pub fn get(&self, name: &str) -> Option<Arc<Image>> {
+        if name.len()>4096 {return None;}
         let name = name.replace('\\', "/").to_lowercase();
         if name.split('/').any(|s| s == ".." || s.is_empty())
             || name.starts_with('/')
@@ -44,12 +45,14 @@ impl Images {
         let mut cache = self.cache.lock().ok()?;
         cache.tick = cache.tick.wrapping_add(1);
         let tick = cache.tick;
-        cache.touch.insert(name.clone(), tick);
         if let Some(image) = cache.loaded.get(&name) {
-            return image.clone();
+            let image=image.clone();
+            cache.touch.insert(name,tick);
+            return image;
         }
         if !cache.pending.contains(&name) && self.request.try_send(name.clone()).is_ok() {
-            cache.pending.insert(name);
+            cache.pending.insert(name.clone());
+            cache.touch.insert(name,tick);
         }
         None
     }
@@ -88,6 +91,10 @@ impl Package {
         })
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        Self::load_cancel(path,||false)
+    }
+    pub fn load_cancel(path: &Path, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
+        anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
         let mut source = Source::of(path);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
@@ -95,6 +102,7 @@ impl Package {
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
+            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             let relative = name
                 .strip_prefix("resources/native_ui/")
                 .or_else(|| name.strip_prefix("native_ui/"))
@@ -110,6 +118,7 @@ impl Package {
             let bytes = source
                 .read(&name)
                 .ok_or_else(|| anyhow::anyhow!("NativeUI member unreadable"))?;
+            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             total += bytes.len();
             anyhow::ensure!(
                 total <= 16 << 20,
@@ -789,6 +798,8 @@ mod tests {
     use super::*;
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
+        assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)
+            .err().unwrap().to_string(),"NativeUI preparation canceled");
         let (request, _jobs) = std::sync::mpsc::sync_channel(1);
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
             local kontakt=require("kontakt")
@@ -802,6 +813,10 @@ mod tests {
         let (names,weight)=font_metadata(&font);
         assert!(names.iter().any(|n|n=="Noto Sans"));
         let mut package=package;
+        assert!(package.images.get("queued.png").is_none());
+        for n in 0..5000 {assert!(package.images.get(&format!("rejected-{n}.png")).is_none());}
+        assert_eq!(package.images.cache.lock().unwrap().touch.len(),1,
+            "a full worker queue must not retain rejected image-name metadata");
         let supplied=Arc::get_mut(&mut package).unwrap();
         supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
         supplied.font_names=names.into_iter().map(|n|(n,weight,font.clone())).collect();
