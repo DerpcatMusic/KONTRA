@@ -802,6 +802,14 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
         rt.control_value(rt.active_plan(), id),
         Ok(ControlValue::Real(0.25))
     );
+    // v1's user offset rides this same physical gain lane; the script base is unchanged.
+    rt.set_engine_offsets(&[sampler_core::EngineParameterOffset { address, offset: 0.1 }]).unwrap();
+    rt.render(&mut out).unwrap();
+    assert!((out[32][0] / before - 0.35).abs() < 0.001);
+    assert_eq!(rt.engine_parameter(address), Ok(250000));
+    rt.set_engine_offsets(&[]).unwrap();
+    rt.render(&mut out).unwrap();
+    assert!((out[32][0] / before - 0.25).abs() < 0.001);
     instrument.chains[0].pre_amplitude[0] = ir::Processor::Gainer {
         gain: ir::Gain::UNITY,
         dry: 0.,
