@@ -71,6 +71,7 @@ pub fn program_automation(
         let version = header(&mut r, &[0x70, 0x71])?;
         let at = r.0;
         let mode = r.u32()?;
+        if mode > 2 { return Err(at.error(ErrorKind::UnsupportedLayout)); }
         let soft_takeover = match r.u8()? {
             0 => false,
             1 => true,
@@ -227,6 +228,16 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn mode_enum_is_bounded_but_host_wire_address_is_not_clipped() {
+        let (mut b,at)=fixture();
+        b[at+3..at+7].copy_from_slice(&2u32.to_le_bytes());
+        b[at+8..at+10].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert_eq!(program_automation(&b,0xae,LIMITS).unwrap()[0].address,65535);
+        b[at+3..at+7].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(program_automation(&b,0xae,LIMITS).unwrap_err(),Error { offset:at+3,kind:ErrorKind::UnsupportedLayout });
+    }
+
     #[test]
     fn invalid_array_headers_and_large_b_array_are_rejected() {
         let (mut b, _) = fixture();
