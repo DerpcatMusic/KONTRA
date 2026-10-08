@@ -2244,3 +2244,116 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     assert!(h.ui.scene().unwrap().surface("instrument-0").is_some(), "selection retains its canonical source");
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
+
+
+/// Audit-only probe: real frontend and full editor, without decoding audio PCM.
+#[test]
+#[ignore = "set KONTRA_AUDIT_UI_PATCH to a locally owned NKI"]
+fn audit_ui_real_frames() {
+    use moose::mui::mui::vello::{self, vello_cpu::{Pixmap, RenderContext, Resources}};
+    let patch = PathBuf::from(std::env::var_os("KONTRA_AUDIT_UI_PATCH").expect("patch"));
+    let start = Instant::now();
+    let mut source = sampler_kontakt::read(&patch).unwrap().instrument;
+    let read_ms = start.elapsed().as_secs_f64()*1000.;
+    let original = Arc::new(source.clone());
+    // No samples are needed for UI initialization; keep group names and saved scripts.
+    source.zones.clear();
+    source.assets.clear();
+    let start = Instant::now();
+    let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+        library: Some(patch.clone()), ..Default::default()
+    }).unwrap();
+    println!("AUDIT_UI read_ms={read_ms:.3} setup_ms={:.3} scripts={} faces={} widgets={} unsupported={}",
+        start.elapsed().as_secs_f64()*1000., loaded.scripts.len(), loaded.interfaces.len(),
+        loaded.interfaces.iter().map(|f|f.widgets.len()).sum::<usize>(), original.unsupported.len());
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:patch.to_string_lossy().into(), ..Default::default()});
+    {
+        let mut view=p.shared.view.lock().unwrap();
+        view.parts[0].active=original.name.clone();
+        view.parts[0].interfaces=loaded.interfaces.into();
+        view.parts[0].instrument=Some(original);
+    }
+    let mut ui=theme::ui();
+    let mut bridge=Bridge::new(p.clone());
+    let mut draw=build(&p,Arc::default(),Arc::default(),Arc::default(),Arc::default());
+    let (width,height)=(1180,900);
+    let mut ctx=RenderContext::new(width,height);
+    let mut resources=Resources::default();
+    let mut cache=vello::Cache::default();
+    let mut pix=Pixmap::new(width,height);
+    for mode in ["Original","Vector"] {
+        for _ in 0..4 {
+            let tree=draw(&mut ui,&mut bridge);
+            ui.frame(tree,Some(Size::new(width as f64,height as f64)),Input::default(),1./60.).unwrap();
+        }
+        let id=format!("face-{}-0",mode.to_lowercase());
+        if ui.scene().unwrap().surface(&id).is_some() {
+            ui.focus(&id);
+            let tree=draw(&mut ui,&mut bridge);
+            ui.frame(tree,Some(Size::new(width as f64,height as f64)),enter(),1./60.).unwrap();
+        }
+        let mut timings:[Vec<f64>;6]=Default::default();
+        for frame in 0..32 {
+            let a=Instant::now();
+            let tree=draw(&mut ui,&mut bridge);
+            let b=Instant::now();
+            ui.frame(tree,Some(Size::new(width as f64,height as f64)),Input::default(),1./60.).unwrap();
+            let c=Instant::now();
+            let scene=ui.scene().unwrap().clone();
+            let d=Instant::now();
+            ctx.reset();
+            vello::paint(&mut vello::Cpu{ctx:&mut ctx,resources:&mut resources,cache:&mut cache},&scene,vello::kurbo::Affine::IDENTITY).unwrap();
+            ctx.flush();
+            let e=Instant::now();
+            ctx.render(&mut pix,&mut resources);
+            let f=Instant::now();
+            if frame>=8 {for (t,(start,end)) in timings.iter_mut().zip([(a,b),(b,c),(c,d),(d,e),(e,f),(a,f)]) {t.push((end-start).as_secs_f64()*1000.);}}
+        }
+        for (stage,mut t) in ["build","layout","scene_clone","cpu_paint","cpu_raster","total"].into_iter().zip(timings) {
+            t.sort_by(f64::total_cmp);
+            println!("AUDIT_UI mode={mode} stage={stage} n={} mean_ms={:.3} median_ms={:.3} p99_ms={:.3}",t.len(),t.iter().sum::<f64>()/t.len() as f64,t[t.len()/2],t[t.len()-1]);
+        }
+        if let Some(dir)=std::env::var_os("KONTRA_AUDIT_UI_SHOTS") {
+            let to=PathBuf::from(dir).join(format!("{}-{mode}.png",patch.file_stem().unwrap().to_string_lossy()));
+            moose::core::screenshot::save_png(&to,&pixels(&ui,width,height),width.into(),height.into());
+        }
+    }
+}
+
+
+/// Minimal checks recording the audit's two reproduced regressions.
+#[test]
+fn audit_ui_toggle_and_nested_wheel() {
+    use sampler_ui_ir as ir;
+    let mut f=ir::Interface::default();
+    f.pages.push(ir::Page{name:"Main".into(),size:ir::Size{width:633,height:500},..Default::default()});
+    let mut knob=ir::Widget::new("Cutoff",ir::PageRef(0),ir::Rect::new(10,10,64,64),ir::Kind::Knob{range:ir::Range{min:0.,max:127.,default:64.,step:None},display:Default::default()});
+    knob.binding=ir::Binding::Control(ir::ControlId(1));
+    f.widgets.push(knob);
+    let p=Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part{path:"/audit/synthetic.nki".into(),..Default::default()});
+    p.shared.view.lock().unwrap().parts[0].interfaces=vec![f].into();
+    let mut h=Harness::new(&p,1180.,900.);
+    let on=|h:&Harness,id:&str| match h.ui.scene().unwrap().surface(id).unwrap().semantics.as_ref().unwrap().role { A11y::Toggle{on}=>on,_=>panic!("toggle")};
+    h.press("face-original-0");
+    assert!(on(&h,"face-original-0"));
+    let copy=p.shared.view.lock().unwrap().parts[0].interfaces.to_vec();
+    p.shared.view.lock().unwrap().parts[0].interfaces=copy.into();
+    h.idle(2);
+    assert!(!on(&h,"face-original-0"),"published interface reproduces mode reversion");
+    println!("AUDIT_REPRO Original=true after click, false after equivalent interface publication");
+
+    let mut inst=sampler_ir::Instrument::default();
+    for n in 0..40 {inst.articulations.push(sampler_ir::Articulation{name:format!("Technique {n}"),switch_keys:vec![n],..Default::default()});}
+    p.shared.view.lock().unwrap().parts[0].instrument=Some(Arc::new(inst));
+    h.press("view-0-Articulations");
+    h.idle(8);
+    let pos=center(&h.ui,"art-0-4");
+    let before=h.ui.scroll("arts-0");
+    h.tick(Input{pointer:PointerInput{pos:Some(pos),..Default::default()},wheel:Vec2::new(0.,80.),..Default::default()});
+    h.idle(30);
+    let after=h.ui.scroll("arts-0");
+    println!("AUDIT_REPRO nested_scroll_before={before:?} after={after:?} rack={:?}",h.ui.scroll("rack-view"));
+    assert!(after[1]>before[1],"nested runtime scroll can move even when rack manually takes the same wheel");
+}
