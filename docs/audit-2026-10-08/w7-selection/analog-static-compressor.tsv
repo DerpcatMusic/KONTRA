@@ -1,0 +1,3 @@
+provenance	condition	key	velocity	cc1	cc11	group	fx_slot	generic	output_gain	bypass	rms	native_full_grid_switch_state
+reported static Mix probe	authored compressor	60	64	100	127	-1	1	1	560434	0	0.0932991	unknown
+reported static Mix probe	forced bypass	60	64	100	127	-1	1	1	560434	1	0.0331272	unknown
