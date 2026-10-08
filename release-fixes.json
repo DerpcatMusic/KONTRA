@@ -2822,6 +2822,24 @@
       ],
       "validation": "Owner failing-first growth/reload regression passed with zero audio heap calls; combined alpha validation includes it.",
       "accepted": true
+    },
+    {
+      "id": "gate-scanner-module-import",
+      "summary": "Resolve shared scanner modules in gate self-checks",
+      "source_commits": [
+        "c857c1c3c7217c2d8473837a8ec66c7ccc90ad49"
+      ],
+      "validation": "Combined gate self-check passes after W12 observer integration.",
+      "accepted": true
+    },
+    {
+      "id": "gate-gesture-null-delta",
+      "summary": "Serialize gesture evidence with an explicit unknown numeric delta",
+      "source_commits": [
+        "c39fd7b0fc3245b3087c5da7408028a9831ffbfd"
+      ],
+      "validation": "Contention self-check reproduces missing delta; fixed receipt preserves unknown and passes.",
+      "accepted": true
     }
   ]
 }
