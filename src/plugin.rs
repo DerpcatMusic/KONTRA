@@ -1881,6 +1881,7 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
+            s.core.trace_master(&gains[..len]);
             if let Some(tapped) = s.core.tapped(len) {
                 shared.scope.push(tapped);
             }
