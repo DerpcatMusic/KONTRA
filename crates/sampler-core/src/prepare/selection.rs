@@ -329,6 +329,9 @@ impl Runtime {
             // Pending until the callback waits or ends, so it can still edit
             // the note's groups; `release` is recomputed then.
             let _ = release;
+            let n = self.notes.get_mut(note.0).unwrap();
+            n.work = n.work.checked_add(1).expect("bounded deferred attack pin");
+            assert!(self.deferred.len() < self.deferred.capacity());
             self.deferred.push((id, note, entry));
         } else {
             self.commit_attack(note, release, snapshot, entry);
