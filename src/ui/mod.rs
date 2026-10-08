@@ -76,7 +76,9 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let art = Arc::new(art::Art::default());
     let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
-    let file_drag = std::sync::Mutex::new(None);
+    let file_drag = Arc::new(std::sync::Mutex::new(None));
+    let cancel_drag = file_drag.clone();
+    let cancel_picker = picker.clone();
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
@@ -101,7 +103,10 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             }
         })
         .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, &file_drag, ui, at, paths, dropped))
-        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
+        .on_cancel(move |ui| {
+            let_go(&cancel_params, &cancel_computer);
+            native_files(&cancel_params, &cancel_picker, &cancel_drag, ui, Point::new(-1., -1.), &[], false);
+        })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
