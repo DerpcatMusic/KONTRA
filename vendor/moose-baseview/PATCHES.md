@@ -35,3 +35,14 @@ macOS retains MUI's owned-loop shutdown and view-class lifetime fixes:
 
 The native editor smoke fixture validates two child close/reopen cycles and
 owned-loop termination. The independent X11 root-reparent patch is preserved.
+
+Native Expose now emits `WindowEvent::RedrawRequested`, matching the shared MUI
+host contract. This invalidates the retained CPU presenter without changing the
+independent root-reparent visibility patch.
+
+X11 server destruction invalidates the owned drawable, stops frame/resize
+callbacks, and terminates the editor thread while delivering `WillClose` once.
+An empty ancestry is never visible, including after the host deletes its parent;
+floating windows also clear their visibility on destruction. The drawable's
+destructor does not destroy an already deleted server resource. KONTRA's root
+reparenting behavior remains intact.

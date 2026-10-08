@@ -290,10 +290,12 @@ fn cpu_presentation_fixture(resize_failure: bool) {
                             return Err("fixture did not establish a GPU frame".into());
                         }
                         let gpu = handler.gpu.as_ref().ok_or("missing initial GPU")?;
-                        // wgpu marks this device invalid immediately. Changing the
-                        // extent forces real surface configuration before present
-                        // could rebuild the lost device.
+                        // Observe real device loss before resizing; Mesa may accept
+                        // configure on a destroyed device.
                         gpu.device().0.destroy();
+                        if !gpu.device_lost() {
+                            return Err("destroyed GPU device loss was not observed".into());
+                        }
                         handler.requests.resize(200, 160);
                         handler.tick(&self.cx, &mut None);
                         if handler.gpu.is_some()
@@ -863,4 +865,136 @@ fn app_gpu_error_observation_preserves_other_observers_and_resets_on_rebuild() {
     assert!(observe_generation_error(&mut generation, &mut app_cursor, 4, observe).is_none());
     assert!(observe(&mut core_cursor).is_some(), "the app must not consume Host's error record");
     assert!(observe_generation_error(&mut generation, &mut app_cursor, 5, observe).is_some(), "a new device may reuse the same error sequence");
+}
+
+/// Hosts may delete the drawable before asking the editor to close. The native
+/// thread must terminate and release its handler without another frame/resize.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires an isolated X11 display"]
+fn native_destroyed_parent_and_drawable_stop_callbacks() {
+    use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle, XcbWindowHandle};
+    use std::num::NonZeroU32;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::{Sender, channel};
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt, CreateWindowAux, WindowClass};
+
+    struct Parent(NonZeroU32);
+    impl HasWindowHandle for Parent {
+        #[expect(unsafe_code, reason = "the fixture owns the native parent during child creation")]
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            // SAFETY: the fixture owns this parent throughout child creation.
+            Ok(unsafe { WindowHandle::borrow_raw(XcbWindowHandle::new(self.0).into()) })
+        }
+    }
+    struct Probe {
+        callbacks: Arc<AtomicUsize>,
+        closes: Arc<AtomicUsize>,
+        first_frame: RefCell<Option<Sender<()>>>,
+        dropped: Sender<()>,
+    }
+    impl WindowHandler for Probe {
+        fn on_frame(&self) -> Result<(), HandlerError> {
+            self.callbacks.fetch_add(1, Ordering::SeqCst);
+            if let Some(send) = self.first_frame.borrow_mut().take() {
+                let _ = send.send(());
+            }
+            Ok(())
+        }
+        fn resized(&self, _: WindowSize) -> Result<(), HandlerError> {
+            self.callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn on_event(&self, event: Event) -> EventStatus {
+            if matches!(event, Event::Window(WindowEvent::WillClose)) {
+                self.closes.fetch_add(1, Ordering::SeqCst);
+            }
+            EventStatus::Ignored
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.dropped.send(());
+        }
+    }
+
+    let (conn, screen) = x11rb::rust_connection::RustConnection::connect(None).unwrap();
+    for parented in [true, false] {
+        let parent = conn.generate_id().unwrap();
+        conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            parent,
+            conn.setup().roots[screen].root,
+            0,
+            0,
+            64,
+            64,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new(),
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+        conn.map_window(parent).unwrap().check().unwrap();
+        let parent_handle = Parent(NonZeroU32::new(parent).unwrap());
+        let settings = settings("MUI destroyed drawable regression", (64, 64));
+        let settings = if parented {
+            settings.with_parent(&parent_handle)
+        } else {
+            settings
+        };
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (first_send, first_recv) = channel();
+        let (drop_send, drop_recv) = channel();
+        let (id_send, id_recv) = channel();
+        let counter = Arc::clone(&callbacks);
+        let close_counter = Arc::clone(&closes);
+        let child = Window::create(settings, move |cx| {
+            let id = match cx.window_handle()?.as_raw() {
+                raw_window_handle::RawWindowHandle::Xlib(h) => h.window as u32,
+                raw_window_handle::RawWindowHandle::Xcb(h) => h.window.get(),
+                _ => unreachable!(),
+            };
+            id_send.send(id).unwrap();
+            Ok(Probe {
+                callbacks: counter,
+                closes: close_counter,
+                first_frame: RefCell::new(Some(first_send)),
+                dropped: drop_send,
+            })
+        })
+        .unwrap();
+        let child_id = id_recv.recv_timeout(Duration::from_secs(3)).unwrap();
+        child.show().unwrap();
+        first_recv
+            .recv_timeout(Duration::from_secs(3))
+            .expect("live native frame");
+        conn.destroy_window(if parented { parent } else { child_id })
+            .unwrap()
+            .check()
+            .unwrap();
+        assert!(
+            conn.get_window_attributes(child_id)
+                .unwrap()
+                .reply()
+                .is_err(),
+            "server must delete the drawable"
+        );
+        // No explicit child.close(): destruction itself must stop and drop it.
+        drop_recv
+            .recv_timeout(Duration::from_secs(3))
+            .expect("destroyed drawable must release its native handler");
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        let finished = callbacks.load(Ordering::SeqCst);
+        child.close();
+        assert_eq!(callbacks.load(Ordering::SeqCst), finished);
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        if !parented {
+            conn.destroy_window(parent).unwrap().check().unwrap();
+        }
+    }
 }
