@@ -883,8 +883,13 @@ fn widget_conflux_native_gestures_and_readback() {
     let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
     let mut counts=std::collections::BTreeMap::<&str,usize>::new();
     let mut scalar_unresolved=0;
+    let mut main_drag=0;
     for authored in loaded.interfaces {
         let face=ir_view::resolved(&authored);
+        if face.source==(ir::Source::Ksp {slot:2}) {
+            assert_eq!(face.widgets.len(),378);
+            assert_eq!(face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n))&&matches!(w.kind,ir::Kind::Knob{..})).count(),45);
+        }
         let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
         h.sync(); h.settle();
         for (n,w) in face.widgets.iter().enumerate().filter(|(n,_)|face.visible(ir::WidgetRef(*n))) {
@@ -904,6 +909,7 @@ fn widget_conflux_native_gestures_and_readback() {
                     let q=Point::new(p.x+if horizontal {100.*direction}else{0.},p.y-if horizontal {0.}else{100.*direction});
                     h.pointer(p,false); h.pointer(p,true); h.pointer(q,true); h.pointer(q,false);
                     h.changed_and_retained(n,before,"drag"); *counts.entry("drag").or_default()+=1;
+                    if face.source==(ir::Source::Ksp {slot:2}) {main_drag+=1;}
                     let before=h.read(n);
                     let scalar=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!()};
                     h.pointer(p,false);
@@ -954,7 +960,9 @@ fn widget_conflux_native_gestures_and_readback() {
         }
     }
     println!("CONFLUX_NATIVE_GESTURES {counts:?} scalar_unresolved_typed={scalar_unresolved}");
-    assert!(counts.get("drag").copied().unwrap_or(0)>=45);
+    assert_eq!(main_drag,45);
+    assert_eq!(counts.get("drag").copied().unwrap_or(0),48);
+    assert_eq!(counts.get("wheel").copied().unwrap_or(0),48);
     assert_eq!(scalar_unresolved,6);
     for family in ["wheel","button/switch click","menu click","value typing","text typing"] {assert!(counts.get(family).copied().unwrap_or(0)>0,"missing visible family gesture: {family}");}
 }
@@ -1005,6 +1013,7 @@ fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
     assert_eq!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,false).unwrap().1[0].event,4);
     assert!(ir_view::file_drop(&ui,"part-b",&face,at,&paths,true).is_none());
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&vec!["/tmp/a.wav".into();33],true).is_none());
+    assert_eq!(ir_view::file_drop_target(&ui,"part-a",&face,at),Some(ir::WidgetRef(0)),"invalid batch still targets a widget and must veto rack fallback");
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&["/tmp/unknown.exe".into()],true).is_none());
     let long=std::path::PathBuf::from(format!("/tmp/{}.wav","x".repeat(sampler_core::TEXT_CAPACITY)));
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&[long],true).is_none());
@@ -1015,4 +1024,53 @@ fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
     face.widgets.pop();face.widgets[0].enabled=false;frame(&mut ui,&face);
     assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
+}
+
+#[test]
+fn widget_xy_modes_preserve_active_cursor_and_relative_axis_scaling() {
+    fn tick(ui:&mut Ui,face:&ir::Interface,state:&mut ir_view::InputState,p:Point,down:bool) {
+        for _ in 0..2 {
+            let el=ir_view::view_state(ui,"xy-test",face,ir::PageRef(0),&ir_view::Assets::default(),ir::Presentation::Vector,1.,&mut ir_view::Values::default(),state);
+            ui.frame(el,Some(Size::new(400.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();
+        }
+    }
+    let script=sampler_ksp::compile("on init declare ui_xy ?pad[4] end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let values=vec![0.25,0.25,0.75,0.75];
+    face.widgets[0].rect=ir::Rect::new(0,0,100,100);face.widgets[0].active_index=Some(2);face.widgets[0].value=Some(ir::Value::Reals(values.clone()));
+    face.widgets[0].kind=ir::Kind::Xy {cursors:2,sensitivity:[Some(500),Some(500)],mouse_mode:Some(0)};
+    let mut ui=theme::ui();let mut state=ir_view::InputState::default();
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),false);
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),true);
+    assert!(state.edits.is_empty(),"mode0 ignores inactive cursor clicks");
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),false);
+    tick(&mut ui,&face,&mut state,Point::new(75.,25.),true);
+    assert!(state.edits.iter().all(|e|e.cursor==2));state.edits.clear();
+    tick(&mut ui,&face,&mut state,Point::new(85.,5.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if (v[2]-0.8).abs()<1e-9 && (v[3]-0.85).abs()<1e-9 && v[..2]==values[..2]));
+    assert_eq!(state.edits.iter().map(|e|e.index).collect::<Vec<_>>(),[2,3]);
+    tick(&mut ui,&face,&mut state,Point::new(85.,5.),false);
+    face.widgets[0].kind=ir::Kind::Xy {cursors:2,sensitivity:[Some(500),Some(500)],mouse_mode:Some(1)};
+    state=Default::default();ui=theme::ui();
+    tick(&mut ui,&face,&mut state,Point::new(10.,90.),false);tick(&mut ui,&face,&mut state,Point::new(10.,90.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==values),"mode1 press emits callback without a jump");
+    assert_eq!(state.edits.len(),2);state.edits.clear();
+    tick(&mut ui,&face,&mut state,Point::new(20.,70.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if (v[2]-0.8).abs()<1e-9 && (v[3]-0.85).abs()<1e-9));
+    face.widgets[0].kind=ir::Kind::Xy {cursors:1,sensitivity:[Some(1),Some(1)],mouse_mode:Some(2)};face.widgets[0].active_index=None;face.widgets[0].value=Some(ir::Value::Reals(vec![0.25,0.25]));state=Default::default();ui=theme::ui();
+    tick(&mut ui,&face,&mut state,Point::new(10.,20.),false);tick(&mut ui,&face,&mut state,Point::new(10.,20.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==vec![0.1,0.8]),"mode2 absolute position ignores sensitivity");
+}
+
+#[test]
+fn widget_table_fast_stroke_edits_crossed_columns_as_one_frame_batch() {
+    let script=sampler_ksp::compile("on init declare ui_table %table[8](1,1,100) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());face.widgets[0].rect=ir::Rect::new(0,0,80,100);
+    let mut ui=theme::ui();let mut state=ir_view::InputState::default();
+    let mut tick=|p:Point,down:bool,state:&mut ir_view::InputState| {for _ in 0..2 {let el=ir_view::view_state(&mut ui,"table-test",&face,ir::PageRef(0),&ir_view::Assets::default(),ir::Presentation::Vector,1.,&mut ir_view::Values::default(),state);ui.frame(el,Some(Size::new(400.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();}};
+    tick(Point::new(5.,80.),false,&mut state);tick(Point::new(5.,80.),true,&mut state);state.edits.clear();
+    tick(Point::new(75.,10.),true,&mut state);
+    let indices=state.edits.iter().map(|e|e.index).collect::<std::collections::BTreeSet<_>>();assert_eq!(indices,(0..8).collect());
+    assert!(state.edits.iter().all(|e|e.cursor==7&&e.event==2));
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==vec![20.,30.,40.,50.,60.,70.,80.,90.]));
 }
