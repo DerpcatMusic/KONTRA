@@ -152,10 +152,29 @@ fn keyswitch_cell_modes_route_actual_source_values_and_user_overrides() {
             core.event(0, Event::midi1(0xc0, 99, 0));
             core.render(16);
             assert_eq!(core.articulation(0), Some(0), "edited program through production ingress");
+            assert_eq!(core.problems(0).ignored_input, 0, "MIDI1 program selector consumes the message");
+            core.select_articulation(0, 2);
+            core.event(0, Event::Ump([0x40c0_0000, 99 << 24]));
+            core.render(16);
+            assert_eq!(core.articulation(0), Some(0), "MIDI2 program selector changes selection");
+            assert_eq!(core.problems(0).ignored_input, 0, "MIDI2 program selector consumes the message");
         }
         core.event(0, Event::midi1(0x80, 60, 0));
         core.render(16);
     }
+}
+
+#[test]
+fn keyswitch_program_messages_without_a_selector_are_counted() {
+    let (mut core, inst) = fixture(ir::SwitchOwner::Native);
+    route(&mut core, &inst, &Overlay::default());
+    assert!(core.select_articulation(0, 2));
+    core.event(0, Event::midi1(0xc0, 0, 0));
+    assert_eq!(core.problems(0).ignored_input, 1);
+    core.event(0, Event::Ump([0x40c0_0000, 0]));
+    assert_eq!(core.problems(0).ignored_input, 2);
+    core.render(16);
+    assert_eq!(core.articulation(0), Some(2), "unhandled program changes leave selection unchanged");
 }
 
 #[test]

@@ -16,7 +16,7 @@
 //! A part plays its MIDI on the zone's manager channel, or as an MPE lower
 //! zone with member channels at its bend range.
 //!
-//! Not yet: per-note controllers and program changes (counted), a sample-rate change
+//! Not yet: per-note controllers and program changes without a selector (counted), a sample-rate change
 //! without reloading.
 
 use std::path::{Path, PathBuf};
@@ -397,6 +397,11 @@ fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
 /// channel unless the zone is MPE.
 fn wire_packet(part: &mut Part, words: &[u32]) {
     if !articulated(part, words) { return; }
+    // Program selectors consume this above; the note adapter has no program sink.
+    if words[0] & 0x00f0_0000 == 0x00c0_0000 {
+        part.problems.ignored_input += 1;
+        return;
+    }
     let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
     words[0] &= if part.mpe_zone { 0xf0ff_ffff } else { 0xf0f0_ffff };
     let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
