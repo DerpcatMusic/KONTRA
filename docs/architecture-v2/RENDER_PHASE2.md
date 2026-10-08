@@ -77,3 +77,34 @@ his loader or authored decoder. The only additional non-owned implementation
 edit is W8's prerequisite allocation-accounting test block in `src/plugin.rs`.
 The root shots no-run gate and the synthetic Native source-edit/context/font
 checks pass. The real macro regression passes in 45.25 seconds.
+
+## Merged transport and binding check
+
+W1 `4f1abcc7` is merged, retaining source-addressed typed snapshots and the
+generation-bound waveform provider. The merged macro fixture passes again in
+41.07 seconds: all six complete strings have 44 px advances/viewports and zero
+editable insets. An explicitly unavailable supplied family reports the Native
+font-service category; it does not silently use a different font.
+
+The initial Native Edit graph reads values from `Edit__Synth__Src__WTSelect`,
+`SPLSelect` and `WTShaper` parameters, all from KSP slot 2 (UI IDs 32809, 32820,
+32815). Their three aliases are not read through `Parameter.value()` in this
+active graph. Option-list/property authority and picker writes are not yet
+traced, so this does not classify their complete interaction intent. The
+`Edit__Synth__Shp__SelectAlias` state remains unclassified. This RAM-only probe
+invokes the authored tab callback and records primitive kinds plus binding
+metadata; it does not certify pointer gestures or native-host stacking.
+
+Native parameter and meter lookup now uses the lowest KSP script slot for
+duplicate identifiers, independent of publication order. The synthetic
+unordered slots 4/2/3 regression fails with last-wins lookup and passes with
+slot 2, matching the official [expose_controls contract](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands).
+The shared scanner adapter observes successful Native consumption instead of
+retaining its old hardcoded false value; the common CLI remains unchanged.
+
+PNG, JPEG, WebP and SVG now select the same requested strip frame/window and
+device-size preparation. Whole-image non-streamable views share their decoded
+Arc; selected views retain only their bounded pixels. The synthetic check
+covers both strip axes, frame clamping, window overflow, downscale, cancellation
+and alpha preservation. The merged UI suite passes 94 tests with 11 ignored.
+Whole-worker memory and corpus acceptance remain open as listed above.
