@@ -13,6 +13,10 @@ struct Gate {
     editor: Harness,
     observing: Option<Values>,
     observed_changes: BTreeSet<String>,
+    frame: usize,
+    current_target: Option<usize>,
+    first_native_diagnostic: Option<(usize, Option<usize>)>,
+    fault_events: Vec<serde_json::Value>,
 }
 impl Gate {
     fn load(selection: Selection) -> Self {
@@ -23,13 +27,18 @@ impl Gate {
         params.shared.widget_gate_install(&mut core);
         native_ui::gate_clear();
         let editor = Harness::new(&params, 1500., 1100.);
-        let mut gate = Self { params, core, editor, observing: None, observed_changes: BTreeSet::new() };
+        let mut gate = Self { params, core, editor, observing: None, observed_changes: BTreeSet::new(), frame: 0, current_target: None, first_native_diagnostic: None, fault_events: Vec::new() };
         gate.settle();
         gate
     }
     fn tick(&mut self, input: Input) {
         self.editor.tick(input);
-        self.core.render(64);
+        self.frame += 1;
+        if self.first_native_diagnostic.is_none() && !native_ui::gate_diagnostics().is_empty() {
+            self.first_native_diagnostic = Some((self.frame, self.current_target));
+        }
+        // One 60 Hz editor frame advances the 48 kHz engine by the same time.
+        self.core.render(800);
         self.params.shared.widget_gate_readback(&mut self.core);
         Load.run(&self.params);
         if let Some(before) = self.observing.as_ref() {
@@ -114,7 +123,11 @@ impl Gate {
     fn faults(&mut self) -> usize {
         let p = self.core.problems(0);
         let lua = self.core.scan_lua(0).map_or(0, |f| f.init_count + f.runtime_count + f.budget_hits);
-        self.core.scan_runtime_faults(0).len() + lua + (p.nonfinite + p.script_overruns + p.lua_faults) as usize
+        let runtime = self.core.scan_runtime_faults(0);
+        for (program, outcome) in &runtime {
+            self.fault_events.push(serde_json::json!({"frame": self.frame, "target": self.current_target, "program": program, "outcome": format!("{outcome:?}")}));
+        }
+        runtime.len() + lua + (p.nonfinite + p.script_overruns + p.lua_faults) as usize
     }
     fn gesture(&mut self, id: &str, kind: &str, at: Point, attempt: usize) -> Vec<String> {
         self.observing = Some(self.values());
@@ -207,19 +220,23 @@ fn original_widget_gestures() {
     let sources = gate.params.shared.view.lock().unwrap().parts[0].interfaces.len().max(1);
     let mut seen = BTreeSet::new();
     let mut results = Vec::new();
-    let mut initial_faults = gate.faults();
+    let initial_load_failure = load_failure(&gate.params.shared.view.lock().unwrap().parts[0].status);
+    let mut initial_faults = gate.faults() + usize::from(initial_load_failure != "none");
     let mut exhausted = false;
     for source in 0..sources {
+        gate.current_target = None;
         let selector = format!("face-0-{source}");
         if gate.editor.ui.scene().unwrap().surface(&selector).is_some() { gate.editor.press(&selector); gate.settle(); }
         let pages = gate.params.shared.view.lock().unwrap().parts[0].interfaces.get(source).map_or(1,|face|face.pages.len().max(1));
         for page in 0..pages {
+            gate.current_target = None;
             let selector = format!("face-page-0-{page}");
             if gate.editor.ui.scene().unwrap().surface(&selector).is_some() { gate.editor.press(&selector); gate.settle(); }
             loop {
                 let candidates = gate.targets();
                 let Some((id, kind)) = candidates.into_iter().find(|(id, _)| !seen.contains(id)) else { break };
                 seen.insert(id.clone());
+                gate.current_target = Some(results.len());
                 let mut reason = "parameter-unchanged";
                 let mut keys = Vec::new();
                 if Instant::now() >= deadline { exhausted = true; reason = "probe-budget"; }
@@ -240,6 +257,7 @@ fn original_widget_gestures() {
         }
         if exhausted { break; }
     }
+    gate.current_target = None;
     gate.settle();
     let saved_values = gate.values();
     let mut saved = gate.params.selection.read().unwrap().clone();
@@ -248,8 +266,9 @@ fn original_widget_gestures() {
     let state = serde_json::to_vec(&saved.parts).unwrap();
     saved.parts = serde_json::from_slice(&state).unwrap();
     let native_diagnostics = native_ui::gate_diagnostics();
-    // Native callback-context persistence remains excluded from this alpha.
-    let captured_state_bytes: Option<usize> = None;
+    let first_native_diagnostic = gate.first_native_diagnostic;
+    let fault_events = std::mem::take(&mut gate.fault_events);
+    let captured_state_bytes = saved.parts[0].script_state.len();
     let captured_controls = saved.parts[0].control_values.len();
     drop(gate);
     let mut reloaded = Gate::load(saved);
@@ -272,8 +291,9 @@ fn original_widget_gestures() {
     let rows: Vec<_> = results.into_iter().map(|(row, _)| row).collect();
     let passed = rows.iter().filter(|r| r["reason"] == "passed").count();
     let total = rows.len();
-    let status = if exhausted || total == 0 { "UNKNOWN" } else if passed == total && faults == 0 { "PASS" } else { "FAIL" };
-    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "coverage_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "native_diagnostics": native_diagnostics, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
+    let status = if faults > 0 || reload_failed { "FAIL" } else if exhausted || total == 0 { "UNKNOWN" } else if passed == total { "PASS" } else { "FAIL" };
+    let problems = reloaded.core.problems(0);
+    println!("\n{}", serde_json::json!({"widget_gate_schema": 1, "program": program, "status": status, "passed": passed, "total": total, "coverage_complete": !exhausted && total > 0 && native_diagnostics.is_empty(), "faults": faults, "fault_events": fault_events, "reload_fault_events": reloaded.fault_events, "reload_problem_counters": {"nonfinite": problems.nonfinite, "script_overruns": problems.script_overruns, "lua_faults": problems.lua_faults}, "native_diagnostics": native_diagnostics, "first_native_diagnostic_frame_and_target": first_native_diagnostic, "reload_first_native_diagnostic_frame_and_target": reloaded.first_native_diagnostic, "captured_state_bytes": captured_state_bytes, "captured_controls": captured_controls, "initial_load_failure": initial_load_failure, "reload_failure": reload_failure, "saved_parameters": saved_values.len(), "reloaded_parameters": reload_values.len(), "targets": rows}));
 }
 
 use sha2::Digest;
