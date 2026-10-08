@@ -14,7 +14,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 default = ["plugin", "clap", "vst3", "library-access"]
 # Opens encrypted library content with the library's own .nicnt access data.
 library-access = ["sampler-kontakt/library-access", "sampler-uvi/library-access"]
-plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg"]
+plugin = ["dep:moose", "dep:png", "dep:rfd", "dep:mui", "dep:mui-native-dialog", "dep:mui-text", "dep:zune-jpeg"]
 clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
@@ -56,7 +56,7 @@ moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }
 moose-standalone = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["gui", "playback"], optional = true }
 clap-sys = { version = "0.5", optional = true }
-mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu"], optional = true }
+mui = { git = "https://github.com/Matari-Audio/MUI", features = ["cpu", "reporting"], optional = true }
 # Library covers: the name typeset from the bundled font, and JPEG artwork the player picks.
 mui-text = { git = "https://github.com/Matari-Audio/MUI", optional = true }
 zune-jpeg = { version = "0.5", default-features = false, features = ["std"], optional = true }
