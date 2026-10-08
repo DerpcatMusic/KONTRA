@@ -916,8 +916,7 @@ impl V2Core {
                 }
                 continue;
             }
-            // ponytail: post-FX until a cross-format input-bus marker admits pre-insert Tone.
-            let cutoff = self.performance.map_or(20_000., |p| p[2]);
+            let cutoff = if part.runtime.has_input_tone() { 20_000. } else { self.performance.map_or(20_000., |p| p[2]) };
             let at = part.runtime.now().saturating_sub(n as u64);
             let _ = part.tone.process(out, &mut part.tone_history[BUSES], cutoff, at);
             for pair in pairs(part.direct) {
@@ -1106,8 +1105,9 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
-            if let Some([attack, release, _]) = self.performance {
+            if let Some([attack, release, cutoff]) = self.performance {
                 let _ = p.runtime.set_fallback_envelope(attack, release);
+                let _ = p.runtime.set_part_tone_cutoff(cutoff);
             }
             p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
             p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
@@ -1270,6 +1270,7 @@ impl Core for V2Core {
         self.performance = next;
         for part in self.parts.iter_mut().flatten() {
             let _ = part.runtime.set_fallback_envelope(attack, release);
+            let _ = part.runtime.set_part_tone_cutoff(cutoff);
         }
     }
 
@@ -1996,6 +1997,29 @@ impl CoreLoader for V2Loader {
 mod tests {
     use super::*;
     use crate::sound::event::HostPattern;
+
+    #[test]
+    fn input_tone_core_skips_post_filter_for_main_and_direct_outputs() {
+        let samples: Vec<_>=(0..4096).map(|n|[(n as f32*0.17).sin()*0.5;2]).collect();
+        let region=Region {sample:0,key_low:0,key_high:127,root_key:None,velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+        let mut filtered=samples[..128].to_vec();
+        sampler_core::OutputLowPass::new(48000).unwrap().process(&mut filtered,&mut [[0.;2];2],1000.,0).unwrap();
+        for f in &mut filtered {*f=f.map(f32::abs);}
+        for direct in [None,Some(0),Some(1),Some(2)] {
+            let buses=(0..3).map(|b|sampler_core::Bus {processors:if b==1 {vec![sampler_core::Processor::Rectify(sampler_core::Rectifier::Full)]} else {vec![]}, sends:vec![sampler_core::BusSend {bus:(b<2).then_some(b+1),gain:1.}],tail_frames:0}).collect();
+            let plan=Prepared::new(48000,vec![Pcm::new(48000,samples.clone().into_boxed_slice()).unwrap()],vec![region.clone()],128).unwrap().with_buses(buses,vec![Some(0)]).unwrap().with_input_bus(1).unwrap();
+            let limits=Limits::for_plan(&plan,4,4);
+            let mut tree=MixTree::instrument("Tone");
+            for b in 0..3 {tree.nodes.push(super::super::tree::MixNode {name:format!("bus{b}"),kind:super::super::tree::NodeKind::Bus,parent:Some(if b==2 {0} else {b+2}),inserts:vec![],sends:vec![]});}
+            let part=Box::new(Part::new(Runtime::new(plan,limits).unwrap(),tree).unwrap());
+            let mut c=V2Core::with_parts(1,48000.);let mut mix=Mix::default();mix.nodes[0]=vec![Default::default();3];
+            if let Some(bus)=direct {mix.nodes[0][bus].output=super::super::tree::NodeOutput::Pair(1);}
+            c.install(0,Some(part));c.set_mix(&mix);c.set_performance(0.002,0.15,1000.);c.play(0,Event::midi1(0x90,60,127));
+            let out=c.render(128);let pair=usize::from(direct.is_some());
+            for n in 0..128 {for channel in 0..2 {let expected=if direct==Some(0) {samples[n][channel]} else {filtered[n][channel]};assert!((out.buses[pair][channel][n]-expected).abs()<1e-6,"Core Tone route {direct:?} must filter once");}}
+            if direct.is_some() {assert!(out.buses[0].iter().flatten().all(|x|*x==0.));}
+        }
+    }
 
     #[test]
     fn v1_global_fallback_attack_and_release_reach_audio() {
