@@ -173,6 +173,9 @@ fn translate(
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
+            default_keyswitch: u8::try_from(params.default_key_switch)
+                .ok()
+                .filter(|&key| key <= 127),
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
@@ -190,6 +193,29 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
     };
+    match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
+        Ok(records) => for record in records {
+            let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
+                let rest = tag.strip_prefix("pts_script_slider_")?;
+                let (slot, ordinal) = rest.split_once('_')?;
+                Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
+            });
+            let source = match record.mode {
+                1 if record.address < 128 => Some(ir::ScriptAutomationSource::Controller(record.address as u8)),
+                2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
+                _ => None,
+            };
+            if let (Some((source_slot, slider)), Some(source)) = (target, source)
+                && (0.0..=1.0).contains(&record.low) && (0.0..=1.0).contains(&record.high)
+            {
+                out.ir.script_automation.push(ir::ScriptAutomation { source, source_slot, slider,
+                    low: f64::from(record.low), high: f64::from(record.high), soft_takeover: record.soft_takeover });
+            } else {
+                out.unsupported("program private", "saved automation target", format!("record {} mode {} address {}", record.offset, record.mode, record.address), ir::Reason::NotModeled);
+            }
+        },
+        Err(error) => out.unsupported("program private", "saved automation layout", error, ir::Reason::NotModeled),
+    }
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
             .map_err(|e| decode("voice groups", e))?;
@@ -302,7 +328,18 @@ fn translate(
     out.dynamic = dynamic;
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
+        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+        out.ir.source_indices.groups.push(Some(runtime));
+    }
+    for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
+        if let Some(slot) = behavior.slot {
+            out.ir.source_indices.slots.resize(
+                out.ir.source_indices.slots.len().max(usize::from(slot) + 1),
+                None,
+            );
+            out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
+        }
     }
     let parent = path
         .parent()
@@ -362,6 +399,7 @@ fn translate(
     if count > data.len() / 8 {
         return Err(invalid("zone count exceeds the zone list"));
     }
+    out.ir.source_indices.zones.resize(count, None);
     for index in 0..count {
         let zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
@@ -403,7 +441,11 @@ fn translate(
                     .saturating_sub(u64::from(end.unsigned_abs())),
             ),
         };
+        let before = out.ir.zones.len();
         out.zone(index, zone, end, group, &params, location.clone());
+        if out.ir.zones.len() > before {
+            out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
+        }
     }
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
@@ -439,7 +481,7 @@ struct Translation {
     start_criteria: Vec<(
         String,
         ir::GroupRef,
-        Vec<ni_file::kontakt::objects::StartCriteriaParams>,
+        ni_file::kontakt::objects::StartCriteriaList,
     )>,
     /// Kontakt voice group index -> `ir.voice_limits` index.
     voice_groups: Vec<Option<usize>>,
@@ -578,7 +620,38 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
+        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
+            if let Some(chunk) = group.0.find_first(id) {
+                let names: Vec<_> = if external {
+                    ExternalModArray32::try_from(chunk)?
+                        .slots()?
+                        .into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
+                        .collect::<Result<_, _>>()?
+                } else {
+                    InternalModArray16::try_from(chunk)?
+                        .slots()?
+                        .into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name)))
+                        .collect::<Result<_, _>>()?
+                };
+                for (slot, name) in names {
+                    self.ir.source_indices.modulators.push(ir::SourceModulator {
+                        group: index,
+                        slot: usize::from(slot),
+                        external,
+                        name,
+                        runtime: None,
+                    });
+                }
+            }
+        }
         if v.muted {
+            // Empty source groups retain their numeric address for KSP and DSP writes.
+            self.ir.groups.push(ir::Group {
+                name: v.name,
+                ..Default::default()
+            });
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
@@ -599,7 +672,7 @@ impl Translation {
         self.start_criteria.push((
             at.clone(),
             ir::GroupRef(self.ir.groups.len()),
-            v.start_criteria.items.clone(),
+            v.start_criteria.clone(),
         ));
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
@@ -853,6 +926,15 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                if let Some(address) = self
+                    .ir
+                    .source_indices
+                    .modulators
+                    .iter_mut()
+                    .find(|m| m.group == index && m.slot == usize::from(slot) && m.external)
+                {
+                    address.runtime = Some(modulator);
+                }
                 for target in &params.targets {
                     routes.extend(self.route(
                         &at,
@@ -1112,7 +1194,6 @@ impl Translation {
         location: PathBuf,
     ) {
         let at = format!("zone {index} (group {})", group.index);
-        let not_modeled = ir::Reason::NotModeled;
         let asset = match self.assets.get(&location) {
             Some(&asset) => asset,
             None => {
@@ -1147,46 +1228,47 @@ impl Translation {
             );
             return;
         }
-        let mut looping = ir::Looping::None;
-        for (slot, l) in z.loops.iter().enumerate().filter(|(_, l)| l.mode != 0) {
-            if looping != ir::Looping::None {
-                self.unsupported(
-                    &at,
-                    "additional loop",
-                    format!("slot {slot}: {l:?}"),
-                    not_modeled,
-                );
-                continue;
-            }
-            if l.loop_count != 0
-                || (l.loop_tuning - 1.0).abs() > 0.001
+        let mut slots = [None; 8];
+        for (slot, l) in z.loops.iter().filter(|(_, l)| l.mode != 0) {
+            if l.loop_count < 0
+                || !l.loop_tuning.is_finite()
+                || l.loop_tuning <= 0.0
                 || l.loop_start < 0
                 || l.loop_length <= 0
+                || l.x_fade_length < 0
             {
                 self.unsupported(
                     &at,
-                    "counted, tuned or invalid loop",
-                    format!("{l:?}"),
-                    not_modeled,
+                    "invalid loop",
+                    format!("slot {slot}: {l:?}"),
+                    ir::Reason::InvalidValue,
                 );
                 continue;
             }
-            let range = ir::LoopRange {
-                start: l.loop_start as u64,
-                end: l.loop_start as u64 + l.loop_length as u64,
-                crossfade: ir::Span::Frames(l.x_fade_length.max(0) as u64),
-                alternating: l.alternating_loop,
-            };
-            // Mode 1 is the only mode in local libraries; 2 as "until release" is unverified.
-            looping = match l.mode {
-                1 => ir::Looping::Continuous(range),
-                2 => ir::Looping::UntilRelease(range),
-                mode => {
-                    self.unsupported(&at, "loop mode", mode, ir::Reason::Unknown);
-                    continue;
-                }
-            };
+            if !matches!(l.mode, 1 | 2) {
+                self.unsupported(&at, "loop mode", l.mode, ir::Reason::Unknown);
+                continue;
+            }
+            if l.alternating_loop && l.x_fade_length > 0 {
+                self.unsupported(&at, "alternating loop crossfade law (metadata retained)", format!("slot {slot}, fade {}", l.x_fade_length), ir::Reason::UnknownLaw);
+            }
+            slots[usize::from(*slot)] = Some(ir::LoopSlot {
+                range: ir::LoopRange {
+                    start: l.loop_start as u64,
+                    end: l.loop_start as u64 + l.loop_length as u64,
+                    crossfade: ir::Span::Frames(l.x_fade_length as u64),
+                    alternating: l.alternating_loop,
+                },
+                count: l.loop_count as u32,
+                tuning: f64::from(l.loop_tuning),
+                until_release: l.mode == 2,
+            });
         }
+        let looping = if slots.iter().any(Option::is_some) {
+            ir::Looping::Slots(slots)
+        } else {
+            ir::Looping::None
+        };
         let semitones =
             12.0 * f64::from(z.tune * program.tune).log2() + f64::from(program.transpose);
         self.ir.zones.push(ir::Zone {
@@ -1265,7 +1347,7 @@ struct RawZone {
     pan: f32,
     tune: f32,
     file: i32,
-    loops: Vec<ni_file::kontakt::objects::Loop>,
+    loops: Vec<(u8, ni_file::kontakt::objects::Loop)>,
 }
 
 /// Layout from the v1 importer: the owning group, then a structured zone whose
@@ -1320,7 +1402,13 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         ));
     }
     let loops = match so.find_first(LOOPS) {
-        Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?.items,
+        Some(chunk) => {
+            let list = LoopArray::try_from(chunk).map_err(|e| e.to_string())?;
+            (0..8)
+                .filter(|slot| list.mask & (1 << slot) != 0)
+                .zip(list.items)
+                .collect()
+        }
         None => Vec::new(),
     };
     Ok(RawZone {
