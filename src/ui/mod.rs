@@ -32,6 +32,8 @@ mod menu;
 mod mix_tree;
 mod ir_view;
 mod generated;
+#[cfg(feature = "shots")]
+pub(crate) mod scan;
 #[allow(dead_code)]
 mod load_report;
 mod bridge;

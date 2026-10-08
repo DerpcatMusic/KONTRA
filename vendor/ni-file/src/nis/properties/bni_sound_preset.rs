@@ -18,9 +18,16 @@ impl std::convert::TryFrom<&ItemData> for BNISoundPresetProperties {
     type Error = NIFileError;
 
     fn try_from(frame: &ItemData) -> Result<Self, Self::Error> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::BNISoundPreset);
-
-        let frame = &*frame.inner.clone().unwrap();
+        let got = frame.header.item_type();
+        if got != ItemType::BNISoundPreset {
+            return Err(NIFileError::ItemWrapError {
+                expected: ItemType::BNISoundPreset,
+                got,
+            });
+        }
+        let frame = frame.inner.as_deref().ok_or(NIFileError::Static(
+            "Missing inner Preset properties in BNISoundPreset",
+        ))?;
 
         Ok(Self {
             preset: frame.try_into()?,
