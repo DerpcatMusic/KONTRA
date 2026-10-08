@@ -76,7 +76,7 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, LoFiSettings, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, OutputLowPass, Parameter, Processor, Rectifier, ReverbSettings,
     StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
@@ -724,6 +724,7 @@ impl<T> Arena<T> {
 /// existing slot, so a full command queue cannot discard its cleanup or notification.
 pub struct Runtime {
     rate: u32,
+    fallback_envelope: Option<[u32; 2]>,
     /// Quarter notes per minute for tempo-synced modulation.
     tempo: f64,
     plans: Arena<Generation>,
@@ -916,6 +917,7 @@ impl Runtime {
         let mut runtime = Self {
             signal_trace,
             rate,
+            fallback_envelope: None,
             tempo: 120.0,
             plans,
             active_plan,
