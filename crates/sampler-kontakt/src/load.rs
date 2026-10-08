@@ -2,7 +2,7 @@
 //! the samples it needs, compile its scripts and lower it. What could not be
 //! carried over is returned with the plan, never dropped silently.
 
-use crate::{Kontakt, LoadError, Resources, read};
+use crate::{Kontakt, LoadError, Resources};
 use sampler_core::{Pcm, Prepared, lower::LowerError};
 use sampler_ir as ir;
 use sampler_ksp::model::Value;
@@ -159,10 +159,10 @@ pub fn load_cancelable(
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
     };
-    load_read(read(path)?, &options, progress, canceled)
+    load_read(crate::read_with_controls(path, &options.control_values)?, &options, progress, canceled)
 }
 
-/// [`load_cancelable`] for an instrument already [`read`], so a caller can
+/// [`load_cancelable`] for an instrument already [`crate::read`], so a caller can
 /// reshape its IR (say, give each group a bus) before samples are decoded.
 pub fn load_read(
     kontakt: Kontakt,
@@ -229,10 +229,10 @@ pub fn load_streamed(
         library: options.library.clone().or_else(|| Some(path.into())),
         ..options.clone()
     };
-    load_read_streamed(read(path)?, &options, policy, progress)
+    load_read_streamed(crate::read_with_controls(path, &options.control_values)?, &options, policy, progress)
 }
 
-/// [`load_streamed`] for an instrument already [`read`]; pictures and
+/// [`load_streamed`] for an instrument already [`crate::read`]; pictures and
 /// resources come from [`Options::library`].
 pub fn load_read_streamed(
     kontakt: Kontakt,
@@ -640,7 +640,17 @@ pub(crate) fn script_environment(
     }
 }
 
+#[cfg(any(test, feature = "scan"))]
+thread_local! { static SCRIPT_INIT_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// Numeric actual initializer count for the isolated scanner and load regression tests.
+#[cfg(any(test, feature = "scan"))]
+pub fn take_script_init_runs() -> usize {
+    SCRIPT_INIT_RUNS.replace(0)
+}
+
 pub(crate) struct ScriptInit {
+    pub control_values: Vec<(sampler_core::ControlId, i32)>,
     pub states: Vec<Option<Result<sampler_ksp::Initialized, String>>>,
     pub resources: Option<Resources>,
 }
@@ -688,6 +698,8 @@ pub(crate) fn initialize_scripts(
             (behavior.language == ir::Language::Ksp).then(|| {
                 #[cfg(feature = "scan")]
                 sampler_ksp::scan::attempt("runtime-preparation");
+                #[cfg(any(test, feature = "scan"))]
+                SCRIPT_INIT_RUNS.set(SCRIPT_INIT_RUNS.get() + 1);
                 sampler_ksp::initialize(
                     &behavior.source,
                     sampler_ksp::Limits::LIBRARY,
@@ -699,6 +711,7 @@ pub(crate) fn initialize_scripts(
         .collect();
     instrument.unsupported.append(&mut views);
     ScriptInit {
+        control_values: control_values.to_vec(),
         states,
         resources: resources.map(std::cell::RefCell::into_inner),
     }
@@ -723,10 +736,9 @@ fn compile_ui_initialized(
     initialized: Option<ScriptInit>,
 ) -> (Vec<sampler_ksp::Script>, Vec<sampler_ui_ir::Interface>, Option<Resources>) {
     let (rate, scripts) = (options.rate, options.scripts);
-    // Host state arrives after translation; initialize with those overrides
-    // instead of reusing state evaluated with the instrument's saved defaults.
-    let initialized = initialized.filter(|_| options.control_values.is_empty());
-    let ScriptInit { mut states, resources } = initialized.unwrap_or_else(|| {
+    // Reuse translated init only for the same host state; late callers may supply different overrides.
+    let initialized = initialized.filter(|init| init.control_values == options.control_values);
+    let ScriptInit { mut states, resources, .. } = initialized.unwrap_or_else(|| {
         let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
         initialize_scripts(instrument, options.library.as_deref(), groups, &options.control_values)
     });

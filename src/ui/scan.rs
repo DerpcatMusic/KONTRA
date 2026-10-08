@@ -396,13 +396,18 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut budget_hit,
     ) = (true, 0, 0, false, false, false, false, false, false);
     let mut load_ms = 0.;
-    let load_started=Instant::now();
+    let mut load_started=Instant::now();
+    let restored = std::env::var_os("KONTRA_SCAN_RESTORED_STATE").is_some();
+    if restored && is_uvi {
+        result["restored_state"] = json!({"status":"unsupported-uvi"});
+        result["reason"] = json!("restored-state collector currently covers Kontakt scalar controls");
+        return result;
+    }
     result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
     for program in 0..count {
-        let start = Instant::now();
         result["stage"] = json!(format!("load program {program}"));
         metrics::checkpoint(out, &result);
-        let request = LoadRequest {
+        let mut request = LoadRequest {
             path: path.clone(),
             program: program as u32,
             sample_rate: 48000.,
@@ -410,6 +415,19 @@ pub fn one(id: &str, out: &Path) -> Value {
             threads: None,
             ..Default::default()
         };
+        if restored {
+            let seed = match V2Loader.prepare(&request, &mut |_| {}, &|| false) {
+                Ok(seed) => seed,
+                Err(e) => { result["failure"] = metrics::error("restored-state seed load", e); return result; }
+            };
+            let ids: std::collections::BTreeSet<_> = seed.interfaces.iter().flat_map(|f| &f.widgets).filter_map(|w| match w.binding { ir::Binding::Control(id) => Some(id), _ => None }).collect();
+            request.control_values = seed.controls.iter().copied().filter(|(id, value)| ids.contains(id) && value.is_finite()).collect();
+            drop(seed);
+            let _ = ksp_observations();
+        }
+        sampler_kontakt::take_script_init_runs();
+        let start = Instant::now();
+        if program == 0 { load_started = start; }
         let mut loaded = match V2Loader.prepare(&request, &mut |_| {}, &|| false) {
             Ok(l) => l,
             Err(e) => {
@@ -437,6 +455,9 @@ pub fn one(id: &str, out: &Path) -> Value {
                 continue;
             }
         };
+        let init_runs = sampler_kontakt::take_script_init_runs();
+        let expected_init_runs = loaded.instrument.as_ref().map(|i| i.behaviors.iter().filter(|b| b.language == sampler_ir::Language::Ksp).count());
+        let restored_state = restored.then(|| json!({"status":if request.control_values.is_empty(){"no-host-controls"}else if Some(init_runs)==expected_init_runs{"single-init"}else{"duplicate-init"},"scalar_overrides":request.control_values.len(),"init_runs":init_runs,"expected_init_runs":expected_init_runs,"timer_excludes_seed":true}));
         let ksp = ksp_observations();
         load_ms += start.elapsed().as_secs_f64() * 1000.;
         let mut symbols = BTreeMap::<String, usize>::new();
@@ -644,7 +665,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
             "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
-            "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
+            "restored_state":restored_state,"script_init_runs":init_runs,"program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
     }
@@ -670,6 +691,11 @@ pub fn one(id: &str, out: &Path) -> Value {
     } else {
         "no"
     });
+    if restored {
+        let programs = result["programs"].as_array().unwrap();
+        let complete = programs.len()==count && programs.iter().all(|p| p["restored_state"]["status"]=="single-init");
+        result["restored_state"] = json!({"status":if complete{"single-init"}else if programs.iter().any(|p| p["restored_state"]["status"]=="duplicate-init"){"duplicate-init"}else{"incomplete"},"timer_excludes_seed":true,"programs":count});
+    }
     result["load_ms"] = json!(load_ms);
     result["first_audio_ms"]=json!(first_audio_ms);
     result["reason"] = json!(format!(
