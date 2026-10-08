@@ -631,15 +631,21 @@ fn resource_container(c: &KontaktChunks) -> Result<Option<String>> {
 /// slot has no text is a warning, never a generic script error.
 fn script_source(path: &Path, slot: usize, s: &ni_file::kontakt::objects::BParScriptParams, warnings: &mut Vec<String>) -> Option<String> {
     let saved = s.text.as_deref().map(|t| script_text(t.as_bytes())).filter(|t| !t.trim().is_empty());
-    let Some(link) = s.textfile_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else { return saved };
+    let Some(link) = s.textfile_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) else {
+        #[cfg(feature="shots")]
+        crate::ui::scan::source_kind(if saved.is_some(){"inline"}else{"none"});
+        return saved };
     let slot = slot + 1;
     let linked = crate::resources::linked_script(path, link);
     match linked {
-        Ok(Some(bytes)) => return Some(script_text(&bytes)).filter(|t| !t.trim().is_empty()).or(saved),
+        Ok(Some(bytes)) => {let text=Some(script_text(&bytes)).filter(|t|!t.trim().is_empty());
+            #[cfg(feature="shots")] crate::ui::scan::source_kind(if text.is_some(){"linked"}else if saved.is_some(){"inline"}else{"none"});
+            return text.or(saved)},
         Ok(None) if saved.is_some() => {}
         Ok(None) => warnings.push(format!("Script slot {slot}: linked script Resources/scripts/{} not found", link.rsplit(['/', '\\']).next().unwrap_or(link))),
         Err(e) => warnings.push(format!("Script slot {slot}: linked script {link} is unreadable: {e}")),
     }
+    #[cfg(feature="shots")] crate::ui::scan::source_kind(if saved.is_some(){"inline"}else{"none"});
     saved
 }
 
@@ -823,7 +829,9 @@ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let mut script_state = Vec::new();
     for (slot, c) in p.0.children.iter().filter(|c| c.id == 6).enumerate() {
         let s = BParScript::try_from(c)?.params().context("Script parameters")?;
-        if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) { scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
+        if !s.bypass && let Some(text) = script_source(&path, slot, &s, &mut warnings) {
+            #[cfg(feature="shots")] crate::ui::scan::admission(slot,scripts.len());
+            scripts.push(text); script_state.push(crate::ksp::saved_persistence(&s.persistent)); }
     }
     warnings.push("Modulation: the first volume AHDSR and flex envelopes shape each voice, internal pitch AHDSRs drive voice pitch, and velocity, key, CC, pitch bend and aftertouch drive supported volume, pitch, sample-start, envelope-time and group-effect targets; LFO states outside saved retriggered zero-delay sine-only Multi pitch, additional volume envelopes, flexible pitch envelopes, external inversion, unsupported effect targets and other modulator parameters are not applied".into());
     let parent = path.parent().context("Instrument has no parent")?;
@@ -1481,3 +1489,6 @@ mod preset_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(feature="shots")]
+pub(crate) fn scan_chunks(path:&Path)->Result<KontaktChunks>{chunks(path)}

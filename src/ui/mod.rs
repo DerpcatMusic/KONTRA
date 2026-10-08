@@ -19,6 +19,8 @@
 //! [`Shared`]: crate::plugin::Shared
 
 mod art;
+#[cfg(feature = "shots")]
+pub(crate) mod scan;
 pub(crate) mod audit;
 mod browser;
 mod chain;
