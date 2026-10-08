@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub fn one(id: &str, out: &Path) -> Value {
+    let onset_only = std::env::var_os("KONTRA_AUDIT_ONSET_ONLY").is_some();
     let mut r = json!({"loads":"no","ui":"error","plays_note":"no","controls_bound":"0/0","load_ms":0.,"stage":"bank access","reason":"UVI initialization failed"});
     metrics::checkpoint(out, &r);
     let t = Instant::now();
@@ -49,6 +50,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             state.as_ref().map(|s| s.key),
         )?;
         let program = library.program(member, &reader.program)?;
+        if onset_only { r["read_program_ms"] = json!(t.elapsed().as_secs_f64() * 1000.); }
         r["program_read"] = json!(true);
         r["zones"] = json!(program.program.sample_zones.len());
         let rejected = super::playback::preflight(&program.program);
@@ -117,7 +119,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let (mut visible, mut bound, mut ui_error, mut blank) = (0, 0, false, false);
         r["stage"] = json!("Original UI");
         metrics::checkpoint(out, &r);
-        for processor in worker.ui_processors().into_iter().take(64) {
+        for processor in worker.ui_processors().into_iter().take(if onset_only { 0 } else { 64 }) {
             let request = worker.request_ui_snapshot(processor)?;
             let started = Instant::now();
             loop {
@@ -190,6 +192,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             else if native_preferred.is_some() { "native-valid-keys" }
             else { "active-zone-nearest60-fallback" };
         if let Some(note) = planned.or(native_preferred) { pick = note; }
+        if onset_only { pick = (60, 100); }
         r["pick_source"] = json!(pick_source);
         r["pick"] = json!(pick);
         r["programs"] = json!([{"source":"uvi","program":0,"pick":pick,"pick_source":pick_source,
@@ -220,6 +223,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             .take_audio_port()
             .ok_or_else(|| anyhow::anyhow!("audio port unavailable"))?;
         let mut peak = 0f32;
+        let mut first_audio_ms = None;
         let mut nonfinite = 0;
         for block in 0..96 {
             let stamp = Stamp {
@@ -234,7 +238,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                         kind: InputKind::Controller {
                             channel: 0,
                             controller: 1,
-                            value: 100,
+                            value: if onset_only { 127 } else { 100 },
                         },
                     },
                     Input {
@@ -278,17 +282,18 @@ pub fn one(id: &str, out: &Path) -> Value {
                 }
                 std::thread::sleep(Duration::from_millis(1));
             };
-            if let Some(wait) =
-                Duration::from_secs_f64(256.0 / 48000.0).checked_sub(start.elapsed())
-            {
-                std::thread::sleep(wait);
-            }
             for x in packet.audio.into_iter().flatten() {
                 if x.is_finite() {
                     peak = peak.max(x.abs());
                 } else {
                     nonfinite += 1;
                 }
+            }
+            if peak > 1e-7 && first_audio_ms.is_none() {
+                first_audio_ms = Some(t.elapsed().as_secs_f64() * 1000.);
+            }
+            if let Some(wait) = Duration::from_secs_f64(256.0 / 48000.0).checked_sub(start.elapsed()) {
+                std::thread::sleep(wait);
             }
         }
         drop(port);
@@ -301,6 +306,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["runtime_errors"] = json!(stats.errors);
         worker.stop();
         r["peak"] = json!(peak);
+        if onset_only { r["first_audio_ms"] = json!(first_audio_ms); }
         r["nonfinite"] = json!(nonfinite);
         r["pick"] = json!(pick);
         r["plays_note"] = json!(if peak > 1e-5 && nonfinite == 0 {
@@ -317,4 +323,27 @@ pub fn one(id: &str, out: &Path) -> Value {
         r["failure"] = metrics::error(r["stage"].as_str().unwrap_or("probe"), e);
     }
     r
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "requires a local UVI fixture; numeric onset evidence only"]
+    fn probe_load_onset() {
+        let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+        let (bank, member) = path.split_once(".ufs/").expect("bank.ufs/program path");
+        let id = format!("{bank}.ufs::{member}");
+        let result = super::one(&id, std::path::Path::new("/proc/self/no-audit-output"));
+        let proc_mb = |name: &str| {
+            std::fs::read_to_string("/proc/self/status").unwrap().lines()
+                .find_map(|line| line.strip_prefix(name)?.split_whitespace().next()?.parse::<f64>().ok())
+                .unwrap_or(0.) / 1024.
+        };
+        println!("PROBE {}", serde_json::json!({"path":path,"program":0,"admitted":result["loads"],
+            "load_run_ms":result["load_ms"],"read_program_ms":result["read_program_ms"],
+            "first_audio_ms":result["first_audio_ms"],"peak":result["peak"],
+            "sample_resident_bytes":result["sample_resident_bytes"],"hwm_mb":proc_mb("VmHWM:"),
+            "rss_done_mb":proc_mb("VmRSS:"),"runtime_errors":result["runtime_errors"],
+            "initialization_errors":result["initialization_errors"],"failure":result["failure"]}));
+    }
 }
