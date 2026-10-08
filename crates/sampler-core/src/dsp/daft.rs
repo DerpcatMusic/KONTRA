@@ -130,9 +130,11 @@ impl Daft {
         c.amplitude * ((1. - c.high) * low + c.high * high)
     }
 
-    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64, cutoff_delta: f64) {
+    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64, modulation: [f64; 4]) {
         let mut x = self.lanes.map(|lane| lane.value(parameters, at, None));
-        x[1] += cutoff_delta;
+        x[0] += modulation[2];
+        x[1] += modulation[0];
+        x[2] += modulation[1];
         let target = Self::targets(x);
         let a = &mut state.aux;
         if a[STARTED] == 0. {
@@ -172,13 +174,13 @@ impl Daft {
         block: &mut Planar,
         len: usize,
         at: u64,
-        cutoff_delta: f64,
+        modulation: [f64; 4],
     ) {
         let mut i = 0;
         while i < len {
             let t = at + i as u64;
             if t % QUANTUM == 0 || state.aux[STARTED] == 0. {
-                self.control(state, parameters, t, cutoff_delta);
+                self.control(state, parameters, t, modulation);
             }
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
             let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
