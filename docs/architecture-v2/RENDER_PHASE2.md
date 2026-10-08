@@ -227,3 +227,74 @@ patch changes request bookkeeping, cancellation and error classification, not
 resource search paths. It must not be credited with resolving those resources.
 Their root-cause investigation is a separate follow-up: UVI resolver findings
 go to W10; Kontakt resolver defects remain W3's scope.
+
+
+## Native lowering stack safety
+
+The default 2 MiB Conflux field-fit test aborted before painting. GDB found
+recursive `native_ui::draw` frames reserving 103,480 bytes each in debug,
+plus iterator/collect frames; the old 32 MiB diagnostic thread measured
+3,058,256 bytes during draw/layout. Resource resolution and image decoding
+were outside that overflowing call chain.
+
+Lowering now uses a heap work stack, heap completed-child results and boxed
+modifier continuations. It preserves child order, inherited style, primitive
+construction before decorator callbacks, and background/overlay/popover order.
+The VM's node/depth limits are retained. No real UI thread stack was enlarged.
+Changed owner files: `src/ui/native_ui.rs`; numeric audit observations only in
+`src/ui/scan.rs`. No sampler, plugin shim or other owner's file changed.
+
+Linux plugin and standalone frames run through baseview's plain `thread::spawn`
+(`vendor/moose-baseview/src/platform/x11/window_thread.rs:136`), with Rust's
+2 MiB default unless the environment overrides it. Its event loop calls
+`handler.on_frame` at `x11/event_loop.rs:226`. CLAP parent setup calls
+`editor.open` at `vendor/moose-clap/src/lib.rs:4845`; VST3 does so at
+`vendor/moose-vst3/src/lib.rs:3402`. Windows creates its window on the caller
+thread (`win/window.rs:960`) and paints in its message handler (`:387`). macOS
+requires the main thread (`macos/window.rs:38`). Their host/main-thread stacks
+are outside our control; these are source findings, not host-stack guarantees.
+
+The frozen shared census identified 51 Native item IDs, all in Conflux.
+The unchanged shared driver measured every ID with the numeric depth extension:
+51 rendered program graphs tie at **24 primitive/decorator edges**. Another
+50 first programs fail at the existing meter service before producing a graph;
+their depth and stack remain unknown. Conflux itself and Big Screen program 1
+are tied deepest measurable representatives, not proof about unavailable graphs.
+
+Linux watermark measurements include Native Session initialization, Lua graph
+generation and four draw/layout passes on the normal test stack:
+
+| Program | Debug peak bytes | Optimized CI peak bytes | Depth |
+| --- | ---: | ---: | ---: |
+| Conflux, program 0 | 836,960 | 204,071 | 24 |
+| Big Screen, program 1 | 836,960 | 204,071 | 24 |
+
+No watermark saturated. The marked range leaves guard pages and 64 KiB below
+the live measuring frame untouched; both peaks exceed that unmarked interval.
+Debug uses about 40% of 2 MiB, leaving about 1.20 MiB. Optimized shared-scanner
+UI/CPU-paint paths additionally measured 204,119 bytes for every successful
+Native graph. The scanner's debug Conflux view hit its unchanged 250 ms VM
+budget, so that failed paint is not presented as a complete debug stack probe.
+These observations do not measure live host/GPU callbacks or arbitrary popup
+states; they remove the identified depth-multiplied Rust lowering frames.
+
+Acceptance: the synthetic 64-level graph aborted on an explicit 2 MiB thread
+before the fix, and passes on that same explicit stack in debug and optimized
+CI. The real six-field Conflux fit test now passes on the default test stack,
+with complete saved values and 44 px frame/viewport/advance. Focused real stack
+probes and root shots `cargo test --lib --features shots --no-run` pass.
+
+Cold and OS-warm optimized Conflux and Big Screen scanner probes use the frozen
+shared driver and baseline READY cache binary. All **20 PNG SHA-256 hashes**
+match byte-for-byte: ten in each condition. Conflux remains Original OK with
+zero missing images and white fraction 0.00041924398625429554. Big Screen
+program 1 paints; program 0 retains meter diagnosis `b488581add938231` on both
+builds. OS cache was uncontrolled; these are product-cache condition labels,
+not flushed-cache performance claims. No big gate, release or install ran.
+
+Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
+`depth-ranking-final.json`, `png-parity-{cold,os-warm}.json` and focused
+`stack-*-watermark-final.log` / `stack-synthetic-*-green.log` in the W3 cache.
+The shared collector CLI/metrics and driver stayed unchanged. The scanner was
+built at 74718ad7; later commits add tests/reporting only, with unchanged
+production lowering and scanner code.
