@@ -184,7 +184,11 @@ def extra_columns(r):
         for key in ['ksp_compile_ok', 'ksp_init_ok', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors']:
             r[key] = 'unknown'
     # Explain failure with fixed categories/counts; never copy authored diagnostics into the reason.
-    base=r.get('reason','').split('; UI diagnosis:',1)[0]
+    base=r.get('reason','').split('; UI diagnosis:',1)[0].split('; admission:',1)[0]
+    failed=sum(p.get('loaded') is not True for p in programs)
+    if r.get('loads')=='no' and failed:
+        base+='; admission: '+str(failed)+'/'+str(len(programs))+' embedded programs failed import/plan construction'
+    r['reason']=base
     if r.get('ui') in ['blank','missing-images','error','budget-hit']:
         detail=r['ui']
         failure_counts=combine(views,'asset_failure_reasons')
