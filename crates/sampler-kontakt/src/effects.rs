@@ -1091,7 +1091,7 @@ pub(crate) fn instrument_buses(
     // `$NI_BUS_OFFSET` + the bus number.
     let mut instrument = Vec::new();
     let mut panned = Vec::new();
-    for bus in buses.iter().filter(|b| !b.groups.is_empty()) {
+    for bus in buses.iter().filter(|b| dynamic || !b.groups.is_empty()) {
         let name = format!("bus {}", bus.index);
         let c = chain_with(
             rack(&name),
@@ -1103,8 +1103,25 @@ pub(crate) fn instrument_buses(
         if bus.pan.abs() > 0.01 {
             panned.push((name, bus.pan));
         }
-        if !c.processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
-            instrument.push((bus, c.processors));
+        let mut processors = c.processors;
+        if dynamic {
+            // A script sets the bus volume and routes groups to any bus at run
+            // time, so every bus exists and its volume is a Mix block's wet level.
+            processors.push(sampler_ir::Processor::Mix {
+                count: 1,
+                address: sampler_ir::SlotAddress {
+                    group: -1,
+                    slot: sampler_core::BUS_VOLUME_SLOT,
+                    generic: 1000 + bus.index as i32,
+                },
+                dry: 0.0,
+                wet: f64::from(bus.volume),
+                bypass: false,
+            });
+            processors.push(sampler_ir::Processor::StereoMatrix(IDENTITY));
+            instrument.push((bus, processors));
+        } else if !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
+            instrument.push((bus, processors));
         }
     }
     for (name, pan) in panned {
@@ -1196,8 +1213,13 @@ pub(crate) fn instrument_buses(
             processors,
             Vec::new(),
             entry,
-            sampler_ir::Gain::Linear(f64::from(bus.volume)),
+            if dynamic {
+                unity
+            } else {
+                sampler_ir::Gain::Linear(f64::from(bus.volume))
+            },
         );
+        ir.bus_addresses.push((1000 + bus.index as i32, at));
         for group in &bus.groups {
             ir.groups[group.0].output = Output::Bus(at);
         }
