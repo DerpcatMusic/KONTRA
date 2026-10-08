@@ -179,7 +179,8 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
             if !in_rack { continue; }
             let key = surface.key.as_str();
             let offset = ui.scroll(key);
-            if ui.get(key).wheel != Vec2::ZERO && cx.state.rack_scrolls.get(key).is_some_and(|previous| *previous != offset) {
+            let at = ui.pointer().pos.is_some_and(|p| p.x >= surface.frame.x && p.x < surface.frame.x+surface.frame.size.width && p.y >= surface.frame.y && p.y < surface.frame.y+surface.frame.size.height);
+            if at && ui.get("rack-view").wheel != Vec2::ZERO && cx.state.rack_scrolls.get(key).is_some_and(|previous| *previous != offset) {
                 taken = true;
             }
             offsets.insert(key.to_owned(), offset);
