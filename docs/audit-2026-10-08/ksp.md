@@ -4,7 +4,7 @@ Baseline: integration `7e82b152`. v1: pinned `0cb7a8a0`, not a current v1 branch
 
 Shared scanner accessor definitions and phase instrumentation evidence: [ksp-scanner-fields.md](ksp-scanner-fields.md).
 
-## Verdict
+## Verdict at the 7e82 baseline
 
 **v2 is worse in runtime fidelity; NKI frontend admission is equal with resources supplied, and multi-script compilation remains incomplete in both engines.** A high compile rate is not a high compatibility rate. v2 admits commands which become unconsumed effects, zero/default queries, or no-ops. Several corresponding v1 paths have actual scheduler/UI/host implementations. Neither implementation is certified against native Kontakt by this audit.
 
@@ -278,9 +278,9 @@ The three normal baselines preserve integer/polyphonic state, aliased ignore_eve
 | Integrated `88fdfd6b` | Numeric array compressed tails repeat their last decoded value | Already present; passing follow-up and existing string/array tests. |
 | Integrated `30953f9c` | Adds event-source host/script query and group routing surfaces | Does not preserve creator slot or fix current-event group writes. Retest actual contracts instead of trusting the commit title. |
 
-## Shared scanner production follow-up
+## Shared scanner production follow-up at the 7e82 baseline
 
-Current installed scanner-only source: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`; pinned Kontakt v1 adapter `44d03cecbd3b5e47b1564d17ac239239dc2ba4ea`. Product baselines remain v2 `7e82b152` and v1 `0cb7a8a0`. Verified optimized binary SHA-256: v2 `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`, v1 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`. This is the final installed extension, including the source-slot counting correction. The [accessor handoff](ksp-scanner-fields.md) defines phase/ownership and safe record boundaries. No independent collector or sweep was started here.
+Measured historical scanner-only source: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`; pinned Kontakt v1 adapter `44d03cecbd3b5e47b1564d17ac239239dc2ba4ea`. Product baselines remain v2 `7e82b152` and v1 `0cb7a8a0`. Verified optimized binary SHA-256: v2 `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`, v1 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`. This extension includes the source-slot counting correction; the later 9993 checkpoint below has separate provenance. The [accessor handoff](ksp-scanner-fields.md) defines phase/ownership and safe record boundaries. No independent collector or sweep was started here.
 
 The measured partial cohort is **the first 100 IDs of the frozen `kontakt-items.tsv`**, all NKI. Both published 72-column TSVs and all 100 per-engine cache identities were validated against their installed binary and current shared note plan. Sorted cohort IDs, LF-terminated, have SHA-256 `1afa7b4304cdd1a66db9f2523981665396e4aace456b87e7b395c55b879af99e`. This ordered cohort is not representative of the full corpus. The complete 834 Kontakt / 1,494 Kontakt+UVI paired denominator remains pending; the report's whole-corpus frontend rates above are not replaced by this subset.
 
@@ -318,9 +318,32 @@ V2 runs persistence in the same init evaluator; `eval.rs:1278` treats Wait/WaitT
 
 **Source-slot counting defect resolved:** the prior `f7b2a8cd` shared metadata category let unknown saved framing override successfully decoded source fields. Current `abf248cd` correctly gives Conflux five slots = three inline + two empty and **zero source decode failures in both engines**. Saved-table integrity is independent: v1's bounded fallback does not decode this saved format, so its raw histogram now exports `unknown`, not `{}`/zero. V2's strict reader decodes the raw table. V1 admission of 13 text-array entries versus v2 zero still directly confirms the production text-array gap. Earlier scanner witnesses and defect evidence remain in this report's Git history (`68cde85f` and predecessors); they are not mixed into current-revision rates.
 
-Section J onset is monotonic wall time from the first production import, outside the lexical prepass/worker spawn. Painting and audition run concurrently. The current Conflux first finite exactly-nonzero output is v1/v2 **146.11 / 5,257.57 ms**; completed Original CPU paint is **354.09 / 5,262.49 ms**, before hashing/PNG writing. `load_ms` remains separate and is not first sound; audible `plays_note` still uses 1e-5. Both report product `cache_state=cold`; OS page-cache state is uncontrolled. These single-witness scanner observations are not a repeated benchmark or native callback timing measurement. Missing onset stays unknown; no-safe-key auditions and fallback-note parity exclusions remain explicit. UVI's section J sidecar update is pending its owner.
+Section J onset is monotonic wall time from the first production import, outside the lexical prepass/worker spawn. Painting and audition run concurrently. The current Conflux first finite exactly-nonzero output is v1/v2 **146.11 / 5,257.57 ms**; completed Original CPU paint is **354.09 / 5,262.49 ms**, before hashing/PNG writing. `load_ms` remains separate and is not first sound; audible `plays_note` still uses 1e-5. Both report product `cache_state=cold`; OS page-cache state is uncontrolled. These single-witness scanner observations are not a repeated benchmark or native callback timing measurement. Missing onset stays unknown; no-safe-key auditions and fallback-note parity exclusions remain explicit. UVI section J was subsequently installed from `audit/uvi-v1-scanner-20261008@026bdbb49f29a5ad752b3470a5f6f64a20a8957d`; its product base is separately `4bffbb18`.
 
 Evidence: current Conflux v1 cache `aff9c78de29075f5c197a8f7a8d0daefc8dff64ce75f1a85ff1bc9e1ae69683b.json`, v2 cache `06cfd71d81310ddba20c5a1640431d9909985050fc4ec519c5f8a3629886189d.json`, under shared `results/{v1,v2}/cache`, plus published `results/{v1,v2}.tsv`. Publication and caches advance independently during shards; validated cohort membership, not a changing row count, defines this snapshot. The generated `symbol-aggregates.tsv` must be read with coverage counters and scanner digest: its 246 UI/keyboard/persistence identifiers plus eight raw saved categories complement the broader unsupported-builtin ranking above. `v1ok-v2missing.tsv` supplies separate authored-UI candidates; gesture/native-host checks remain outstanding.
+
+## Integration checkpoint 9993: preliminary current witness
+
+Current installed v2 product checkpoint is `9993db691a5f69d31980357694a678e358785e5e`, scanner-only Native observer `tools/kontra-scan-native-9993-20261008@ef88dcb6bd5e50ff12ad8317bdb73da92fcd415f`. Verified optimized v2 SHA-256: `19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751`; pinned Kontakt v1 remains `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`. The UVI sidecar is now `34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1`. The 72-column schema remains stable. The installed README reports three scanner checks passed; the root no-run check was pending at this checkpoint notification. This is not a plugin/release-readiness result.
+
+Only **one current-digest v2 witness, Conflux**, was available at inspection. Its shared-driver signature matches the current binary, file and common note plan. Local v2 `results.tsv` had this one row, while top-level v2 publication still had 357 preceding-checkpoint rows; those must not be relabelled 9993 data. The first-100 cohort and ranked findings above describe 7e82 and remain historical baseline evidence. No fresh whole-corpus rate or broad closure count is inferred from this one instrument.
+
+| Conflux at 9993, versus pinned v1 | Current v2 observation | Meaning |
+|---|---|---|
+| Clean compile / actual init | 3/3 / 3/3 | Same admitted slot population; five raw slots = three inline + two empty |
+| Raw / admitted `!` entries | **13 / 13** | Former v2 text-array admission gap is closed for this production witness; v1 admits 13, raw histogram unknown |
+| Persistence_changed | Both present callbacks completed; third absent | V1's first persistence phase still waiting at its load observation |
+| Original authored UI | **original-ok** | Previous v2 missing-image witness is superseded for this checkpoint |
+| Visible scalar/ID bindings / typed targets | 74/80 / 6 | New Native/bridge population differs from previous 107/113 and v1 78/78; no identical-control parity inference |
+| Selected audition | Key 60, velocity 64; audible, matched note plan | Selected-note observation, not native PCM parity |
+
+Source corroborates text-array admission: `9993 library.rs:1668` maps `SavedValue::Texts` to `ir::Saved::Texts`. It also sets `e.callback_type = PERSISTENCE_CHANGED` before the load callback (`eval.rs:220`), correcting the earlier INIT-type implementation. The new evaluator excludes explicitly consumed pending values from automatic restore (`eval.rs:207`), and follow-up persistence edge tests are active in the source. These are source observations plus a saved-entry admission witness, **not newly executed results for every earlier failing contract**. Original audit tests still carry ignored annotations; those annotations do not prove the defects remain open at 9993.
+
+Load-time waits remain an explicit open implementation boundary: current `eval.rs:1471` still treats Wait/WaitTicks/WaitAsync/StopWait as warning-producing no-ops in the evaluator shared by init/persistence. More synchronously completed persistence callbacks therefore do not demonstrate better scheduling fidelity. Other entries in the old ranked audit require checkpoint-specific source/probe/data verification before claiming closure or continued failure.
+
+Native font success now measures decoded package font files, while custom-font graph usage remains unknown. Legacy/bridge widget counts exclude `NativeSceneTree`; they cannot establish complete Native control/widget coverage or live typography/gestures. This witness records one successful font decode in the aggregate and unknown custom-font usage. First observed finite nonzero audio is 400.72 ms and completed CPU paint 744.47 ms; concurrent onset and the separate 1e-5 audition threshold retain the shared scanner definitions. One run cannot establish a load-speed ratio.
+
+Evidence: current shared v2 Conflux cache `37bb5dbb6785a6c2851f46776725f21b983eb280608d75584dd2ec363df8d52b.json`; pinned v1 comparison `aff9c78de29075f5c197a8f7a8d0daefc8dff64ce75f1a85ff1bc9e1ae69683b.json`. Census owns the fresh paired full 1,494-ID run. No independent collector, checkpoint binary build, scanner modification or product release was started here.
 
 ## Unknowns and concrete measurement plan
 
