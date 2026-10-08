@@ -668,13 +668,13 @@ impl Runtime {
             crate::EventInfo::Velocity => {
                 (self.notes.get(note.0).unwrap().velocity * 127.).round() as i64
             }
-            crate::EventInfo::Source => i64::from(self.notes.get(note.0).unwrap().input.is_none()),
+            crate::EventInfo::ReleaseVelocity => {
+                (self.release_times[note.0.index].velocity.unwrap_or(0.) * 127.).round() as i64
+            }
+            crate::EventInfo::Source => i64::from(self.note_events[note.0.index].creator_slot),
             crate::EventInfo::MidiChannel => {
                 i64::from(self.notes.get(note.0).unwrap().address.channel)
             }
-            // ponytail: Kontakt's zone ids are unique per zone; the group's
-            // index + 1 is nonzero exactly while the event sounds, which is
-            // what scripts test, and tells groups apart.
             crate::EventInfo::ZoneId => {
                 let mut family = self.notes.get(note.0).unwrap().first_family;
                 while let Some(index) = family {
@@ -685,7 +685,7 @@ impl Runtime {
                         let state = self.voices.slots[v.get()].value.unwrap();
                         voice = state.siblings.next;
                         if !state.stolen {
-                            return Ok(i64::from(state.group.map_or(0, |g| g + 1)) + 1);
+                            return Ok(i64::from(state.source_zone));
                         }
                     }
                 }
