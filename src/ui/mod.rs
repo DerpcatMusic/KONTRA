@@ -356,7 +356,7 @@ struct EditorState {
     /// share of the height.
     pane: Option<browser::Pane>,
     split: f64,
-    multis: bool,
+    uvi: bool,
     tab: Tab,
     settings: bool,
     /// The name a "Save multi…" is typing, and why the last try failed.
@@ -909,7 +909,7 @@ fn build(
             s if s > 0. => f64::from(s).clamp(browser::SPLIT_MIN, browser::SPLIT_MAX),
             _ => browser::SPLIT,
         },
-        multis: false,
+        uvi: false,
         tab: Tab::Rack,
         settings: false,
         saving: None,
@@ -1334,6 +1334,8 @@ impl Cx<'_> {
 pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod browser_tests;
 #[cfg(test)]
  pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
 #[cfg(all(test, feature = "library-access"))]
