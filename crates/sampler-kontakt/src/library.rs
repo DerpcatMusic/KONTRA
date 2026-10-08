@@ -477,6 +477,8 @@ fn translate(
     let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic).ok(); }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
         instrument: out.ir,

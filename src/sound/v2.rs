@@ -571,6 +571,12 @@ impl Default for V2Core {
 
 #[cfg(feature = "shots")]
 impl V2Core {
+    pub fn scan_record_selections(&mut self, part: usize, enabled: bool) {
+        if let Some(Some(p)) = self.parts.get_mut(part) { p.runtime.record_selections(enabled); }
+    }
+    pub fn scan_selections(&mut self, part: usize) -> Vec<sampler_core::SelectionRecord> {
+        self.parts.get_mut(part).and_then(Option::as_mut).map(|p|p.runtime.take_selection_records()).unwrap_or_default()
+    }
     pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
         let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
     }

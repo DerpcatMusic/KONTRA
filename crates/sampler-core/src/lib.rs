@@ -216,6 +216,29 @@ pub struct RegionVerdict {
     pub region: usize,
     pub group: Option<u32>,
     pub rejected: Option<Rejection>,
+    /// Actual admitted source, after script offsets and start modulation.
+    pub started: Option<SelectedSource>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedSource {
+    /// One-based original zone identity (the KSP zone ID).
+    pub zone: u32,
+    pub sample: usize,
+    pub frame: u64,
+    pub direction: Direction,
+    pub loops: [Option<SelectedLoop>; 8],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedLoop {
+    pub start: usize,
+    pub end: usize,
+    pub until_release: bool,
+    pub alternating: bool,
+    pub crossfade: usize,
+    pub count: u32,
+    pub tuning_bits: u64,
 }
 
 /// One selection's diagnostic: every region mapped to the key with its verdict.
@@ -223,6 +246,8 @@ pub struct RegionVerdict {
 /// script-suppressed attack has `suppressed` set and no candidates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectionRecord {
+    pub event: u64,
+    pub parent_event: Option<u64>,
     pub at: u64,
     pub key: u8,
     pub velocity: f64,
