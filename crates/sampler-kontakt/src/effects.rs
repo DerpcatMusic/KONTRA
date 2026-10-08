@@ -7,7 +7,7 @@
 //! ID names the module.
 
 use ni_file::kontakt::{
-    Chunk, StructuredObject,
+    StructuredObject,
     objects::{BParFX, BParamArrayBParFX8, InsertBus, Program},
 };
 
@@ -1289,6 +1289,7 @@ fn eq_band(
 
 #[cfg(test)]
 mod tests {
+    use ni_file::kontakt::Chunk;
     #[test]
     fn fx_decode_failures_keep_scope_slots_and_valid_siblings() {
         mod wire {
