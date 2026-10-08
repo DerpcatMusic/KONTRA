@@ -2,25 +2,6 @@
 use sampler_ui_ir::{Binding, Kind};
 use std::{collections::BTreeSet, path::Path};
 
-const WIDGETS: &[&str] = &[
-    "ui_knob",
-    "ui_slider",
-    "ui_button",
-    "ui_switch",
-    "ui_menu",
-    "ui_table",
-    "ui_xy",
-    "ui_waveform",
-    "ui_wavetable",
-    "ui_file_selector",
-    "ui_level_meter",
-    "ui_value_edit",
-    "ui_label",
-    "ui_text_edit",
-    "ui_panel",
-    "ui_mouse_area",
-];
-
 // Source usage is not an initialized-control census. Ignore strings/comments.
 fn identifiers(source: &str) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
@@ -51,78 +32,11 @@ fn identifiers(source: &str) -> BTreeSet<String> {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    assert!(
+        args.len() == 3 && args[1] == "witness",
+        "usage: widget_audit witness PATH"
+    );
     let path = Path::new(&args[2]);
-    if args[1] == "usage" {
-        use ni_file::kontakt::objects::{BParScript, Bank, Program};
-        let mut used = BTreeSet::new();
-        let multi = path
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("nkm"));
-        let chunks = sampler_kontakt::read_chunks(path).expect("container metadata");
-        let programs: Vec<Program> = if multi {
-            let bank =
-                Bank::try_from(chunks.find_first(3).expect("multi bank")).expect("bank metadata");
-            let mut slots: Vec<_> = bank
-                .slot_list()
-                .expect("slot metadata")
-                .slots
-                .into_iter()
-                .collect();
-            slots.sort_by_key(|(slot, _)| *slot);
-            slots
-                .into_iter()
-                .flat_map(|(_, container)| {
-                    container.program_list().expect("program metadata").programs
-                })
-                .collect()
-        } else {
-            vec![
-                Program::try_from(chunks.find_first(0x28).expect("instrument program"))
-                    .expect("program metadata"),
-            ]
-        };
-        let mut scripts = 0;
-        for program in &programs {
-            for chunk in program.0.children.iter().filter(|c| c.id == 6) {
-                let script = BParScript::try_from(chunk)
-                    .and_then(|s| s.params())
-                    .expect("script metadata");
-                if !script.bypass
-                    && let Some(text) = script.text
-                    && !text.trim().is_empty()
-                {
-                    scripts += 1;
-                    used.extend(identifiers(&text));
-                }
-            }
-        }
-        println!("scripts\t{scripts}\tprograms\t{}", programs.len());
-        for token in used {
-            if WIDGETS.contains(&token.as_str())
-                || token.starts_with("$CONTROL_PAR_")
-                || matches!(
-                    token.as_str(),
-                    "ui_control"
-                        | "ui_controls"
-                        | "ui_update"
-                        | "set_knob_defval"
-                        | "set_table_steps_shown"
-                        | "attach_zone"
-                        | "attach_level_meter"
-                        | "fs_get_filename"
-                        | "fs_navigate"
-                        | "load_komplete_ui"
-                        | "load_performance_view"
-                        | "make_perfview"
-                        | "move_control_px"
-                        | "move_control"
-                )
-            {
-                println!("use\t{token}");
-            }
-        }
-        return;
-    }
     let read = sampler_kontakt::read(path).expect("metadata read");
     let options = sampler_kontakt::Options {
         keys: 0..=0,
