@@ -14,7 +14,7 @@ pub(crate) struct KeyColours {
 }
 
 impl KeyColours {
-    fn merge(snapshots: &[UiSnapshot]) -> Self {
+    pub(crate) fn merge(snapshots: &[UiSnapshot]) -> Self {
         let mut keys: [Option<&str>; 128] = [None; 128];
         let mut conflicts = [false; 128];
         for map in snapshots.iter().filter_map(|s| s.root.key_colours.as_ref()) {
