@@ -1437,6 +1437,7 @@ impl Lowering<'_> {
                 Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
                     resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
             },
+            ir::Processor::LoFi { bits, frequency, noise, color } => Processor::LoFi(crate::LoFiSettings { bits, frequency, noise, color }),
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
