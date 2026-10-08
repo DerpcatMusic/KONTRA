@@ -84,6 +84,8 @@ pub enum LoadError {
         path: std::path::PathBuf,
         reason: String,
     },
+    /// The program's declared UI/script container is absent; other programs are not substitutes.
+    ResourceContainerMissing,
     /// The translated instrument could not be lowered to a playable plan.
     Lower(sampler_core::lower::LowerError),
     /// The caller canceled the load.
@@ -106,6 +108,8 @@ pub enum Stage {
     Parse,
     /// Translating records to the instrument IR.
     Translate,
+    /// Resolving a program's declared script/UI resource container.
+    ResourceResolve,
     /// Finding and decoding sample audio.
     SampleResolve,
     /// Compiling the instrument's scripts.
@@ -119,6 +123,7 @@ pub enum Stage {
 /// What kind of failure a [`LoadError`] is, without its payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
+    ResourceContainerMissing,
     Io,
     Decode,
     Access,
@@ -152,6 +157,7 @@ impl LoadError {
 
     pub fn kind(&self) -> Kind {
         match self.cause() {
+            Self::ResourceContainerMissing => Kind::ResourceContainerMissing,
             Self::Io { .. } => Kind::Io,
             Self::Decode { .. } => Kind::Decode,
             Self::Access { .. } => Kind::Access,
@@ -169,6 +175,7 @@ impl LoadError {
             Self::Io { .. } | Self::Access { .. } => Some(Stage::Container),
             Self::Decode { .. } => Some(Stage::Parse),
             Self::Invalid { .. } => Some(Stage::Translate),
+            Self::ResourceContainerMissing => Some(Stage::ResourceResolve),
             Self::Lower(_) => Some(Stage::Prepare),
             Self::Canceled => None,
         }
@@ -204,6 +211,7 @@ impl LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ResourceContainerMissing => f.write_str("resource_container_missing"),
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Self::Decode { path, what, error } => write!(f, "{}: {what}: {error}", path.display()),
             Self::Access { path, reason } => {

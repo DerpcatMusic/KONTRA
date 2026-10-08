@@ -157,8 +157,8 @@ impl Assets {
         scale: f64,
         values: &Values,
     ) {
-        if self.preparation.as_ref().is_none_or(|p| p.path() != path) {
-            self.preparation = Some(super::picture_worker::Preparation::new(path));
+        if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.declared() != face.resource_container.as_deref()) {
+            self.preparation = Some(super::picture_worker::Preparation::new_declared(path, face.resource_container.as_deref()));
         }
         let prepared =
             self.preparation
@@ -1647,7 +1647,7 @@ mod render_tests;
 /// Exercise the production asset loader, layout and CPU painter without a window.
 #[cfg(feature = "shots")]
 pub fn uvi_ui_health(face: &Interface, path: &std::path::Path) -> serde_json::Value {
-    let mut source = super::pictures::Source::of(path);
+    let mut source = super::pictures::Source::of_declared(path, face.resource_container.as_deref());
     let mut assets = Assets::default();
     let (mut image_errors, mut font_errors) = (0, 0);
     assets.sync(face, Presentation::Bitmap, |asset| {

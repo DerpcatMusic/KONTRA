@@ -25,6 +25,24 @@ struct Local {
     drafts: HashMap<String, String>,
 }
 thread_local! {static LOCAL:std::cell::RefCell<HashMap<u64,Local>>=std::cell::RefCell::new(HashMap::new());}
+#[cfg(test)]
+thread_local! {static AUDIT_FAILURES: std::cell::RefCell<Vec<String>> = const {std::cell::RefCell::new(Vec::new())};}
+#[cfg(test)]
+pub(super) fn audit_failures() -> Vec<String> {AUDIT_FAILURES.with(|v|v.borrow().clone())}
+#[cfg(test)]
+fn audit_lua_error(error:&mlua::Error) {
+    let text=error.to_string();
+    for class in ["attempt to index a number", "attempt to index a nil", "attempt to index a boolean", "attempt to get length of a number", "attempt to get length of a nil", "attempt to perform arithmetic", "attempt to compare", "number expected", "string expected", "table expected", "NativeUI time budget exceeded", "NativeUI interrupt budget exceeded"] {
+        if text.contains(class) {AUDIT_FAILURES.with(|v|v.borrow_mut().push(class.to_owned()));}
+    }
+    for line in text.lines() {
+        if let Some((_,tail))=line.split_once(".nui\"]:").or_else(||line.split_once(".nui:")) {
+            if let Some(n)=tail.split(':').next().and_then(|n|n.parse::<u32>().ok()) {
+                AUDIT_FAILURES.with(|v|v.borrow_mut().push(format!("module_line={n}")));
+            }
+        }
+    }
+}
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 pub(super) struct State {
     id: u64,
@@ -34,6 +52,7 @@ pub(super) struct State {
     failed: bool,
     failure: Option<String>,
     started: bool,
+    container_missing: bool,
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
@@ -112,7 +131,7 @@ impl Drop for State {
     }
 }
 impl State {
-    pub fn new(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>) -> Self {
+    pub fn new_declared(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>, declared: Option<String>) -> Self {
         let path = path.to_path_buf();
         let (done, loading) = std::sync::mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
@@ -120,7 +139,7 @@ impl State {
         let _ = std::thread::Builder::new()
             .name("native-resources".into())
             .spawn(move || {
-                let result = Package::load_cancel(&path,||cancel.load(Ordering::Acquire)).map(Arc::new);
+                let result = Package::load_declared_cancel(&path,declared.as_deref(),||cancel.load(Ordering::Acquire)).map(Arc::new);
                 if !cancel.load(Ordering::Acquire) {
                     let _ = done.send(result);
                     super::picture_worker::completed();
@@ -134,6 +153,7 @@ impl State {
             failed: false,
             failure: None,
             started: false,
+            container_missing: false,
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
@@ -141,6 +161,7 @@ impl State {
             graph_depth: None,
         }
     }
+    pub fn container_missing(&self) -> bool { self.container_missing }
     pub fn bytes(&self) -> usize {
         self.package.as_ref().map_or(0, |p| p.images.bytes())
     }
@@ -237,7 +258,13 @@ impl State {
                 Ok(package) => self.package = Some(package),
                 Err(error) => {
                     self.failed = true;
-                    self.failure = Some(failure(&error, "NativeUI resource preparation"));
+                    self.container_missing = error.downcast_ref::<sampler_kontakt::LoadError>()
+                        .is_some_and(|e| e.kind() == sampler_kontakt::Kind::ResourceContainerMissing);
+                    self.failure = Some(if self.container_missing {
+                        "resource_resolve, resource_container_missing: declared resource container absent".into()
+                    } else { failure(&error, "NativeUI resource preparation") });
+                    #[cfg(test)]
+                    AUDIT_FAILURES.with(|v|v.borrow_mut().push(self.failure.as_ref().unwrap().split(": ").next().unwrap().to_owned()));
                 }
             }
         }
@@ -302,8 +329,12 @@ impl State {
         match result {
             Ok(el) => el,
             Err(error) => {
+                #[cfg(test)]
+                if let Some(error)=error.downcast_ref::<mlua::Error>() {audit_lua_error(error);}
                 self.failed = true;
                 self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
+                #[cfg(test)]
+                AUDIT_FAILURES.with(|v|v.borrow_mut().push(self.failure.as_ref().unwrap().split(": ").next().unwrap().to_owned()));
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
@@ -802,6 +833,8 @@ fn draw_base(
                 match canvas_draw(&vm, &paint, Size::new(size.width / s, size.height / s), s) {
                     Ok(draw) => draw,
                     Err(e) => {
+                        #[cfg(test)]
+                        { audit_lua_error(&e); AUDIT_FAILURES.with(|v|v.borrow_mut().push(failure(&e.clone().into(),"NativeUI canvas").split(": ").next().unwrap().to_owned())); }
                         let _ = vm.globals().set("__canvas_error", e.to_string());
                         Vec::new()
                     }
@@ -1340,7 +1373,7 @@ mod tests {
         let entry=loaded.interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
         let controls:Vec<_>=loaded.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
             .map(move |(n,w)|(f.source,n,w.clone()))).collect();
-        let package=Arc::new(Package::load(&path).unwrap());
+        let package=Arc::new(Package::load_declared_cancel(&path,loaded.instrument.source_indices.resource_container.as_deref(),||false).unwrap());
         let session=Session::new(package,&entry,controls.clone()).unwrap();
         let reads=Arc::new(std::sync::Mutex::new(Vec::<(String,usize,String,String)>::new()));
         let trace=reads.clone();
@@ -1419,10 +1452,12 @@ mod tests {
         let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
         let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
             .map(move |(n, w)| (f.source, n, w.clone()))).collect();
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package = Arc::new(Package::load_declared_cancel(&path, loaded.instrument.source_indices.resource_container.as_deref(), || false).unwrap());
         let watermark = stack_watermark();
-        let session = Session::new(package.clone(), &entry, controls).unwrap();
-        let graph = session.render().unwrap();
+        let session = Session::new(package.clone(), &entry, controls)
+            .unwrap_or_else(|e| panic!("{}", failure(&e,"Native initialization").split_once(": ").unwrap().0));
+        let graph = session.render()
+            .unwrap_or_else(|e| panic!("{}", failure(&e,"Native graph").split_once(": ").unwrap().0));
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
@@ -1433,6 +1468,165 @@ mod tests {
         assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
         println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
             graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
+    }
+
+    #[test]
+    #[ignore = "requires locally owned multi; authored identifiers stay in RAM"]
+    fn native_multi_meter_ownership() {
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let multi = sampler_kontakt::read_multi(&path).unwrap();
+        let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+        let bank = ni_file::kontakt::objects::Bank::try_from(chunks.find_first(3).unwrap()).unwrap();
+        let mut bank_resources=sampler_kontakt::Resources::of(&path);
+        let bank_sources: Vec<_> = bank.0.children.iter().filter(|c| c.id==6)
+            .map(|c| {
+                let params=ni_file::kontakt::objects::BParScript::try_from(c).unwrap().params().unwrap();
+                params.textfile_name.as_deref().and_then(|name|bank_resources.script(name)).or(params.text).unwrap_or_default()
+            }).collect();
+        let mut loaded = Vec::new();
+        for program in 0..multi.programs.len() {
+            let mut source = sampler_kontakt::read_program(&path,program).unwrap().instrument;
+            source.retain_zones(|_|false); source.assets.clear();
+            loaded.push(sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {
+                library:Some(path.clone()), ..Default::default()
+            }).unwrap());
+        }
+        let entry = loaded[0].interfaces.iter().find_map(|f|f.native_ui.as_ref()).unwrap().entry.clone();
+        for (program,l) in loaded.iter().enumerate() {
+            for (slot,face) in l.interfaces.iter().enumerate() {
+                println!("MULTI_FACE program={program} slot={slot} widgets={} native={} entry_matches_first={}",face.widgets.len(),face.native_ui.is_some(),face.native_ui.as_ref().is_some_and(|n|n.entry==entry));
+            }
+        }
+        let controls:Vec<_> = loaded.iter().flat_map(|l|l.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate()
+            .map(move |(n,w)|(f.source,n,w.clone())))).collect();
+        let own_names: Vec<Vec<_>> = loaded.iter().map(|l|l.interfaces.iter().flat_map(|f|f.widgets.iter()
+            .map(|w|(w.name.trim_start_matches(['$','%','@','~','?','!']).to_owned(),w.meter.is_some()))).collect()).collect();
+        let sources: Vec<Vec<_>> = loaded.iter().map(|l|l.instrument.behaviors.iter().map(|b|b.source.clone()).collect()).collect();
+        let mut pending=vec![std::path::PathBuf::from("/mnt/MAIN_STORAGE/Libraries/Kontakt")];
+        let mut containers=Vec::new();
+        while let Some(dir)=pending.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry=entry.unwrap(); let ty=entry.file_type().unwrap();
+                if ty.is_dir() {pending.push(entry.path());}
+                else if entry.path().extension().is_some_and(|e|e.eq_ignore_ascii_case("nkr")) {containers.push(entry.path());}
+            }
+        }
+        containers.sort();
+        let mut candidates=std::collections::BTreeSet::new();
+        for (container_index,container) in containers.iter().enumerate() {
+            let mut assets=super::super::pictures::Source::of_declared(container,container.to_str());
+            let mut mentions=vec![std::collections::BTreeSet::<String>::new();loaded.len()];
+            let mut quoted=vec![std::collections::BTreeSet::<String>::new();loaded.len()];
+            let mut direct=vec![std::collections::BTreeSet::<String>::new();loaded.len()];
+            let mut modules=0;
+            for name in assets.native_names().unwrap().into_iter().filter(|n|n.ends_with(".nui")) {
+                let bytes=assets.read_result(&name).unwrap().unwrap();
+                let text=std::str::from_utf8(&bytes).unwrap(); modules+=1;
+                for (program,names) in own_names.iter().enumerate() {
+                    mentions[program].extend(names.iter().filter(|(n,_)|!n.is_empty()&&(text.contains(&format!("'{n}'"))||text.contains(&format!("\"{n}\""))||(n.len()>8&&text.contains(n)))).map(|(n,_)|n.clone()));
+                    quoted[program].extend(names.iter().filter(|(n,_)|!n.is_empty()&&(text.contains(&format!("'{n}'"))||text.contains(&format!("\"{n}\"")))).map(|(n,_)|n.clone()));
+                    for call in ["connect_parameter","connect_level_meter"] {
+                        for (_,tail) in text.match_indices(call).map(|(at,_)|(at,&text[at+call.len()..])) {
+                            let tail=tail.trim_start().strip_prefix('(').unwrap_or("").trim_start();
+                            for (n,_) in names {
+                                if tail.starts_with(&format!("'{n}'"))||tail.starts_with(&format!("\"{n}\"")) {direct[program].insert(n.clone());}
+                            }
+                        }
+                    }
+                }
+            }
+            let indexed=assets.read_result("Resources/native_ui/__inventory_absent__.nui").is_ok();
+            if container.starts_with(bank_resources.root()) {candidates.extend(quoted[0].iter().cloned());}
+            for (program,names) in mentions.iter().enumerate() {
+                println!("MULTI_PACKAGE container_index={container_index} own_library={} indexed={indexed} modules={modules} program={program} distinct_owned_control_mentions={}",container.starts_with(bank_resources.root()),names.len());
+                println!("MULTI_PACKAGE_MATCHES container_index={container_index} program={program} full_quoted_identifiers={} direct_binding_identifiers={} partial_only={}",quoted[program].len(),direct[program].len(),names.len()-quoted[program].len());
+            }
+        }
+        println!("MULTI_PACKAGE containers={}",containers.len());
+        println!("MULTI_METER programs={} bank_scripts={} bank_meter_declarations={}",loaded.len(),bank_sources.len(),bank_sources.iter().map(|s|s.matches("declare ui_level_meter").count()).sum::<usize>());
+        let package = Arc::new(Package::load_declared_cancel(&path,loaded[0].instrument.source_indices.resource_container.as_deref(),||false).unwrap());
+        for (program,load) in loaded.iter().enumerate() {
+            let owned=load.interfaces.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect();
+            let session=Session::new(package.clone(),&entry,owned).unwrap();
+            let graph=session.render();
+            if let Err(error)=&graph {
+                if let Some(error)=error.downcast_ref::<mlua::Error>() {audit_lua_error(error);println!("MULTI_OWN_ERROR program={program} operations={:?}",package.error_operations(error));}
+            }
+            println!("MULTI_OWN_GRAPH program={program} graph_ok={} fixed_errors={:?}",graph.is_ok(),audit_failures());
+        }
+        let candidates:Vec<_>=candidates.into_iter().collect();
+        let tagged=Session::new(package.tagged_identifiers(&candidates),&entry,controls.clone()).unwrap();
+        let tagged_paint=tagged.render().is_ok();
+        let connections=tagged.connections();
+        println!("MULTI_BINDING_TAG candidates={} graph_ok={tagged_paint} tagged_binding_calls={}",candidates.len(),connections.iter().filter(|n|n.contains("__binding_probe_")).count());
+        println!("MULTI_BINDING_KINDS {:?}",tagged.connection_kinds());
+        for (n,id) in candidates.iter().enumerate() {
+            println!("MULTI_BINDING_TAG identifier_index={n} identifier_chars={} reached_binding={}",id.chars().count(),connections.iter().any(|id|id.contains(&format!("__binding_probe_{n}"))));
+        }
+        let session = Session::new(package,&entry,controls).unwrap_or_else(|_|panic!("combined genuine-control session failed"));
+        let kontakt: Table = session.lua().globals().get::<Table>("package").unwrap().get::<Table>("loaded").unwrap().get("kontakt").unwrap();
+        let connect: mlua::Function = kontakt.get("connect_level_meter").unwrap();
+        let identifiers = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::<String>::new()));
+        let recorded = identifiers.clone();
+        kontakt.set("connect_level_meter",session.lua().create_function(move |_,identifier:String| {
+            recorded.lock().unwrap().insert(identifier.clone()); connect.call::<Table>(identifier)
+        }).unwrap()).unwrap();
+        let parameter_reads = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::<String>::new()));
+        let reads = parameter_reads.clone();
+        session.lua().globals().set("__audit_parameter",session.lua().create_function(move |_,(identifier,_,_,access):(String,i64,String,String)| {
+            if access=="value" { reads.lock().unwrap().insert(identifier); } Ok(())
+        }).unwrap()).unwrap();
+        let painted = session.render().is_ok();
+        for (index,identifier) in parameter_reads.lock().unwrap().iter().enumerate() {
+            println!("MULTI_PARAMETER identifier_index={index} own_widget_matches={} own_source_matches={}",
+                own_names[0].iter().filter(|(n,_)|n==identifier).count(),sources[0].iter().filter(|s|s.contains(identifier)).count());
+        }
+        for (index,identifier) in identifiers.lock().unwrap().iter().enumerate() {
+            println!("MULTI_METER identifier_index={index} bank_source_matches={}",bank_sources.iter().filter(|s|s.contains(identifier)).count());
+            for (program,names) in own_names.iter().enumerate() {
+                println!("MULTI_METER identifier_index={index} program={program} widget_matches={} attached_matches={} source_matches={}",
+                    names.iter().filter(|(n,_)|n==identifier).count(),names.iter().filter(|(n,m)|n==identifier&&*m).count(),sources[program].iter().filter(|s|s.contains(identifier)).count());
+            }
+        }
+        println!("MULTI_METER connected={} combined_genuine_controls_graph={painted}",identifiers.lock().unwrap().len());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "shots"))]
+    #[test]
+    #[ignore = "requires locally owned missing-container multis; counts and stack watermarks only"]
+    fn missing_container_ksp_stack_watermarks() {
+        let list=std::fs::read_to_string(std::env::var_os("KONTRA_RESOURCE_SURVEY_LIST").unwrap()).unwrap();
+        for (index,line) in list.lines().enumerate() {
+            let (_,path)=line.split_once('\t').unwrap();
+            if !path.ends_with(".nkm") {continue;}
+            let path=std::path::PathBuf::from(path);
+            let mut source=sampler_kontakt::read_program(&path,0).unwrap().instrument;
+            source.retain_zones(|_|false); source.assets.clear();
+            let declared=source.source_indices.resource_container.clone();
+            if sampler_kontakt::Resources::of_declared(&path,declared.as_deref()).container_status()
+                .err().is_none_or(|e|e.kind()!=sampler_kontakt::Kind::ResourceContainerMissing) {continue;}
+            let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
+            std::thread::Builder::new().stack_size(2<<20).spawn(move || {
+                let watermark=stack_watermark();
+                let mut ui=super::super::theme::ui();
+                let mut values=super::super::ir_view::Values::default();
+                let mut painted=0;
+                for face in loaded.interfaces.iter() {
+                    let face=super::super::ir_view::resolved(face);
+                    if face.widgets.is_empty() {continue;}
+                    let mut assets=super::super::ir_view::Assets::default();
+                    for _ in 0..4 {
+                        assets.prepare(&path,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+                        let el=super::super::ir_view::view(&mut ui,&face,ir::PageRef(0),&assets,ir::Presentation::Bitmap,1.,&mut values);
+                        ui.frame(el,Some(Size::new(970.,600.)),Input::default(),1./60.).unwrap();
+                    }
+                    painted+=1;
+                }
+                let peak=stack_peak(watermark);
+                assert!(peak < watermark.2-watermark.0-4096,"stack watermark saturated");
+                println!("KSP_FALLBACK_STACK item_index={index} program=0 painted_faces={painted} peak_bytes={peak} thread_stack_bytes={} unmarked_top_bytes={}",2<<20,watermark.2-watermark.1);
+            }).unwrap().join().unwrap();
+        }
     }
 
     #[test]
@@ -1451,7 +1645,7 @@ mod tests {
         let saved: Vec<_> = controls.iter().filter(|(_,_,w)|w.name.starts_with("@Footer__Macro__Name__"))
             .map(|(_,_,w)|match &w.value {Some(ir::Value::Text(s))=>s.clone(),_=>panic!("published text missing")}).collect();
         assert_eq!(saved.len(), 6);
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package = Arc::new(Package::load_declared_cancel(&path,loaded.instrument.source_indices.resource_container.as_deref(),||false).unwrap());
         let session = Session::new(package.clone(), &entry, controls).unwrap();
         let graph = session.render().unwrap();
         fn font_usage(node:&Table,package:&Package,counts:&mut [usize;3]) {

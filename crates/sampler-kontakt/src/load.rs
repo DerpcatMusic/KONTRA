@@ -651,7 +651,7 @@ pub(crate) fn initialize_scripts(
     groups: Vec<String>,
     control_values: &[(sampler_core::ControlId, i32)],
 ) -> ScriptInit {
-    let resources = library.map(Resources::of).map(std::cell::RefCell::new);
+    let resources = library.map(|path| Resources::of_declared(path, instrument.source_indices.resource_container.as_deref())).map(std::cell::RefCell::new);
     let mut views = Vec::new();
     let states = instrument
         .behaviors
@@ -778,7 +778,10 @@ fn compile_ui_initialized(
     let mut interfaces = Vec::new();
     for (script, name) in compiled.iter().zip(&names) {
         match script.ui(&picture) {
-            Ok(ui) => interfaces.push(ui),
+            Ok(mut ui) => {
+                ui.resource_container = instrument.source_indices.resource_container.clone();
+                interfaces.push(ui);
+            }
             Err(e) => instrument.unsupported.push(ir::Unsupported {
                 location: name.clone(),
                 feature: "script interface".into(),
