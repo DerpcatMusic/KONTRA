@@ -134,6 +134,7 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
             zoom_params.shared.libraries.settings().editor_scale()
         })
         .on_close(move || {
+            close_params.shared.editor_watch.store(usize::MAX, Ordering::Relaxed);
             close_picker.close();
             close_params.shared.libraries.flush_settings();
         })
