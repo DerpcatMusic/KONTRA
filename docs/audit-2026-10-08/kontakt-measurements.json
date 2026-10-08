@@ -5941,7 +5941,7 @@
     "source_revision": "e340c39a6666752866015b5ee8f06a3cc978c416",
     "v1_adapter_revision": "788f41fafa7e21ddf7b1917bc4cf43e0a83876b8",
     "observed_at_utc": "2026-10-08T08:59:48.810069+00:00",
-    "status": "partial corpus; matched-note eligible subset only",
+    "status": "historical e340 snapshot superseded by f7 source; only its frozen50pairs are established",
     "versions": {
       "v1": {
         "binary_sha256": "ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08",
@@ -6188,5 +6188,162 @@
       "/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Single Instruments/2 Tubas/2 Tubas Repetitions.nki"
     ],
     "old_cache_excluded": true
+  },
+  "shared_scan_section_j_partial": {
+    "source_revision": "f7b2a8cdc6773ff569799c256ad9b0d638e3a824",
+    "v1_adapter_revision": "11db26e72650f373465b6534d6ddb3684e1e9970",
+    "observed_at_utc": "2026-10-08T10:18:48.226647+00:00",
+    "status": "partial advancing sweep; detailed Conflux pair analyzed, other current records not used for regression list",
+    "versions": {
+      "v1": {
+        "binary_sha256": "bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438",
+        "current_digest_kontakt_cache_rows": 50,
+        "published_rows_observed": 50,
+        "published_sha256": "06b0cb25faec0ebc34b26c273666e801dddd850e4f4e5b51a87ff31e03888f58",
+        "published_coverage_current_revision": "not joined to current cache in this snapshot",
+        "conflux_cache_sha256": "155666bcdf23b60f841334f85903e0368c2e2e64adc74dd30a11991b67d789dd",
+        "conflux": {
+          "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+          "revision": "bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438",
+          "loads": "yes",
+          "plays_note": "yes",
+          "first_audio_ms": 277.077449,
+          "ui_first_frame_ms": 903.432403,
+          "cache_state": "cold",
+          "load_ms": 263.675119,
+          "audition_status": "matched-note-plan",
+          "note_picked": "{\"0\":[60,64]}",
+          "keyswitch_picked": "{\"0\":null}",
+          "fallback_note": 0,
+          "sample_zone_count": 1985,
+          "saved_entry_sigils": "{}",
+          "admitted_saved_entry_sigils": "{\"!\":13,\"$\":223,\"%\":15,\"@\":6}",
+          "ksp_compile_ok": "yes",
+          "ksp_init_ok": "yes",
+          "slots_seen": 5,
+          "slots_decode_failed": 5,
+          "load_fault_records": 0,
+          "ksp_runtime_fault_records": 0,
+          "controls_bound": "78/78",
+          "bound_typed": 5
+        },
+        "raw_metadata_slots": [
+          {
+            "wire_slot": 0,
+            "raw_category": "decode_failed",
+            "saved_table_integrity": "unknown",
+            "saved_entries_total": null,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 1,
+            "raw_category": "decode_failed",
+            "saved_table_integrity": "unknown",
+            "saved_entries_total": null,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 2,
+            "raw_category": "decode_failed",
+            "saved_table_integrity": "unknown",
+            "saved_entries_total": null,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 3,
+            "raw_category": "decode_failed",
+            "saved_table_integrity": "unknown",
+            "saved_entries_total": null,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 4,
+            "raw_category": "decode_failed",
+            "saved_table_integrity": "unknown",
+            "saved_entries_total": null,
+            "raw_saved_entries_by_sigil": {}
+          }
+        ]
+      },
+      "v2": {
+        "binary_sha256": "2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0",
+        "current_digest_kontakt_cache_rows": 59,
+        "published_rows_observed": 50,
+        "published_sha256": "dbf18e648c502d801c16ccc70bcc34e238e0eadb1c9a0c0b3dc94ddf3e9f27e6",
+        "published_coverage_current_revision": "not joined to current cache in this snapshot",
+        "conflux_cache_sha256": "2dc4aad56ef5e7536ce61e48f8d357c8654635f26b1429c6304cccbaeb740463",
+        "conflux": {
+          "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+          "revision": "2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0",
+          "loads": "yes",
+          "plays_note": "yes",
+          "first_audio_ms": 8060.106203,
+          "ui_first_frame_ms": 8064.8115,
+          "cache_state": "cold",
+          "load_ms": 8020.021826000001,
+          "audition_status": "matched-note-plan",
+          "note_picked": "{\"0\":[60,64]}",
+          "keyswitch_picked": "{\"0\":null}",
+          "fallback_note": 0,
+          "sample_zone_count": 1985,
+          "saved_entry_sigils": "{\"!\":13,\"$\":223,\"%\":15,\"@\":6}",
+          "admitted_saved_entry_sigils": "{\"$\":223,\"%\":15,\"@\":6}",
+          "ksp_compile_ok": "yes",
+          "ksp_init_ok": "yes",
+          "slots_seen": 5,
+          "slots_decode_failed": 0,
+          "load_fault_records": 0,
+          "ksp_runtime_fault_records": 0,
+          "controls_bound": "107/113",
+          "bound_typed": 6
+        },
+        "raw_metadata_slots": [
+          {
+            "wire_slot": 0,
+            "raw_category": "empty",
+            "saved_table_integrity": "decoded",
+            "saved_entries_total": 0,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 1,
+            "raw_category": "empty",
+            "saved_table_integrity": "decoded",
+            "saved_entries_total": 0,
+            "raw_saved_entries_by_sigil": {}
+          },
+          {
+            "wire_slot": 2,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded",
+            "saved_entries_total": 223,
+            "raw_saved_entries_by_sigil": {
+              "!": 13,
+              "$": 189,
+              "%": 15,
+              "@": 6
+            }
+          },
+          {
+            "wire_slot": 3,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded",
+            "saved_entries_total": 34,
+            "raw_saved_entries_by_sigil": {
+              "$": 34
+            }
+          },
+          {
+            "wire_slot": 4,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded",
+            "saved_entries_total": 0,
+            "raw_saved_entries_by_sigil": {}
+          }
+        ]
+      }
+    },
+    "v1_raw_sigils_status": "unknown because all5 inventory slots decode_failed; admitted state remains observable",
+    "timing_definition": "first finite exactly nonzero block since first production import, Original paint concurrent; metadata prepass/worker spawn excluded; audible threshold separately1e-5; OS cache uncontrolled"
   }
 }
