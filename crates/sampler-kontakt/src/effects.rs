@@ -341,9 +341,13 @@ impl Slot {
             0x18 => {
                 let kind = r.i32()?;
                 if (30..=41).contains(&kind) {
-                    // Ladder records repeat the subtype, with a version flag
-                    // byte before some repeats (DSP_FORMAT_SPECIFICATION,
-                    // "Effect parameter payloads"); v0x95 repeats it more.
+                    // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
+                    // Exact version framing comes from the shared verified reader.
+                    if matches!(self.version, 0x90..=0x92) {
+                        let record = ni_file::kontakt::objects::BParFXFilterRecord::read(self.version, &self.public).ok()?;
+                        return Some(Params::Filter { kind: record.filter_type, cutoff: record.cutoff,
+                            resonance: record.resonance, extra: vec![record.leading_value] });
+                    }
                     r.skip_repeats(kind);
                 } else if r.i32()? != kind {
                     return None;
@@ -600,6 +604,7 @@ pub(crate) fn voice_chain(
     slots: &[Slot],
     split: i32,
     dynamic: Option<(i32, i32)>,
+    group: i32,
 ) -> (Chain, usize) {
     let valid = (0..=8).contains(&split);
     let cut = if valid {
@@ -607,8 +612,8 @@ pub(crate) fn voice_chain(
     } else {
         slots.len()
     };
-    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic);
-    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic);
+    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic, (group, -1));
+    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic, (group, -1));
     let boundary = before.processors.len();
     before.processors.extend(after.processors);
     before.send_taps.extend(after.send_taps.into_iter().map(|mut tap| {
@@ -642,7 +647,7 @@ pub(crate) fn voice_chain(
 /// channels, so they commute with it.
 #[cfg(test)]
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
-    chain_with(slots, scope, None, None)
+    chain_with(slots, scope, None, None, (-1, 1))
 }
 
 /// A decoded impulse response: its sample rate and frames.
@@ -664,6 +669,7 @@ pub(crate) fn chain_with(
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
     dynamic: Option<(i32, i32)>,
+    physical: (i32, i32),
 ) -> Chain {
     let mut out = Chain::default();
     let mut combined = IDENTITY;
@@ -731,6 +737,24 @@ pub(crate) fn chain_with(
                     bypass: fx.bypass,
                 });
                 combined = product(gain, combined);
+            }
+            Some(Params::Filter { kind: 33, cutoff, resonance, extra }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92) => {
+                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto.
+                // Gain is signed normalized (12 dB per unit); the native kernel
+                // retains the record-version cutoff clock.
+                let values = [extra[0], *cutoff, *resonance];
+                if values.iter().all(|v| v.is_finite()) && (-1.0..=1.0).contains(&values[0])
+                    && values[1..].iter().all(|v| (0.0..=1.0).contains(v)) {
+                    filters.push(sampler_ir::Processor::LadderLP4(sampler_ir::LadderLP4 {
+                        address: Some(sampler_ir::SlotAddress { group: physical.0, slot: fx.slot as i32, generic: physical.1 }),
+                        gain: f64::from(values[0]), cutoff: f64::from(values[1]), resonance: f64::from(values[2]),
+                        record_version: fx.version,
+                    }));
+                    combined = product(gain, combined);
+                } else {
+                    notes.push(("Ladder LP4 parameters".into(), "non-finite or outside native range".into(), sampler_ir::Reason::InvalidValue));
+                    modelled = false;
+                }
             }
             Some(Params::Filter {
                 kind,
@@ -1155,14 +1179,14 @@ pub(crate) fn instrument_buses(
         rack("instrument insert"),
         Scope::Bus,
         Some(&mut source),
-        generic(1),
+        generic(1), (-1, 1),
     );
     take("instrument insert", &insert);
     let main = chain_with(
         rack("instrument main"),
         Scope::Bus,
         Some(&mut source),
-        generic(2),
+        generic(2), (-1, 2),
     );
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
@@ -1175,7 +1199,7 @@ pub(crate) fn instrument_buses(
             std::slice::from_ref(slot),
             Scope::Bus,
             Some(&mut source),
-            generic(0),
+            generic(0), (-1, 0),
         );
         // Port from v1 0cb7a8a0:src/fx/processor.rs (process returns and
         // SendInputs::tap): bypassed returns contribute no dry signal.
@@ -1201,7 +1225,7 @@ pub(crate) fn instrument_buses(
             rack(&name),
             Scope::Bus,
             Some(&mut source),
-            generic(1000 + bus.index as i32),
+            generic(1000 + bus.index as i32), (-1, 1000 + bus.index as i32),
         );
         take(&name, &c);
         if bus.pan.abs() > 0.01 {
@@ -1396,6 +1420,22 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     use ni_file::kontakt::Chunk;
+    #[test]
+    fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
+        let mut public = 33i32.to_le_bytes().to_vec();
+        public.push(0);
+        public.extend(33i32.to_le_bytes());
+        for value in [-0.25f32, 0.5, 0.3] { public.extend(value.to_le_bytes()); }
+        let slot = super::Slot { slot: 3, module: 0x18, version: 0x92,
+            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1));
+        assert!(chain.notes.is_empty());
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
+                && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
+                && d.record_version == 0x92)));
+    }
+
     #[test]
     fn fx_decode_failures_keep_scope_slots_and_valid_siblings() {
         mod wire {
@@ -1755,7 +1795,7 @@ mod tests {
         after.slot = 7;
         before.dry_level = 0.0;
         after.dry_level = 0.0;
-        let (chain, boundary) = voice_chain(&[before, after], 6, None);
+        let (chain, boundary) = voice_chain(&[before, after], 6, None, 0);
         assert_eq!(boundary, 1);
         assert_eq!(chain.processors.len(), 2);
         assert_eq!(
@@ -1779,13 +1819,13 @@ mod tests {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
         gainer.bypass = true;
-        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
+        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None, (-1, 1));
         assert!(plain.processors.is_empty());
         let c = chain_with(
             std::slice::from_ref(&gainer),
             Scope::Bus,
             None,
-            Some((-1, 1)),
+            Some((-1, 1)), (-1, 1),
         );
         assert!(
             matches!(
@@ -2086,7 +2126,7 @@ mod tests {
         before.slot = 2;
         let mut after = slot(0x17, levels, 1.0);
         after.slot = 6;
-        let (chain, boundary) = voice_chain(&[before, after], 4, None);
+        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0);
         assert!(chain.notes.is_empty(), "{:?}", chain.notes);
         assert_eq!(boundary, 0);
         assert_eq!(chain.send_taps.len(), 2);
