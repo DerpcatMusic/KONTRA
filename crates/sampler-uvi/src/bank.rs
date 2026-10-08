@@ -78,7 +78,7 @@ impl Bank {
         for (index, member) in directory.files.iter().enumerate() {
             if let Some(path) = &member.path {
                 paths
-                    .entry(path.clone())
+                    .entry(path.to_ascii_lowercase())
                     .and_modify(|entry| *entry = None)
                     .or_insert(Some(index));
             }
@@ -170,11 +170,16 @@ impl Bank {
         let read = || -> Result<Vec<u8>> {
             let path = path.replace('\\', "/");
             let (program, path) = resource_base(program, &path, &self.ufs.header.bank_name)?;
-            let member = resource(program, path, |p| self.resolve(p)).or_else(|_| {
-                let normalized = normalize(path)?;
-                if let Ok(member) = self.resolve(&normalized) {
-                    return Ok(member);
+            let candidates = ui_candidates(program, path)?;
+            let mut member = None;
+            for candidate in &candidates {
+                if let Some(index) = self.paths.get(&candidate.to_ascii_lowercase()) {
+                    member = Some(&self.directory.files[index.context("Ambiguous UI resource")?]);
+                    break;
                 }
+            }
+            let member = if let Some(member) = member { member } else {
+                let normalized = normalize(path)?;
                 let suffix = format!("/{}", normalized.to_ascii_lowercase());
                 let mut matches = self.directory.files.iter().filter(|m| {
                     m.path
@@ -183,8 +188,8 @@ impl Bank {
                 });
                 let first = matches.next().context("UI resource missing")?;
                 ensure!(matches.next().is_none(), "Ambiguous UI resource");
-                Ok(first)
-            })?;
+                first
+            };
             ensure!(member.size <= 32 << 20, "UI resource exceeds 32 MiB");
             self.read(member)
         };
@@ -252,13 +257,33 @@ impl Bank {
 
     fn resolve(&self, path: &str) -> Result<&Member> {
         let path = normalize(path)?;
-        if let Some(index) = self.paths.get(&path) {
+        if let Some(index) = self.paths.get(&path.to_ascii_lowercase()) {
             return index
                 .map(|i| &self.directory.files[i])
                 .context("Ambiguous UVI member path");
         }
         resolve(&self.directory, &path)
     }
+}
+
+/// Preserve the actual module directory first, then search its package roots.
+/// Candidate order never turns an ambiguous exact identity into a suffix hit.
+fn ui_candidates(program: &str, path: &str) -> Result<Vec<String>> {
+    let base = program.rsplit_once('/').map_or("", |(base, _)| base);
+    let rooted = normalize(path)?;
+    let mut out = Vec::new();
+    if !path.starts_with('/') { out.push(normalize(&format!("{base}/{path}"))?); }
+    if !out.contains(&rooted) { out.push(rooted.clone()); }
+    let parts: Vec<_> = rooted.split('/').collect();
+    if let Some(scripts) = parts.iter().position(|p| p.eq_ignore_ascii_case("Scripts")) {
+        // A module can live below nested package folders. The bank index is
+        // authoritative; no filesystem or another bank participates.
+        for start in scripts + 1..parts.len() {
+            let candidate = parts[start..].join("/");
+            if !out.contains(&candidate) { out.push(candidate); }
+        }
+    }
+    Ok(out)
 }
 
 /// Falcon's `$Bank.ufs/` volume is rooted in this bank, not the preset folder.
@@ -305,7 +330,7 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
     let exact: Vec<_> = directory
         .files
         .iter()
-        .filter(|m| m.path.as_deref() == Some(&path))
+        .filter(|m| m.path.as_ref().is_some_and(|p| p.eq_ignore_ascii_case(&path)))
         .collect();
     if exact.len() == 1 {
         return Ok(exact[0]);
@@ -315,7 +340,7 @@ fn resolve<'a>(directory: &'a Directory, path: &str) -> Result<&'a Member> {
         !path.contains('/'),
         "UVI resource path is absent from this bank"
     );
-    let named: Vec<_> = directory.files.iter().filter(|m| m.name == path).collect();
+    let named: Vec<_> = directory.files.iter().filter(|m| m.name.eq_ignore_ascii_case(&path)).collect();
     ensure!(named.len() == 1, "UVI member name is absent or ambiguous");
     Ok(named[0])
 }
@@ -437,5 +462,14 @@ mod tests {
         let (_, path) =
             resource_base("Presets/p.uvip", "$Authored.ufs/../escape.aif", "Authored").unwrap();
         assert!(normalize(path).is_err());
+    }
+
+    #[test]
+    fn ui_candidates_keep_module_and_package_roots_in_order() {
+        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "/Scripts/_ui/../Resources/knob.png").unwrap(),
+            ["Scripts/Resources/knob.png", "Resources/knob.png", "knob.png"]);
+        assert_eq!(ui_candidates("Presets/Strings/p.uvip", "Resources/knob.png").unwrap(),
+            ["Presets/Strings/Resources/knob.png", "Resources/knob.png"]);
+        assert!(ui_candidates("Presets/p.uvip", "/Scripts/../../escape.png").is_err());
     }
 }
