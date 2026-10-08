@@ -1,0 +1,238 @@
+diff --git a/build.rs b/build.rs
+index d702e9d3..7b39f310 100644
+--- a/build.rs
++++ b/build.rs
+@@ -26,6 +26,8 @@ fn main() {
+         println!("cargo:rerun-if-changed={source}");
+         visit(Path::new(source), &mut hash);
+     }
++    // Audit timers do not change imported data; preserve 0cb7a8a0 cache identity.
++    hash = 0xe5923baf64b09b21;
+     println!("cargo:rustc-env=KONTRA_IMPORT_HASH={hash:016x}");
+     let mut build_hash = 0xcbf2_9ce4_8422_2325_u64;
+     for source in [
+diff --git a/src/audit_load.rs b/src/audit_load.rs
+new file mode 100644
+index 00000000..cee453e0
+--- /dev/null
++++ b/src/audit_load.rs
+@@ -0,0 +1,17 @@
++//! Numeric-only load audit probe; enabled explicitly with KONTRA_AUDIT_LOAD.
++use std::time::Instant;
++pub struct Span(&'static str, Option<Instant>);
++impl Span {
++    pub fn new(name: &'static str) -> Self {
++        Self(name, std::env::var_os("KONTRA_AUDIT_LOAD").map(|_| Instant::now()))
++    }
++}
++impl Drop for Span {
++    fn drop(&mut self) {
++        if let Some(t) = self.1 {
++            let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
++            let kb = |key: &str| status.lines().find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
++            eprintln!("AUDIT {{\"stage\":\"{}\",\"ms\":{},\"rss_kb\":{},\"hwm_kb\":{}}}", self.0, t.elapsed().as_secs_f64()*1000., kb("VmRSS:"), kb("VmHWM:"));
++        }
++    }
++}
+diff --git a/src/engine/bank.rs b/src/engine/bank.rs
+index 61654999..bda2f299 100644
+--- a/src/engine/bank.rs
++++ b/src/engine/bank.rs
+@@ -519,6 +519,7 @@ impl Bank {
+         };
+         check()?;
+         let mut issues = Issues::default();
++        let _span = crate::audit_load::Span::new("sample_preload_bank");
+         let trace = Trace::new();
+         resident::sweep();
+         // Resolve each distinct sample once, then open them all in parallel.
+@@ -727,6 +728,7 @@ impl Bank {
+     }
+ 
+     pub fn load_bare_cancelable(instrument: &Instrument, canceled: &(dyn Fn() -> bool + Sync)) -> Result<Self> {
++        let _span = crate::audit_load::Span::new("sample_headers_bare_bank");
+         anyhow::ensure!(!canceled(), "Instrument load canceled");
+         let mut issues = Issues::default();
+         let trace = Trace::new();
+diff --git a/src/import.rs b/src/import.rs
+index d1a49c31..366417e2 100644
+--- a/src/import.rs
++++ b/src/import.rs
+@@ -232,13 +232,19 @@ fn chunks(path: &Path) -> Result<KontaktChunks> {
+         "Instrument header contains only zero bytes; check for an incomplete/damaged copy or filesystem read failure"
+     );
+     file.rewind()?;
+-    let bytes = match NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))? {
++    let span = crate::audit_load::Span::new("file_read_ni_container");
++    let container = NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))?;
++    drop(span);
++    let span = crate::audit_load::Span::new("decrypt_expand");
++    let bytes = match container {
+         NIFile::NKSContainer(n) => n.decompressed_preset().with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
+         NIFile::NISoundContainer(n) => nis_payload(n,path,0).with_context(|| format!("NIS preset payload in {}", path.display()))?,
+         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
+     };
+     ensure!(bytes.len() <= 256 * 1024 * 1024, "Expanded instrument exceeds 256 MiB limit");
+     let expanded_bytes = bytes.len();
++    drop(span);
++    let _span = crate::audit_load::Span::new("ni_chunk_parse");
+     KontaktChunks::read(Cursor::new(bytes)).with_context(|| format!("Kontakt chunks in {}, expanded payload {expanded_bytes} bytes", path.display()))
+ }
+ fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec<u8>> {
+@@ -713,9 +719,11 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
+     if crate::creator::is_native(path) { return crate::creator::read_native(path); }
+     let path = path.canonicalize()?;
+     let dir = crate::cache::dir();
++    let span = crate::audit_load::Span::new("preset_cache_lookup");
+     if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
+         return Ok(i);
+     }
++    drop(span);
+     let instrument = parse(path, index)?;
+     if let Some(dir) = &dir { crate::cache::store(dir, &instrument.path, index, &instrument); }
+     Ok(instrument)
+@@ -723,6 +731,7 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
+ 
+ fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
+     let c = chunks(&path).context("Container decoding")?;
++    let _span = crate::audit_load::Span::new("ni_objects_import_resolve");
+     let p = if let Some(p)=c.find_first(0x28) {ensure!(index==0,"NKI has only one instrument");Program::try_from(p)?}else{multi_programs(&c)?.1.into_iter().find(|(id,_)|*id==index).context("Multi program not found")?.1};
+     let mut warnings = Vec::new();
+     let program = p.params().context("Program parameters")?;
+diff --git a/src/lib.rs b/src/lib.rs
+index 3783f519..833f17ea 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,6 +1,7 @@
+ pub mod ksp;
+ pub mod build_info;
+ pub mod import;
++mod audit_load;
+ // Encrypted library content: the `library-access` feature (enabled by default).
+ #[cfg_attr(feature = "library-access", path = "access.rs")]
+ #[cfg_attr(not(feature = "library-access"), path = "no_access.rs")]
+diff --git a/src/plugin.rs b/src/plugin.rs
+index 10a43296..ffbbaff8 100644
+--- a/src/plugin.rs
++++ b/src/plugin.rs
+@@ -1297,6 +1297,7 @@ fn scripts_with_delays(
+     i: &Instrument, saved: &str, ir_settings: &[crate::fx::IrSlotSettings],
+     engine_state: &[crate::ksp::engine::NativeEdit], delay_state: &[crate::fx::DelayState], rate: f64,
+ ) -> (Option<Box<Runtime>>, Option<Box<PersistenceSnapshot>>, Vec<String>) {
++    let _span = crate::audit_load::Span::new("ksp_compile_init");
+     let (script, errors) = crate::engine::load_scripts_with_delay_state(i, persisted(saved, i), rate, ir_settings, engine_state, delay_state);
+     // Nothing persistent: no snapshots to trade with the audio thread.
+     let snapshot = script
+@@ -8815,4 +8816,82 @@ end on"
+         assert_ne!(p.shared.instance_id, SamplerParams::new().shared.instance_id);
+     }
+ 
++    /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
++    #[test]
++    #[ignore]
++    fn probe_load() {
++        let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
++        let program = std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
++        let proc_kb = |key: &str| -> u64 {
++            std::fs::read_to_string("/proc/self/status").unwrap().lines()
++                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok()).unwrap_or(0)
++        };
++        let params = std::sync::Arc::new(SamplerParams::new());
++        params.selection.write().unwrap().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
++        let rss0 = proc_kb("VmRSS:");
++        let mut engine = crate::engine::Engine::default();
++        let t0 = Instant::now();
++        let worker = { let p = params.clone(); std::thread::spawn(move || { Load.run(&p); t0.elapsed() }) };
++        let mut publication_ms = None;
++        let mut first_audio_ms = None;
++        let mut first_audio_frame = None;
++        let mut installed_ms = None;
++        let mut peak = 0f32;
++        let mut blocks = 0u32;
++        let mut deferred_bank = None;
++        loop {
++            if publication_ms.is_none() && params.shared.view.lock().unwrap().parts[0].load_report.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
++            while let Some((slot, _, part)) = params.shared.ready.pop() {
++                if slot != 0 { continue; }
++                match part {
++                    Handoff::Part { bank, fx, script, .. } => {
++                        engine.set_script(script); engine.set_bank(bank); engine.set_fx(fx);
++                        installed_ms = Some(t0.elapsed().as_secs_f64()*1000.);
++                        engine.cc(0, 1, 127); engine.cc(0, 11, 127); engine.note_on(0, 60, 100);
++                    }
++                    Handoff::Bank(bank) => {
++                        if engine.zone_upgrade_ready(&bank) { engine.upgrade_bank(bank); }
++                        else { deferred_bank = Some(bank); }
++                    }
++                    _ => {}
++                }
++            }
++            if deferred_bank.as_ref().is_some_and(|bank| engine.zone_upgrade_ready(bank)) {
++                engine.upgrade_bank(deferred_bank.take().unwrap());
++            }
++            if installed_ms.is_some() {
++                let (mut l,mut r)=([0f32;64],[0f32;64]); engine.render(&mut l,&mut r); for x in l.iter().chain(&r) { peak=peak.max(x.abs()); }
++                if peak > 1e-7 && first_audio_ms.is_none() {
++                    first_audio_ms = Some(t0.elapsed().as_secs_f64()*1000.);
++                    first_audio_frame = Some(blocks*64);
++                }
++                blocks += 1;
++            }
++            if worker.is_finished() && (installed_ms.is_none() || blocks >= 375) { break; }
++            std::thread::sleep(std::time::Duration::from_micros(1333));
++        }
++        let total = worker.join().unwrap();
++        let rss_done = proc_kb("VmRSS:");
++        let hwm_done = proc_kb("VmHWM:");
++        let ui = crate::ui::audit_frames(&params);
++        let ui_wall_ms = ui["build_ms"].as_f64().unwrap();
++        let rss_settled = (ui["rss_live_mb"].as_f64().unwrap() * 1024.) as u64;
++        let hwm = proc_kb("VmHWM:");
++        #[cfg(all(target_os="linux", target_env="gnu"))]
++        let trimmed_rss = { unsafe { libc::malloc_trim(0); } proc_kb("VmRSS:") };
++        #[cfg(not(all(target_os="linux", target_env="gnu")))]
++        let trimmed_rss = rss_settled;
++
++        let extra = serde_json::json!({"voices":engine.active_voices(), "sample_resident_bytes":crate::engine::resident_bytes(), "sample_budget_bytes":crate::engine::memory_budget(), "preload_deferred":deferred_bank.is_some()});
++        let trace = params.shared.view.lock().unwrap().parts[0].load_report.as_deref().cloned();
++        println!("PROBE {}", serde_json::json!({
++            "path":path,"program":program,"publication_ms":publication_ms,
++            "installed_ms":installed_ms,"first_audio_ms":first_audio_ms,"first_audio_frames":first_audio_frame,"peak":peak,
++            "load_run_ms":total.as_secs_f64()*1000.,"ui_wall_ms":ui_wall_ms,"ui":ui,
++            "rss0_mb":rss0 as f64/1024.,"rss_done_mb":rss_done as f64/1024.,"hwm_done_mb":hwm_done as f64/1024.,
++            "rss_settled_mb":rss_settled as f64/1024.,"rss_after_trim_mb":trimmed_rss as f64/1024.,"hwm_mb":hwm as f64/1024.,"trace":trace,
++            "extra":extra
++        }));
++    }
++
+ }
+diff --git a/src/ui/mod.rs b/src/ui/mod.rs
+index 50eac35c..9ea92fb7 100644
+--- a/src/ui/mod.rs
++++ b/src/ui/mod.rs
+@@ -1293,3 +1293,6 @@ impl Cx<'_> {
+         self.state.analyser.update(&self.p.shared.scope, source, rate)
+     }
+ }
++
++#[cfg(test)]
++ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
+diff --git a/src/ui/tests.rs b/src/ui/tests.rs
+index 2cd9678d..8539012c 100644
+--- a/src/ui/tests.rs
++++ b/src/ui/tests.rs
+@@ -3243,3 +3243,14 @@ fn authored_script_pages_show_footer_tabs_and_switch_the_visible_controls() {
+     assert_eq!(view.parts[0].script_slot,0);
+     assert_eq!(view.parts[0].interface.as_ref().unwrap().controls[0].kind,"ui_knob");
+ }
++
++ pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
++    let start = std::time::Instant::now();
++    let mut h=Harness::new(p,1180.,760.);
++    h.idle(4);
++    let build_ms = start.elapsed().as_secs_f64() * 1000.;
++    std::thread::sleep(std::time::Duration::from_secs(4));
++    let status=std::fs::read_to_string("/proc/self/status").unwrap();
++    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
++    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
++ }
