@@ -225,6 +225,7 @@ pub struct SourceEngineLookup {
 }
 
 /// The native 0..1M knob maps linearly to the named control's Continuous range.
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceControlAlias {
     pub control: ControlRef,
@@ -232,6 +233,7 @@ pub struct SourceControlAlias {
     pub address: SlotAddress,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceEngineValue {
     pub parameter: u16,
