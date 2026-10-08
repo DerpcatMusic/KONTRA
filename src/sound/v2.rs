@@ -1173,6 +1173,8 @@ fn insert_names(instrument: &ir::Instrument, chain: Option<ir::ChainRef>) -> Vec
             ir::Processor::Compressor(_) => "Compressor",
             ir::Processor::Rectify(_) => "Rectify",
             ir::Processor::Daft(_) => "Daft",
+            ir::Processor::LadderLP4(_) => "Ladder LP4",
+            ir::Processor::SendReturnGate { .. } => "Send return gate",
             ir::Processor::Branch { .. } => "Branch",
             ir::Processor::Convolution { .. } => "Convolution",
             ir::Processor::Filter(_) => "Filter",

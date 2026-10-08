@@ -1171,12 +1171,20 @@ pub(crate) fn instrument_buses(
         .iter()
         .filter(|s| dynamic || !s.bypass)
     {
-        let c = chain_with(
+        let mut c = chain_with(
             std::slice::from_ref(slot),
             Scope::Bus,
             Some(&mut source),
             generic(0),
         );
+        // Port from v1 0cb7a8a0:src/fx/processor.rs (process returns and
+        // SendInputs::tap): bypassed returns contribute no dry signal.
+        // Keep the real slot control so scripts can re-enable the return.
+        if dynamic && !c.processors.is_empty() {
+            c.processors.push(sampler_ir::Processor::SendReturnGate {
+                address: sampler_ir::SlotAddress { group: -1, slot: slot.slot as i32, generic: 0 },
+            });
+        }
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
         if !c.processors.is_empty() {
@@ -1608,6 +1616,56 @@ mod tests {
             48_000, sampler_ksp::Limits::LIBRARY, &[], &Default::default(),
         ).unwrap();
         assert!(script.writes_effect_slots(), "shared engine writes must retain live slot lanes");
+    }
+
+    #[test]
+    fn dynamic_bypassed_send_returns_add_no_dry_copy() {
+        use sampler_ir as ir;
+        let render = |dynamic| {
+            let mut instrument = ir::Instrument::default();
+            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()),
+                encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.groups.push(ir::Group::default());
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.group = Some(ir::GroupRef(0));
+            zone.keys = ir::KeyRange { low: 60, high: 60 };
+            zone.velocity = ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let mut send = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
+            send.bypass = true;
+            send.dry_level = 0.0;
+            instrument_buses(&mut instrument, &[("instrument send".into(), vec![send])], &[], dynamic,
+                &mut |_| Err("no impulse".into()));
+            let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 4096].into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, plan| Ok(plan)).unwrap();
+            let mut rt = sampler_core::Runtime::new(plan, sampler_core::Limits {
+                notes: 4, channels: 1, performances: 1, families: 4, expressions: 4,
+                voices: 4, decisions: 8, commands: 8, behaviors: 0, behavior_fuel: 0,
+                behavior_cells: 0, note_cells: 0,
+            }).unwrap();
+            rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native,
+                port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            rt.render(&mut output).unwrap();
+            let initial = output[32][0];
+            if dynamic {
+                let address = sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SEND_EFFECT_BYPASS").unwrap(),
+                    group: -1, slot: 0, generic: 0,
+                };
+                let mut settled = [[0.0; 2]; 512];
+                rt.set_engine_parameter(address, 0).unwrap();
+                rt.render(&mut settled).unwrap();
+                assert!((settled[511][0] - initial * 2.0).abs() < 1e-6, "live send did not return: {} vs {}", settled[511][0], initial * 2.0);
+                rt.set_engine_parameter(address, 1).unwrap();
+                rt.render(&mut settled).unwrap();
+                assert!((settled[511][0] - initial).abs() < 1e-6, "live bypass did not mute return");
+            }
+            initial
+        };
+        let (saved, live) = (render(false), render(true));
+        assert!(saved > 0.0);
+        assert!((live / saved - 1.0).abs() < 1e-6, "bypassed send changed dry gain: {saved} -> {live}");
     }
 
     #[test]

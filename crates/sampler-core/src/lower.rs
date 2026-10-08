@@ -1412,6 +1412,10 @@ impl Lowering<'_> {
                 wet: self.slot_range(SlotKind::Output, address),
                 bypass: self.slot_range(SlotKind::Bypass, address),
             },
+            ir::Processor::SendReturnGate { address } => Processor::ControlGain(ControlRange {
+                low: 1.0, high: 0.0,
+                ..self.slot_range(SlotKind::Bypass, address)
+            }),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
                 dry,
