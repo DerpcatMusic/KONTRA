@@ -206,11 +206,12 @@ fn held_lifecycle(event: usize) {
             _ => unreachable!(),
         }
     });
-    let expected=if event==3 {0} else {1};
+    let expected=if event==3 {0} else if event==1 {2} else {1};
     assert_eq!(rt.voice_count(),expected,"held lifecycle event {event} must end immediately");
     publish(&mut rt,&mut worker);
     support::without_heap(|| rt.render(&mut audio).unwrap());
     assert_eq!(rt.voice_count(),expected,"a late page must not resurrect event {event}");
+    if event==1 { assert!(audio.iter().flatten().any(|x| *x!=0.), "released late onset must sound"); }
     support::without_heap(|| {
         rt.all_sound_off(input.channel_address()).unwrap();
         rt.flush_behaviors(|_,_,_|true);
@@ -221,7 +222,7 @@ fn held_lifecycle(event: usize) {
 }
 
 #[test] fn held_cold_choke_ends_before_storage_arrives() {held_lifecycle(0)}
-#[test] fn held_cold_note_off_ends_before_storage_arrives() {held_lifecycle(1)}
+#[test] fn released_cold_note_off_waits_then_sounds_in_release() {held_lifecycle(1)}
 #[test] fn held_cold_cancel_ends_before_storage_arrives() {held_lifecycle(2)}
 #[test] fn held_cold_all_sound_off_ends_before_storage_arrives() {held_lifecycle(3)}
 #[test] fn held_cold_callback_fault_ends_before_storage_arrives() {held_lifecycle(4)}
@@ -234,4 +235,28 @@ fn held_cold_terminal_decode_fault_ends_before_storage_arrives() {
     support::without_heap(|| assert_eq!(rt.service_streaming(256),
         Err(StreamError::DecodeFailed(DecodeFailure::InvalidSamples))));
     assert_eq!(rt.voice_count(),0,"failed storage must not retain silent onsets");
+}
+
+#[test]
+fn cold_note_off_follows_sustain_until_pedal_up_then_starts_late_in_release() {
+    let (mut rt,mut worker)=player(Envelope::new(128,0,0,1.,10000).unwrap(),2);
+    let note=rt.live_notes().next().unwrap();
+    let input=Input { protocol:Protocol::Native,port:0,group:0,channel:0,key:60,external_id:Some(0) };
+    let channel=rt.register_channel(input.channel_address()).unwrap();
+    support::without_heap(|| {
+        rt.sustain(channel,true).unwrap();
+        assert_eq!(rt.note_off(input,None),Ok(note));
+        assert!(rt.release_context(note).unwrap().gate.is_none());
+        assert_eq!(rt.voice_count(),2);
+        rt.sustain(channel,false).unwrap();
+        assert_eq!(rt.release_context(note).unwrap().gate.unwrap().cause,ReleaseCause::Pedal);
+        assert_eq!(rt.voice_count(),2);
+        rt.render(&mut [[0.;2];256]).unwrap();
+        assert_eq!(rt.voice_count(),2,"storage delay does not clock the release");
+    });
+    publish(&mut rt,&mut worker);
+    let mut audio=[[0.;2];256];
+    support::without_heap(|| rt.render(&mut audio).unwrap());
+    assert!(audio.iter().flatten().any(|x| *x!=0.));
+    assert_eq!(rt.voice_count(),2);
 }

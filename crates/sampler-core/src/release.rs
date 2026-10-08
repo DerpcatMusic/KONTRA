@@ -115,7 +115,7 @@ impl Runtime {
             note.input_down = false;
         }
         if note.key_down() {
-            self.stop_held_onsets(id);
+            if !cause.musical() { self.stop_held_onsets(id); }
             let note = self.notes.get_mut(id.0).unwrap();
             // A source stop before attack forwarding consumes that pending attack.
             // Physical key-up retains the native deferred-attack rejection policy.

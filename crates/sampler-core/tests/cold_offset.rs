@@ -9,7 +9,7 @@ fn plan(pcm: Pcm, direction: Direction) -> Prepared {
     Prepared::new(48000, vec![pcm], vec![Region {
         sample:0, key_low:60, key_high:60, root_key:None,
         velocity_low:0., velocity_high:1., gain:1.,
-        envelope:Envelope::new(0,0,0,1.,0).unwrap(),
+        envelope:Envelope::new(0,0,0,1.,128).unwrap(),
         playback:Playback { direction, ..Default::default() },
     }], 8).unwrap()
     .with_velocity_curves(vec![VelocityCurve::Constant]).unwrap()
@@ -25,8 +25,7 @@ fn player(plan: Prepared) -> Runtime {
     Runtime::new(plan,limits).unwrap()
 }
 
-#[test]
-fn an_unpreloaded_start_offset_waits_without_skipping_or_changing_direction() {
+fn late_offset(note_off_before_data: bool) {
     let data: Vec<Frame> = (0..PAGE_FRAMES*5+137)
         .map(|i| [i as f32/32768.,-(i as f32)/32768.]).collect();
     for direction in [Direction::Forward,Direction::Reverse] {
@@ -39,6 +38,13 @@ fn an_unpreloaded_start_offset_waits_without_skipping_or_changing_direction() {
         let mut resident = player(plan(Pcm::new(48000,data.clone().into_boxed_slice()).unwrap(),direction));
         streamed.trigger(input(),60,1.).unwrap();
         resident.trigger(input(),60,1.).unwrap();
+        if note_off_before_data {
+            support::without_heap(|| {
+                streamed.note_off(input(),None).unwrap();
+                resident.note_off(input(),None).unwrap();
+            });
+            assert_eq!(streamed.voice_count(),1,"a released cold staccato still has an onset");
+        }
         let mut silent = [[0.;2];64];
         // More than the old 50 ms hold: a late page must not skip the onset.
         support::without_heap(|| {
@@ -62,5 +68,15 @@ fn an_unpreloaded_start_offset_waits_without_skipping_or_changing_direction() {
         // position must match the resident note, rather than a later transient.
         assert_eq!(&actual[48..],&expected[48..],"{direction:?}: the intended offset must be held");
         assert!(actual[48..].iter().any(|f| *f!=[0.;2]));
+        if note_off_before_data {
+            support::without_heap(|| streamed.render(&mut actual).unwrap());
+            assert_eq!(streamed.voice_count(),0,"release clocks 128 active frames, not the storage wait");
+        }
     }
 }
+
+#[test]
+fn an_unpreloaded_start_offset_waits_without_skipping_or_changing_direction() {late_offset(false)}
+
+#[test]
+fn staccato_released_before_late_onset_plays_its_correct_offset_then_releases() {late_offset(true)}
