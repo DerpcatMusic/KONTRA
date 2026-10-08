@@ -471,3 +471,12 @@ completed-key byte pairs. Native-package views report this legacy-worker object
 as null. W10's eleven real UVI timeouts remain **UNATTRIBUTED** pending its
 Winds Arcs Short/Attack candidate witness; zero service counters alone do not
 prove a cache-budget branch. No authored names or resource bytes are persisted.
+
+The scanner's existing 15-second asset-preparation watchdog now returns an
+incomplete render observation with its stage and pending count. Completed bytes,
+queue/cache counters and graph work stay in the parent view record. The shared
+exporter reports `ui=incomplete`, `paint_ok=unknown` and no paint error; a proven
+paint or Native runtime fault still wins. This changes scanner classification,
+not the asynchronous product worker or its deterministic limits. A failing-first
+pipeline check covers pending Native metrics and preservation of a real paint
+error alongside incomplete work.
