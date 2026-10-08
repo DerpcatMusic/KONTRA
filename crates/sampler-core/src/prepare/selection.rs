@@ -928,12 +928,7 @@ impl Runtime {
                     self.families.get_mut(family.0).unwrap().decision = decision;
                     family
                 });
-                let envelope = self
-                    .plans
-                    .get(plan.0)
-                    .unwrap()
-                    .script
-                    .envelope(group, r.envelope);
+                let envelope = self.controlled_envelope(plan, group, r.envelope);
                 let admitted = self.admit_voice(
                     family,
                     r.sample,
