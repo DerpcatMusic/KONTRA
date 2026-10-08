@@ -363,7 +363,7 @@ impl Runtime {
                 || state.envelope.done(),
                 |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
             );
-            if !state.started || done {
+            if !state.started || state.cursor.holding_onset() || done {
                 self.end_voice(VoiceId(self.voices.id(index.get())));
             }
         }
@@ -449,7 +449,7 @@ impl Runtime {
     /// unstarted voice ends now. Existing shorter tails are unchanged.
     pub(super) fn choke_voice(&mut self, index: super::Index, frames: u32) {
         let state = self.voices.at_mut(index);
-        if frames == 0 || !state.started {
+        if frames == 0 || !state.started || state.cursor.holding_onset() {
             self.end_voice(VoiceId(self.voices.id(index.get())));
         } else if state.chain.is_some() {
             if state
@@ -464,6 +464,23 @@ impl Runtime {
             }
         } else {
             state.envelope.choke(frames);
+        }
+    }
+
+    /// Unsounded onsets have no audible release or DSP tail to preserve.
+    pub(super) fn stop_held_onsets(&mut self, note: NoteId) {
+        let mut family = self.notes.get(note.0).unwrap().first_family;
+        while let Some(index) = family {
+            let current = self.families.slots[index.get()].value.unwrap();
+            family = current.siblings.next;
+            let mut voice = current.first_voice;
+            while let Some(index) = voice {
+                let current = self.voices.slots[index.get()].value.unwrap();
+                voice = current.siblings.next;
+                if current.cursor.holding_onset() {
+                    self.end_voice(VoiceId(self.voices.id(index.get())));
+                }
+            }
         }
     }
 
