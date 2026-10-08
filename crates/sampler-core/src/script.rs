@@ -1,5 +1,5 @@
 //! Script-instance integer state. Storage travels with its prepared generation.
-use crate::ops::{ScriptBank, ScriptResources};
+use crate::ops::{ScriptInitial, ScriptResources};
 use crate::{BehaviorId, Error, PlanId, Prepared, Program, Runtime};
 
 /// Dense instance identity scoped to a prepared plan, not a callback or note.
@@ -43,7 +43,7 @@ impl Prepared {
         }
         let instances: Box<[_]> = instances
             .into_iter()
-            .map(|cells| ScriptBank {
+            .map(|cells| ScriptInitial {
                 cells: cells.into_boxed_slice(),
                 ..Default::default()
             })
@@ -83,7 +83,7 @@ impl Prepared {
     }
 }
 
-fn validate(programs: &[Program], instances: &[ScriptBank]) -> Result<(), Error> {
+fn validate(programs: &[Program], instances: &[ScriptInitial]) -> Result<(), Error> {
     for program in programs {
         if program.texts.len() < program.text_constants {
             return Err(Error::InvalidInput);
