@@ -150,6 +150,8 @@ pub struct Widget {
     pub mapper: Option<String>,
     /// MultiStateButton advances on click; Menu opens a choice list.
     pub menu_cycle: bool,
+    /// Even coordinate index of the manually selected XY cursor.
+    pub active_index: Option<i32>,
     /// Current source value for typed widgets; numeric controls use their service.
     pub value: Option<Value>,
     pub waveform: Option<Waveform>,
@@ -191,6 +193,7 @@ impl Widget {
             viewport: None,
             mapper: None,
             menu_cycle: false,
+            active_index: None,
             value: None,
             waveform: None,
             meter: None,
