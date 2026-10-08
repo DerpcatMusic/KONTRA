@@ -47,6 +47,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Installed reader identity for display-cache invalidation; no bank access state.
+pub fn installed_reader() -> Option<PathBuf> {
+    #[cfg(feature = "library-access")]
+    { access::reader_path(bank::configured_reader().as_deref()).ok() }
+    #[cfg(not(feature = "library-access"))]
+    { None }
+}
+
 const XML_LIMIT: u64 = 32 << 20;
 
 /// Container nodes whose meaning is their children.
