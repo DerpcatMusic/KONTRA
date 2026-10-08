@@ -199,6 +199,31 @@ fn persistence_receipt_requires_each_changed_parameter() {
     assert!(!retained(&[], &a, &b));
 }
 
+fn load_failure(status: &str) -> &'static str {
+    if !status.starts_with("Load failed:") { "none" }
+    else if status.contains("schema changed") { "script-schema-changed" }
+    else if status.contains("type changed") { "script-value-type-changed" }
+    else if status.contains("Script persistence: InvalidInput") { "script-restore-invalid-input" }
+    else if status.contains("Script persistence: Capacity") { "script-restore-capacity" }
+    else { "load-failed" }
+}
+
+#[test]
+fn load_failure_receipt_keeps_authored_error_text_private() {
+    assert_eq!(load_failure("Load failed: Saved script state schema changed"), "script-schema-changed");
+    assert_eq!(load_failure("Load failed: authored private text"), "load-failed");
+    assert_eq!(load_failure("loaded"), "none");
+}
+
+#[test]
+fn persistence_receipt_requires_each_changed_parameter() {
+    let a = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("typed-0-2".into(), ir::Value::Text("edited".into()))]);
+    let b = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("typed-0-2".into(), ir::Value::Text("old".into()))]);
+    assert!(retained(&["control-1".into()], &a, &b));
+    assert!(!retained(&["control-1".into(), "typed-0-2".into()], &a, &b));
+    assert!(!retained(&[], &a, &b));
+}
+
 #[test]
 #[ignore = "release gate: set KONTRA_WIDGET_GATE_PATH and KONTRA_WIDGET_GATE_PROGRAM; all private values stay in RAM"]
 fn original_widget_gestures() {
@@ -275,12 +300,8 @@ fn original_widget_gestures() {
     let reload_values = reloaded.values();
     let faults = reloaded.faults() + initial_faults + native_diagnostics.len() + native_ui::gate_diagnostics().len();
     let reload_status = reloaded.params.shared.view.lock().unwrap().parts[0].status.clone();
-    let reload_failed = reload_status.starts_with("Load failed:");
-    let reload_failure = if reload_status.contains("schema changed") { "script-schema-changed" }
-        else if reload_status.contains("type changed") { "script-value-type-changed" }
-        else if reload_status.contains("Script persistence: InvalidInput") { "script-restore-invalid-input" }
-        else if reload_status.contains("Script persistence: Capacity") { "script-restore-capacity" }
-        else if reload_failed { "load-failed" } else { "none" };
+    let reload_failure = load_failure(&reload_status);
+    let reload_failed = reload_failure != "none";
     for (row, keys) in &mut results {
         if row["reason"] == "persistence-pending" {
             let pass = retained(keys, &saved_values, &reload_values);
