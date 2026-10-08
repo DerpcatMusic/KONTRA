@@ -435,6 +435,12 @@ pub struct Prepared {
     /// Controller values a script set in `on init`, before any input.
     pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) region_zone_ids: Box<[u32]>,
+    pub(super) native_start: Box<[Box<[sampler_ir::GroupStart]>]>,
+    pub(super) native_articulation_keys: Box<[Option<u8>]>,
+    pub(super) native_default_key: Option<u8>,
+    pub(super) native_rr_length: u32,
+    pub(super) native_random_groups: Box<[u32]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
@@ -456,6 +462,7 @@ pub struct Prepared {
     pub(super) script_initial: Box<[super::ops::ScriptBank]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
+    pub(super) automation: Box<[super::AutomationBinding]>,
     pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
@@ -627,6 +634,12 @@ impl Prepared {
             script_release_triggers: false,
             initial_controllers: Vec::new(),
             region_groups: Box::new([]),
+            region_zone_ids: Box::new([]),
+            native_start: Box::new([]),
+            native_articulation_keys: Box::new([]),
+            native_default_key: None,
+            native_rr_length: 0,
+            native_random_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
@@ -645,6 +658,7 @@ impl Prepared {
             script_initial: Box::new([]),
             stages: Box::new([]),
             note_cells: 0,
+            automation: Box::new([]),
             widgets: Box::new([]),
             controls: Box::new([]),
             control_programs: Box::new([]),
@@ -823,6 +837,21 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
+    /// Control-side lookup; zero, omitted zones and absent source maps return None.
+    /// No fallback to runtime region ordinals.
+    pub fn source_zone_region(&self, zone_id: u32) -> Option<usize> {
+        if zone_id == 0 {
+            return None;
+        }
+        self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The immutable prepared sample asset behind a region, for control-side peak work.
+    pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
+        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+    }
+
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
     }

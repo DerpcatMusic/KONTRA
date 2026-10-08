@@ -398,6 +398,7 @@ impl Streamer {
         self.sources.get(&asset).cloned()
     }
 
+
     /// Open every source as a streamed asset, timing an open plus first-page
     /// read on up to `probe` of them to size heads by `policy`.
     pub(crate) fn open(
