@@ -40,9 +40,9 @@ fn label_alignment_and_offsets_change_pixels() {
 }
 #[test]
 fn table_cells_and_source_colours_change_pixels() {
-    let mut face = face(Kind::Table { columns: 4, range: ir::Range { min: -100., max: 100., ..Default::default() }, bipolar: true, cells: vec![0;4], steps_shown: Some(4) });
+    let mut face = face(Kind::Table { columns: 4, range: ir::Range { min: -100., max: 100., ..Default::default() }, bipolar: true, cells: vec![0.;4], steps_shown: Some(4) });
     let empty = pixels(&face);
-    if let Kind::Table { cells, .. } = &mut face.widgets[0].kind { *cells = vec![-75, 25, 80, -25]; }
+    if let Kind::Table { cells, .. } = &mut face.widgets[0].kind { *cells = vec![-75., 25., 80., -25.]; }
     assert_ne!(empty, pixels(&face));
     let values = pixels(&face);
     face.widgets[0].colors.bar = Some(ir::Rgba::rgb(0xff0000));

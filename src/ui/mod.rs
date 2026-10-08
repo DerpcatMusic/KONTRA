@@ -37,6 +37,7 @@ pub(crate) mod scan;
 mod load_report;
 mod bridge;
 mod pictures;
+mod render_art;
 mod inside;
 mod part;
 pub(crate) mod picker;
