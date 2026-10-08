@@ -7,6 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
+scan = []
 default = ["library-access"]
 # Reads the user's own installed bank access (see src/access.rs); without it,
 # only clear programs with loose samples load.

@@ -2,8 +2,8 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use predicates::Matching;
+pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
@@ -133,15 +133,30 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
+        Ok(std::mem::replace(
+            &mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()),
+            ranges,
+        ))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.len())
+            .sum()
     }
     /// Bytes resident ranges hold, packed.
     pub fn head_bytes(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.bytes())
+            .sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -424,6 +439,8 @@ pub struct Prepared {
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
+    pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
     /// Bus index by source address, for script group routing.
@@ -439,6 +456,7 @@ pub struct Prepared {
     pub(super) script_initial: Box<[super::ops::ScriptBank]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
+    pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
@@ -613,6 +631,8 @@ impl Prepared {
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
+            engine_parameters: Box::new([]),
+            engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
             bus_addresses: Box::new([]),
@@ -625,6 +645,7 @@ impl Prepared {
             script_initial: Box::new([]),
             stages: Box::new([]),
             note_cells: 0,
+            widgets: Box::new([]),
             controls: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),

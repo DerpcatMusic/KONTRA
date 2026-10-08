@@ -8,7 +8,7 @@ use crate::behavior::Continuation;
 /// Nested subroutine frames per continuation.
 pub const CALL_DEPTH: usize = 32;
 /// Bytes per text cell; longer text is truncated at a character boundary.
-pub const TEXT_CAPACITY: usize = 256;
+pub const TEXT_CAPACITY: usize = 320;
 pub const EFFECT_ARGS: usize = 6;
 /// Pending effects retained between drains; later effects are counted and dropped.
 pub const EFFECT_CAPACITY: usize = 256;
@@ -245,6 +245,13 @@ pub enum Op {
         write: bool,
     },
     /// Value supplied by the host through `Runtime::set_host_value`.
+    ReadWidgetEventParameter {
+        local: u16,
+    },
+    ReadWidgetInteraction {
+        local: u16,
+        field: u8,
+    },
     ReadHost {
         local: u16,
         slot: u8,
@@ -254,6 +261,38 @@ pub enum Op {
     ReadClock {
         local: u16,
         micros: u32,
+    },
+    /// Address registers are parameter, physical group, slot and generic.
+    TextProperty {
+        key: u16,
+        text: TextRef,
+        write: bool,
+    },
+    TimeConversion {
+        local: u16,
+        ticks_to_micros: bool,
+    },
+    EngineParameter {
+        address: u16,
+        local: u16,
+        write: bool,
+    },
+    EngineDisplay {
+        address: u16,
+        value: Option<u16>,
+        text: TextRef,
+    },
+    EngineLookup {
+        group: u16,
+        owner: u16,
+        target: bool,
+        text: TextRef,
+        local: u16,
+    },
+    Purge {
+        group: u16,
+        local: u16,
+        write: bool,
     },
     /// Queue a frontend-defined service request with `count` registers from `args`.
     Emit {
@@ -279,8 +318,30 @@ impl Op {
             Self::RealUnary { local, .. }
             | Self::IntegerToReal { local }
             | Self::RealToInteger { local }
+            | Self::ReadWidgetEventParameter { local }
+            | Self::ReadWidgetInteraction { local, .. }
             | Self::ReadHost { local, .. }
             | Self::ReadClock { local, .. } => usize::from(*local) + 1,
+            Self::TextProperty { key, text, .. } => (usize::from(*key) + 4).max(reg(text)),
+            Self::TimeConversion { local, .. } => usize::from(*local) + 1,
+            Self::EngineParameter { address, local, .. } => {
+                (usize::from(*address) + 4).max(usize::from(*local) + 1)
+            }
+            Self::EngineDisplay {
+                address,
+                value,
+                text,
+            } => (usize::from(*address) + 4)
+                .max(value.map_or(0, |v| usize::from(v) + 1))
+                .max(reg(text)),
+            Self::EngineLookup {
+                group,
+                owner,
+                text,
+                local,
+                ..
+            } => usize::from(*group.max(owner).max(local)) + 1 + reg(text),
+            Self::Purge { group, local, .. } => usize::from(*group.max(local)) + 1,
             Self::Call { .. } | Self::Return => 0,
             Self::TextClear { text } => reg(text),
             Self::TextAppend { text: t, part } => reg(t).max(match part {
@@ -330,7 +391,10 @@ impl Op {
             Self::TextFind {
                 text, base, count, ..
             } => (cell(text)?, usize::from(*base) + usize::from(*count)),
-            Self::TextIndex { text, .. } => (cell(text)?, 0),
+            Self::TextIndex { text, .. }
+            | Self::TextProperty { text, .. }
+            | Self::EngineLookup { text, .. }
+            | Self::EngineDisplay { text, .. } => (cell(text)?, 0),
             Self::CompareText { lhs, rhs, .. } => (cell(lhs)?.max(cell(rhs)?), 0),
             Self::Emit { text: Some(t), .. } => (cell(t)?, 0),
             _ => (0, 0),
@@ -454,18 +518,34 @@ impl Store {
 }
 
 /// One script instance's mutable state, cloned into each plan generation.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ScriptBank {
     pub cells: Box<[i64]>,
     pub texts: Box<[Text]>,
     pub store: Store,
     pub controls: Box<[Option<ControlId>]>,
+    pub text_properties: Vec<([i32; STORE_KEY], Text)>,
+}
+
+impl Clone for ScriptBank {
+    fn clone(&self) -> Self {
+        let mut text_properties = Vec::with_capacity(self.text_properties.capacity());
+        text_properties.extend_from_slice(&self.text_properties);
+        Self {
+            cells: self.cells.clone(),
+            texts: self.texts.clone(),
+            store: self.store.clone(),
+            controls: self.controls.clone(),
+            text_properties,
+        }
+    }
 }
 
 /// Initial non-integer resources of one script instance.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScriptResources {
     pub texts: Vec<String>,
+    pub text_properties: Vec<([i32; STORE_KEY], String)>,
     pub store: Vec<([i32; STORE_KEY], i64)>,
     /// Entries the store may hold, including the initial ones.
     pub store_capacity: usize,
@@ -477,6 +557,12 @@ impl ScriptResources {
         bank.texts = self.texts.iter().map(|t| Text::new(t)).collect();
         bank.store = Store::new(self.store, self.store_capacity)?;
         bank.controls = self.controls.into_boxed_slice();
+        bank.text_properties = Vec::with_capacity(self.store_capacity);
+        bank.text_properties.extend(
+            self.text_properties
+                .into_iter()
+                .map(|(key, text)| (key, Text::new(&text))),
+        );
         Ok(())
     }
 }
@@ -525,7 +611,25 @@ impl Default for OpState {
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
             truncated_texts: 0,
-            host: [0; HOST_VALUES],
+            host: {
+                let mut values = [0; HOST_VALUES];
+                for (slot, value) in [
+                    (8, 500000),
+                    (9, 250000),
+                    (10, 125000),
+                    (11, 333333),
+                    (12, 166667),
+                    (13, 83333),
+                    (14, 2000000),
+                    (16, 4),
+                    (17, 4),
+                    (19, 120000),
+                    (24, 2),
+                ] {
+                    values[slot] = value;
+                }
+                values
+            },
             random: 0x9e37_79b9_7f4a_7c15,
         }
     }
@@ -628,6 +732,29 @@ impl Runtime {
         Ok(())
     }
 
+    fn engine_address(
+        &mut self,
+        id: BehaviorId,
+        register: u16,
+    ) -> Result<Option<crate::EngineParameterAddress>, Error> {
+        let raw = self.reg(id, register)? as i32;
+        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(c.owner)?;
+        let parameter = self.plans.get(plan.0).unwrap().prepared.programs[c.program]
+            .engine_symbols
+            .iter()
+            .find(|(value, _)| *value == raw)
+            .map(|(_, parameter)| *parameter);
+        Ok(match parameter {
+            Some(parameter) => Some(crate::EngineParameterAddress {
+                parameter,
+                group: self.reg(id, register + 1)? as i32,
+                slot: self.reg(id, register + 2)? as i32,
+                generic: self.reg(id, register + 3)? as i32,
+            }),
+            None => None,
+        })
+    }
     fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
         Ok(match text {
             TextRef::Cell(cell) => cell as usize,
@@ -830,6 +957,145 @@ impl Runtime {
                 );
                 self.set_reg(id, local, i64::from(index))?;
             }
+            Op::TimeConversion {
+                local,
+                ticks_to_micros,
+            } => {
+                let quarter = self.ops.host[8].max(1);
+                let value = i128::from(self.reg(id, local)?);
+                let value = if ticks_to_micros {
+                    value * i128::from(quarter) / 960
+                } else {
+                    value * 960 / i128::from(quarter)
+                };
+                self.set_reg(
+                    id,
+                    local,
+                    value.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i64,
+                )?;
+            }
+            Op::TextProperty { key, text, write } => {
+                let mut k = [0; STORE_KEY];
+                for (i, v) in k.iter_mut().enumerate() {
+                    *v = self.reg(id, key + i as u16)? as i32;
+                }
+                let cell = self.text_cell(id, text)?;
+                let bank = self.behavior_bank(id)?;
+                if write {
+                    let value = *bank.texts.get(cell).ok_or(Error::InvalidInput)?;
+                    if let Some((_, v)) = bank.text_properties.iter_mut().find(|(key, _)| *key == k)
+                    {
+                        *v = value;
+                    } else if bank.text_properties.len() < bank.text_properties.capacity() {
+                        bank.text_properties.push((k, value));
+                    } else {
+                        return Err(Error::Capacity);
+                    }
+                } else {
+                    let value = bank
+                        .text_properties
+                        .iter()
+                        .find(|(key, _)| *key == k)
+                        .map_or(Text::default(), |(_, v)| *v);
+                    *bank.texts.get_mut(cell).ok_or(Error::InvalidInput)? = value;
+                }
+            }
+            Op::EngineParameter {
+                address,
+                local,
+                write,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                if let Some(address) = self.engine_address(id, address)? {
+                    if write {
+                        self.set_engine_parameter_in(plan, address, self.reg(id, local)? as i32)?;
+                    } else {
+                        let value = self.engine_parameter_in(plan, address)?;
+                        self.set_reg(id, local, value.into())?;
+                    }
+                } else if !write {
+                    self.set_reg(id, local, 0)?;
+                }
+            }
+            Op::EngineDisplay {
+                address,
+                value,
+                text,
+            } => {
+                let cell = self.text_cell(id, text)?;
+                let mut result = Text::default();
+                if let Some(address) = self.engine_address(id, address)? {
+                    let plan = self.behavior_plan(owner)?;
+                    let value = match value {
+                        Some(v) => self.reg(id, v)? as i32,
+                        None => self.engine_parameter_in(plan, address)?,
+                    };
+                    crate::engine_parameters::display(address.parameter, value, &mut result);
+                }
+                *self
+                    .behavior_bank(id)?
+                    .texts
+                    .get_mut(cell)
+                    .ok_or(Error::InvalidInput)? = result;
+            }
+            Op::EngineLookup {
+                group,
+                owner: lookup_owner,
+                target,
+                text,
+                local,
+            } => {
+                let group = self.reg(id, group)? as i32;
+                let lookup_owner = self.reg(id, lookup_owner)? as i32;
+                let cell = self.text_cell(id, text)?;
+                let name = *self
+                    .behavior_bank(id)?
+                    .texts
+                    .get(cell)
+                    .ok_or(Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                let found = self
+                    .plans
+                    .get(plan.0)
+                    .unwrap()
+                    .prepared
+                    .engine_lookups
+                    .iter()
+                    .find(|l| {
+                        l.group == group
+                            && l.owner == lookup_owner
+                            && l.target == target
+                            && l.name.eq_ignore_ascii_case(name.as_str())
+                    })
+                    .map_or(-1, |l| l.index);
+                self.set_reg(id, local, found.into())?;
+            }
+            Op::Purge {
+                group,
+                local,
+                write,
+            } => {
+                let plan = self.behavior_plan(owner)?;
+                let group = self.reg(id, group)?;
+                if write {
+                    self.write_param(
+                        plan,
+                        crate::ParamScope::Group,
+                        group,
+                        crate::ModTarget::Attenuate,
+                        if self.reg(id, local)? == 0 { 0 } else { 1000 },
+                        false,
+                    )?;
+                } else {
+                    let value = self.read_param(
+                        plan,
+                        crate::ParamScope::Group,
+                        group,
+                        crate::ModTarget::Attenuate,
+                    )?;
+                    self.set_reg(id, local, i64::from(value != 0))?;
+                }
+            }
             Op::Store { key, local, write } => {
                 let mut k = [0; STORE_KEY];
                 for (i, slot) in k.iter_mut().enumerate() {
@@ -894,6 +1160,33 @@ impl Runtime {
                     };
                     self.set_reg(id, local, value)?;
                 }
+            }
+            Op::ReadWidgetEventParameter { local } => {
+                let index =
+                    usize::try_from(self.reg(id, local)?).map_err(|_| Error::InvalidInput)?;
+                let parameters = match self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.context {
+                    crate::behavior::PlanContext::Control(e) => e.interaction.event_par,
+                    _ => [0; 4],
+                };
+                let value = *parameters.get(index).ok_or(Error::InvalidInput)?;
+                self.set_reg(id, local, i64::from(value))?;
+            }
+            Op::ReadWidgetInteraction { local, field } => {
+                let interaction = match self.behaviors.get(id.0).ok_or(Error::StaleHandle)?.context
+                {
+                    crate::behavior::PlanContext::Control(e) => e.interaction,
+                    _ => crate::WidgetInteraction::default(),
+                };
+                let value = match field {
+                    0 => i64::from(interaction.index),
+                    1 => i64::from(interaction.cursor),
+                    2 => i64::from(interaction.modifiers & 1 != 0),
+                    3 => i64::from(interaction.modifiers & 2 != 0),
+                    4 => i64::from(interaction.modifiers & 4 != 0),
+                    5 => i64::from(interaction.event),
+                    _ => return Err(Error::InvalidInput),
+                };
+                self.set_reg(id, local, value)?;
             }
             Op::ReadHost { local, slot } => {
                 let value = *self
