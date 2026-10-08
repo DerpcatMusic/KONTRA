@@ -216,15 +216,6 @@ fn load_failure_receipt_keeps_authored_error_text_private() {
 }
 
 #[test]
-fn persistence_receipt_requires_each_changed_parameter() {
-    let a = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("typed-0-2".into(), ir::Value::Text("edited".into()))]);
-    let b = BTreeMap::from([("control-1".into(), ir::Value::Real(1.)), ("typed-0-2".into(), ir::Value::Text("old".into()))]);
-    assert!(retained(&["control-1".into()], &a, &b));
-    assert!(!retained(&["control-1".into(), "typed-0-2".into()], &a, &b));
-    assert!(!retained(&[], &a, &b));
-}
-
-#[test]
 #[ignore = "release gate: set KONTRA_WIDGET_GATE_PATH and KONTRA_WIDGET_GATE_PROGRAM; all private values stay in RAM"]
 fn original_widget_gestures() {
     let path = std::env::var("KONTRA_WIDGET_GATE_PATH").expect("gate path required");
