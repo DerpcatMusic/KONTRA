@@ -743,6 +743,7 @@ impl Drop for Streamer {
 /// Open readers kept per decode thread between pages of the same assets
 /// (each holds a 16 KiB read buffer).
 const OPEN_READERS: usize = 16;
+const RECLAIM_AFTER: Duration = Duration::from_secs(5);
 
 fn decode(
     worker: &Mutex<StreamWorker>,
@@ -758,14 +759,17 @@ fn decode(
     let mut readers: Vec<(AssetId, SampleReader, u64)> = Vec::new();
     let mut tick = 0u64;
     let mut held = None;
+    let mut last_job = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         let Some(mut job) = held.take().or_else(|| worker().next_job()) else {
             // The runtime unparks decoders after queuing requests and Drop
             // unparks them to stop; an unpark before this park is not lost.
-            std::thread::park();
+            if last_job.elapsed() >= RECLAIM_AFTER { readers.clear(); }
+            std::thread::park_timeout(RECLAIM_AFTER);
             continue;
         };
         tick += 1;
+        last_job = std::time::Instant::now();
         let asset = job.key().asset;
         let index = match readers.iter().position(|(id, ..)| *id == asset) {
             Some(i) => Some(i),
@@ -877,6 +881,57 @@ impl Streamed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_decode_closes_readers_and_reopens_the_same_source_on_reactivation() {
+        use std::sync::atomic::AtomicUsize;
+        struct Lease(Arc<AtomicUsize>);
+        impl Drop for Lease {
+            fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+        }
+        struct SourceCount { live: Arc<AtomicUsize>, opens: Arc<AtomicUsize> }
+        impl AssetSource for SourceCount {
+            fn open(&self) -> io::Result<SampleReader> {
+                self.live.fetch_add(1, Ordering::SeqCst);
+                self.opens.fetch_add(1, Ordering::SeqCst);
+                let lease = Lease(self.live.clone());
+                Ok(SampleReader::custom(48000, sampler_core::PAGE_FRAMES, move |_, out| {
+                    let _ = &lease;
+                    out.fill([0.25, -0.5]); Ok(())
+                }))
+            }
+        }
+        let live = Arc::new(AtomicUsize::new(0));
+        let opens = Arc::new(AtomicUsize::new(0));
+        let pcm = Pcm::streamed(48000, sampler_core::PAGE_FRAMES).unwrap();
+        let sources = HashMap::from([(pcm.asset_id(), Arc::new(SourceCount { live: live.clone(), opens: opens.clone() }) as Arc<dyn AssetSource>)]);
+        let (mut cache, worker) = StreamCache::new(1).unwrap();
+        let (streamer, _) = Streamer::start(sources, std::slice::from_ref(&pcm), vec![vec![]], worker, 1, true, 0).unwrap();
+        for cycle in 0..2 {
+            cache.request(&pcm, 0, 0).unwrap();
+            streamer.threads[0].thread().unpark();
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            while cache.poll().is_none() {
+                assert!(std::time::Instant::now() < until, "decoder did not reactivate");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(cache.frame(pcm.asset_id(), 0), Some([0.25, -0.5]));
+            assert_eq!(opens.load(Ordering::SeqCst), cycle + 1);
+            assert_eq!(live.load(Ordering::SeqCst), 1);
+            if cycle == 0 {
+                cache.invalidate(sampler_core::PageKey { asset: pcm.asset_id(), index: 0 }).unwrap();
+                streamer.threads[0].thread().unpark();
+                let until = std::time::Instant::now() + RECLAIM_AFTER + Duration::from_secs(2);
+                while live.load(Ordering::SeqCst) != 0 {
+                    assert!(std::time::Instant::now() < until, "idle reader retained its storage");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(streamer.sources.contains_key(&pcm.asset_id()));
+            }
+        }
+        drop(streamer);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+    }
 
     #[test]
     fn headers_open_in_bounded_parallel_workers_and_keep_asset_order() {

@@ -3874,6 +3874,9 @@ dependencies = [
 [[package]]
 name = "sampler-pool"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "sampler-simd"
