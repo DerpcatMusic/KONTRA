@@ -109,6 +109,7 @@ impl Default for Envelope {
 }
 
 impl Envelope {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 7] { [("delay_frames",self.delay as f64),("attack_frames",self.attack as f64),("hold_frames",self.hold as f64),("decay_frames",self.decay as f64),("sustain",self.sustain as f64),("release_frames",self.release as f64),("one_shot",f64::from(self.one_shot))] }
     pub fn new(
         attack: u32,
         hold: u32,

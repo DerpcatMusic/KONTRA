@@ -132,7 +132,7 @@ impl PlanControl {
     }
 
     /// Rejection returns the exact owned plan to the caller; nothing is published.
-    pub fn submit(&mut self, prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
+    pub fn submit(&mut self, mut prepared: Box<Prepared>) -> Result<u64, RejectedPlan> {
         let reason = if self.pending.is_abandoned() {
             Some(PlanError::Disconnected)
         } else if prepared.rate != self.rate {
@@ -151,6 +151,7 @@ impl PlanControl {
         if let Some(reason) = reason {
             return Err(RejectedPlan { reason, prepared });
         }
+        if super::trace_report::configure(&mut prepared).is_err() { return Err(RejectedPlan {reason:PlanError::Capacity,prepared}); }
         let dsp = match super::dsp::DspState::new(
             &prepared,
             self.voices,
@@ -389,6 +390,7 @@ impl Runtime {
                 }
             }
         }
+        if self.signal_trace { self.signal_trace = self.plans.slots.iter().any(|s| s.value.as_ref().is_some_and(|g| g.prepared.signal_trace.is_some())); }
         count
     }
 
@@ -412,6 +414,7 @@ impl Runtime {
             return Ok(None);
         };
         let request = plan.request;
+        self.signal_trace |= plan.prepared.signal_trace.is_some();
         // The single audio writer preflighted a non-quarantined slot before popping.
         self.active_plan = PlanId(
             self.plans

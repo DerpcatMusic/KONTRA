@@ -153,6 +153,9 @@ pub use schedule::Event;
 use schedule::{Action, Scheduled};
 pub use variation::{Sequence, SequenceScope, Take, TakePolicy};
 
+pub mod trace;
+pub mod trace_report;
+
 pub type Frame = [f32; 2];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -680,6 +683,7 @@ pub struct Runtime {
     cold_started: u64,
     /// Last and peak `render` nanoseconds, and the last call's frames.
     render_time: [u64; 3],
+    signal_trace: bool,
     families: Arena<Family>,
     decisions: Arena<variation::Decision>,
     expressions: Arena<ExpressionOwner>,
@@ -752,7 +756,8 @@ impl Runtime {
         RuntimeId(self.notes.runtime)
     }
 
-    pub fn new(plan: Prepared, limits: Limits) -> Result<Self, Error> {
+    pub fn new(mut plan: Prepared, limits: Limits) -> Result<Self, Error> {
+        trace_report::configure(&mut plan)?;
         if limits.notes == 0 || limits.performances == 0 {
             return Err(Error::InvalidInput);
         }
@@ -817,7 +822,9 @@ impl Runtime {
             notes: 0,
             callbacks: 0,
         })?);
+        let signal_trace = plans.get(active_plan.0).unwrap().prepared.signal_trace.is_some();
         let mut runtime = Self {
+            signal_trace,
             rate,
             tempo: 120.0,
             plans,

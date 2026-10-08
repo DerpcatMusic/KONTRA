@@ -320,6 +320,7 @@ impl SamplerParams {
         drop(view);
         let mut context = serde_json::json!({
             "instance_id": self.shared.instance_id, "build": crate::build_info::BUILD,
+            "signal_traces": sampler_core::trace_report::reports(),
             "host": {"sample_rate": self.shared.rate()},
             "rack": {"parts": parts, "buses": selection.buses, "outputs": selection.outputs,
                 "midi_thru": selection.midi_thru},
