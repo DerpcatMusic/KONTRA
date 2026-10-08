@@ -331,8 +331,25 @@ impl EngineLayers {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NoteParams {
     pub layer: Layer,
+    pub transition: Option<(Layer, u64)>,
     pub fade: Option<Fade>,
     pub mods: ModValues,
+}
+
+impl NoteParams {
+    pub fn layer_at(&self, now: u64) -> Layer {
+        let Some((from, start)) = self.transition else {
+            return self.layer;
+        };
+        let amount = (now.saturating_sub(start) as f64 / super::voice_mod::CELL as f64).min(1.0);
+        let mix = |a, b| a + (b - a) * amount;
+        Layer {
+            decibels: mix(from.decibels, self.layer.decibels),
+            pan: mix(from.pan, self.layer.pan),
+            pitch: mix(from.pitch, self.layer.pitch),
+            attenuate: mix(from.attenuate, self.layer.attenuate),
+        }
+    }
 }
 
 /// A note's "from script" modulator values by id; unset ids read 0.
@@ -411,6 +428,20 @@ impl Runtime {
         value: f64,
         relative: bool,
     ) -> Result<(), Error> {
+        self.set_note_param_with_immediate(note, target, value, relative, false)
+    }
+
+    /// The same native note layer with an explicit smoothing policy. Immediate
+    /// writes take effect on the next sample; otherwise interpolate on the
+    /// native 64-frame control interval, starting at the instruction's time.
+    pub fn set_note_param_with_immediate(
+        &mut self,
+        note: NoteId,
+        target: ModTarget,
+        value: f64,
+        relative: bool,
+        immediate: bool,
+    ) -> Result<(), Error> {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let scale = match target {
             ModTarget::Decibels | ModTarget::Pan => 1000.0,
@@ -421,9 +452,13 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         self.script_params = true;
-        self.note_params[note.0.index]
+        let params = &mut self.note_params[note.0.index];
+        let from = params.layer_at(self.now);
+        params
             .layer
-            .write(target, (value * scale).round() as i64, relative)
+            .write(target, (value * scale).round() as i64, relative)?;
+        params.transition = (!immediate).then_some((from, self.now));
+        Ok(())
     }
 
     /// As [`Runtime::set_note_param`] for a group of the active plan (a
@@ -467,6 +502,9 @@ impl Runtime {
         stop: bool,
     ) -> Result<(), Error> {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        if !to.is_finite() || to < 0.0 || from.is_some_and(|v| !v.is_finite() || v < 0.0) {
+            return Err(Error::InvalidInput);
+        }
         self.script_params = true;
         let now = self.now;
         let params = &mut self.note_params[note.0.index];
@@ -478,6 +516,50 @@ impl Runtime {
             frames,
             stop,
         });
+        Ok(())
+    }
+
+    /// Fade only existing voices of this note in the selected runtime group.
+    /// Group identity is supplied by the frontend's physical source map. Other
+    /// groups and subsequent voices keep their own gain and lifetime.
+    pub fn fade_note_group(
+        &mut self,
+        note: NoteId,
+        group: u32,
+        from: Option<f64>,
+        to: f64,
+        frames: u64,
+        stop: bool,
+    ) -> Result<(), Error> {
+        let owner = self.notes.get(note.0).ok_or(Error::StaleHandle)?;
+        let plan = self.plans.get(owner.plan.0).unwrap();
+        if group >= plan.prepared.group_count
+            || !to.is_finite()
+            || to < 0.0
+            || from.is_some_and(|v| !v.is_finite() || v < 0.0)
+        {
+            return Err(Error::InvalidInput);
+        }
+        self.script_params = true;
+        for voice in self
+            .voices
+            .slots
+            .iter_mut()
+            .filter_map(|s| s.value.as_mut())
+        {
+            if voice.group == Some(group) && self.families.get(voice.family.0).unwrap().note == note
+            {
+                let start =
+                    from.unwrap_or_else(|| voice.script_fade.map_or(1.0, |f| f.at(self.now)));
+                voice.script_fade = Some(Fade {
+                    from: start,
+                    to,
+                    start: self.now,
+                    frames,
+                    stop,
+                });
+            }
+        }
         Ok(())
     }
 
