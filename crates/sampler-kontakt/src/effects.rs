@@ -1390,9 +1390,10 @@ mod tests {
             );
             assert_eq!(
                 chain(&racks[index].1, Scope::Voice).processors,
+                // Existing rack law: wet Gainer 2 plus saved dry level 1.
                 [sampler_ir::Processor::StereoMatrix([
-                    [2.0, 0.0],
-                    [0.0, 2.0]
+                    [3.0, 0.0],
+                    [0.0, 3.0]
                 ])]
             );
         }
