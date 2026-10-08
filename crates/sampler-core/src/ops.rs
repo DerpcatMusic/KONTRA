@@ -630,8 +630,8 @@ impl Effect {
 /// Subroutine return positions retained by a suspended continuation.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Frames {
-    returns: [u32; CALL_DEPTH],
-    depth: u8,
+    pub(super) returns: [u32; CALL_DEPTH],
+    pub(super) depth: u8,
 }
 impl Default for Frames {
     fn default() -> Self {
@@ -948,18 +948,39 @@ impl Runtime {
             }
             Op::TextAppend { text, part } => {
                 let cell = self.text_cell(id, text)?;
+                let constant = match part {
+                    TextPart::Constant(index) => Some(usize::from(index)),
+                    TextPart::Table { base, count, index } => {
+                        let at = self.reg(id, index)?;
+                        u16::try_from(at)
+                            .ok()
+                            .filter(|at| *at < count)
+                            .map(|at| usize::from(base) + usize::from(at))
+                    }
+                    _ => None,
+                };
+                if let Some(index) = constant {
+                    let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+                    let plan = self.behavior_plan(c.owner)?;
+                    let generation = self.plans.get_mut(plan.0).ok_or(Error::StaleHandle)?;
+                    let program = &generation.prepared.programs[c.program];
+                    let source = program.texts.get(index).ok_or(Error::InvalidInput)?;
+                    let instance = program.script_instance.ok_or(Error::InvalidInput)?;
+                    let target = generation
+                        .scripts
+                        .get_mut(usize::from(instance.0))
+                        .and_then(|bank| bank.texts.get_mut(cell))
+                        .ok_or(Error::InvalidInput)?;
+                    let before = target.len;
+                    // v1 pushes the borrowed constant directly into mutable text storage.
+                    target.push(source);
+                    if usize::from(target.len - before) < source.len() {
+                        self.ops.truncated_texts += 1;
+                    }
+                    return Ok(false);
+                }
                 let mut piece = Text::default();
                 match part {
-                    TextPart::Constant(index) => {
-                        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-                        let plan = self.behavior_plan(c.owner)?;
-                        piece = Text::new(
-                            self.plans.get(plan.0).unwrap().prepared.programs[c.program]
-                                .texts
-                                .get(usize::from(index))
-                                .ok_or(Error::InvalidInput)?,
-                        );
-                    }
                     TextPart::Text(source) => {
                         let source = self.text_cell(id, source)?;
                         piece = *self
@@ -973,21 +994,7 @@ impl Runtime {
                         let _ = write!(piece, "{}", self.reg(id, local)?);
                     }
                     TextPart::Real(local) => write_real(&mut piece, real(self.reg(id, local)?)),
-                    TextPart::Table { base, count, index } => {
-                        let at = self.reg(id, index)?;
-                        if let Ok(at) = u16::try_from(at)
-                            && at < count
-                        {
-                            let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
-                            let plan = self.behavior_plan(c.owner)?;
-                            piece = Text::new(
-                                self.plans.get(plan.0).unwrap().prepared.programs[c.program]
-                                    .texts
-                                    .get(usize::from(base) + usize::from(at))
-                                    .ok_or(Error::InvalidInput)?,
-                            );
-                        }
-                    }
+                    TextPart::Constant(_) | TextPart::Table { .. } => {}
                 }
                 let target = self
                     .behavior_bank(id)?

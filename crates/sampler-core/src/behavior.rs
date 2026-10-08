@@ -1395,6 +1395,28 @@ impl Runtime {
             };
             let mut next = pc + 1;
             match op {
+                // v1 dispatches subroutine frames inside the local interpreter loop.
+                Instruction::Op(super::ops::Op::Call { target }) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    let depth = usize::from(c.frames.depth);
+                    if depth == super::ops::CALL_DEPTH {
+                        break;
+                    }
+                    let Ok(return_pc) = u32::try_from(next) else {
+                        break;
+                    };
+                    c.frames.returns[depth] = return_pc;
+                    c.frames.depth += 1;
+                    next = target as usize;
+                }
+                Instruction::Op(super::ops::Op::Return) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    if c.frames.depth == 0 {
+                        break;
+                    }
+                    c.frames.depth -= 1;
+                    next = c.frames.returns[usize::from(c.frames.depth)] as usize;
+                }
                 Instruction::SetLocal { local, value } => *local!(local) = value,
                 Instruction::AddLocal { local, value } => {
                     let cell = local!(local);
