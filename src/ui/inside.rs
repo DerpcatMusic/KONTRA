@@ -106,6 +106,7 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
             let (hit, el) = latch(ui, format!("view-{slot}-{}", v.label()), v.label(), v.label(), v == view);
             if hit {
                 picked = v;
+                if v == View::Sound { cx.state.select(slot); }
             }
             el
         })
