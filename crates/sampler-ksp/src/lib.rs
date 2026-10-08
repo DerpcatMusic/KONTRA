@@ -1011,6 +1011,7 @@ fn compile_initialized_inner(
         coverage: BTreeMap::new(),
         warnings: Vec::new(),
         scratch: 0,
+        modules: Vec::new(),
     };
     let mut programs = Vec::new();
     let mut entries = Vec::new();
@@ -1056,6 +1057,7 @@ fn compile_initialized_inner(
             let remaining = unit.budget;
             let program = unit
                 .program(
+                    programs.len(),
                     &callback.body,
                     callback.span,
                     context,
@@ -1085,6 +1087,7 @@ fn compile_initialized_inner(
             }
         }
     }
+    unit.finish(&mut programs).map_err(|f| f.locate(source))?;
     // Replay init through the same addressed service as every callback.
     let mut start: Vec<_> = init
         .engine
