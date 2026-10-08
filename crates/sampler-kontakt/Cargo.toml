@@ -7,6 +7,7 @@ license = "Apache-2.0"
 publish = false
 
 [features]
+scan = ["sampler-ksp/scan"]
 default = ["library-access"]
 # Reads a library's own .nicnt access data to open its encrypted content.
 library-access = ["dep:aes"]

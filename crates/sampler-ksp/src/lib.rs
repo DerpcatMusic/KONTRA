@@ -20,6 +20,8 @@ mod lower;
 pub mod model;
 pub mod nckp;
 mod parser;
+#[cfg(feature = "scan")]
+pub mod scan;
 mod sema;
 pub mod ui;
 
@@ -529,6 +531,16 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
+    compile_inner(source, rate, limits, controls, environment)
+}
+
+fn compile_inner(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    environment: &Environment,
+) -> Result<Script, Error> {
     let error = |message: &str| Error {
         offset: 0,
         line: 1,
@@ -561,6 +573,8 @@ pub struct Initialized {
     init: eval::Initial,
     conditions: BTreeSet<String>,
     environment: Environment,
+    #[cfg(feature = "scan")]
+    observation: scan::Checkpoint,
 }
 
 impl Initialized {
@@ -648,6 +662,20 @@ pub fn initialize(
     limits: Limits,
     environment: &Environment,
 ) -> Result<Initialized, Error> {
+    #[cfg(feature = "scan")]
+    scan::reset_script();
+    let result = initialize_inner(source, limits, environment);
+    #[cfg(feature = "scan")]
+    if result.is_err() {
+        scan::record(&result, source, environment.slot);
+    }
+    result
+}
+fn initialize_inner(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
     let audit_begin = std::time::Instant::now();
     if source.len() > limits.source_bytes {
         return Err(Error {
@@ -662,12 +690,18 @@ pub fn initialize(
     let mut syms = lexer::Interner::default();
     let (hir, init, conditions) = (|| {
         let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature = "scan")]
+        scan::stage("preprocess");
         let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature = "scan")]
+        scan::stage("parse");
         let ast = parser::parse(&toks, &syms)?;
         let budget = sema::Budget {
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
+        #[cfg(feature = "scan")]
+        scan::stage("sema");
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
             eprintln!(
@@ -676,7 +710,10 @@ pub fn initialize(
             );
         }
         let init_begin = std::time::Instant::now();
-        let init = eval::run(&hir, environment)?;
+        let init = eval::run(&hir, environment);
+        #[cfg(feature = "scan")]
+        scan::initialized(init.is_ok());
+        let init = init?;
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
             eprintln!(
                 "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",
@@ -691,11 +728,29 @@ pub fn initialize(
         init,
         conditions,
         environment: environment.clone(),
+        #[cfg(feature = "scan")]
+        observation: scan::checkpoint(),
     })
 }
 
 /// Lower callbacks at the actual host rate, consuming the initialized state.
 pub fn compile_initialized(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    #[cfg(feature = "scan")]
+    let slot = initialized.environment.slot;
+    #[cfg(feature = "scan")]
+    scan::restore(initialized.observation.clone());
+    let result = compile_initialized_inner(source, rate, limits, controls, initialized);
+    #[cfg(feature = "scan")]
+    scan::record(&result, source, slot);
+    result
+}
+fn compile_initialized_inner(
     source: &str,
     rate: u32,
     limits: Limits,
@@ -728,8 +783,12 @@ pub fn compile_initialized(
         init,
         conditions,
         environment,
+        #[cfg(feature = "scan")]
+            observation: _,
     } = initialized;
 
+    #[cfg(feature = "scan")]
+    scan::stage("lower");
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];
     let mut host = Vec::new();

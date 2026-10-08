@@ -7,17 +7,37 @@ use sampler_ui_ir as ir;
 use std::{path::Path, sync::Arc};
 
 /// Where an instrument's resources come from.
-pub struct Source(sampler_kontakt::Resources);
+pub struct Source(sampler_kontakt::Resources, #[cfg(feature = "shots")] pub Scan);
+
+#[cfg(feature = "shots")]
+#[derive(Clone, Copy, Default)]
+pub struct Scan {
+    pub lookups: usize,
+    pub lookup_ok: usize,
+    pub decodes: usize,
+    pub decode_ok: usize,
+    pub fonts: usize,
+}
 
 impl Source {
     pub fn of(instrument: &Path) -> Self {
-        Self(sampler_kontakt::Resources::of(instrument))
+        Self(sampler_kontakt::Resources::of(instrument), #[cfg(feature = "shots")] Scan::default())
     }
 
     /// `asset` decoded and cut into its frames.
     pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
-        let ir::AssetKind::Image(meta) = &asset.kind else { return None };
-        let image = crate::artwork::decode(&self.0.read(&asset.path)?)?;
+        let ir::AssetKind::Image(meta) = &asset.kind else {
+            #[cfg(feature = "shots")]
+            { self.1.fonts += 1; }
+            return None;
+        };
+        let bytes = self.0.read(&asset.path);
+        #[cfg(feature = "shots")]
+        { self.1.lookups += 1; self.1.lookup_ok += usize::from(bytes.is_some()); }
+        let image = crate::artwork::decode(&bytes?);
+        #[cfg(feature = "shots")]
+        { self.1.decodes += 1; self.1.decode_ok += usize::from(image.is_some()); }
+        let image = image?;
         let n = meta.frames.max(1);
         let vertical = meta.axis == ir::Orientation::Vertical;
         let (fw, fh) = if vertical { (image.width, image.height / n) } else { (image.width / n, image.height) };
