@@ -71,7 +71,9 @@ impl Runtime {
         }
         let expression = self.expressions.get(note.expression.0).unwrap();
         Ok(Some(VoiceDemand {
-            cursor: v.cursor.with_step(v.base_step * expression.rendered.ratio),
+            cursor: if self.offline && v.started { v.cursor } else {
+                v.cursor.with_step(v.base_step * expression.rendered.ratio)
+            },
             envelope: v.envelope,
             at,
             frames: ((end - at) as u32).min(v.tail_remaining.unwrap_or(u32::MAX)),
