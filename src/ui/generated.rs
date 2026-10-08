@@ -113,6 +113,7 @@ pub fn view(
     _assets: &ir_view::Assets,
     scale: f64,
     values: &mut ir_view::Values,
+    input: &mut ir_view::InputState,
 ) -> El {
     let controls: Vec<_> = face
         .draw_order(page)
@@ -183,7 +184,7 @@ pub fn view(
                     cells.push(
                         col![
                             caption(name(face, n)).lines(1).fill(secondary()),
-                            ir_view::widget(
+                            ir_view::widget_state(
                                 ui,
                                 namespace,
                                 face,
@@ -192,6 +193,7 @@ pub fn view(
                                 ir::Presentation::Vector,
                                 scale,
                                 values,
+                                input,
                                 width,
                                 height
                             )
@@ -225,11 +227,11 @@ pub fn view(
                 .w(Len::Pct(100.)),
         );
     }
-    col(bands)
-        .gap(INSET)
-        .pad(INSET)
-        .w(Len::Pct(100.))
-        .shrink(0)
-        .named("KONTRA performance controls")
-        .id(format!("{namespace}generated"))
+    let root=format!("{namespace}-ir-view");
+    let size=ui.scene().and_then(|scene|scene.surface(&root)).map(|surface|surface.frame.size)
+        .unwrap_or(Size::new(f64::from(face.pages[page.0].size.width)*scale,f64::from(face.pages[page.0].size.height)*scale));
+    let body=col(bands).gap(INSET).pad(INSET).w(Len::Pct(100.)).shrink(0).named("KONTRA performance controls");
+    let mut layers=vec![body];
+    if let Some(popup)=ir_view::menu_popup(ui,namespace,face,scale,values,input,size.width,size.height) {layers.push(popup);}
+    stack(layers).w(Len::Pct(100.)).shrink(0).id(root)
 }
