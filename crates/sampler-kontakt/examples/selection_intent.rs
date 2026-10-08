@@ -41,33 +41,32 @@ fn main() {
         }
         return;
     }
-    let library = sampler_kontakt::read(Path::new(&arg)).unwrap();
-    let ir = &library.instrument;
+    let mut library = sampler_kontakt::read(Path::new(&arg)).unwrap();
     if std::env::args().nth(2).as_deref() == Some("--widgets") {
-        for behavior in &ir.behaviors {
-            let env = sampler_ksp::Environment {
-                slot: behavior.slot.unwrap_or(0),
-                groups: ir.groups.iter().map(|g| g.name.clone()).collect(),
+        let (scripts, _, _) = sampler_kontakt::compile_ui(
+            &mut library.instrument,
+            &sampler_kontakt::Options {
+                library: Some(arg.clone().into()),
                 ..Default::default()
-            };
-            let script = sampler_ksp::compile_with(
-                &behavior.source,
-                48000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &env,
-            )
-            .unwrap();
+            },
+        );
+        for script in scripts {
+            let slot = script.view().slot();
             let mut slider = 0;
             for widget in &script.model().interface.widgets {
-                let ordinal = (widget.kind == sampler_ksp::model::WidgetKind::Slider).then(|| { let i=slider; slider+=1; i });
-                if (32808..=32812).contains(&widget.ui_id) || ordinal.is_some_and(|i| (40..=44).contains(&i))
+                let ordinal = (widget.kind == sampler_ksp::model::WidgetKind::Slider).then(|| {
+                    let i = slider;
+                    slider += 1;
+                    i
+                });
+                if (32808..=32812).contains(&widget.ui_id)
+                    || ordinal.is_some_and(|i| (40..=44).contains(&i))
                     || widget.name.contains("controller_dynamics")
                     || widget.name.contains("art_select_tonal")
                 {
                     println!(
                         "widget slot={} ui_id={} name={} range={:?} automation_id={:?} slider_ordinal={ordinal:?}",
-                        env.slot,
+                        slot,
                         widget.ui_id,
                         widget.name,
                         widget.range,
@@ -78,6 +77,7 @@ fn main() {
         }
         return;
     }
+    let ir = &library.instrument;
     println!(
         "instrument={} groups={} zones={} default_keyswitch={:?}",
         ir.name,
