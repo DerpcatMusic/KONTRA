@@ -322,7 +322,12 @@ impl Slot {
             },
             0x18 => {
                 let kind = r.i32()?;
-                if r.i32()? != kind {
+                if (30..=41).contains(&kind) {
+                    // Ladder records repeat the subtype, with a version flag
+                    // byte before some repeats (DSP_FORMAT_SPECIFICATION,
+                    // "Effect parameter payloads"); v0x95 repeats it more.
+                    r.skip_repeats(kind);
+                } else if r.i32()? != kind {
                     return None;
                 }
                 if (22..=24).contains(&kind) {
@@ -332,7 +337,7 @@ impl Slot {
                     Params::Eq { bands }
                 } else {
                     // Daft (70, 71) stores a leading value first.
-                    let leading = if matches!(kind, 70 | 71) {
+                    let leading = if matches!(kind, 70 | 71 | 30..=41) {
                         Some(r.f32()?)
                     } else {
                         None
@@ -371,6 +376,19 @@ impl Reader<'_> {
     }
     fn i32(&mut self) -> Option<i32> {
         self.take().map(i32::from_le_bytes)
+    }
+    /// Consume the subtype repeats and their flag bytes after the first.
+    fn skip_repeats(&mut self, kind: i32) {
+        let k = kind.to_le_bytes();
+        loop {
+            if let Some(rest) = self.0.strip_prefix(&k) {
+                self.0 = rest;
+            } else if let Some(rest) = self.0.strip_prefix(&[0]).and_then(|r| r.strip_prefix(&k)) {
+                self.0 = rest;
+            } else {
+                return;
+            }
+        }
     }
     fn flag(&mut self) -> Option<bool> {
         self.take::<1>().map(|[b]| b != 0)
@@ -815,7 +833,17 @@ pub(crate) fn chain_with(
             out.notes.push((
                 fx.slot,
                 "effect".into(),
-                format!("{name} v{:#x} {params:?}", fx.version),
+                format!(
+                    "{name} v{:#x} {params:?}{}",
+                    fx.version,
+                    // An unparsed payload: keep its head so a survey can group the layouts.
+                    if params.is_none() {
+                        let head: String = fx.public.iter().take(40).map(|b| format!("{b:02x}")).collect();
+                        format!(" len {} head {head}", fx.public.len())
+                    } else {
+                        String::new()
+                    }
+                ),
                 sampler_ir::Reason::NotModeled,
             ));
         }
@@ -1063,7 +1091,7 @@ pub(crate) fn instrument_buses(
     // `$NI_BUS_OFFSET` + the bus number.
     let mut instrument = Vec::new();
     let mut panned = Vec::new();
-    for bus in buses.iter().filter(|b| !b.groups.is_empty()) {
+    for bus in buses.iter().filter(|b| dynamic || !b.groups.is_empty()) {
         let name = format!("bus {}", bus.index);
         let c = chain_with(
             rack(&name),
@@ -1075,8 +1103,25 @@ pub(crate) fn instrument_buses(
         if bus.pan.abs() > 0.01 {
             panned.push((name, bus.pan));
         }
-        if !c.processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
-            instrument.push((bus, c.processors));
+        let mut processors = c.processors;
+        if dynamic {
+            // A script sets the bus volume and routes groups to any bus at run
+            // time, so every bus exists and its volume is a Mix block's wet level.
+            processors.push(sampler_ir::Processor::Mix {
+                count: 1,
+                address: sampler_ir::SlotAddress {
+                    group: -1,
+                    slot: sampler_core::BUS_VOLUME_SLOT,
+                    generic: 1000 + bus.index as i32,
+                },
+                dry: 0.0,
+                wet: f64::from(bus.volume),
+                bypass: false,
+            });
+            processors.push(sampler_ir::Processor::StereoMatrix(IDENTITY));
+            instrument.push((bus, processors));
+        } else if !processors.is_empty() || (bus.volume - 1.0).abs() > 1e-4 {
+            instrument.push((bus, processors));
         }
     }
     for (name, pan) in panned {
@@ -1168,8 +1213,13 @@ pub(crate) fn instrument_buses(
             processors,
             Vec::new(),
             entry,
-            sampler_ir::Gain::Linear(f64::from(bus.volume)),
+            if dynamic {
+                unity
+            } else {
+                sampler_ir::Gain::Linear(f64::from(bus.volume))
+            },
         );
+        ir.bus_addresses.push((1000 + bus.index as i32, at));
         for group in &bus.groups {
             ir.groups[group.0].output = Output::Bus(at);
         }
@@ -1359,6 +1409,21 @@ mod tests {
         assert_eq!((c.threshold_db, c.ratio, c.link), (-18.0, 4.0, true));
         assert_eq!(c.attack.seconds(), 0.01);
         assert!(built.notes.is_empty(), "{:?}", built.notes);
+    }
+
+    #[test]
+    fn ladder_records_with_flag_bytes_parse_to_their_cutoff() {
+        // Conflux (v0x92): kind, flag, kind, then leading, cutoff, resonance.
+        // Morphology (v0x95): kind, flag, kind, kind, kind, flag, kind, floats.
+        let k = 33i32.to_le_bytes();
+        let floats: Vec<u8> = [0.0f32, 0.4, 0.25].iter().flat_map(|x| x.to_le_bytes()).collect();
+        for layout in [&[&k[..], &[0], &k][..], &[&k, &[0], &k, &k, &k, &[0], &k]] {
+            let mut bytes = layout.concat();
+            bytes.extend(&floats);
+            let built = chain(&[slot(0x18, bytes, 1.0)], Scope::Voice);
+            let note = &built.notes[1].2;
+            assert_eq!(*note, "33 cutoff 0.4 resonance 0.25", "{:?}", built.notes);
+        }
     }
 
     #[test]
