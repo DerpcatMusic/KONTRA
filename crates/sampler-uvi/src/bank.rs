@@ -54,7 +54,10 @@ impl Bank {
         let reader_error = |e| AccessError::Reader(access::failure_reason(&e));
         let bank_error = |e| AccessError::Bank(access::failure_reason(&e));
         let content_error = |e| AccessError::Content(access::failure_reason(&e));
+        let span = sampler_kontakt::audit::Span::new("uvi_ufs_header");
         let ufs = Ufs::open(path).map_err(bank_error)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_directory_namespace");
         let (directory, program_namespace) = match ufs.decode_directory(&[]) {
             Ok(directory) => (directory, Vec::new()),
             Err(error) if error.is::<crate::ufs::NeedsMetadataNamespace>() => {
@@ -64,6 +67,8 @@ impl Bank {
             }
             Err(error) => return Err(bank_error(error)),
         };
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_content_setup");
         // Only banks with encrypted members need a content state prepared.
         let content_key = if directory
             .files
@@ -74,6 +79,7 @@ impl Bank {
         } else {
             None
         };
+        drop(span);
         let mut paths = HashMap::with_capacity(directory.files.len());
         for (index, member) in directory.files.iter().enumerate() {
             if let Some(path) = &member.path {

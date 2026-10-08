@@ -630,10 +630,43 @@ fn a_cold_start_waits_silently_for_its_page_then_fades_in() {
         rt.render(&mut output).unwrap();
     });
     // A short fade-in, then the source at full level.
-    assert!(output[0][0] > 0. && output[0][0] < output[255][0] && output[60] == output[255]);
+    assert!(
+        output[0][0] >= 0.
+            && output[10][0] > 0.
+            && output[0][0] < output[255][0]
+            && output[60] == output[255]
+    );
     assert!(output.windows(2).all(|w| w[0][0] <= w[1][0]));
     let stats = rt.stats();
     assert_eq!((stats.cold_starts, stats.stream_underruns), (1, 0));
+}
+
+#[test]
+fn a_lazy_start_preserves_its_attack_until_the_first_page_arrives() {
+    let mut data = vec![[0.; 2]; PAGE_FRAMES * 2];
+    data[..128].fill([0.5; 2]); // A transient that a silent advancing cursor loses.
+    let asset = Pcm::streamed(48000, data.len()).unwrap();
+    let (cache, mut worker) = StreamCache::new(4).unwrap();
+    let mut r = region(0, Playback::default());
+    r.envelope = Envelope::default();
+    let mut rt = runtime(vec![asset], vec![r]).with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    let mut output = [[0.; 2]; 256];
+    rt.trigger(input(), 60, 1.).unwrap();
+    rt.service_streaming(PAGE_FRAMES as u32).unwrap();
+    support::without_heap(|| rt.render(&mut output).unwrap());
+    assert!(output.iter().all(|f| f == &[0.; 2]));
+    let mut job = worker.next_job().unwrap();
+    let range = job.range();
+    job.frames_mut().copy_from_slice(&data[range]);
+    worker.complete(job, Ok(())).unwrap();
+    rt.service_streaming(PAGE_FRAMES as u32).unwrap();
+    support::without_heap(|| rt.render(&mut output).unwrap());
+    assert!(
+        output.iter().any(|f| f[0] > 0.4),
+        "the held attack must still play"
+    );
+    assert_eq!(rt.stats().stream_underruns, 0);
 }
 
 #[test]
