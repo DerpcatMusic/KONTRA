@@ -209,14 +209,23 @@ own bounded private/public/child areas and its public payload starts:
 |---|---|---|---|
 | 0 | i32 | mode | Native loop mode; disabled entries stay present |
 | 4 / 8 | i32 ×2 | loop_start, loop_length | Frame start and length; exclusive end is start+length |
-| 12 | i32 | loop_count | Counted traversal; zero is native infinite/default candidate |
+| 12 | i32 | loop_count | Repeat count; zero repeats indefinitely |
 | 16 | bool | alternating_loop | Ping-pong traversal |
-| 17 | f32 | loop_tuning | Linear loop pitch ratio; not semitones |
+| 17 | f32 | loop_tuning | Linear pitch ratio applied after the first loop jump |
 | 21 | i32 | x_fade_length | Crossfade length in source frames |
 
 Current playback admits modes 1 continuous and 2 until release, but the mode-2
-Kontakt association remains unverified. Count semantics, multiple-loop
-transition order and non-unit loop tuning require native comparison. Every
+Kontakt association remains unverified. The
+[official KSP loop parameters](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/zone-parameters#loop-parameters)
+combine direction and lifetime in API IDs 0..4: disabled, forward/end,
+bidirectional/end, forward/release and bidirectional/release. Serialized
+`mode` plus `alternating_loop` is a different representation; copying API
+IDs into this field is unsafe. Count zero is indefinite; loop tuning applies
+after the first jump and on subsequent repeats, not on the initial pass.
+The API exposes crossfade in microseconds while the saved reader/lowerer
+uses source frames, so KSP conversion needs the source sample rate.
+Native endpoint, counted-repeat and multi-loop transition measurements remain
+open, including the one-shot behavior described by the host manual. Every
 original occupied slot and all these values are now retained in the IR;
 playback wiring belongs to the core agent. The old owned reader compacted
 loop holes, changing the source slot used in reports and future KSP queries.
