@@ -205,3 +205,35 @@ fn script_thread_publishes_runtime_faults_without_widget_changes() {
     assert_eq!(loaded.ui.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Lua],1);
     assert!(loaded.ui.findings().iter().any(|f|f.feature=="lua error" && f.count==1 && f.value.contains("first runtime fault")));
 }
+
+fn live_thread_note_state(burst: usize) {
+    use sampler_uvi::{script::SavedValue, scripted::Script};
+    let source = xml(&format!("local notes=0; function onNote(e) notes=notes+1; for i=1,{burst} do postEvent{{type=Event.Controller,controller=1,value=17}} end end; function onSave() return {{notes=notes}} end"));
+    let (mut owner, loaded) = sampler_uvi::scripted::ScriptThread::spawn(source, (), Config::default()).unwrap();
+    let revision = loaded.ui.revision();
+    owner.note_on(1, 60, 100);
+    let mut commands = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while commands.is_empty() {
+        owner.drain(&mut commands);
+        assert!(std::time::Instant::now() < deadline, "calibrate that onNote completed");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    if burst > 1024 {
+        assert!(commands.len() < burst, "calibrate undrained audio commands");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(loaded.ui.revision(), revision, "the state change must have no UI revision: {:?}", loaded.ui.findings());
+    let state = loaded.ui.state().expect("host saves must complete even when audio is paused");
+    assert_eq!(state.custom, Some(SavedValue::Table(vec![(SavedValue::String("notes".into()), SavedValue::Number(1.))])), "onSave must read live note state");
+}
+
+#[test]
+fn script_thread_state_runs_on_save_after_note_without_ui_revision() {
+    live_thread_note_state(1);
+}
+
+#[test]
+fn script_thread_state_survives_command_backpressure() {
+    live_thread_note_state(4096);
+}
