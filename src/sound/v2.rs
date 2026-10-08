@@ -620,6 +620,14 @@ impl V2Core {
     pub fn scan_selections(&mut self, part: usize) -> Vec<sampler_core::SelectionRecord> {
         self.parts.get_mut(part).and_then(Option::as_mut).map(|p|p.runtime.take_selection_records()).unwrap_or_default()
     }
+    #[cfg(test)]
+    pub(crate) fn widget_gate_values(&self, part: usize) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
+        let Some(Some(part)) = self.parts.get(part) else { return Default::default() };
+        let plan = part.runtime.active_plan();
+        part.runtime.widget_definitions(plan).unwrap_or_default().iter()
+            .filter_map(|widget| widget_value(&part.runtime, plan, widget)
+                .map(|value| (sampler_ui_ir::ControlId(widget.id.0), value))).collect()
+    }
     pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
         let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
     }

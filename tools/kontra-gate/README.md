@@ -52,3 +52,21 @@ The full authored rows remain in each program's `dsp_slots` receipt. The indepen
 Tier 1 evaluator is `tools/kontra-scan/native_family.py`; native captures for
 SCRIPT_DRIVEN cells can be compared by `fidelity.family_match` (minimum 32 takes).
 No host launching is required or authorized by these tools.
+
+Widget receipts now address each item and cache condition independently. The ignored
+`ui::widget_gate::original_widget_gestures` test loads through the production plugin
+loader, forces Original, drives pointer/keyboard input through the full editor, reads
+engine/Lua values, serializes the host Part in RAM, and reloads it. The adapter runs
+all programs named by the same-run scanner receipt, one heavy invocation per program.
+Missing, crashed, timed-out, empty or partially enumerated probes cannot pass. A legacy
+Conflux Vector/readback witness cannot certify another cell.
+
+`gestures/<condition>/<item-sha256>/metrics.json` contains passed/total counts,
+per-program observations and typed reasons: parameter-unchanged, navigation-only,
+occluded-or-outside-viewport, save-reload-mismatch, script-or-render-fault, probe-budget,
+probe-timeout, probe-crash-or-no-receipt, invalid-receipt. Target identity is hashed;
+resources, parameter values and serialized host state are never exported. Native
+menus use real popup item clicks. Passive meters/panels/images and disabled controls
+have no edit obligation. Navigation-only targets remain explicit failures until their
+view-state obligation has its own witness. These are headless production editor
+receipts; they do not certify OS/DAW capture, IME or native Kontakt calibration.
