@@ -192,6 +192,24 @@ impl<'h> Unit<'h> {
             })
     }
 
+    /// The group volume, pan and tune writes `on init` left, as one program
+    /// run at plan start so the runtime layers begin where Kontakt's engine
+    /// does: `(target, group, engine value)`, group negative for the instrument.
+    pub fn engine_start(&mut self, writes: &[([i32;4],i32)], purges: &[(i32,i32)]) -> Result<Program> {
+        let mut code = Vec::new();
+        for &(address,value) in writes {
+            for (i,v) in address.into_iter().enumerate() { code.push(I::SetLocal {local:i as u16,value:i64::from(v)}); }
+            code.push(I::SetLocal {local:4,value:i64::from(value)});
+            code.push(I::Op(Op::EngineParameter {address:0,local:4,write:true}));
+        }
+        for &(group,value) in purges {
+            code.push(I::SetLocal {local:0,value:i64::from(group)});
+            code.push(I::SetLocal {local:1,value:i64::from(value)});
+            code.push(I::Op(Op::Purge {group:0,local:1,write:true}));
+        }
+        Program::new(code).map(|p|p.with_wait_lifetime(WaitLifetime::Callback)).map_err(|e|Fault {span:Span::default(),builtin:None,message:format!("invalid engine start: {e:?}")})
+    }
+
     /// A timer listener's driver: every period, start `body` (the listener
     /// program for `signal`); a zero period polls every 10 ms until set.
     // ponytail: $NI_SIGNAL_TIMER_BEAT assumes 120 BPM, like wait_ticks.
@@ -984,6 +1002,13 @@ impl Gen<'_, '_> {
                     }
                 }
             }
+            ExprKind::Builtin(builtin @ (Builtin::GetEngineParDisp | Builtin::GetEngineParDispExt), args) => {
+                self.engine_address(args,free,false)?;
+                let value = if *builtin == Builtin::GetEngineParDispExt { self.arg(args,4,free+4)?; Some(free+4) } else {None};
+                self.emit(I::Op(Op::EngineDisplay {address:free,value,text:dst}))?;
+                self.cover(*builtin,Coverage::Native);
+                return Ok(());
+            }
             ExprKind::Builtin(builtin, _) if e.ty == Ty::Str => {
                 self.ignore(*builtin, "text is not available at runtime; empty");
                 return Ok(());
@@ -1655,21 +1680,14 @@ impl Gen<'_, '_> {
                 true
             }
             FindMod | GetModIdx | FindTarget | GetTargetIdx => {
-                let name = self.const_text(args, args.len() - 1);
-                match name {
-                    Some(name) => self.set(dst, i64::from(crate::eval::lookup_index(&name)))?,
-                    None => {
-                        let free = reg(dst, 1)?;
-                        let Some(text) = self.text_arg(args, args.len() - 1, free)? else {
-                            self.ignore(builtin, "needs a text name; -1");
-                            return self.set(dst, -1);
-                        };
-                        self.emit(I::Op(Op::TextIndex { text, local: dst }))?;
-                        self.tdepth -= 1;
-                    }
-                }
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
+                let (group,owner) = (dst+1,dst+2);
+                self.arg(args,0,group)?;
+                let target = matches!(builtin, FindTarget | GetTargetIdx);
+                if target { self.arg(args,1,owner)?; } else { self.set(owner,-1)?; }
+                let Some(text) = self.text_arg(args,args.len()-1,dst+3)? else { return self.set(dst,-1); };
+                self.emit(I::Op(Op::EngineLookup { group,owner,target,text,local:dst }))?;
+                self.tdepth -= 1;
+                true
             }
             ChangeVol | ChangeTune | ChangePan if !self.selects_many(builtin, args, 0) => {
                 let target = match builtin {
@@ -1814,154 +1832,18 @@ impl Gen<'_, '_> {
                 }
                 true
             }
-            PurgeGroup => {
-                // Purged groups are silent; the host still frees their samples.
-                self.arg(args, 0, dst)?;
-                self.arg(args, 1, t)?;
-                self.clamp(t, 0, 1)?;
-                let thousand = reg(dst, 2)?;
-                self.set(thousand, 1000)?;
-                self.emit(I::Binary32 {
-                    lhs: t,
-                    rhs: thousand,
-                    operation: IB::Multiply,
-                })?;
-                self.write_param(ParamScope::Group, ModTarget::Attenuate, dst, args, None)?;
-                return self.effect(builtin, args, dst);
-            }
-            SetEnginePar if self.slot_param(args).is_some() => {
-                // An effect slot's bypass, output gain or dry level, at runtime
-                // (the slot rack is the plan's; unknown slots are ignored).
-                let kind = self.slot_param(args).unwrap();
-                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.arg(args, 3, slot)?;
-                self.arg(args, 4, generic)?;
-                self.arg(args, 1, value)?;
-                if kind != SlotKind::Bypass {
-                    self.effect_gain(value)?;
-                }
-                self.emit(I::WriteSlot {
-                    kind,
-                    group,
-                    slot,
-                    generic,
-                    local: value,
-                })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar
-                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_OUTPUT_CHANNEL")
-                    && self.const_int(args, 3) == Some(-1)
-                    && self.const_int(args, 4) == Some(-1) =>
-            {
-                // A group's output: `$NI_BUS_OFFSET` + n routes it to instrument bus n.
-                let [group, address] = [1, 2].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.arg(args, 1, address)?;
-                self.emit(I::WriteGroupBus { group, address })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar
-                if self.engine_par_name(args).as_deref() == Some("ENGINE_PAR_VOLUME")
-                    && self.const_int(args, 2) == Some(-1)
-                    && self.const_int(args, 3) == Some(-1)
-                    && self.const_int(args, 4).is_none_or(|n| n >= 1000) =>
-            {
-                // An instrument bus's volume (`generic` = `$NI_BUS_OFFSET` + n);
-                // another generic index is ignored by the plan.
-                let [group, slot, generic, value] = [1, 2, 3, 4].map(|n| dst + n);
-                self.arg(args, 2, group)?;
-                self.set(slot, i64::from(sampler_core::BUS_VOLUME_SLOT))?;
-                self.arg(args, 4, generic)?;
-                self.arg(args, 1, value)?;
-                self.volume_gain(value)?;
-                self.emit(I::WriteSlot {
-                    kind: SlotKind::Output,
-                    group,
-                    slot,
-                    generic,
-                    local: value,
-                })?;
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar if self.envelope_param(args).is_some() => {
-                // The group's volume envelope when the slot is find_mod's
-                // "ENV_AHDSR"; any other modulator goes to the host as before.
-                self.arg(args, 1, dst)?;
-                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
-                let stage = self.envelope_param(args).unwrap();
-                let (slot, value) = (reg(dst, 1)?, reg(dst, 2)?);
-                self.arg(args, 3, slot)?;
-                self.set(value, i64::from(crate::eval::lookup_index(AMP_ENVELOPE)))?;
-                self.emit(I::CompareLocal {
-                    lhs: slot,
-                    rhs: value,
-                    comparison: Cmp::Equal,
-                })?;
-                let other = self.jump_if_zero(slot)?;
-                self.arg(args, 1, value)?;
-                if stage == EnvelopeStage::AttackCurve {
-                    self.clamp(value, 0, 1_000_000)?;
-                } else if stage == EnvelopeStage::Sustain {
-                    self.envelope_sustain(value)?;
-                } else {
-                    self.envelope_frames(stage, value)?;
-                }
-                self.arg(args, 2, dst)?;
-                self.emit(I::WriteEnvelope {
-                    group: dst,
-                    stage,
-                    local: value,
-                })?;
-                let end = self.jump()?;
-                self.land(other);
-                self.emit_effect(builtin, args, dst)?;
-                self.land(end);
-                self.set(dst, 0)?;
-                self.cover(builtin, Coverage::Approximate);
-                return Ok(());
-            }
-            SetEnginePar if self.engine_param(args, 3).is_some() => {
-                // Absolute: the group or instrument layer get_engine_par reads.
-                let target = self.engine_param(args, 3).unwrap();
-                self.arg(args, 1, t)?;
-                self.engine_units(target, t)?;
-                self.arg(args, 2, dst)?;
-                self.write_param(ParamScope::Group, target, dst, args, None)?;
-                self.set(dst, 0)?;
+            PurgeGroup | GetPurgeState => {
+                self.arg(args,0,t)?;
+                if builtin == PurgeGroup { self.arg(args,1,dst)?; }
+                self.emit(I::Op(Op::Purge {group:t,local:dst,write:builtin == PurgeGroup}))?;
                 true
             }
-            GetEnginePar if self.engine_param(args, 2).is_some() => {
-                // The group's current value, authored until a script sets it.
-                let target = self.engine_param(args, 2).unwrap();
-                self.arg(args, 1, dst)?;
-                self.emit(I::ReadParam {
-                    scope: ParamScope::Group,
-                    index: dst,
-                    target,
-                    local: dst,
-                })?;
-                self.engine_value(target, dst)?;
+            SetEnginePar | GetEnginePar => {
+                self.engine_address(args, dst+1, builtin == SetEnginePar)?;
+                if builtin == SetEnginePar { self.arg(args, 1, dst)?; }
+                self.emit(I::Op(Op::EngineParameter { address: dst+1, local: dst, write: builtin == SetEnginePar }))?;
+                if builtin == SetEnginePar { self.set(dst,0)?; }
                 true
-            }
-            GetEnginePar => {
-                self.set(dst, 0)?;
-                self.store(args, [0, 1, 2, 3].map(Key::Arg), dst, false)?;
-                true
-            }
-            SetEnginePar => {
-                // Mirror for get_engine_par, then hand the edit to the host.
-                self.arg(args, 1, dst)?;
-                self.store(args, [0, 2, 3, 4].map(Key::Arg), dst, true)?;
-                self.effect(builtin, args, dst)?;
-                return self.set(dst, 0);
             }
             SetListener | ChangeListenerPar => {
                 // The timer driver reads the period from the store.
@@ -2871,6 +2753,9 @@ impl Gen<'_, '_> {
         Ok(())
     }
 
+    fn engine_address(&mut self, args: &[Arg], base: u16, write: bool) -> Result<()> {
+        for (i,arg) in (if write {[0,2,3,4]} else {[0,1,2,3]}).into_iter().enumerate() { self.arg(args,arg,reg(base,i as u16)?)?; } Ok(())
+    }
     fn set_control_par(&mut self, builtin: Builtin, args: &[Arg], dst: u16) -> Result<()> {
         let par = self.const_int(args, 1);
         if par == Some(b::CONTROL_PAR_VALUE) && builtin != Builtin::SetControlParArr {

@@ -726,6 +726,14 @@ pub fn compile_with(
             }
         }
     }
+    // Replay init through the same addressed service as every callback.
+    let mut start: Vec<_> = init.engine.iter().map(|(&key,&value)|(key,value)).collect();
+    start.sort_by_key(|(key,_)|*key);
+    let purges: Vec<_> = init.model.requests.iter().filter(|r|r.command == "purge_group").filter_map(|r|match r.args.as_slice() { [Value::Int(group),Value::Int(value)] => Some((*group,*value)),_=>None }).collect();
+    if !start.is_empty() || !purges.is_empty() {
+        starts.push(programs.len());
+        programs.push(unit.engine_start(&start,&purges).map_err(|f|f.locate(source))?);
+    }
     for (ui, control) in &mut host {
         control.callback = entries
             .iter()
@@ -795,7 +803,7 @@ pub fn compile_with(
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
     Ok(Script {
-        programs,
+        programs: programs.into_iter().map(|p| p.with_engine_symbols(hir.symbols.iter().enumerate().filter_map(|(i,name)| sampler_core::engine_parameter_id(name).map(|parameter| (hir::OPAQUE_BASE+i as i32,parameter))).collect())).collect(),
         entries,
         starts,
         shared,

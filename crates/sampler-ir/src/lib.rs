@@ -1196,6 +1196,7 @@ pub enum Saved {
     Ints(Vec<i64>),
     /// A real array (`?name`), in element order.
     Reals(Vec<f64>),
+    Texts(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

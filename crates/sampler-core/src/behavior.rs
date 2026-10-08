@@ -358,10 +358,16 @@ pub struct Program {
     pub(super) requires_controller: bool,
     pub(super) requires_performance: bool,
     pub(super) texts: Box<[super::ops::Text]>,
+    pub(super) engine_symbols: Box<[(i32, u16)]>,
     pub(super) text_constants: usize,
     pub(super) script_texts: usize,
 }
 impl Program {
+    pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
+        self.engine_symbols = symbols.into_boxed_slice();
+        self
+    }
+
     /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
     pub fn writes_slots(&self) -> bool {
         self.code
@@ -677,6 +683,7 @@ impl Program {
             script_instance: None,
             wait_lifetime: WaitLifetime::Gate,
             texts: Box::new([]),
+            engine_symbols: Box::new([]),
             text_constants,
             script_texts,
         })
