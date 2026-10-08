@@ -81,6 +81,11 @@ impl Runtime {
             .flatten()
         {
             let note = self.note_on_pitched_in(performance, input, pitch, velocity, expression)?;
+            if !self.plans.get(self.active_plan.0).unwrap().prepared.native_start.is_empty() {
+                let generation = self.plans.get_mut(self.active_plan.0).unwrap();
+                generation.native_cycle = generation.native_cycle.wrapping_sub(1);
+                self.performance_state.edit(index).native_key = Some(input.key);
+            }
             self.articulation_now(index, value);
             self.performance_state
                 .release(self.selections[note.0.index].snapshot);
@@ -218,6 +223,12 @@ impl Runtime {
             && self.plans.get(plan.0).unwrap().prepared.tracks_previous
         {
             self.record_previous_key(performance, note_pitch.key());
+        }
+        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+            let generation = self.plans.get(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
         }
         let snapshot = self.performance_state.current[performance];
         let release = if routed {
@@ -651,6 +662,8 @@ impl Runtime {
                 && r.articulation.is_some_and(|a| a != state.articulation)
             {
                 Some(Rejection::Articulation)
+            } else if group.is_some_and(|g| !prepared.native_group_allowed(g, state)) {
+                Some(Rejection::Condition)
             } else if r.conditions.is_some_and(|i| {
                 !prepared.conditions[i].iter().all(|c| {
                     let v = state.value(c.controller);
@@ -802,7 +815,7 @@ impl Runtime {
                 let step = prepared.step(candidate, note_pitch);
                 let seed =
                     self.now ^ ((note.0.index as u64) << 40) ^ ((candidate.region as u64) << 20);
-                let held = self.held_frames(note);
+                let held = self.release_counter_frames(note).unwrap();
                 let n = self.notes.get(note.0).unwrap();
                 let inputs = crate::voice_mod::Inputs::new(
                     n,
@@ -863,10 +876,11 @@ impl Runtime {
                 let routed = self.plans.get(plan.0).unwrap().script.bus(group, r.bus);
                 let state = self.voices.get_mut(voice.0).unwrap();
                 state.bus = routed;
+                state.source_zone = self.plans.get(plan.0).unwrap().prepared.region_zone_ids.get(candidate.region).copied().unwrap_or(candidate.region as u32 + 1);
                 if r.chain.is_some() {
                     self.plans.get_mut(plan.0).unwrap().dsp.reset(voice.0.index);
                 }
-                let held = self.held_frames(note);
+                let held = self.release_counter_frames(note).unwrap();
                 let n = self.notes.get(note.0).unwrap();
                 let controllers = &self.performance_state.states[snapshot].controllers;
                 let inputs = crate::voice_mod::Inputs::new(
