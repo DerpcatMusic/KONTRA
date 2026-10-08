@@ -40,7 +40,7 @@ Canonical sweep directories: ../results/v1 and ../results/v2. Publishing script 
 
 - kontra-scan-v1 SHA-256 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`
 - kontra-scan-v2 SHA-256 `d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a`
-- kontra-scan-v1-uvi SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`
+- kontra-scan-v1-uvi SHA-256 `34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1`
 
 ## Rebuild from the shared source branch
 
@@ -75,7 +75,7 @@ Audited v2 7e82b152 lacks the newer root keyboard snapshot accessor. Scanner-onl
 
 ## V1 UVI sidecar
 
-Pinned v1 Kontakt stays at 0cb7a8a0. It has no UVI implementation. `::` IDs route through adjacent `kontra-scan-v1-uvi`, supplied by the UVI auditor: branch `audit/uvi-v1-scanner-20261008`, source `1c198e60`, product base `4bffbb18`, optimized release. SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`. Its snapshots use conservative processor-local merging: #00FFFFFF valid, #00000000 invalid, other colours highlights, absent/conflicting unknown. This later v1 UVI baseline is explicitly separate from pinned Kontakt. Both use the same shared driver and note-plan contract; use `v2-items.tsv` to census both corpora with either version.
+Pinned v1 Kontakt stays at 0cb7a8a0. It has no UVI implementation. `::` IDs route through adjacent `kontra-scan-v1-uvi`, supplied by the UVI auditor: branch `audit/uvi-v1-scanner-20261008`, source `026bdbb49f29a5ad752b3470a5f6f64a20a8957d`, product base `4bffbb18`, optimized release. SHA-256 `34a61e82ca6f09afc0eab692a1bf0b6765edbd7d063fccca94d95e699a93b9c1`. Its snapshots use conservative processor-local merging: #00FFFFFF valid, #00000000 invalid, other colours highlights, absent/conflicting unknown. This later v1 UVI baseline is explicitly separate from pinned Kontakt. Both use the same shared driver and note-plan contract; use `v2-items.tsv` to census both corpora with either version.
 
 ### Rebuild pinned Kontakt v1 from this bundle
 
@@ -100,3 +100,5 @@ first_audio_ms is monotonic wall time from the first production program import t
 load_ms is unchanged: pinned v1 includes script import/init and the deferred initial sample-bank preload; it is NOT first sound. cache_state describes the product cache condition, not the per-item metrics cache or OS page cache. Frozen pinned v1 scanner disables parsed/header cache reads and writes; frozen v2 7e82 has no product metadata cache, so both are cold under this scanner. OS page cache is uncontrolled. New product cache implementations must expose their actual cache condition before their warm/cold acceptance results can use this column.
 
 Decoded source-slot disposition is independent of saved-table integrity. Only actual record/parameter errors count as decode_failed; an unknown saved-table format keeps its successfully decoded bypass/inline/link/empty category and an incomplete raw histogram.
+
+The UVI J sidecar uses production Worker::start after the metadata/assets prepass, includes required pre-audition native snapshots, and paints concurrently with audio observation. Its load_ms retains the earlier legacy origin. The shared worker environment forces KONTRA_UVI_STATIC_PCM_CACHE=0, disabling persistent decoded PCM caching; cache_state=cold describes this product condition, not OS cache. Historical1c198e60/d565 sidecar remains frozen separately.

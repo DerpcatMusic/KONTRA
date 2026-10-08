@@ -18,8 +18,9 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest = root / 'items.tsv'
     manifest.write_text(f'kontakt\t{good}\nkontakt\t{hung}\n')
     engine = root / 'engine'
-    engine.write_text('#!/usr/bin/env python3\nimport sys,json,time\n'
+    engine.write_text('#!/usr/bin/env python3\nimport sys,json,time,os\n'
                       'if "hung" in sys.argv[2]: time.sleep(60)\n'
+                      'assert os.environ.get("KONTRA_UVI_STATIC_PCM_CACHE")=="0"\n'
                       'print(json.dumps({"loads":"yes","ui":"original-ok","plays_note":"silent","reason":"x\\ty\\nz"}))\n')
     engine.chmod(0o755)
     args = [sys.executable, str(driver), '--engine', str(engine), '--list', str(manifest),

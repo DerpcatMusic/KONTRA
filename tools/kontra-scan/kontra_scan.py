@@ -194,6 +194,7 @@ def probe(engine, item, work, timeout, shots):
     work.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env['KONTRA_SCAN_ACTIVE'] = '1'
+    env['KONTRA_UVI_STATIC_PCM_CACHE'] = '0'
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
     reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
