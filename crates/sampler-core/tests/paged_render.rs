@@ -82,6 +82,7 @@ fn paged_audio_matches_resident_across_rates_boundaries_loops_release_and_partit
                 Some(LoopShape::Crossfade { frames: 17 }),
             ] {
                 let playback = Playback {
+                    loop_slots: [None; 8],
                     start: PAGE_FRAMES - 101,
                     end: Some(PAGE_FRAMES + 111),
                     direction,
@@ -773,4 +774,72 @@ fn a_start_offset_into_a_missing_page_is_refused_counted_and_marks_the_asset_col
         asset.take_cold(),
         "the refusal asks for the page to be loaded"
     );
+}
+
+#[test]
+fn tuned_serial_loops_match_resident_audio_and_demand_at_every_partition() {
+    let data: Box<[Frame]> = (0..PAGE_FRAMES * 2)
+        .map(|i| [(i as f32 * 0.071).sin(), (i as f32 * 0.013).cos()])
+        .collect();
+    for step in [0.5_f64, 1., 3.25] {
+        for direction in [Direction::Forward, Direction::Reverse] {
+            let mut slots = [None; 8];
+            slots[7] = Some(LoopSlot {
+                range: Loop {
+                    start: PAGE_FRAMES - 50,
+                    end: PAGE_FRAMES - 10,
+                    mode: LoopMode::UntilRelease,
+                    shape: LoopShape::PingPong,
+                    passes: std::num::NonZeroU32::new(3),
+                },
+                tuning: 0.75,
+            });
+            slots[1] = Some(LoopSlot {
+                range: Loop {
+                    start: PAGE_FRAMES + 30,
+                    end: PAGE_FRAMES + 70,
+                    mode: LoopMode::UntilRelease,
+                    shape: LoopShape::Crossfade { frames: 7 },
+                    passes: std::num::NonZeroU32::new(2),
+                },
+                tuning: 1.25,
+            });
+            let playback = Playback {
+                start: PAGE_FRAMES - 100,
+                end: Some(PAGE_FRAMES + 100),
+                direction,
+                loop_slots: slots,
+                transpose_semitones: 12. * step.log2(),
+                ..Default::default()
+            };
+            let asset = Pcm::streamed(48000, data.len()).unwrap();
+            let (mut cache, mut worker) = StreamCache::new(2).unwrap();
+            for page in 0..2 {
+                load(&mut cache, &mut worker, &asset, &data, page);
+            }
+            let mut paged =
+                runtime(vec![asset], vec![region(0, playback)]).with_stream_cache(cache);
+            let mut resident = runtime(
+                vec![Pcm::new(48000, data.clone()).unwrap()],
+                vec![region(0, playback)],
+            );
+            let (mut actual, mut expected) = ([[0.; 2]; 1024], [[0.; 2]; 1024]);
+            support::without_heap(|| {
+                let a = paged.trigger(input(), 60, 1.).unwrap();
+                let b = resident.trigger(input(), 60, 1.).unwrap();
+                paged.render(&mut actual[..173]).unwrap();
+                resident.render(&mut expected[..173]).unwrap();
+                paged.release(a).unwrap();
+                resident.release(b).unwrap();
+                for chunk in actual[173..].chunks_mut(7) {
+                    paged.render(chunk).unwrap();
+                }
+                for chunk in expected[173..].chunks_mut(257) {
+                    resident.render(chunk).unwrap();
+                }
+                assert_eq!(actual, expected, "step={step} {direction:?}");
+                assert_eq!(paged.stream_underruns(), 0);
+            });
+        }
+    }
 }
