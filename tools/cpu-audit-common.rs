@@ -90,6 +90,11 @@ fn main() {
         std::fs::write(path, std::process::id().to_string()).unwrap();
         std::thread::sleep(Duration::from_millis(300))
     }
+    // Optional metadata outside the timed/allocator-counted section. Diagnostic
+    // runs are tagged separately from the original performance cells.
+    let trace_stream = std::env::var_os("CPU_AUDIT_TRACE_STREAM").is_some();
+    let mut stream_trace = Vec::with_capacity(if trace_stream { 6000 } else { 0 });
+    let mut previous_underruns = 0;
     let pace = Instant::now();
     for begin in (0..192000).step_by(block) {
         let before = CALLS.get();
@@ -107,6 +112,13 @@ fn main() {
         let ns = t.elapsed().as_nanos() as u64;
         COUNT.set(false);
         allocations += CALLS.get() - after_events;
+        if trace_stream {
+            let underruns = p.problems()["underruns"].as_u64().unwrap();
+            if underruns != previous_underruns {
+                stream_trace.push((begin, underruns - previous_underruns, ns));
+                previous_underruns = underruns;
+            }
+        }
         peak = peak.max(got);
         voice_sum += v;
         voice_peak = voice_peak.max(v);
@@ -142,6 +154,9 @@ fn main() {
     info["render_heap_calls"] = json!(allocations);
     info["event_heap_calls"] = json!(event_allocations);
     info["problems"] = p.problems();
+    if trace_stream {
+        info["diagnostic_stream_trace"] = json!(stream_trace);
+    }
     info["rss_kb_final"] = json!(proc_value("/proc/self/status", "VmRSS:"));
     info["disk_read_bytes"] = json!(proc_value("/proc/self/io", "read_bytes:") - io0);
     info["rchar_bytes"] = json!(proc_value("/proc/self/io", "rchar:") - rchar0);
