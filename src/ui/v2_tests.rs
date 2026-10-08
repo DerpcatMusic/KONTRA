@@ -653,7 +653,7 @@ fn widget_conflux_placement_and_capture() {
             println!("CONFLUX_NCKP raw={} parsed={} raw_knobs={knobs}",raw_names.len(),parsed_names.len());
         }
     }
-    source.zones.clear();
+    source.retain_zones(|_|false);
     source.assets.clear();
     let loaded = sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path), ..Default::default()}).unwrap();
     let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f|f.widgets.len()).unwrap());
@@ -891,7 +891,7 @@ fn widget_conflux_native_gestures_and_readback() {
     let Some(path)=std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").map(std::path::PathBuf::from) else {return};
     if !path.exists() {return;}
     let mut source=sampler_kontakt::read(&path).unwrap().instrument;
-    source.zones.clear(); source.assets.clear();
+    source.retain_zones(|_|false); source.assets.clear();
     let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
     let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
     let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
@@ -1132,11 +1132,12 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
     let saved=source.behaviors.iter().flat_map(|b|b.state.iter()).filter_map(|(name,value)| {
         if let sampler_ir::Saved::Text(value)=value {Some((name.trim_start_matches('@').to_owned(),value.clone()))}else{None}
     }).collect::<std::collections::HashMap<_,_>>();
-    source.zones.clear();source.assets.clear();
-    let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
+    source.retain_zones(|_|false);source.assets.clear();
+    let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
     let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
     let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
     let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let controls=loaded.interfaces.iter().flat_map(|face|face.widgets.iter().enumerate().map(move |(n,w)|(face.source,n,w.clone()))).collect();
     let face=loaded.interfaces.into_iter().find(|f|f.source==(ir::Source::Ksp {slot:2})).unwrap();
     let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
     h.sync();
@@ -1152,4 +1153,30 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
         count+=1;
     }
     assert_eq!(count,6);
+    let package=std::sync::Arc::new(super::native_runtime::Package::load(&path).unwrap_or_else(|_|panic!("native package load failed; private details omitted")));
+    let session=super::native_runtime::Session::new(package,&face.native_ui.as_ref().unwrap().entry,controls).unwrap_or_else(|_|panic!("native session init failed; private details omitted"));
+    session.update_view(&face,&h.values,&h.state.values,&h.state.meters);
+    let graph=session.render().unwrap_or_else(|_|panic!("native graph render failed; private details omitted"));
+    fn texts(node:&mlua::Table,out:&mut Vec<(String,String)>) {
+        let kind=node.get::<String>("kind").unwrap_or_default();
+        if matches!(kind.as_str(),"Text"|"TextInput") {
+            let props=node.get::<mlua::Table>("props").unwrap();
+            out.push((kind,props.get::<String>("text").unwrap_or_default()));
+        }
+        if let Ok(children)=node.get::<mlua::Table>("children") {for child in children.sequence_values::<mlua::Table>() {texts(&child.unwrap(),out);}}
+        if let Ok(modifiers)=node.get::<mlua::Table>("modifiers") {for modifier in modifiers.sequence_values::<mlua::Table>() {
+            let modifier=modifier.unwrap();let kind=modifier.get::<String>("name").unwrap_or_default();
+            if matches!(kind.as_str(),"background"|"overlay") {if let Ok(child)=modifier.get::<mlua::Table>("value") {texts(&child,out);}}
+            else if kind=="popover" {if let Ok(value)=modifier.get::<mlua::Table>("value") {if let Ok(child)=value.get::<mlua::Table>("content") {texts(&child,out);}}}
+        }}
+    }
+    let mut labels=Vec::new();texts(&graph,&mut labels);
+    let mut matched=0;
+    for w in face.widgets.iter().filter(|w|w.name.starts_with("@Footer__Macro__Name__")) {
+        let expected=saved.get(w.name.trim_start_matches('@')).unwrap();
+        let matches=labels.iter().filter(|(_,text)|text==expected).collect::<Vec<_>>();
+        println!("FOOTER_NATIVE_TEXT ui_id={:?} chars={} matching_text_nodes={} kinds={:?}",w.source_id,expected.chars().count(),matches.len(),matches.iter().map(|(kind,_)|kind).collect::<Vec<_>>());
+        assert!(!matches.is_empty(),"complete footer text missing from rendered native graph");matched+=1;
+    }
+    assert_eq!(matched,6);
 }
