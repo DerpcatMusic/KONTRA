@@ -172,6 +172,11 @@ pub struct Driver<S: Script> {
 /// Notes and values the driver tracks at once; beyond it, plays are dropped.
 const TRACKED: usize = 1024;
 
+#[cfg(feature = "scan")]
+impl Driver<ScriptThread> {
+    pub fn scan_faults(&self) -> crate::script::ScanFaults { self.host.scan_faults() }
+}
+
 impl<S: Script> Driver<S> {
     /// The driver of `host`; the plan it plays on is the caller's runtime.
     pub fn new(host: S, groups: Vec<OscGroup>, rate: u32) -> Self {
