@@ -1606,6 +1606,15 @@ impl Runtime {
         self.release_now(id, ReleaseCause::Explicit)
     }
 
+    fn discard_note(&mut self, id: NoteId) -> Result<(), Error> {
+        let note = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
+        note.attack = AttackStatus::Suppressed;
+        note.sostenuto = false;
+        self.close_gate(id, ReleaseCause::Discarded);
+        self.cleanup_closed_notes();
+        Ok(())
+    }
+
     fn release_now(&mut self, id: NoteId, cause: ReleaseCause) -> Result<(), Error> {
         let n = self.notes.get_mut(id.0).ok_or(Error::StaleHandle)?;
         n.sostenuto = false;
@@ -1692,6 +1701,16 @@ impl Runtime {
         while let Some(note) = self.closed_notes.pop() {
             let n = self.notes.get(note.0).unwrap();
             let cause = self.release_times[note.0.index].cleanup.take().unwrap();
+            if cause == ReleaseCause::Discarded {
+                for slot in &mut self.behaviors.slots {
+                    if let Some(callback) = &mut slot.value
+                        && callback.owner == BehaviorOwner::Note(note)
+                        && callback.outcome.is_none()
+                    {
+                        callback.outcome = Some(Outcome::Cancelled);
+                    }
+                }
+            }
             let child_cause = if cause.musical() {
                 ReleaseCause::Parent
             } else {
@@ -1713,7 +1732,9 @@ impl Runtime {
             while let Some(index) = family {
                 let state = self.families.at_mut(index);
                 family = state.siblings.next;
-                if state.trigger == Trigger::Attack || !cause.musical() {
+                if cause == ReleaseCause::Discarded {
+                    self.choke_family_now(FamilyId(self.families.id(index.get())), 0);
+                } else if state.trigger == Trigger::Attack || !cause.musical() {
                     self.release_family_now(FamilyId(self.families.id(index.get())));
                 }
             }
