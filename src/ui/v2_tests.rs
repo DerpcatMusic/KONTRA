@@ -1453,3 +1453,45 @@ fn v1_sample_folder_creator_is_reachable() {
     let mut h = Harness::new(&p, 1180., 780.); h.press("app-menu");
     assert!(h.ui.scene().unwrap().surfaces().any(|s| s.text_value.as_deref() == Some("Create library from folder…")), "v1 library creator menu is missing");
 }
+
+#[test]
+fn v1_sound_editor_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut instrument = sampler_ir::Instrument {
+        name: "Editor fixture".into(),
+        ..Default::default()
+    };
+    instrument.groups.push(sampler_ir::Group {
+        name: "Sustain".into(),
+        ..Default::default()
+    });
+    let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+    zone.group = Some(sampler_ir::GroupRef(0));
+    instrument.zones.push(zone);
+    p.selection
+        .write()
+        .unwrap()
+        .parts
+        .push(crate::plugin::Part {
+            path: "/generated/editor.nki".into(),
+            ..Default::default()
+        });
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(instrument));
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Sound");
+    for id in [
+        "edit-group-prev",
+        "edit-group-next",
+        "edit-scope-all",
+        "edit-scope-one",
+        "edit-compact",
+        "edit-expanded",
+        "edit-envelope",
+    ] {
+        assert!(
+            h.ui.scene().unwrap().surface(id).is_some(),
+            "missing v1 editor control {id}"
+        );
+    }
+}
+
