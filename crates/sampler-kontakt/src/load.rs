@@ -641,13 +641,18 @@ pub(crate) fn script_environment(
     }
 }
 
-#[cfg(any(test, feature = "scan"))]
+#[cfg(test)]
 thread_local! { static SCRIPT_INIT_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(all(feature = "scan", not(test)))]
+static SCRIPT_INIT_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Numeric actual initializer count for the isolated scanner and load regression tests.
+/// Actual initializer count across loader workers in one isolated scanner process.
 #[cfg(any(test, feature = "scan"))]
 pub fn take_script_init_runs() -> usize {
-    SCRIPT_INIT_RUNS.replace(0)
+    #[cfg(test)]
+    { SCRIPT_INIT_RUNS.replace(0) }
+    #[cfg(not(test))]
+    { SCRIPT_INIT_RUNS.swap(0, std::sync::atomic::Ordering::Relaxed) }
 }
 
 pub(crate) struct ScriptInit {
@@ -701,8 +706,10 @@ pub(crate) fn initialize_scripts(
             (behavior.language == ir::Language::Ksp).then(|| {
                 #[cfg(feature = "scan")]
                 sampler_ksp::scan::attempt("runtime-preparation");
-                #[cfg(any(test, feature = "scan"))]
+                #[cfg(test)]
                 SCRIPT_INIT_RUNS.set(SCRIPT_INIT_RUNS.get() + 1);
+                #[cfg(all(feature = "scan", not(test)))]
+                SCRIPT_INIT_RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 sampler_ksp::initialize(
                     &behavior.source,
                     sampler_ksp::Limits::LIBRARY,
