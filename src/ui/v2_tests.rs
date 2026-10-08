@@ -837,7 +837,7 @@ impl<'a> NativeGesture<'a> {
                 ir::Value::Text(v)=>sampler_core::WidgetValue::Text(sampler_core::Text::try_new(&v).unwrap()),
                 _=>panic!("unexpected array edit"),
             };
-            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
+            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,mouse_over:edit.mouse_over,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
             let context=sampler_core::ControlContext {performance:self.runtime.performance(0).unwrap(),origin:sampler_core::ChannelAddress {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0},channels:1};
             self.runtime.invoke_widget(context,plan,None,&[sampler_core::WidgetEdit {id,index:edit.index,value,interaction}]).unwrap();
         }
@@ -1186,4 +1186,40 @@ fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
         assert!(!matches.is_empty(),"complete footer text missing from rendered native graph");matched+=1;
     }
     assert_eq!(matched,6);
+}
+
+#[test]
+fn widget_mouse_area_press_release_reaches_native_callback_without_drop_configuration() {
+    let instrument=sampler_ir::Instrument {behaviors:vec![sampler_ir::Behavior {name:String::new(),language:sampler_ir::Language::Ksp,source:"on init declare ui_mouse_area $area declare $calls declare $event declare $over end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE $over := $NI_MOUSE_OVER_CONTROL end on".into(),slot:Some(0),state:vec![],requires:vec![]}],..Default::default()};
+    let loaded=sampler_kontakt::prepare(instrument,vec![],&Default::default()).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let mut face=loaded.interfaces.into_iter().next().unwrap();face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    let mut h=NativeGesture {face,script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+    h.sync();h.settle();
+    let plan=h.runtime.active_plan();let cell=|h:&NativeGesture<'_>,index|h.runtime.script_cell(plan,sampler_core::ScriptInstanceId(0),index).unwrap();
+    h.pointer(Point::new(50.,50.),false);h.pointer(Point::new(50.,50.),true);
+    assert_eq!(cell(&h,1),1,"MouseArea press must run ui_control once");assert_eq!(cell(&h,2),0);assert_eq!(cell(&h,3),1);
+    h.pointer(Point::new(50.,50.),true);assert_eq!(cell(&h,1),1,"holding must not repeat press");
+    h.pointer(Point::new(150.,150.),false);
+    assert_eq!(cell(&h,1),2,"captured release outside must run ui_control once");assert_eq!(cell(&h,2),1);assert_eq!(cell(&h,3),0);
+    assert_eq!(h.read(0),sampler_core::WidgetValue::Integer(0),"button metadata must retain the MouseArea handle value");
+}
+
+#[test]
+fn widget_missing_feedback_keeps_current_authored_value_separate_from_reset_default() {
+    let script=sampler_ksp::compile("on init declare ui_knob $k(0,2,1) $k := 1 set_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE,0) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    assert_eq!(face.widgets[0].value,Some(ir::Value::Integer(1)));
+    let ir::Binding::Control(control)=face.widgets[0].binding else {panic!()};
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();
+    let mut tick=|p:Point,down:bool,values:&mut ir_view::Values,state:&mut ir_view::InputState| {for _ in 0..2 {let el=ir_view::view_state(&mut ui,"missing-feedback",&face,ir::PageRef(0),&Default::default(),ir::Presentation::Vector,1.,values,state);ui.frame(el,Some(Size::new(200.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();}};
+    tick(Point::new(50.,50.),false,&mut values,&mut state);
+    assert_eq!(values[&control],1.,"missing readback must seed current authored value, not reset default");
+    assert!(state.edits.is_empty(),"passive paint must not produce a widget edit");
+    tick(Point::new(50.,50.),true,&mut values,&mut state);tick(Point::new(50.,30.),true,&mut values,&mut state);
+    assert!(state.edits.is_empty(),"sub-step drag must stay at current1, never jump to reset0");
+    tick(Point::new(50.,-50.),true,&mut values,&mut state);
+    assert_eq!(values[&control],2.,"unrounded accumulator must eventually cross a step from authored current value");
 }
