@@ -206,6 +206,7 @@ impl Runtime {
                 expressions: &self.expressions,
                 kernel: &self.kernel,
                 cache: self.stream_cache.as_ref().map(|c| c.reader()),
+                rings: self.stream_cache.as_ref().and_then(|c| c.voices.as_ref()).map(|r| r.reader()),
                 voices: Disjoint::new(&mut self.voices.slots, 1, claims),
                 scratch,
                 outcomes,
@@ -345,6 +346,7 @@ struct View<'a> {
     expressions: &'a super::Arena<super::ExpressionOwner>,
     kernel: &'a super::resample::Kernel,
     cache: Option<super::stream::PageReader<'a>>,
+    rings: Option<super::voice_stream::RingReader<'a>>,
     voices: Disjoint<'a, Slot<Voice>>,
     scratch: &'a Slab<[Frame; BLOCK]>,
     outcomes: &'a Slab<Outcome>,
@@ -422,6 +424,7 @@ impl View<'_> {
             asset.touch(self.at + self.frames as u64);
             let head = asset.try_head();
             let source = super::source::PagedFrames {
+                traversal: self.rings.map(|r| (v.cursor, v.stream.and_then(|b| r.read(b)))),
                 cache: self.cache.expect("preflighted stream cache"),
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
@@ -484,6 +487,7 @@ impl View<'_> {
                 asset.touch(self.at + frames as u64);
                 let head = asset.try_head();
                 let pcm = super::source::PagedFrames {
+                    traversal: self.rings.map(|r| (v.cursor, v.stream.and_then(|b| r.read(b)))),
                     cache: self.cache.expect("preflighted stream cache"),
                     asset: asset.asset_id(),
                     head: head.as_deref().map_or(&[], |h| h),
