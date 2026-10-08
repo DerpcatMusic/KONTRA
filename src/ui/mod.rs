@@ -76,6 +76,9 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let art = Arc::new(art::Art::default());
     let build = build(&params, meters.clone(), computer.clone(), picker.clone(), art.clone());
     let (drop_params, drop_picker) = (params.clone(), picker.clone());
+    let file_drag = Arc::new(std::sync::Mutex::new(None));
+    let cancel_drag = file_drag.clone();
+    let cancel_picker = picker.clone();
     let (cancel_params, cancel_computer) = (params.clone(), computer.clone());
     let (key_params, key_computer) = (params.clone(), computer.clone());
     let watch_params = params.clone();
@@ -99,8 +102,11 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
                 let _ = crate::diagnostics::flush(std::time::Duration::from_millis(100));
             }
         })
-        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, ui, at, paths, dropped))
-        .on_cancel(move |_| let_go(&cancel_params, &cancel_computer))
+        .on_files(move |ui, at, paths, dropped| native_files(&drop_params, &drop_picker, &file_drag, ui, at, paths, dropped))
+        .on_cancel(move |ui| {
+            let_go(&cancel_params, &cancel_computer);
+            native_files(&cancel_params, &cancel_picker, &cancel_drag, ui, Point::new(-1., -1.), &[], false);
+        })
         .on_key(move |ui, event| key_computer.key(ui, &key_params, event))
         .hide_pointer(theme::pointer_hidden)
         .native_timing(crate::diagnostics::native_timing_hook())
@@ -738,9 +744,50 @@ fn sanitize(selection: &mut Selection) {
     }
 }
 
-/// Files dragged in from the desktop: instruments into the slot under the
-/// pointer or free slots, one saved multi replaces the rack. Returns whether they are accepted.
-fn native_files(p: &SamplerParams, picker: &picker::Picker, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+/// The bounded current OS gesture; source epoch still guards admission.
+struct FileDrag {
+    slot: usize, epoch: u64, source_slot: u8, widget: sampler_ui_ir::Widget,
+    paths: Vec<(u32, sampler_ui_ir::Value)>,
+}
+
+fn widget_files(p: &SamplerParams, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> Option<bool> {
+    let view = shown(&p.shared.view);
+    let mut target = None;
+    let mut rejected = false;
+    for (slot, published) in view.parts.iter().enumerate() {
+        for (shown, base) in published.interfaces.iter().enumerate() {
+            let mut face = base.clone();
+            if let Some(patch) = published.updates.get(shown) { patch.apply(base, &Default::default(), &mut face); }
+            let namespace = format!("part-{slot}-epoch-{}-script-{shown}", published.generation);
+            if ir_view::file_drop_target(ui, &namespace, &face, at).is_none() { continue; }
+            let Some((n, edits)) = ir_view::file_drop(ui, &namespace, &face, at, paths, dropped) else { rejected = true; break };
+            let interaction = part::interaction(&edits[0]);
+            let source_slot = match face.source { sampler_ui_ir::Source::Ksp { slot } => slot, _ => 0 };
+            let paths = edits.into_iter().map(|e| (e.index, e.value)).collect();
+            target = Some((FileDrag { slot, epoch: published.generation, source_slot, widget: face.widgets[n.0].clone(), paths }, interaction));
+            break;
+        }
+        if target.is_some() || rejected { break; }
+    }
+    let mut last = lock(drag);
+    if let Some(previous) = last.take() {
+        let same = target.as_ref().is_some_and(|(next, _)| next.slot == previous.slot && next.epoch == previous.epoch
+            && next.source_slot == previous.source_slot && next.widget.source_id == previous.widget.source_id);
+        if !same {
+            p.shared.set_widget_batch_at(previous.slot, previous.epoch, previous.source_slot, &previous.widget, previous.paths,
+                sampler_core::WidgetInteraction { event: 4, mouse_over: false, ..Default::default() });
+        }
+    }
+    let Some((target, interaction)) = target else { return rejected.then_some(false) };
+    let accepted = p.shared.set_widget_batch_at(target.slot, target.epoch, target.source_slot, &target.widget, target.paths.clone(), interaction);
+    if accepted && !dropped { *last = Some(target); }
+    Some(accepted)
+}
+
+/// Desktop files first target authored MouseAreas, then library/rack actions.
+fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mutex<Option<FileDrag>>, ui: &Ui, at: Point, paths: &[PathBuf], dropped: bool) -> bool {
+    if let Some(accepted) = widget_files(p, drag, ui, at, paths, dropped) { return accepted; }
+
     let inside = |id: &str| {
         ui.scene().and_then(|s| s.surface(id)).is_some_and(|s| {
             let r = s.frame;

@@ -22,6 +22,11 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_CURSOR_PICTURE",
     "$CONTROL_PAR_AUTOMATION_NAME",
     "$CONTROL_PAR_FONT_TYPE",
+    "$CONTROL_PAR_FONT_TYPE_ON",
+    "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+    "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+    "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+    "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
     "$CONTROL_PAR_TEXT_ALIGNMENT",
     "$CONTROL_PAR_Z_LAYER",
     "$CONTROL_PAR_PARENT_PANEL",
@@ -30,6 +35,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_RANGE_MAX",
     "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_TEXTPOS_Y",
+    "$CONTROL_PAR_VALUEPOS_Y",
     "$CONTROL_PAR_ALLOW_AUTOMATION",
     "$CONTROL_PAR_AUTOMATION_ID",
     "$CONTROL_PAR_SHORT_NAME",
@@ -43,6 +49,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
     "$CONTROL_PAR_MOUSE_MODE",
+    "$CONTROL_PAR_ACTIVE_INDEX",
     "$CONTROL_PAR_WT_VIS_MODE",
     "$CONTROL_PAR_PARALLAX_X",
     "$CONTROL_PAR_PARALLAX_Y",
@@ -258,6 +265,8 @@ pub fn interface(
     let page = ir::PageRef(0);
     let mut background = ir::Background {
         offset_y: m.skin_offset.unwrap_or(0),
+        // Pinned classic Kontakt profile: frame origin + header + skin offset.
+        origin_y: 68,
         ..Default::default()
     };
     if let Some(r) = model
@@ -273,6 +282,8 @@ pub fn interface(
         for (name, v) in props {
             if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE" {
                 background.image = bld.asset(None, "$INST_WALLPAPER_ID", &text(v));
+            } else if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE_STATE" {
+                background.frame = match v { Value::Int(n) => (*n).max(0) as u32, _ => 0 };
             } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_PICTURE" {
                 bld.ui.icon = bld.asset(None, "$INST_ICON_ID", &text(v));
             } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_HIDE" {
@@ -443,7 +454,9 @@ pub fn interface(
         );
         let mut out = ir::Widget::new(w.name.clone(), page, rect, kind);
         out.auto_size = width.is_none() || height.is_none();
+        out.default_axes = [width.is_none(), height.is_none()];
         out.source_id = Some(w.ui_id);
+        out.active_index = int("$CONTROL_PAR_ACTIVE_INDEX");
         out.value = match &w.value {
             WidgetValue::None => None,
             WidgetValue::Int(v) => Some(ir::Value::Integer(*v)),
@@ -478,6 +491,7 @@ pub fn interface(
             }
         }
         out.text_y = int("$CONTROL_PAR_TEXTPOS_Y");
+        out.value_y = int("$CONTROL_PAR_VALUEPOS_Y");
         out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
         out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {
             axis: if m < 0 {
@@ -535,9 +549,13 @@ pub fn interface(
             allowed: int("$CONTROL_PAR_ALLOW_AUTOMATION") != Some(0),
             id: int("$CONTROL_PAR_AUTOMATION_ID").and_then(|n| u32::try_from(n).ok()),
         };
-        if let Some(font) = int("$CONTROL_PAR_FONT_TYPE") {
+        if int("$CONTROL_PAR_FONT_TYPE").is_some() || int("$CONTROL_PAR_TEXT_ALIGNMENT").is_some() {
+            let font = int("$CONTROL_PAR_FONT_TYPE").unwrap_or(0);
             let align = int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1);
             out.style = Some(bld.style(font, align));
+        }
+        for (index, property) in ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_FONT_TYPE_ON", "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED", "$CONTROL_PAR_FONT_TYPE_ON_PRESSED", "$CONTROL_PAR_FONT_TYPE_OFF_HOVER", "$CONTROL_PAR_FONT_TYPE_ON_HOVER"].iter().enumerate() {
+            out.state_styles[index] = int(property).filter(|&font| font >= 0).map(|font| bld.style(font, int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1)));
         }
         if let Some(p) = w.text("$CONTROL_PAR_PICTURE")
             && let Some(asset) = bld.asset(Some(i), "$CONTROL_PAR_PICTURE", p)
