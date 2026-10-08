@@ -132,7 +132,11 @@ impl Runtime {
     }
 
     fn grow_with(&mut self, g: &mut Growth) -> bool {
-        if let Some(params) = &mut g.note_params { return self.note_params.adopt(params); }
+        if let Some(params) = &mut g.note_params {
+            let adopted = self.note_params.adopt(params);
+            if adopted { self.note_pressure.store(0, Ordering::Relaxed); }
+            return adopted;
+        }
         let old = self.voices.slots.len();
         if g.voices <= old {
             return false;
@@ -185,11 +189,15 @@ impl Runtime {
     }
 
     pub(super) fn note_note_pressure(&self) {
-        if self.notes.occupied * 4 >= self.note_params.capacity() * 3
-            && !self.note_pressure.swap(true, Ordering::Relaxed)
+        let capacity = self.note_params.capacity();
+        if self.notes.occupied * 4 >= capacity * 3
+            && self.note_pressure.swap(capacity, Ordering::Relaxed) != capacity
             && let Some(thread) = self.growth.as_ref().and_then(|q| q.waker.as_ref())
         { thread.unpark(); }
     }
 }
 
 pub(crate) type Pressure = Arc<AtomicBool>;
+
+/// Capacity against which audio observed note pressure; zero means none.
+pub(crate) type NotePressure = Arc<std::sync::atomic::AtomicUsize>;

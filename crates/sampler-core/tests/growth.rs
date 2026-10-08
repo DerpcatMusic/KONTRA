@@ -36,9 +36,12 @@ fn note_parameter_pages_grow_without_moving_live_state_or_audio_heap_work() {
     assert_eq!(control.grow_note_params(256), Ok(256));
     assert_eq!(small.note_params_capacity(), 128);
     assert_eq!(control.grow_note_params(512), Err(PlanError::Capacity));
+    note(&mut small, 97).unwrap(); note(&mut full, 97).unwrap();
+    assert!(!control.note_pressure(), "pressure on the old capacity must not request growth of the queued capacity");
     block(&mut small, &mut full);
     assert_eq!(small.note_params_capacity(), 256);
-    for id in 97..256 { note(&mut small, id).unwrap(); note(&mut full, id).unwrap(); }
+    assert!(!control.note_pressure(), "adoption clears pressure against the old capacity");
+    for id in 98..256 { note(&mut small, id).unwrap(); note(&mut full, id).unwrap(); }
     assert_eq!(note(&mut small, 256), Err(Error::Capacity));
     assert_eq!(control.grow_note_params(512), Ok(512));
     block(&mut small, &mut full);
