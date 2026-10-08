@@ -6193,7 +6193,7 @@
     "source_revision": "f7b2a8cdc6773ff569799c256ad9b0d638e3a824",
     "v1_adapter_revision": "11db26e72650f373465b6534d6ddb3684e1e9970",
     "observed_at_utc": "2026-10-08T10:18:48.226647+00:00",
-    "status": "partial advancing sweep; detailed Conflux pair analyzed, other current records not used for regression list",
+    "status": "historical f7 snapshot; source-slot telemetry caution corrected in abf248cd",
     "versions": {
       "v1": {
         "binary_sha256": "bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438",
@@ -6345,5 +6345,139 @@
     },
     "v1_raw_sigils_status": "unknown because all5 inventory slots decode_failed; admitted state remains observable",
     "timing_definition": "first finite exactly nonzero block since first production import, Original paint concurrent; metadata prepass/worker spawn excluded; audible threshold separately1e-5; OS cache uncontrolled"
+  },
+  "shared_scan_final_extension_partial": {
+    "source_revision": "abf248cd0b99d884b9f2456914362a7bd8e81869",
+    "v1_adapter_revision": "44d03cecbd3b5e47b1564d17ac239239dc2ba4ea",
+    "observed_at_utc": "2026-10-08T10:41:25.308792+00:00",
+    "status": "partial advancing Kontakt sweep; completed corpus pending",
+    "versions": {
+      "v1": {
+        "binary_sha256": "870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e",
+        "published_rows": 125,
+        "published_tsv_sha256": "01e86be449ff02f334044b0160c99663775a32a59b2fd17780881bdd291a66dc",
+        "published_kontakt_rows_with_current_cache": 125,
+        "conflux": {
+          "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+          "revision": "870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e",
+          "loads": "yes",
+          "plays_note": "yes",
+          "note_picked": "{\"0\":[60,64]}",
+          "keyswitch_picked": "{\"0\":null}",
+          "audition_status": "matched-note-plan",
+          "fallback_note": 0,
+          "controls_bound": "78/78",
+          "bound_typed": 5,
+          "first_audio_ms": 146.11175200000002,
+          "ui_first_frame_ms": 354.094091,
+          "cache_state": "cold",
+          "slots_seen": 5,
+          "slots_inline_nonempty": 3,
+          "slots_empty": 2,
+          "slots_decode_failed": 0,
+          "saved_entry_sigils": "unknown",
+          "admitted_saved_entry_sigils": "{\"!\":13,\"$\":223,\"%\":15,\"@\":6}",
+          "ksp_compile_ok": "yes",
+          "ksp_init_ok": "yes",
+          "sample_zone_count": 1985,
+          "ksp_runtime_fault_records": 0
+        },
+        "conflux_cache_sha256": "fc3f5658de7ad1839978a37685f7c28b949cdf19c5c5b0b1fbdcc9b98b3e27d5",
+        "conflux_source_inventory": [
+          {
+            "wire_slot": 0,
+            "raw_category": "empty",
+            "saved_table_integrity": "unknown"
+          },
+          {
+            "wire_slot": 1,
+            "raw_category": "empty",
+            "saved_table_integrity": "unknown"
+          },
+          {
+            "wire_slot": 2,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "unknown"
+          },
+          {
+            "wire_slot": 3,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "unknown"
+          },
+          {
+            "wire_slot": 4,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "unknown"
+          }
+        ]
+      },
+      "v2": {
+        "binary_sha256": "d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a",
+        "published_rows": 125,
+        "published_tsv_sha256": "6dbb2abc8c3579656ecb451a330ef711d0c7d34f54fb5762d61db2a34ea165d2",
+        "published_kontakt_rows_with_current_cache": 125,
+        "conflux": {
+          "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+          "revision": "d4534838916e008d32a6e0763541a8bd9285651d77f130bad18fe926d0975f5a",
+          "loads": "yes",
+          "plays_note": "yes",
+          "note_picked": "{\"0\":[60,64]}",
+          "keyswitch_picked": "{\"0\":null}",
+          "audition_status": "matched-note-plan",
+          "fallback_note": 0,
+          "controls_bound": "107/113",
+          "bound_typed": 6,
+          "first_audio_ms": 5257.569810999999,
+          "ui_first_frame_ms": 5262.492196,
+          "cache_state": "cold",
+          "slots_seen": 5,
+          "slots_inline_nonempty": 3,
+          "slots_empty": 2,
+          "slots_decode_failed": 0,
+          "saved_entry_sigils": "{\"!\":13,\"$\":223,\"%\":15,\"@\":6}",
+          "admitted_saved_entry_sigils": "{\"$\":223,\"%\":15,\"@\":6}",
+          "ksp_compile_ok": "yes",
+          "ksp_init_ok": "yes",
+          "sample_zone_count": 1985,
+          "ksp_runtime_fault_records": 0
+        },
+        "conflux_cache_sha256": "a154d989a49ebd4341def0d2883d6cafb1070ee309e7e4b1c84b958ff5feff30",
+        "conflux_source_inventory": [
+          {
+            "wire_slot": 0,
+            "raw_category": "empty",
+            "saved_table_integrity": "decoded"
+          },
+          {
+            "wire_slot": 1,
+            "raw_category": "empty",
+            "saved_table_integrity": "decoded"
+          },
+          {
+            "wire_slot": 2,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded"
+          },
+          {
+            "wire_slot": 3,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded"
+          },
+          {
+            "wire_slot": 4,
+            "raw_category": "inline_nonempty",
+            "saved_table_integrity": "decoded"
+          }
+        ]
+      }
+    },
+    "paired_current_kontakt_count": 125,
+    "eligible_matched_ids": [
+      "/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki",
+      "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki"
+    ],
+    "not_auditioned_count": 123,
+    "v1_audible_v2_not_audible_ids": [],
+    "v1_raw_sigils_status": "unknown; decoded source slots independent of saved table"
   }
 }
