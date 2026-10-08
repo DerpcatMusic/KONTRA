@@ -109,7 +109,7 @@ mod tests {
     fn host_slots_have_stable_ids_and_include_native_address_2048() {
         let params = crate::plugin::SamplerParams::new();
         let infos = params.param_infos();
-        assert_eq!(infos.len(), 2050); // Volume plus 2049 host slots.
+        assert_eq!(infos.len(), 2053); // Volume, Attack, Release, Tone plus 2049 slots.
         assert_eq!(
             infos.iter().map(|p| p.id).collect::<Vec<_>>(),
             crate::plugin::SamplerParams::param_infos_static()
@@ -125,5 +125,31 @@ mod tests {
         params.set_plain(BASE + 2048, f64::NAN);
         assert_eq!(params.get_normalized(BASE + 2048), Some(0.75));
         assert_eq!(params.parse_value(BASE, "inf"), None);
+    }
+
+    #[test]
+    fn v1_global_host_parameters_keep_ranges_defaults_and_stable_ids() {
+        let params = crate::plugin::SamplerParams::new();
+        let infos = params.param_infos();
+        for (name, id, min, max, default) in [
+            ("Attack", 0x95b8fd, 0.0001, 5., 0.002),
+            ("Release", 0x36ae7e, 0.001, 10., 0.15),
+            ("Tone", 0x62f120, 20., 20_000., 20_000.),
+        ] {
+            let info = infos.iter().find(|p| p.name == name).expect("v1 global host parameter");
+            assert_eq!(info.id, id);
+            assert!(matches!(info.range, ParamRange::Logarithmic { min: a, max: b } if a == min && b == max));
+            assert_eq!(info.default_plain, default);
+            assert_eq!(HostAutomation::address(id), None);
+            params.set_plain(id, min);
+            let restored = crate::plugin::SamplerParams::new();
+            let (ids, values) = params.collect_values();
+            restored.restore_values(&ids.into_iter().zip(values).collect::<Vec<_>>());
+            assert_eq!(restored.get_plain(id), Some(min));
+        }
+        assert_eq!(params.volume.id(), 0xe0698f);
+        for address in 0..crate::sound::HOST_AUTOMATION_SLOTS {
+            assert_eq!(infos.iter().filter(|p| p.id == BASE + u32::from(address)).count(), 1);
+        }
     }
 }

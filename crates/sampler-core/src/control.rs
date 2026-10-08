@@ -223,6 +223,23 @@ impl Prepared {
 }
 
 impl Runtime {
+    /// v1 engine defaults: captured by new fallback voices, never authored envelopes.
+    pub fn set_fallback_envelope(&mut self, attack: f64, release: f64) -> Result<(), Error> {
+        if !(0.0001..=5.).contains(&attack) || !(0.001..=10.).contains(&release) {
+            return Err(Error::InvalidInput);
+        }
+        self.fallback_envelope = Some([(attack * f64::from(self.rate)).round() as u32,
+            (release * f64::from(self.rate)).round() as u32]);
+        Ok(())
+    }
+
+    pub(crate) fn region_envelope(&self, envelope: crate::Envelope, fallback: bool) -> crate::Envelope {
+        if fallback && let Some([attack, release]) = self.fallback_envelope {
+            envelope.with_stage(crate::EnvelopeStage::Attack, attack)
+                .with_stage(crate::EnvelopeStage::Release, release)
+        } else { envelope }
+    }
+
     pub(crate) fn controlled_envelope(&self, plan: PlanId, group: Option<u32>, envelope: crate::Envelope) -> crate::Envelope {
         let generation = self.plans.get(plan.0).unwrap();
         let mut envelope = generation.script.envelope(group,envelope);

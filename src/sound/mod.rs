@@ -351,6 +351,8 @@ pub trait Core: Send {
 
     /// The mixer: parts, output pairs and each part's tree nodes.
     fn set_mix(&mut self, mix: &mix::Mix);
+    /// Global fallback-envelope times in seconds and part-output Tone cutoff in Hz.
+    fn set_performance(&mut self, attack: f64, release: f64, cutoff: f64);
     /// Host output port of each pair, as last set by [`set_mix`](Self::set_mix).
     fn bus_ports(&self) -> [u8; BUSES];
     /// Copy `part`'s post-fader mono signal during [`render`](Self::render).

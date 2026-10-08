@@ -347,6 +347,14 @@ pub fn lower_with(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    // Port v1 settings.envelope/flex: either authored amplitude source excludes defaults.
+    plan = plan.with_fallback_envelopes(instrument.zones.iter().map(|z| {
+        z.amplitude.is_none() && !z.routes.iter().any(|r| {
+            let r = &instrument.routes[r.0];
+            r.target == ir::Target::Amplitude && matches!(instrument.modulators[r.source.0].source,
+                ir::ModulationSource::Envelope(_) | ir::ModulationSource::Breakpoints(_))
+        })
+    }).collect()).map_err(core(Stage::Envelope, "fallback envelopes"))?;
     if !instrument.source_indices.zones.is_empty() {
         let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
         for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
