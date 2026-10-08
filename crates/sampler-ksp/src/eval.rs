@@ -21,7 +21,7 @@ pub struct Environment {
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
-    pub engine_values: BTreeMap<[i32;4],i32>,
+    pub engine_values: BTreeMap<[i32; 4], i32>,
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
@@ -149,7 +149,7 @@ struct Eval<'h> {
     fuel: u64,
     depth: usize,
     consumed: BTreeSet<VarId>,
-    pending_menus: BTreeMap<usize,i32>,
+    pending_menus: BTreeMap<usize, i32>,
     callback_type: i32,
 }
 
@@ -188,8 +188,12 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
-        if !e.consumed.contains(&VarId(i as u32)) && (var.persistence != Persistence::None
-            || matches!(var.home, Home::Control(_)) && e.env.control_values.contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
+        if !e.consumed.contains(&VarId(i as u32))
+            && (var.persistence != Persistence::None
+                || matches!(var.home, Home::Control(_))
+                    && e.env
+                        .control_values
+                        .contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
         {
             e.restore(VarId(i as u32));
         }
@@ -357,18 +361,37 @@ impl Eval<'_> {
             Value::Text(s) => V::S(s.clone()),
         };
         if v.len.is_none() {
-            let host = matches!(v.home, Home::Control(_)).then(|| self.env.control_values.get(&crate::derived_control_id(self.env.slot, &v.name))).flatten();
+            let host = matches!(v.home, Home::Control(_))
+                .then(|| {
+                    self.env
+                        .control_values
+                        .get(&crate::derived_control_id(self.env.slot, &v.name))
+                })
+                .flatten();
             if let Some(saved) = host.or_else(|| self.env.persisted.get(&*v.name)) {
                 let mut value = conv(saved);
                 // A menu is saved as its selected item's position; the
                 // variable holds that item's value (Una Corda's velocity
                 // menu stores 5 for "Linear", whose value is 0).
-                if host.is_none() && let Home::Control(ui) = v.home && self.hir.uis[ui as usize].kind == WidgetKind::Menu {
+                if host.is_none()
+                    && let Home::Control(ui) = v.home
+                    && self.hir.uis[ui as usize].kind == WidgetKind::Menu
+                {
                     let ui = ui as usize;
                     let index = value.int();
                     let items = self.menu(ui);
-                    if items.is_empty() { self.pending_menus.insert(ui,index); value = V::I(0); }
-                    else { value = V::I(usize::try_from(index).ok().and_then(|i|items.get(i)).or_else(||items.first()).map_or(0,|item|item.value)); }
+                    if items.is_empty() {
+                        self.pending_menus.insert(ui, index);
+                        value = V::I(0);
+                    } else {
+                        value = V::I(
+                            usize::try_from(index)
+                                .ok()
+                                .and_then(|i| items.get(i))
+                                .or_else(|| items.first())
+                                .map_or(0, |item| item.value),
+                        );
+                    }
                 }
                 self.write_var(var, value);
             }
@@ -907,6 +930,11 @@ impl Eval<'_> {
                 // Text lines past 64 Ki are never shown; Conflux fills nine
                 // controls with a million lines each (~700 MB of model).
                 if !(builtin == SetControlParStrArr && index >= MAX_TEXT_LINES) {
+                    if par == b::CONTROL_PAR_VALUE
+                        && let Some(ui) = self.ui_index(id)
+                    {
+                        self.write_elem(self.hir.uis[ui].var, index, value.clone(), span);
+                    }
                     self.st
                         .indexed_properties
                         .insert((id, par, index), value.value());
@@ -991,11 +1019,19 @@ impl Eval<'_> {
                 let ui = self.ui_of(Self::var(args, 0));
                 let (text, value) = (self.text(args, 1)?, self.int(args, 2)?);
                 if let Some(ui) = ui {
-                    self.menu(ui).push(MenuItem {text,value,visible:true});
+                    self.menu(ui).push(MenuItem {
+                        text,
+                        value,
+                        visible: true,
+                    });
                     if let Some(&index) = self.pending_menus.get(&ui) {
                         let items = self.menu(ui);
-                        let selected = usize::try_from(index).ok().and_then(|i|items.get(i)).or_else(||items.first()).map_or(0,|item|item.value);
-                        self.write_var(Self::var(args,0),V::I(selected));
+                        let selected = usize::try_from(index)
+                            .ok()
+                            .and_then(|i| items.get(i))
+                            .or_else(|| items.first())
+                            .map_or(0, |item| item.value);
+                        self.write_var(Self::var(args, 0), V::I(selected));
                     }
                 }
                 V::I(0)
@@ -1248,8 +1284,22 @@ impl Eval<'_> {
                     },
                     _ => 0,
                 };
-                let authored = symbol_name(self.hir,key[0]).and_then(|name|sampler_core::engine_parameter_id(&name)).and_then(|parameter|self.env.engine_values.get(&[parameter.into(),key[1],key[2],key[3]]).copied());
-                V::I(self.st.engine.get(&key).copied().or(authored).unwrap_or(neutral))
+                let authored = symbol_name(self.hir, key[0])
+                    .and_then(|name| sampler_core::engine_parameter_id(&name))
+                    .and_then(|parameter| {
+                        self.env
+                            .engine_values
+                            .get(&[parameter.into(), key[1], key[2], key[3]])
+                            .copied()
+                    });
+                V::I(
+                    self.st
+                        .engine
+                        .get(&key)
+                        .copied()
+                        .or(authored)
+                        .unwrap_or(neutral),
+                )
             }
             GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
             GroupName => {
@@ -1267,11 +1317,22 @@ impl Eval<'_> {
                 )
             }
             FindMod | GetModIdx | FindTarget | GetTargetIdx => {
-                let name = self.text(args,args.len()-1)?;
-                let group = self.int(args,0)?;
-                let target = matches!(builtin,FindTarget | GetTargetIdx);
-                let owner = if target {self.int(args,1)?} else {-1};
-                V::I(self.env.engine_lookups.iter().find(|l|l.group==group && l.owner==owner && l.target==target && l.name.eq_ignore_ascii_case(&name)).map_or(-1,|l|l.index))
+                let name = self.text(args, args.len() - 1)?;
+                let group = self.int(args, 0)?;
+                let target = matches!(builtin, FindTarget | GetTargetIdx);
+                let owner = if target { self.int(args, 1)? } else { -1 };
+                V::I(
+                    self.env
+                        .engine_lookups
+                        .iter()
+                        .find(|l| {
+                            l.group == group
+                                && l.owner == owner
+                                && l.target == target
+                                && l.name.eq_ignore_ascii_case(&name)
+                        })
+                        .map_or(-1, |l| l.index),
+                )
             }
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),
@@ -1281,9 +1342,9 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
-            | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
-            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
+            | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
@@ -1354,5 +1415,6 @@ fn placeholder() -> model::Widget {
         menu: Vec::new(),
         callback: None,
         persistence: Persistence::None,
+        location: None,
     }
 }
