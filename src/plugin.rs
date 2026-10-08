@@ -583,6 +583,7 @@ pub struct Shared {
     discard: ArrayQueue<Retired>,
     /// Host sample rate (`f64` bits) parts are prepared for.
     pub(crate) editor_watch: AtomicUsize,
+    pub(crate) reported: AtomicU32,
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
     /// The velocity each key sounds at, 0 when silent: `played` on screen
@@ -661,6 +662,7 @@ pub(crate) struct PartView {
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
     pub(crate) status: String,
+    pub(crate) timing_status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
     /// Samples are being read for this slot.
@@ -726,6 +728,7 @@ impl Default for Shared {
             pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
             editor_watch: AtomicUsize::new(usize::MAX),
+            reported: AtomicU32::new(0),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
@@ -2622,7 +2625,7 @@ mod settings_parity_tests {
 }
 
 /// Port v1 timing_for/plan; stale patch and snapshot measurements are excluded.
-fn timing_for(p:&Part)->std::borrow::Cow<'_,crate::timing::Timing>{
+pub(crate) fn timing_for(p:&Part)->std::borrow::Cow<'_,crate::timing::Timing>{
     if p.timing.measured(&p.path,p.program,&p.snapshot){std::borrow::Cow::Borrowed(&p.timing)}else{std::borrow::Cow::Owned(crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()})}
 }
 fn timing_plan(s:&Selection)->crate::timing::Plan{
@@ -2632,4 +2635,26 @@ fn timing_plan(s:&Selection)->crate::timing::Plan{
             let names:Vec<&str>=p.timing.arts.iter().map(|a|a.identity.as_str()).collect();
             crate::timing::Holds::of(&timing_for(p),&names,latency_ms)
         }))).collect()}
+}
+
+#[cfg(test)]
+mod timing_loader_tests {
+    use super::*;
+    #[test]
+    fn v1_auto_align_loader_measures_a_fresh_generated_wave_and_persists_it() {
+        let dir=std::env::temp_dir().join(format!("kontra-timing-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();let path=dir.join("C3.wav");
+        let data:Vec<u8>=(0..72000).flat_map(|n|(((std::f64::consts::TAU*261.625565*n as f64/48000.).sin()*12000.)as i16).to_le_bytes()).collect();
+        let mut wav=Vec::new();wav.extend(b"RIFF");wav.extend((36+data.len()as u32).to_le_bytes());wav.extend(b"WAVEfmt ");wav.extend(16u32.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(48000u32.to_le_bytes());wav.extend(96000u32.to_le_bytes());wav.extend(2u16.to_le_bytes());wav.extend(16u16.to_le_bytes());wav.extend(b"data");wav.extend((data.len()as u32).to_le_bytes());wav.extend(data);std::fs::write(&path,wav).unwrap();
+        let p=SamplerParams::new();{let mut s=p.selection.write().unwrap();s.auto_align=true;s.parts.push(Part{path:path.to_string_lossy().into(),timing:crate::timing::Timing{override_ms:Some(12.),..Default::default()},..Default::default()});s.order.push(0);}
+        let began=Instant::now();
+        loop {
+            Load.run(&p);
+            if p.selection.read().unwrap().parts[0].timing.measured(&path.to_string_lossy(),0,""){break;}
+            assert!(began.elapsed().as_secs()<15,"auto-align never measured a loaded part");std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        assert_eq!(t.override_ms,Some(12.));assert!(t.loaded.first.iter().all(Option::is_some),"all velocity buckets were actually rendered");
+        let restored=Selection::deserialize(&s.serialize()).unwrap();assert_eq!(restored.parts[0].timing,*t);
+        drop(s);drop(p);std::fs::remove_dir_all(dir).unwrap();
+    }
 }
