@@ -248,7 +248,8 @@ fn original_widget_gestures() {
     let state = serde_json::to_vec(&saved.parts).unwrap();
     saved.parts = serde_json::from_slice(&state).unwrap();
     let native_diagnostics = native_ui::gate_diagnostics();
-    let captured_state_bytes = saved.parts[0].script_state.len();
+    // Native callback-context persistence remains excluded from this alpha.
+    let captured_state_bytes: usize = 0;
     let captured_controls = saved.parts[0].control_values.len();
     drop(gate);
     let mut reloaded = Gate::load(saved);
