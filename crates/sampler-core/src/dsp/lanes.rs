@@ -78,13 +78,23 @@ pub(crate) fn process(
                         filters,
                     );
                 }
-                for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
-                    let t = at + i as u64;
-                    let b = bypass.value(t);
-                    let (direct, through) = (dry.value(t) * (1. - b) + b, wet.value(t) * (1. - b));
-                    for (v, d) in x.iter_mut().zip(d) {
-                        let wet_part = if off { 0. } else { through * *v };
-                        *v = direct * d + wet_part;
+                if let [Some(d), Some(w), Some(b)] = [dry, wet, bypass].map(|r| r.settled(at)) {
+                    let (direct, through) = (d * (1. - b) + b, w * (1. - b));
+                    for (x, d) in block[..len].iter_mut().zip(&dry_block) {
+                        for (v, d) in x.iter_mut().zip(d) {
+                            let wet_part = if off { 0. } else { through * *v };
+                            *v = direct * d + wet_part;
+                        }
+                    }
+                } else {
+                    for (i, (x, d)) in block[..len].iter_mut().zip(&dry_block).enumerate() {
+                        let t = at + i as u64;
+                        let b = bypass.value(t);
+                        let (direct, through) = (dry.value(t) * (1. - b) + b, wet.value(t) * (1. - b));
+                        for (v, d) in x.iter_mut().zip(d) {
+                            let wet_part = if off { 0. } else { through * *v };
+                            *v = direct * d + wet_part;
+                        }
                     }
                 }
             }
