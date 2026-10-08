@@ -298,3 +298,23 @@ Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
 The shared collector CLI/metrics and driver stayed unchanged. The scanner was
 built at 74718ad7; later commits add tests/reporting only, with unchanged
 production lowering and scanner code.
+
+## Native binding and telemetry checkpoint (W3)
+
+The shared Native bridge preserves declared text and arrays when only scalar
+telemetry is available. The focused test fails before the guard and passes for
+text, integer arrays and real arrays afterward. Valid bindings retain the live
+0.625 meter readback and typed edit routing.
+
+**PROVISIONAL (no Kontakt reference capture):** retain the requested face;
+unmatched parameters report `connected=false` and ignore edits/touch; unmatched
+meters report `connected=false` and no level. Program ownership is unchanged.
+NI documents [identifier-only KSP exposure](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#expose_controls)
+and [unconnected meters](https://developer.native-instruments.com/komplete-ui/docs/Packages/kontakt/Classes/KSPLevelMeter/).
+All 12 installed NKRs were inspected; Conflux has 134 readable Native modules.
+The two quoted program-0 candidate identifiers reached no binding call during
+requested-face initialization/rendering, including tagged indirect flow. This
+does not prove inactive branches or Kontakt-observed legacy Native behavior.
+
+This checkpoint does not claim full-editor Native painting or a final N/50
+Original-OK count. Those remain a separate, timeboxed investigation.

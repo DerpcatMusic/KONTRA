@@ -1,6 +1,6 @@
 //! Bounded legacy .nui execution over the published UI IR. No filesystem Lua API.
 use super::pictures::Source;
-use mlua::{Function, Lua, Table, UserData, UserDataMethods, Value as LuaValue};
+use mlua::{Function, Lua, Table, UserData, UserDataFields, UserDataMethods, Value as LuaValue};
 use moose::mui::mui::{prelude::Font, scene::Image};
 use sampler_ui_ir as ir;
 use std::{
@@ -335,6 +335,9 @@ fn value(lua: &Lua, value: &ir::Value, index: Option<usize>) -> mlua::Result<Lua
     })
 }
 impl UserData for Parameter {
+    fn add_fields<F:UserDataFields<Self>>(fields:&mut F) {
+        fields.add_field_method_get("connected",|_,this|Ok(this.bridge.lock().unwrap().controls.get(this.binding).is_some()));
+    }
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
@@ -382,10 +385,7 @@ impl UserData for Parameter {
                 #[cfg(test)]
                 trace_parameter(_lua,this,"write")?;
                 let mut bridge = this.bridge.lock().unwrap();
-                let widget = bridge
-                    .controls
-                    .get(this.binding)
-                    .ok_or_else(|| mlua::Error::external("NativeUI control unavailable"))?;
+                let Some(widget) = bridge.controls.get(this.binding) else {return Ok(())};
                 let value = match v {
                     LuaValue::String(s) => {
                         let s = s.to_str()?.to_owned();
@@ -486,11 +486,8 @@ impl UserData for Parameter {
             },
         );
         methods.add_method("update_touch", |_, this, index: Option<usize>| {
-            this.bridge
-                .lock()
-                .unwrap()
-                .touches
-                .insert((this.binding, index.unwrap_or(0)));
+            let mut bridge=this.bridge.lock().unwrap();
+            if bridge.controls.get(this.binding).is_some() {bridge.touches.insert((this.binding,index.unwrap_or(0)));}
             Ok(())
         });
         methods.add_method("end_touch", |_, this, index: Option<usize>| {
@@ -511,7 +508,8 @@ impl UserData for Parameter {
         });
         methods.add_method("is_midi_learn_active", |_, _, _: Option<usize>| Ok(false));
         for name in ["begin_midi_learn", "end_midi_learn"] {
-            methods.add_method(name, |_, _, _: Option<usize>| {
+            methods.add_method(name, |_, this, _: Option<usize>| {
+                if this.bridge.lock().unwrap().controls.get(this.binding).is_none() {return Ok(())};
                 Err::<(), _>(mlua::Error::external("NativeUI MIDI learn is unavailable"))
             });
         }
@@ -633,20 +631,14 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                let binding = meter_names.get(&identifier).copied()
-                    .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
+                let binding = meter_names.get(&identifier).copied();
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
+                meter.set("connected",binding.is_some())?;
                 meter.set(
                     "level_value",
                     lua.create_function(move |_, _: LuaValue| {
-                        Ok(bridge
-                            .lock()
-                            .unwrap()
-                            .meters
-                            .get(&binding)
-                            .copied()
-                            .unwrap_or(0.))
+                        Ok(binding.and_then(|binding|bridge.lock().unwrap().meters.get(&binding).copied()).unwrap_or(0.))
                     })?,
                 )?;
                 Ok(meter)
@@ -708,7 +700,8 @@ impl Session {
             let w = &mut bridge.controls[at];
             if let Some(value) = typed.get(&ir::WidgetRef(index)) {
                 w.value = Some(value.clone());
-            } else if let ir::Binding::Control(c) = w.binding
+            } else if matches!(w.value, None | Some(ir::Value::Integer(_) | ir::Value::Real(_)))
+                && let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -868,6 +861,12 @@ mod tests {
         );
         assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
             "another source is not overwritten by this source's scalar fallback");
+        let mut typed_source=source.clone();
+        for saved in [ir::Value::Text("published text".into()),ir::Value::Integers(vec![1,2,3]),ir::Value::Reals(vec![0.25,0.5])] {
+            typed_source.widgets[0].value=Some(saved.clone());
+            session.update_view(&typed_source,&HashMap::from([(ir::ControlId(42),75.)]),&Default::default(),&Default::default());
+            assert_eq!(session.bridge.lock().unwrap().controls[1].value,Some(saved),"scalar telemetry must preserve declared text/array values");
+        }
         session.update_view(
             &source,
             &Default::default(),
@@ -884,6 +883,22 @@ mod tests {
         assert_eq!(edits[0].source_id, Some(7));
         assert_eq!(edits[0].source, ir::Source::Ksp { slot: 2 });
         assert!(session.unavailable_controls().is_empty());
+        // Requested faces may contain bindings absent from this instrument.
+        session.lua().load(r#"
+            local kontakt=require('kontakt')
+            local missing=kontakt.connect_parameter('undeclared')
+            local missing_bool=kontakt.connect_parameter('undeclared_bool','bool')
+            local meter=kontakt.connect_level_meter('undeclared_meter')
+            assert(missing.connected==false and missing_bool.connected==false)
+            assert(meter.connected==false and meter:level_value()==0)
+            assert(missing:value()==0 and missing_bool:value()==false)
+            missing:set_value(0.75)
+            missing:update_touch()
+            assert(missing:is_touch_active()==false)
+            missing:end_touch()
+        "#).exec().unwrap();
+        assert!(session.take_edits().is_empty(),"unconnected bindings cannot edit a declared control");
+        assert!(session.bridge.lock().unwrap().touches.is_empty());
         assert!(
             session
                 .lua()
