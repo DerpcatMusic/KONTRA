@@ -23,6 +23,16 @@ pub struct Biquad {
 }
 impl Biquad {
     pub(crate) fn trace_coefficients(&self) -> [f64; 5] { [self.b[0],self.b[1],self.b[2],self.a[0],self.a[1]] }
+    /// Static response from the coefficients playback consumes. Port from v1
+    /// filter::magnitude, for the sound editor; no second filter kernel.
+    pub fn magnitude(self, hz: f64) -> f64 {
+        let w=std::f64::consts::TAU*hz/f64::from(self.rate);
+        let norm=|c:[f64;3]| {
+            let re=c[0]+c[1]*w.cos()+c[2]*(2.*w).cos();
+            let im=-c[1]*w.sin()-c[2]*(2.*w).sin(); re*re+im*im
+        };
+        (norm(self.b)/norm([1.,self.a[0],self.a[1]])).sqrt()
+    }
     /// Prepare coefficients off audio. Frequency is strictly between DC and Nyquist;
     /// Q is positive, including for shelves: Q = 1/sqrt(2) gives RBJ shelf slope S=1.
     /// Larger Q permits resonant overshoot. Reject numerically unstable coefficients.

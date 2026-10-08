@@ -436,6 +436,10 @@ struct Note {
     children: usize,
 }
 
+/// Fixed editor probe of actual occupied native voices (v1 playheads).
+#[derive(Clone, Copy, Debug)]
+pub struct VoiceTap {pub group:u32,pub key:u8,pub velocity:u8,pub phase:u8,pub level:f32}
+
 #[derive(Clone, Copy, Debug)]
 struct Voice {
     family: FamilyId,
@@ -1016,6 +1020,17 @@ impl Runtime {
             next = slot.next;
         }
         audible
+    }
+
+    pub fn voice_taps(&self) -> [Option<VoiceTap>;16] {
+        let mut taps=[None;16]; let mut next=self.voices.first;
+        for to in &mut taps {
+            let Some(i)=next else {break;};let slot=&self.voices.slots[i];let v=slot.value.as_ref().unwrap();
+            let family=self.families.get(v.family.0).unwrap();let note=self.notes.get(family.note.0).unwrap();
+            *to=Some(VoiceTap {group:v.group.unwrap_or(u32::MAX),key:note.pitch.key(),velocity:(note.velocity*127.).round() as u8,phase:v.envelope.editor_phase(),level:v.envelope.current()});
+            next=slot.next;
+        }
+        taps
     }
 
     pub fn pending_commands(&self) -> usize {

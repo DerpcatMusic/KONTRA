@@ -135,7 +135,8 @@ impl ControlState {
         let ControlValue::Real(base) = base else { return base };
         let binding = &prepared.engine_parameters[self.engine_index[index]];
         let norm = binding.law.encode(base);
-        let to = (f64::from(norm) + f64::from(offset) * 1e6).round().clamp(0., 1e6) as i32;
+        // The admitted law owns its normalized bounds, including bipolar gains.
+        let to = (f64::from(norm) + f64::from(offset) * 1e6).round() as i32;
         let mut value = binding.law.decode(to);
         if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
             value = value.clamp(min, max);
