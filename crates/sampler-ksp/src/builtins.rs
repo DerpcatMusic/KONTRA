@@ -573,6 +573,9 @@ const VALUED: &[(&str, i32)] = &[
 
 /// Constants whose numeric value carries meaning.
 pub fn constant(name: &str) -> Option<i32> {
+    if let Some(event) = sampler_core::WidgetEventType::ksp_constant(name) {
+        return Some(event as i32);
+    }
     if let Some(&(_, v)) = VALUED.iter().find(|(n, _)| *n == name) {
         return Some(v);
     }
