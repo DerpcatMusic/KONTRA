@@ -464,12 +464,17 @@ impl Session {
         ));
         let hook_deadline = deadline.clone();
         let hook_fuel = fuel.clone();
-        lua.set_interrupt(move |_| {
+        lua.set_interrupt(move |lua| {
             if hook_fuel
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
                 .is_err()
             {
-                return Err(mlua::Error::external("NativeUI interrupt budget exceeded"));
+                let site = lua.inspect_stack(0, |debug| {
+                    let source = debug.source();
+                    let source = source.source.as_deref().unwrap_or("");
+                    format!("{}:{}:{}:{}", usize::from(source == "NativeUI host"), debug.current_line().unwrap_or(0), &blake3::hash(source.as_bytes()).to_hex()[..16], lua.globals().get::<u32>("__native_nodes").unwrap_or(0))
+                }).unwrap_or_default();
+                return Err(mlua::Error::external(format!("NativeUI interrupt budget exceeded; site {site}")));
             }
             if hook_fuel.load(Ordering::Relaxed) % 256 == 0
                 && std::time::Instant::now() > *hook_deadline.lock().unwrap()
@@ -635,7 +640,7 @@ impl Session {
         bridge.meters.extend(values);
     }
     pub fn render(&self) -> anyhow::Result<Table> {
-        self.fuel.store(100_000, Ordering::Relaxed);
+        self.fuel.store(1_000_000, Ordering::Relaxed);
         *self.deadline.lock().unwrap() =
             std::time::Instant::now() + std::time::Duration::from_millis(250);
         if let Ok(error) = self.lua.globals().get::<String>("__canvas_error") {
@@ -774,5 +779,25 @@ mod tests {
                 .unwrap()
                 .is_nil()
         );
+        // Context modifiers affect descendants without leaking into siblings.
+        let context_source = syntax::translate(r#"
+            local ui=require('native_ui')
+            local key=ui.create_context()
+            local child=function() local value=ui.use_context(key); return @ui.Text {text=value() or 'base'} end
+            return function() return @ui.ZStack {
+                @child {}.context(key=key,value='nested')
+                @child {}
+            } end
+        "#).unwrap();
+        let context_root: Function = session.lua().load(&context_source).eval().unwrap();
+        let render: Function = session.lua().globals().get("__render").unwrap();
+        let graph: Table = render.call(context_root).unwrap();
+        let children: Table = graph.get("children").unwrap();
+        let nested: Table = children.get::<Table>(1).unwrap().get::<Table>("children").unwrap().get(1).unwrap();
+        let sibling: Table = children.get(2).unwrap();
+        assert_eq!(nested.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "nested");
+        assert_eq!(sibling.get::<Table>("props").unwrap().get::<String>("text").unwrap(), "base");
+        let forever: Function = session.lua().load("return function() while true do end end").eval().unwrap();
+        assert!(session.call(forever, ()).unwrap_err().to_string().contains("budget exceeded"));
     }
 }

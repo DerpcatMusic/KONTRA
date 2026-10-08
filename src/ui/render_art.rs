@@ -115,16 +115,17 @@ pub(super) fn words(
             .h(lh)
             .pad((2. * scale, 0.))
     };
-    stack![
+    let el = stack![
         col(lines.into_iter().map(one))
             .gap(0.)
             .w(w)
             .h(tall)
-            .at(0., top.map_or((h - tall) / 2., |y| f64::from(y) * scale))
+            .at(0., top.map_or(((h - tall) / 2.).max(0.), |y| f64::from(y) * scale))
     ]
     .w(w)
     .h(h)
-    .clip()
+    .clip();
+    if label && tall > h { el.scroll() } else { el }
 }
 #[allow(clippy::too_many_arguments)]
 fn bitmap_words(
@@ -145,7 +146,8 @@ fn bitmap_words(
     };
     let lh = f64::from(font.frames[0].height) * s;
     let lines = lines(text, w - 4. * s, label && h >= 2. * lh, advance);
-    let y = top.map_or((h - lh * lines.len() as f64) / 2., |y| f64::from(y) * s);
+    let tall = lh * lines.len() as f64;
+    let y = top.map_or(((h - tall) / 2.).max(0.), |y| f64::from(y) * s);
     let mut layers = Vec::new();
     for (n, line) in lines.iter().enumerate() {
         let width = advance(line);
@@ -166,7 +168,8 @@ fn bitmap_words(
             x += width;
         }
     }
-    stack(layers).w(w).h(h).clip()
+    let el = stack(layers).w(w).h(h).clip();
+    if label && tall > h { el.scroll() } else { el }
 }
 
 /// Arbitrary margins take precedence; absent margins retain v1's symmetric cuts.

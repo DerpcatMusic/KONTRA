@@ -186,7 +186,7 @@ fn light_under(face: &Interface, assets: &Assets, n: WidgetRef) -> bool {
         let i=(v as usize*img.width as usize+u as usize)*4;
         if let Some(c)=img.rgba.get(i..i+4) {blend(rgb,ir::Rgba{r:c[0],g:c[1],b:c[2],a:c[3]});}
     };
-    if let Some(pic)=page.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {let [wx,wy,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);sample(&mut rgb,img,(x-wx as f64)*img.width as f64/sw.max(1) as f64,(y+page.background.offset_y as f64-wy as f64)*img.height as f64/sh.max(1) as f64);}
+    if let Some(pic)=page.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(page.background.frame as usize) {let [wx,wy,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);sample(&mut rgb,img,(x-wx as f64)*img.width as f64/sw.max(1) as f64,(y+page.background.origin_y as f64+page.background.offset_y.max(0) as f64-wy as f64)*img.height as f64/sh.max(1) as f64);}
     for at in face.draw_order(face.widgets[n.0].page) {
         if at==n {break;}
         if !face.visible(at) {continue;}
@@ -247,7 +247,14 @@ pub fn resolve_changed(face: &mut Interface, indices: impl IntoIterator<Item = u
             w.rect.y = (row as i32 - 1) * GRID.1 + GRID.3;
             w.placement = ir::Placement::Pixels;
         }
-        if w.auto_size { (w.rect.width, w.rect.height) = default_size(&w.kind); w.auto_size = false; }
+        if w.auto_size {
+            let defaults = default_size(&w.kind);
+            let axes = if w.default_axes == [false; 2] { [true; 2] } else { w.default_axes };
+            if axes[0] { w.rect.width = defaults.0; }
+            if axes[1] { w.rect.height = defaults.1; }
+            w.auto_size = false;
+            w.default_axes = [false; 2];
+        }
         if face.source == ir::Source::FalconLua { continue }
         let meta = w.images.iter().filter(|i| i.role != Use::Handle).find_map(|i| match &face.assets.get(i.asset.0)?.kind {
             ir::AssetKind::Image(m) => m.size.map(|s| (s, m.stretch)),
@@ -274,9 +281,9 @@ pub fn view_state(ui: &mut Ui, namespace: &str, face: &Interface, page: PageRef,
     let ground = block(w, h).radius(0).fill(p.background.color.map_or(Fill::from(Role::Field), |c| Fill::from(colour(c))));
     layers.push(ground.at(0., 0.));
     // The wallpaper at its own size; the page shows it from `offset_y` down.
-    if let Some(pic)=p.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(0) {
+    if let Some(pic)=p.background.image.and_then(|a|assets.get(a)) && let Some(img)=pic.at(p.background.frame as usize) {
         let [x,y,sw,sh]=pic.window.unwrap_or([0,0,img.width,img.height]);
-        layers.push(block(sw as f64*scale,sh as f64*scale).radius(0).fill(Fill::Image(img.clone(),Fit::Fill)).at(x as f64*scale,(y as f64-p.background.offset_y as f64)*scale));
+        layers.push(block(sw as f64*scale,sh as f64*scale).radius(0).fill(Fill::Image(img.clone(),Fit::Fill)).at(x as f64*scale,(y as f64-p.background.origin_y as f64-p.background.offset_y.max(0) as f64)*scale));
     }
     for n in face.draw_order(page) {
         if !face.visible(n) {
@@ -383,7 +390,10 @@ pub(super) fn widget_state(
     let can_edit = enabled && wd.intercepts_mouse;
     let mut v = control.and_then(|c| values.get(&c).copied()).unwrap_or(default);
     let before = v;
-    let style=wd.style.and_then(|s|face.styles.get(s.0));
+    let state = usize::from(v > 0.5) + if ui.get(id.as_str()).held { 2 } else if hovered { 4 } else { 0 };
+    let style = if matches!(wd.kind, Kind::Button { .. } | Kind::Switch | Kind::Menu { .. }) {
+        wd.state_styles[state].or(wd.style)
+    } else { wd.style }.and_then(|s| face.styles.get(s.0));
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink=match style {
         Some(s) if !own_face && s.color.a>0 => Fill::from(colour(s.color)),
@@ -507,7 +517,9 @@ pub(super) fn widget_state(
                 if can_edit { drive_widget(ui, &id, &mut v, &(range.min..=range.max), travel, vertical, range.default, range.step, false); }
                 let mut parts = Vec::new();
                 if !wd.hide.title && !wd.text.is_empty() { parts.push(words(wd.text.clone()).fill(secondary()).flex(1).min_w(0)); }
-                parts.push(words(wd.value_text.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| number(v, display))));
+                if !wd.hide.value {
+                    parts.push(super::render_art::words(wd.value_text.as_deref().unwrap_or(&number(v, display)), style, assets, bitmap, ink.clone(), w, h, scale, wd.value_y, false));
+                }
                 if *arrows {
                     let up = format!("{id}-up"); let down = format!("{id}-down");
                     if can_edit && ui.get(up.as_str()).activated() { v = quantized(v + range.step.unwrap_or(1.),range); }
