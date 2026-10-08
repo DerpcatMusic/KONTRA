@@ -25,6 +25,7 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrumen
     static COMPILED: Mutex<Option<Compiled>> = Mutex::new(None);
     let lock = || COMPILED.lock().unwrap_or_else(|e| e.into_inner());
     // Ordinary scripts keep the existing cache-hit path: no tokenization or I/O.
+    let view_span = crate::audit_load::Span::new("ksp_frontend_view");
     let prepared = if source.contains("load_performance_view") {
         Some(super::performance_view::prepare(source, inherited, instrument)?)
     } else { None };
@@ -37,7 +38,10 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrumen
         Some(p) => p,
         None => super::performance_view::prepare(source, inherited, instrument)?,
     };
+    drop(view_span);
+    let span = crate::audit_load::Span::new("ksp_callback_lower");
     let program = Arc::new(compile::compile_prepared(prepared, setup)?);
+    drop(span);
     let mut compiled = lock();
     let compiled = compiled.get_or_insert_default();
     compiled.retain(|_, p| p.strong_count() > 0);
@@ -1250,6 +1254,7 @@ impl Runtime {
         };
         let inherited = self.programs.iter().zip(&self.states).rev()
             .find(|(_, state)| state.error.is_none()).map(|(p, _)| p.conditions.clone()).unwrap_or_default();
+        let span = crate::audit_load::Span::new("ksp_compile_frontend_callbacks");
         let program = match compiled(source, &setup, &inherited, engine.instrument_path()) {
             Ok(p) => p,
             Err(e) => {
@@ -1260,14 +1265,18 @@ impl Runtime {
                 return Err(e);
             }
         };
+        drop(span);
         self.states.push(SlotState::new(index, &program));
         self.programs.push(program);
         let staged = self.env.host.clone();
+        let span = crate::audit_load::Span::new("ksp_on_init");
         if let Err(e) = self.run_init(engine, index) {
             self.env.host = staged;
             self.states[index as usize].error = Some(format!("{e:#}"));
             return Err(e);
         }
+        drop(span);
+        let persist_span = crate::audit_load::Span::new("ksp_persistence_changed");
         self.restore_persistent(index);
         // Loading is off the audio thread: callbacks it triggers get the init budget.
         let block_fuel = std::mem::replace(&mut self.env.block_fuel, INIT_FUEL);
@@ -1281,6 +1290,7 @@ impl Runtime {
         self.settle(engine);
         self.fuel_cap = CALLBACK_FUEL;
         self.env.block_fuel = block_fuel;
+        drop(persist_span);
         Ok(())
     }
 

@@ -232,13 +232,19 @@ fn chunks(path: &Path) -> Result<KontaktChunks> {
         "Instrument header contains only zero bytes; check for an incomplete/damaged copy or filesystem read failure"
     );
     file.rewind()?;
-    let bytes = match NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))? {
+    let span = crate::audit_load::Span::new("file_read_ni_container");
+    let container = NIFile::read(&mut file).with_context(|| format!("NIS/NKS container {} ({file_bytes} bytes), decoder cursor {:?}", path.display(), file.stream_position().ok()))?;
+    drop(span);
+    let span = crate::audit_load::Span::new("decrypt_expand");
+    let bytes = match container {
         NIFile::NKSContainer(n) => n.decompressed_preset().with_context(|| format!("NKS preset decompression in {}, compressed {} bytes", path.display(), n.compressed_data.len()))?,
         NIFile::NISoundContainer(n) => nis_payload(n,path,0).with_context(|| format!("NIS preset payload in {}", path.display()))?,
         _ => bail!("Unsupported instrument container; choose an NKI or NKM preset"),
     };
     ensure!(bytes.len() <= 256 * 1024 * 1024, "Expanded instrument exceeds 256 MiB limit");
     let expanded_bytes = bytes.len();
+    drop(span);
+    let _span = crate::audit_load::Span::new("ni_chunk_parse");
     KontaktChunks::read(Cursor::new(bytes)).with_context(|| format!("Kontakt chunks in {}, expanded payload {expanded_bytes} bytes", path.display()))
 }
 fn nis_payload(n:ni_file::nis::ItemContainer,path:&Path,depth:usize)->Result<Vec<u8>> {
@@ -713,9 +719,11 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
     if crate::creator::is_native(path) { return crate::creator::read_native(path); }
     let path = path.canonicalize()?;
     let dir = crate::cache::dir();
+    let span = crate::audit_load::Span::new("preset_cache_lookup");
     if let Some(i) = dir.as_deref().and_then(|dir| crate::cache::load(dir, &path, index)) {
         return Ok(i);
     }
+    drop(span);
     let instrument = parse(path, index)?;
     if let Some(dir) = &dir { crate::cache::store(dir, &instrument.path, index, &instrument); }
     Ok(instrument)
@@ -723,6 +731,7 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
 
 fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
     let c = chunks(&path).context("Container decoding")?;
+    let _span = crate::audit_load::Span::new("ni_objects_import_resolve");
     let p = if let Some(p)=c.find_first(0x28) {ensure!(index==0,"NKI has only one instrument");Program::try_from(p)?}else{multi_programs(&c)?.1.into_iter().find(|(id,_)|*id==index).context("Multi program not found")?.1};
     let mut warnings = Vec::new();
     let program = p.params().context("Program parameters")?;

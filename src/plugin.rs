@@ -1297,6 +1297,7 @@ fn scripts_with_delays(
     i: &Instrument, saved: &str, ir_settings: &[crate::fx::IrSlotSettings],
     engine_state: &[crate::ksp::engine::NativeEdit], delay_state: &[crate::fx::DelayState], rate: f64,
 ) -> (Option<Box<Runtime>>, Option<Box<PersistenceSnapshot>>, Vec<String>) {
+    let _span = crate::audit_load::Span::new("ksp_compile_init");
     let (script, errors) = crate::engine::load_scripts_with_delay_state(i, persisted(saved, i), rate, ir_settings, engine_state, delay_state);
     // Nothing persistent: no snapshots to trade with the audio thread.
     let snapshot = script
@@ -8813,6 +8814,84 @@ end on"
         assert_eq!(context["host"]["audio"]["block"], 3);
         assert!(context["log_flush_error"].is_null());
         assert_ne!(p.shared.instance_id, SamplerParams::new().shared.instance_id);
+    }
+
+    /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
+    #[test]
+    #[ignore]
+    fn probe_load() {
+        let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+        let program = std::env::var("PROBE_PROGRAM").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let proc_kb = |key: &str| -> u64 {
+            std::fs::read_to_string("/proc/self/status").unwrap().lines()
+                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok()).unwrap_or(0)
+        };
+        let params = std::sync::Arc::new(SamplerParams::new());
+        params.selection.write().unwrap().parts = vec![Part { path: path.clone(), program, ..Default::default() }];
+        let rss0 = proc_kb("VmRSS:");
+        let mut engine = crate::engine::Engine::default();
+        let t0 = Instant::now();
+        let worker = { let p = params.clone(); std::thread::spawn(move || { Load.run(&p); t0.elapsed() }) };
+        let mut publication_ms = None;
+        let mut first_audio_ms = None;
+        let mut first_audio_frame = None;
+        let mut installed_ms = None;
+        let mut peak = 0f32;
+        let mut blocks = 0u32;
+        let mut deferred_bank = None;
+        loop {
+            if publication_ms.is_none() && params.shared.view.lock().unwrap().parts[0].load_report.is_some() { publication_ms = Some(t0.elapsed().as_secs_f64()*1000.); }
+            while let Some((slot, _, part)) = params.shared.ready.pop() {
+                if slot != 0 { continue; }
+                match part {
+                    Handoff::Part { bank, fx, script, .. } => {
+                        engine.set_script(script); engine.set_bank(bank); engine.set_fx(fx);
+                        installed_ms = Some(t0.elapsed().as_secs_f64()*1000.);
+                        engine.cc(0, 1, 127); engine.cc(0, 11, 127); engine.note_on(0, 60, 100);
+                    }
+                    Handoff::Bank(bank) => {
+                        if engine.zone_upgrade_ready(&bank) { engine.upgrade_bank(bank); }
+                        else { deferred_bank = Some(bank); }
+                    }
+                    _ => {}
+                }
+            }
+            if deferred_bank.as_ref().is_some_and(|bank| engine.zone_upgrade_ready(bank)) {
+                engine.upgrade_bank(deferred_bank.take().unwrap());
+            }
+            if installed_ms.is_some() {
+                let (mut l,mut r)=([0f32;64],[0f32;64]); engine.render(&mut l,&mut r); for x in l.iter().chain(&r) { peak=peak.max(x.abs()); }
+                if peak > 1e-7 && first_audio_ms.is_none() {
+                    first_audio_ms = Some(t0.elapsed().as_secs_f64()*1000.);
+                    first_audio_frame = Some(blocks*64);
+                }
+                blocks += 1;
+            }
+            if worker.is_finished() && (installed_ms.is_none() || blocks >= 375) { break; }
+            std::thread::sleep(std::time::Duration::from_micros(1333));
+        }
+        let total = worker.join().unwrap();
+        let rss_done = proc_kb("VmRSS:");
+        let hwm_done = proc_kb("VmHWM:");
+        let ui = crate::ui::audit_frames(&params);
+        let ui_wall_ms = ui["build_ms"].as_f64().unwrap();
+        let rss_settled = (ui["rss_live_mb"].as_f64().unwrap() * 1024.) as u64;
+        let hwm = proc_kb("VmHWM:");
+        #[cfg(all(target_os="linux", target_env="gnu"))]
+        let trimmed_rss = { unsafe { libc::malloc_trim(0); } proc_kb("VmRSS:") };
+        #[cfg(not(all(target_os="linux", target_env="gnu")))]
+        let trimmed_rss = rss_settled;
+
+        let extra = serde_json::json!({"voices":engine.active_voices(), "sample_resident_bytes":crate::engine::resident_bytes(), "sample_budget_bytes":crate::engine::memory_budget(), "preload_deferred":deferred_bank.is_some()});
+        let trace = params.shared.view.lock().unwrap().parts[0].load_report.as_deref().cloned();
+        println!("PROBE {}", serde_json::json!({
+            "path":path,"program":program,"publication_ms":publication_ms,
+            "installed_ms":installed_ms,"first_audio_ms":first_audio_ms,"first_audio_frames":first_audio_frame,"peak":peak,
+            "load_run_ms":total.as_secs_f64()*1000.,"ui_wall_ms":ui_wall_ms,"ui":ui,
+            "rss0_mb":rss0 as f64/1024.,"rss_done_mb":rss_done as f64/1024.,"hwm_done_mb":hwm_done as f64/1024.,
+            "rss_settled_mb":rss_settled as f64/1024.,"rss_after_trim_mb":trimmed_rss as f64/1024.,"hwm_mb":hwm as f64/1024.,"trace":trace,
+            "extra":extra
+        }));
     }
 
 }
