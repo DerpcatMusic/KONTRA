@@ -46,7 +46,7 @@ def main():
         name, path, program = line.split("\t")
         output = out / f"{mode}-{name}-{repeat}.json"
         if output.exists():
-            continue
+            if os.environ.get('KONTRA_GATE_REQUIRE_QUIET') != '1' or json.loads(output.read_text()).get('contention') == 'QUIET': continue
         # Resume the same slice after releasing the heavy slot. Never start a
         # worker unless its entire timeout fits in this short shard.
         if deadline - time.monotonic() < 130:
@@ -80,6 +80,13 @@ def main():
         if cache_home:
             cmd[5:5] = ["--bind", str(numeric), str(numeric)]
         stages, result = [], {}
+        activity = None
+        if env.get('KONTRA_GATE_ACTIVITY') == '1':
+            sys.path.insert(0, str(Path(__file__).resolve().parent / 'kontra-gate'))
+            from contention import Activity, QuietBusy
+            activity = Activity(out / (output.stem + '-activity'))
+            try: activity.start()
+            except QuietBusy: return 75
         begin = time.monotonic()
         try:
             run = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=130)
@@ -91,6 +98,9 @@ def main():
             result["returncode"] = run.returncode
         except subprocess.TimeoutExpired:
             result = {"timeout_s": 130}
+        finally:
+            if activity: activity.finish()
+        if activity: result['contention'] = activity.result['status']
         result.update(library=name, mode=mode, repeat=repeat, stages=stages, process_wall_s=time.monotonic() - begin)
         output.write_text(json.dumps(result, indent=2) + "\n")
         print(name, mode, result.get("load_run_ms", result.get("returncode", "timeout")), flush=True)

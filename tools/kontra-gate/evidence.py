@@ -4,6 +4,10 @@ import json
 import shutil
 from pathlib import Path
 import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from contention import Activity, QuietBusy
 
 AUDIT_STAGES = set('preset_cache_lookup preset_cache_store preset_cache_decode preset_cache_validate preset_cache_restore_scripts script_ui_prepare core_lower_bindings stream_page_pool file_read_ni_container decrypt_expand ni_chunk_parse ni_objects_parse translate_resolve_ir translate_ksp_init translate_resource_ir_dsp translate_zones_sample_resolve translate_keys_validate sample_source_resolve sample_headers_latency_probe sample_preload runtime_alloc_init ksp_frontend ksp_cache_frontend ksp_cache_native_restore ksp_on_init ksp_callback_lower uvi_read_translate uvi_lua_init'.split())
 FIELDS = set('level subsystem event phase category kind sequence instance_id count counters data elapsed_ms timestamp status error position stage subsystem_id nodes id from to node_id edges blocks peak rms dc enabled params level_db rms_db peak_db gain_db gain latency latency_frames bypass bypassed signal_graph_trace sample_rate'.split())
@@ -35,12 +39,20 @@ class Capture:
         self.cache = Path(cache) if cache else None
         self.before = self.cache_stats()
         env['XDG_DATA_HOME'] = str(self.root / 'data')
+        self.activity = None
+        if env.get('KONTRA_GATE_ACTIVITY') == '1':
+            self.activity = Activity(work)
+            try: self.activity.start()
+            except QuietBusy:
+                self.stderr.close(); self.tmp.cleanup()
+                raise
 
     def cache_stats(self):
         files = [p for p in self.cache.rglob('*') if p.is_file()] if self.cache else []
         return {'files': len(files), 'bytes': sum(p.stat().st_size for p in files)}
 
     def finish(self):
+        if self.activity: self.activity.finish()
         self.stderr.flush(); self.stderr.close()
         records = []
         stages = []
