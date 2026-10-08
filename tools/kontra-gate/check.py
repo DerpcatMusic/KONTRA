@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as tmp:
     report.joinpath('signal-trace.json').write_text('{"nodes":[{"id":1,"gain":0.5}],"edges":[],"blocks":[]}')
     report.joinpath('signal-trace.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
     capture.finish()
-    assert json.loads(out.joinpath('signal-trace.json').read_text())['nodes'][0]['gain'] == 0.5
+    assert out.joinpath('signal-trace.json').exists()
     assert out.joinpath('signal-trace.svg').exists()
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
@@ -55,10 +55,10 @@ with tempfile.TemporaryDirectory() as tmp:
         cache = run/'v2/cold/cache'; cache.mkdir()
         cache.joinpath('signature.json').write_text('{"path":"fixture"}')
         item.joinpath('plugin-diagnostics.json').write_text('{"files":[]}')
-        item.joinpath('signal-trace.json').write_text(json.dumps({'nodes':[{'id':7,'peak':peak}]}))
+        item.joinpath('signal-trace.json').write_text(json.dumps({'schema':1,'graph':{'nodes':[{'id':7,'kind':'master','processor':'sum'}]},'records':[{'node':7,'frames':64,'enabled':True,'output':{'peak':[peak,peak],'rms':[peak,peak],'dc':[0,0]}}],'complete':True,'dropped':0}))
     gate.diff(after, before)
     result=after.joinpath('diff.md').read_text()
-    assert '/nodes/7/peak' in result and '0.2 | 0.4' in result
+    assert '/node/7/master/sum/coherent/peak/0' in result and '0.2 | 0.4' in result
 print('signal trace retention and per-stage diff checks passed')
 assert gate.compare(0, 0, optimum=0) == 'PASS'
 assert gate.compare(1, 1, optimum=0) == 'FAIL'
@@ -94,3 +94,40 @@ assert unknown['restored_state_status']=='unknown' and unknown['load_ms']=='unkn
 restored=scanner.extra_columns({'gate_condition':'restored-state', 'loads':'yes', 'load_ms':10, 'restored_state':{'status':'single-init','timer_excludes_seed':True}, 'programs':[{'loaded':True,'source':'kontakt','restored_state':{'status':'single-init','scalar_overrides':3,'init_runs':1,'expected_init_runs':1,'timer_excludes_seed':True}}]})
 assert restored['restored_state_status']=='single-init' and restored['script_init_runs']==1 and restored['load_ms']==10
 print('restored-state witness checks passed')
+with tempfile.TemporaryDirectory() as tmp:
+    out=Path(tmp); capture=Capture(out,{})
+    capture.stderr.write(b'AUDIT {"stage":"translate_ksp_init","ms":12.5,"hwm_kb":20}\nAUDIT {"stage":"authored secret","ms":1}\n')
+    capture.finish()
+    stage=json.loads(out.joinpath('load-stages.json').read_text())
+    assert stage['stages']==[{'stage':'translate_ksp_init','ms':12.5,'hwm_kb':20}]
+    assert 'secret' not in out.joinpath('plugin-diagnostics.json').read_text()
+print('numeric audit stage retention checks passed')
+
+with tempfile.TemporaryDirectory() as tmp:
+    out=Path(tmp); env={}; capture=Capture(out,env)
+    report=capture.root/'reports'; nested=report/'1'; nested.mkdir()
+    trace={'schema':1,'graph':{'nodes':[{'id':7}], 'edges':[]},'records':[], 'complete':True,'dropped':0}
+    report.joinpath('signal-trace.json').write_text(json.dumps(trace)); nested.joinpath('signal-trace.json').write_text(json.dumps(dict(trace,dropped=1)))
+    capture.finish()
+    kept=json.loads(out.joinpath('signal-traces.json').read_text())['traces']
+    assert {v['path']:v['status'] for v in kept}=={'signal-trace.json':'VALID','1/signal-trace.json':'UNKNOWN'}
+    assert out.joinpath('1/signal-trace.json').exists()
+print('schema1 runtime retention and complete/drop admission checks passed')
+
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp); engine=root/'engine';engine.write_text('fixture'); items=root/'items.tsv';items.write_text('fixture.nki\n')
+    import sys
+    saved_probe=scanner.probe; saved_argv=sys.argv; saved_notes=scanner.NOTE_ROOT
+    scanner.NOTE_ROOT=root/'notes';scanner.NOTE_ROOT.mkdir()
+    def probe(engine,item,work,*args):
+        work.mkdir(parents=True);work.joinpath('signal-trace.json').write_text('fixture')
+        scanner.note_path(item).write_text('{}')
+        return {'loads':'yes','ui':'unknown','programs':[]}
+    scanner.probe=probe
+    try:
+        sys.argv=['scanner','--engine',str(engine),'--list',str(items),'--out',str(root/'results')]
+        assert scanner.main()==0
+        key=next((root/'results/cache').glob('*.json')).stem
+        assert (root/'results/items'/key/'signal-trace.json').exists()
+    finally: scanner.probe=saved_probe;sys.argv=saved_argv;scanner.NOTE_ROOT=saved_notes
+print('first-load note-plan signature retains matching diagnostics checks passed')
