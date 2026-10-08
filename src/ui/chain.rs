@@ -257,6 +257,8 @@ fn detail(p: ir::Processor) -> String {
             d.cutoff * 100.,
             d.resonance * 100.
         ),
+        ir::Processor::LadderLP4(_) => "Ladder low-pass · 4 poles".into(),
+        ir::Processor::SendReturnGate { .. } => "Send return · follows effect bypass".into(),
         ir::Processor::StereoMatrix(_) => "Stereo routing".into(),
         ir::Processor::Branch { gain, .. } => format!("Parallel branch · {}", db(gain)),
         ir::Processor::Convolution { dry, wet, .. } => format!(
