@@ -34,6 +34,10 @@ pub(crate) struct Stereo {
     rate: f32,
 }
 impl Stereo {
+    pub(super) fn batches(&self) -> bool { !self.pseudo }
+    pub(super) fn targets(&self, parameters: &[ControlRamp], at: u64) -> [f32; 2] {
+        [self.width.value(parameters, at, None) as f32, self.pan.value(parameters, at, None) as f32]
+    }
     pub(super) fn process(
         &self,
         state: &mut ProcessorState,
@@ -47,8 +51,7 @@ impl Stereo {
         let mut pan_delta = 0.0;
         let [left, right] = block;
         for i in 0..len {
-            let target_width = self.width.value(parameters, at + i as u64, None) as f32;
-            let target_pan = self.pan.value(parameters, at + i as u64, None) as f32;
+            let [target_width, target_pan] = self.targets(parameters, at + i as u64);
             if state.aux[2] == 0.0 {
                 (width, pan, state.aux[2]) = (target_width, target_pan, 1.0);
             }
@@ -66,15 +69,8 @@ impl Stereo {
                 state.delay_position = ((cursor + 1) & 1023) as u32;
                 state.delay_filled = (state.delay_filled + 1).min(1023);
                 (l, delayed)
-            } else if width >= 0.5 {
-                let spread = 2.0 * width - 1.0;
-                (
-                    (1.0 + spread) * l - spread * r,
-                    (1.0 + spread) * r - spread * l,
-                )
             } else {
-                let a = 0.5 - width;
-                (l + a * (r - l), r + a * (l - r))
+                matrix(l, r, width)
             };
             left[i] = f64::from(l * (1.0 - pan.max(0.0)));
             right[i] = f64::from(r * (1.0 + pan.min(0.0)));
@@ -87,6 +83,16 @@ impl Stereo {
             pan += pan_delta;
         }
         (state.aux[0], state.aux[1]) = (f64::from(width), f64::from(pan));
+    }
+}
+
+pub(super) fn matrix(l: f32, r: f32, width: f32) -> (f32, f32) {
+    if width >= 0.5 {
+        let spread = 2.0 * width - 1.0;
+        ((1.0 + spread) * l - spread * r, (1.0 + spread) * r - spread * l)
+    } else {
+        let a = 0.5 - width;
+        (l + a * (r - l), r + a * (l - r))
     }
 }
 

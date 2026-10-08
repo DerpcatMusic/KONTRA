@@ -183,10 +183,7 @@ pub(crate) fn program_racks(
 /// saved output gain and dry level follow the script's init writes (396280 ->
 /// 0.99570, 303068 -> 0.44539, 560434 -> 2.8164, 3305 -> 5.776e-7).
 pub(crate) fn engine_gain(value: i32) -> f32 {
-    if value <= 0 {
-        return 0.0;
-    }
-    (f64::from(value) / 396_851.0).powi(3) as f32
+    sampler_core::EngineParameterLaw::CubicGain { unity: 396_851.0 }.decode(value) as f32
 }
 
 /// Apply the `set_engine_par` writes a script left at init to a rack's slots.
@@ -344,9 +341,13 @@ impl Slot {
             0x18 => {
                 let kind = r.i32()?;
                 if (30..=41).contains(&kind) {
-                    // Ladder records repeat the subtype, with a version flag
-                    // byte before some repeats (DSP_FORMAT_SPECIFICATION,
-                    // "Effect parameter payloads"); v0x95 repeats it more.
+                    // Port from v1 0cb7a8a0:src/fx/params.rs::parse_versioned.
+                    // Exact version framing comes from the shared verified reader.
+                    if matches!(self.version, 0x90..=0x92) {
+                        let record = ni_file::kontakt::objects::BParFXFilterRecord::read(self.version, &self.public).ok()?;
+                        return Some(Params::Filter { kind: record.filter_type, cutoff: record.cutoff,
+                            resonance: record.resonance, extra: vec![record.leading_value] });
+                    }
                     r.skip_repeats(kind);
                 } else if r.i32()? != kind {
                     return None;
@@ -587,6 +588,14 @@ pub(crate) struct Chain {
     /// Each translated SV filter slot and its index in `processors`, for
     /// modulation targets that name a module slot.
     pub filter_slots: Vec<(usize, usize)>,
+    pub send_taps: Vec<SendTap>,
+}
+
+pub(crate) struct SendTap {
+    pub slot: usize,
+    pub position: sampler_ir::VoiceSendPosition,
+    pub levels: Vec<f32>,
+    pub bypass: bool,
 }
 
 /// Keep the amplifier boundary at its physical slot, even when either side
@@ -595,6 +604,7 @@ pub(crate) fn voice_chain(
     slots: &[Slot],
     split: i32,
     dynamic: Option<(i32, i32)>,
+    group: i32,
 ) -> (Chain, usize) {
     let valid = (0..=8).contains(&split);
     let cut = if valid {
@@ -602,10 +612,15 @@ pub(crate) fn voice_chain(
     } else {
         slots.len()
     };
-    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic);
-    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic);
+    let mut before = chain_with(&slots[..cut], Scope::Voice, None, dynamic, (group, -1));
+    let after = chain_with(&slots[cut..], Scope::Voice, None, dynamic, (group, -1));
     let boundary = before.processors.len();
     before.processors.extend(after.processors);
+    before.send_taps.extend(after.send_taps.into_iter().map(|mut tap| {
+        let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else { unreachable!() };
+        tap.position = sampler_ir::VoiceSendPosition::AfterAmplitude(n);
+        tap
+    }));
     before.notes.extend(after.notes);
     before.filter_slots.extend(
         after
@@ -632,7 +647,7 @@ pub(crate) fn voice_chain(
 /// channels, so they commute with it.
 #[cfg(test)]
 pub(crate) fn chain(slots: &[Slot], scope: Scope) -> Chain {
-    chain_with(slots, scope, None, None)
+    chain_with(slots, scope, None, None, (-1, 1))
 }
 
 /// A decoded impulse response: its sample rate and frames.
@@ -654,6 +669,7 @@ pub(crate) fn chain_with(
     scope: Scope,
     mut impulses: Option<&mut Impulses>,
     dynamic: Option<(i32, i32)>,
+    physical: (i32, i32),
 ) -> Chain {
     let mut out = Chain::default();
     let mut combined = IDENTITY;
@@ -703,13 +719,42 @@ pub(crate) fn chain_with(
                 filters.extend(bands.iter().filter_map(|band| eq_band(*band, &mut notes)));
                 combined = product(eq_gain, combined);
             }
-            Some(Params::SendLevels { sends, .. }) if scope == Scope::Bus => {
-                if out.sends.is_empty() {
+            Some(Params::SendLevels { sends, .. }) => {
+                flush(&mut combined, &mut filters, &mut out);
+                let sends: Vec<_> = sends.iter().map(|&level| {
+                    if level.is_finite() && level >= 0.0 { level } else {
+                        notes.push(("send level".into(), "non-finite or negative".into(), sampler_ir::Reason::InvalidValue));
+                        0.0
+                    }
+                }).collect();
+                if scope == Scope::Bus && out.sends.is_empty() {
                     out.sends = sends.clone();
+                }
+                out.send_taps.push(SendTap {
+                    slot: fx.slot,
+                    position: sampler_ir::VoiceSendPosition::BeforeAmplitude(out.processors.len()),
+                    levels: sends,
+                    bypass: fx.bypass,
+                });
+                combined = product(gain, combined);
+            }
+            Some(Params::Filter { kind: 33, cutoff, resonance, extra }) if !extra.is_empty() && matches!(fx.version, 0x90..=0x92) => {
+                // Port from v1 0cb7a8a0:src/engine/filter.rs::proto.
+                // Gain is signed normalized (12 dB per unit); the native kernel
+                // retains the record-version cutoff clock.
+                let values = [extra[0], *cutoff, *resonance];
+                if values.iter().all(|v| v.is_finite()) && (-1.0..=1.0).contains(&values[0])
+                    && values[1..].iter().all(|v| (0.0..=1.0).contains(v)) {
+                    filters.push(sampler_ir::Processor::LadderLP4(sampler_ir::LadderLP4 {
+                        address: Some(sampler_ir::SlotAddress { group: physical.0, slot: fx.slot as i32, generic: physical.1 }),
+                        gain: f64::from(values[0]), cutoff: f64::from(values[1]), resonance: f64::from(values[2]),
+                        record_version: fx.version,
+                    }));
+                    combined = product(gain, combined);
                 } else {
+                    notes.push(("Ladder LP4 parameters".into(), "non-finite or outside native range".into(), sampler_ir::Reason::InvalidValue));
                     modelled = false;
                 }
-                combined = product(gain, combined);
             }
             Some(Params::Filter {
                 kind,
@@ -1111,7 +1156,7 @@ pub(crate) fn instrument_buses(
     buses: &[BusPlan],
     dynamic: bool,
     load: &mut dyn FnMut(i32) -> Result<Decoded, String>,
-) -> Vec<(String, Note)> {
+) -> (Vec<(String, Note)>, Vec<(usize, sampler_ir::BusRef)>) {
     use sampler_ir::{BusRef, ChainRef, Output, Scope as IrScope, Send, SendPosition};
     let rack = |name: &str| {
         racks
@@ -1134,14 +1179,14 @@ pub(crate) fn instrument_buses(
         rack("instrument insert"),
         Scope::Bus,
         Some(&mut source),
-        generic(1),
+        generic(1), (-1, 1),
     );
     take("instrument insert", &insert);
     let main = chain_with(
         rack("instrument main"),
         Scope::Bus,
         Some(&mut source),
-        generic(2),
+        generic(2), (-1, 2),
     );
     take("instrument main", &main);
     // A send slot's effect runs on its own bus, fed at the Send Levels slot's level.
@@ -1150,16 +1195,24 @@ pub(crate) fn instrument_buses(
         .iter()
         .filter(|s| dynamic || !s.bypass)
     {
-        let c = chain_with(
+        let mut c = chain_with(
             std::slice::from_ref(slot),
             Scope::Bus,
             Some(&mut source),
-            generic(0),
+            generic(0), (-1, 0),
         );
+        // Port from v1 0cb7a8a0:src/fx/processor.rs (process returns and
+        // SendInputs::tap): bypassed returns contribute no dry signal.
+        // Keep the real slot control so scripts can re-enable the return.
+        if dynamic && !c.processors.is_empty() {
+            c.processors.push(sampler_ir::Processor::SendReturnGate {
+                address: sampler_ir::SlotAddress { group: -1, slot: slot.slot as i32, generic: 0 },
+            });
+        }
         take("instrument send", &c);
         let level = insert.sends.get(slot.slot).copied().unwrap_or(1.0);
-        if !c.processors.is_empty() && level > 0.0 {
-            sends.push((c.processors, f64::from(level)));
+        if !c.processors.is_empty() {
+            sends.push((slot.slot, c.processors, f64::from(level)));
         }
     }
     // Instrument buses: only the ones a group feeds and that do something.
@@ -1172,7 +1225,7 @@ pub(crate) fn instrument_buses(
             rack(&name),
             Scope::Bus,
             Some(&mut source),
-            generic(1000 + bus.index as i32),
+            generic(1000 + bus.index as i32), (-1, 1000 + bus.index as i32),
         );
         take(&name, &c);
         if bus.pan.abs() > 0.01 {
@@ -1213,7 +1266,7 @@ pub(crate) fn instrument_buses(
     ir.impulses = store;
     let chained = !(insert.processors.is_empty() && sends.is_empty() && main.processors.is_empty());
     if !chained && instrument.is_empty() {
-        return report;
+        return (report, Vec::new());
     }
     // Bus order: insert, sends, main, then the instrument buses.
     let main_bus = (!main.processors.is_empty()).then_some(sends.len() + 1);
@@ -1242,21 +1295,46 @@ pub(crate) fn instrument_buses(
         });
     };
     let unity = sampler_ir::Gain::UNITY;
-    let feeds = sends
+    let feeds: Vec<_> = sends
         .iter()
         .enumerate()
-        .map(|(i, (_, level))| Send {
+        .map(|(i, (_, _, level))| Send {
             to: Output::Bus(BusRef(i + 1)),
             gain: sampler_ir::Gain::Linear(*level),
             position: SendPosition::PostChain,
         })
         .collect();
+    let send_buses: Vec<_> = sends.iter().enumerate().map(|(i, (slot, _, _))| (*slot, BusRef(i + 1))).collect();
     let entry = if chained {
-        add(ir, "insert".into(), insert.processors, feeds, target, unity);
-        for (i, (processors, _)) in sends.into_iter().enumerate() {
+        let mut segments = Vec::new();
+        let mut cursor = 0;
+        for tap in &insert.send_taps {
+            let sampler_ir::VoiceSendPosition::BeforeAmplitude(n) = tap.position else { unreachable!() };
+            let feeds = if tap.bypass { Vec::new() } else {
+                send_buses.iter().filter_map(|&(slot, bus)| tap.levels.get(slot).map(|&level| Send {
+                    to: Output::Bus(bus), gain: sampler_ir::Gain::Linear(f64::from(level)),
+                    position: SendPosition::PostChain,
+                })).collect()
+            };
+            segments.push((insert.processors[cursor..n].to_vec(), feeds));
+            cursor = n;
+        }
+        if segments.is_empty() {
+            segments.push((insert.processors, feeds));
+        } else if cursor < insert.processors.len() {
+            segments.push((insert.processors[cursor..].to_vec(), Vec::new()));
+        }
+        // Each continuation is another summed bus, so its history and send
+        // position use the existing preallocated bus DAG.
+        let continuation = sends.len() + 1 + usize::from(main_bus.is_some());
+        let mut segments = segments.into_iter().enumerate().peekable();
+        let (_, (processors, feeds)) = segments.next().expect("insert segment");
+        let next = if segments.peek().is_some() { Output::Bus(BusRef(continuation)) } else { target };
+        add(ir, "insert".into(), processors, feeds, next, unity);
+        for (slot, processors, _) in sends {
             add(
                 ir,
-                format!("send {i}"),
+                format!("send {slot}"),
                 processors,
                 Vec::new(),
                 target,
@@ -1272,6 +1350,10 @@ pub(crate) fn instrument_buses(
                 Output::Master,
                 unity,
             );
+        }
+        while let Some((i, (processors, feeds))) = segments.next() {
+            let next = if segments.peek().is_some() { Output::Bus(BusRef(continuation + i)) } else { target };
+            add(ir, format!("insert continuation {i}"), processors, feeds, next, unity);
         }
         for group in &mut ir.groups {
             group.output = Output::Bus(BusRef(0));
@@ -1299,7 +1381,7 @@ pub(crate) fn instrument_buses(
             ir.groups[group.0].output = Output::Bus(at);
         }
     }
-    report
+    (report, send_buses)
 }
 
 /// One EQ band (Hz, octaves, dB) as a peaking filter; flat bands vanish.
@@ -1338,6 +1420,22 @@ fn eq_band(
 #[cfg(test)]
 mod tests {
     use ni_file::kontakt::Chunk;
+    #[test]
+    fn native_ladder_lp4_import_preserves_signed_gain_and_record_version() {
+        let mut public = 33i32.to_le_bytes().to_vec();
+        public.push(0);
+        public.extend(33i32.to_le_bytes());
+        for value in [-0.25f32, 0.5, 0.3] { public.extend(value.to_le_bytes()); }
+        let slot = super::Slot { slot: 3, module: 0x18, version: 0x92,
+            bypass: false, output_gain: 1., dry_level: 0., output_set: false, public };
+        let chain = super::chain_with(&[slot], super::Scope::Voice, None, Some((7, -1)), (7, -1));
+        assert!(chain.notes.is_empty());
+        assert!(chain.processors.iter().any(|p| matches!(p,
+            sampler_ir::Processor::LadderLP4(d) if d.gain == -0.25
+                && d.cutoff == 0.5 && (d.resonance - 0.3).abs() < 1e-7
+                && d.record_version == 0x92)));
+    }
+
     #[test]
     fn fx_decode_failures_keep_scope_slots_and_valid_siblings() {
         mod wire {
@@ -1520,6 +1618,118 @@ mod tests {
     }
 
     #[test]
+    fn compressor_output_and_bypass_init_writes_use_the_shared_slot_law() {
+        // Pinned v1 0cb7a8a0, engine/params.rs: effect_gain = 16*x^3.
+        // The shared service's rounded unity differs by less than 0.00005 dB.
+        for value in [0, 125_919, 396_851, 560_434, 1_000_000] {
+            let native = 16.0 * (f64::from(value) / 1_000_000.0).powi(3);
+            let gain = f64::from(engine_gain(value));
+            if native > 0.0 {
+                assert!((20.0 * (gain / native).log10()).abs() < 0.00005);
+            } else {
+                assert_eq!(gain, 0.0);
+            }
+        }
+        assert_eq!(engine_gain(-1), 0.0);
+        assert_eq!(engine_gain(i32::MAX), engine_gain(1_000_000));
+        let mut fx = slot(0x19, Vec::new(), 1.0);
+        fx.slot = 1;
+        let mut writes = vec![sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN".into(),
+            value: 560_434, group: -1, slot: 1, generic: 1,
+        }, sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_EFFECT_BYPASS".into(),
+            value: 1, group: -1, slot: 1, generic: 1,
+        }];
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(fx.bypass && fx.output_set);
+        assert!((20.0 * f64::from(fx.output_gain).log10() - 8.99385).abs() < 0.0001);
+        writes[1].value = 0;
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(!fx.bypass);
+    }
+
+    #[test]
+    fn addressed_engine_writes_require_dynamic_effect_racks() {
+        let script = sampler_ksp::compile_with(
+            "on controller\nset_engine_par($ENGINE_PAR_EFFECT_BYPASS, 1, -1, 1, $NI_INSERT_BUS)\nend on",
+            48_000, sampler_ksp::Limits::LIBRARY, &[], &Default::default(),
+        ).unwrap();
+        assert!(script.writes_effect_slots(), "shared engine writes must retain live slot lanes");
+    }
+
+    #[test]
+    fn dynamic_bypassed_send_returns_add_no_dry_copy() {
+        use sampler_ir as ir;
+        let render = |dynamic| {
+            let mut instrument = ir::Instrument::default();
+            instrument.assets.push(ir::Asset { location: ir::AssetLocation::Path("probe".into()),
+                encoding: ir::Encoding::Wav, root_key: None, loops: Vec::new() });
+            instrument.groups.push(ir::Group::default());
+            let mut zone = ir::Zone::new(ir::AssetRef(0));
+            zone.group = Some(ir::GroupRef(0));
+            zone.keys = ir::KeyRange { low: 60, high: 60 };
+            zone.velocity = ir::VelocityResponse::None;
+            instrument.zones.push(zone);
+            let mut send = slot(0x13, 1.0f32.to_le_bytes().to_vec(), 1.0);
+            send.bypass = true;
+            send.dry_level = 0.0;
+            instrument_buses(&mut instrument, &[("instrument send".into(), vec![send])], &[], dynamic,
+                &mut |_| Err("no impulse".into()));
+            let pcm = sampler_core::Pcm::new(48000, vec![[0.25; 2]; 4096].into_boxed_slice()).unwrap();
+            let plan = sampler_core::lower::lower(&instrument, 48000, vec![pcm], |_, plan| Ok(plan)).unwrap();
+            let mut rt = sampler_core::Runtime::new(plan, sampler_core::Limits {
+                notes: 4, channels: 1, performances: 1, families: 4, expressions: 4,
+                voices: 4, decisions: 8, commands: 8, behaviors: 0, behavior_fuel: 0,
+                behavior_cells: 0, note_cells: 0,
+            }).unwrap();
+            rt.trigger(sampler_core::Input { protocol: sampler_core::Protocol::Native,
+                port: 0, group: 0, channel: 0, key: 60, external_id: None }, 60, 1.0).unwrap();
+            let mut output = [[0.0; 2]; 64];
+            rt.render(&mut output).unwrap();
+            let initial = output[32][0];
+            if dynamic {
+                let address = sampler_core::EngineParameterAddress {
+                    parameter: sampler_core::engine_parameter_id("ENGINE_PAR_SEND_EFFECT_BYPASS").unwrap(),
+                    group: -1, slot: 0, generic: 0,
+                };
+                let mut settled = [[0.0; 2]; 512];
+                rt.set_engine_parameter(address, 0).unwrap();
+                rt.render(&mut settled).unwrap();
+                assert!((settled[511][0] - initial * 2.0).abs() < 1e-6, "live send did not return: {} vs {}", settled[511][0], initial * 2.0);
+                rt.set_engine_parameter(address, 1).unwrap();
+                rt.render(&mut settled).unwrap();
+                assert!((settled[511][0] - initial).abs() < 1e-6, "live bypass did not mute return");
+            }
+            initial
+        };
+        let (saved, live) = (render(false), render(true));
+        assert!(saved > 0.0);
+        assert!((live / saved - 1.0).abs() < 1e-6, "bypassed send changed dry gain: {saved} -> {live}");
+    }
+
+    #[test]
+    #[ignore = "installed library metadata probe; run through kontakto-heavy"]
+    fn analog_saved_compressor_state() {
+        let path = std::path::Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+        if !path.exists() { return; }
+        let chunks = crate::read_chunks(path).unwrap();
+        let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+        let racks = program_racks(&program, &[], |_, _| panic!("rack decode failed"));
+        let (_, insert) = racks.iter().find(|(name, _)| name == "instrument insert").unwrap();
+        let compressors: Vec<_> = insert.iter().filter(|slot| slot.module == 0x19).collect();
+        assert_eq!(compressors.len(), 1);
+        let fx = compressors[0];
+        eprintln!("saved compressor slot={} bypass={} output_gain={} output_db={}",
+            fx.slot, fx.bypass, fx.output_gain, 20.0 * f64::from(fx.output_gain).log10());
+        assert_eq!(fx.slot, 1);
+        assert!(!fx.bypass);
+        let v1_gain = 16.0 * (560_434.0f64 / 1_000_000.0).powi(3);
+        assert!((f64::from(fx.output_gain) - v1_gain).abs() < 1e-6);
+        assert!((20.0 * (f64::from(fx.output_gain) / f64::from(engine_gain(560_434))).log10()).abs() < 0.00005);
+    }
+
+    #[test]
     fn reverb_time_high_cut_and_low_shelf_follow_the_reference_display() {
         let r = |time: f32, cut: f32, shelf: f32| {
             reverb(
@@ -1585,7 +1795,7 @@ mod tests {
         after.slot = 7;
         before.dry_level = 0.0;
         after.dry_level = 0.0;
-        let (chain, boundary) = voice_chain(&[before, after], 6, None);
+        let (chain, boundary) = voice_chain(&[before, after], 6, None, 0);
         assert_eq!(boundary, 1);
         assert_eq!(chain.processors.len(), 2);
         assert_eq!(
@@ -1609,13 +1819,13 @@ mod tests {
         let mut gainer = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
         gainer.slot = 3;
         gainer.bypass = true;
-        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None);
+        let plain = chain_with(std::slice::from_ref(&gainer), Scope::Bus, None, None, (-1, 1));
         assert!(plain.processors.is_empty());
         let c = chain_with(
             std::slice::from_ref(&gainer),
             Scope::Bus,
             None,
-            Some((-1, 1)),
+            Some((-1, 1)), (-1, 1),
         );
         assert!(
             matches!(
@@ -1862,6 +2072,20 @@ mod tests {
             [ir::Processor::Reverb(_)]
         ));
         instrument.validate().unwrap();
+        // A physical return at slot 3 remains addressable even when the
+        // instrument level is zero; a group tap can still feed that return.
+        let mut sparse = ir::Instrument::default();
+        let mut return_slot = slot(0x59, racks[1].1[0].public.clone(), 1.0);
+        return_slot.slot = 3;
+        let mut zero = 4u32.to_le_bytes().to_vec();
+        zero.extend([0.0f32; 4].iter().flat_map(|x| x.to_le_bytes()));
+        zero.extend(0u32.to_le_bytes());
+        let (_, returns) = instrument_buses(&mut sparse, &[
+            ("instrument insert".into(), vec![slot(0x17, zero, 1.0)]),
+            ("instrument send".into(), vec![return_slot]),
+        ], &[], false, &mut |_| Err("none".into()));
+        assert_eq!(returns, vec![(3, ir::BusRef(1))]);
+        assert_eq!(sparse.buses[0].sends[0].gain, ir::Gain::Linear(0.0));
         // Nothing to do: no buses.
         let mut plain = ir::Instrument::default();
         instrument_buses(&mut plain, &[], &[], false, &mut |_| Err("none".into()));
@@ -1891,5 +2115,53 @@ mod tests {
         assert_eq!(routed.buses[0].output, ir::Output::Master);
         assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(0)));
         routed.validate().unwrap();
+    }
+
+    #[test]
+    fn voice_send_levels_are_admitted_on_both_sides_of_the_amplifier() {
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut before = slot(0x17, levels.clone(), 1.0);
+        before.slot = 2;
+        let mut after = slot(0x17, levels, 1.0);
+        after.slot = 6;
+        let (chain, boundary) = voice_chain(&[before, after], 4, None, 0);
+        assert!(chain.notes.is_empty(), "{:?}", chain.notes);
+        assert_eq!(boundary, 0);
+        assert_eq!(chain.send_taps.len(), 2);
+        assert_eq!(chain.send_taps[0].slot, 2);
+        assert_eq!(chain.send_taps[0].position, sampler_ir::VoiceSendPosition::BeforeAmplitude(0));
+        assert_eq!(chain.send_taps[1].slot, 6);
+        assert_eq!(chain.send_taps[1].position, sampler_ir::VoiceSendPosition::AfterAmplitude(0));
+    }
+
+    #[test]
+    fn instrument_send_tap_precedes_later_inserts_on_the_summed_bus() {
+        use sampler_ir as ir;
+        let mut before = slot(0x13, 2.0f32.to_le_bytes().to_vec(), 1.0);
+        before.dry_level = 0.0;
+        let mut levels = 1u32.to_le_bytes().to_vec();
+        levels.extend(0.5f32.to_le_bytes());
+        levels.extend(0u32.to_le_bytes());
+        let mut tap = slot(0x17, levels, 1.0);
+        tap.slot = 2;
+        let mut after = slot(0x13, 3.0f32.to_le_bytes().to_vec(), 1.0);
+        after.slot = 3;
+        after.dry_level = 0.0;
+        let mut ir = ir::Instrument::default();
+        instrument_buses(&mut ir, &[
+            ("instrument insert".into(), vec![before, tap, after]),
+            ("instrument send".into(), vec![slot(0x13, 0.5f32.to_le_bytes().to_vec(), 1.0)]),
+        ], &[], false, &mut |_| Err("none".into()));
+        assert_eq!(ir.buses.len(), 3);
+        assert_eq!(ir.buses[0].output, ir::Output::Bus(ir::BusRef(2)));
+        assert_eq!(ir.buses[0].sends[0].to, ir::Output::Bus(ir::BusRef(1)));
+        assert_eq!(ir.buses[0].sends[0].gain, ir::Gain::Linear(0.5));
+        for (bus, gain) in [(0, 2.0), (2, 3.0)] {
+            let stages = &ir.chains[ir.buses[bus].chain.unwrap().0].pre_amplitude;
+            assert!(matches!(stages[..], [ir::Processor::Gainer { gain: ir::Gain::Linear(g), dry: 0.0 }] if g == gain));
+        }
+        ir.validate().unwrap();
     }
 }

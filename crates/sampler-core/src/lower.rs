@@ -23,6 +23,21 @@ pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLoo
     }).collect()
 }
 
+/// Defaults, lawful service conversions and DSP identities for native LP4 lanes.
+fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+    let Some(slot) = d.address else { return Vec::new(); };
+    [("ENGINE_PAR_CUTOFF", d.cutoff, false), ("ENGINE_PAR_RESONANCE", d.resonance, false),
+        ("ENGINE_PAR_GAIN", d.gain, true)].into_iter().map(|(name, value, signed)| {
+        let address = crate::EngineParameterAddress { parameter: crate::engine_parameter_id(name).unwrap(),
+            group: slot.group, slot: slot.slot, generic: slot.generic };
+        let id = crate::engine_parameter_control(address);
+        (ControlDefinition { id, domain: ControlDomain::Real { min: if signed { -1. } else { 0. }, max: 1. },
+            default: ControlValue::Real(value) }, crate::EngineParameterBinding { address, control: id,
+                law: if signed { crate::EngineParameterLaw::SignedNormalized }
+                    else { crate::EngineParameterLaw::Linear { low: 0., high: 1. } } })
+    }).collect()
+}
+
 /// Seed for random sequences; fixed so renders are reproducible.
 const SEED: u64 = 0x5eed_1a7e;
 /// Decay allowance for bus filters after their input stops, in seconds.
@@ -516,7 +531,16 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
-    let engine_bindings = plan.engine_parameter_bindings().to_vec();
+    let mut engine_bindings = plan.engine_parameter_bindings().to_vec();
+    let mut native = std::collections::BTreeMap::new();
+    for chain in &instrument.chains {
+        for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+            if let ir::Processor::LadderLP4(d) = p {
+                for (_, binding) in ladder_lanes(*d) { native.insert(binding.address, binding); }
+            }
+        }
+    }
+    engine_bindings.extend(native.into_values());
     plan = plan
         .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
         .map_err(core(Stage::Controls, "source engine lookups"))?;
@@ -1214,6 +1238,9 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
+            (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
@@ -1238,6 +1265,9 @@ impl Lowering<'_> {
         let mut all = std::collections::BTreeMap::new();
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                if let ir::Processor::LadderLP4(d) = *p {
+                    for (control, _) in ladder_lanes(d) { all.entry(control.id).or_insert(control); }
+                }
                 let ir::Processor::Mix {
                     address,
                     dry,
@@ -1283,6 +1313,12 @@ impl Lowering<'_> {
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
             let mut stages = self.processors(owner, **p)?;
+            // A physical native owner already binds these fields to the shared
+            // service; replacing them would leave writes on an unused mirror.
+            if matches!(**p, ir::Processor::LadderLP4(d) if d.address.is_some())
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                return Err(unsupported(owner, Feature::Controls));
+            }
             for binding in self
                 .ir
                 .processor_controls
@@ -1392,6 +1428,15 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
+            ir::Processor::LadderLP4(d) => {
+                let lanes = ladder_lanes(d);
+                let parameter = |index: usize, value: f64| lanes.get(index).map_or(Parameter::Constant(value), |(c, _)| {
+                    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
+                    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
+                });
+                Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
+                    resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
+            },
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
@@ -1403,6 +1448,10 @@ impl Lowering<'_> {
                 wet: self.slot_range(SlotKind::Output, address),
                 bypass: self.slot_range(SlotKind::Bypass, address),
             },
+            ir::Processor::SendReturnGate { address } => Processor::ControlGain(ControlRange {
+                low: 1.0, high: 0.0,
+                ..self.slot_range(SlotKind::Bypass, address)
+            }),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
                 dry,
