@@ -13,6 +13,19 @@ pub struct EngineParameterAddress {
     pub generic: i32,
 }
 
+/// Completion metadata for script service calls. Unsupported addresses stay
+/// observable without stopping later authored writes; no fault text is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineParameterOutcome {
+    pub plan: PlanId,
+    pub program: usize,
+    pub address: Option<EngineParameterAddress>,
+    pub write: bool,
+    pub result: Result<(), Error>,
+}
+
+pub(crate) const ENGINE_OUTCOME_CAPACITY: usize = 64;
+
 /// Physical meter point. Channel is stereo 0/1; group/slot -1 means the
 /// instrument/post-rack point. Bus is the authored bus number, not DSP packing.
 /// Unsupported per-slot taps return InvalidInput rather than another level.
