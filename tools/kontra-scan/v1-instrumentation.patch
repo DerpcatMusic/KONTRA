@@ -214,10 +214,10 @@ index 50eac35c..399d8575 100644
  mod chain;
 diff --git a/src/ui/scan.rs b/src/ui/scan.rs
 new file mode 100644
-index 00000000..ffeecb07
+index 00000000..6d988150
 --- /dev/null
 +++ b/src/ui/scan.rs
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,448 @@
 +//! Shared scanner's pinned-v1 adapter; no decrypted source or library assets are persisted.
 +use super::*;
 +use crate::{
@@ -451,7 +451,7 @@ index 00000000..ffeecb07
 +                    })
 +                    .count();
 +                views.push(json!({"controls_declared":declared,"controls_bound_declared":declared_bound,
-+                    "slot":slot,"widgets":face.controls.len(),"visible":shown.len(),"interactive":live,"bound":live_bound,"kinds":kinds,"geometry":geometries,"missing_images":missing_images,"asset_errors":picture_errors.len(),"render":match rendered {Ok(mut r)=>{r["ok"]=json!(true);r},Err(_)=>json!({"ok":false,"budget_hit":render_error.as_deref().is_some_and(metrics::budget),"reason":render_error.as_deref().map(metrics::message)})}}));
++                    "bound_typed":shown.iter().filter(|s|matches!(face.controls[s.control].kind.as_str(),"ui_table"|"ui_xy"|"ui_text_edit")&&face.controls[s.control].id>0).count(),"typed_binding_basis":"visible source UI ID; live typed edit/readback unmeasured","phantom_free_controls":null,"slot":slot,"widgets":face.controls.len(),"visible":shown.len(),"interactive":live,"bound":live_bound,"kinds":kinds,"geometry":geometries,"missing_images":missing_images,"asset_errors":picture_errors.len(),"render":match rendered {Ok(mut r)=>{r["ok"]=json!(true);r},Err(_)=>json!({"ok":false,"budget_hit":render_error.as_deref().is_some_and(metrics::budget),"reason":render_error.as_deref().map(metrics::message)})}}));
 +            }
 +        }
 +        // v1's initial playable bank validates/resolves sample headers and streams on demand.
@@ -483,23 +483,16 @@ index 00000000..ffeecb07
 +            })
 +            .max_by_key(|k| (valid.contains(k), std::cmp::Reverse(k.abs_diff(60))))
 +            .map(|k| (k, 64));
-+        let pick = metrics::note(*program).or(candidate).or_else(|| {
-+            bank.zones()
-+                .iter()
-+                .find(|z| !invalid.contains(&z.root))
-+                .map(|z| {
-+                    (
-+                        z.root,
-+                        ((u16::from(z.low_velocity) + u16::from(z.high_velocity)) / 2).max(1) as u8,
-+                    )
-+                })
-+        });
++        let pick = metrics::note(*program).or(candidate).or_else(||metrics::fallback_note(&invalid));
 +        let pick_source = match pick {
-+            Some((k, 64)) if valid.contains(&k) => "native_declared",
-+            Some((_, 64)) => "zone_coverage",
++            Some((k, 64)) if candidate==pick && valid.contains(&k) => "native_declared",
++            Some((_, 64)) if candidate==pick => "zone_coverage",
 +            _ => "fallback",
 +        };
++        let declared_switch=native.iter().find(|(_,k)|matches!(k.kind,Some(crate::ksp::Value::Int(1)))||matches!(&k.kind,Some(crate::ksp::Value::Text(t))if t=="$NI_KEY_TYPE_CONTROL")).map(|(key,_)|*key);
++        let keyswitch=metrics::planned_keyswitch(*program).unwrap_or(declared_switch);
 +        let skipped = bank.skipped_zones;
++        let sample_zone_count=bank.zones().len();
 +        let mut engine = Engine::default();
 +        engine.set_bank(Some(Box::new(bank)));
 +        engine.set_fx(crate::engine::effects(&instrument, rt.as_deref(), 48_000.));
@@ -510,6 +503,11 @@ index 00000000..ffeecb07
 +        if let Some((key, vel)) = pick {
 +            engine.cc(0, 1, 100);
 +            engine.cc(0, 11, 127);
++            if let Some(switch)=keyswitch {
++                engine.note_on(0,switch,64);
++                let (mut l,mut r)=([0f32;128],[0f32;128]);engine.render(&mut l,&mut r);
++                engine.note_off(0,switch);
++            }
 +            engine.note_on(0, key, vel);
 +            for _ in 0..180 {
 +                std::thread::sleep(Duration::from_millis(3));
@@ -523,7 +521,7 @@ index 00000000..ffeecb07
 +        any_heard |= heard;
 +        // Script failures are recorded separately from successful import/sample-bank construction.
 +        error |= !script_errors.is_empty();
-+        result["programs"].as_array_mut().unwrap().push(json!({"ksp":ksp,"sample_resident_bytes":crate::engine::resident_bytes(),"underruns":engine.underruns(),"pick_source":pick_source,"native_valid_keys":valid,"native_key_conflicts":0,"native_preferred_note":candidate.filter(|(k,_)|valid.contains(k)),"admitted_saved_entries_by_sigil":instrument.script_state.iter().flat_map(|s|s.keys()).fold(BTreeMap::<String,usize>::new(),|mut m,n|{*m.entry(metrics::metadata::sigil(n.as_bytes()).into()).or_default()+=1;m}),"load_path":"kontakt-v1-loader","program":program,"loaded":true,"source":"kontakt","symbols":symbols,"views":views,"script_error_count":script_errors.len(),"missing_samples":instrument.missing_samples.len(),"skipped_zones":skipped,"plays_note":if heard{"yes"}else{"silent"},"pick":pick}));
++        result["programs"].as_array_mut().unwrap().push(json!({"ksp":ksp,"keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==0 {Some("unknown")} else {None},"sample_zone_count":sample_zone_count,"sample_resident_bytes":crate::engine::resident_bytes(),"underruns":engine.underruns(),"pick_source":pick_source,"native_valid_keys":valid,"native_key_conflicts":0,"native_preferred_note":candidate.filter(|(k,_)|valid.contains(k)),"admitted_saved_entries_by_sigil":instrument.script_state.iter().flat_map(|s|s.keys()).fold(BTreeMap::<String,usize>::new(),|mut m,n|{*m.entry(metrics::metadata::sigil(n.as_bytes()).into()).or_default()+=1;m}),"load_path":"kontakt-v1-loader","program":program,"loaded":true,"source":"kontakt","symbols":symbols,"views":views,"script_error_count":script_errors.len(),"missing_samples":instrument.missing_samples.len(),"skipped_zones":skipped,"plays_note":if heard{"yes"}else{"silent"},"pick":pick}));
 +    }
 +    result["loads"] = json!(if all_load && !programs.is_empty() {
 +        "yes"

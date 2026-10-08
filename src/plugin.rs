@@ -7,6 +7,9 @@
 //! larger storage to the audio thread through lock-free queues. Everything the
 //! audio thread replaces goes back to the loader to be dropped.
 
+mod automation;
+pub(crate) mod automation_ids;
+
 use crate::sound::{
     BUSES, BlockInfo, Core, CoreError, CoreLoader, LoadRequest, MAX_BLOCK, Progress, RACK_SLOTS, Rendered, TUNE_RANGE,
     Transport,
@@ -254,6 +257,8 @@ impl Selection {
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
+    #[nested(base = 0)]
+    pub host: automation::HostAutomation,
     // Raw MIDI stays port/channel-specific; VST3 supplies its own controller proxies.
     #[persist = "selection"]
     pub selection: RwLock<Selection>,
@@ -347,6 +352,8 @@ pub(crate) struct PartShared {
     problems: [AtomicU64; 14],
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
+    engine_meters: Mutex<Vec<EngineMeterCell>>,
+    waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
     pub(crate) node_meters: Mutex<Arc<[[AtomicU32; 2]]>>,
@@ -381,6 +388,8 @@ impl ControlCell {
     }
 }
 
+struct EngineMeterCell { address: sampler_core::EngineMeterAddress, value: AtomicU32 }
+
 impl PartShared {
     /// Tree node `node`'s level, silent when the part has no such node.
     pub(crate) fn node_level(&self, node: usize) -> [f32; 2] {
@@ -412,6 +421,49 @@ impl PartShared {
         let mut values = self.control_values();
         if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
         values
+    }
+
+    pub(crate) fn widget_meters(&self, face: &sampler_ui_ir::Interface, epoch: u64) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, f64> {
+        let mut meters = self.engine_meters.lock().unwrap();
+        if self.generation.load(Ordering::Acquire) != epoch { return Default::default(); }
+        // Only addresses in the current IR face stay registered; GUI prunes them.
+        meters.retain(|m| face.widgets.iter().filter_map(|w| w.meter).any(|a|
+            (a.group, a.slot, a.channel, a.bus) == (m.address.group, m.address.slot, m.address.channel, m.address.bus)));
+        face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            let address = widget.meter?;
+            let address = sampler_core::EngineMeterAddress { group: address.group, slot: address.slot,
+                channel: address.channel, bus: address.bus };
+            let index = meters.iter().position(|m| m.address == address).unwrap_or_else(|| {
+                meters.push(EngineMeterCell { address, value: AtomicU32::new(0) }); meters.len() - 1
+            });
+            Some((sampler_ui_ir::WidgetRef(n), f64::from(f32::from_bits(meters[index].value.load(Ordering::Relaxed)))))
+        }).collect()
+    }
+
+    fn refresh_widget_meters(&self, epoch: u64, read: impl Fn(sampler_core::EngineMeterAddress) -> Option<f32>) {
+        if let Ok(meters) = self.engine_meters.try_lock() {
+            if self.generation.load(Ordering::Acquire) != epoch { return; }
+            let mut changed = false;
+            for meter in meters.iter() {
+                let value = read(meter.address).unwrap_or(0.);
+                let value = if value.is_finite() { value.max(0.) } else { 0. };
+                changed |= meter.value.swap(value.to_bits(), Ordering::Relaxed) != value.to_bits();
+            }
+            if changed { self.scalar_revision.fetch_add(1, Ordering::Release); }
+        }
+    }
+
+    pub(crate) fn widget_waveforms(&self, face: &sampler_ui_ir::Interface, epoch: u64, pixel_scale: f64) -> Vec<(sampler_ui_ir::WidgetRef, crate::sound::waveform::Envelope)> {
+        let plan = self.ingress.lock().unwrap().as_ref().map(|ingress| ingress.plan());
+        let provider = self.waveforms.lock().unwrap();
+        if self.generation.load(Ordering::Acquire) != epoch { return Vec::new(); }
+        let Some(provider) = provider.as_ref().filter(|provider| Some(provider.plan) == plan) else { return Vec::new(); };
+        face.widgets.iter().enumerate().filter_map(|(n, widget)| {
+            if !face.visible(sampler_ui_ir::WidgetRef(n)) { return None; }
+            let zone = u32::try_from(widget.waveform.as_ref()?.zone).ok().filter(|id| *id > 0)?;
+            let bins = (f64::from(face.page_rect(sampler_ui_ir::WidgetRef(n)).width) * pixel_scale).ceil().clamp(1., 4096.) as usize;
+            Some((sampler_ui_ir::WidgetRef(n), provider.get(zone, bins)?))
+        }).collect()
     }
 
     pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
@@ -983,6 +1035,14 @@ impl Shared {
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
     }
 
+    /// Main-thread host automation uses the same epoch admission and reply queue.
+    pub(crate) fn set_host_parameter_at(&self, slot: usize, epoch: u64, address: u16, value: f64) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|client| client.submit_host_parameter(address, value))
+    }
+
     /// One authored gesture; XY axes and touched table cells stay one transaction.
     pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let Some(part) = self.part(slot) else { return false };
@@ -1293,6 +1353,8 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         let mut ingress = atoms.ingress.lock().unwrap();
         let epoch = atoms.generation.fetch_add(1, Ordering::AcqRel) + 1;
         *ingress = None;
+        atoms.engine_meters.lock().unwrap().clear();
+        *atoms.waveforms.lock().unwrap() = None;
         epoch
     };
     if part.path.is_empty() {
@@ -1366,6 +1428,14 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
+                if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
+                    let wake = Arc::downgrade(&atoms);
+                    *atoms.waveforms.lock().unwrap() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
+                        if let Some(atoms) = wake.upgrade() && atoms.generation.load(Ordering::Acquire) == generation {
+                            atoms.scalar_revision.fetch_add(1, Ordering::Release);
+                        }
+                    }).ok();
+                }
                 *atoms.ingress.lock().unwrap() = part.ui_controls.take();
             }
             let nodes = v.tree.as_ref().map_or(1, |t| t.nodes.len());
@@ -1552,6 +1622,12 @@ fn relay_typed_input(e: &Event, cx: &mut ProcessContext, thru: bool) {
 
 /// A typed host MIDI event: shown on the keyboard and wheels, played as UMP.
 fn feed_typed_input(s: &mut Dsp, p: &SamplerParams, e: &Event, cx: &mut ProcessContext, thru: bool) {
+    if let EventBody::ParamChange { id, value } = e.body {
+        if let Some(address) = automation::HostAutomation::address(id) {
+            if !s.core.host_parameter(address, value) { s.unsupported += 1; }
+        }
+        return;
+    }
     relay_typed_input(e, cx, thru);
     let shared = &p.shared;
     let lit = |note: u8, velocity: u8| shared.heard[note as usize & 127].store(velocity, Ordering::Relaxed);
@@ -1728,6 +1804,7 @@ impl PluginLogic for Sampler {
                 atoms.articulation.store(playing, Ordering::Relaxed);
                 if s.core.epoch(slot) == atoms.generation.load(Ordering::Acquire) {
                     atoms.refresh_controls(|id| s.core.control_value(slot, id));
+                    atoms.refresh_widget_meters(s.core.epoch(slot), |address| s.core.widget_meter(slot, address));
                 }
             }
             s.until_poll = (rate * 0.1) as usize;

@@ -97,6 +97,13 @@ fn room_height(ui: &Ui, slot: usize) -> f64 {
     (rack.frame.size.height - (stage.frame.y - part.frame.y).max(0.) - tabs - perf).max(0.)
 }
 
+pub(super) fn interaction(edit: &ir_view::Edit) -> sampler_core::WidgetInteraction {
+    sampler_core::WidgetInteraction { index: edit.index, cursor: edit.cursor, event: edit.event,
+        mouse_over: edit.mouse_over,
+        modifiers: u8::from(edit.mods.shift) | (u8::from(edit.mods.ctrl || edit.mods.cmd) << 1) | (u8::from(edit.mods.alt) << 2),
+        ..Default::default() }
+}
+
 /// `slot`'s library interface, when its scripts declare one.
 fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<El> {
     let from = cx.view.parts.get(slot)?.interfaces.clone();
@@ -196,17 +203,28 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     face.values.extend(current.iter().copied());
     if let Some(shared) = &shared {
         face.input.values.extend(shared.widget_values(&face.face));
+        face.input.meters = shared.widget_meters(&face.face, generation);
+        let waveforms = shared.widget_waveforms(&face.face, generation, scale * ui.scale().unwrap_or(1.));
+        face.input.wave_duration_us = waveforms.iter().map(|(widget, envelope)| (*widget, envelope.duration_us)).collect();
+        face.input.peaks = waveforms.into_iter().map(|(widget, envelope)| (widget, envelope.peaks)).collect();
     }
     if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
     let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
+        for (index,source) in face.from.iter().enumerate() {
+            let current=published.updates.get(index).filter(|patch|**patch!=Default::default()).map(|patch| {let mut current=source.clone();patch.apply(source,&Default::default(),&mut current);current});
+            let current=current.as_ref().unwrap_or(source);
+            let typed=shared.as_ref().map(|shared|shared.widget_values(current)).unwrap_or_default();
+            native.update_view(current,&face.values,&typed);
+        }
         let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
         let view=native.view(ui,slot,scale,&face.face,&face.values,&face.input);
         for edit in native.edits() {
-            let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)}else{face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
-            let admitted=if let (ir::Source::Ksp{slot:source_slot},Some(widget))=(edit.source,widget) {
-                cx.p.shared.set_widget_at(slot,generation,source_slot,widget,edit.index,edit.value)
-            }else{false};
+            let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)} else {face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
+            let admitted=widget.is_some_and(|widget| {
+                let source_slot=match edit.source {ir::Source::Ksp{slot}=>slot,_=>0};
+                cx.p.shared.set_widget_at(slot,generation,source_slot,widget,edit.index,edit.value.clone())
+            });
             if !admitted {cx.state.notice="This authored widget edit could not be applied.".into();}
         }
         view
@@ -218,8 +236,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let mut edits: std::collections::HashMap<ir::WidgetRef, (std::collections::BTreeMap<u32, ir::Value>, sampler_core::WidgetInteraction)> = Default::default();
     for edit in face.input.edits.drain(..) {
         let entry = edits.entry(edit.widget).or_default();
+        entry.1 = interaction(&edit);
         entry.0.insert(edit.index, edit.value);
-        entry.1 = sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift) | (u8::from(edit.mods.ctrl || edit.mods.cmd)<<1) | (u8::from(edit.mods.alt)<<2),..Default::default()};
     }
     let mut edited_controls = std::collections::HashSet::new();
     for (n, (edits, interaction)) in edits {
