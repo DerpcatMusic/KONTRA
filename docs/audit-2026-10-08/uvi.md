@@ -2,7 +2,7 @@
 
 ## Verdict and reference identities
 
-**Current shared-sweep revision:** `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`. The prior9dcf05e5/18fe63fe/a4b3f8c7 smoke records below are historical revision-scoped evidence, not rows in the restarted current census. Canonical TSVs were reset and contained0 data rows when this handoff was verified. Old null-pick audio is discarded for parity; current comparisons require matching actual notes and exclude fallback auditions.
+**Current shared-sweep revision:** `tools/kontra-scan@2355155b56a5ae26add8bdbc287d46d42e7825f2`, v2 binary SHA-256 `f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a`. It replaces e340c39a/742c24e2; v1 ac5aed73 and the exact UVI sidecar d565661a are unchanged. The prior9dcf05e5/18fe63fe/a4b3f8c7 smoke records below are historical revision-scoped evidence, not rows in the restarted current census. Canonical TSVs were reset for the new sweep;0 data rows were observed at the earlier e340c39a handoff, and2355155b coverage remains pending the census owner. Old null-pick audio is discarded for parity; current comparisons require matching actual notes and exclude fallback auditions.
 
 **v2 is worse than the UVI development implementation on `codex/uvi-latest-integration` in interactive UI, scoped live parameters, graph routing, persistence and identified verified DSP surfaces.** v2 has real protected-bank streaming, so “UVI disk streaming is missing” is incorrect. The shared Clarinet A smoke now proves audible output on the same declared native note in both, with lower observed v2 process RSS (140.36 vs418.60 MiB) and sample residency (26,175,632 vs218,923,526 B). Corpus-wide load/CPU/memory superiority remains unproved; scanner load stages differ. Admission is a v2 advantage in the stopped sample: its offline loader admits80/80 matched AO IDs while v1 rejects all80 before Ready. That is not native parity. Successful import, exported widgets and finite nonzero PCM are separate milestones; none establishes native Falcon parity.
 
@@ -253,7 +253,7 @@ These are one warm/cache-affected pair, not660-program results or native PCM par
 **v1 diagnostic precision:** installedd565661a exports `asset_failures`, `font_failures`, `asset_limit` from `UiAssets::diagnostics()` (`src/uvi/scan.rs:198–215`) and generic `runtime_errors` from `Worker::stats().errors` (`:301`). These are safe aggregate fields, not lookup/decode/font-request counts, Lua init/runtime phase faults, or an actual layout/Lua budget-hit accessor. `asset_limit` is an asset cache limit, not a tree/VM budget. The extended columns remain **unknown**, not0. No existing adapter export can fill the requested missing fields accurately. New v1 baseline instrumentation would be required; the installed sidecar/source and common CLI are unchanged.
 
 
-### Restarted shared sweep: e340c39a
+### Superseded shared sweep: e340c39a
 
 Installed binaries were SHA-256 verified after the census owner's handoff:
 
@@ -271,3 +271,10 @@ For new audio comparisons, use actual `note_picked`/`note_policy`/`audition_stat
 
 
 **Unchanged UVI sidecar note-plan boundary:** source1c198e60's compiled `metrics::note(program)` (`tools/kontra-scan/metrics.rs:59–66`) returns only `Option<(u8,u8)>`; it reads key/velocity and has no optional keyswitch or explicit no-audition command. `src/uvi/scan.rs:189–194` falls back to its local selection when no numeric override exists. Thus common valid numeric plans are honored, but a keyswitch in the new plan does not establish that the old sidecar sent it; keep v1 keyswitch execution unknown. Likewise, when v2 has no safe pick, do not regard an independent sidecar fallback as a matched safe audition. Require both actual picks/statuses and compatible keyswitch evidence before parity claims; the audit does not modify the frozen adapter.
+
+
+### Current shared sweep: 2355155b (zone-count correction)
+
+The scanner owner pushed and installed `tools/kontra-scan@2355155b56a5ae26add8bdbc287d46d42e7825f2`; this audit independently verified v2 binary SHA-256 `f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a`, pinned-v1 SHA-256 `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08` and unchanged UVI-sidecar SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`. Use2355155b for future scanner extension merges/rebuilds; installed `bin/README.md` records that exact rebuild revision. The owner reports its fresh required wrapper/no-run gate passed and the paired serial sweep restarted after Conflux-first smoke. Results remain pending; no independent collector is running here.
+
+`sample_zone_count` now means retained instrument IR mapping count, **unknown if the retained instrument is unavailable**. Raw `decoded_zone_count` remains separate in detailed JSON. Neither mapping count measures runtime purge/gating, playable current-state voices, or audible PCM; reserved cache residency is not zone existence. No-safe-key reason explicitly says **not auditioned**, rather than claiming a silent played note. The unchanged UVI sidecar's unknown fields and keyswitch/no-audition-command boundary above still apply.
