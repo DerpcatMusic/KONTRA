@@ -240,3 +240,38 @@ fn widget_meter_reads_native_bus_channel_without_heap_and_rejects_old_epoch() {
     assert_eq!(atoms.widget_meters(&face,1),values);
     assert_eq!(atoms.scalar_revision.load(Ordering::Acquire),revision);
 }
+
+#[test]
+fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_bins() {
+    use crate::sound::waveform::{Provider, Source};
+    let prepared = sampler_core::Prepared::new(48000, vec![], vec![], 1).unwrap();
+    let limits = sampler_core::Limits::for_plan(&prepared, 4, 1);
+    let runtime = sampler_core::Runtime::new(prepared, limits).unwrap();
+    let plan = runtime.active_plan();
+    let mut part = CorePart::new(runtime, MixTree::instrument("waveform")).unwrap();
+    let atoms = PartShared::default(); atoms.generation.store(1, Ordering::Release);
+    atoms.loop_audit_install_ingress(part.ui_controls.take());
+    let pcm = sampler_core::Pcm::new(4, vec![[-1.,0.], [0.5,0.],[-0.75,0.75],[0.,1.]].into_boxed_slice()).unwrap();
+    let (wake, ready) = std::sync::mpsc::channel();
+    *atoms.waveforms.lock().unwrap() = Some(Provider::start(plan, [(3, Source {pcm, stream:None})].into(), move || {wake.send(()).ok();}).unwrap());
+    let mut face = sampler_ui_ir::Interface::default();
+    face.source = sampler_ui_ir::Source::Ksp {slot:2};
+    for zone in [3,3,9] {
+        let mut widget = sampler_ui_ir::Widget::new("waveform", sampler_ui_ir::PageRef(0), sampler_ui_ir::Rect::new(0,0,4,20), sampler_ui_ir::Kind::Waveform);
+        widget.waveform = Some(sampler_ui_ir::Waveform {zone,flags:0,cursor_us:0,table:vec![],highlighted:None,midi_start_note:0});
+        face.widgets.push(widget);
+    }
+    assert!(atoms.widget_waveforms(&face,0,0.5).is_empty());
+    let _ = atoms.widget_waveforms(&face,1,0.5);
+    for _ in 0..2 { ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap(); }
+    let values = atoms.widget_waveforms(&face,1,0.5);
+    assert_eq!(values.len(),2,"hole ID9 must not alias compact zone ordinal");
+    assert_eq!(values[0].0,sampler_ui_ir::WidgetRef(0));
+    assert_eq!(&*values[0].1.peaks,&[(-1.,0.5),(-0.75,1.)]);
+    assert_eq!(values[0].1.duration_us,1_000_000);
+    assert!(Arc::ptr_eq(&values[0].1.peaks,&values[1].1.peaks));
+    atoms.generation.store(2,Ordering::Release);
+    let _ = atoms.widget_waveforms(&face,1,0.5);
+    atoms.loop_audit_install_ingress(None);
+    assert!(atoms.widget_waveforms(&face,2,0.5).is_empty(),"unmatched Prepared generation cannot publish cached peaks");
+}
