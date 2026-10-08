@@ -336,35 +336,27 @@ pub(crate) struct NoteParams {
 }
 
 /// A note's "from script" modulator values by id; unset ids read 0.
-// ponytail: twelve ids per note (KSP scripts use at most three, Pacific 1, 3,
-// 4; UVI's VWinds sets seven); further ids are dropped. Grow if a library
-// needs more.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModValues {
-    ids: [u16; 12],
-    values: [i32; 12],
-    len: u8,
+    values: [i32; crate::USER_EVENT_PAR as usize + 16],
+}
+
+impl Default for ModValues {
+    fn default() -> Self {
+        Self {
+            values: [0; crate::USER_EVENT_PAR as usize + 16],
+        }
+    }
 }
 
 impl ModValues {
     pub fn get(&self, id: u16) -> i32 {
-        let len = usize::from(self.len);
-        self.ids[..len]
-            .iter()
-            .position(|&i| i == id)
-            .map_or(0, |at| self.values[at])
+        self.values.get(usize::from(id)).copied().unwrap_or(0)
     }
 
     fn set(&mut self, id: u16, value: i32) {
-        let len = usize::from(self.len);
-        match self.ids[..len].iter().position(|&i| i == id) {
-            Some(at) => self.values[at] = value,
-            None if len < self.ids.len() => {
-                self.ids[len] = id;
-                self.values[len] = value;
-                self.len += 1;
-            }
-            None => {}
+        if let Some(slot) = self.values.get_mut(usize::from(id)) {
+            *slot = value;
         }
     }
 }
@@ -553,7 +545,7 @@ impl Runtime {
         if let Some(log) = &mut self.write_log {
             log.push(format!("event_par event {event} id {id} value {value}"));
         }
-        let user = (crate::USER_EVENT_PAR..crate::USER_EVENT_PAR + 4).contains(&id);
+        let user = (crate::USER_EVENT_PAR..crate::USER_EVENT_PAR + 16).contains(&id);
         if id > 1000 && !user {
             return Ok(());
         }
@@ -561,7 +553,11 @@ impl Runtime {
             // Modulator values are normalized to +-1e6; user parameters keep
             // any integer (a script stores event ids in them).
             let limit = if user { i64::from(i32::MAX) } else { 1_000_000 };
-            let value = value.clamp(-limit, limit) as i32;
+            let value = if user {
+                value.clamp(i64::from(i32::MIN), limit)
+            } else {
+                value.clamp(-limit, limit)
+            } as i32;
             self.note_params[note.0.index].mods.set(id, value);
         }
         Ok(())
@@ -582,6 +578,7 @@ impl Runtime {
             return Ok(0);
         };
         Ok(match info {
+            crate::EventInfo::Status => 1,
             crate::EventInfo::Key => i64::from(self.notes.get(note.0).unwrap().pitch.key()),
             crate::EventInfo::Velocity => {
                 (self.notes.get(note.0).unwrap().velocity * 127.).round() as i64

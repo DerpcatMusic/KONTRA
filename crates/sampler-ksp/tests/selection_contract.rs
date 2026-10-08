@@ -1,4 +1,6 @@
 //! W7 failing-first selection/lifecycle contracts, adapted from the ranked KSP audit.
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
 use sampler_core::*;
 use sampler_ksp::{Environment, Script};
 
@@ -43,6 +45,10 @@ fn runtime_scripts(scripts: Vec<Script>) -> Runtime {
     .unwrap()
     .with_groups(1, vec![Some(0)])
     .unwrap();
+    runtime_prepared(scripts, prepared)
+}
+
+fn runtime_prepared(scripts: Vec<Script>, prepared: Prepared) -> Runtime {
     let plan = sampler_ksp::bind_modules(scripts, prepared).unwrap();
     let limits = Limits {
         notes: 16,
@@ -54,7 +60,7 @@ fn runtime_scripts(scripts: Vec<Script>) -> Runtime {
         decisions: 0,
         commands: 64,
         behaviors: 32,
-        behavior_fuel: 16384,
+        behavior_fuel: 65536,
         behavior_cells: plan.behavior_local_count() * 32,
         note_cells: plan.note_cell_count() * 16,
     };
@@ -203,4 +209,346 @@ fn stop_wait_can_disable_later_waits_without_leaving_a_stale_resume() {
     rt.render(&mut [[0.; 2]; 1]).unwrap();
     assert_eq!(cell(&rt, 0, 1), 2);
     assert_eq!(rt.pending_commands(), 0);
+}
+
+macro_rules! event_contract {
+    ($name:ident, $reason:literal, $source:literal, $cell:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let mut rt = runtime($source);
+            note(&mut rt);
+            assert_eq!(cell(&rt, 0, $cell), $expected);
+        }
+    };
+}
+event_contract!(
+    active_event_status_is_note_queue,
+    "audit: event status",
+    "on init declare $out end on on note $out := event_status($EVENT_ID) end on",
+    0,
+    1
+);
+event_contract!(
+    get_event_ids_contains_current_event,
+    "audit: event enumeration",
+    "on init declare %ids[16] declare $out end on
+     on note get_event_ids(%ids) $out := search(%ids, $EVENT_ID) end on",
+    16,
+    0
+);
+event_contract!(
+    event_mark_is_readable,
+    "audit: marks",
+    "on init declare $out end on on note set_event_mark($EVENT_ID, $MARK_1)
+     $out := get_event_mark($EVENT_ID, $MARK_1) end on",
+    0,
+    1
+);
+event_contract!(
+    current_event_group_allow_state_is_readable,
+    "audit: event group readback",
+    "on init declare $out end on on note
+     $out := get_event_par_arr($EVENT_ID, $EVENT_PAR_ALLOW_GROUP, 0) end on",
+    0,
+    1
+);
+event_contract!(
+    custom_event_array_parameters_roundtrip,
+    "audit: custom event parameters",
+    "on init declare $out end on on note
+     set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 42, 15)
+     $out := get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 15) end on",
+    0,
+    42
+);
+event_contract!(
+    thirteen_script_modulator_ids_roundtrip,
+    "audit: per-note modulator store drops IDs after twelve",
+    "on init declare $out declare $i end on
+     on note $i := 0 while ($i < 13)
+     set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 42, $i)
+     inc($i) end while
+     $out := get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 12) end on",
+    0,
+    42
+);
+event_contract!(
+    affected_groups_have_dynamic_size,
+    "audit: GROUPS_AFFECTED",
+    "on init declare $out end on on note $out := num_elements(%GROUPS_AFFECTED) end on",
+    0,
+    1
+);
+event_contract!(
+    relative_mode_two_is_absolute,
+    "audit: change_vol mode 2",
+    "on init declare $out end on on note change_vol($EVENT_ID, -6000, 2)
+     change_vol($EVENT_ID, -3000, 2)
+     $out := get_event_par($EVENT_ID, $EVENT_PAR_VOLUME) end on",
+    0,
+    -3000
+);
+event_contract!(
+    pan_mode_two_is_absolute,
+    "audit: change_pan mode 2 accumulates",
+    "on init declare $out end on on note change_pan($EVENT_ID, 1000, 2)
+     change_pan($EVENT_ID, -1000, 2)
+     $out := get_event_par($EVENT_ID, $EVENT_PAR_PAN) end on",
+    0,
+    -1000
+);
+
+#[test]
+fn event_queries_and_arrays_run_without_heap_and_retire_with_the_event() {
+    let mut rt = runtime(
+        "on init
+        declare %ids[4] := (9,9,9,9)
+        declare $id declare $status declare $marked declare $custom
+        end on
+        on note
+        get_event_ids(%ids)
+        $id := $EVENT_ID
+        set_event_mark($id, $MARK_28)
+        set_event_par_arr($id, $EVENT_PAR_CUSTOM, -2147483648, 15)
+        $status := event_status($id)
+        $marked := get_event_mark($id, $MARK_28)
+        $custom := get_event_par_arr($id, $EVENT_PAR_CUSTOM, 15)
+        end on
+        on controller
+        get_event_ids(%ids)
+        $status := event_status($id)
+        $marked := get_event_mark($id, $MARK_28)
+        $custom := get_event_par_arr($id, $EVENT_PAR_CUSTOM, 15)
+        end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!(cell(&rt, 0, 0), cell(&rt, 0, 4));
+    assert_eq!(
+        [cell(&rt, 0, 1), cell(&rt, 0, 2), cell(&rt, 0, 3)],
+        [0, 9, 9]
+    );
+    assert_eq!(
+        [cell(&rt, 0, 5), cell(&rt, 0, 6), cell(&rt, 0, 7)],
+        [1, 1, i64::from(i32::MIN)]
+    );
+    rt.panic();
+    rt.flush_behaviors(|_, _, _| true);
+    rt.flush_ended(|_| true);
+    let domain = rt.performance(0).unwrap();
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+            .unwrap();
+    });
+    assert_eq!(cell(&rt, 0, 0), 0);
+    assert_eq!(
+        [cell(&rt, 0, 5), cell(&rt, 0, 6), cell(&rt, 0, 7)],
+        [0, 0, 0]
+    );
+}
+
+#[test]
+fn custom_parameters_share_standard_indices_and_do_not_alias_modulators() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c declare $d declare $e end on
+        on note
+        set_event_par($EVENT_ID, $EVENT_PAR_0, 19)
+        $a := get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 0)
+        set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 23 + 7, 3)
+        $b := get_event_par($EVENT_ID, $EVENT_PAR_3)
+        set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 2000000, 1000)
+        set_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 88, 1001)
+        set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 77, -1)
+        set_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 66, 16)
+        $c := get_event_par_arr($EVENT_ID, $EVENT_PAR_MOD_VALUE_ID, 1000)
+        $d := get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 0)
+        $e := get_event_par_arr($EVENT_ID, $EVENT_PAR_CUSTOM, 16)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!(
+        (0..5).map(|i| cell(&rt, 0, i)).collect::<Vec<_>>(),
+        vec![19, 30, 1000000, 19, 0]
+    );
+}
+
+#[test]
+fn event_mark_deletion_preserves_other_marks_and_note_reuse_clears_them() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c end on
+        on note
+        $c := get_event_mark($EVENT_ID, $MARK_28)
+        set_event_mark($EVENT_ID, $MARK_1 + $MARK_28)
+        delete_event_mark($EVENT_ID, $MARK_1)
+        $a := get_event_mark($EVENT_ID, $MARK_1)
+        $b := get_event_mark($EVENT_ID, $MARK_28)
+        end on",
+    );
+    for _ in 0..2 {
+        note(&mut rt);
+        assert_eq!(
+            [cell(&rt, 0, 0), cell(&rt, 0, 1), cell(&rt, 0, 2)],
+            [0, 1, 0]
+        );
+        rt.panic();
+        rt.flush_behaviors(|_, _, _| true);
+        rt.flush_ended(|_| true);
+    }
+}
+
+#[test]
+fn dynamic_relative_mode_only_adds_for_one() {
+    let mut rt = runtime(
+        "on init declare $mode := 2 declare $a declare $b end on
+        on note
+        change_vol($EVENT_ID,-6000,$mode)
+        change_vol($EVENT_ID,-3000,$mode)
+        $a := get_event_par($EVENT_ID,$EVENT_PAR_VOLUME)
+        $mode := 1
+        change_vol($EVENT_ID,-1000,$mode)
+        $b := get_event_par($EVENT_ID,$EVENT_PAR_VOLUME)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!([cell(&rt, 0, 1), cell(&rt, 0, 2)], [-3000, -4000]);
+}
+
+#[test]
+fn affected_groups_keep_physical_holes_and_ignore_script_group_disallow() {
+    let prepared = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[1.; 2]; 64])).unwrap()],
+        vec![Region {
+            sample: 0,
+            key_low: 60,
+            key_high: 60,
+            root_key: None,
+            velocity_low: 0.,
+            velocity_high: 1.,
+            gain: 1.,
+            envelope: Envelope::default(),
+            playback: Playback::default(),
+        }],
+        1,
+    )
+    .unwrap()
+    .with_groups(5, vec![Some(3)])
+    .unwrap();
+    let script = compile_in(
+        "on init declare $size declare $group declare $allowed declare $after end on
+        on note
+        disallow_group($ALL_GROUPS)
+        $size := num_elements(%GROUPS_AFFECTED)
+        $group := %GROUPS_AFFECTED[0]
+        $allowed := get_event_par_arr($EVENT_ID,$EVENT_PAR_ALLOW_GROUP,3)
+        allow_group(3)
+        $after := get_event_par_arr($EVENT_ID,$EVENT_PAR_ALLOW_GROUP,3)
+        end on",
+        &Environment {
+            groups: (0..5).map(|g| format!("Group {g}")).collect(),
+            ..Default::default()
+        },
+    );
+    let mut rt = runtime_prepared(vec![script], prepared);
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!(
+        (0..4).map(|i| cell(&rt, 0, i)).collect::<Vec<_>>(),
+        vec![1, 3, 0, 1]
+    );
+    rt.panic();
+    rt.trigger(input(2), 61, 1.).unwrap();
+    assert_eq!(cell(&rt, 0, 0), 0);
+    assert_eq!(cell(&rt, 0, 1), -1);
+}
+
+#[test]
+fn release_reads_its_group_view_and_event_tags() {
+    let mut rt = runtime(
+        "on init declare $a declare $b declare $c declare $d end on
+        on note
+        set_event_mark($EVENT_ID,$MARK_1)
+        set_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,42,15)
+        end on
+        on release
+        disallow_group($ALL_GROUPS)
+        $a := get_event_par_arr($EVENT_ID,$EVENT_PAR_ALLOW_GROUP,0)
+        allow_group(0)
+        $b := get_event_par_arr($EVENT_ID,$EVENT_PAR_ALLOW_GROUP,0)
+        $c := get_event_mark($EVENT_ID,$MARK_1)
+        $d := get_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,15)
+        end on",
+    );
+    let n = note(&mut rt);
+    support::without_heap(|| {
+        rt.key_up(n, None).unwrap();
+    });
+    assert_eq!(
+        (0..4).map(|i| cell(&rt, 0, i)).collect::<Vec<_>>(),
+        vec![0, 1, 1, 42]
+    );
+}
+
+#[test]
+fn all_native_modulator_ids_and_custom_parameters_roundtrip_together() {
+    let mut rt = runtime(
+        "on init declare $i declare $sum declare $custom_sum end on
+        on note
+        $i := 0
+        while ($i <= 1000)
+            set_event_par_arr($EVENT_ID,$EVENT_PAR_MOD_VALUE_ID,$i,$i)
+            inc($i)
+        end while
+        $i := 0
+        while ($i < 16)
+            set_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,$i + 1,$i)
+            inc($i)
+        end while
+        $i := 0
+        while ($i <= 1000)
+            $sum := $sum + get_event_par_arr($EVENT_ID,$EVENT_PAR_MOD_VALUE_ID,$i)
+            inc($i)
+        end while
+        $i := 0
+        while ($i < 16)
+            $custom_sum := $custom_sum + get_event_par_arr($EVENT_ID,$EVENT_PAR_CUSTOM,$i)
+            inc($i)
+        end while
+        end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!([cell(&rt, 0, 1), cell(&rt, 0, 2)], [500500, 136]);
+}
+
+#[test]
+fn generated_event_pending_group_state_is_readable() {
+    let mut rt = runtime(
+        "on init declare $id declare $before declare $after end on
+        on note
+        $id := play_note(60,127,0,100000)
+        $before := get_event_par_arr($id,$EVENT_PAR_ALLOW_GROUP,0)
+        set_event_par_arr($id,$EVENT_PAR_ALLOW_GROUP,0,0)
+        $after := get_event_par_arr($id,$EVENT_PAR_ALLOW_GROUP,0)
+        end on",
+    );
+    note(&mut rt);
+    assert_eq!([cell(&rt, 0, 1), cell(&rt, 0, 2)], [1, 0]);
+}
+#[test]
+fn affected_group_search_uses_dynamic_length() {
+    let mut rt = runtime(
+        "on init declare $a declare $b end on on note
+        disallow_group($ALL_GROUPS)
+        $a := search(%GROUPS_AFFECTED,0)
+        $b := search(%GROUPS_AFFECTED,99)
+        end on",
+    );
+    support::without_heap(|| {
+        note(&mut rt);
+    });
+    assert_eq!([cell(&rt, 0, 0), cell(&rt, 0, 1)], [0, -1]);
 }
