@@ -29,6 +29,9 @@ pub struct RuntimeStats {
     pub render_frames_last: u32,
     /// Bytes of stream cache pages, allocated whether resident or not.
     pub stream_cache_bytes: usize,
+    /// Starts rejected by page admission, separate from audible underruns.
+    pub stream_capacity_refusals: u64,
+    pub stream_disconnected_refusals: u64,
 }
 
 impl Runtime {
@@ -60,6 +63,8 @@ impl Runtime {
             render_nanos_peak: self.render_time[1],
             render_frames_last: self.render_time[2] as u32,
             stream_cache_bytes: self.stream_cache.as_ref().map_or(0, |c| c.bytes()),
+            stream_capacity_refusals: self.stream_admission_errors[0],
+            stream_disconnected_refusals: self.stream_admission_errors[1],
         }
     }
 
