@@ -4,11 +4,85 @@ use super::{
     theme::*,
 };
 use moose::mui::mui::{
+    geometry::Path as DrawPath,
     prelude::*,
     scene::{Fit, Image},
 };
 use sampler_ui_ir as ir;
 use std::sync::Arc;
+
+/// Min/max envelope from the current source zone; no audio reads in painting.
+pub(super) fn waveform(
+    peaks: Arc<[(f32, f32)]>,
+    descriptor: Option<ir::Waveform>,
+    duration_us: Option<u64>,
+    colors: ir::Colors,
+    hide_background: bool,
+) -> El {
+    let fill = |c: ir::Rgba| {
+        Fill::from(
+            Color::srgb(c.r as f32 / 255., c.g as f32 / 255., c.b as f32 / 255.)
+                .with_alpha(c.a as f32 / 255.),
+        )
+    };
+    let ink = colors.wave.map_or(Fill::from(value_ink(0.)), fill);
+    let cursor_ink = colors.wave_cursor.map_or(Fill::from(Role::Ink), fill);
+    let background = if hide_background {
+        Role::Field.alpha(0.)
+    } else {
+        colors.background.map_or(Role::Field.alpha(1.), fill)
+    };
+    canvas(move |s| {
+        let mut draws = Vec::new();
+        let across = (s.width.ceil() as usize).clamp(1, 4096);
+        let n = peaks.len();
+        let mid = s.height / 2.;
+        if n > 0 && mid > 0. {
+            let mut top = Vec::with_capacity(across * 2);
+            let mut foot = Vec::with_capacity(across * 2);
+            for x in 0..across {
+                let a = x * n / across;
+                let b = ((x + 1) * n / across).max(a + 1).min(n);
+                let (lo, hi) = peaks[a..b].iter().fold((0f32, 0f32), |(lo, hi), &(a, b)| {
+                    (
+                        if a.is_finite() {
+                            lo.min(a.clamp(-1., 1.))
+                        } else {
+                            lo
+                        },
+                        if b.is_finite() {
+                            hi.max(b.clamp(-1., 1.))
+                        } else {
+                            hi
+                        },
+                    )
+                });
+                for px in [
+                    x as f64 * s.width / across as f64,
+                    (x + 1) as f64 * s.width / across as f64,
+                ] {
+                    top.push(Point::new(px, mid - f64::from(hi).max(0.5 / mid) * mid));
+                    foot.push(Point::new(px, mid - f64::from(lo).min(-0.5 / mid) * mid));
+                }
+            }
+            top.extend(foot.into_iter().rev());
+            draws.push(Draw::fill(DrawPath::polyline(top, true), ink.clone()));
+        }
+        if let Some(wave) = &descriptor
+            && let Some(duration) = duration_us.filter(|&n| n > 0)
+            && wave.cursor_us >= 0
+        {
+            let x =
+                (wave.cursor_us as f64 / duration as f64).clamp(0., 1.) * (s.width - 1.).max(0.);
+            draws.push(Draw::fill(
+                rect(x.round(), 0., 1., s.height),
+                cursor_ink.clone(),
+            ));
+        }
+        draws
+    })
+    .fill(background)
+}
 
 fn lines(text: &str, room: f64, wrap: bool, advance: impl Fn(&str) -> f64) -> Vec<String> {
     let mut out = Vec::new();
@@ -115,13 +189,10 @@ pub(super) fn words(
             .h(lh)
             .pad((2. * scale, 0.))
     };
-    let el = stack![
-        col(lines.into_iter().map(one))
-            .gap(0.)
-            .w(w)
-            .h(tall)
-            .at(0., top.map_or(((h - tall) / 2.).max(0.), |y| f64::from(y) * scale))
-    ]
+    let el = stack![col(lines.into_iter().map(one)).gap(0.).w(w).h(tall).at(
+        0.,
+        top.map_or(((h - tall) / 2.).max(0.), |y| f64::from(y) * scale)
+    )]
     .w(w)
     .h(h)
     .clip();
