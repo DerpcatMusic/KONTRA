@@ -91,17 +91,17 @@ impl Package {
         })
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        Self::load_cancel(path,||false)
+        Self::load_declared_cancel(path,None,||false)
     }
-    pub fn load_cancel(path: &Path, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
+    pub fn load_declared_cancel(path: &Path, declared: Option<&str>, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
         anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
-        let mut source = Source::of(path);
+        let mut source = Source::of_declared(path, declared);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
         let mut font_names = Vec::new();
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
-        for name in source.native_names() {
+        for name in source.native_names()? {
             anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             let relative = name
                 .strip_prefix("resources/native_ui/")
@@ -633,22 +633,13 @@ impl Session {
         kontakt.set(
             "connect_level_meter",
             lua.create_function(move |lua, identifier: String| {
-                // Like parameters, unused optional meter handles may be retained by a module.
-                let binding = meter_names.get(&identifier).copied();
-                #[cfg(test)]
-                if let Ok(trace) = lua.globals().get::<Function>("__audit_meter") {
-                    trace.call::<()>((identifier.clone(), binding.is_some(), false))?;
-                }
+                let binding = meter_names.get(&identifier).copied()
+                    .ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
                 let bridge = meter_bridge.clone();
                 let meter = lua.create_table()?;
                 meter.set(
                     "level_value",
-                    lua.create_function(move |_lua, _: LuaValue| {
-                        #[cfg(test)]
-                        if let Ok(trace) = _lua.globals().get::<Function>("__audit_meter") {
-                            trace.call::<()>((identifier.clone(), binding.is_some(), true))?;
-                        }
-                        let binding = binding.ok_or_else(|| mlua::Error::external("NativeUI meter unavailable"))?;
+                    lua.create_function(move |_, _: LuaValue| {
                         Ok(bridge
                             .lock()
                             .unwrap()
@@ -807,8 +798,20 @@ impl Session {
 mod tests {
     use super::*;
     #[test]
+    fn declared_missing_package_keeps_its_typed_resource_stage() {
+        let root=std::env::temp_dir().join(format!("native-missing-package-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("Resources/native_ui")).unwrap();
+        std::fs::write(root.join("Resources/native_ui/main.nui"),b"return function() return nil end").unwrap();
+        let error=Package::load_declared_cancel(&root.join("fixture.nki"),Some("missing.nkr"),||false).err().unwrap();
+        let error=error.downcast_ref::<sampler_kontakt::LoadError>().unwrap();
+        assert_eq!(error.kind(),sampler_kontakt::Kind::ResourceContainerMissing);
+        assert_eq!(error.stage(),Some(sampler_kontakt::Stage::ResourceResolve));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
-        assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)
+        assert_eq!(Package::load_declared_cancel(Path::new("/unopened/synthetic.nki"),None,||true)
             .err().unwrap().to_string(),"NativeUI preparation canceled");
         let (request, _jobs) = std::sync::mpsc::sync_channel(1);
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
@@ -887,13 +890,6 @@ mod tests {
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
         let meter:Table=graph.get::<Table>("children").unwrap().get(1).unwrap();
         assert_eq!(meter.get::<Table>("props").unwrap().get::<String>("text").unwrap(),"0.625");
-        let kontakt: Table = session.lua().globals().get::<Table>("package").unwrap()
-            .get::<Table>("loaded").unwrap().get("kontakt").unwrap();
-        let connect: Function = kontakt.get("connect_level_meter").unwrap();
-        let unused: Table = connect.call("unused-meter").expect("unused meter handles are lazy");
-        let read: Function = unused.get("level_value").unwrap();
-        assert!(read.call::<f64>(unused).unwrap_err().to_string().contains("NativeUI meter unavailable"),
-            "an actually read missing meter remains unavailable");
         let edits = session.take_edits();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].value, ir::Value::Integer(75));

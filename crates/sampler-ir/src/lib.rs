@@ -98,6 +98,8 @@ pub struct Instrument {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SourceIndices {
+    /// Authored program resource-container path (Kontakt public F0), independent of other rack programs.
+    pub resource_container: Option<String>,
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
     pub modulators: Vec<SourceModulator>,

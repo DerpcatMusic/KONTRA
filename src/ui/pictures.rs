@@ -28,6 +28,7 @@ pub struct Scan {
     pub lookup_limit: usize,
     pub lookup_read: usize,
     pub lookup_unavailable: usize,
+    pub lookup_container_missing: usize,
     pub decodes: usize,
     pub decode_ok: usize,
     pub fonts: usize,
@@ -36,7 +37,8 @@ pub struct Scan {
 }
 
 impl Source {
-    pub fn of(instrument: &Path) -> Self {
+    pub fn of(instrument: &Path) -> Self { Self::of_declared(instrument, None) }
+    pub fn of_declared(instrument: &Path, declared: Option<&str>) -> Self {
         let uvi = instrument
             .ancestors()
             .any(|p| {
@@ -46,7 +48,7 @@ impl Source {
             })
             .then(|| sampler_uvi::Resources::of(instrument));
         Self {
-            kontakt: sampler_kontakt::Resources::of(instrument),
+            kontakt: sampler_kontakt::Resources::of_declared(instrument, declared),
             uvi,
             #[cfg(feature = "shots")]
             scan: Scan::default(),
@@ -75,16 +77,18 @@ impl Source {
                 Err(ResourceError::Limit) => self.scan.lookup_limit += 1,
                 Err(ResourceError::Read) => self.scan.lookup_read += 1,
                 Err(ResourceError::Unavailable) => self.scan.lookup_unavailable += 1,
+                Err(ResourceError::ContainerMissing) => self.scan.lookup_container_missing += 1,
             }
         }
         result
     }
-    pub(super) fn native_names(&mut self) -> Vec<String> {
+    pub(super) fn native_names(&mut self) -> anyhow::Result<Vec<String>> {
         let mut names = self.kontakt.names("resources/native_ui/");
         names.extend(self.kontakt.names("native_ui/"));
         names.sort();
         names.dedup();
-        names
+        self.kontakt.container_status()?;
+        Ok(names)
     }
     pub fn font(&mut self, asset: &ir::Asset) -> Option<moose::mui::mui::prelude::Font> {
         let font = self
@@ -155,6 +159,7 @@ pub(super) fn resource_category(error: ResourceError) -> &'static str {
         ResourceError::Limit => "lookup-limit",
         ResourceError::Read => "lookup-read",
         ResourceError::Unavailable => "lookup-unavailable",
+        ResourceError::ContainerMissing => "resource_container_missing",
     }
 }
 
@@ -162,6 +167,7 @@ pub(super) fn resource_category(error: ResourceError) -> &'static str {
 fn kontakt_error(error: sampler_kontakt::LoadError) -> ResourceError {
     use sampler_kontakt::LoadError as E;
     match error {
+        E::ResourceContainerMissing => ResourceError::ContainerMissing,
         E::Io { .. } => ResourceError::Read,
         E::Decode { .. } => ResourceError::Corrupt,
         E::Invalid { reason, .. } => match reason.as_str() {

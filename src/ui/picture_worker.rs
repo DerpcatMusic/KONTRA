@@ -54,6 +54,7 @@ struct Cached {
 }
 pub(super) struct Preparation {
     path: PathBuf,
+    declared: Option<String>,
     jobs: SyncSender<Vec<Request>>,
     results: Receiver<Result>,
     epoch: Arc<AtomicU64>,
@@ -73,7 +74,11 @@ impl Drop for Preparation {
     }
 }
 impl Preparation {
-    pub fn new(path: &Path) -> Self {
+    #[cfg(test)]
+    pub fn new(path: &Path) -> Self { Self::new_declared(path, None) }
+    pub fn new_declared(path: &Path, declared: Option<&str>) -> Self {
+        let declared = declared.map(str::to_owned);
+        let worker_declared = declared.clone();
         let (jobs, requests) = mpsc::sync_channel::<Vec<Request>>(1);
         let (done, results) = mpsc::sync_channel(1);
         let epoch = Arc::new(AtomicU64::new(0));
@@ -83,7 +88,7 @@ impl Preparation {
             .name("authored-art".into())
             .spawn(move || {
                 // Discovery and all encoded reads happen here, never in Face::new.
-                let mut source = Source::of(&worker_path);
+                let mut source = Source::of_declared(&worker_path, worker_declared.as_deref());
                 while let Ok(batch) = requests.recv() {
                     for request in batch {
                         let canceled = || worker_epoch.load(Ordering::Acquire) != request.epoch;
@@ -136,6 +141,7 @@ impl Preparation {
             });
         Self {
             path: path.into(),
+            declared,
             jobs,
             results,
             epoch,
@@ -150,6 +156,7 @@ impl Preparation {
             scan: Default::default(),
         }
     }
+    pub fn declared(&self) -> Option<&str> { self.declared.as_deref() }
     pub fn path(&self) -> &Path {
         &self.path
     }

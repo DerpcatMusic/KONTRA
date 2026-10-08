@@ -157,8 +157,8 @@ impl Assets {
         scale: f64,
         values: &Values,
     ) {
-        if self.preparation.as_ref().is_none_or(|p| p.path() != path) {
-            self.preparation = Some(super::picture_worker::Preparation::new(path));
+        if self.preparation.as_ref().is_none_or(|p| p.path() != path || p.declared() != face.resource_container.as_deref()) {
+            self.preparation = Some(super::picture_worker::Preparation::new_declared(path, face.resource_container.as_deref()));
         }
         let prepared =
             self.preparation

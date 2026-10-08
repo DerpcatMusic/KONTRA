@@ -53,7 +53,7 @@ fn render(
     let mut missing = Vec::new();
     let mut assets = ir_view::Assets::default();
     let mut native = face.native_ui.as_ref().map(|n| {
-        super::native_ui::State::new(
+        super::native_ui::State::new_declared(
             path,
             &n.entry,
             interfaces
@@ -65,6 +65,7 @@ fn render(
                         .map(move |(n, w)| (f.source, n, w.clone()))
                 })
                 .collect(),
+            face.resource_container.clone(),
         )
     });
     let input = ir_view::InputState::default();
@@ -172,10 +173,10 @@ fn render(
             .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)))
             .min(1.);
         let authored = native.as_ref().map(|n| n.authored());
-        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
+        let mut w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
             .ceil()
             .clamp(1., 1200.) as u16;
-        let h = (authored.map_or(
+        let mut h = (authored.map_or(
             f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)),
             |s| s.height,
         ) * scale)
@@ -192,7 +193,11 @@ fn render(
                     if Instant::now() > deadline {
                         return Err("authored image preparation time budget exceeded".into());
                     }
-                    let el = if let Some(native) = &mut native {
+                    if native.as_ref().is_some_and(|n| n.container_missing()) {
+                        w=(f64::from(face.pages[p].size.width.max(1))*scale).ceil().clamp(1.,1200.) as u16;
+                        h=(f64::from(ir_view::height(&face,ir::PageRef(p)).max(1))*scale).ceil().clamp(1.,900.) as u16;
+                    }
+                    let el = if let Some(native) = &mut native && !native.container_missing() {
                         native.view(&mut ui, 0, scale, &face, values, &input)
                     } else {
                         assets.prepare(
@@ -220,11 +225,11 @@ fn render(
                         1. / 60.,
                     )
                     .map_err(|e| e.to_string())?;
-                    if let Some(error) = native.as_ref().and_then(|n| n.diagnostic()) {
+                    if let Some(error) = native.as_ref().filter(|n| !n.container_missing()).and_then(|n| n.diagnostic()) {
                         return Err(error);
                     }
                     let pending = native
-                        .as_ref()
+                        .as_ref().filter(|n| !n.container_missing())
                         .map_or_else(|| assets.pending(), |n| n.pending());
                     if pending == 0 {
                         settled += 1;
@@ -294,10 +299,11 @@ fn render(
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
-    let scan = native.as_ref().map_or_else(|| assets.scan(), |n| n.scan());
+    let container_missing = native.as_ref().is_some_and(|n| n.container_missing());
+    let painted_native = native.as_ref().filter(|n| !n.container_missing());
+    let scan = painted_native.map_or_else(|| assets.scan(), |n| n.scan());
     missing.extend(
-        native
-            .as_ref()
+        painted_native
             .map_or_else(|| assets.failures(), |n| n.failures()),
     );
     missing.sort();
@@ -312,13 +318,14 @@ fn render(
             ir::Font::File(a) => assets.font(&a).is_some(),
         })
         .count();
-    let native_fonts=native.as_ref().and_then(|n|n.font_success());
-    let fonts_declared=if native.is_some(){native_fonts}else{Some(legacy_fonts_declared)};
-    let font_success=if native.is_some(){native_fonts}else{Some(legacy_font_success)};
-    let resources_known=native.is_none()||native_fonts.is_some();
+    let native_fonts=painted_native.and_then(|n|n.font_success());
+    let fonts_declared=if painted_native.is_some(){native_fonts}else{Some(legacy_fonts_declared)};
+    let font_success=if painted_native.is_some(){native_fonts}else{Some(legacy_font_success)};
+    let resources_known=painted_native.is_none()||native_fonts.is_some();
     let mut failures=BTreeMap::new();
     if resources_known {
         failures.insert("lookup-not-found",scan.lookup_missing);
+        failures.insert("resource_container_missing",scan.lookup_container_missing);
         failures.insert("lookup-invalid",scan.lookup_invalid);
         failures.insert("lookup-ambiguous",scan.lookup_ambiguous);
         failures.insert("lookup-corrupt",scan.lookup_corrupt);
@@ -335,17 +342,18 @@ fn render(
         "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
         "font_declared":fonts_declared,"font_success":font_success,
 
-        "custom_font_uses":if native.is_some(){None}else{Some(face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_)|ir::Font::File(_))).count())},
+        "custom_font_uses":if painted_native.is_some(){None}else{Some(face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_)|ir::Font::File(_))).count())},
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
+        "asset_failure_reasons":failures,"source_presentation":if container_missing {"own-ksp-container-missing"}else if painted_native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!container_missing && !renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|!container_missing && renders.iter().any(|r|r["ok"]==true)),
+        "resource_diagnostic":container_missing.then(||json!({"kind":"resource_container_missing","stage":"resource_resolve","kontakt_observed_behavior":"UNVERIFIED","fallback":"own-ksp-and-loose-resources"})),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
         "native_graph_depth":native.as_ref().and_then(|n|n.graph_depth()),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
-        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
+        "decoded_image_bytes":painted_native.map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
 }
 
 pub fn one(id: &str, out: &Path) -> Value {

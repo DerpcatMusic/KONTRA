@@ -34,6 +34,7 @@ pub(super) struct State {
     failed: bool,
     failure: Option<String>,
     started: bool,
+    container_missing: bool,
     entry: String,
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
@@ -112,7 +113,7 @@ impl Drop for State {
     }
 }
 impl State {
-    pub fn new(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>) -> Self {
+    pub fn new_declared(path: &Path, entry: &str, controls: Vec<(ir::Source, usize, ir::Widget)>, declared: Option<String>) -> Self {
         let path = path.to_path_buf();
         let (done, loading) = std::sync::mpsc::sync_channel(1);
         let canceled = Arc::new(AtomicBool::new(false));
@@ -120,7 +121,7 @@ impl State {
         let _ = std::thread::Builder::new()
             .name("native-resources".into())
             .spawn(move || {
-                let result = Package::load_cancel(&path,||cancel.load(Ordering::Acquire)).map(Arc::new);
+                let result = Package::load_declared_cancel(&path,declared.as_deref(),||cancel.load(Ordering::Acquire)).map(Arc::new);
                 if !cancel.load(Ordering::Acquire) {
                     let _ = done.send(result);
                     super::picture_worker::completed();
@@ -134,6 +135,7 @@ impl State {
             failed: false,
             failure: None,
             started: false,
+            container_missing: false,
             entry: entry.into(),
             seed: controls,
             size: Size::new(970., 600.),
@@ -141,6 +143,7 @@ impl State {
             graph_depth: None,
         }
     }
+    pub fn container_missing(&self) -> bool { self.container_missing }
     pub fn bytes(&self) -> usize {
         self.package.as_ref().map_or(0, |p| p.images.bytes())
     }
@@ -237,7 +240,11 @@ impl State {
                 Ok(package) => self.package = Some(package),
                 Err(error) => {
                     self.failed = true;
-                    self.failure = Some(failure(&error, "NativeUI resource preparation"));
+                    self.container_missing = error.downcast_ref::<sampler_kontakt::LoadError>()
+                        .is_some_and(|e| e.kind() == sampler_kontakt::Kind::ResourceContainerMissing);
+                    self.failure = Some(if self.container_missing {
+                        "resource_resolve, resource_container_missing: declared resource container absent".into()
+                    } else { failure(&error, "NativeUI resource preparation") });
                 }
             }
         }
@@ -1406,40 +1413,6 @@ mod tests {
     fn native_program_stack_watermark() {
         let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
         let program = std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0, |n| n.parse().unwrap());
-        if path.extension().is_some_and(|e| e == "nkm") {
-            let chunks = sampler_kontakt::read_chunks(&path).unwrap();
-            let files = chunks.filename_tables().unwrap().unwrap().other_filetable;
-            let multi = sampler_kontakt::read_multi(&path).unwrap();
-            for (n, (_, raw_program)) in multi.programs.iter().enumerate() {
-                let record = raw_program.public_record().unwrap();
-                let resource = record.resource_container_filename_ref.and_then(|id| files.get(&(id as u32)));
-                let locations = sampler_kontakt::Resources::of(&path).locations();
-                let basename = resource.map(|p| p.replace(['\\', '|'], "/")).and_then(|p| p.rsplit('/').next().map(str::to_owned));
-                let inventory = std::process::Command::new("rg").args(["--files", "/mnt/MAIN_STORAGE/Libraries", "--iglob", "*.nkr"]).output().unwrap();
-                assert!(inventory.status.success(), "resource inventory failed");
-                let inventory = String::from_utf8(inventory.stdout).unwrap();
-                let matches: Vec<_> = inventory.lines().filter(|p| basename.as_ref().is_some_and(|n| p.rsplit('/').next().is_some_and(|f| f.eq_ignore_ascii_case(n)))).collect();
-                println!("NATIVE_DECLARED_CONTAINER program={n} path_bytes={} windows_drive={} unix_root={} parent_segments={} exact_file={} global_basename_matches={} pipe={} basename_bytes={}",
-                    resource.map_or(0, |s| s.len()), resource.is_some_and(|s| s.as_bytes().get(1)==Some(&b':')),
-                    resource.is_some_and(|s| s.starts_with('/')), resource.is_some_and(|s| s.contains("..")),
-                    resource.is_some_and(|s| std::path::Path::new(s).is_file()), matches.len(), resource.is_some_and(|s| s.contains('|')), basename.as_ref().map_or(0, |s| s.len()));
-                println!("NATIVE_PROGRAM_CONTAINER_MATCHES program={n} declared_in_current_index={}",
-                    locations.iter().filter(|p| basename.as_ref().is_some_and(|n| p.file_name().is_some_and(|f| f.to_string_lossy().eq_ignore_ascii_case(n)))).count());
-                if n == program {
-                    for (slot, script) in raw_program.0.children.iter().filter(|c| c.id == 6).enumerate() {
-                        let raw = ni_file::kontakt::objects::BParScript::try_from(script).unwrap().params().unwrap();
-                        println!("NATIVE_RAW_SCRIPT slot={slot} bypass={} linked={} inline_native={} inline_meters={}", raw.bypass,
-                            raw.textfile_name.as_ref().is_some_and(|n| !n.trim().is_empty()),
-                            raw.text.as_ref().is_some_and(|s| s.contains("load_native_ui")),
-                            raw.text.as_ref().map_or(0, |s| s.matches("declare ui_level_meter").count()));
-                    }
-                }
-                println!("NATIVE_PROGRAM_AUTHORITY program={n} library_id={} resource_ref={} resolved={} nkr={} own_container_basename={}",
-                    record.prefix.library_id, record.resource_container_filename_ref.is_some(), resource.is_some(),
-                    resource.is_some_and(|p| p.to_lowercase().ends_with(".nkr")),
-                    resource.is_some_and(|p| p.replace(['\\', '|'], "/").rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case("Conflux.nkr"))));
-            }
-        }
         let mut source = if path.extension().is_some_and(|e| e == "nkm") {
             sampler_kontakt::read_program(&path, program).unwrap().instrument
         } else {
@@ -1451,50 +1424,14 @@ mod tests {
             library: Some(path.clone()), ..Default::default()
         }).unwrap();
         let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
-        let controls: Vec<_> = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
+        let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
             .map(move |(n, w)| (f.source, n, w.clone()))).collect();
-        let source_scripts: Vec<_> = loaded.instrument.behaviors.iter().map(|b| b.source.clone()).collect();
-        let model_names: Vec<_> = loaded.scripts.iter().flat_map(|s| s.model().interface.widgets.iter()
-            .map(|w| (w.name.clone(), w.unresolved, matches!(w.kind, sampler_ksp::model::WidgetKind::LevelMeter)))).collect();
-        println!("NATIVE_METER_SOURCE scripts={} model_widgets={} model_meters={} unresolved_meters={} attachments={} declarations={}",
-            loaded.scripts.len(), model_names.len(), model_names.iter().filter(|(_, _, m)| *m).count(),
-            model_names.iter().filter(|(_, u, m)| *u && *m).count(),
-            loaded.scripts.iter().flat_map(|s| s.model().requests.iter()).filter(|r| r.command == "attach_level_meter").count(),
-            source_scripts.iter().map(|s| s.matches("declare ui_level_meter").count()).sum::<usize>());
-        let meter_names: Vec<_> = controls.iter().map(|(_, _, w)| w.name.clone()).collect();
-        println!("NATIVE_METER_INVENTORY controls={} meter_kinds={} attached_meters={}", controls.len(),
-            controls.iter().filter(|(_, _, w)| matches!(w.kind, ir::Kind::LevelMeter { .. })).count(),
-            controls.iter().filter(|(_, _, w)| w.meter.is_some()).count());
-        let package = Arc::new(Package::load(&path).unwrap());
+        let package = Arc::new(Package::load_declared_cancel(&path, loaded.instrument.source_indices.resource_container.as_deref(), || false).unwrap());
         let watermark = stack_watermark();
         let session = Session::new(package.clone(), &entry, controls)
-            .unwrap_or_else(|error| panic!("{}", failure(&error, "Native initialization").split_once(": ").unwrap().0));
-        let meter_trace = Arc::new(std::sync::Mutex::new([0_usize; 4]));
-        let trace = meter_trace.clone();
-        session.lua().globals().set("__audit_meter", session.lua().create_function(
-            move |_, (identifier, available, reading): (String, bool, bool)| {
-                if !available {
-                    let stripped = identifier.trim_start_matches(['$', '%', '@', '~', '?', '!']);
-                    println!("NATIVE_METER_AUTHORITY model_matches={} unresolved_matches={} meter_matches={} declaration_matches={} source_refs={}",
-                        model_names.iter().filter(|(n, _, _)| n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
-                        model_names.iter().filter(|(n, u, _)| *u && n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
-                        model_names.iter().filter(|(n, _, m)| *m && n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
-                        source_scripts.iter().filter(|s| s.contains(&format!("declare ui_level_meter ${stripped}"))).count(),
-                        source_scripts.iter().filter(|s| s.contains(&identifier)).count());
-                    println!("NATIVE_METER_MISSING reading={reading} raw_matches={} stripped_matches={} case_matches={} numeric={} leading_sigil={}",
-                        meter_names.iter().filter(|n| n.as_str() == identifier).count(),
-                        meter_names.iter().filter(|n| n.trim_start_matches(['$', '%', '@', '~', '?', '!']) == stripped).count(),
-                        meter_names.iter().filter(|n| n.trim_start_matches(['$', '%', '@', '~', '?', '!']).eq_ignore_ascii_case(stripped)).count(),
-                        identifier.parse::<u32>().is_ok(), identifier != stripped);
-                }
-                trace.lock().unwrap()[usize::from(available) * 2 + usize::from(reading)] += 1;
-                Ok(())
-            }).unwrap()).unwrap();
-        let graph = session.render().unwrap_or_else(|error| {
-            println!("NATIVE_METERS counts={:?}", *meter_trace.lock().unwrap());
-            panic!("{}", failure(&error, "Native graph").split_once(": ").unwrap().0)
-        });
-
+            .unwrap_or_else(|e| panic!("{}", failure(&e,"Native initialization").split_once(": ").unwrap().0));
+        let graph = session.render()
+            .unwrap_or_else(|e| panic!("{}", failure(&e,"Native graph").split_once(": ").unwrap().0));
         let mut ui = super::super::theme::ui();
         let mut drafts = HashMap::new();
         for _ in 0..4 {
@@ -1502,12 +1439,47 @@ mod tests {
             ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
         }
         let peak = stack_peak(watermark);
-        let meters = *meter_trace.lock().unwrap();
-        println!("NATIVE_METERS missing_connections={} missing_reads={} available_connections={} available_reads={}",
-            meters[0], meters[1], meters[2], meters[3]);
         assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
         println!("NATIVE_STACK program={program} depth={} native_init_graph_draw_layout_peak_bytes={peak} unmarked_top_bytes={}",
             graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "shots"))]
+    #[test]
+    #[ignore = "requires locally owned missing-container multis; counts and stack watermarks only"]
+    fn missing_container_ksp_stack_watermarks() {
+        let list=std::fs::read_to_string(std::env::var_os("KONTRA_RESOURCE_SURVEY_LIST").unwrap()).unwrap();
+        for (index,line) in list.lines().enumerate() {
+            let (_,path)=line.split_once('\t').unwrap();
+            if !path.ends_with(".nkm") {continue;}
+            let path=std::path::PathBuf::from(path);
+            let mut source=sampler_kontakt::read_program(&path,0).unwrap().instrument;
+            source.retain_zones(|_|false); source.assets.clear();
+            let declared=source.source_indices.resource_container.clone();
+            if sampler_kontakt::Resources::of_declared(&path,declared.as_deref()).container_status()
+                .err().is_none_or(|e|e.kind()!=sampler_kontakt::Kind::ResourceContainerMissing) {continue;}
+            let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
+            std::thread::Builder::new().stack_size(2<<20).spawn(move || {
+                let watermark=stack_watermark();
+                let mut ui=super::super::theme::ui();
+                let mut values=super::super::ir_view::Values::default();
+                let mut painted=0;
+                for face in loaded.interfaces.iter() {
+                    let face=super::super::ir_view::resolved(face);
+                    if face.widgets.is_empty() {continue;}
+                    let mut assets=super::super::ir_view::Assets::default();
+                    for _ in 0..4 {
+                        assets.prepare(&path,&face,ir::PageRef(0),ir::Presentation::Bitmap,1.,&values);
+                        let el=super::super::ir_view::view(&mut ui,&face,ir::PageRef(0),&assets,ir::Presentation::Bitmap,1.,&mut values);
+                        ui.frame(el,Some(Size::new(970.,600.)),Input::default(),1./60.).unwrap();
+                    }
+                    painted+=1;
+                }
+                let peak=stack_peak(watermark);
+                assert!(peak < watermark.2-watermark.0-4096,"stack watermark saturated");
+                println!("KSP_FALLBACK_STACK item_index={index} program=0 painted_faces={painted} peak_bytes={peak} thread_stack_bytes={} unmarked_top_bytes={}",2<<20,watermark.2-watermark.1);
+            }).unwrap().join().unwrap();
+        }
     }
 
     #[test]
