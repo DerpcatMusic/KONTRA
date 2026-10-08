@@ -166,7 +166,7 @@ impl Part {
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
         let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
-        let widget_values = widgets.iter().filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
+        let widget_values = widgets.iter().filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_))).filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
         let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
@@ -412,18 +412,21 @@ impl ControlIngress {
         }
     }
 
-    pub(crate) fn values(&mut self) -> std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value> {
-        self.settle();
-        let mut values = self.widget_values.clone();
-        for (&(id, index), (_, value)) in &self.pending_widgets {
-            if let Some(current) = values.get_mut(&id) {
-                match (current, value) {
+    pub(crate) fn values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        let mut values = std::collections::HashMap::new();
+        for (n, widget) in face.widgets.iter().enumerate() {
+            let sampler_ui_ir::Binding::Variable { script, name } = &widget.binding else { continue };
+            let id = sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(*script, name).0);
+            let Some(mut current) = self.widget_values.get(&id).cloned() else { continue };
+            for (&(_, index), (_, value)) in self.pending_widgets.range((id, 0)..=(id, u32::MAX)) {
+                match (&mut current, value) {
                     (sampler_ui_ir::Value::Integers(values), sampler_ui_ir::Value::Integer(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
                     (sampler_ui_ir::Value::Reals(values), sampler_ui_ir::Value::Real(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
                     (current, value) if index == 0 => current.clone_from(value),
                     _ => {},
                 }
             }
+            values.insert(sampler_ui_ir::WidgetRef(n), current);
         }
         values
     }

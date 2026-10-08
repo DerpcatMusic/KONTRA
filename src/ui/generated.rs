@@ -113,6 +113,7 @@ pub fn view(
     _assets: &ir_view::Assets,
     scale: f64,
     values: &mut ir_view::Values,
+    input: &mut ir_view::InputState,
 ) -> El {
     let controls: Vec<_> = face
         .draw_order(page)
@@ -183,7 +184,7 @@ pub fn view(
                     cells.push(
                         col![
                             caption(name(face, n)).lines(1).fill(secondary()),
-                            ir_view::widget(
+                            ir_view::widget_state(
                                 ui,
                                 namespace,
                                 face,
@@ -192,6 +193,7 @@ pub fn view(
                                 ir::Presentation::Vector,
                                 scale,
                                 values,
+                                input,
                                 width,
                                 height
                             )
