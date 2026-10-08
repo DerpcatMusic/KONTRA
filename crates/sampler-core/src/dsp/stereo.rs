@@ -34,6 +34,7 @@ pub(crate) struct Stereo {
     rate: f32,
 }
 impl Stereo {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 3] { [("width",self.width),("pan",self.pan),("pseudo",PreparedParameter::Constant(f64::from(self.pseudo)))] }
     pub(super) fn batches(&self) -> bool { !self.pseudo }
     pub(super) fn targets(&self, parameters: &[ControlRamp], at: u64) -> [f32; 2] {
         [self.width.value(parameters, at, None) as f32, self.pan.value(parameters, at, None) as f32]

@@ -148,7 +148,7 @@ pub(crate) struct ControlRamp {
     frames: u32,
 }
 impl ControlRamp {
-    pub(super) fn value(self, at: u64) -> f64 {
+    pub(crate) fn value(self, at: u64) -> f64 {
         let elapsed = at.saturating_sub(self.start);
         if elapsed >= u64::from(self.frames) {
             self.target

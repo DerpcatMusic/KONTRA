@@ -38,6 +38,7 @@ pub(crate) struct Ladder {
 }
 
 impl Ladder {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 3] { [("cutoff",self.parameters[0]),("resonance",self.parameters[1]),("gain",self.parameters[2])] }
     pub(super) fn process(
         &self, state: &mut ProcessorState, cells: &mut [[f64; 2]],
         parameters: &[ControlRamp], block: &mut Planar, len: usize, at: u64,
