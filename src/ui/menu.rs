@@ -27,6 +27,8 @@ pub enum Target {
     Midi(usize),
     /// A part's output pair.
     Output(usize),
+    /// A bound instrument menu in one script interface.
+    ScriptMenu { part: usize, script: usize, widget: usize, generation: u64 },
     /// The mixer's routing: the Outputs mode and the one-click actions.
     Routing,
 }
@@ -86,6 +88,7 @@ pub enum Command {
     Output(usize, u8),
     /// Route a part automatically again.
     AutoOutput(usize),
+    ScriptValue(usize, sampler_ui_ir::ControlId, i32),
     /// The mixer's Outputs mode ([`crate::routing::Outputs`]).
     Outputs(u8),
     OwnOutputs,
@@ -281,6 +284,17 @@ fn items(cx: &Cx, target: &Target) -> Vec<Item> {
                 |(n, label)| check(label, part.bend_range == n, Command::BendRange(*slot, n)),
             ));
             items
+        }
+        Target::ScriptMenu { part, script, widget, generation } => {
+            if cx.p.shared.part(*part).is_none_or(|p| p.generation.load(std::sync::atomic::Ordering::Relaxed) != *generation) { return vec![]; }
+            let Some(face) = cx.view.parts.get(*part).and_then(|p| p.interfaces.get(*script)) else { return vec![] };
+            let Some(w) = face.widgets.get(*widget) else { return vec![] };
+            let (sampler_ui_ir::Kind::Menu { items }, sampler_ui_ir::Binding::Control(id)) = (&w.kind, &w.binding) else { return vec![] };
+            let value = cx.p.shared.part(*part).and_then(|p| p.control_values().into_iter().find(|(c,_)| *c == *id).map(|(_,v)|v));
+            items.iter().filter(|i| i.visible).map(|i| {
+                if i.text.trim().starts_with("--") { Item::Rule }
+                else { check(i.text.clone(), value == Some(f64::from(i.value)), Command::ScriptValue(*part, *id, i.value)) }
+            }).collect()
         }
         Target::Output(slot) => {
             let Some(part) = cx.selection.parts.get(*slot) else {
@@ -565,6 +579,7 @@ pub fn run(ui: &mut Ui, cx: &mut Cx, command: Command) {
             let part = &mut cx.selection.parts[slot];
             (part.output, part.output_manual) = (output, true);
         }
+        Command::ScriptValue(slot, id, value) => { shared.set_control(slot, id, f64::from(value)); },
         Command::AutoOutput(slot) => cx.selection.parts[slot].output_manual = false,
         Command::Outputs(0) => crate::routing::to_stereo(&mut cx.selection),
         Command::Outputs(mode) => cx.selection.outputs = mode,
