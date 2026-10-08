@@ -133,6 +133,7 @@ pub struct SourceEngineLookup {
     pub index: i32,
 }
 
+#[cfg_attr(feature = "cache", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceEngineValue {
     pub parameter: u16,
