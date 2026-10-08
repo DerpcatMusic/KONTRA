@@ -243,6 +243,11 @@ impl Runtime {
     }
 
     fn render_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
+        if !self.offline && self.using_voice_rings() {
+            if let Err(error) = self.service_streaming(output.len() as u32) {
+                self.stream_fault = Some(error); return;
+            }
+        }
         if self.offline {
             // Modulation advance is cached on the absolute control grid. Prepare
             // the exact steps before requesting pages; rendering at the same
@@ -373,6 +378,7 @@ impl Runtime {
                 asset.touch(at + output.len() as u64);
                 let head = asset.try_head();
                 let pcm = super::source::PagedFrames {
+                    traversal: self.stream_cache.as_ref().unwrap().traversal(v),
                     cache: self
                         .stream_cache
                         .as_ref()
@@ -659,6 +665,7 @@ impl Runtime {
             asset.touch(at + segment.len() as u64);
             let head = asset.try_head();
             let source = super::source::PagedFrames {
+                traversal: self.stream_cache.as_ref().unwrap().traversal(v),
                 cache: self
                     .stream_cache
                     .as_ref()
