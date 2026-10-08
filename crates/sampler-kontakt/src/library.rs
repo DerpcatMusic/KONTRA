@@ -1471,6 +1471,7 @@ pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
                         .map(|n| n.parse().ok())
                         .collect::<Option<_>>()?,
                 ),
+                b'!' => ir::Saved::Texts(rest.strip_suffix('\n').unwrap_or(rest).split('\n').map(str::to_owned).collect()),
                 b'?' => ir::Saved::Reals(
                     rest.split_whitespace()
                         .map(|n| n.parse().ok())
