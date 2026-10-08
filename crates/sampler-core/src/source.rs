@@ -316,6 +316,9 @@ impl Cursor {
         }) || self.loop_range.is_some() && self.exit.is_none()
     }
 
+    pub(super) fn trace_start(&self) -> u64 { self.start as u64 }
+    pub(super) fn trace_position(&self) -> u64 { self.index(self.position as i128).map_or(self.start as u64, |i| i as u64) }
+
     pub(super) fn step(&self) -> f64 {
         if let Some(loops) = self.loops {
             let (local, position) = self.segment(i128::from(self.position));
