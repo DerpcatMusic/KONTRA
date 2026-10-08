@@ -108,6 +108,16 @@ pub struct RuntimeProblems {
     pub capacity_drops: u64,
     /// Streamed audio not read in time and played silent.
     pub underruns: u64,
+    #[serde(default)]
+    pub stream_capacity: u64,
+    #[serde(default)]
+    pub stream_disconnected: u64,
+    #[serde(default)]
+    pub stream_failed: u64,
+    #[serde(default)]
+    pub stream_errors: u64,
+    #[serde(default)]
+    pub offline_failures: u64,
     /// Rendered frames replaced by silence for being non-finite.
     pub nonfinite: u64,
     /// Script callbacks that ran past their budget.
