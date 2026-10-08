@@ -98,7 +98,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     assert_eq!(
         knob.drag,
         Some(sampler_ui_ir::Drag {
-            axis: sampler_ui_ir::Orientation::Horizontal,
+            axis: sampler_ui_ir::Orientation::Vertical,
             sensitivity: 500
         })
     );
@@ -109,7 +109,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     let Kind::Table { cells, .. } = &table.kind else {
         panic!()
     };
-    assert_eq!(cells[2], 7);
+    assert_eq!(cells[2], 7.);
     assert_eq!(
         button.placement,
         sampler_ui_ir::Placement::Grid { column: 2, row: 3 }
@@ -185,7 +185,7 @@ fn saved_state_and_new_widget_fields_reach_the_ir() {
         }
     );
     let env = sampler_ksp::Environment {
-        persisted: [("$Bg".into(), sampler_ksp::model::Value::Int(2))].into(),
+        persisted: [("$Bg".into(), sampler_ksp::model::Value::Int(1))].into(),
         ..Default::default()
     };
     let (saved, _) = wallpaper(&env);
@@ -258,4 +258,61 @@ fn a_saved_menu_is_the_item_position_not_its_value() {
         "{:?}",
         widget.value
     );
+}
+
+#[test]
+fn custom_fonts_do_not_collide_with_factory_fonts() {
+    let source = r#"on init
+        declare ui_label $label(1,1)
+        declare $first
+        declare $second
+        $first := get_font_id("first")
+        $second := get_font_id("second")
+        set_control_par(get_ui_id($label),$CONTROL_PAR_FONT_TYPE,get_font_id("first"))
+        end on"#;
+    let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits { source_bytes: 4096, instructions: 256, variables: 16, array_cells: 16 }, &[]).unwrap();
+    let ui = script.ui(&|_| None).unwrap();
+    assert_eq!(script.model().interface.fonts, vec!["first", "second"]);
+    assert!(matches!(ui.styles[0].font, sampler_ui_ir::Font::Bitmap(_)));
+    assert_eq!(ui.assets[0].path, "Resources/pictures/first.png");
+}
+
+#[test]
+fn missing_performance_description_does_not_create_visible_unsized_knob() {
+    let script = sampler_ksp::compile(
+        "on init\nload_performance_view(\"missing\")\n$ghost := 0\nend on",
+        48000, sampler_ksp::Limits::LIBRARY, &[],
+    ).unwrap();
+    let ghost = &script.model().interface.widgets[0];
+    assert!(ghost.unresolved);
+    assert!(ghost.control.is_none());
+    assert!(ghost.properties.is_empty());
+    assert!(script.ui(&|_| None).unwrap().widgets.is_empty());
+    assert!(script.warnings().iter().any(|d| d.message.contains("unbound")));
+}
+
+#[test]
+fn typed_seed_meter_and_waveform_addresses_reach_ir() {
+    let script = sampler_ksp::compile(r#"on init
+        declare ui_table %t[4](1,1,100)
+        set_control_par_arr(get_ui_id(%t),$CONTROL_PAR_VALUE,42,2)
+        declare ui_text_edit @text
+        @text := "seed"
+        declare ui_level_meter $m
+        attach_level_meter(get_ui_id($m),3,4,1,2)
+        declare ui_waveform $w(1,1)
+        attach_zone($w,27,3)
+        set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,12000,0)
+        set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,42,2)
+        declare ui_xy ?pad[4]
+        set_control_par(get_ui_id(?pad),$CONTROL_PAR_ACTIVE_INDEX,2)
+    end on"#,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let ui = script.ui(&|_|None).unwrap();
+    assert_eq!(ui.widgets[0].value,Some(sampler_ui_ir::Value::Integers(vec![0,0,42,0])));
+    assert_eq!(ui.widgets[1].value,Some(sampler_ui_ir::Value::Text("seed".into())));
+    assert_eq!(ui.widgets[2].meter,Some(sampler_ui_ir::MeterAddress {group:3,slot:4,channel:1,bus:Some(2)}));
+    let waveform = ui.widgets[3].waveform.as_ref().unwrap();
+    assert_eq!((waveform.zone,waveform.flags,waveform.cursor_us),(27,3,12000));
+    assert_eq!(waveform.table,vec![0,0,42]);
+    assert_eq!(ui.widgets[4].active_index,Some(2));
 }

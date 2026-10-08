@@ -165,7 +165,28 @@ pub fn view(ui: &mut Ui, cx: &mut Cx) -> El {
         .map(|i| (i, col![header_at(ui, cx, order[i], true), rule()].gap(0).w(Len::Pct(100.))))
         .collect();
     // A knob under the pointer turns; the rack scrolls otherwise.
-    let taken = wheel_taken();
+    let mut taken = wheel_taken();
+    let mut offsets = std::collections::HashMap::new();
+    if let Some(scene) = ui.scene() {
+        for surface in scene.surfaces() {
+            if surface.content.height <= surface.frame.size.height && surface.content.width <= surface.frame.size.width { continue; }
+            let mut parent = surface.parent.clone();
+            let mut in_rack = false;
+            while let Some(id) = parent {
+                if id.as_str() == "rack-view" { in_rack = true; break; }
+                parent = scene.surface(id.as_str()).and_then(|s| s.parent.clone());
+            }
+            if !in_rack { continue; }
+            let key = surface.key.as_str();
+            let offset = ui.scroll(key);
+            let at = ui.pointer().pos.is_some_and(|p| p.x >= surface.frame.x && p.x < surface.frame.x+surface.frame.size.width && p.y >= surface.frame.y && p.y < surface.frame.y+surface.frame.size.height);
+            if at && ui.get("rack-view").wheel != Vec2::ZERO && cx.state.rack_scrolls.get(key).is_some_and(|previous| *previous != offset) {
+                taken = true;
+            }
+            offsets.insert(key.to_owned(), offset);
+        }
+    }
+    cx.state.rack_scrolls = offsets;
     let wheel = ui.wheel("rack-view").filter(|_| !taken);
 
     let max = (content_h - view_h).max(0.);

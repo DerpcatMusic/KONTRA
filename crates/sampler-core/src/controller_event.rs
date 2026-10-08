@@ -64,8 +64,9 @@ impl Runtime {
         number: u8,
         value: u32,
     ) -> Result<Option<BehaviorId>, Error> {
+        let context = crate::ControlContext { performance, origin, channels };
         let performance = self.performance_index(performance)?;
-        if number >= 128 || origin.group >= 16 || origin.channel >= 16 || channels == 0 {
+        if number >= 130 || origin.group >= 16 || origin.channel >= 16 || channels == 0 {
             return Err(Error::InvalidInput);
         }
         let event = ControllerEvent {
@@ -79,6 +80,11 @@ impl Runtime {
             reserved: 0,
         };
         self.apply_due();
+        let needed = self.plans.get(self.active_plan.0).unwrap().prepared.stages.iter().filter(|s| s.controller.is_some()).count();
+        if needed == 0 && matches!(number, 64 | 66) && value >= 0x8000_0000 {
+            self.missing_pedal_channels(event.scope())?;
+        }
+        self.dispatch_automation(context, self.active_plan, crate::AutomationSource::Controller(number), f64::from(value) / f64::from(u32::MAX), needed)?;
         self.admit_controller(self.active_plan, event)
     }
 
@@ -156,7 +162,7 @@ impl Runtime {
         id: BehaviorId,
         number: u8,
     ) -> Result<u32, Error> {
-        if number >= 128 {
+        if number >= 130 {
             return Err(Error::InvalidInput);
         }
         let callback = self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
@@ -179,7 +185,7 @@ impl Runtime {
         number: u8,
         value: u32,
     ) -> Result<(), Error> {
-        if number >= 128 {
+        if number >= 130 {
             return Err(Error::InvalidInput);
         }
         let callback = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
@@ -346,7 +352,7 @@ impl Runtime {
         number: u8,
         value: u32,
     ) -> Result<(), Error> {
-        if number >= 128 {
+        if number >= 130 {
             return Err(Error::InvalidInput);
         }
         let performance = self.performance(performance)?;
@@ -361,7 +367,7 @@ impl Runtime {
 /// Generation-owned projected CC inputs. Stage zero uses the runtime's raw input
 /// bank; later stages update only when an event actually reaches that stage.
 pub(super) struct ControllerState {
-    banks: Box<[[u32; 128]]>,
+    banks: Box<[[u32; 130]]>,
     performances: usize,
 }
 impl ControllerState {
@@ -372,18 +378,20 @@ impl ControllerState {
             .saturating_sub(1)
             .checked_mul(performances)
             .ok_or(Error::Capacity)?;
-        std::alloc::Layout::array::<[u32; 128]>(count).map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<[u32; 130]>(count).map_err(|_| Error::Capacity)?;
         let mut banks = Vec::new();
         banks
             .try_reserve_exact(count)
             .map_err(|_| Error::Capacity)?;
-        banks.resize(count, [0; 128]);
+        let mut reset = [0; 130];
+        reset[128] = 0x8000_0000;
+        banks.resize(count, reset);
         Ok(Self {
             banks: banks.into_boxed_slice(),
             performances,
         })
     }
-    pub fn bank(&self, stage: usize, performance: usize) -> &[u32; 128] {
+    pub fn bank(&self, stage: usize, performance: usize) -> &[u32; 130] {
         &self.banks[(stage - 1) * self.performances + performance]
     }
     pub fn receive(&mut self, event: ControllerEvent) {

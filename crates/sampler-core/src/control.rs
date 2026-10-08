@@ -1,5 +1,8 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
+mod script_state;
+pub use script_state::{ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue};
+
 use super::{Error, Instruction, PlanId, Prepared, Runtime};
 mod transfer;
 pub(super) use transfer::ControlQueues;
@@ -82,6 +85,7 @@ pub(super) struct ControlEvent {
     pub origin: crate::ChannelAddress,
     pub channels: u16,
     pub stage: usize,
+    pub interaction: crate::WidgetInteraction,
 }
 impl ControlEvent {
     pub fn scope(self) -> crate::ChannelScope {
@@ -96,7 +100,8 @@ impl ControlEvent {
 
 pub(super) struct ControlState {
     values: Box<[ControlValue]>,
-    revision: u64,
+    pub(super) automation: Box<[crate::automation::AutomationState]>,
+    pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
     pub(super) pending: usize,
 }
@@ -104,6 +109,7 @@ impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
+            automation: vec![crate::automation::AutomationState::default(); plan.automation.len()].into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
@@ -126,6 +132,8 @@ impl Prepared {
         for binding in &self.control_programs {
             self.control_index(binding.control)?;
         }
+        for binding in &self.engine_parameters {self.control_index(binding.control)?;}
+        for control in self.envelope_controls.iter().flatten().flatten() {self.control_index(*control)?;}
         Ok(self)
     }
 
@@ -186,6 +194,23 @@ impl Prepared {
 }
 
 impl Runtime {
+    pub(crate) fn controlled_envelope(&self, plan: PlanId, group: Option<u32>, envelope: crate::Envelope) -> crate::Envelope {
+        let generation = self.plans.get(plan.0).unwrap();
+        let mut envelope = generation.script.envelope(group,envelope);
+        if let Some(controls) = group.and_then(|g|generation.prepared.envelope_controls.get(g as usize)) {
+            for (stage,id) in crate::engine_parameters::ENVELOPE_STAGES.into_iter().zip(controls) {
+                if let Some(id) = id {
+                    let index=generation.prepared.control_index(*id).unwrap();
+                    let value=generation.controls.values[index];
+                    if value != generation.prepared.controls[index].default {
+                        if let ControlValue::Real(value)=value {envelope=envelope.with_control(stage,value);}
+                    }
+                }
+            }
+        }
+        envelope
+    }
+
     /// Apply an interaction and start its prepared handler as one admission. Full
     /// callback capacity rejects before changing the value. Handler faults are
     /// retained outcomes; a committed edit is not rolled back after execution.
@@ -214,6 +239,7 @@ impl Runtime {
                 origin: context.origin,
                 channels: context.channels,
                 stage: binding.stage,
+                interaction: crate::WidgetInteraction::default(),
             })
         });
         if let Some(binding) = binding {

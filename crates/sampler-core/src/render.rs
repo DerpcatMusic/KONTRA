@@ -481,8 +481,8 @@ impl Runtime {
                 n,
                 expression.value,
                 &self.performance_state.current(performance).controllers,
-                self.release_times[f.note.0.index].held(n.key_down(), at),
-                self.note_params[f.note.0.index].mods,
+                self.release_times[f.note.0.index].counter(n.key_down(), at),
+                &self.note_params[f.note.0.index].mods,
             );
             let clock = super::voice_mod::Clock {
                 rate: f64::from(self.rate),
@@ -503,27 +503,32 @@ impl Runtime {
         let mut stop = false;
         let points = if self.script_params {
             let params = self.note_params[f.note.0.index];
-            let layer = plan.script.layer(v.group).stack(params.layer);
+            let group = plan.script.layer(v.group);
             let end = at + frames as u64;
             let fade = |t| {
                 params
                     .fade
                     .map_or(1.0, |f: super::script_params::Fade| f.at(t))
+                    * v.script_fade.map_or(1.0, |f| f.at(t))
             };
             // Gains sit on the absolute control grid, like voice modulation, so
             // host block sizes and event splits cannot move them.
             let begin = at - at % super::voice_mod::CELL;
             let grid_end = begin + super::voice_mod::CELL;
-            let from = layer.gains(fade(begin));
-            let to = layer.gains(fade(grid_end));
-            stop = end == grid_end && params.fade.is_some_and(|f| f.stop && f.done(grid_end));
+            let first = group.stack(params.layer_at(begin));
+            let last = group.stack(params.layer_at(grid_end));
+            let from = first.gains(fade(begin));
+            let to = last.gains(fade(grid_end));
+            stop = end == grid_end
+                && (params.fade.is_some_and(|f| f.stop && f.done(grid_end))
+                    || v.script_fade.is_some_and(|f| f.stop && f.done(grid_end)));
             let mut ramp = points.unwrap_or(super::voice_mod::Ramp {
                 from: Default::default(),
                 to: Default::default(),
                 begin,
                 end: grid_end,
             });
-            for (o, g) in [(&mut ramp.from, from), (&mut ramp.to, to)] {
+            for (o, g, layer) in [(&mut ramp.from, from, first), (&mut ramp.to, to, last)] {
                 o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
                 o.pitch += layer.semitones();
             }
@@ -569,10 +574,16 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
-        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
-        if let Some(filter) = filter {
-            plan.dsp.filters.as_mut_slice()[0].modulation = filter;
+        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        if let Some(chain) = chain {
+            for &bus in &chain.tap_buses {
+                plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
+            }
         }
+        let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
+        let bank = &mut plan.dsp.filters.as_mut_slice()[0];
+        bank.modulation = filter.unwrap_or([1.0; 2]);
+        bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, i);
         let asset = &plan.prepared.pcm[v.sample];
         let bus = v.bus;
         let target = if let Some(bus) = bus {
@@ -585,11 +596,11 @@ impl Runtime {
         } else {
             (target, None)
         };
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut claimed = plan.dsp.cells.claim(i);
         let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
         let mut delay = plan.dsp.delay_samples.claim(i);
         let context = super::dsp::RenderContext {
+            amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters: &plan.dsp.parameters,
@@ -600,6 +611,7 @@ impl Runtime {
                 convolutions: &mut [],
             },
             at,
+            feeds: &mut plan.dsp.feeds,
         };
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), at);
@@ -625,12 +637,27 @@ impl Runtime {
         };
         drop((claimed, delay));
         if let (Some(ramp), Some(target)) = (points, mixed) {
+            let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
                 plan.modulation
                     .mix(i, segment, target, ramp, at, f64::from(self.rate));
             } else {
                 ramp_mix(segment, target, ramp, at);
+            }
+        }
+        if faults == 0 {
+            if let Some(chain) = chain {
+                for &bus in &chain.tap_buses {
+                    let feed = &plan.dsp.feeds[bus].samples;
+                    let target = plan.dsp.buses.input(bus, produced);
+                    for (i, sample) in target.iter_mut().enumerate() {
+                        for c in 0..2 {
+                            sample[c] += (feed[c][i] * f64::from(gains[c])) as f32;
+                        }
+                    }
+                    plan.dsp.buses.fed(bus, produced);
+                }
             }
         }
         let applied = points.map_or(gains, |r| {

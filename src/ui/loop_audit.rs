@@ -102,6 +102,7 @@ fn loop_audit_conflux() {
     let mut scripts = crate::sound::ScriptUi {
         views: loaded.scripts,
         resources: loaded.resources,
+        ..Default::default()
     };
     let mut publication = Vec::new();
     for _ in 0..8 {

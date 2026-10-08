@@ -649,11 +649,11 @@ pub fn wheel_taken() -> bool {
 thread_local! {
     /// One pointer capture per window thread. The UI address distinguishes
     /// editors whose controls have the same IDs; it is never dereferenced.
-    static GRIPPED: std::cell::RefCell<(usize, String)> = const { std::cell::RefCell::new((0, String::new())) };
+    static GRIPPED: std::cell::RefCell<(usize, String, f64)> = const { std::cell::RefCell::new((0, String::new(), 0.)) };
 }
 
 /// `id` is being dragged: return whether this is its first drag frame.
-fn grip(ui: &Ui, id: &str) -> bool {
+fn grip(ui: &Ui, id: &str, value: f64) -> bool {
     let owner = std::ptr::from_ref(ui) as usize;
     GRIPPED.with(|g| {
         let mut g = g.borrow_mut();
@@ -661,6 +661,7 @@ fn grip(ui: &Ui, id: &str) -> bool {
             g.0 = owner;
             g.1.clear();
             g.1.push_str(id);
+            g.2 = value;
             true
         } else {
             false
@@ -690,18 +691,29 @@ fn drag(ui: &Ui, id: &str, value: &mut f64, range: &RangeInclusive<f64>, travel:
             }
         });
     }
-    if r.dragged && grip(ui, id) && travel.is_finite() && travel > 0.
-        && value.is_finite() && range.start().is_finite() && range.end().is_finite()
-    {
-        let missed = r.drag_total - r.drag_delta;
-        let d = if vertical { -missed.y } else { missed.x };
-        let fine = if r.mods.shift { FINE_DRAG } else { 1. };
-        if d.is_finite() {
-            *value = (*value + d * fine / travel * (range.end() - range.start()))
-                .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
-        }
+    let first = r.dragged && grip(ui, id, *value);
+    if r.dragged {
+        // Keep the grab in authored units. Integer readback must not erase
+        // fractional motion, and a renderer without readback uses the same path.
+        GRIPPED.with(|g| {
+            let mut g = g.borrow_mut();
+            let mut raw = g.2;
+            if first && travel.is_finite() && travel > 0. {
+                let missed = r.drag_total - r.drag_delta;
+                let d = if vertical { -missed.y } else { missed.x };
+                let fine = if r.mods.shift { FINE_DRAG } else { 1. };
+                if d.is_finite() {
+                    raw = (raw + d * fine / travel * (range.end() - range.start()))
+                        .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
+                }
+            }
+            ui.drag(id, &mut raw, range.clone(), travel, vertical);
+            g.2 = raw;
+            *value = raw;
+        });
+    } else {
+        ui.drag(id, value, range.clone(), travel, vertical);
     }
-    ui.drag(id, value, range.clone(), travel, vertical);
 }
 
 /// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag
@@ -716,22 +728,40 @@ pub fn drive(
     vertical: bool,
     reset: f64,
 ) -> bool {
+    drive_widget(ui,id,value,range,travel,vertical,reset,None,true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn drive_widget(ui:&mut Ui,id:&str,value:&mut f64,range:&RangeInclusive<f64>,travel:f64,vertical:bool,reset:f64,step:Option<f64>,double_reset:bool)->bool {
     let (lo, hi) = (*range.start(), *range.end());
+    let bound = |v:f64| v.clamp(lo.min(hi),lo.max(hi));
+    let step = step.filter(|s|s.is_finite() && *s>0.);
     let r = ui.get(id);
     drag(ui, id, value, range, travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
-        let step = (hi - lo) / if r.mods.shift { 500. } else { 50. };
+        let notch = (hi-lo).abs()/if r.mods.shift {500.} else {50.};
+        let step = step.map_or(notch,|quantum| (notch/quantum).round().max(1.)*quantum);
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
         } else {
             wheel.x
         };
-        *value = (*value + dir.signum() * step).clamp(lo, hi);
+        *value = bound(*value + dir.signum() * step);
     }
-    stepped(ui, id, value, range);
-    if r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
-        *value = reset;
+    if let Some(step) = step {
+        for key in ui.keys(id) {
+            *value = bound(match key.key {
+                Key::Up|Key::Right => *value+step,
+                Key::Down|Key::Left => *value-step,
+                Key::PageUp => *value+step*10., Key::PageDown => *value-step*10.,
+                Key::Home => lo, Key::End => hi, _=>continue,
+            });
+        }
+    } else { stepped(ui, id, value, range); }
+    if double_reset && r.double_clicked || r.pressed && (r.mods.ctrl || r.mods.cmd) {
+        *value = bound(reset);
+        GRIPPED.with(|g|g.borrow_mut().1.clear());
     }
     r.held
 }

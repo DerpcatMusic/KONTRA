@@ -24,6 +24,8 @@ mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 pub mod script;
+mod resources;
+pub use resources::Resources;
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -368,6 +370,8 @@ pub struct OscGroup {
     pub layer: u32,
     pub osc: u32,
     pub group: u32,
+    pub keygroup: usize,
+    pub oscillator: usize,
 }
 
 impl Translation {
@@ -400,16 +404,7 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let mut gain = number(program, "Gain", 1.0)?;
-        for insert in program
-            .children()
-            .filter(|n| n.has_tag_name("Inserts"))
-            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-        {
-            gain *= number(insert, "Volume", 1.0)?;
-            self.used.push(insert.id());
-        }
+        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -466,6 +461,10 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
+        let program_output = self.insert_bus(program, ir::Output::Master)?;
+        for (_, bus) in &auxes {
+            self.ir.buses[bus.0].output = program_output;
+        }
         for (ordinal, layer) in program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -475,6 +474,7 @@ impl Translation {
                 continue;
             }
             self.scope_connections(layer)?;
+            let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -483,6 +483,7 @@ impl Translation {
                     position: pan.clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
+                output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
@@ -506,22 +507,11 @@ impl Translation {
                     pre_fader: number(router, "PreFader", 0.0)? != 0.0,
                 });
             }
-            // Oscillators get groups of their own only where a keygroup stacks
-            // several; otherwise the layer's group is oscillator 1.
-            let stacked = layer
-                .descendants()
-                .filter(|n| n.has_tag_name("Keygroup"))
-                .any(|k| k.descendants().filter(|n| n.has_tag_name("SamplePlayer")).count() > 1);
-            self.split = (scripted && stacked).then(|| (ordinal + 1, base.clone()));
+            // Scripts address individual keygroups/oscillators, including
+            // single-oscillator keygroups; no two original nodes may alias.
+            self.split = scripted.then(|| (ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
-            }
-            if scripted && !stacked {
-                self.osc_groups.push(OscGroup {
-                    layer: ordinal as u32 + 1,
-                    osc: 1,
-                    group: self.ir.groups.len() as u32 - 1,
-                });
             }
             if pan != 0.0 {
                 self.unsupported(
@@ -639,6 +629,15 @@ impl Translation {
             self.place(chain, placed);
             chain
         });
+        if let Some(chain) = chain {
+            for insert in keygroup.children().filter(|n| n.has_tag_name("Inserts")).flat_map(|n| n.descendants()).filter(|n| n.has_tag_name("OnePole")) {
+                if let Some(placed) = self.insert_nodes.iter().find(|p| p.node == insert.id().get_usize() && p.count > 0).copied() {
+                    for connection in connections(insert) {
+                        self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                    }
+                }
+            }
+        }
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -647,7 +646,7 @@ impl Translation {
             if number(player, "Bypass", 0.0)? != 0.0 {
                 continue;
             }
-            let group = self.oscillator_group(group, oscillator as u32 + 1);
+            let group = self.oscillator_group(group, oscillator as u32 + 1, keygroup.id().get_usize(), player.id().get_usize());
             let at = path(player);
             let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
                 self.unsupported(&at, "sample player without a sample", "");
@@ -745,9 +744,9 @@ impl Translation {
     }
 
     /// The group a zone of oscillator `osc` goes to: the layer's own, or in a
-    /// scripted program one group per (layer, oscillator) so that `playNote`'s
-    /// `oscIndex` can select it.
-    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32) -> ir::GroupRef {
+    /// scripted program one group per original oscillator so that scoped
+    /// parameter writes and `playNote` selection share the same identity.
+    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32, keygroup: usize, oscillator: usize) -> ir::GroupRef {
         let Some((layer, base)) = &self.split else {
             return layer_group;
         };
@@ -755,7 +754,7 @@ impl Translation {
         if let Some(found) = self
             .osc_groups
             .iter()
-            .find(|g| g.layer == layer && g.osc == osc)
+            .find(|g| g.oscillator == oscillator)
         {
             return ir::GroupRef(found.group as usize);
         }
@@ -767,6 +766,8 @@ impl Translation {
             layer,
             osc,
             group: index as u32,
+            keygroup,
+            oscillator,
         });
         ir::GroupRef(index)
     }
@@ -989,11 +990,15 @@ impl Translated {
         rate: u32,
         config: script::Config,
     ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+        self.attach_script_with_ui_state(rate, config, None)
+    }
+
+    pub fn attach_script_with_ui_state(&mut self, rate: u32, config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
         let (thread, loaded) =
-            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config).map_err(
+            scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
                 |reason| {
                     sampler_kontakt::LoadError::Invalid { path: "script".into(), reason }
                         .at(sampler_kontakt::Stage::ScriptCompile)
@@ -2214,4 +2219,3 @@ mod survey {
         }
     }
 }
-
