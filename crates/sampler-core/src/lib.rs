@@ -34,8 +34,8 @@ struct Siblings {
 
 mod widget;
 pub use widget::{
-    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetInteraction, WidgetStorage,
-    WidgetValue,
+    WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetEventType, WidgetInteraction,
+    WidgetStorage, WidgetValue,
 };
 mod control;
 pub use control::{
