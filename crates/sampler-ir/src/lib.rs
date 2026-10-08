@@ -1073,6 +1073,8 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
+    /// Native Ladder LP4. Values are normalized; the engine owns the laws.
+    LadderLP4(LadderLP4),
     /// One parallel branch of an effect rack. The next `count` processors (nested
     /// ones included) run on the signal that entered the group's first branch;
     /// `gain` times their output joins the sum, which the `last` branch leaves
@@ -1111,6 +1113,14 @@ pub struct Daft {
     pub cutoff: f64,
     pub resonance: f64,
     pub highpass: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderLP4 {
+    pub gain: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub record_version: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
