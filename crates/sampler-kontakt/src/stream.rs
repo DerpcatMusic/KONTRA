@@ -651,7 +651,7 @@ impl Streamer {
                 let (sources, ranges) = (streamer.sources.clone(), streamer.ranges.clone());
                 let stop = streamer.stop.clone();
                 move || {
-                    // Woken by the audio side (`StreamCache::set_wake`) when a
+                    // Woken by the audio side (`StreamCache::set_reloader`) when a
                     // start finds an asset cold, and by Drop.
                     while !stop.load(Ordering::Relaxed) {
                         if reload(&assets, &sources, &ranges, head_budget).is_err() {
@@ -871,10 +871,10 @@ impl Streamed {
             streamer
                 .threads
                 .iter()
-                .chain(&streamer.reloader)
                 .map(|t| t.thread().clone())
                 .collect(),
         );
+        cache.set_reloader(streamer.reloader.as_ref().map(|t| t.thread().clone()));
         drop(assets);
         Ok(Self {
             loaded,
