@@ -202,10 +202,18 @@ impl Model {
         for (p, v) in &mut playing.values {
             *v = (*v + edits.offset(group, *p)).clamp(0., 1.);
         }
-        for s in [&mut base, &mut playing] {
+        for (s, edited) in [(&mut base, false), (&mut playing, true)] {
             for &(p, b) in &s.bindings {
                 let Some(n) = p.read(s) else { continue };
-                let native = b.law.decode((n * 1e6).round() as i32);
+                let native = if !edited || edits.offset(group, p) == 0. {
+                    values
+                        .iter()
+                        .find(|(id, _)| id.0 == b.control.0)
+                        .map(|(_, v)| *v)
+                        .unwrap_or_else(|| b.law.decode((n * 1e6).round() as i32))
+                } else {
+                    b.law.decode((n * 1e6).round() as i32)
+                };
                 if let Some(env) = s.envelope.as_mut() {
                     match p {
                         Param::Attack => env.attack = native as f32 / rate as f32,
@@ -213,7 +221,13 @@ impl Model {
                         Param::Decay => env.decay = native as f32 / rate as f32,
                         Param::Sustain => env.sustain = native as f32,
                         Param::Release => env.release = native as f32 / rate as f32,
-                        Param::Curve => env.attack_shape = ir::Curve::Exponential(native),
+                        Param::Curve => {
+                            env.attack_shape = if native == 0. {
+                                ir::Curve::Linear
+                            } else {
+                                ir::Curve::Exponential(native)
+                            }
+                        }
                         _ => {}
                     }
                 }
