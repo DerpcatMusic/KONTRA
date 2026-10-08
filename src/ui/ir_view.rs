@@ -378,3 +378,7 @@ fn widget(
         _ => el,
     }
 }
+
+#[cfg(test)]
+#[path = "render_tests.rs"]
+mod render_tests;
