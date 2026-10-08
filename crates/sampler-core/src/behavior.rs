@@ -1,5 +1,6 @@
 //! Native bounded musical instructions, independent of any vendor language VM.
 use super::{Action, Error, Handle, Inheritance, NoteId, Runtime};
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Velocity {
@@ -394,8 +395,11 @@ impl Comparison {
     }
 }
 
+#[derive(Clone)]
 pub struct Program {
-    pub(super) code: Box<[Instruction]>,
+    pub(super) code: Arc<[Instruction]>,
+    pub(super) entry: usize,
+    pub(super) ui_id: i32,
     pub(super) locals: usize,
     pub(super) note_cells: usize,
     pub(super) note_base: usize,
@@ -406,14 +410,14 @@ pub struct Program {
     pub(super) requires_note: bool,
     pub(super) requires_controller: bool,
     pub(super) requires_performance: bool,
-    pub(super) texts: Box<[super::ops::Text]>,
-    pub(super) engine_symbols: Box<[(i32, u16)]>,
+    pub(super) texts: Arc<[Box<str>]>,
+    pub(super) engine_symbols: Arc<[(i32, u16)]>,
     pub(super) text_constants: usize,
     pub(super) script_texts: usize,
 }
 impl Program {
     pub fn with_engine_symbols(mut self, symbols: Vec<(i32, u16)>) -> Self {
-        self.engine_symbols = symbols.into_boxed_slice();
+        self.engine_symbols = symbols.into();
         self
     }
 
@@ -424,7 +428,8 @@ impl Program {
         self.code.iter().any(|op| {
             matches!(
                 op,
-                Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }
+                Instruction::WriteSlot { .. }
+                    | Instruction::WriteGroupBus { .. }
                     | Instruction::Op(super::ops::Op::EngineParameter { write: true, .. })
             )
         })
@@ -437,16 +442,22 @@ impl Program {
         {
             return Err(Error::InvalidInput);
         }
-        self.texts = texts.iter().map(|t| super::ops::Text::new(t)).collect();
+        self.texts = texts.iter().map(|t| Box::<str>::from(*t)).collect();
         Ok(self)
     }
 
     /// Offset `StartProgram` targets by `base`, for a program table that
     /// concatenates several modules.
     pub fn with_program_base(mut self, base: usize) -> Self {
-        for op in self.code.iter_mut() {
-            if let Instruction::StartProgram { program } = op {
-                *program = program.saturating_add(base as u32);
+        if self
+            .code
+            .iter()
+            .any(|op| matches!(op, Instruction::StartProgram { .. }))
+        {
+            for op in Arc::make_mut(&mut self.code) {
+                if let Instruction::StartProgram { program } = op {
+                    *program = program.saturating_add(base as u32);
+                }
             }
         }
         self
@@ -479,6 +490,93 @@ impl Program {
     pub fn with_wait_lifetime(mut self, lifetime: WaitLifetime) -> Self {
         self.wait_lifetime = lifetime;
         self
+    }
+
+    /// An entry into shared code, with admission requirements from its entire
+    /// body and reachable functions, including authored dead code.
+    pub fn with_entry(
+        mut self,
+        entry: usize,
+        ranges: &[Range<usize>],
+        ui_id: i32,
+    ) -> Result<Self, Error> {
+        if entry >= self.code.len()
+            || !ranges.iter().any(|r| r.contains(&entry))
+            || ranges
+                .iter()
+                .any(|r| r.start > r.end || r.end > self.code.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        let instructions = ranges
+            .iter()
+            .flat_map(|range| self.code[range.clone()].iter());
+        (
+            self.requires_note,
+            self.requires_controller,
+            self.requires_performance,
+        ) = Self::requirements(instructions)?;
+        self.entry = entry;
+        self.ui_id = ui_id;
+        Ok(self)
+    }
+
+    fn requirements<'a>(
+        instructions: impl Iterator<Item = &'a Instruction> + Clone,
+    ) -> Result<(bool, bool, bool), Error> {
+        let requires_note = instructions.clone().any(|op| {
+            matches!(
+                op,
+                Instruction::ForwardAttack
+                    | Instruction::ForwardReleaseGroups
+                    | Instruction::SuppressAttack
+                    | Instruction::SuppressRelease
+                    | Instruction::Play { .. }
+                    | Instruction::PlayMidi {
+                        inheritance: Inheritance::Linked | Inheritance::Snapshot,
+                        ..
+                    }
+                    | Instruction::PlayMidi {
+                        duration: DurationValue::Fixed(Duration::Gate | Duration::FramesOrGate(_)),
+                        ..
+                    }
+                    | Instruction::ReadEventId { .. }
+                    | Instruction::ReadAffectedGroup { .. }
+                    | Instruction::ReadVelocity7 { .. }
+                    | Instruction::WriteEventKey { event: None, .. }
+                    | Instruction::WriteEventVelocity7 { event: None, .. }
+                    | Instruction::WriteGroup { .. }
+                    | Instruction::ReadKey { .. }
+                    | Instruction::ReadKeyDown { .. }
+                    | Instruction::ReadNoteCell { .. }
+                    | Instruction::WriteNoteCell { .. }
+            )
+        });
+        let requires_controller = instructions.clone().any(|op| {
+            matches!(
+                op,
+                Instruction::ForwardController
+                    | Instruction::SuppressController
+                    | Instruction::ReadControllerNumber { .. }
+                    | Instruction::ReadControllerPort { .. }
+                    | Instruction::ReadControllerGroup { .. }
+                    | Instruction::ReadControllerChannel { .. }
+                    | Instruction::ReadControllerValue { .. }
+            )
+        });
+        let requires_performance = requires_controller
+            || instructions.clone().any(|op| {
+                matches!(
+                    op,
+                    Instruction::ReadInputController { .. }
+                        | Instruction::WriteController { .. }
+                        | Instruction::PlayMidi { .. }
+                )
+            });
+        if requires_note && requires_controller {
+            return Err(Error::InvalidInput);
+        }
+        Ok((requires_note, requires_controller, requires_performance))
     }
 
     pub fn new(code: Vec<Instruction>) -> Result<Self, Error> {
@@ -710,63 +808,15 @@ impl Program {
                 script_cells = script_cells.max(array.end()?);
             }
         }
-        let requires_note = code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::ForwardAttack
-                    | Instruction::ForwardReleaseGroups
-                    | Instruction::SuppressAttack
-                    | Instruction::SuppressRelease
-                    | Instruction::Play { .. }
-                    | Instruction::PlayMidi {
-                        inheritance: Inheritance::Linked | Inheritance::Snapshot,
-                        ..
-                    }
-                    | Instruction::PlayMidi {
-                        duration: DurationValue::Fixed(Duration::Gate | Duration::FramesOrGate(_)),
-                        ..
-                    }
-                    | Instruction::ReadEventId { .. }
-                    | Instruction::ReadAffectedGroup { .. }
-                    | Instruction::ReadVelocity7 { .. }
-                    | Instruction::WriteEventKey { event: None, .. }
-                    | Instruction::WriteEventVelocity7 { event: None, .. }
-                    | Instruction::WriteGroup { .. }
-                    | Instruction::ReadKey { .. }
-                    | Instruction::ReadKeyDown { .. }
-                    | Instruction::ReadNoteCell { .. }
-                    | Instruction::WriteNoteCell { .. }
-            )
-        });
-        let requires_controller = code.iter().any(|op| {
-            matches!(
-                op,
-                Instruction::ForwardController
-                    | Instruction::SuppressController
-                    | Instruction::ReadControllerNumber { .. }
-                    | Instruction::ReadControllerPort { .. }
-                    | Instruction::ReadControllerGroup { .. }
-                    | Instruction::ReadControllerChannel { .. }
-                    | Instruction::ReadControllerValue { .. }
-            )
-        });
-        let requires_performance = requires_controller
-            || code.iter().any(|op| {
-                matches!(
-                    op,
-                    Instruction::ReadInputController { .. }
-                        | Instruction::WriteController { .. }
-                        | Instruction::PlayMidi { .. }
-                )
-            });
-        if requires_note && requires_controller {
-            return Err(Error::InvalidInput);
-        }
+        let (requires_note, requires_controller, requires_performance) =
+            Self::requirements(code.iter())?;
         Ok(Self {
             requires_performance,
             requires_controller,
             requires_note,
-            code: code.into_boxed_slice(),
+            code: code.into(),
+            entry: 0,
+            ui_id: 0,
             locals,
             note_cells,
             note_base: 0,
@@ -774,8 +824,8 @@ impl Program {
             script_instance: None,
             source_slot: -1,
             wait_lifetime: WaitLifetime::Gate,
-            texts: Box::new([]),
-            engine_symbols: Box::new([]),
+            texts: Arc::from([]),
+            engine_symbols: Arc::from([]),
             text_constants,
             script_texts,
         })
@@ -918,7 +968,7 @@ impl Runtime {
             context: PlanContext::Bare,
             note_stage,
             program,
-            pc: 0,
+            pc: plan.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1011,7 +1061,7 @@ impl Runtime {
             context,
             note_stage: None,
             program,
-            pc: 0,
+            pc: generation.prepared.programs[program].entry,
             outcome: None,
             frames: Default::default(),
             yielded_at: None,
@@ -1353,6 +1403,28 @@ impl Runtime {
             };
             let mut next = pc + 1;
             match op {
+                // v1 dispatches subroutine frames inside the local interpreter loop.
+                Instruction::Op(super::ops::Op::Call { target }) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    let depth = usize::from(c.frames.depth);
+                    if depth == super::ops::CALL_DEPTH {
+                        break;
+                    }
+                    let Ok(return_pc) = u32::try_from(next) else {
+                        break;
+                    };
+                    c.frames.returns[depth] = return_pc;
+                    c.frames.depth += 1;
+                    next = target as usize;
+                }
+                Instruction::Op(super::ops::Op::Return) => {
+                    let c = self.behaviors.get_mut(id.0).unwrap();
+                    if c.frames.depth == 0 {
+                        break;
+                    }
+                    c.frames.depth -= 1;
+                    next = c.frames.returns[usize::from(c.frames.depth)] as usize;
+                }
                 Instruction::SetLocal { local, value } => *local!(local) = value,
                 Instruction::AddLocal { local, value } => {
                     let cell = local!(local);
@@ -2617,5 +2689,36 @@ impl Runtime {
         }
         self.cancel_closed_work();
         self.release_controller_reserve(id);
+    }
+}
+
+#[cfg(test)]
+mod shared_program_tests {
+    use super::*;
+
+    #[test]
+    fn entries_share_code_and_unpadded_text_but_keep_admission_requirements() {
+        let shared = Program::new(vec![
+            Instruction::End,
+            Instruction::ReadInputController {
+                controller: 0,
+                local: 0,
+            },
+            Instruction::End,
+        ])
+        .unwrap()
+        .with_texts(&["short", "é"])
+        .unwrap();
+        let bare = shared.clone().with_entry(0, &[0..1], 1).unwrap();
+        let routed = shared.clone().with_entry(1, &[1..3], 2).unwrap();
+        assert!(Arc::ptr_eq(&bare.code, &routed.code));
+        assert!(Arc::ptr_eq(&bare.texts, &routed.texts));
+        assert_eq!(bare.texts.iter().map(|t| t.len()).sum::<usize>(), 7);
+        assert!(!bare.requires_performance());
+        assert!(routed.requires_performance());
+        assert_eq!((bare.ui_id, routed.ui_id), (1, 2));
+        assert!(shared.clone().with_entry(3, &[0..3], 0).is_err());
+        assert!(shared.clone().with_entry(0, &[0..4], 0).is_err());
+        assert!(shared.with_entry(0, &[], 0).is_err());
     }
 }
