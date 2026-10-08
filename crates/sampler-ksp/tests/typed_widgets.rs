@@ -1,3 +1,5 @@
+#[path = "../../sampler-core/tests/support/mod.rs"]
+mod support;
 use sampler_core::*;
 use sampler_ksp::{Environment, Limits as KspLimits};
 fn runtime(source: &str) -> Runtime {
@@ -226,6 +228,7 @@ fn typed_toggle_preserves_native_domain_validation() {
         .with_script_instances(vec![vec![]])
         .unwrap()
         .with_widgets(vec![WidgetDefinition {
+            drop: None,
             id,
             source_slot: 0,
             ui_id: 1,
@@ -366,4 +369,152 @@ fn selected_file_keeps_selector_handle_and_fires_native_callback() {
         Text::try_new(&"x".repeat(TEXT_CAPACITY + 1)),
         Err(Error::Capacity)
     );
+}
+
+#[test]
+fn mouse_area_admits_owned_drop_paths_and_native_enter_leave_metadata() {
+    let mut rt = runtime(
+        "on init declare ui_mouse_area $area set_control_par(get_ui_id($area),$CONTROL_PAR_DND_ACCEPT_AUDIO,$NI_DND_ACCEPT_MULTIPLE) set_control_par(get_ui_id($area),$CONTROL_PAR_DND_ACCEPT_MIDI,$NI_DND_ACCEPT_ONE) set_control_par(get_ui_id($area),$CONTROL_PAR_RECEIVE_DRAG_EVENTS,1) declare $calls declare $audio_count declare $midi_count declare $inside declare @audio declare @midi end on on ui_control($area) inc($calls) $audio_count := num_elements(!NI_DND_ITEMS_AUDIO) $midi_count := num_elements(!NI_DND_ITEMS_MIDI) $inside := $NI_MOUSE_OVER_CONTROL if ($audio_count > 0) @audio := !NI_DND_ITEMS_AUDIO[0] end if if ($midi_count > 0) @midi := !NI_DND_ITEMS_MIDI[0] end if end on",
+    );
+    let plan = rt.active_plan();
+    let id = rt.widget_id(plan, 0, 32768).unwrap();
+    let interaction = WidgetInteraction {
+        event: WidgetEventType::DndDrop as i32,
+        mouse_over: true,
+        ..Default::default()
+    };
+    let edits = [
+        WidgetEdit {
+            id,
+            index: 0,
+            interaction,
+            value: WidgetValue::DropPath {
+                kind: WidgetDropKind::Audio,
+                path: Text::new("/tmp/native-test.wav"),
+            },
+        },
+        WidgetEdit {
+            id,
+            index: 1,
+            interaction,
+            value: WidgetValue::DropPath {
+                kind: WidgetDropKind::Midi,
+                path: Text::new("/tmp/native-test.mid"),
+            },
+        },
+    ];
+    support::without_heap(|| {
+        rt.invoke_widget(context(&rt), plan, None, &edits).unwrap();
+    });
+    assert_eq!(
+        rt.widget_value(plan, id, 0),
+        Ok(WidgetValue::Integer(0)),
+        "native handle stays intact"
+    );
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(1));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(1));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 4), Ok(1));
+    assert_eq!(
+        rt.script_text(plan, ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "/tmp/native-test.wav"
+    );
+    assert_eq!(
+        rt.script_text(plan, ScriptInstanceId(0), 1)
+            .unwrap()
+            .as_str(),
+        "/tmp/native-test.mid"
+    );
+    let revision = rt.control_revision(plan).unwrap();
+    let oversize: Vec<_> = (0..=WIDGET_DROP_CAPACITY)
+        .map(|index| WidgetEdit {
+            id,
+            index,
+            interaction,
+            value: edits[0].value,
+        })
+        .collect();
+    assert_eq!(
+        rt.invoke_widget(context(&rt), plan, None, &oversize),
+        Err(Error::InvalidInput)
+    );
+    assert_eq!(rt.control_revision(plan), Ok(revision));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+    rt.invoke_widget(
+        context(&rt),
+        plan,
+        None,
+        &[WidgetEdit {
+            id,
+            index: 0,
+            interaction: WidgetInteraction {
+                event: WidgetEventType::DndDrag as i32,
+                ..Default::default()
+            },
+            value: WidgetValue::Integer(0),
+        }],
+    )
+    .unwrap();
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(2));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(0));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(0));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 4), Ok(0));
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+                value: WidgetValue::Integer(0),
+            }],
+        )
+        .unwrap();
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(4));
+    assert_eq!(rt.widget_value(plan, id, 0), Ok(WidgetValue::Integer(0)));
+}
+
+#[test]
+fn ordinary_mouse_area_buttons_need_no_drop_configuration() {
+    let mut rt = runtime(
+        "on init declare ui_mouse_area $area declare $calls declare $event end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE end on",
+    );
+    let plan = rt.active_plan();
+    let id = rt.widget_id(plan, 0, 32768).unwrap();
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                value: WidgetValue::Integer(0),
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            rt.script_cell(plan, ScriptInstanceId(0), 2),
+            Ok(event as i64)
+        );
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(2));
 }
