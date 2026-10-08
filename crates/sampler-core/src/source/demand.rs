@@ -100,11 +100,14 @@ impl Cursor {
     /// traversal direction, and the virtual offset of the cursor's window
     /// start, to recover first-use deadlines.
     pub(crate) fn linear_reach(&self, frames: u32) -> Option<(Range<usize>, Direction, f64)> {
-        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        if self.loops.is_some() {
+            return None;
+        }
+        let radius = crate::resample::Kernel::radius(self.step()) as f64;
         let length = (self.end - self.start) as f64;
         let low = self.position as f64 - radius;
         let high =
-            self.position as f64 + self.fraction + f64::from(frames) * self.step + radius + 1.;
+            self.position as f64 + self.fraction + f64::from(frames) * self.step() + radius + 1.;
         if let Some(r) = self.loop_range {
             let fade = match r.shape {
                 crate::LoopShape::Crossfade { frames }
@@ -133,6 +136,9 @@ impl Cursor {
     /// superset of `visit_demand`'s ranges, ignoring envelope ends; `None` for
     /// ping-pong loops and a loop exit within reach.
     pub(crate) fn loop_reach(&self, frames: u32) -> Option<LoopReach> {
+        if self.loops.is_some() {
+            return None;
+        }
         let r = self.loop_range?;
         let fade = match r.shape {
             crate::LoopShape::PingPong => return None,
@@ -140,10 +146,10 @@ impl Cursor {
             crate::LoopShape::Crossfade { frames }
             | crate::LoopShape::EqualPowerCrossfade { frames } => frames as u64,
         };
-        let radius = crate::resample::Kernel::radius(self.step) as f64;
+        let radius = crate::resample::Kernel::radius(self.step()) as f64;
         let lead = self.position as f64 + self.fraction + radius;
         let low = (self.position as f64 - radius).max(0.) as u64;
-        let high = (lead + f64::from(frames) * self.step + 1.).ceil() as u64;
+        let high = (lead + f64::from(frames) * self.step() + 1.).ceil() as u64;
         if self.exit.is_some_and(|exit| high > exit) {
             return None;
         }
@@ -151,7 +157,7 @@ impl Cursor {
         let first = self.first_boundary(r);
         let length = (r.end - r.start) as u64;
         let base = first - length;
-        let when = |v: u64| (((v as f64 - lead) / self.step).floor() - 1.).max(0.) as u32;
+        let when = |v: u64| (((v as f64 - lead) / self.step()).floor() - 1.).max(0.) as u32;
         let mut out: [Option<(Range<u64>, u32)>; 4] = Default::default();
         out[0] = Some((low..high.min(first), when(low)));
         if high > first {
@@ -188,7 +194,7 @@ impl Cursor {
             Direction::Reverse => self.end - 1 - index,
         } as f64;
         // One frame early: a deadline may only err towards urgency.
-        (((offset - lead) / self.step).floor() - 1.).max(0.) as u32
+        (((offset - lead) / self.step()).floor() - 1.).max(0.) as u32
     }
 
     pub(crate) fn visit_demand(
@@ -198,14 +204,19 @@ impl Cursor {
         mut accept: impl FnMut(u32, Range<usize>) -> bool,
     ) -> bool {
         let mut covered_end: Option<i128> = None;
+        let mut previous_step = self.step();
         for offset in 0..frames {
             if self.done() || envelope.done() {
                 break;
             }
-            let radius = if self.step == 1. && self.fraction == 0. {
+            if self.step() != previous_step {
+                covered_end = None;
+                previous_step = self.step();
+            }
+            let radius = if self.step() == 1. && self.fraction == 0. {
                 0
             } else {
-                crate::resample::Kernel::radius(self.step)
+                crate::resample::Kernel::radius(self.step())
             };
             let mut primary = None;
             let mut partner = None;

@@ -8,6 +8,37 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Accepted 0.3.225 — keyswitch panel and Program Change accounting
+
+One reviewed logical defect advances the accepted counter from 0.3.224.
+This source version uses the green integration checkpoint `67dafc61`.
+
+### Added after 0.3.224
+
+- Add the compact keyswitch panel, persistent articulation overlays, MIDI learn,
+  conflict swaps and the appended input palette.
+
+### Fixed after 0.3.224
+
+- Route MIDI 1 and MIDI 2 Program Change through authored Program selectors.
+  Selection changes without an ignored-input count; instruments without a
+  Program selector continue counting the message as ignored.
+
+### Known limits for 0.3.225
+
+- Packaging and installation are held by the user. One logged gate must prove
+  complete UI, DSP, Falcon/UVI and scripting support, and improvement over v1
+  on every required metric and its settings/features before a release ships.
+- The full integration shards, reader checks, keyswitch and App-menu tests pass.
+  The final shared scanner quick15 has 15 loads, seven Original UIs OK, eight
+  with missing images and 14 matched audible auditions, with no measured
+  regressions. Afflatus has no safe test key and is not auditioned.
+- W7's Areia/selection changes and W5's runtime engine installation are held
+  for a later gated release. W2 widgets, W3 Conflux artwork, W8 load-speed and
+  later W1 transport/waveform work are not in this source checkpoint.
+- This is a normal local build using the host glibc. CI targets Ubuntu 22.04
+  and checks a 2.35 maximum; actual CI artifact proof remains separate.
+
 ### Accepted 0.3.224 — Original view, verified readers and runtime storage
 
 Sixteen reviewed logical fixes advance the accepted counter from 0.3.208.

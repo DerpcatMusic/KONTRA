@@ -32,15 +32,25 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod automation;
+pub use automation::{AutomationBinding, AutomationSource};
+mod widget;
+pub use widget::{
+    WIDGET_EDIT_CAPACITY, WIDGET_DROP_CAPACITY, WidgetDefinition, WidgetDropKind, WidgetDropStorage,
+    WidgetEdit, WidgetEventType, WidgetInteraction, WidgetStorage, WidgetValue,
+};
 mod control;
 pub use control::{
-    ControlCallback, ControlClient, ControlContext, ControlDefinition, ControlDomain, ControlId,
-    ControlOperation, ControlQueueError, ControlReply, ControlRequest, ControlValue, ControlWrite,
-    BUS_VOLUME_SLOT, RejectedControls, SlotKind, is_slot_control, slot_control,
+    BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
+    ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
+    ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
+    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
-pub use performance::{AXIS_SWITCH, Keyswitch, previous_key_value, PerformanceId, SelectionPolicy, SelectionSnapshot};
+pub use performance::{
+    AXIS_SWITCH, Keyswitch, PerformanceId, SelectionPolicy, SelectionSnapshot, previous_key_value,
+};
 mod switching;
 pub use switching::{Driver, Selector, Switch, SwitchKeys, Switching};
 mod behavior;
@@ -59,22 +69,30 @@ pub use stream::{
     StreamCache, StreamError, StreamWorker,
 };
 mod source;
-pub use source::{Direction, Loop, LoopMode, LoopShape, Playback, SampleDemand};
+pub use source::{Direction, Loop, LoopMode, LoopShape, LoopSlot, Playback, SampleDemand};
 mod bus;
 pub use bus::{Bus, BusMix, BusSend, GroupFader};
 pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
-    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay, FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor,
-    Rectifier, ReverbSettings, StateVariableFilter, SvfMode, VoiceChain,
+    Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
+    FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
 use envelope::EnvelopeState;
 pub use envelope::{Envelope, EnvelopeCurve};
+mod engine_parameter_names;
+mod engine_parameters;
 mod gate;
 mod modulation;
 mod plan_programs;
 mod script_params;
+pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
+pub use engine_parameters::{
+    EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
+    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name,
+};
 mod steal;
 mod voice_mod;
 pub use plan_programs::{PlanProgram, SignalProgram};
@@ -90,6 +108,7 @@ pub use modulation::{Destination, ExpressionSource, Modulation, Route};
 mod pitch;
 pub use pitch::NotePitch;
 mod groups;
+mod native_start;
 mod note_event;
 pub use note_event::NoteProperties;
 mod packed;
@@ -110,8 +129,8 @@ mod resample;
 use plans::{Generation, PlanQueues};
 pub use plans::{PlanControl, PlanError, PlanId, PlanTransfer, RejectedPlan};
 pub use prepare::{
-    AssetId, AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region, Tuning, VelocityCurve, ZoneFades,
-    service_mipmaps,
+    AXIS_BASE, AssetId, ControllerCondition, MAX_AXES, PREVIOUS_KEY, Pcm, Prepared, Ranges, Region,
+    Tuning, VelocityCurve, ZoneFades, service_mipmaps,
 };
 mod integer;
 pub mod lower;
@@ -157,11 +176,14 @@ pub enum EventInfo {
     Key,
     /// The event's velocity, 0..=127.
     Velocity,
+    ReleaseVelocity,
+    /// 1 for a live note event, 0 for an unknown or retired event.
+    Status,
     /// Nonzero while the event has a sounding voice, 0 once it ended.
     ZoneId,
     /// The event's MIDI channel (0-based).
     MidiChannel,
-    /// 1 when a script created the event (`play_note`), 0 for a host event.
+    /// Physical creator script slot, or -1 for a host event.
     Source,
 }
 
@@ -422,6 +444,7 @@ struct Voice {
     bus: Option<usize>,
     tail_remaining: Option<u32>,
     dsp_fade: Option<(u32, f32)>,
+    script_fade: Option<script_params::Fade>,
     envelope: EnvelopeState,
     gain: f32,
     /// v1 audible_voices: applied channel gains at the last render chunk.
@@ -433,6 +456,7 @@ struct Voice {
     stolen: bool,
     /// The region's group, for script group layers.
     group: Option<u32>,
+    source_zone: u32,
     /// Frames a releasing voice's gain bound has stayed under `render::INAUDIBLE`.
     quiet: u32,
 }
@@ -669,6 +693,7 @@ pub struct Runtime {
     note_events: Box<[note_event::NoteEvent]>,
     source_ids: Vec<(i32, NoteId)>,
     last_source_id: i32,
+    last_callback_id: i32,
     closed_notes: Vec<NoteId>,
     channels: Arena<Channel>,
     voices: Arena<Voice>,
@@ -821,6 +846,8 @@ impl Runtime {
         let rate = plan.rate;
         let mut plans = Arena::new(id, 1);
         let active_plan = PlanId(plans.insert(Generation {
+            native_cycle: 0,
+            native_seed: 0,
             request: 0,
             sequences: variation::SequenceState::new(&plan),
             controls: control::ControlState::new(&plan),
@@ -835,7 +862,7 @@ impl Runtime {
             notes: 0,
             callbacks: 0,
         })?);
-        Ok(Self {
+        let mut runtime = Self {
             rate,
             tempo: 120.0,
             plans,
@@ -846,6 +873,7 @@ impl Runtime {
             closed_notes: Vec::with_capacity(limits.notes),
             source_ids: Vec::with_capacity(limits.notes),
             last_source_id: 0,
+            last_callback_id: 0,
             channels: Arena::new(id, limits.channels),
             voices: Arena::new(id, limits.voices),
             voice_activity: vec![0; limits.voices.div_ceil(64)].into_boxed_slice(),
@@ -923,7 +951,11 @@ impl Runtime {
                 }
                 state
             },
-        })
+        };
+        // Authored init effects must reach the DSP before the first input or
+        // getter, including hosts that send MIDI before their first render.
+        runtime.start_plan_programs();
+        Ok(runtime)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -1270,6 +1302,13 @@ impl Runtime {
             let cells = self.plans.get(plan.0).unwrap().prepared.note_cells;
             self.note_values[begin..begin + cells].fill(0);
         }
+        if !self.plans.get(plan.0).unwrap().prepared.native_start.is_empty() {
+            let generation = self.plans.get_mut(plan.0).unwrap();
+            let state = self.performance_state.edit(performance);
+            state.native_tick = generation.native_cycle;
+            state.native_seed = generation.native_seed;
+            generation.native_cycle = generation.native_cycle.wrapping_add(1);
+        }
         self.selections[id.index] = performance::NoteSelection {
             performance,
             snapshot: self.performance_state.capture(performance),
@@ -1485,6 +1524,7 @@ impl Runtime {
             bus: None,
             tail_remaining: None,
             dsp_fade: None,
+            script_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
             last_gains: [0.0; 2],
@@ -1492,6 +1532,7 @@ impl Runtime {
             born: self.voice_order,
             stolen: false,
             group: None,
+            source_zone: 0,
             quiet: 0,
         })?);
         self.cold_started += u64::from(cold);

@@ -19,7 +19,8 @@ pub fn sigil(bytes: &[u8]) -> &'static str {
     }
 }
 // Bounded framing check: params() deliberately suppresses malformed saved tables.
-fn table(data: &[u8], _version: u16) -> (&'static str, BTreeMap<String, usize>) {
+fn table(data: &[u8], version: u16) -> (&'static str, BTreeMap<String, usize>) {
+    if version!=0x50 {return ("unknown",BTreeMap::new())}
     fn word(d: &mut &[u8]) -> Option<usize> {
         let (a, b) = d.split_at_checked(4)?;
         *d = b;

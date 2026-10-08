@@ -150,6 +150,8 @@ impl WidgetKind {
 
 #[derive(Clone, Debug)]
 pub struct Ui {
+    /// Name referenced after loading a view, but absent from that view.
+    pub unresolved: bool,
     pub kind: WidgetKind,
     pub var: VarId,
     /// Folded declaration parameters, e.g. `(min, max, display_ratio)`.
