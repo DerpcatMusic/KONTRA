@@ -3736,6 +3736,7 @@ name = "sampler-kontakt"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "dirs",
  "ncw",
  "ni-file",
  "sampler-core",
