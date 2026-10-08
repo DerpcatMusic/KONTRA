@@ -313,6 +313,14 @@ impl<S: Script> Driver<S> {
         }
         for command in inbox.drain(..) {
             match command {
+                Command::EngineParameter { address, value } => {
+                    if rt.set_engine_parameter(address, value).is_err() {
+                        let category = "insert parameter without a DSP lane";
+                        if !self.unmodeled.contains(&category) && self.unmodeled.len() < self.unmodeled.capacity() {
+                            self.unmodeled.push(category);
+                        }
+                    }
+                }
                 Command::Play(play) => self.play(rt, &play, closing)?,
                 Command::Release { id, at_ms } => {
                     if let Some(note) = self.notes.get(&id).copied() {
