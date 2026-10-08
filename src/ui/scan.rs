@@ -336,6 +336,7 @@ fn render(
         failures.insert("lookup-ambiguous",scan.lookup_ambiguous);
         failures.insert("lookup-corrupt",scan.lookup_corrupt);
         failures.insert("lookup-limit",scan.lookup_limit);
+        failures.insert("preparation-limit",scan.preparation_oversized + scan.preparation_key_budget);
         failures.insert("lookup-read",scan.lookup_read);
         failures.insert("lookup-unavailable",scan.lookup_unavailable);
         failures.insert("decode-failed",scan.decodes-scan.decode_ok);
@@ -343,8 +344,14 @@ fn render(
     if let Some(missing_fonts)=missing_fonts {
         failures.insert("font-service-unavailable",missing_fonts);
     }
+    let preparation = native.is_none().then(|| json!({"completed":scan.preparation_completed,"completed_bytes":scan.preparation_completed_bytes,
+        "max_key_bytes":scan.preparation_max_key_bytes,"wanted_peak_bytes":scan.preparation_wanted_peak_bytes,
+        "oversized":scan.preparation_oversized,"key_budget":scan.preparation_key_budget,
+        "evicted":scan.preparation_evicted,"requeued":scan.preparation_requeued,
+        "completed_key_bytes":assets.completed_key_bytes()}));
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
+        "image_preparation":preparation,
         "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
         "font_declared":fonts_declared,"font_success":font_success,"font_unresolved_styles":fonts_declared.zip(font_success).map(|(declared,success)|declared.saturating_sub(success)),
 
