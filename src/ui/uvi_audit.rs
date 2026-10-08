@@ -131,7 +131,7 @@ fn assistant_host_font_parses_on_request() {
     }
     let path=std::env::temp_dir().join("kontra-authored-host-font.uvip");
     let mut source=pictures::Source::of(&path);
-    assert!(source.read("Unrelated-Regular.ttf").is_none());
+    assert!(source.read_result("Unrelated-Regular.ttf").unwrap().is_none());
     let _ui=theme::ui();
     let before=rss();
     let asset=sampler_ui_ir::Asset {path:"Assistant-Regular.ttf".into(),kind:sampler_ui_ir::AssetKind::TrueTypeFont};
