@@ -1279,11 +1279,6 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     }
 }
 
-// v1 0cb7a8a0:src/engine/stream.rs keeps RING=8192 frames ahead at unity pitch.
-fn stream_horizon(head: usize) -> u32 {
-    (head.max(8192) + MAX_BLOCK) as u32
-}
-
 /// Voice-rendering threads per part: `KONTRA_THREADS` (`auto` or a count)
 /// wins, then the player's setting; one (the audio thread alone) otherwise.
 fn render_threads(request: &LoadRequest) -> Threads {
@@ -1763,7 +1758,7 @@ impl V2Loader {
             .map(|i| i.articulations.iter().map(|a| a.switch_keys.first().copied()).collect());
         if streams && let Some(stream) = &stream {
             // Heads bound only starts; running voices request a page ahead.
-            part.horizon = Some(stream_horizon(stream.report.head_frames));
+            part.horizon = Some((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32);
             part._stream = Some(stream.clone());
         }
         progress(Progress::DONE);
@@ -1896,7 +1891,7 @@ mod tests {
         let limits = Limits::for_plan(&plan, 8, 8);
         let runtime = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
         let mut part = Part::new(runtime, MixTree::instrument("prefetch")).unwrap();
-        part.horizon = Some(stream_horizon(628));
+        part.horizon = Some((8192 + MAX_BLOCK) as u32);
         let mut core = V2Core::with_parts(1, 48000.);
         core.install(0, Some(Box::new(part)));
         core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
