@@ -819,7 +819,7 @@ fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
 
 #[test]
 fn authored_delay_runs_existing_dsp_at_the_requested_time() {
-    let instrument = ir::Instrument {
+    let mut instrument = ir::Instrument {
         assets: vec![asset("impulse")],
         zones: vec![ir::Zone {
             keys: ir::KeyRange { low: 60, high: 60 },
@@ -843,7 +843,7 @@ fn authored_delay_runs_existing_dsp_at_the_requested_time() {
     let plan = lower(
         &instrument,
         48000,
-        vec![Pcm::new(48000, samples.into_boxed_slice()).unwrap()],
+        vec![Pcm::new(48000, samples.clone().into_boxed_slice()).unwrap()],
         no_behaviors,
     )
     .unwrap();
@@ -854,4 +854,21 @@ fn authored_delay_runs_existing_dsp_at_the_requested_time() {
     assert!(output[..4].iter().all(|sample| sample[0] == 0.));
     assert!(output[4][0] > 0.);
     assert!((output[8][0] / output[4][0] - 0.5).abs() < 1e-6);
+    instrument.chains[0].pre_amplitude[0] = ir::Processor::Delay {
+        time: ir::Time::ZERO,
+        feedback: 0.5,
+        mix: 1.,
+    };
+    let plan = lower(
+        &instrument,
+        48000,
+        vec![Pcm::new(48000, samples.into_boxed_slice()).unwrap()],
+        no_behaviors,
+    )
+    .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut output).unwrap();
+    assert!(output[0][0] > 0.);
+    assert!(output[1..].iter().all(|sample| sample[0] == 0.));
 }
