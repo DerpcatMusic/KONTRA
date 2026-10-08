@@ -399,7 +399,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .collect();
     let owns_sustain = scripts.iter().any(|s| s.owns_sustain);
     let owns_release_triggers = scripts.iter().any(|s| s.owns_release_triggers);
-    for (index, script) in scripts.into_iter().enumerate() {
+    for (index, mut script) in scripts.into_iter().enumerate() {
         if script.rate != plan.sample_rate() {
             return Err(sampler_core::Error::InvalidInput);
         }
@@ -413,7 +413,12 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         });
         for w in &script.model.interface.widgets {
             use model::{Location, WidgetValue};
-            let storage = if let Some(id) = w.control {
+            let storage = if w.kind == model::WidgetKind::FileSelector {
+                let offset = u32::try_from(script.resources.texts.len())
+                    .map_err(|_| sampler_core::Error::Capacity)?;
+                script.resources.texts.push(String::new());
+                Some(sampler_core::WidgetStorage::FileSelection { offset })
+            } else if let Some(id) = w.control {
                 Some(sampler_core::WidgetStorage::Control(id))
             } else {
                 w.location.as_ref().and_then(|location| match *location {

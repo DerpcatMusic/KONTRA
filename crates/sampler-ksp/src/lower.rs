@@ -1039,6 +1039,17 @@ impl Gen<'_, '_> {
                     }
                 }
             }
+            ExprKind::Builtin(Builtin::FsGetFilename, args) => {
+                self.arg(args, 0, free)?;
+                self.arg(args, 1, free + 1)?;
+                self.emit(I::Op(Op::FileName {
+                    ui: free,
+                    format: free + 1,
+                    text: dst,
+                }))?;
+                self.cover(Builtin::FsGetFilename, Coverage::Native);
+                return Ok(());
+            }
             ExprKind::Builtin(Builtin::GetControlParStr, args) => {
                 self.property_key(args, free, None)?;
                 self.emit(I::Op(Op::TextProperty {

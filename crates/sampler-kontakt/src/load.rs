@@ -535,6 +535,7 @@ pub(crate) fn script_environment(
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
+        evaluation_budget: None,
         groups,
         engine_values: Default::default(),
         engine_lookups: Vec::new(),
@@ -575,7 +576,11 @@ pub(crate) fn script_environment(
 pub fn compile_ui(
     instrument: &mut ir::Instrument,
     options: &Options,
-) -> (Vec<sampler_ksp::Script>, Vec<sampler_ui_ir::Interface>, Option<Resources>) {
+) -> (
+    Vec<sampler_ksp::Script>,
+    Vec<sampler_ui_ir::Interface>,
+    Option<Resources>,
+) {
     let (rate, scripts) = (options.rate, options.scripts);
     let resources = options.library.as_deref().map(Resources::of);
     let limits = sampler_ksp::Limits::LIBRARY;
@@ -611,7 +616,12 @@ pub fn compile_ui(
             }
         }
         let mut environment = script_environment(behavior, index, groups.clone(), performance_view);
-        environment.control_values.extend(options.control_values.iter().map(|&(id, value)| (id, Value::Int(value))));
+        environment.control_values.extend(
+            options
+                .control_values
+                .iter()
+                .map(|&(id, value)| (id, Value::Int(value))),
+        );
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
             ir::Language::Ksp => {
@@ -658,7 +668,11 @@ pub fn compile_ui(
             }),
         }
     }
-    (compiled, interfaces, resources.map(std::cell::RefCell::into_inner))
+    (
+        compiled,
+        interfaces,
+        resources.map(std::cell::RefCell::into_inner),
+    )
 }
 
 fn prepare_inner(
