@@ -14,6 +14,7 @@ p.add_argument('binary', type=Path)
 p.add_argument('out', type=Path)
 p.add_argument('--cold', action='store_true')
 p.add_argument('--profile', action='store_true')
+p.add_argument('--block', type=int, choices=[32, 64, 256])
 p.add_argument('--only', choices=['piano', 'strings', 'fx'])
 a = p.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
@@ -27,7 +28,7 @@ heavy = '/home/derpcat/.cache/kontakto-heavy'
 for name, (library, instrument) in scenarios.items():
     if a.only and a.only != name:
         continue
-    for block in ([64] if a.profile else [32, 64, 256]):
+    for block in ([a.block] if a.block else [64] if a.profile else [32, 64, 256]):
         tag = f'{a.engine}-{name}-{block}' + ('-cold' if a.cold else '') + ('-perf' if a.profile else '')
         done = a.out / f'{tag}.done'
         if done.exists():
