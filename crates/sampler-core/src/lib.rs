@@ -32,6 +32,8 @@ struct Siblings {
     next: Option<Index>,
 }
 
+mod automation;
+pub use automation::{AutomationBinding, AutomationSource};
 mod widget;
 pub use widget::{
     WIDGET_EDIT_CAPACITY, WidgetDefinition, WidgetEdit, WidgetEventType, WidgetInteraction,

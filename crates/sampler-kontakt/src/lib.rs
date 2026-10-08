@@ -30,7 +30,7 @@ pub use library::{Kontakt, read, read_program, read_with_snapshot};
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
-    load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
+    compile_ui, load_cancelable, load_read, load_read_streamed, load_streamed, prepare, stream_instrument,
 };
 pub use mapping::{Group, LoopSlot, Loops, Zone};
 pub use metadata::{
