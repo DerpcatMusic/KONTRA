@@ -109,7 +109,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     let Kind::Table { cells, .. } = &table.kind else {
         panic!()
     };
-    assert_eq!(cells[2], 7);
+    assert_eq!(cells[2], 7.);
     assert_eq!(
         button.placement,
         sampler_ui_ir::Placement::Grid { column: 2, row: 3 }
