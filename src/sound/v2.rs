@@ -1497,10 +1497,11 @@ fn kontakt(
         None
     };
     let path = snapshot.as_ref().map_or(&request.path, |(parent, _)| parent);
+    let control_values = request.control_values.iter().filter(|(_, value)| value.is_finite()).map(|&(id, value)| (sampler_core::ControlId(id.0), value.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)).collect::<Vec<_>>();
     let mut source = match &snapshot {
-        Some((parent, state)) => sampler_kontakt::read_with_snapshot(parent, state),
-        None if extension("nkm") => sampler_kontakt::read_program(path, request.program as usize),
-        None => sampler_kontakt::read(path),
+        Some((parent, state)) => sampler_kontakt::read_with_snapshot_and_controls(parent, state, &control_values),
+        None if extension("nkm") => sampler_kontakt::read_program_with_controls(path, request.program as usize, &control_values),
+        None => sampler_kontakt::read_with_controls(path, &control_values),
     }
     .map_err(load)?;
     let mut report = LoadReport::of(&source.instrument, &request.path, source.locations.len());
@@ -1510,7 +1511,7 @@ fn kontakt(
         library: Some(path.clone()),
         mpe: request.mpe.then(|| sampler_core::lower::MpeDefaults::for_instrument(&source.instrument)),
         dynamics_start: request.dynamics_start,
-        control_values: request.control_values.iter().filter(|(_, value)| value.is_finite()).map(|&(id, value)| (sampler_core::ControlId(id.0), value.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)).collect(),
+        control_values,
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {
