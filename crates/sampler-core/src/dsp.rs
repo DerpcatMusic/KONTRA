@@ -135,11 +135,16 @@ pub enum Processor {
     /// `x * (dry + g)` where `g` follows `gain` through a one-pole using the
     /// native per-frame coefficient, starting at its first target. Constant
     /// or control targets only; per-voice scalar path.
-    Gainer { dry: f64, gain: Parameter },
+    Gainer {
+        dry: f64,
+        gain: Parameter,
+    },
     /// Native Stereo Modeller width/balance smoothing and optional right delay.
     StereoModeller(StereoSettings),
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
+    /// Pinned v1 native Ladder LP4, with separate preallocated family state.
+    LadderLP4(LadderSettings),
     /// WaveShaper rectification (stateless).
     Rectify(Rectifier),
     /// Formant Crusher decimation; per-voice scalar path.
@@ -180,6 +185,7 @@ impl Processor {
             Processor::Compressor(settings) => settings.valid(),
             Processor::Decimate(decimator) => decimator.valid(),
             Processor::Daft(settings) => settings.valid(),
+            Processor::LadderLP4(settings) => settings.valid(),
             Processor::StereoModeller(settings) => settings.valid(),
             Processor::Branch { gain, .. } => gain.is_finite(),
             Processor::Rectify(_) => true,
@@ -195,24 +201,29 @@ mod compressor;
 pub(super) mod control;
 mod convolution;
 mod daft;
+mod ladder_kernel;
+mod ladder;
+pub use ladder::LadderSettings;
 mod delay;
 mod stereo;
+mod taps;
 pub use stereo::StereoSettings;
+pub use taps::{VoiceSendPosition, VoiceSendTap};
 pub(super) mod lanes;
 mod reverb;
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
-pub use daft::DaftSettings;
-pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub use convolution::ConvolutionUpload;
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
+pub use daft::DaftSettings;
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
+pub use shaping::{Decimator, Rectifier};
 pub use svf::{StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
@@ -234,7 +245,11 @@ pub(super) enum PreparedProcessor {
     },
     Decimate(Decimator),
     Daft(daft::Daft),
-    StereoModeller { stereo: stereo::Stereo, offset: usize },
+    LadderLP4 { ladder: ladder::Ladder, offset: usize },
+    StereoModeller {
+        stereo: stereo::Stereo,
+        offset: usize,
+    },
     Branch {
         count: u16,
         gain: f64,
@@ -259,14 +274,18 @@ pub(super) struct PreparedVoiceChain {
     post: Box<[PreparedProcessor]>,
     tail_frames: u32,
     pub delay_frames: usize,
+    taps: Box<[taps::PreparedTap]>,
+    pub tap_buses: Box<[usize]>,
 }
 
 pub(super) struct RenderContext<'a> {
+    pub amplifier: Option<crate::voice_mod::Ramp>,
     pub expression: Frame,
     pub delay: &'a mut [[f64; 2]],
     pub parameters: &'a [ControlRamp],
     pub filters: svf::FilterContext<'a>,
     pub at: u64,
+    pub feeds: &'a mut [taps::TapFeed],
 }
 
 /// Serial stereo processing with an explicit envelope boundary.
@@ -276,6 +295,7 @@ pub struct VoiceChain {
     pre: Box<[Processor]>,
     post: Box<[Processor]>,
     tail_frames: u32,
+    taps: Box<[VoiceSendTap]>,
 }
 impl VoiceChain {
     pub fn new(
@@ -298,6 +318,7 @@ impl VoiceChain {
             pre: pre_envelope.into_boxed_slice(),
             post: post_envelope.into_boxed_slice(),
             tail_frames,
+            taps: Box::new([]),
         })
     }
     pub(super) fn compile(
@@ -307,6 +328,9 @@ impl VoiceChain {
         filters: &mut Vec<svf::PreparedFilter>,
     ) -> Result<PreparedVoiceChain, Error> {
         let mut delay_frames = 0;
+        let mut tap_buses: Vec<_> = self.taps.iter().map(|tap| tap.bus).collect();
+        tap_buses.sort_unstable();
+        tap_buses.dedup();
         Ok(PreparedVoiceChain {
             pre: compile_processors(
                 self.pre,
@@ -328,6 +352,12 @@ impl VoiceChain {
             )?,
             tail_frames: self.tail_frames,
             delay_frames,
+            taps: self
+                .taps
+                .into_iter()
+                .map(|tap| tap.compile(bindings))
+                .collect(),
+            tap_buses: tap_buses.into_boxed_slice(),
         })
     }
 }
@@ -376,6 +406,11 @@ pub(super) fn compile_processors(
                 },
                 Processor::Daft(settings) => {
                     PreparedProcessor::Daft(settings.compile(rate, bindings))
+                }
+                Processor::LadderLP4(settings) => {
+                    let offset = *delay_frames;
+                    *delay_frames = offset.checked_add(ladder::CELLS).ok_or(Error::Capacity)?;
+                    PreparedProcessor::LadderLP4 { ladder: settings.compile(rate, bindings), offset }
                 }
                 Processor::Rectify(mode) => PreparedProcessor::Rectify(mode),
                 Processor::Gainer { dry, gain } => PreparedProcessor::Gainer {
@@ -474,32 +509,15 @@ impl PreparedVoiceChain {
             let len = begun.len;
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
-            let mut fault = process(
-                &self.pre,
-                pre,
-                &mut block,
-                len,
-                context.parameters,
-                at,
-                context.delay,
-                &mut context.filters,
-            );
+            let mut fault = self.process_section(true, pre, &mut block, len, at, &mut context);
             let levels = levels(voice, len);
             let [left, right] = &mut block;
-            for ((l, r), level) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels) {
-                *l *= level;
-                *r *= level;
+            for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
+                let gains = context.amplifier.map_or([1.0; 2], |r| r.gains_at(at + i as u64 + 1));
+                *l *= level * f64::from(gains[0]);
+                *r *= level * f64::from(gains[1]);
             }
-            fault |= process(
-                &self.post,
-                post,
-                &mut block,
-                len,
-                context.parameters,
-                at,
-                context.delay,
-                &mut context.filters,
-            );
+            fault |= self.process_section(false, post, &mut block, len, at, &mut context);
             faults += u64::from(self.finish(
                 voice,
                 begun,
@@ -541,7 +559,7 @@ impl PreparedVoiceChain {
                 pcm,
                 &mut raw[..count],
                 &mut unity,
-                voice.gain,
+                1.0,
                 [1.; 2],
                 kernel,
             )
@@ -614,21 +632,17 @@ impl PreparedVoiceChain {
 
     /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
     pub(super) fn batches(&self) -> bool {
-        !self
-            .pre
-            .iter()
-            .chain(&self.post)
-            .any(|stage| {
+        self.taps.is_empty()
+            && !self.pre.iter().chain(&self.post).any(|stage| {
                 matches!(
                     stage,
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
-                        | PreparedProcessor::Gainer { .. }
-                        | PreparedProcessor::StereoModeller { .. }
                         | PreparedProcessor::Daft(_)
+                        | PreparedProcessor::LadderLP4 { .. }
                         | PreparedProcessor::Branch { .. }
-                )
+                ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
     }
 
@@ -658,7 +672,7 @@ pub(super) struct Begun {
 pub(super) fn levels(voice: &mut Voice, len: usize) -> [f64; BLOCK] {
     let mut levels = [0.; BLOCK];
     for level in &mut levels[..len] {
-        *level = f64::from(
+        *level = f64::from(voice.gain) * f64::from(
             voice
                 .envelope
                 .constant_level()
@@ -839,8 +853,18 @@ pub(super) fn process(
             PreparedProcessor::Compressor(compressor) => compressor.process(state, block, len),
             PreparedProcessor::Decimate(decimator) => decimator.process(state, block, len),
             PreparedProcessor::Daft(daft) => daft.process(state, parameters, block, len, at),
+            PreparedProcessor::LadderLP4 { ladder, offset } => {
+                fault |= ladder.process(state, &mut delay_samples[*offset..*offset + ladder::CELLS], parameters, block, len, at);
+            }
             PreparedProcessor::StereoModeller { stereo, offset } => {
-                stereo.process(state, parameters, block, len, at, &mut delay_samples[*offset..]);
+                stereo.process(
+                    state,
+                    parameters,
+                    block,
+                    len,
+                    at,
+                    &mut delay_samples[*offset..],
+                );
             }
             PreparedProcessor::Rectify(mode) => {
                 for channel in block.iter_mut() {
@@ -928,6 +952,7 @@ pub(super) struct DspState {
     /// thread's (and the whole of single-threaded rendering).
     pub filters: Slab<svf::FilterBank>,
     pub buses: crate::bus::BusState,
+    pub feeds: Box<[taps::TapFeed]>,
 }
 impl DspState {
     pub fn new(
@@ -939,6 +964,19 @@ impl DspState {
         let (stride, delay_stride) = Self::shape(plan);
         let cells = stride.checked_mul(voices).ok_or(Error::Capacity)?;
         let delay_count = delay_stride.checked_mul(voices).ok_or(Error::Capacity)?;
+        if plan
+            .voice_chains
+            .iter()
+            .flat_map(|chain| &chain.tap_buses)
+            .any(|bus| *bus >= plan.buses.len())
+        {
+            return Err(Error::InvalidInput);
+        }
+        let feeds = if plan.voice_chains.iter().any(|chain| !chain.taps.is_empty()) {
+            plan.buses.len()
+        } else {
+            0
+        };
         Ok(Self {
             voices,
             stride,
@@ -952,6 +990,7 @@ impl DspState {
             delay_samples: Slab::new(allocate(delay_count)?, delay_stride),
             parameters: control::initial_parameters(plan, &plan.dsp_bindings),
             buses: crate::bus::BusState::new(plan)?,
+            feeds: allocate(feeds)?,
         })
     }
     /// Per-voice chain state and delay line sizes (`stride`, `delay_stride`).
@@ -1031,6 +1070,19 @@ impl DspState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {
+        for pseudo in [false, true] {
+            let chain = VoiceChain::new(vec![
+                Processor::Gainer { dry: 0.1, gain: Parameter::Constant(0.8) },
+                Processor::StereoModeller(StereoSettings {
+                    width: Parameter::Constant(0.7), pan: Parameter::Constant(-0.2), pseudo,
+                }),
+            ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            assert_eq!(chain.batches(), !pseudo);
+        }
+    }
 
     /// One frame through `stages` as a one-frame block.
     fn process(

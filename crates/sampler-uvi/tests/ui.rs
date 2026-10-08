@@ -75,7 +75,7 @@ fn callbacks_suppress_table_changes_and_ui_callbacks_cannot_yield() {
 }
 
 #[test]
-fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
+fn persistence_restores_custom_data_before_widgets_and_init() {
     let script = r#"
       trace='body'
       local k=Knob('Gain',0,0,1)
@@ -84,7 +84,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
       function onInit() trace=trace..'/init' end
       function onSave() return {a=true,text='ok',[2]={0.125}} end
       function onLoad(data)
-        assert(trace=='body/widget/init')
+        assert(trace=='body' and k.value==0)
         assert(data.a and data.text=='ok' and data[2][1]==0.125)
         trace=trace..'/load'
       end
@@ -97,7 +97,7 @@ fn persistence_restores_widgets_before_init_and_custom_data_after_init() {
     let state = serde_json::from_str(&encoded).unwrap();
     let b =
         ScriptHost::new_with_ui_state(&xml(script), (), Config::default(), Some(&state)).unwrap();
-    assert_eq!(b.global_text("trace"), "body/widget/init/load");
+    assert_eq!(b.global_text("trace"), "body/load/widget/init");
     assert_eq!(b.control_values()[1].1, 0.);
     assert!(
         host("function onSave() local t={} t.self=t return t end")
@@ -177,4 +177,21 @@ fn engine_objects_are_not_widget_options_and_logical_values_keep_their_type() {
         vec![control_id(3, 0), control_id(4, 0)]
     );
     h.set_control(control_id(3, 0), 0.375).unwrap();
+}
+
+#[test]
+fn script_thread_publishes_runtime_faults_without_widget_changes() {
+    use sampler_uvi::scripted::Script;
+    let source=xml("function onNote(e) error('first runtime fault') end");
+    let (mut thread,loaded)=sampler_uvi::scripted::ScriptThread::spawn(source,(),Config::default()).unwrap();
+    let revision=loaded.ui.revision();
+    thread.note_on(1,60,100);
+    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(1);
+    while loaded.ui.revision()==revision && std::time::Instant::now()<deadline {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(loaded.ui.revision()>revision,"runtime findings must wake report consumers");
+    assert_eq!(loaded.ui.runtime_faults(),(1,0));
+    assert_eq!(loaded.ui.fault_counts().runtime[&sampler_uvi::script::FaultCategory::Lua],1);
+    assert!(loaded.ui.findings().iter().any(|f|f.feature=="lua error" && f.count==1 && f.value.contains("first runtime fault")));
 }

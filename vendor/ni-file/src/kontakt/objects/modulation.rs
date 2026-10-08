@@ -44,9 +44,21 @@ pub struct ModTarget {
     /// Always -1 in local presets.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_i16: i16,
-    /// Bit field; 0x10 always set, 0x02/0x04 of unknown meaning.
+    /// Bit field; 0x02 is negative depth, other bits retain unassigned meaning.
     #[cfg_attr(feature = "serde", serde(skip))]
     pub unknown_flags: u8,
+}
+
+impl ModTarget {
+    /// Native target flag bit 1 stores the depth sign, independently of Invert.
+    /// Retained from the frozen format-reader checkpoint b7f6af0b.
+    pub fn signed_intensity(&self) -> f32 {
+        if self.unknown_flags & 2 != 0 {
+            -self.intensity
+        } else {
+            self.intensity
+        }
+    }
 }
 
 /// Modulation shaper transfer curve.

@@ -49,7 +49,8 @@ The graph is:
 1. Check out the event's exact source SHA
 2. Call this commit's CI workflow with `release_validation: true`
 3. Require release-profile Linux tests and Windows/macOS compilation
-4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64
+4. Build CLAP, VST3 and standalone for Linux x64, Windows x64, macOS arm64 and macOS x64.
+   Linux packages use Ubuntu 22.04 and reject any artifact requiring glibc newer than 2.35.
 5. Verify all four ZIP checksum sidecars, required binaries/legal files and embedded
    build identities, then publish only if that SHA is still `main`. Each ZIP includes
    `SOURCE_COMMIT.txt`, `clap-build-info.json`, `vst3-build-info.json` and standalone

@@ -379,7 +379,7 @@ enum Look {
     Mapped(f32),
     /// Switches articulation: deep in its part's hue, brighter while the
     /// articulation it picks is the one playing.
-    Switch(f32, bool),
+    Switch(Color, bool, bool),
 }
 
 /// The lowest and highest keys that play notes.
@@ -394,11 +394,28 @@ fn playable(looks: &[Look; 128]) -> Option<(usize, usize)> {
 fn part_looks(cx: &mut Cx, slot: usize) -> [Look; 128] {
     let hue = part_color(slot).hue();
     let mut looks = mapped(cx, slot).map(|m| if m { Look::Mapped(hue) } else { Look::Unmapped });
+    for (key, authored) in cx.view.parts[slot].keys.iter().enumerate().take(128) {
+        if let Some(color) = authored.color.and_then(ksp_key_color) {
+            looks[key] = Look::Switch(color, false, false);
+        }
+    }
     if let Some(inst) = super::inside::switch_keys(cx, slot) {
         let active = super::inside::active(cx, slot);
-        for (n, a) in inst.articulations.iter().enumerate() {
-            for &k in &a.switch_keys {
-                looks[usize::from(k & 127)] = Look::Switch(hue, active == Some(n));
+        let ids = crate::sound::articulation::identities(&inst.articulations);
+        let overlay = &cx.selection.parts[slot].articulation_overlay;
+        for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
+            let color = super::inside::articulation_color(cx, slot, &source, a);
+            let crate::sound::articulation::Input::Keys(keys) = overlay.input(&source, a, sampler_ir::Driver::Keys) else { unreachable!() };
+            for &key in &a.switch_keys {
+                let moved = !keys.contains(&key);
+                looks[usize::from(key)] = Look::Switch(color, active == Some(n), moved && !overlay.keep_originals);
+            }
+        }
+        // Assigned keys win over dimmed originals, including swapped assignments.
+        for (n, (a, source)) in inst.articulations.iter().zip(&ids).enumerate() {
+            let color = super::inside::articulation_color(cx, slot, source, a);
+            if let crate::sound::articulation::Input::Keys(keys) = overlay.input(source, a, sampler_ir::Driver::Keys) {
+                for key in keys.into_iter().filter(|k| *k < 128) { looks[usize::from(key)] = Look::Switch(color, active == Some(n), false); }
             }
         }
     }
@@ -509,7 +526,7 @@ fn key(
         (Look::Mapped(hue), true) => Color::oklch(0.33, 0.075, hue),
         (Look::Unmapped, false) => Color::oklch(0.56, 0., 0.),
         (Look::Unmapped, true) => Color::oklch(0.24, 0., 0.),
-        (Look::Switch(hue, on), _) => Color::oklch(if on { 0.8 } else { 0.6 }, 0.13, hue),
+        (Look::Switch(color, on, outlined), _) => color.with_alpha(if outlined { 0.25 } else if on { 1. } else { 0.8 }),
     };
     // A sounding key lights like an LED under its top edge: neutral, strong
     // there and fading down the key, stronger the harder it is played. Dark
@@ -544,6 +561,7 @@ fn key(
     let text = col(parts).pad((2, 3)).align(Align::Center).w(Len::Pct(100.)).h(Len::Pct(100.));
     stack![led, text]
         .fill(face)
+        .when(matches!(look, Look::Switch(_, _, true)), |e| if let Look::Switch(color, _, _) = look { e.stroke(color).stroke_width(1) } else { e })
         .on(State::Hover, move |s| {
             if held || !over {
                 s

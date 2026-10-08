@@ -1070,6 +1070,22 @@ pub(crate) struct Ramp {
     pub end: u64,
 }
 
+impl Ramp {
+    pub(crate) fn gains_at(self, at: u64) -> [f32; 2] {
+        let len = self.end.saturating_sub(self.begin).max(1) as f32;
+        let offset = at.saturating_sub(self.begin) as f32;
+        std::array::from_fn(|c| {
+            self.from.gains[c] + (self.to.gains[c] - self.from.gains[c]) / len * offset
+        })
+    }
+
+    pub(crate) fn without_gains(mut self) -> Self {
+        self.from.gains = [1.0; 2];
+        self.to.gains = [1.0; 2];
+        self
+    }
+}
+
 /// The tone filter's open cutoff as a fraction of the sample rate.
 const TONE_OPEN: f64 = 0.45;
 

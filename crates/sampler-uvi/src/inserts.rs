@@ -1,6 +1,6 @@
 //! UVI insert effects as IR processors: aux-bus chains, effect racks and
-//! keygroup inserts. Values are the program's static ones; a script that
-//! writes them later does not reach these processors yet.
+//! keygroup inserts. Exact catalog fields with supported native DSP lanes
+//! receive live controls in `engine_parameters`; other writes stay reported.
 use super::{Translation, number, path};
 use roxmltree::Node;
 use sampler_ir as ir;
@@ -27,6 +27,34 @@ pub struct InsertNode {
 pub(super) type Placed = (usize, usize, usize);
 
 impl Translation {
+    /// A program/layer insert sees the sum of its children, not each voice.
+    pub(super) fn insert_bus(
+        &mut self,
+        parent: Node,
+        output: ir::Output,
+    ) -> Result<ir::Output, String> {
+        let (processors, placed) = self.inserts(parent, false, None)?;
+        if placed.is_empty() {
+            return Ok(output);
+        }
+        let bus = ir::BusRef(self.ir.buses.len());
+        let chain = ir::ChainRef(self.ir.chains.len());
+        self.ir.chains.push(ir::Chain {
+            scope: ir::Scope::Bus(bus),
+            pre_amplitude: processors,
+            post_amplitude: Vec::new(),
+        });
+        self.place(chain, placed);
+        self.ir.buses.push(ir::Bus {
+            name: parent.attribute("Name").unwrap_or_default().into(),
+            chain: Some(chain),
+            sends: Vec::new(),
+            output,
+            gain: ir::Gain::UNITY,
+        });
+        Ok(ir::Output::Bus(bus))
+    }
+
     /// Record `placed` entries (relative to one chain) once the chain is `chain`.
     pub(super) fn place(&mut self, chain: ir::ChainRef, placed: Vec<Placed>) {
         self.insert_nodes.extend(placed.into_iter().map(|(node, first, count)| InsertNode {
@@ -88,6 +116,27 @@ impl Translation {
                     }
                 }
                 "DigitalEq" => self.digital_eq(node, &at, &mut out)?,
+                "ThreeBandShelves" => {
+                    let middle = number(node, "GainMid", 0.0)?;
+                    out.push(ir::Processor::Gain(db(middle)));
+                    for (name, frequency, default, low) in [
+                        ("GainLow", "FreqLowMid", 200.0, true),
+                        ("GainHigh", "FreqMidHigh", 4000.0, false),
+                    ] {
+                        let gain = db(number(node, name, 0.0)? - middle);
+                        out.push(ir::Processor::Filter(ir::Filter {
+                            kind: if low { ir::FilterKind::LowShelf { gain } } else { ir::FilterKind::HighShelf { gain } },
+                            cutoff: ir::Frequency::Hertz(number(node, frequency, default)?),
+                            resonance: ir::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2),
+                        }));
+                    }
+                    self.ir.unsupported.push(ir::Unsupported {
+                        location: at.clone(),
+                        feature: "ThreeBandShelves crossover kernel (shared shelves used)".into(),
+                        value: String::new(),
+                        reason: ir::Reason::UnknownLaw,
+                    });
+                }
                 "WaveShaper" => {
                     // DSP_FORMAT_SPECIFICATION "WaveShaper rectifier kernels":
                     // internal modes 6 (full) and 7 (half). Public numbering
@@ -192,7 +241,19 @@ impl Translation {
                         wet: number(node, "Wet", 1.0)?,
                     });
                 }
-                "TrackDelay" if number(node, "DelayTime", 0.0)? == 0.0 => {}
+                "TrackDelay" => {
+                    let time = number(node, "DelayTime", 0.0)?;
+                    if number(node, "SyncToHost", 0.0)? != 0.0 {
+                        self.unsupported(&at, "TrackDelay host sync", time);
+                    }
+                    if time > 0.0 {
+                        out.push(ir::Processor::Delay {
+                            time: ir::Time::Seconds(time),
+                            feedback: 0.0,
+                            mix: 1.0,
+                        });
+                    }
+                }
                 "EffectRack" => {
                     // Live chains are parallel branches summed at their own gains
                     // (one is just a serial section at that gain).

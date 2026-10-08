@@ -8,6 +8,7 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod kontakt;
 pub mod units;
 mod validate;
 
@@ -77,6 +78,8 @@ pub struct Instrument {
     pub controls: Vec<Control>,
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
+    /// Ordered per-voice sends at authored processor boundaries.
+    pub voice_send_taps: Vec<VoiceSendTap>,
     pub behaviors: Vec<Behavior>,
     /// Saved source automation, addressed by slider declaration ordinal per slot.
     pub script_automation: Vec<ScriptAutomation>,
@@ -86,6 +89,8 @@ pub struct Instrument {
     pub voice_limits: Vec<VoiceLimit>,
     /// A host controller that sets the instrument volume once it arrives.
     pub host_volume: Option<HostVolume>,
+    /// Original Kontakt settings, including values not yet admitted by playback.
+    pub kontakt_objects: Option<Box<kontakt::Objects>>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
@@ -604,11 +609,11 @@ pub struct AxisPick {
 /// A selectable articulation, switched by keys and/or an alternative driver.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
-    pub name: String,
-    /// Stable authored group/axis/control identity.
+    /// Stable source axis/group/control identity, independent of display order.
     pub source: String,
-    /// Authored keyless choice callback, when present.
+    /// Optional authored selection control (stable engine control ID).
     pub control: Option<u128>,
+    pub name: String,
     /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
     /// reads them, and the first is the key a driver taps to select this.
     pub switch_keys: Vec<u8>,
@@ -1071,6 +1076,11 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
+    /// Native Ladder LP4. Values are normalized; the engine owns the laws.
+    LadderLP4(LadderLP4),
+    /// Mute a send return when its paired Mix slot is bypassed. Uses that
+    /// slot's existing bypass control; insert bypass still passes dry audio.
+    SendReturnGate { address: SlotAddress },
     /// One parallel branch of an effect rack. The next `count` processors (nested
     /// ones included) run on the signal that entered the group's first branch;
     /// `gain` times their output joins the sum, which the `last` branch leaves
@@ -1109,6 +1119,16 @@ pub struct Daft {
     pub cutoff: f64,
     pub resonance: f64,
     pub highpass: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderLP4 {
+    /// Physical native owner; absent for an authored standalone processor.
+    pub address: Option<SlotAddress>,
+    pub gain: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub record_version: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1239,6 +1259,27 @@ pub struct ProcessorControl {
     pub chain: ChainRef,
     pub index: usize,
     pub parameter: ProcessorParameter,
+    pub ramp: Time,
+}
+
+/// Completed authored stages on the named side of the voice amplitude split.
+/// Lowering preserves this boundary when one stage expands to several kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceSendPosition {
+    BeforeAmplitude(usize),
+    AfterAmplitude(usize),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceSendTap {
+    pub chain: ChainRef,
+    pub position: VoiceSendPosition,
+    pub bus: BusRef,
+    pub gain: Gain,
+    pub bypass: bool,
+    /// Optional controls use existing native Continuous ranges (linear gain,
+    /// bypass 0..1), and bind real DSP lanes rather than a parameter mirror.
+    pub gain_control: Option<ControlRef>,
+    pub bypass_control: Option<ControlRef>,
     pub ramp: Time,
 }
 
@@ -1448,4 +1489,14 @@ mod ranking_tests {
         assert_eq!(ranked[1], ("effect".to_string(), 2));
         assert_eq!(ranked[2], ("zero <path>".to_string(), 1));
     }
+}
+
+/// A Kontakt note name: MIDI 60 = C3, 0 = C-2. Strict bounds; no wrapping.
+pub fn parse_note(text: &str) -> Option<u8> {
+    let mut chars = text.trim().chars();
+    let base = match chars.next()?.to_ascii_uppercase() { 'C' => 0, 'D' => 2, 'E' => 4, 'F' => 5, 'G' => 7, 'A' => 9, 'B' => 11, _ => return None };
+    let rest = chars.as_str();
+    let (offset, octave) = match rest.as_bytes().first() { Some(b'#') => (1, &rest[1..]), Some(b'b' | b'B') => (-1, &rest[1..]), _ => (0, rest) };
+    let note = (i32::from(octave.parse::<i16>().ok()?) + 2) * 12 + base + offset;
+    u8::try_from(note).ok().filter(|n| *n < 128)
 }

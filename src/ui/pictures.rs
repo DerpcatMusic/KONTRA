@@ -52,9 +52,13 @@ impl Source {
     }
 
     pub(crate) fn read_result(&mut self, path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
-        let result = match &self.uvi {
-            Some(uvi) => uvi.read_result(path),
-            None => self.kontakt.read_result(path).map_err(kontakt_error),
+        let result = if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+            Err(ResourceError::InvalidPath)
+        } else {
+            match &self.uvi {
+                Some(uvi) => uvi.read_result(path),
+                None => self.kontakt.read_result(path).map_err(kontakt_error),
+            }
         };
         #[cfg(feature = "shots")]
         {
@@ -244,8 +248,10 @@ mod tests {
             assert_eq!(source.read_result("Resources/fixture.bin").unwrap(), Some(b"synthetic".to_vec()));
             assert_eq!(source.read_result("Resources/absent.bin").unwrap(), None);
             assert_eq!(source.read_result("../foreign.bin"), Err(ResourceError::InvalidPath));
+            assert_eq!(source.read_result("Resources/\0fixture.bin"), Err(ResourceError::InvalidPath));
+            assert_eq!(source.read_result(&"x".repeat(4097)), Err(ResourceError::InvalidPath));
             #[cfg(feature = "shots")]
-            assert_eq!((source.scan.lookups, source.scan.lookup_ok, source.scan.lookup_missing, source.scan.lookup_invalid), (3, 1, 1, 1));
+            assert_eq!((source.scan.lookups, source.scan.lookup_ok, source.scan.lookup_missing, source.scan.lookup_invalid), (5, 1, 1, 3));
         }
         std::fs::write(dir.join("broken.nkr"), b"not an archive").unwrap();
         let mut source = Source::of(&dir.join("fixture.nki"));

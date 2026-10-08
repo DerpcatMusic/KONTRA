@@ -171,7 +171,7 @@ impl Pcm {
     pub(crate) fn try_head(&self) -> Option<RwLockReadGuard<'_, Ranges>> {
         self.0.head.try_read().ok()
     }
-    pub(crate) fn mark_cold(&self) {
+    pub fn mark_cold(&self) {
         self.0.cold.store(true, Relaxed);
     }
     pub(crate) fn touch(&self, now: u64) {
@@ -446,6 +446,7 @@ pub struct Prepared {
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
     pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) envelope_controls: Box<[[Option<super::ControlId>; 6]]>,
     pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
@@ -645,6 +646,7 @@ impl Prepared {
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
             engine_parameters: Box::new([]),
+            envelope_controls: Box::new([]),
             engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
