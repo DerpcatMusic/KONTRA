@@ -13,6 +13,7 @@ sys.path.insert(0, str(HERE))
 from evidence import Capture, redact
 from contention import wait_for_quiet
 HEAVY = Path.home() / '.cache/kontakto-heavy'
+QUIET_REQUEST = Path.home() / '.cache/kontra-quiet-request'
 V1 = Path.home() / '.cache/kontra-v1'
 CPU_V1 = Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
 CPU_V1_SHA256 = 'b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab'
@@ -30,6 +31,9 @@ def capture(args, folder, env=None, cwd=None, timeout=235, timed=False):
         try:
             worker = [sys.executable, HERE / 'contention.py', folder, *args] if timed else args
             while True:
+                if QUIET_REQUEST.exists():
+                    return [], {'stdout_sha256': hashlib.sha256(b'').hexdigest(), 'returncode': 75,
+                                'lines': 0, 'reason': 'quiet-request-active'}, ''
                 if timed and child_env.get('KONTRA_GATE_REQUIRE_QUIET') == '1': wait_for_quiet(folder)
                 job = subprocess.run([str(HEAVY), 'timeout', str(timeout), *map(str, worker)], stdout=output, stderr=evidence.stderr, env=child_env, cwd=cwd)
                 activity = json.loads((folder / 'activity.json').read_text()) if timed and (folder / 'activity.json').exists() else {}
@@ -152,6 +156,11 @@ def gestures(run, source):
                                 failures[reason] = failures.get(reason, 0) + 1; complete = False
                                 observations.append({'program': program, **witness, 'status': 'UNKNOWN', 'reason': reason}); continue
                             for key in counts: counts[key] += row.get(key, 0)
+                            for phase in ['initial', 'reload']:
+                                failure = row.get(phase + '_load_failure' if phase == 'initial' else 'reload_failure', 'none')
+                                if failure != 'none':
+                                    reason = phase + '-' + failure
+                                    failures[reason] = failures.get(reason, 0) + 1
                             complete &= row.get('coverage_complete', False) and witness['returncode'] == 0
                             targets = row.get('targets', [])
                             if (len(targets) != row.get('total') or sum(t.get('reason') == 'passed' for t in targets) != row.get('passed')
