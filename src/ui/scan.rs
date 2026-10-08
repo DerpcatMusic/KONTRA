@@ -183,6 +183,8 @@ fn render(
             .clamp(1., 900.) as u16;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, String> {
+                #[cfg(target_os = "linux")]
+                let watermark = std::env::var_os("KONTRA_SCAN_STACK").map(|_| super::native_ui::stack_watermark());
                 let mut ui = theme::ui();
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut settled = 0;
@@ -262,6 +264,13 @@ fn render(
                     report["shot"] = json!(shot);
                 }
                 report["size"] = json!([w, h]);
+                #[cfg(target_os = "linux")]
+                if let Some(watermark) = watermark {
+                    let peak = super::native_ui::stack_peak(watermark);
+                    report["stack_peak_bytes"] = json!(peak);
+                    report["stack_watermark_unmarked_top_bytes"] = json!(watermark.2 - watermark.1);
+                    report["stack_watermark_saturated"] = json!(peak >= watermark.2 - watermark.0 - 4096);
+                }
                 Ok(report)
             }));
         renders.push(match result {
@@ -332,6 +341,7 @@ fn render(
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
         "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
+        "native_graph_depth":native.as_ref().and_then(|n|n.graph_depth()),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
