@@ -137,10 +137,8 @@ fn cubic(fraction: f64, mut read: impl FnMut(i64) -> [f32; 2]) -> [f32; 2] {
     })
 }
 
-/// Bank spacing: eight stretches per octave through 2x, denser above 2x.
-const PER_OCTAVE: usize = 8;
-const HIGH_PER_OCTAVE: usize = 2 * PER_OCTAVE;
-const STRETCHES: usize = PER_OCTAVE + HIGH_PER_OCTAVE * (OCTAVES - 1);
+/// Stretches of the polyphase bank: eight per octave above unity.
+const STRETCHES: usize = 8;
 /// Phases per input frame; coefficients interpolate linearly between rows.
 const PHASES: usize = 64;
 
@@ -229,41 +227,12 @@ impl Polyphase {
     #[inline(always)]
     fn sample_with<const FUSED: bool>(&self, fraction: f64, window: &[[f32; 2]]) -> [f32; 2] {
         if window.len() < self.width() {
-            return if self.width() <= NARROW_WIDTH {
-                self.padded::<FUSED, NARROW_WIDTH>(fraction, window)
-            } else {
-                self.padded::<FUSED, MAX_WIDTH>(fraction, window)
-            };
+            let mut padded = [[0.0; 2]; MAX_WIDTH];
+            let taps = 2 * self.radius + 1;
+            padded[..taps].copy_from_slice(&window[..taps]);
+            return self.dot::<FUSED>(fraction, &padded[..self.width()]);
         }
         self.dot::<FUSED>(fraction, window)
-    }
-
-    #[inline(always)]
-    fn padded<const FUSED: bool, const WIDTH: usize>(
-        &self,
-        fraction: f64,
-        window: &[[f32; 2]],
-    ) -> [f32; 2] {
-        let mut padded = [[0.; 2]; WIDTH];
-        let taps = 2 * self.radius + 1;
-        padded[..taps].copy_from_slice(&window[..taps]);
-        self.dot::<FUSED>(fraction, &padded[..self.width()])
-    }
-
-    #[inline]
-    fn sample_read<const WIDTH: usize>(
-        &self,
-        fraction: f64,
-        mut read: impl FnMut(i64) -> [f32; 2],
-    ) -> [f32; 2] {
-        let mut window = [[0.; 2]; WIDTH];
-        for (frame, offset) in window
-            .iter_mut()
-            .zip(-(self.radius as i64)..=self.radius as i64)
-        {
-            *frame = read(offset);
-        }
-        self.sample(fraction, &window[..self.width()])
     }
 
     /// [`Self::sample`] for a window of at least `width()` frames; `FUSED`
@@ -319,11 +288,10 @@ fn accumulate<const FUSED: bool>(
     }
 }
 
-/// Widest polyphase window, including the normal streamed high-pitch path.
-const MAX_TAPS: usize = 2 * MAX_STEP as usize * SHORT_RADIUS + 1;
+/// Widest polyphase window: radius 12 at stretch 2.
+const MAX_TAPS: usize = 2 * 2 * SHORT_RADIUS + 1;
 /// Its padded width in frames.
 const MAX_WIDTH: usize = (2 * MAX_TAPS).div_ceil(CHUNK) * CHUNK / 2;
-const NARROW_WIDTH: usize = (2 * (2 * 2 * SHORT_RADIUS + 1)).div_ceil(CHUNK) * CHUNK / 2;
 
 /// The runtime's rate converter: immutable tables shared by every runtime,
 /// prepared by Runtime construction and never lazily initialized by rendering.
@@ -351,35 +319,16 @@ impl Kernel {
     }
 
     fn stretch(index: usize) -> f64 {
-        let octave = if index < PER_OCTAVE {
-            (index + 1) as f64 / PER_OCTAVE as f64
-        } else {
-            1. + (index + 1 - PER_OCTAVE) as f64 / HIGH_PER_OCTAVE as f64
-        };
-        octave.exp2()
+        ((index + 1) as f64 / STRETCHES as f64).exp2()
     }
 
-    /// The bank entry for 1 < step <= MAX_STEP: the narrowest stretch at or above
-    /// step. Above 2x, sixteenth-octave spacing preserves the short sinc passband.
-    #[inline(always)]
+    /// The bank entry for 1 < step <= 2: the narrowest stretch at or above
+    /// step, so the band edge sits at most an eighth of an octave low.
     pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
-        if self.quality != ResampleQuality::Realtime || !(step > 1.0 && step <= MAX_STEP) {
+        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > 2.0 {
             return None;
         }
-        if step <= 2. {
-            self.bank[..PER_OCTAVE]
-                .iter()
-                .find(|entry| entry.stretch >= step)
-        } else {
-            self.high_polyphase(step)
-        }
-    }
-
-    // Keep the extended bank's lookup code out of the common narrow-rate loop.
-    #[inline(never)]
-    fn high_polyphase(&self, step: f64) -> Option<&Polyphase> {
-        let bank = &self.bank[PER_OCTAVE..];
-        bank.get(bank.partition_point(|entry| entry.stretch < step))
+        self.bank.iter().find(|entry| entry.stretch >= step)
     }
 
     /// The widest window any quality reads at `step`: demand prediction uses it.
@@ -404,14 +353,15 @@ impl Kernel {
         &self,
         fraction: f64,
         step: f64,
-        read: impl FnMut(i64) -> [f32; 2],
+        mut read: impl FnMut(i64) -> [f32; 2],
     ) -> [f32; 2] {
         if let Some(bank) = self.polyphase(step) {
-            return if bank.width() <= NARROW_WIDTH {
-                bank.sample_read::<NARROW_WIDTH>(fraction, read)
-            } else {
-                bank.sample_read::<MAX_WIDTH>(fraction, read)
-            };
+            let radius = bank.radius as i64;
+            let mut window = [[0.0; 2]; MAX_WIDTH];
+            for (frame, offset) in window.iter_mut().zip(-radius..=radius) {
+                *frame = read(offset);
+            }
+            return bank.sample(fraction, &window);
         }
         match self.quality {
             ResampleQuality::High => self.long.sample(fraction, step, read),
@@ -436,46 +386,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bounded_bank_lookup_matches_linear_selection_and_stays_inside_stream_demand() {
-        for quality in [ResampleQuality::Realtime, ResampleQuality::High] {
-            let kernel = Kernel::new(quality);
-            for step in [f64::NAN, f64::INFINITY, -1., 0., 0.5, 1., MAX_STEP + 0.1]
-                .into_iter()
-                .chain(
-                    kernel
-                        .bank
-                        .iter()
-                        .flat_map(|bank| [bank.stretch - 1e-8, bank.stretch, bank.stretch + 1e-8]),
-                )
-            {
-                let expected =
-                    if quality == ResampleQuality::Realtime && step > 1. && step <= MAX_STEP {
-                        kernel.bank.iter().find(|entry| entry.stretch >= step)
-                    } else {
-                        None
-                    };
-                let selected = kernel.polyphase(step);
-                assert_eq!(
-                    selected.map(|b| b as *const Polyphase),
-                    expected.map(|b| b as *const Polyphase)
-                );
-                if let Some(bank) = selected {
-                    let taps = 2 * bank.radius + 1;
-                    assert!(bank.radius + bank.width() - taps <= Kernel::radius(step) as usize);
-                }
-            }
-        }
-    }
-
-    #[test]
     fn prepared_rows_match_reference_impulses_without_changing_narrow_bank_rounding() {
         let kernel = Kernel::new(ResampleQuality::Realtime);
         for bank in kernel.bank {
             let taps = 2 * bank.radius + 1;
             for phase in 0..=PHASES {
-                if bank.stretch > 2. && ![0, 7, PHASES].contains(&phase) {
-                    continue;
-                }
                 let row = &bank.rows[phase * bank.stride..][..bank.stride];
                 let mut expected = vec![0f64; taps];
                 for (k, coefficient) in expected.iter_mut().enumerate() {
@@ -544,19 +459,9 @@ mod tests {
             1.0,
             1.5,
             2.0,
-            2.01,
-            2.5,
-            3.0,
-            4.0,
-            5.0,
             8.0,
-            12.0,
             MAX_STEP,
-        ]
-        .into_iter()
-        .chain(kernel.bank.iter().filter_map(|bank| {
-            (bank.stretch >= 2. && bank.stretch < MAX_STEP).then_some(bank.stretch + 1e-8)
-        })) {
+        ] {
             for fraction in [0.0, 0.125, 0.5, 0.999] {
                 let dc = kernel.sample(fraction, step, |_| [1.0, -1.0]);
                 assert!((dc[0] - 1.0).abs() < 1e-6 && (dc[1] + 1.0).abs() < 1e-6);
