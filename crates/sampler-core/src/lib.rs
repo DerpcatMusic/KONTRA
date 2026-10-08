@@ -698,6 +698,7 @@ impl<T> Arena<T> {
 pub struct Runtime {
     rate: u32,
     fallback_envelope: Option<[u32; 2]>,
+    part_tone_cutoff: f64,
     /// Quarter notes per minute for tempo-synced modulation.
     tempo: f64,
     plans: Arena<Generation>,
@@ -891,6 +892,7 @@ impl Runtime {
             signal_trace,
             rate,
             fallback_envelope: None,
+            part_tone_cutoff: 20_000.,
             tempo: 120.0,
             plans,
             active_plan,

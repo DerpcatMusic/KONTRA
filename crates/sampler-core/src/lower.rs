@@ -1643,6 +1643,9 @@ impl Lowering<'_> {
             .with_impulses(impulses)
             .with_buses(buses, bindings)
             .map_err(core(Stage::Buses, "buses"))?;
+        let plan = if let Some(bus) = self.ir.input_bus {
+            plan.with_input_bus(bus.0).map_err(core(Stage::Buses, "instrument input"))?
+        } else { plan };
         let plan = plan.with_bus_addresses(
             self.ir
                 .bus_addresses

@@ -70,6 +70,7 @@ pub(super) struct PreparedBuses {
     convolution_bus: Box<[usize]>,
     impulses: Box<[std::sync::Arc<crate::dsp::Impulse>]>,
     rate: u32,
+    pub(super) input: Option<usize>,
     filters: Box<[crate::dsp::svf::PreparedFilter]>,
     pub parameters: Box<[ControlRange]>,
     pub controls: Box<[(crate::ControlId, usize)]>,
@@ -194,6 +195,7 @@ impl PreparedBuses {
             convolution_bus: convolution_bus.into_boxed_slice(),
             impulses: impulses.into(),
             rate,
+            input: None,
             filters: filters.into_boxed_slice(),
             parameters: parameters.into_boxed_slice(),
             controls: controls.into_boxed_slice(),
@@ -225,6 +227,9 @@ impl Default for Buffer {
 
 pub(super) struct BusState {
     buffers: Box<[Buffer]>,
+    tone: Option<crate::OutputLowPass>,
+    tone_history: [[f64; 2]; 2],
+    tone_ringing: bool,
     cells: Box<[ProcessorState]>,
     delay_samples: Box<[[f64; 2]]>,
     reverbs: Box<[crate::dsp::Reverb]>,
@@ -244,6 +249,9 @@ impl BusState {
     pub fn new(plan: &Prepared) -> Result<Self, Error> {
         Ok(Self {
             buffers: allocate(plan.buses.len())?,
+            tone: plan.buses.input.map(|_| crate::OutputLowPass::new(plan.buses.rate)).transpose()?,
+            tone_history: [[0.; 2]; 2],
+            tone_ringing: false,
             cells: allocate(plan.buses.cells)?,
             delay_samples: allocate(plan.buses.delay_frames)?,
             reverbs: plan
@@ -299,11 +307,13 @@ impl BusState {
         self.buffers[bus].input_frames = self.buffers[bus].input_frames.max(frames);
     }
     pub fn active(&self) -> bool {
-        self.buffers.iter().any(|b| b.remaining != 0)
+        self.tone_ringing || self.buffers.iter().any(|b| b.remaining != 0)
     }
     pub fn reset(&mut self) {
         self.begin();
         self.cells.fill(ProcessorState::default());
+        self.tone_history = [[0.; 2]; 2];
+        self.tone_ringing = false;
         self.reverbs.iter_mut().for_each(crate::dsp::Reverb::clear);
         self.convolutions
             .iter_mut()
@@ -320,6 +330,7 @@ impl BusState {
         outs: &mut [&mut [Frame]],
         offset: usize,
         at: u64,
+        tone_cutoff: Option<f64>,
         mut trace: Option<(&crate::trace::TraceGraph, &mut crate::trace::Recorder)>,
     ) -> u64 {
         let mut faults = 0;
@@ -336,15 +347,35 @@ impl BusState {
             } else {
                 buffer.remaining
             };
-            let produced = input + (tail as usize).min(len - input);
+            let mut produced = input + (tail as usize).min(len - input);
             buffer.remaining = tail - (produced - input) as u32;
+            if graph.input == Some(index) {
+                let cutoff = tone_cutoff.unwrap_or(20_000.);
+                // End IIR-only ringing below -240dB; never keep native FX awake indefinitely.
+                if cutoff < 20_000. && (input > 0 || self.tone_history[0].iter().any(|v| v.abs() > 1e-12)) {
+                    produced = len;
+                }
+                let before = if TRACE { crate::trace::planar(&buffer.samples[..len]) } else { [[0.; BLOCK]; 2] };
+                let _ = self.tone.as_mut().unwrap().process(&mut buffer.samples[..len], &mut self.tone_history, cutoff, at);
+                if cutoff < 20_000. { buffer.dirty = true; }
+                if produced == 0 { self.tone_history = [[0.; 2]; 2]; }
+                self.tone_ringing = cutoff < 20_000. && self.tone_history[0].iter().any(|v| v.abs() > 1e-12);
+                if TRACE { if let Some((g,r)) = trace.as_mut() {
+                    let input_id = g.buses[index].input;
+                    r.record(input_id, &before, &before, len, [1.; 2], true, Default::default(), &self.parameters, &g.nodes[input_id]);
+                    if let Some(id) = g.buses[index].tone {
+                        let after = crate::trace::planar(&buffer.samples[..len]);
+                        r.record(id, &before, &after, len, [1.; 2], cutoff < 20_000., Default::default(), &self.parameters, &g.nodes[id]);
+                    }
+                } }
+            }
             if produced > 0 {
                 let mut block = [[0.; BLOCK]; 2];
                 for (i, frame) in buffer.samples[..produced].iter().enumerate() {
                     block[0][i] = f64::from(frame[0]);
                     block[1][i] = f64::from(frame[1]);
                 }
-                if TRACE { if let Some((g,r)) = trace.as_mut() {
+                if TRACE && graph.input != Some(index) { if let Some((g,r)) = trace.as_mut() {
                     let id = g.buses[index].input;
                     r.record(id, &block, &block, produced, [1.; 2], true, Default::default(), &self.parameters, &g.nodes[id]);
                 } }
@@ -463,10 +494,14 @@ impl PreparedBuses {
                 else if native.is_some_and(|a|a.generic==2) { "master_inserts" }
                 else { "bus_output" };
             let output = graph.node(role, "fader_pan", None, group, Some(bus), vec![], 0);
-            let parent = graph.connect(&node.processors, &stages, input);
+            let tone = (self.input == Some(bus)).then(|| {
+                let id = graph.node("part_tone", "pre_insert_one_pole", None, group, Some(bus), vec![], 0);
+                graph.edge(input, id, "serial"); id
+            });
+            let parent = graph.connect(&node.processors, &stages, tone.unwrap_or(input));
             graph.edge(parent, output, "serial");
             let sends = node.sends.iter().enumerate().map(|(i,send)| graph.node("bus_send", "send_gain", None, group, Some(bus), vec![crate::trace::TraceParameter::constant("level",send.gain),crate::trace::TraceParameter::constant("post_fader",f64::from(node.follows.get(i).copied().unwrap_or(true)))], 0)).collect();
-            graph.buses.push(crate::trace::BusNodes { input, output, stages, sends });
+            graph.buses.push(crate::trace::BusNodes { input, output, tone, stages, sends });
         }
         for (bus, node) in self.nodes.iter().enumerate() {
             for (n, send) in node.sends.iter().enumerate() {

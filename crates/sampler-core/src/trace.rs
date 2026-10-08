@@ -51,6 +51,7 @@ pub(crate) struct VoiceNodes {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BusNodes {
     pub input: usize,
+    pub tone: Option<usize>,
     pub output: usize,
     pub stages: Vec<usize>,
     pub sends: Vec<usize>,

@@ -70,6 +70,9 @@ pub struct Instrument {
     pub shapes: Vec<Shape>,
     pub chains: Vec<Chain>,
     pub buses: Vec<Bus>,
+    /// Sum entering the instrument/program inserts, after upstream group buses.
+    /// Direct outputs before this point bypass instrument-level processing.
+    pub input_bus: Option<BusRef>,
     /// Source addresses of buses (Kontakt's `$NI_BUS_OFFSET` + n), which a
     /// script's output-channel writes name.
     pub bus_addresses: Vec<(i32, BusRef)>,
