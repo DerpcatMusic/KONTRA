@@ -22,11 +22,20 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_CURSOR_PICTURE",
     "$CONTROL_PAR_AUTOMATION_NAME",
     "$CONTROL_PAR_FONT_TYPE",
+    "$CONTROL_PAR_FONT_TYPE_ON",
+    "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED",
+    "$CONTROL_PAR_FONT_TYPE_ON_PRESSED",
+    "$CONTROL_PAR_FONT_TYPE_OFF_HOVER",
+    "$CONTROL_PAR_FONT_TYPE_ON_HOVER",
     "$CONTROL_PAR_TEXT_ALIGNMENT",
     "$CONTROL_PAR_Z_LAYER",
     "$CONTROL_PAR_PARENT_PANEL",
     "$CONTROL_PAR_VERTICAL",
+    "$CONTROL_PAR_RANGE_MIN",
+    "$CONTROL_PAR_RANGE_MAX",
+    "$CONTROL_PAR_WT_ZONE",
     "$CONTROL_PAR_TEXTPOS_Y",
+    "$CONTROL_PAR_VALUEPOS_Y",
     "$CONTROL_PAR_ALLOW_AUTOMATION",
     "$CONTROL_PAR_AUTOMATION_ID",
     "$CONTROL_PAR_SHORT_NAME",
@@ -40,6 +49,7 @@ const MAPPED: &[&str] = &[
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_X",
     "$CONTROL_PAR_MOUSE_BEHAVIOUR_Y",
     "$CONTROL_PAR_MOUSE_MODE",
+    "$CONTROL_PAR_ACTIVE_INDEX",
     "$CONTROL_PAR_WT_VIS_MODE",
     "$CONTROL_PAR_PARALLAX_X",
     "$CONTROL_PAR_PARALLAX_Y",
@@ -143,6 +153,7 @@ struct Builder<'p> {
     ui: ir::Interface,
     assets: HashMap<String, ir::AssetRef>,
     styles: HashMap<(i32, i32), ir::StyleRef>,
+    fonts: Vec<ir::AssetRef>,
     picture: &'p dyn Fn(&str) -> Option<ir::ImageMeta>,
 }
 
@@ -183,7 +194,7 @@ impl Builder<'_> {
             ];
             let factory = usize::try_from(font).ok().filter(|&f| f < COLORS.len());
             self.ui.styles.push(ir::TextStyle {
-                font: ir::Font::Stock(font),
+                font: font.checked_sub(26).and_then(|n| self.fonts.get(n as usize)).copied().map_or(ir::Font::Stock(font), ir::Font::Bitmap),
                 size: factory
                     .filter(|f| matches!(f, 1 | 5 | 7 | 16 | 17 | 20))
                     .map(|_| 13.),
@@ -242,11 +253,20 @@ pub fn interface(
         },
         assets: HashMap::new(),
         styles: HashMap::new(),
+        fonts: Vec::new(),
         picture,
     };
+    for name in &m.fonts {
+        let asset = ir::AssetRef(bld.ui.assets.len());
+        bld.ui.assets.push(ir::Asset { path: picture_path(name), kind: ir::AssetKind::BitmapFont });
+        bld.fonts.push(asset);
+    }
+    bld.ui.native_ui=model.requests.iter().rev().find(|r|r.command=="load_native_ui").and_then(|r|r.args.last()).and_then(|v|match v {Value::Text(entry) if !entry.is_empty()=>Some(ir::NativeUi{entry:entry.clone()}),_=>None});
     let page = ir::PageRef(0);
     let mut background = ir::Background {
         offset_y: m.skin_offset.unwrap_or(0),
+        // Pinned classic Kontakt profile: frame origin + header + skin offset.
+        origin_y: 68,
         ..Default::default()
     };
     if let Some(r) = model
@@ -262,6 +282,8 @@ pub fn interface(
         for (name, v) in props {
             if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE" {
                 background.image = bld.asset(None, "$INST_WALLPAPER_ID", &text(v));
+            } else if id == b::INST_WALLPAPER_ID && name == "$CONTROL_PAR_PICTURE_STATE" {
+                background.frame = match v { Value::Int(n) => (*n).max(0) as u32, _ => 0 };
             } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_PICTURE" {
                 bld.ui.icon = bld.asset(None, "$INST_ICON_ID", &text(v));
             } else if id == b::INST_ICON_ID && name == "$CONTROL_PAR_HIDE" {
@@ -294,13 +316,13 @@ pub fn interface(
         height_rows,
     });
 
-    let by_id: HashMap<i32, usize> = m
-        .widgets
+    let widgets: Vec<_> = m.widgets.iter().filter(|w| !w.unresolved).collect();
+    let by_id: HashMap<i32, usize> = widgets
         .iter()
         .enumerate()
         .map(|(i, w)| (w.ui_id, i))
         .collect();
-    for (i, w) in m.widgets.iter().enumerate() {
+    for (i, w) in widgets.iter().enumerate() {
         let int = |p: &str| w.int(p);
         let range = |default_max: i32| {
             let (lo, hi) = w.range.unwrap_or((0, default_max));
@@ -331,7 +353,11 @@ pub fn interface(
             },
             WidgetKind::Slider => ir::Kind::Slider {
                 range: range(1_000_000),
-                orientation: ir::Orientation::Horizontal,
+                orientation: if int("$CONTROL_PAR_MOUSE_BEHAVIOUR").is_some_and(|m| m < 0) {
+                    ir::Orientation::Vertical
+                } else {
+                    ir::Orientation::Horizontal
+                },
             },
             WidgetKind::Button => ir::Kind::Button { momentary: false },
             WidgetKind::Switch => ir::Kind::Switch,
@@ -378,7 +404,7 @@ pub fn interface(
                         step: Some(1.0),
                     },
                     bipolar: r < 0,
-                    cells,
+                    cells: cells.into_iter().map(f64::from).collect(),
                     steps_shown: int("table_steps_shown").and_then(|n| u32::try_from(n).ok()),
                 }
             }
@@ -398,7 +424,7 @@ pub fn interface(
                     .map(|p| int(p).unwrap_or(0)),
             },
             WidgetKind::LevelMeter => ir::Kind::LevelMeter {
-                orientation: if int("$CONTROL_PAR_VERTICAL") == Some(0) {
+                orientation: if int("$CONTROL_PAR_VERTICAL") != Some(1) {
                     ir::Orientation::Horizontal
                 } else {
                     ir::Orientation::Vertical
@@ -428,7 +454,28 @@ pub fn interface(
         );
         let mut out = ir::Widget::new(w.name.clone(), page, rect, kind);
         out.auto_size = width.is_none() || height.is_none();
+        out.default_axes = [width.is_none(), height.is_none()];
         out.source_id = Some(w.ui_id);
+        out.active_index = int("$CONTROL_PAR_ACTIVE_INDEX");
+        out.value = match &w.value {
+            WidgetValue::None => None,
+            WidgetValue::Int(v) => Some(ir::Value::Integer(*v)),
+            WidgetValue::Text(v) => Some(ir::Value::Text(v.clone())),
+            WidgetValue::Ints(v) => Some(ir::Value::Integers(v.clone())),
+            WidgetValue::Reals(v) => Some(ir::Value::Reals(v.clone())),
+        };
+        if let ir::Kind::Table { cells, .. } = &out.kind {
+            out.value = Some(ir::Value::Integers(cells.iter().map(|n|n.round() as i32).collect()));
+        }
+        if matches!(w.kind, WidgetKind::Waveform | WidgetKind::Wavetable) {
+            out.waveform = waveform(model, w.ui_id).or_else(|| int("$CONTROL_PAR_WT_ZONE").map(|zone| ir::Waveform {
+                zone, flags: 0, cursor_us: 0, table: vec![], highlighted: None, midi_start_note: 60,
+            }));
+        }
+        if w.kind == WidgetKind::LevelMeter {
+            out.meter = meter_address(model, w.ui_id);
+            out.meter_range = Some([int("$CONTROL_PAR_RANGE_MIN").unwrap_or(0), int("$CONTROL_PAR_RANGE_MAX").unwrap_or(1_000_000)]);
+        }
         out.z = int("$CONTROL_PAR_Z_LAYER").unwrap_or(0);
         let hide = int("$CONTROL_PAR_HIDE").unwrap_or(0);
         out.hidden = hide & b::HIDE_WHOLE_CONTROL != 0;
@@ -444,12 +491,13 @@ pub fn interface(
             }
         }
         out.text_y = int("$CONTROL_PAR_TEXTPOS_Y");
+        out.value_y = int("$CONTROL_PAR_VALUEPOS_Y");
         out.value_text = w.text("$CONTROL_PAR_LABEL").map(Into::into);
         out.drag = int("$CONTROL_PAR_MOUSE_BEHAVIOUR").map(|m| ir::Drag {
             axis: if m < 0 {
-                ir::Orientation::Horizontal
-            } else {
                 ir::Orientation::Vertical
+            } else {
+                ir::Orientation::Horizontal
             },
             sensitivity: m.unsigned_abs(),
         });
@@ -501,9 +549,13 @@ pub fn interface(
             allowed: int("$CONTROL_PAR_ALLOW_AUTOMATION") != Some(0),
             id: int("$CONTROL_PAR_AUTOMATION_ID").and_then(|n| u32::try_from(n).ok()),
         };
-        if let Some(font) = int("$CONTROL_PAR_FONT_TYPE") {
+        if int("$CONTROL_PAR_FONT_TYPE").is_some() || int("$CONTROL_PAR_TEXT_ALIGNMENT").is_some() {
+            let font = int("$CONTROL_PAR_FONT_TYPE").unwrap_or(0);
             let align = int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1);
             out.style = Some(bld.style(font, align));
+        }
+        for (index, property) in ["$CONTROL_PAR_FONT_TYPE", "$CONTROL_PAR_FONT_TYPE_ON", "$CONTROL_PAR_FONT_TYPE_OFF_PRESSED", "$CONTROL_PAR_FONT_TYPE_ON_PRESSED", "$CONTROL_PAR_FONT_TYPE_OFF_HOVER", "$CONTROL_PAR_FONT_TYPE_ON_HOVER"].iter().enumerate() {
+            out.state_styles[index] = int(property).filter(|&font| font >= 0).map(|font| bld.style(font, int("$CONTROL_PAR_TEXT_ALIGNMENT").unwrap_or(1)));
         }
         if let Some(p) = w.text("$CONTROL_PAR_PICTURE")
             && let Some(asset) = bld.asset(Some(i), "$CONTROL_PAR_PICTURE", p)
@@ -529,7 +581,7 @@ pub fn interface(
         }
         if let Some(parent) = int("$CONTROL_PAR_PARENT_PANEL") {
             match by_id.get(&parent) {
-                Some(&p) if m.widgets[p].kind == WidgetKind::Panel && p != i => {
+                Some(&p) if widgets[p].kind == WidgetKind::Panel && p != i => {
                     out.parent = Some(ir::WidgetRef(p));
                 }
                 _ => bld.unsupported(Some(i), "$CONTROL_PAR_PARENT_PANEL", parent.to_string()),
@@ -595,4 +647,39 @@ fn meter(model: &model::Model, ui_id: i32) -> ir::Binding {
         bus: u32::try_from(int(4)).ok(),
         channel: int(3).clamp(0, 255) as u8,
     }
+}
+
+/// Keep all four dimensions of `attach_level_meter`, including group/effect taps.
+fn meter_address(model: &model::Model, ui_id: i32) -> Option<ir::MeterAddress> {
+    let request = model.requests.iter().rev().find(|r| r.command == "attach_level_meter" && r.args.first() == Some(&Value::Int(ui_id)))?;
+    let int = |at| match request.args.get(at) { Some(Value::Int(v)) => *v, _ => -1 };
+    Some(ir::MeterAddress { group: int(1), slot: int(2), channel: u8::try_from(int(3)).ok()?, bus: (int(4) >= 0).then(|| int(4)) })
+}
+
+fn waveform(model: &model::Model, ui_id: i32) -> Option<ir::Waveform> {
+    let mut wave = None;
+    let name = model.interface.widgets.iter().find(|w| w.ui_id == ui_id)?.name.as_str();
+    for request in &model.requests {
+        if !matches!(request.args.first(),Some(Value::Int(id)) if *id == ui_id)
+            && !matches!(request.args.first(),Some(Value::Text(v)) if v == name) { continue; }
+        let int = |at| match request.args.get(at) { Some(Value::Int(v)) => *v, _ => 0 };
+        match request.command {
+            "attach_zone" => wave = Some(ir::Waveform { zone: int(1), flags: int(2) as u32, cursor_us: 0, table: vec![], highlighted: None, midi_start_note: 60 }),
+            "set_ui_wf_property" => if let Some(w) = wave.as_mut() {
+                // Property names are interned symbols, not guessed numeric ordinals.
+                let property = match request.args.get(1) { Some(Value::Text(name)) => name.as_str(), _ => "" };
+                match property {
+                    "$UI_WF_PROP_PLAY_CURSOR" => w.cursor_us = i64::from(int(2)),
+                    "$UI_WF_PROP_FLAGS" => w.flags = int(2) as u32,
+                    // ponytail: bounded slice annotation snapshot; larger arrays need paged storage.
+                    "$UI_WF_PROP_TABLE_VAL" => if let Ok(index) = usize::try_from(int(3)) { if index < 65536 { w.table.resize(w.table.len().max(index + 1), 0); w.table[index] = int(2); } },
+                    "$UI_WF_PROP_TABLE_IDX_HIGHLIGHT" => w.highlighted = u32::try_from(int(2)).ok(),
+                    "$UI_WF_PROP_MIDI_DRAG_START_NOTE" => w.midi_start_note = int(2).clamp(0,127) as u8,
+                    _ => {},
+                }
+            },
+            _ => {},
+        }
+    }
+    wave
 }

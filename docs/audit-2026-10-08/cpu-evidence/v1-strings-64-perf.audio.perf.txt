@@ -1,0 +1,23 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 89  of event 'cycles:u'
+# Event count (approx.): 13499669
+#
+# Overhead  Command       Shared Object     Symbol
+# ........  ............  ................  ........................................................
+#
+    27.44%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::Player>::render_block
+    18.77%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::ksp::runtime::Runtime>::begin_audio_block
+    14.12%  cpu-audit-v1  cpu-audit-v1      [.] kontakto::engine::voice::mix_avx512
+    13.59%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::voice::Envelope>::run
+    11.47%  cpu-audit-v1  cpu-audit-v1      [.] cpu_audit_v1::main
+     7.47%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::Player>::start
+     6.63%  cpu-audit-v1  cpu-audit-v1      [.] <kontakto::engine::voice::Voice>::gather
+
+
+#
+# (Tip: For tracepoint events, try: perf report -s trace_fields)
+#

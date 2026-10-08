@@ -23,10 +23,16 @@ pub(super) struct NoteEvent {
     /// The generated event was admitted with a positive/fixed duration policy.
     pub fixed_duration: bool,
     pub source_offset_micros: u32,
+    /// Physical source script slot; -1 for host input.
+    pub creator_slot: i32,
+    pub marks: u32,
     source_id: Option<i32>,
 }
 
 impl NoteEvent {
+    pub(super) fn source_id_is(&self, event: i64) -> bool {
+        self.source_id.is_some_and(|id| i64::from(id) == event)
+    }
     pub(super) fn new(pitch: NotePitch, velocity: f64) -> Self {
         let initial = NoteProperties { pitch, velocity };
         Self {
@@ -41,6 +47,8 @@ impl NoteEvent {
             routed: false,
             fixed_duration: false,
             source_offset_micros: 0,
+            creator_slot: -1,
+            marks: 0,
             source_id: None,
         }
     }

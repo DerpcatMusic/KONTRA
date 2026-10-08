@@ -1,0 +1,11 @@
+[package]
+name = "cpu-audit-v1"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[dependencies]
+kontakto = { path = "../../../gpt-kontakt-ui-v1-bench", default-features = false, features = ["library-access"] }
+serde_json = "1"
+[profile.release]
+lto = "thin"
+strip = "none"

@@ -592,8 +592,11 @@ impl Streamer {
                     // Woken by the audio side (`StreamCache::set_wake`) when a
                     // start finds an asset cold, and by Drop.
                     while !stop.load(Ordering::Relaxed) {
-                        let _ = reload(&assets, &sources, &ranges, head_budget);
-                        std::thread::park();
+                        if reload(&assets, &sources, &ranges, head_budget).is_err() {
+                            std::thread::park_timeout(Duration::from_millis(100));
+                        } else {
+                            std::thread::park();
+                        }
                     }
                 }
             })?;
@@ -663,8 +666,13 @@ fn reload(
             .sum::<usize>();
         let held = assets.iter().map(Pcm::head_bytes).sum::<usize>();
         if held.saturating_add(estimate) <= budget {
-            load_ranges(pcm, &mut source.open()?, ranges)?;
-            count += 1;
+        if let Err(error) = source.open().and_then(|mut reader| load_ranges(pcm, &mut reader, ranges)) {
+            if !matches!(error.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof | io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) {
+                pcm.mark_cold();
+            }
+            return Err(error);
+        }
+        count += 1;
         }
     }
     Ok(count)
@@ -725,10 +733,16 @@ fn decode(
                 readers[i]
                     .1
                     .read(start, job.frames_mut())
-                    .map_err(|_| DecodeFailure::InvalidSamples)
+                    .map_err(|error| match error.kind() {
+                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof => DecodeFailure::InvalidSamples,
+                        _ => DecodeFailure::Unavailable,
+                    })
             }
             None => Err(DecodeFailure::Unavailable),
         };
+        if result == Err(DecodeFailure::Unavailable) {
+            if let Some(i) = index { readers.swap_remove(i); }
+        }
         let completed = worker().complete(job, result);
         if let Err(rejected) = completed {
             if rejected.reason != sampler_core::StreamError::Capacity {

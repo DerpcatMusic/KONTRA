@@ -1,0 +1,27 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 269  of event 'cycles:u'
+# Event count (approx.): 27272594
+#
+# Overhead  Command          Shared Object     Symbol
+# ........  ...............  ................  .................................................................................................................................
+#
+    35.21%  kontakto-stream  cpu-audit-v1      [.] std::sys::backtrace::__rust_begin_short_backtrace::<kontakto::engine::stream::pool::{closure#2}, ()>
+    13.58%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::engine::Player>::render_block
+     9.29%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::ksp::runtime::Runtime>::begin_audio_block
+     6.99%  cpu-audit-v1     cpu-audit-v1      [.] kontakto::engine::voice::mix_avx512
+     6.73%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::engine::voice::Envelope>::run
+     5.73%  kontakto-stream  cpu-audit-v1      [.] <kontakto::audio::SampleReader>::read
+     5.68%  cpu-audit-v1     cpu-audit-v1      [.] cpu_audit_v1::main
+     4.92%  kontakto-stream  [vdso]            [.] __vdso_clock_gettime
+     4.53%  kontakto-stream  libc.so.6         [.] 0x00000000001b7ca5
+     3.70%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::engine::Player>::start
+     3.28%  cpu-audit-v1     cpu-audit-v1      [.] <kontakto::engine::voice::Voice>::gather
+
+
+#
+# (Tip: Show current config key-value pairs: perf config --list)
+#

@@ -11,6 +11,8 @@ scan = ["sampler-ksp/scan"]
 default = ["library-access"]
 # Reads a library's own .nicnt access data to open its encrypted content.
 library-access = ["dep:aes"]
+# The host consumes legacy .nui requests through its authored renderer.
+native-ui = []
 
 [dependencies]
 sampler-ir = { path = "../sampler-ir" }
