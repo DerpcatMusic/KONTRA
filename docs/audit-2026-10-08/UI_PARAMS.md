@@ -18,9 +18,11 @@ The master list contains **781 Kontakt NKI + 53 Kontakt NKM = 834 paths**, plus 
 
 The single-instrument helper skips KSP comments and string literals, canonicalizes historical leading-underscore builtin aliases, and counts whole tokens, including inactive preprocessor branches and unreachable functions. It separates bypassed-script counters and traverses bank/program script records. Source hashes are ephemeral Rust `DefaultHasher` identities, not cryptographic proofs. No sources, saved values, picture/font/audio bytes or access data are exported; panic payloads are suppressed. The helper is available to the shared scanner owner; it has no corpus runner or cache implementation.
 
-**Whole-corpus incidence remains incomplete.** This report now consumes `programs[].symbols` directly from the published shared v2 cache, rather than the separate pilot. Nonzero matrix cells are lower bounds from observed records; “Not observed / coverage incomplete” does not mean absence from the corpus. The canonical shared cache had **one Kontakt NKI result and zero NKM results out of 834 paths** at 2026-10-08 06:36 UTC; its UI classification was missing-images, with successful load and audible audition. The canonical v1 cache was empty then. A targeted shared-v1 Conflux run is reported below separately. The census owner runs the full sweep; update this report from its results without repeating collection.
+**Whole-corpus incidence remains incomplete.** Extension source `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085` is installed. This report uses a 2026-10-08 07:37 UTC snapshot of the current-digest shared JSON cache: **three v2 smoke IDs, of which one is Kontakt NKI and two are UVI**, with zero NKM and no current v1 records. This scope's denominator is still **1/834 Kontakt paths observed**. Top-level published TSVs were header-only at that snapshot; paired full-sweep results are pending. Old-digest cache records are excluded, and each item is counted once. The earlier targeted pre-extension v1 comparison below is historical evidence, not a current paired result.
 
-The frozen shared scanner records selected source tokens; it does not yet count every helper name, distinguish bypassed-script incidence in its published symbols, canonicalize leading-underscore aliases, or expose saved-entry sigil counts. Therefore requested extension columns remain pending with the census owner. Widget **declaration tokens** here are not the renderer's widget counts: NCKP-created widgets may have no source declaration. An independent 100-path pilot was stopped and remains excluded. No fully-unlocked count is measured.
+Incidence now reads **`metadata.slots[].symbols` only where `compile_disposition == embedded`**, retaining raw owner/program/wire-slot ownership; bypassed symbols are separate. Nonzero matrix cells are observed lower bounds, not counts of broken or fully unlocked instruments. Raw saved-table framing/sigils, admitted sigils, actual init and persistence completion, and rendered widget counts now exist; see the Conflux extension table below. Widget declaration tokens remain distinct from NCKP-derived/rendered widget counts.
+
+**Extension coverage caveat:** `metrics.rs:46` now requires exact membership in `ui-symbols.txt`. The pinned whitelist omits eight typed string/real get/set variants, four NKS parameter names, keyboard helpers and NKS-navigation helpers (29 rows in this audit). Those cells are **Unknown (not whitelisted)**, not zero: same-baseline compiler evidence still shows Conflux string-getter sites and 220 unsupported NKS properties. The gap was forwarded to the coordinator for the shared collector owner before the full sweep; no local collector was added. `disabled_block_errors` means v1 compiler-disabled callback blocks, not preprocessor-inactive code. Inactive-region attribution remains unknown without independent span evidence. The independent 100-path pilot stays excluded.
 
 ```sh
 ~/.cache/kontakto-heavy cargo build --locked -p sampler-kontakt --example ui_params_probe
@@ -38,9 +40,26 @@ Validation: the two relevant packages pass `cargo test --no-run`; **6/6 authored
 
 ## Conflux first witness: facts within this scope
 
-The shared v2 scanner (`tools/kontra-scan@54f7ea57`, frozen baseline `7e82b152`, binary SHA-256 `1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`) was also run on Conflux only. It reported **loads yes, Original UI missing-images, 107/113 visible interactive bindings, plays_note yes, load 4,860 ms, peak RSS 230.11 MB**. The main view requested four assets and missed one; its 970×592 render was nonuniform with white fraction 0.0. Thus this bounded Original-view run did **not** reproduce a white blank. Binding readback and audible audition do not prove gesture or full sound parity. A hidden third view rendered uniformly; that does not make the visible main UI blank. Full rendering diagnosis belongs to the render scope.
+The current extension's Conflux smoke record uses v2 binary SHA-256 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`. It reports **loads yes, audible audition yes, Original UI missing-images, 107/113 visible interactive bindings and one missing image**. The main page is 970×592 and nonuniform. Its declared background is **RGBA (240,239,228,255)**; **93.8985%** of pixels match that cream background within the scanner's tolerance. Its pure-white fraction is 0.0. The earlier pure-white metric alone does **not** rule out the user's predominantly plain, near-white appearance. The render scope must explain that appearance, the missing picture and actual paint/input behavior; scalar binding readback does not certify gestures.
 
-Matched **single-item** shared scans (both frozen adapters, one run each):
+| Current Conflux extension measurement | Observed |
+|---|---|
+| Raw wire-slot partition | 5 total: 3 inline, 2 empty; 0 bypassed, linked-only or decode-failed |
+| Empty source kinds | wire 0 absent; wire 1 whitespace-only |
+| Executed runtime slots | wire/runtime 2, 3, 4; owner standalone-program, program 0 |
+| Final compile admissions / clean flags | 3 / 3; “clean” does not assert full builtin fidelity or no warnings |
+| Actual init completion | all 3 present callbacks completed |
+| Actual persistence completion | both present callbacks in slots 2/3 completed; slot 4 absent |
+| Load / note-time fault records | 0 / 0 observed in this smoke run |
+| Raw saved-table framing | decoded in all 5 raw slots |
+| Raw saved-entry sigils | `$`:223, `%`:15, `@`:6, `!`:13; 257 total |
+| Loader-admitted saved sigils | `$`:223, `%`:15, `@`:6; 244 total; `!`:0 |
+| Source navigation / policy exposure | make_instr_persistent:16, set_snapshot_type:1, persistence_changed:2 references |
+| All rendered view widgets | 411 + 22 + 1 = 434; distinct from source declaration-token counts |
+
+The **13 raw string-array entries missing from admitted state** directly corroborate F6's production type omission. These are entry counts, not leaked values, distinct variables unlocked, or a successful lifecycle test. All Conflux init/persistence callbacks completing refutes fatal load-callback failure for this observed run, while F1/F2/F4's runtime semantic defects remain. Completion is taken from final runtime-preparation slot records; three import-harvest attempts and one dynamic-rack attempt are retained separately and are **not** added to the three runtime admissions. Current load time 17,338 ms/RSS 230.84 MB is a smoke observation under shared-machine conditions; it is not substituted into the earlier targeted pair below.
+
+Earlier **pre-extension single-item** shared scans (one run each, different audition notes; not the pending paired full sweep):
 
 | Measurement | v1 `0cb7a8a0` | v2 `7e82b152` |
 |---|---:|---:|
@@ -77,7 +96,7 @@ Every matrix row points to these systemic fixes. Reach means observed files usin
 | F9 / P1 | Automation name/allowed/id is UI IR metadata (`ui.rs:498`); root `SamplerParams` exposes Volume and persisted Selection, not a dynamic KSP automation map (`src/plugin.rs:223`). Per-XY automation discarded with unsupported indexed metadata. | Bind stable vendor automation IDs to existing core controls and host gesture/parameter interfaces; **M**, plugin adapters and source control definitions. | Host enumerates each permitted control once by authored name/id; IDs stable across view/reload; disallowed controls absent; XY cursor mapping; host changes update scripts/UI and correct callback policy. |
 | F10 / P1 | `on ui_control` admits scalar controls correctly but array/text/non-scalar widget edits have no public mutation/callback admission; `ui_controls` and `ui_update` rejected (`sema.rs:107`); event kind/column/cursor modifiers missing from control context (`sampler-core/src/control.rs:194`). | Extend existing ownership/admission to typed widget edits and callback families, carry source interaction fields, preserve same-sample ordering; **M/L**, sema/lower/core control and UI adapter. | Edit-before-callback, direct setters do not recurse, capacity rejection before mutation, waiting handler retains slot/plan, repeated and equal-time edits have native ordering, table/XY index, text/file payload and aggregate/periodic callbacks. |
 
-Observed candidate reach (union of listed shared source-token mentions; no addition of overlapping counts; active/bypassed distinction pending):
+Observed candidate reach (union of listed shared source-token mentions; no addition of overlapping counts; embedded slots only; bypassed slots excluded):
 
 | Fix | Representative surface | NKI / NKM files | Fully unlocked |
 |---|---|---:|---|
@@ -86,17 +105,17 @@ Observed candidate reach (union of listed shared source-token mentions; no addit
 | F3 | `make_persistent`, `make_instr_persistent`… | >= 1 / 0 observed | Unmeasured |
 | F4 | `get_control_par`, `get_control_par_str`, `get_control_par_real`… | >= 1 / 0 observed | Unmeasured |
 | F5 | `read_persistent_var`… | Not observed / coverage incomplete | Unmeasured |
-| F6 | `make_instr_persistent`, `set_snapshot_type`… | Not observed / coverage incomplete | Unmeasured |
+| F6 | `make_instr_persistent`, `set_snapshot_type`… | >= 1 / 0 observed | Unmeasured |
 | F7 | `set_control_par`, `set_control_par_str`, `set_control_par_arr`… | >= 1 / 0 observed | Unmeasured |
 | F8 | `move_control`, `move_control_px`, `$CONTROL_PAR_POS_X`… | >= 1 / 0 observed | Unmeasured |
 | F9 | `$CONTROL_PAR_ALLOW_AUTOMATION`, `$CONTROL_PAR_AUTOMATION_ID`, `$CONTROL_PAR_AUTOMATION_NAME`… | >= 1 / 0 observed | Unmeasured |
-| F10 | `ui_control`, `ui_controls`, `ui_update`… | >= 1 / 0 observed | Unmeasured |
+| F10 | `ui_control`, `ui_controls`, `ui_update`… | Not observed / coverage incomplete | Unmeasured |
 
 ## Exhaustive parameter matrix
 
 Names comprise the union of all `$CONTROL_PAR_*` identifiers in the pinned surface/symbol inventory and builtin adapter, plus the four NKS extension parameters observed in Conflux. The prefix-only `$CONTROL_PAR_` and `$CONTROL_PAR_WAVE_END_` are index patterns, not actual parameters, and excluded from the concrete count. “I” is integer, “S” string, “R” real; “idx” means indexed cursor/cell metadata. All getters/setters also inherit the shared matrix below: numeric explicitly set metadata can mirror; string/real/indexed getters at runtime are not thereby correct. `MAPPED` means only that IR has a field, not that painting, host automation or interaction uses it.
 
-Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sampler-ksp/src/ui.rs`, `ksp/eval.rs`, `ksp/lower.rs`, `ksp/lib.rs`, `ksp/model.rs` similarly. `ir/lib.rs` = `crates/sampler-ui-ir/src/lib.rs`. Files NKI/NKM are observed lower bounds from shared results; incomplete source coverage and helper exclusions prevent corpus-wide zero claims. The requested bypass-separated extension remains pending. Source tokens do not establish absence from NCKP/native UI/resources.
+Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sampler-ksp/src/ui.rs`, `ksp/eval.rs`, `ksp/lower.rs`, `ksp/lib.rs`, `ksp/model.rs` similarly. `ir/lib.rs` = `crates/sampler-ui-ir/src/lib.rs`. Files NKI/NKM are observed lower bounds from current-digest shared embedded-slot records; bypassed records are excluded. Unobserved or unwhitelisted names cannot support corpus-wide zero claims. Source tokens do not establish absence from NCKP/native UI/resources.
 
 | Parameter | Expected type / units and behavior | v2 status, root-cause evidence → fix | Files NKI / NKM |
 |---|---|---|---:|
@@ -133,7 +152,7 @@ Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sample
 | `$CONTROL_PAR_HELP` | S; caption/lines/value label/help/short caption | partial; init scalar/textline overlay mapped; runtime getters empty; aliases discarded; eval:925 / ui:479 / lower:2087 → F1/F2/F4 | Not observed / coverage incomplete |
 | `$CONTROL_PAR_HIDE` | I mask; hide whole/parts or indexed XY cursor | partial; whole/inherited hide mapped; mod-light and indexed hide unavailable; ui:433,538 → F7/F10 | >= 1 / 0 observed |
 | `$CONTROL_PAR_IDENTIFIER` | S read-only; declaration name without sigil | wrong; never synthesized from Widget.name; init getter returns "0", runtime ignored; eval:589,911 / lower:2087 → F4 | Not observed / coverage incomplete |
-| `$CONTROL_PAR_KEY` | Uncertain historical/vendor extension; needs profile-specific reference | missing; opaque symbol, no semantic handler; ui:538 → F7; do not invent units | Not observed / coverage incomplete |
+| `$CONTROL_PAR_KEY` | Uncertain historical/vendor extension; needs profile-specific reference | missing; opaque symbol, no semantic handler; ui:538 → F7; do not invent units | Unknown (not whitelisted) |
 | `$CONTROL_PAR_KEY_ALT` | I read-only; interaction modifier snapshot | missing; no modifier fields in callback admission; control.rs:194 / lower:2920 → F4/F10 | Not observed / coverage incomplete |
 | `$CONTROL_PAR_KEY_CONTROL` | I read-only; interaction modifier snapshot | missing; no modifier fields in callback admission; control.rs:194 / lower:2920 → F4/F10 | >= 1 / 0 observed |
 | `$CONTROL_PAR_KEY_SHIFT` | I read-only; interaction modifier snapshot | missing; no modifier fields in callback admission; control.rs:194 / lower:2920 → F4/F10 | Not observed / coverage incomplete |
@@ -145,10 +164,10 @@ Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sample
 | `$CONTROL_PAR_MOUSE_BEHAVIOUR_X` | I; XY axis sensitivities | partial; IR stores absolute magnitude, not full gesture/coordinate semantics; ui:388 → F2/F10 | Not observed / coverage incomplete |
 | `$CONTROL_PAR_MOUSE_BEHAVIOUR_Y` | I; XY axis sensitivities | partial; IR stores absolute magnitude, not full gesture/coordinate semantics; ui:388 → F2/F10 | Not observed / coverage incomplete |
 | `$CONTROL_PAR_MOUSE_MODE` | I enum; XY click/drag policy | partial; IR field only, no typed XY input admission; ui:392 → F10 | Not observed / coverage incomplete |
-| `$CONTROL_PAR_NKS_NUM_VALUES` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | >= 1 / 0 observed |
-| `$CONTROL_PAR_NKS_STR_VALUES` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | >= 1 / 0 observed |
-| `$CONTROL_PAR_NKS_STYLE` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | >= 1 / 0 observed |
-| `$CONTROL_PAR_NKS_TYPE` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | >= 1 / 0 observed |
+| `$CONTROL_PAR_NKS_NUM_VALUES` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | Unknown (not whitelisted) |
+| `$CONTROL_PAR_NKS_STR_VALUES` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | Unknown (not whitelisted) |
+| `$CONTROL_PAR_NKS_STYLE` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | Unknown (not whitelisted) |
+| `$CONTROL_PAR_NKS_TYPE` | Uncertain vendor extension; resolve its legal type/index/context | missing; interned/stored but unsupported semantic projection; ui:538 → F7 | Unknown (not whitelisted) |
 | `$CONTROL_PAR_NONE` | I sentinel; no operation | wrong; generic stores and unsupported emission instead of no-op; eval:567 / ui:538 → F7 | Not observed / coverage incomplete |
 | `$CONTROL_PAR_NUM_ITEMS` | I read-only; current menu item count | partial; init computed, runtime not seeded/derived; eval:600 / lower:2928 → F4 | >= 1 / 0 observed |
 | `$CONTROL_PAR_OFF_COLOR` | I RGB color; relevant widget paint slot | partial; IR color fields, no complete meter/waveform/table paint; ui:54,457 → F7; render/widgets scopes | Not observed / coverage incomplete |
@@ -178,7 +197,7 @@ Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sample
 | `$CONTROL_PAR_VALUE` | I scalar, I table cells or R XY coordinates; no recursive callback | partial; scalar values native; indexed table/XY VM and presentation diverge; eval:567,886 / lower:2874 → F2/F10 | >= 1 / 0 observed |
 | `$CONTROL_PAR_VALUEPOS_Y` | I; caption/value vertical pixel offset | partial for TEXTPOS_Y, missing VALUEPOS_Y; ui:446,538; renderer does not consume offset → F7; render scope | Not observed / coverage incomplete |
 | `$CONTROL_PAR_VERTICAL` | I boolean; meter orientation | partial; IR mapped; no live meter source; ui:401 / ui:598 → F7/F10 | Not observed / coverage incomplete |
-| `$CONTROL_PAR_WAVETABLE` | Uncertain historical/vendor extension; needs profile-specific reference | missing; opaque symbol, no semantic handler; ui:538 → F7; do not invent units | Not observed / coverage incomplete |
+| `$CONTROL_PAR_WAVETABLE` | Uncertain historical/vendor extension; needs profile-specific reference | missing; opaque symbol, no semantic handler; ui:538 → F7; do not invent units | Unknown (not whitelisted) |
 | `$CONTROL_PAR_WAVETABLE_ALPHA` | I; opacity component | missing; unsupported independent alpha and gradient fields; ui:538 → F7; render scope | Not observed / coverage incomplete |
 | `$CONTROL_PAR_WAVETABLE_COLOR` | I RGB; wavetable/gradient end color | missing; unsupported style fields; ui:538 → F7; render scope | Not observed / coverage incomplete |
 | `$CONTROL_PAR_WAVETABLE_END_ALPHA` | I; opacity component | missing; unsupported independent alpha and gradient fields; ui:538 → F7; render scope | Not observed / coverage incomplete |
@@ -203,17 +222,17 @@ Evidence paths in tables omit the `crates/` prefix. `ksp/ui.rs` = `crates/sample
 |---|---|---|---|---:|
 | `get_ui_id` | correct for declared widgets and slot-local arithmetic | ksp/eval:880; lower:1980; FIRST_UI_ID=32768; NCKP tree order | Retain separate source IDs and u128 semantic IDs; test multiple slots and NCKP nesting | >= 1 / 0 observed |
 | `set_control_par` | partial; scalar integer metadata/value | ksp/eval:567; lower:2874; lib:307; missing legality/schema | F1/F4/F7; read/write every legal numeric parameter | >= 1 / 0 observed |
-| `set_control_par_str` | partial; init strings and direct runtime effects | ksp/eval:881; lib:313; typed getter missing and effect text bounded | F4/F7; caption/path/name roundtrip and long Unicode | >= 1 / 0 observed |
-| `set_control_par_real` | wrong for fractional metadata at init; runtime effect scalar only | ksp/eval:580 casts non-string v.int(); lib:309 preserves runtime IEEE bits | F2/F4; distinguish legal real VALUE from unsupported real metadata | Not observed / coverage incomplete |
+| `set_control_par_str` | partial; init strings and direct runtime effects | ksp/eval:881; lib:313; typed getter missing and effect text bounded | F4/F7; caption/path/name roundtrip and long Unicode | Unknown (not whitelisted) |
+| `set_control_par_real` | wrong for fractional metadata at init; runtime effect scalar only | ksp/eval:580 casts non-string v.int(); lib:309 preserves runtime IEEE bits | F2/F4; distinguish legal real VALUE from unsupported real metadata | Unknown (not whitelisted) |
 | `set_control_par_arr` | wrong; init separate map, runtime scalar mirror | ksp/eval:886; lower:2904; lib:314 | F2; independent indexes and actual variable storage | >= 1 / 0 observed |
-| `set_control_par_str_arr` | partial; init textline map, runtime effect inserted | ksp/eval:895 capped at 65536 lines; lib:315; indexed images/automation not projected | F2/F7; per-cursor strings and virtualized multiline policy | >= 1 / 0 observed |
-| `set_control_par_real_arr` | wrong; values retained only as indexed properties at init; runtime effect unhandled | ksp/eval:886; lower:2874; lib:307 lacks case | F2; two cursor coordinates with no scalar/index alias | Not observed / coverage incomplete |
+| `set_control_par_str_arr` | partial; init textline map, runtime effect inserted | ksp/eval:895 capped at 65536 lines; lib:315; indexed images/automation not projected | F2/F7; per-cursor strings and virtualized multiline policy | Unknown (not whitelisted) |
+| `set_control_par_real_arr` | wrong; values retained only as indexed properties at init; runtime effect unhandled | ksp/eval:886; lower:2874; lib:307 lacks case | F2; two cursor coordinates with no scalar/index alias | Unknown (not whitelisted) |
 | `get_control_par` | partial; static VALUE/TYPE native and sparse int readback | ksp/eval:589; lower:2910; default/derived/input fields absent | F4; dynamic TYPE, defaults, menu and interaction state | >= 1 / 0 observed |
-| `get_control_par_str` | wrong; init only reads stored property or converts 0; runtime ignored | ksp/eval:910; lower:2087 | F4; actual captions plus generated declaration identifier | >= 1 / 0 observed |
-| `get_control_par_real` | wrong; init int property converted to real; runtime ignored | ksp/eval:902; lower:2087 | F2/F4; legal fractional value roundtrip | Not observed / coverage incomplete |
+| `get_control_par_str` | wrong; init only reads stored property or converts 0; runtime ignored | ksp/eval:910; lower:2087 | F4; actual captions plus generated declaration identifier | Unknown (not whitelisted) |
+| `get_control_par_real` | wrong; init int property converted to real; runtime ignored | ksp/eval:902; lower:2087 | F2/F4; legal fractional value roundtrip | Unknown (not whitelisted) |
 | `get_control_par_arr` | wrong; init map lookup; runtime omits index and initial indexed store | ksp/eval:914; lower:2928; lib:741 | F2; seeded indexed get, no cross-index overwrite | >= 1 / 0 observed |
-| `get_control_par_str_arr` | partial init map only; runtime ignored | ksp/eval:914; lower:2087 | F2/F4; current per-cursor/name/textline strings | Not observed / coverage incomplete |
-| `get_control_par_real_arr` | partial init map only; runtime ignored | ksp/eval:914; lower:2087 | F2/F4; current XY VM coordinate after typed edit | Not observed / coverage incomplete |
+| `get_control_par_str_arr` | partial init map only; runtime ignored | ksp/eval:914; lower:2087 | F2/F4; current per-cursor/name/textline strings | Unknown (not whitelisted) |
+| `get_control_par_real_arr` | partial init map only; runtime ignored | ksp/eval:914; lower:2087 | F2/F4; current XY VM coordinate after typed edit | Unknown (not whitelisted) |
 
 Root data disagreement: setting TABLE VALUE through `_arr` changes the indexed property/IR overlay, not `%table`. Conversely script assignment to `%table` changes VM cells, not the immutable presentation's stored table values. XY coordinates have the same missing projection. The scalar interface's atomic numeric readback does not cover arrays, text or dynamic menu state. Invalid UI ID/type/parameter/applicability is not consistently rejected; unknown-property acceptance must never be mistaken for support. Core native scalar edit admission has correct type/range/stale-generation checks, which should be reused.
 
@@ -225,14 +244,14 @@ All pinned User Interface Commands plus typed getter/setter flavors above, curre
 |---|---|---|---:|
 | `add_menu_item` | append ordered text + semantic value | ksp/partial init correct; runtime emitted, unhandled; eval:980 / lib:307 → F1/F4 | >= 1 / 0 observed |
 | `add_text_line` | append label line | ksp/partial init concatenates; runtime discarded; eval:925 / lib:307 → F1 | Not observed / coverage incomplete |
-| `attach_level_meter` | bind meter to group/slot/channel/bus source | ksp/partial request/IR retains bus+channel, not complete source; ui:598 → F7/F10 | Not observed / coverage incomplete |
+| `attach_level_meter` | bind meter to group/slot/channel/bus source | ksp/partial request/IR retains bus+channel, not complete source; ui:598 → F7/F10 | >= 1 / 0 observed |
 | `attach_zone` | bind waveform to zone and flags | ksp/missing service; init request/runtime Host only; eval:1259 / lib:307 → F7/F10 | Not observed / coverage incomplete |
-| `expose_controls` | expose declared identifiers across slots to Komplete UI | ksp/missing; init no-op, no exported registry; eval:1125 → F7/F10 | Not observed / coverage incomplete |
+| `expose_controls` | expose declared identifiers across slots to Komplete UI | ksp/missing; init no-op, no exported registry; eval:1125 → F7/F10 | >= 1 / 0 observed |
 | `fs_get_filename` | selected filename/path from file callback | ksp/missing; empty string/ignored; eval:1249 / lower:2087 → F4/F10 | Not observed / coverage incomplete |
 | `fs_navigate` | select neighboring file and invoke its handler | ksp/missing; Host effect discarded; lower:2065 / lib:307 → F10 | Not observed / coverage incomplete |
 | `get_font_id` | resource font name to font ID | ksp/partial init registers font name, not full font selection; eval:1053 / ui:504 → F7; render | Not observed / coverage incomplete |
-| `get_menu_item_str` | current item caption by index | ksp/partial init correct; runtime ignored; eval:1007 / lower:2087 → F4 | Not observed / coverage incomplete |
-| `get_menu_item_value` | current semantic item value by index | ksp/partial init correct; runtime ignored; eval:1007 / lower:2087 → F4 | Not observed / coverage incomplete |
+| `get_menu_item_str` | current item caption by index | ksp/partial init correct; runtime ignored; eval:1007 / lower:2087 → F4 | >= 1 / 0 observed |
+| `get_menu_item_value` | current semantic item value by index | ksp/partial init correct; runtime ignored; eval:1007 / lower:2087 → F4 | >= 1 / 0 observed |
 | `get_menu_item_visibility` | current per-item visibility | ksp/partial init correct; runtime ignored; eval:1007 / lower:2087 → F4 | Not observed / coverage incomplete |
 | `get_num_menu_items` | current item count (historical helper) | ksp/partial init correct; runtime ignored; eval:1018 / lower:2087 → F4 | Not observed / coverage incomplete |
 | `get_ui_wf_property` | waveform cursor/flags/indexed slice state | ksp/missing; returns 0; eval:1252 / lower:2087 → F7/F10 | Not observed / coverage incomplete |
@@ -241,10 +260,10 @@ All pinned User Interface Commands plus typed getter/setter flavors above, curre
 | `make_perfview` | init activates authored performance page | ksp/correct activation subset; conflict with NCKP not enforced; eval:1049 → F7 | Not observed / coverage incomplete |
 | `move_control` | grid placement, (0,0) hidden; all callbacks | ksp/partial private grid tags at init; runtime discarded; eval:963 / ui:436 → F1/F8 | >= 1 / 0 observed |
 | `move_control_px` | local pixel placement; all callbacks | ksp/partial init pixel props; stale grid tags remain; runtime discarded; eval:963 → F1/F8 | >= 1 / 0 observed |
-| `set_control_help` | tooltip content | ksp/partial init correct; runtime discarded; eval:925 → F1 | Not observed / coverage incomplete |
+| `set_control_help` | tooltip content | ksp/partial init correct; runtime discarded; eval:925 → F1 | >= 1 / 0 observed |
 | `set_knob_defval` | raw reset value | ksp/partial init property; runtime discarded; eval:946 → F1/F4 | Not observed / coverage incomplete |
-| `set_knob_label` | formatted value text | ksp/partial init property; runtime discarded; eval:925 → F1 | Not observed / coverage incomplete |
-| `set_knob_unit` | display unit enum | ksp/partial init property; runtime discarded; eval:946 → F1 | Not observed / coverage incomplete |
+| `set_knob_label` | formatted value text | ksp/partial init property; runtime discarded; eval:925 → F1 | >= 1 / 0 observed |
+| `set_knob_unit` | display unit enum | ksp/partial init property; runtime discarded; eval:946 → F1 | >= 1 / 0 observed |
 | `set_menu_item_str` | mutate existing item caption | ksp/partial init correct; runtime discarded; eval:988 → F1/F4 | >= 1 / 0 observed |
 | `set_menu_item_value` | mutate existing semantic item value | ksp/partial init correct; runtime discarded; eval:988 → F1/F4 | Not observed / coverage incomplete |
 | `set_menu_item_visibility` | mutate item visibility; selected hidden item contract | ksp/partial init data; runtime discarded; eval:988 → F1/F4 | >= 1 / 0 observed |
@@ -257,31 +276,31 @@ All pinned User Interface Commands plus typed getter/setter flavors above, curre
 | `set_ui_height_px` | init view height in pixels | ksp/partial retained; invalid range/default/header semantics; eval:1027 / ui:286 → F7/F8; render | >= 1 / 0 observed |
 | `set_ui_width_px` | init view width in pixels | ksp/partial retained; invalid range policy unchecked; eval:1031 / ui:291 → F7/F8 | >= 1 / 0 observed |
 | `set_ui_wf_property` | waveform cursor/flags/slice state | ksp/missing; init request/runtime Host discarded; eval:1259 / lib:307 → F7/F10 | Not observed / coverage incomplete |
-| `load_native_ui` | vendor UI frontend load by profile | ksp/missing runtime/front-end execution; init request only; eval:1259 → F7; render/loop | Not observed / coverage incomplete |
+| `load_native_ui` | vendor UI frontend load by profile | ksp/missing runtime/front-end execution; init request only; eval:1259 → F7; render/loop | >= 1 / 0 observed |
 | `load_komplete_ui` | Komplete Script package/profile load | ksp/missing baseline command; builtins.rs from_name has no alias; newer UI branch identifies unavailable frontend → F7 | Not observed / coverage incomplete |
-| `set_nks_nav_name` | NKS navigation metadata name | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | Not observed / coverage incomplete |
-| `set_nks_nav_par` | NKS navigation parameter metadata | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | Not observed / coverage incomplete |
-| `reset_nks_nav` | reset NKS navigation metadata | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | Not observed / coverage incomplete |
+| `set_nks_nav_name` | NKS navigation metadata name | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | Unknown (not whitelisted) |
+| `set_nks_nav_par` | NKS navigation parameter metadata | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | Unknown (not whitelisted) |
+| `reset_nks_nav` | reset NKS navigation metadata | ksp/missing; Host request emitted, not consumed; eval:1259 / lib:307 → F7 | >= 1 / 0 observed |
 | `make_persistent` | executed declaration flag: instrument + snapshots | ksp/partial static flag; current-state save path absent; sema:355 / model:164 → F3/F5 | >= 1 / 0 observed |
-| `make_instr_persistent` | executed declaration flag: instrument only | ksp/partial static flag; recall ignores exclusion; sema:355 / snapshot:97 → F3/F5/F6 | Not observed / coverage incomplete |
+| `make_instr_persistent` | executed declaration flag: instrument only | ksp/partial static flag; recall ignores exclusion; sema:355 / snapshot:97 → F3/F5/F6 | >= 1 / 0 observed |
 | `read_persistent_var` | immediate pending saved restore, then consume entry | ksp/wrong duplicate restoration; no persistence-kind check; eval:338,1132 → F5 | Not observed / coverage incomplete |
-| `set_snapshot_type` | four-valued recall/native-save policy across slots | ksp/missing host policy; init request retained only; eval:1125 / snapshot:97 → F6 | Not observed / coverage incomplete |
+| `set_snapshot_type` | four-valued recall/native-save policy across slots | ksp/missing host policy; init request retained only; eval:1125 / snapshot:97 → F6 | >= 1 / 0 observed |
 | `set_listener` | configure listener signal/period; UI scripts may refresh through on listener | ksp/partial timer init model + runtime period store; only init-configured timer signals start drivers; beat driver hardcodes 120 BPM, idle polling hardcodes 480 frames; eval:1202 / lib:688 / lower:198,1966 → F10; use host tempo/rate and measure scheduling | >= 1 / 0 observed |
 | `change_listener_par` | change an existing listener period while callbacks run | ksp/partial runtime period store; stop/restart and wait ordering need differential timing proof; lower:1966 / lib:688 → F10 | Not observed / coverage incomplete |
-| `set_key_color` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | >= 1 / 0 observed |
-| `set_key_type` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | >= 1 / 0 observed |
-| `set_key_pressed` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | >= 1 / 0 observed |
-| `set_key_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `set_key_pressed_support` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | >= 1 / 0 observed |
-| `set_keyrange` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
+| `set_key_color` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `set_key_type` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `set_key_pressed` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `set_key_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `set_key_pressed_support` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `set_keyrange` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
 | `remove_keyrange` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_key_color` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_key_type` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_key_triggerstate` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_key_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_keyrange_min_note` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_keyrange_max_note` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
-| `get_keyrange_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Not observed / coverage incomplete |
+| `get_key_color` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_key_type` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_key_triggerstate` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_key_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_keyrange_min_note` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_keyrange_max_note` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
+| `get_keyrange_name` | keyboard visual/type/name/pressed/range state in vendor units | ksp/partial init keys/ranges; runtime consumer handles only color/type/pressed/name; trigger state zero; eval:1063 / lib:290 → F1/F4/F10; keyboard/render owner | Unknown (not whitelisted) |
 
 ## Widget-specific parameter and persistence obligations
 
