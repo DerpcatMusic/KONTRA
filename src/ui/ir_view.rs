@@ -220,6 +220,24 @@ pub fn view(ui: &mut Ui, face: &Interface, page: PageRef, assets: &Assets, prese
             continue;
         }
         let r = face.page_rect(n);
+        if face.source == ir::Source::FalconLua {
+            let intersects = |clip: ir::Rect| {
+                i64::from(r.x) < i64::from(clip.x) + i64::from(clip.width)
+                    && i64::from(r.y) < i64::from(clip.y) + i64::from(clip.height)
+                    && i64::from(r.x) + i64::from(r.width) > i64::from(clip.x)
+                    && i64::from(r.y) + i64::from(r.height) > i64::from(clip.y)
+            };
+            if !intersects(ir::Rect::new(0, 0, p.size.width, p.size.height)) { continue; }
+            let mut parent = face.widgets[n.0].parent;
+            let mut clipped = false;
+            for _ in 0..face.widgets.len() {
+                let Some(at) = parent else { break };
+                let Some(panel) = face.widgets.get(at.0) else { break };
+                if panel.viewport.is_some() && !intersects(face.page_rect(at)) { clipped = true; break; }
+                parent = panel.parent;
+            }
+            if clipped { continue; }
+        }
         let (x, y, ww, hh) = (f64::from(r.x) * scale, f64::from(r.y) * scale, f64::from(r.width) * scale, f64::from(r.height) * scale);
         let mut el = widget(ui, face, n, assets, presentation, scale, values, ww, hh);
         let (mut x,mut y)=(x,y);
