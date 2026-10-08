@@ -318,7 +318,7 @@ fn translate(
                 .slot
                 .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
             {
-                for (name, value) in saved(entries) {
+                for (name, value) in saved(entries).map_err(|e| invalid(&format!("snapshot persistent values: {:?} at {}", e.kind, e.offset)))? {
                     match behavior.state.iter_mut().find(|(n, _)| *n == name) {
                         Some(slot) => slot.1 = value,
                         None => behavior.state.push((name, value)),
