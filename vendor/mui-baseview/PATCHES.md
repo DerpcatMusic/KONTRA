@@ -69,3 +69,8 @@ WGPU_BACKEND=metal xvfb-run -a cargo test --locked -p kontra-native-host \
 xvfb-run -a cargo test --locked -p kontra-native-host \
   native_resize_failure_falls_back_and_presents -- --ignored --test-threads=1
 ```
+
+`native_destroyed_parent_and_drawable_stop_callbacks` deletes a real X11
+host parent and a standalone drawable without calling editor close first. It
+asserts server deletion, spontaneous handler release, one `WillClose`, and no
+further frame/resize callbacks. It runs in the same ignored native-host suite.
