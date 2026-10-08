@@ -78,6 +78,7 @@ pub struct PlanControl {
     voices: usize,
     expressions: usize,
     notes: usize,
+    note_params: usize,
     performances: usize,
     sequence: u64,
     /// Render lanes of the runtime (see `Runtime::set_threads`).
@@ -86,12 +87,33 @@ pub struct PlanControl {
     growth: Producer<super::grow::Growth>,
     grown: Consumer<super::grow::Growth>,
     pressure: super::grow::Pressure,
+    note_pressure: super::grow::NotePressure,
     /// Sizes of the plans the runtime may still hold, for growth.
     live: Vec<super::grow::Dims>,
     growing: bool,
 }
 
 impl PlanControl {
+    pub fn note_params_capacity(&self) -> usize { self.note_params }
+    pub fn note_params_bytes(&self) -> usize { std::mem::size_of::<crate::script_params::NoteParams>() }
+    pub fn note_pressure(&self) -> bool { self.note_pressure.load(std::sync::atomic::Ordering::Relaxed) >= self.note_params }
+
+    /// Control side allocates new pages; audio adopts pointers and returns the
+    /// emptied transfer for control-side destruction. Existing notes do not move.
+    pub fn grow_note_params(&mut self, notes: usize) -> Result<usize, PlanError> {
+        if self.growth.is_abandoned() { return Err(PlanError::Disconnected); }
+        while self.grown.pop().is_ok() { self.growing = false; }
+        let adopted = self.installed.load(std::sync::atomic::Ordering::Acquire) == self.sequence;
+        if self.growing || !adopted { return Err(PlanError::Capacity); }
+        let pages = crate::script_params::NoteParamsGrowth::build(self.note_params, notes, self.notes)
+            .map_err(|_| PlanError::Capacity)?;
+        let capacity = pages.capacity;
+        self.growth.push(super::grow::Growth::note_params(pages)).map_err(|_| PlanError::Capacity)?;
+        self.note_pressure.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.growing = true;
+        self.note_params = capacity;
+        Ok(capacity)
+    }
     /// Voice slots the pool has, or is being grown to.
     pub fn voice_capacity(&self) -> usize {
         self.voices
@@ -256,10 +278,18 @@ impl Runtime {
         generations: usize,
         queued: usize,
     ) -> Result<(Self, PlanControl), Error> {
+        Self::with_plan_updates_and_note_capacity(plan, limits, generations, queued, limits.notes)
+    }
+
+    /// Prepare a smaller initial note-parameter pool, growable from PlanControl.
+    /// Other Limits::notes storage retains the full ceiling.
+    pub fn with_plan_updates_and_note_capacity(
+        plan: Prepared, limits: Limits, generations: usize, queued: usize, initial_notes: usize,
+    ) -> Result<(Self, PlanControl), Error> {
         if generations < 2 || queued == 0 {
             return Err(Error::InvalidInput);
         }
-        let mut runtime = Self::new(plan, limits)?;
+        let mut runtime = Self::new_with_note_params(plan, limits, initial_notes)?;
         // Move the initial generation into the larger control-side arena. No live
         // notes exist yet, and the emptied old arena owns no prepared assets.
         let mut slots = Arena::new(runtime.plans.runtime, generations);
@@ -292,6 +322,7 @@ impl Runtime {
             voices: limits.voices,
             expressions: limits.expressions,
             notes: limits.notes,
+            note_params: runtime.note_params.capacity(),
             performances: limits.performances,
             sequence: 0,
             lanes: runtime.lanes.clone(),
@@ -299,6 +330,7 @@ impl Runtime {
             growth,
             grown,
             pressure: runtime.voice_pressure.clone(),
+            note_pressure: runtime.note_pressure.clone(),
             live,
             growing: false,
         };
