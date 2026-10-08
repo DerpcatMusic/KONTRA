@@ -277,3 +277,187 @@ The extra FX32 warm deadline did not repeat: all three additional pairs have one
 Source commit `8b2929cd953038a9f4faf98717d826d53c0da0f0` was handed to W0 and the coordinator as the accepted narrow performance port under the updated A/A and quiet-attribution instructions. The source change preserves mathematical units, validation and callback/storage ownership, and the original piano improvements plus measured libm drop stand. **This is not a zero-underrun release pass: original, A/A and additional storage faults remain recorded, and v2 still trails v1. Global release HOLD remains.** A fresh full eight-cell matched v1/accepted-v2 stage profile is running before the separately gated mixing port.
 
 Receipts: `neutral-port-aa/`, `neutral-port-quiet/`, `neutral-port-calibration-summary.json`, `neutral-port-all-ab.json`, and per-run `quiet-validation.json`. New gate output directories are symlinked under the target volume; the root read-mostly floor is 16 GiB. Activity capture began after the coordinator's request; older runs do not acquire a retrospective quiet claim.
+
+
+## Post-acceptance stage table: v1 versus 8b2929cd
+
+Fresh 48-run matched rotation: three alternating pairs per original piano32/64 and FX64/256 cold/warm cell. Frozen binaries: v1 profile `5537c8fbfa29bb2b23860bf789d5122b313e78c614419bf870fbd3146907569f`; accepted v2 `0f9fbd59a0760f5d7899798c664f27c5ac1eee26ee938cccf4af48afd5837201`. All run/metadata receipts and per-IP source mappings are retained in `neutral-stage-profiles/` and `neutral-stage-attribution/`. Epoch/audio-TID/steady-window selection and exclusive attribution use the same method and limits as the first table. Shared libm and unknown/fused categories remain explicit; sampled stage costs are estimates, not a decomposition of timed median/p99. Each entry below is v1→v2 µs/block. Zero means no sampled cost, not proof of free work. Instrument voice/source semantics are unchanged within each engine, not asserted equivalent across engines.
+
+### piano 32 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.356→3.912 |
+| resample | 0.267→4.712 |
+| envelope/mod | 0.119→8.090 |
+| filter | 0.889→0.059 |
+| FX | 2.282→0.207 |
+| mixing | 1.008→4.534 |
+| stream service | 0.030→0.919 |
+| callback/event | 0.415→0.296 |
+| fused resample/mix | 0.059→0.000 |
+| DSP dispatch/validation | 0.000→2.371 |
+| harness/timing | 0.207→0.089 |
+| unattributed libm | 0.000→0.178 |
+| unattributed other | 0.682→1.956 |
+
+v1: profiled median/p99 4.451/16.580 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 22.970/44.451 µs; underruns 0, deadlines 4.
+### piano 32 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.059→3.171 |
+| resample | 0.030→5.008 |
+| envelope/mod | 0.000→6.578 |
+| filter | 0.148→0.000 |
+| FX | 1.541→0.178 |
+| mixing | 0.326→4.356 |
+| stream service | 0.000→0.593 |
+| callback/event | 0.415→0.385 |
+| fused resample/mix | 0.000→0.000 |
+| DSP dispatch/validation | 0.000→2.726 |
+| harness/timing | 0.356→0.267 |
+| unattributed libm | 0.000→0.207 |
+| unattributed other | 0.622→1.689 |
+
+v1: profiled median/p99 4.330/14.060 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 22.461/47.121 µs; underruns 0, deadlines 3.
+### piano 64 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.297→3.678 |
+| resample | 0.237→6.584 |
+| envelope/mod | 0.059→7.830 |
+| filter | 0.534→0.059 |
+| FX | 1.957→0.178 |
+| mixing | 0.475→8.186 |
+| stream service | 0.000→0.534 |
+| callback/event | 0.297→0.534 |
+| fused resample/mix | 0.059→0.000 |
+| DSP dispatch/validation | 0.000→3.144 |
+| harness/timing | 0.237→0.059 |
+| unattributed libm | 0.000→0.119 |
+| unattributed other | 0.712→1.720 |
+
+v1: profiled median/p99 5.270/20.851 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 30.801/53.661 µs; underruns 0, deadlines 0.
+### piano 64 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 0.475→4.923 |
+| resample | 0.297→6.762 |
+| envelope/mod | 0.059→9.313 |
+| filter | 0.652→0.059 |
+| FX | 1.898→0.119 |
+| mixing | 0.534→7.474 |
+| stream service | 0.119→0.534 |
+| callback/event | 0.534→0.178 |
+| fused resample/mix | 0.000→0.000 |
+| DSP dispatch/validation | 0.000→3.025 |
+| harness/timing | 0.356→0.059 |
+| unattributed libm | 0.000→0.178 |
+| unattributed other | 1.246→1.542 |
+
+v1: profiled median/p99 6.210/21.790 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 30.830/55.151 µs; underruns 0, deadlines 0.
+### fx 64 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 4.627→5.932 |
+| resample | 0.830→0.297 |
+| envelope/mod | 1.008→14.058 |
+| filter | 10.677→0.652 |
+| FX | 5.695→4.567 |
+| mixing | 0.178→9.372 |
+| stream service | 0.415→12.397 |
+| callback/event | 13.702→0.771 |
+| fused resample/mix | 0.593→0.000 |
+| DSP dispatch/validation | 0.000→2.254 |
+| harness/timing | 5.398→0.237 |
+| unattributed libm | 1.483→0.356 |
+| unattributed other | 5.695→14.652 |
+
+v1: profiled median/p99 43.940/76.541 µs; underruns 0, deadlines 1.
+
+v2: profiled median/p99 54.741/119.422 µs; underruns 0, deadlines 3.
+### fx 64 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 4.686→6.822 |
+| resample | 1.008→0.712 |
+| envelope/mod | 1.364→13.228 |
+| filter | 9.906→1.008 |
+| FX | 3.559→5.161 |
+| mixing | 0.000→7.415 |
+| stream service | 0.415→11.567 |
+| callback/event | 13.109→0.534 |
+| fused resample/mix | 0.771→0.000 |
+| DSP dispatch/validation | 0.000→2.135 |
+| harness/timing | 6.110→0.119 |
+| unattributed libm | 1.305→0.178 |
+| unattributed other | 5.635→12.575 |
+
+v1: profiled median/p99 44.751/78.982 µs; underruns 0, deadlines 1.
+
+v2: profiled median/p99 54.121/112.982 µs; underruns 0, deadlines 0.
+### fx 256 cold
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 19.624→24.589 |
+| resample | 2.601→1.655 |
+| envelope/mod | 4.492→58.398 |
+| filter | 46.813→3.783 |
+| FX | 18.678→9.457 |
+| mixing | 0.000→29.790 |
+| stream service | 1.891→22.224 |
+| callback/event | 45.395→2.128 |
+| fused resample/mix | 0.709→0.000 |
+| DSP dispatch/validation | 0.000→6.856 |
+| harness/timing | 16.787→0.473 |
+| unattributed libm | 6.856→1.891 |
+| unattributed other | 23.643→41.139 |
+
+v1: profiled median/p99 180.053/308.296 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 201.923/308.966 µs; underruns 1, deadlines 0.
+### fx 256 warm
+
+| Stage | v1→accepted v2 µs/block |
+|---|---:|
+| voice render | 20.333→31.918 |
+| resample | 3.783→1.419 |
+| envelope/mod | 3.546→57.689 |
+| filter | 41.139→2.128 |
+| FX | 18.205→14.659 |
+| mixing | 0.236→32.864 |
+| stream service | 1.891→28.608 |
+| callback/event | 48.468→2.837 |
+| fused resample/mix | 1.419→0.000 |
+| DSP dispatch/validation | 0.000→11.349 |
+| harness/timing | 17.732→0.473 |
+| unattributed libm | 6.147→1.891 |
+| unattributed other | 19.151→52.488 |
+
+v1: profiled median/p99 179.323/300.186 µs; underruns 0, deadlines 0.
+
+v2: profiled median/p99 204.104/291.965 µs; underruns 1, deadlines 3.
+
+The updated piano64 cold gaps are mixing 0.475→8.186, resample 0.237→6.584, voice render 0.297→3.678, and DSP dispatch/validation 0→3.144. Unattributed libm is now 0→0.119. At FX256 cold, stream service is 1.891→22.224 µs/block and mixing 0→29.790; the accepted v2 profile still reports one storage underrun versus v1 zero. Quiet-baseline underruns are therefore not dismissed as contention: release tolerance remains zero.
+
+### Streaming comparison and diagnostic limits
+
+On original FX256 cold, v1's adapter reports preload4048 source frames, 514,033,080 resident sample/stream bytes, and 23,595 samples. `0cb7a8a0:src/engine/bank.rs` plans a 4096-frame source preload (MAX_BLOCK128 × MAX_STEP32), reducing it to fit the bank budget. `src/engine/stream.rs` uses RING8192 source frames, CHUNK2048, urgent lead4096, and serves urgent slots across all banks before speculative ring fill. Its worker-local reader cache retains 64 readers. V2 Auto uses lazy heads (0 resident head bytes at publication; measured head hint628 output frames in the original profile), an 8 MiB head budget, and service horizon max(head,4096)+128=4224 output frames; four workers retain 16 readers each. Source/output units differ with pitch; the numerical horizons are comparable at unity pitch only.
+
+An openat/close-only syscall diagnostic on each frozen engine's FX256 cold cell records no new OS opens during the four-second note sequence. This does not establish absence of reader churn: archive samples share already-open file handles while constructing new NCW readers. The diagnostic remains retained, records metadata only, and its traced CPU timings are not acceptance results. It cannot justify blindly raising the reader cache.
+
+W8 owns non-stream runtime/script UI RSS attribution; W9 has no active voice/FX/convolution allocation-sizing changes. Streaming reader/cache/head/page-pool sizing stays W9's. The mixing draft caches settled slot levels using the literal v1 slot loop, with the moving-ramp fallback and all validation retained; it has not been built, committed or gated yet.
