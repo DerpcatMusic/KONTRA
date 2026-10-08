@@ -1263,6 +1263,10 @@
       "command": "kontakto-heavy cargo test --profile ci --no-run",
       "result": "pass",
       "build_seconds": 17.24
+    },
+    "v1_onset_report_no_run": {
+      "result": "pass",
+      "seconds": 72
     }
   },
   "branch_single_program_resource_scene": {
@@ -1366,7 +1370,8 @@
     "source_branch": "audit/uvi-v1-scanner-20261008",
     "installed_shared_binary_changed_by_auditor": false,
     "prior_binary_sha256": "9463ebd6b77d2a7c0137ee27b9540cba1b55decff429c0fff45173e832fbcda5",
-    "executable": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-uvi-v1-bench/release/examples/kontra_scan"
+    "executable": "/home/derpcat/.cache/kontakto-audit-uvi/staged/kontra-scan-v1-uvi-d565",
+    "historical_build_output": "/mnt/Windows11/DEV_WORKSPACE/Toolchains/User/cargo-target/kontakto-audit-uvi-v1-bench/release/examples/kontra_scan"
   },
   "integration_head_checked": {
     "sha": "be4c5c21928b462d7a604f4e07b05eac13931616",
@@ -1753,5 +1758,50 @@
       "without_numeric_override": "local selection fallback; require paired actual-pick checks"
     },
     "status": "superseded by2355155b"
+  },
+  "staged_v1_uvi_onset": {
+    "source_branch": "audit/uvi-v1-scanner-20261008",
+    "source_commit": "95a1f01b95234cf954e2f149c711ad501c704acd",
+    "product_base": "4bffbb18b867b0a8e84b435d11684784b237693c",
+    "binary": "/home/derpcat/.cache/kontakto-audit-uvi/staged/kontra-scan-v1-uvi-onset-95a1f01b",
+    "binary_sha256": "7f628b151c3dd31ddef1e09ac71876367c543d65e940b490132afcb089ba9b8b",
+    "installed_sidecar_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "install_owner": "shared scanner owner; not installed by this auditor",
+    "build": "kontakto-heavy cargo build --release --example kontra_scan --features shots,uvi",
+    "fields": {
+      "first_audio_ms": "monotonic elapsed since existing load start to observed packet containing first finite nonzero output; before pacing sleep; null for silent/failed/no-audition results",
+      "ui_first_frame_ms": "monotonic elapsed since same load start to first successful Original CPU bitmap completion; null if unavailable",
+      "cache_state": "cold; persistent product PCM cache disabled, independent of OS filesystem page-cache warmth"
+    },
+    "timing_limit": "scanner probes Original UI before audio; worker packet receipt and CPU bitmap timings, not DAW DAC/presentation timestamps",
+    "note_plan": "existing metrics::note(0) and native declarations unchanged",
+    "checks": {
+      "onset_unit": "1 passed",
+      "features_shots_uvi_no_run": "passed;1m51s",
+      "optimized_build": "passed;1m46s",
+      "clarinet_smoke": {
+        "loads": "yes",
+        "ui": "original-ok",
+        "plays_note": "yes",
+        "load_ms": 1668.394803,
+        "ui_first_frame_ms": 1708.938195,
+        "first_audio_ms": 1759.155676,
+        "cache_state": "cold",
+        "pick": [
+          60,
+          64
+        ],
+        "pick_source": "shared-note-plan",
+        "native_preferred_note": [
+          60,
+          64
+        ],
+        "nonfinite": 0,
+        "native_valid_keys_equal_frozen_v2": true
+      },
+      "missing_item": "passed: both timing fields null; plays_note=no"
+    },
+    "corpus_collector": "none",
+    "installed_by_auditor": false
   }
 }
