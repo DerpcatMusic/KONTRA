@@ -12,6 +12,7 @@ use crate::{
 /// KontaktIO:      LoopArray
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopArray {
+    pub mask: u8,
     pub items: Vec<Loop>,
     /// Serialized slot of each occupied entry; holes must not renumber loops.
     pub slots: Vec<u8>,
@@ -49,7 +50,7 @@ impl LoopArray {
             }
         }
 
-        Ok(Self { items, slots })
+        Ok(Self { mask, items, slots })
     }
 }
 

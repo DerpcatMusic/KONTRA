@@ -202,6 +202,14 @@ impl Check<'_> {
         for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
+                Processor::Gainer { gain, dry } => {
+                    self.gain(gain, "gainer gain")?;
+                    self.finite(dry, "gainer dry")?;
+                }
+                Processor::StereoModeller { width, pan, .. } => {
+                    self.within(width, 0.0..=1.0, "stereo width")?;
+                    self.within(pan, -1.0..=1.0, "stereo pan")?;
+                }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::Rectify(_) => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
@@ -361,8 +369,17 @@ impl Instrument {
             if let Some(end) = zone.playback.end {
                 check.range(zone.playback.start, end, "playback")?;
             }
-            if let Looping::Continuous(range) | Looping::UntilRelease(range) = zone.playback.looping
-            {
+            let ranges = match zone.playback.looping {
+                Looping::Continuous(range) | Looping::UntilRelease(range) => vec![range],
+                Looping::Slots(slots) => {
+                    for slot in slots.iter().flatten() {
+                        check.within(slot.tuning, f64::MIN_POSITIVE..=f64::MAX, "loop tuning")?;
+                    }
+                    slots.iter().flatten().map(|slot| slot.range).collect()
+                }
+                _ => Vec::new(),
+            };
+            for range in ranges {
                 check.range(range.start, range.end, "loop")?;
                 if let crate::Span::Time(time) = range.crossfade {
                     check.time(time, "loop crossfade")?;
@@ -444,6 +461,26 @@ impl Instrument {
                 Depth::Pitch(pitch) => check.pitch(pitch, "depth")?,
                 Depth::Normalized(value) => check.finite(value, "depth")?,
             }
+        }
+        for (i, binding) in self.processor_controls.iter().enumerate() {
+            check.owner = format!("processor control {i}");
+            if self.processor_controls[..i].iter().any(|p| {
+                p.chain == binding.chain
+                    && p.index == binding.index
+                    && p.parameter == binding.parameter
+            }) {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "duplicate processor control",
+                    value: i as f64,
+                });
+            }
+            check.exists(Reference::Control(binding.control.0))?;
+            check.exists(Reference::Processor {
+                chain: binding.chain.0,
+                index: binding.index,
+            })?;
+            check.time(binding.ramp, "ramp")?;
         }
         for (i, chain) in self.chains.iter().enumerate() {
             check.owner = format!("chain {i}");
