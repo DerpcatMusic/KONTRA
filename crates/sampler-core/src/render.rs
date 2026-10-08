@@ -484,27 +484,32 @@ impl Runtime {
         let mut stop = false;
         let points = if self.script_params {
             let params = self.note_params[f.note.0.index];
-            let layer = plan.script.layer(v.group).stack(params.layer);
+            let group = plan.script.layer(v.group);
             let end = at + frames as u64;
             let fade = |t| {
                 params
                     .fade
                     .map_or(1.0, |f: super::script_params::Fade| f.at(t))
+                    * v.script_fade.map_or(1.0, |f| f.at(t))
             };
             // Gains sit on the absolute control grid, like voice modulation, so
             // host block sizes and event splits cannot move them.
             let begin = at - at % super::voice_mod::CELL;
             let grid_end = begin + super::voice_mod::CELL;
-            let from = layer.gains(fade(begin));
-            let to = layer.gains(fade(grid_end));
-            stop = end == grid_end && params.fade.is_some_and(|f| f.stop && f.done(grid_end));
+            let first = group.stack(params.layer_at(begin));
+            let last = group.stack(params.layer_at(grid_end));
+            let from = first.gains(fade(begin));
+            let to = last.gains(fade(grid_end));
+            stop = end == grid_end
+                && (params.fade.is_some_and(|f| f.stop && f.done(grid_end))
+                    || v.script_fade.is_some_and(|f| f.stop && f.done(grid_end)));
             let mut ramp = points.unwrap_or(super::voice_mod::Ramp {
                 from: Default::default(),
                 to: Default::default(),
                 begin,
                 end: grid_end,
             });
-            for (o, g) in [(&mut ramp.from, from), (&mut ramp.to, to)] {
+            for (o, g, layer) in [(&mut ramp.from, from, first), (&mut ramp.to, to, last)] {
                 o.gains = [o.gains[0] * g[0], o.gains[1] * g[1]];
                 o.pitch += layer.semitones();
             }
