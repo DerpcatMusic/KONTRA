@@ -1,6 +1,7 @@
 """Native-slot and independent-oracle verdicts for the shared release gate."""
 from collections import Counter
 import json
+import math
 
 SLOT_METRICS = ('fx_slots_dropped', 'filter_slots_dropped', 'mod_slots_dropped')
 
@@ -31,11 +32,21 @@ def family_match(observed, oracle):
     """
     if not isinstance(oracle, dict) or oracle.get('basis') not in ('native-host', 'native-data-reviewed'):
         return {'status':'UNKNOWN', 'reason':'independent-native-oracle-absent'}
-    if not oracle.get('complete') or len(observed) < oracle.get('minimum_repeats', 1):
+    minimum = oracle.get('minimum_repeats', 32)
+    if type(minimum) is not int or minimum < 32:
+        return {'status':'UNKNOWN', 'reason':'invalid-native-repeat-protocol'}
+    if not oracle.get('complete') or len(observed) < minimum:
         return {'status':'UNKNOWN', 'reason':'incomplete-repeated-evidence'}
     expected = Counter(oracle.get('families', []))
     if not expected:
         return {'status':'UNKNOWN', 'reason':'native-families-absent'}
+    for family, rr in oracle.get('rr', {}).items():
+        probabilities = rr.get('probabilities', {})
+        tolerance = rr.get('tolerance')
+        if family not in expected or not probabilities or not isinstance(tolerance,(int,float)) or not math.isfinite(tolerance) or not 0 <= tolerance <= 1 or any(not isinstance(p,(int,float)) or not math.isfinite(p) or not 0 < p <= 1 for p in probabilities.values()) or abs(sum(probabilities.values())-1)>1e-6:
+            return {'status':'UNKNOWN', 'reason':'invalid-native-distribution'}
+    if any(not isinstance(take,list) or any(not isinstance(v,dict) or not isinstance(v.get('family'),str) for v in take) for take in observed):
+        return {'status':'UNKNOWN', 'reason':'invalid-executed-family-evidence'}
     hist = Counter()
     for take in observed:
         if Counter(v['family'] for v in take) != expected:
