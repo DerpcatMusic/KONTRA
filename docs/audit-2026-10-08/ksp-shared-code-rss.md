@@ -72,4 +72,28 @@ Comparison: mean(B) minus mean(A) must not exceed the observed baseline range(A)
 
 Dolce32's p50 increase is 4.8082 µs against 0.289 µs baseline variation. CPU acceptance is not waived. Stream errors, underruns, faults and nonfinite outputs are zero, and original silent-note counters are unchanged for each A/B cell. Round-robin PCM peaks vary and are not treated as exact-sample identity.
 
-NEXT: diagnose Dolce32 total per-block cost before a READY handoff.
+The initial CPU failure remains part of the release disclosure; it is not erased by later measurements.
+
+## VM follow-up and completed receipts
+
+Follow-up `c46143393375a840238205d980e9bef83f27ada0` ports v1 `0cb7a8a0:src/ksp/vm.rs` local bounded Call/Return dispatch and borrowed constant append. It preserves the shared instruction/string storage. New guards cover nested frames across fuel boundaries and UTF-8 truncation/table bounds/self-append without audio allocation. Targeted behavior/ops: 28 passed; core/KSP: 584 passed (399 core, 185 KSP), zero failures and 41 existing ignored tests. Area/root no-run and all seven production Dolce envelope-init cases passed; offline failures, stream errors and underruns remain zero.
+
+The frozen shipping follow-up SHA256 is `cedf158eedf7b4e246b5d88479641ac5b64d3679f96d49a1ff56f254afeb7915`, built with the same CI command/profile. Its completed receipt is `cpu-hotpaths-summary.json`: 36 raw QUIET runs, including one bounded A5/B3 pair for each of four uncertain cells. Two external-build-contended attempts were rejected and retained. A3/Dolce32 had 54 baseline underruns despite QUIET; that receipt is retained and its CPU comparison is replaced with the same baseline binary A5, which had zero underruns. The 35 clean renders have matching runtime counters and zero render/event heap calls.
+
+| Instrument | Block | A mean p50 µs | B mean p50 µs | A mean p99 µs | B mean p99 µs | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Conflux | 32 | 1.9850 | 1.9600 | 64.8165 | 65.3310 | PASS |
+| Conflux | 64 | 3.4867 | 3.6700 | 113.7353 | 109.7320 | PASS |
+| Conflux | 256 | 11.2467 | 16.2405 | 403.1577 | 438.0985 | FAIL |
+| Analog | 32 | 37.2760 | 36.1410 | 104.7220 | 98.9820 | PASS |
+| Analog | 64 | 50.8777 | 51.8210 | 122.2720 | 127.5120 | PASS |
+| Analog | 256 | 190.3485 | 186.6630 | 379.2820 | 376.8670 | PASS |
+| Dolce | 32 | 40.2460 | 36.1900 | 293.8805 | 245.4250 | PASS |
+| Dolce | 64 | 53.4160 | 50.9910 | 324.0015 | 307.0150 | PASS |
+| Dolce | 256 | 192.2170 | 193.8235 | 1304.8907 | 1267.5185 | PASS |
+
+Overall CPU acceptance remains FAIL at Conflux256: p50 delta 4.9938 µs exceeds its 4.7200 µs A/A range; p99 delta 34.9408 µs exceeds 16.8010 µs. Dolce passes the fresh comparison, but baseline timings also shifted, so this does not prove the follow-up caused the improvement or remove the original +14% disclosure. W0 is authorized to ship this green code as the normal alpha release with that disclosure.
+
+Source-only compiled-code inspection also rules out a guessed scheduler frame-copy cost: exact 3f49 and the original shared-table profiling builds both emit 4,080-byte drain_behavior bodies with 264-byte stack frames and no memcpy/rep-movs sequence. Structural differences are Program strides and Arc header offsets. Sparse GDB sampling did not establish VM dominance. No separate KSP timer was added.
+
+NEXT: compare frozen original shared-table and follow-up binaries in a matched quiet window after W13/W9, within the callback-diagnosis timebox; preserve the unresolved result if no window is available.
