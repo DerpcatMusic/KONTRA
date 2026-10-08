@@ -84,7 +84,22 @@ impl EngineParameterLaw {
             Self::CubicGain { unity } => unity.is_finite() && unity > 0.,
         }
     }
-    fn decode(self, value: i32) -> f64 {
+    /// Validate a native authored value before converting it. This is the same
+    /// law the addressed runtime binding uses; frontends do not duplicate it.
+    pub fn normalized_value(self, value: f64) -> Result<i32, Error> {
+        if !self.valid() || !value.is_finite() {
+            return Err(Error::InvalidInput);
+        }
+        let (low, high) = (self.decode(0), self.decode(1_000_000));
+        if !low.is_finite() || !high.is_finite() || value < low || value > high {
+            return Err(Error::InvalidInput);
+        }
+        Ok(self.encode(value))
+    }
+
+    /// Convert the normalized service range to a native DSP value. Use a law
+    /// admitted by Prepared::with_engine_parameters; normalized inputs clamp.
+    pub fn decode(self, value: i32) -> f64 {
         let v = f64::from(value.clamp(0, 1_000_000));
         match self {
             Self::Linear { low, high } => low + (high - low) * v / 1e6,
@@ -95,7 +110,9 @@ impl EngineParameterLaw {
             Self::CubicGain { unity } => (v / unity).powi(3),
         }
     }
-    fn encode(self, value: f64) -> i32 {
+    /// Convert a finite native DSP value to the normalized service range.
+    /// Frontends should use normalized_value to validate authored input.
+    pub fn encode(self, value: f64) -> i32 {
         (match self {
             Self::Linear { low, high } => {
                 if low == high {
@@ -224,6 +241,9 @@ mod law_tests {
         ];
         for law in laws {
             assert!(law.valid());
+            assert_eq!(law.normalized_value(f64::NAN), Err(Error::InvalidInput));
+            assert_eq!(law.normalized_value(f64::INFINITY), Err(Error::InvalidInput));
+            assert_eq!(law.normalized_value(law.decode(500000)), Ok(500000));
             for value in [0, 123456, 500000, 999999, 1000000] {
                 assert!((law.encode(law.decode(value)) - value).abs() <= 1);
             }

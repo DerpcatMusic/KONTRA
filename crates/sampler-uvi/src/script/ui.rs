@@ -555,6 +555,24 @@ pub struct UiState {
     pub widgets: Vec<(usize, String, SavedValue)>,
     pub custom: Option<SavedValue>,
 }
+pub(super) fn json_state(source: &str) -> Result<SavedValue, String> {
+    if source.len() > 2 << 20 { return Err("UVI state exceeds 2 MiB".into()); }
+    fn convert(v: serde_json::Value, depth: usize, remaining: &mut usize) -> Result<SavedValue, String> {
+        *remaining = remaining.checked_sub(1).ok_or("UVI state exceeds 65536 values")?;
+        if depth > 64 { return Err("UVI state exceeds depth limit".into()); }
+        Ok(match v {
+            serde_json::Value::Null => SavedValue::Nil,
+            serde_json::Value::Bool(b) => SavedValue::Boolean(b),
+            serde_json::Value::Number(n) => SavedValue::Number(n.as_f64().filter(|n| n.is_finite()).ok_or("invalid state number")?),
+            serde_json::Value::String(s) => SavedValue::String(s),
+            serde_json::Value::Array(v) => SavedValue::Table(v.into_iter().enumerate().map(|(i,v)| Ok((SavedValue::Number((i+1) as f64), convert(v,depth+1,remaining)?))).collect::<Result<_,String>>()?),
+            serde_json::Value::Object(v) => SavedValue::Table(v.into_iter().map(|(k,v)| Ok((SavedValue::String(k),convert(v,depth+1,remaining)?))).collect::<Result<_,String>>()?),
+        })
+    }
+    let value: serde_json::Value = serde_json::from_str(source).map_err(|e| e.to_string())?;
+    if !value.is_object() && !value.is_array() && !value.is_null() { return Err("UVI custom state must be a table or nil".into()); }
+    convert(value,0,&mut 65536)
+}
 fn save_value(
     v: Value,
     stack: &mut Vec<usize>,
@@ -633,6 +651,11 @@ fn load_value(
     })
 }
 impl ScriptHost {
+    /// Explicit state restoration: widget callbacks, custom onLoad, no onInit.
+    pub fn restore_ui_state(&self, state: &UiState) -> Result<(), String> {
+        self.restore_ui_values(state)?;
+        self.restore_ui_custom(state)
+    }
     pub fn save_ui_state(&self) -> Result<UiState, String> {
         self.shared.arm(self.shared.config.load);
         let mut out = UiState::default();

@@ -48,6 +48,7 @@ fn render(
     prefix: &str,
 ) -> Value {
     let face = ir_view::resolved(face);
+
     let mut missing = Vec::new();
     let mut assets = ir_view::Assets::default();
     let mut native = face.native_ui.as_ref().map(|n| {
@@ -303,6 +304,7 @@ fn render(
         "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
         "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
         "font_declared":fonts_declared,"font_success":font_success,
+
         "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
