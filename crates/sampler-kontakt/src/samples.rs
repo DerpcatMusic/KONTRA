@@ -52,6 +52,7 @@ pub struct Samples {
 }
 
 impl Samples {
+    pub(crate) fn root(&self) -> &Path { &self.root }
     /// `root` bounds every lookup: a sample never resolves outside its library.
     pub fn new(root: &Path) -> Self {
         Self {
