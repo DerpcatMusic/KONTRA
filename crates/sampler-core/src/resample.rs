@@ -361,11 +361,25 @@ impl Kernel {
 
     /// The bank entry for 1 < step <= MAX_STEP: the narrowest stretch at or above
     /// step. Above 2x, sixteenth-octave spacing preserves the short sinc passband.
+    #[inline(always)]
     pub(super) fn polyphase(&self, step: f64) -> Option<&Polyphase> {
-        if self.quality != ResampleQuality::Realtime || step <= 1.0 || step > MAX_STEP {
+        if self.quality != ResampleQuality::Realtime || !(step > 1.0 && step <= MAX_STEP) {
             return None;
         }
-        self.bank.iter().find(|entry| entry.stretch >= step)
+        if step <= 2. {
+            self.bank[..PER_OCTAVE]
+                .iter()
+                .find(|entry| entry.stretch >= step)
+        } else {
+            self.high_polyphase(step)
+        }
+    }
+
+    // Keep the extended bank's lookup code out of the common narrow-rate loop.
+    #[inline(never)]
+    fn high_polyphase(&self, step: f64) -> Option<&Polyphase> {
+        let bank = &self.bank[PER_OCTAVE..];
+        bank.get(bank.partition_point(|entry| entry.stretch < step))
     }
 
     /// The widest window any quality reads at `step`: demand prediction uses it.
@@ -420,6 +434,38 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_bank_lookup_matches_linear_selection_and_stays_inside_stream_demand() {
+        for quality in [ResampleQuality::Realtime, ResampleQuality::High] {
+            let kernel = Kernel::new(quality);
+            for step in [f64::NAN, f64::INFINITY, -1., 0., 0.5, 1., MAX_STEP + 0.1]
+                .into_iter()
+                .chain(
+                    kernel
+                        .bank
+                        .iter()
+                        .flat_map(|bank| [bank.stretch - 1e-8, bank.stretch, bank.stretch + 1e-8]),
+                )
+            {
+                let expected =
+                    if quality == ResampleQuality::Realtime && step > 1. && step <= MAX_STEP {
+                        kernel.bank.iter().find(|entry| entry.stretch >= step)
+                    } else {
+                        None
+                    };
+                let selected = kernel.polyphase(step);
+                assert_eq!(
+                    selected.map(|b| b as *const Polyphase),
+                    expected.map(|b| b as *const Polyphase)
+                );
+                if let Some(bank) = selected {
+                    let taps = 2 * bank.radius + 1;
+                    assert!(bank.radius + bank.width() - taps <= Kernel::radius(step) as usize);
+                }
+            }
+        }
+    }
 
     #[test]
     fn prepared_rows_match_reference_impulses_without_changing_narrow_bank_rounding() {
