@@ -92,9 +92,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let multi = tmp.path().join("x.kontra-multi");
         let state = tmp.path().join("x.state");
-        std::fs::write(&multi, r#"{"format":"kontra-multi","version":1,"parts":[{"path":"test.nki"}]}"#).unwrap();
+        std::fs::write(&multi, r#"{"format":"kontra-multi","version":1,"name":"Probe","parts":[{"path":"test.nki"}]}"#).unwrap();
         assert!(export_multi_state(&multi, &state).is_err());
-        std::fs::write(&multi, r#"{"format":"kontra-multi","version":2,"parts":[{"path":"test.nki"}]}"#).unwrap();
+        std::fs::write(&multi, r#"{"format":"kontra-multi","version":2,"name":"Probe","parts":[{"path":"test.nki"}]}"#).unwrap();
         export_multi_state(&multi, &state).unwrap();
         let before = std::fs::read(&state).unwrap();
         assert!(export_multi_state(&multi, &state).is_err());
