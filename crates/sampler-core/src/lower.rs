@@ -3,13 +3,14 @@
 //! execute exactly is rejected with [`LowerError::Unsupported`], never
 //! approximated silently.
 use crate::{
-    Biquad, Breakpoint, Breakpoints, Bus, BusSend, ControlDefinition, ControlDomain, ControlRange,
-    CompressorSettings, DaftSettings, ControlValue, ControllerCondition, Direction, Driver, Envelope, EnvelopeCurve, Error,
-    FilterKind, GroupParams, Impulse, Keyswitch, Lfo, LfoRate, LfoShape, Loop, LoopMode, LoopShape,
-    ModProgram, ModRoute, ModScale, ModSource, ModTarget, Parameter, Pcm, Playback, Prepared,
-    Processor, Rectifier, Region, ReverbSettings, SelectionPolicy, Selector, Sequence, SequenceScope,
-    SlotKind, StateVariableFilter, SvfMode, Switch, SwitchKeys, Switching, Take, TakePolicy,
-    Trigger, VelocityCurve, VoiceChain, ZoneFades, slot_control,
+    Biquad, Breakpoint, Breakpoints, Bus, BusSend, CompressorSettings, ControlDefinition,
+    ControlDomain, ControlRange, ControlValue, ControllerCondition, DaftSettings, Direction,
+    Driver, Envelope, EnvelopeCurve, Error, FilterKind, GroupParams, Impulse, Keyswitch, Lfo,
+    LfoRate, LfoShape, Loop, LoopMode, LoopShape, ModProgram, ModRoute, ModScale, ModSource,
+    ModTarget, Parameter, Pcm, Playback, Prepared, Processor, Rectifier, Region, ReverbSettings,
+    SelectionPolicy, Selector, Sequence, SequenceScope, SlotKind, StateVariableFilter, SvfMode,
+    Switch, SwitchKeys, Switching, Take, TakePolicy, Trigger, VelocityCurve, VoiceChain, ZoneFades,
+    slot_control,
 };
 use sampler_ir as ir;
 use std::fmt;
@@ -1041,7 +1042,9 @@ impl Lowering<'_> {
                 makeup: c.makeup.linear(),
                 link: c.link,
             }),
-            ir::Processor::Branch { gain, first, last, .. } => Processor::Branch {
+            ir::Processor::Branch {
+                gain, first, last, ..
+            } => Processor::Branch {
                 count: 0,
                 gain: gain.linear(),
                 first,
@@ -1469,7 +1472,9 @@ impl Lowering<'_> {
             .enumerate()
             .flat_map(|(axis, a)| {
                 a.choices.iter().enumerate().flat_map(move |(choice, c)| {
-                    c.switch_keys.iter().map(move |&key| (key, axis, choice as u32))
+                    c.switch_keys
+                        .iter()
+                        .map(move |&key| (key, axis, choice as u32))
                 })
             })
             .collect();
@@ -1481,12 +1486,9 @@ impl Lowering<'_> {
     }
 
     fn controllers(&self, plan: Prepared) -> Result<Prepared, LowerError> {
-        if self
-            .ir
-            .zones
-            .iter()
-            .all(|z| z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none())
-        {
+        if self.ir.zones.iter().all(|z| {
+            z.conditions.is_empty() && z.axes.is_empty() && previous_key(z.trigger).is_none()
+        }) {
             return Ok(plan);
         }
         // A 7-bit value covers every 32-bit value that scales down to it.

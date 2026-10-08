@@ -530,7 +530,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
-            CurrentScriptSlot => 0,
+            CurrentScriptSlot => i32::from(self.env.slot),
             _ => 0,
         }
     }
@@ -1255,9 +1255,9 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
-            | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
-            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
+            | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
