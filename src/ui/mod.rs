@@ -59,6 +59,12 @@ use std::time::{Duration, Instant};
 use theme::*;
 
 pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
+    let mut config = mui::diagnostics::Config::new("kontra", env!("CARGO_PKG_VERSION"));
+    config.build = option_env!("APP_GIT_REVISION").unwrap_or("unknown").into();
+    config.mui_revision = "199d46be30dc742cd82882035531ab8a8894291b".into();
+    let reporter = mui::diagnostics::Reporter::start(config)
+        .inspect_err(|error| eprintln!("KONTRA MUI reporting: {error}"))
+        .ok();
     let meters = Arc::new(Meters::default());
     let computer = Arc::new(computer::Computer::default());
     #[cfg(target_os = "linux")]
@@ -80,7 +86,8 @@ pub(crate) fn editor(params: Arc<SamplerParams>) -> Box<dyn Editor> {
     let parent_picker = Arc::clone(&picker);
     let last_size = AtomicU64::new(0);
     let editor = MuiEditor::new(params, theme::ui(), size, build)
-        .on_log(|line| {
+        .on_log(move |line| {
+            let _reporter = &reporter;
             let failed = line.contains("unavailable") || line.contains("failed") || line.contains("panic");
             crate::diagnostics::event(if failed { crate::diagnostics::LogLevel::Warning } else { crate::diagnostics::LogLevel::Info },
                 "renderer", "native_window", serde_json::json!({"stage":"renderer", "reason":line}));

@@ -21,3 +21,17 @@ xvfb-run -a cargo test --locked -p kontra-native-host \
 The application MUI source patch consumes this package. New MUI parent-before/
 after-map pixel tests cover a different transition and must also pass before
 deployment. This local preservation does not claim complete DAW validation.
+
+macOS retains MUI's owned-loop shutdown and view-class lifetime fixes:
+
+- Only a view owning `NSApplication.run()` stops that loop, posting an
+  application-defined event so a display-link/timer close returns from `run()`.
+  Embedded child views leave the host's application loop alone.
+- One UUID-named Objective-C view class is registered per Rust implementation
+  and loaded baseview image. Registered classes outlive AccessKit's cached
+  subclasses; view instances and their Rust state still deallocate normally.
+- Deallocation explicitly dispatches to NSView, including externally subclassed
+  views, rather than disposing a superclass beneath a cached native subclass.
+
+The native editor smoke fixture validates two child close/reopen cycles and
+owned-loop termination. The independent X11 root-reparent patch is preserved.
