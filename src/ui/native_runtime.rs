@@ -78,6 +78,11 @@ impl Images {
     }
 }
 impl Package {
+    #[cfg(test)]
+    pub(super) fn audit_token_count(&self, token: &str) -> usize {
+        self.members.values().filter_map(|bytes| std::str::from_utf8(bytes).ok())
+            .map(|source| source.matches(token).count()).sum()
+    }
     pub fn font(&self, name: &str, bold: bool) -> Option<Font> {
         let name = name.to_lowercase();
         self.fonts.iter().find(|(path, _)| {

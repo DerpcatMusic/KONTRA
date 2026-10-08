@@ -56,6 +56,8 @@ mod spectrum;
 pub(crate) mod tests;
 #[cfg(test)]
 mod v2_tests;
+#[cfg(all(test, feature = "shots"))]
+mod widget_gate;
 mod theme;
 
 use crate::library;
