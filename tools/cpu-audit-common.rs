@@ -1,3 +1,4 @@
+include!("cpu-audit-schedules.rs");
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -49,35 +50,26 @@ fn main() {
         println!("ok");
         return;
     }
-    assert_eq!(args.len(), 4, "PATH BLOCK piano|strings|fx");
+    assert_eq!(args.len(), 4, "PATH BLOCK piano|strings|fx|fast-repeat|legato|cold-jump");
     let block: usize = args[2].parse().unwrap();
     assert!([32, 64, 256].contains(&block));
+    let schedule = audit_schedule(&args[3]);
     let start = Instant::now();
     let (mut p, mut info) = Player::load(Path::new(&args[1]));
     info["load_seconds"] = json!(start.elapsed().as_secs_f64());
     info["rss_kb_loaded"] = json!(proc_value("/proc/self/status", "VmRSS:"));
     let mut idle = Vec::with_capacity(1000);
-    for _ in 0..1000 {
+    for _ in 0..schedule.idle_blocks {
         let t = Instant::now();
         std::hint::black_box(p.render(block));
         idle.push(t.elapsed().as_nanos() as u64)
     }
-    let keys: Vec<u8> = if args[3] == "piano" {
-        vec![48, 52, 55, 60, 64, 67, 72, 76]
-    } else {
-        (48..60).collect()
-    };
-    let mut events = vec![(0, 0xb0, 1, 110), (0, 0xb0, 11, 127), (0, 0xb0, 64, 127)];
-    for &key in &keys {
-        events.push((0, 0x90, key, 100));
-        events.push((48000, 0x80, key, 0))
-    }
-    events.push((144000, 0xb0, 64, 0));
-    events.sort_by_key(|e| e.0);
+    let events = schedule.events;
+    let blocks = schedule.frames.div_ceil(block).max(6000);
     let (mut all, mut steady, mut per_voice) = (
-        Vec::with_capacity(6000),
-        Vec::with_capacity(6000),
-        Vec::with_capacity(6000),
+        Vec::with_capacity(blocks),
+        Vec::with_capacity(blocks),
+        Vec::with_capacity(blocks),
     );
     let (mut next, mut peak, mut voice_sum, mut voice_peak, mut misses) =
         (0, 0.0f32, 0usize, 0usize, 0usize);
@@ -100,7 +92,7 @@ fn main() {
         );
     }
     let pace = Instant::now();
-    for begin in (0..192000).step_by(block) {
+    for begin in (0..schedule.frames).step_by(block) {
         let before = CALLS.get();
         COUNT.set(true);
         let t = Instant::now();
@@ -121,7 +113,7 @@ fn main() {
         voice_peak = voice_peak.max(v);
         misses += usize::from(ns > block as u64 * 1_000_000_000 / 48000);
         all.push(ns);
-        if (12000..48000).contains(&begin) && v > 0 {
+        if schedule.steady.contains(&begin) && v > 0 {
             steady.push(ns);
             per_voice.push(ns / v as u64)
         }
@@ -138,7 +130,9 @@ fn main() {
     }
     info["path"] = json!(args[1]);
     info["block"] = json!(block);
-    info["idle"] = quantiles(idle);
+    info["scenario"] = json!(args[3]);
+    info["schedule_frames"] = json!(schedule.frames);
+    if !idle.is_empty() { info["idle"] = quantiles(idle); }
     info["all"] = quantiles(all.clone());
     if !steady.is_empty() {
         info["steady"] = quantiles(steady);
