@@ -89,3 +89,21 @@ stored, no audio effect), `setSampleOffset`, `waitBeat`, `onTransport`,
 2. Parameter model: `setParameter`/`getParameter` and `sendScriptModulation`
    onto the IR where a law exists.
 3. UI widgets into `sampler-ui-ir::Interface`, as the KSP frontend does.
+
+### Deterministic evaluation bounds (2026-10-09)
+
+UVI admission and callbacks consume Luau call/backedge checkpoints and deferred
+coroutine resumes. Initialization shares 33,554,432 units across graph/script
+phases; live callbacks receive 1,048,576. Graph construction permits 262,144
+engine elements and depth 192, separately from the Original UI widget budget.
+The existing 1.5 GiB Lua memory limit remains. Config's elapsed load/callback
+thresholds are observations only: scheduler contention cannot reject finite
+work. Work exhaustion keeps the existing fault category and unsupported-init
+classification; infinite Lua loops and repeated deferred spawning still stop.
+
+The five former load-deadline leaves complete with 86,868 elements/depth 6 and
+12,877,619–13,366,624 VM checkpoints. The work-bound candidate produces the same
+checkpoint counts; receipts are in the W10 `w10-uvi-deadlines-20261009` run.
+Finite initialization with an already-expired elapsed threshold fails before
+and passes after this change. No quiet CPU or whole-census acceptance follows
+from these diagnostic timings.
