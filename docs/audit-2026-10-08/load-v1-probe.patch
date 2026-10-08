@@ -48,7 +48,7 @@ index 61654999..bda2f299 100644
          // Resolve each distinct sample once, then open them all in parallel.
 @@ -727,6 +728,7 @@ impl Bank {
      }
- 
+
      pub fn load_bare_cancelable(instrument: &Instrument, canceled: &(dyn Fn() -> bool + Sync)) -> Result<Self> {
 +        let _span = crate::audit_load::Span::new("sample_headers_bare_bank");
          anyhow::ensure!(!canceled(), "Instrument load canceled");
@@ -92,7 +92,7 @@ index d1a49c31..366417e2 100644
      if let Some(dir) = &dir { crate::cache::store(dir, &instrument.path, index, &instrument); }
      Ok(instrument)
 @@ -723,6 +731,7 @@ fn read_inner(path: &Path, index: u32) -> Result<Instrument> {
- 
+
  fn parse(path: PathBuf, index: u32) -> Result<Instrument> {
      let c = chunks(&path).context("Container decoding")?;
 +    let _span = crate::audit_load::Span::new("ni_objects_import_resolve");
@@ -126,7 +126,7 @@ index 10a43296..ffbbaff8 100644
 @@ -8815,4 +8816,82 @@ end on"
          assert_ne!(p.shared.instance_id, SamplerParams::new().shared.instance_id);
      }
- 
+
 +    /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
 +    #[test]
 +    #[ignore]
