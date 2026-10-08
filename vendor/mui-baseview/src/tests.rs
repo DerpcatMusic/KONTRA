@@ -289,22 +289,13 @@ fn cpu_presentation_fixture(resize_failure: bool) {
                         if handler.unpainted || handler.software.is_some() {
                             return Err("fixture did not establish a GPU frame".into());
                         }
+                        handler.requests.resize(200, 160);
+                        handler.tick(&self.cx, &mut None);
                         let gpu = handler.gpu.as_ref().ok_or("missing initial GPU")?;
-                        // Observe real device loss before resizing; Mesa may accept
-                        // configure on a destroyed device.
+                        // Lose the device before X11 acknowledges the requested resize.
                         gpu.device().0.destroy();
                         if !gpu.device_lost() {
                             return Err("destroyed GPU device loss was not observed".into());
-                        }
-                        handler.requests.resize(200, 160);
-                        handler.tick(&self.cx, &mut None);
-                        if handler.gpu.is_some()
-                            || handler.software.is_some()
-                            || !handler.software_only
-                            || !handler.unpainted
-                            || handler.driver.size() != (200, 160)
-                        {
-                            return Err("resize failure did not detach GPU for CPU recovery".into());
                         }
                     }
                     Ok(())
@@ -316,6 +307,29 @@ fn cpu_presentation_fixture(resize_failure: bool) {
                     return Ok(());
                 }
                 // Baseview flushes its X11 connection after this callback.
+                self.phase.set(if self.resize_failure { 4 } else { 1 });
+                return Ok(());
+            }
+            if self.phase.get() == 4 {
+                let mut handler = self.handler.borrow_mut();
+                if handler.driver.size() != (200, 160) {
+                    return Ok(());
+                }
+                handler.tick(&self.cx, &mut None);
+                if (handler.gpu.is_some()
+                    || handler.software.is_some()
+                    || !handler.software_only
+                    || !handler.unpainted)
+                    && let Some(send) = self.result.borrow_mut().take()
+                {
+                    let _ = send.send(Err(format!(
+                        "resize failure did not detach GPU: gpu={}, cpu={}, software_only={}, unpainted={}",
+                        handler.gpu.is_some(),
+                        handler.software.is_some(),
+                        handler.software_only,
+                        handler.unpainted,
+                    )));
+                }
                 self.phase.set(1);
                 return Ok(());
             }
