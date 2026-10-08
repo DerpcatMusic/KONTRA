@@ -13,6 +13,8 @@ sys.path.insert(0, str(HERE))
 from evidence import Capture, redact
 HEAVY = Path.home() / '.cache/kontakto-heavy'
 V1 = Path.home() / '.cache/kontra-v1'
+CPU_V1 = Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
+CPU_V1_SHA256 = 'b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab'
 GESTURE = 'ui::v2_tests::widget_conflux_native_gestures_and_readback'
 
 
@@ -20,6 +22,8 @@ def capture(args, folder, env=None, cwd=None, timeout=235):
     folder.mkdir(parents=True, exist_ok=True)
     child_env = dict(os.environ, **(env or {}))
     evidence = Capture(folder, child_env)
+    if env and 'XDG_CACHE_HOME' in env:
+        child_env['XDG_CACHE_HOME'] = env['XDG_CACHE_HOME']
     # Runtime output stays in RAM until reduced to numeric JSON and test witnesses.
     with tempfile.TemporaryFile(dir='/dev/shm') as output:
         try:
@@ -38,10 +42,23 @@ def capture(args, folder, env=None, cwd=None, timeout=235):
 
 
 def cpu(run, source):
-    frozen = V1 / 'bin/cpu-audit-v1'
+    frozen = CPU_V1
     example = source / 'examples/cpu_audit.rs'
     result = {'status': 'UNKNOWN', 'cells': [], 'reason': 'frozen-v1-adapter-or-v2-example-absent'}
     if frozen.is_file() and example.is_file():
+        try:
+            receipt = json.loads(frozen.with_name('BUILD.json').read_text())
+        except (OSError, ValueError):
+            receipt = {}
+        if (not isinstance(receipt, dict) or receipt.get('sha256') != CPU_V1_SHA256
+                or hashlib.sha256(frozen.read_bytes()).hexdigest() != CPU_V1_SHA256
+                or receipt.get('source_sha') != '0cb7a8a0b4d43086596a64c77320caa1b26d6d98'
+                or receipt.get('adapter_commit') != '42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad'
+                or receipt.get('equivalence') != 'PASS'):
+            result['reason'] = 'frozen-v1-cpu-adapter-integrity-failed'
+            (run / 'cpu.json').write_text(json.dumps(result, indent=2) + '\n')
+            return result
+        result['v1_adapter'] = receipt
         records, witness, _ = capture(['cargo', 'build', '--profile', 'ci', '--example', 'cpu_audit'], run / 'cpu/build', cwd=source)
         if witness['returncode']:
             result['reason'] = 'v2-cpu-adapter-build-failed'
@@ -61,7 +78,7 @@ def cpu(run, source):
                         metric = out / 'metrics.json'
                         if metric.exists():
                             result['cells'].append(json.loads(metric.read_text())); continue
-                        records, witness, _ = capture([exe, path, block, scenario], out)
+                        records, witness, _ = capture([exe, path, block, scenario], out, {'XDG_CACHE_HOME': '/dev/null'})
                         row = next((r for r in records if r.get('block') == block and isinstance(r.get('all'), dict)), {})
                         cell = {'item_sha256': item, 'version': version, 'block': block, 'scenario': scenario, **witness,
                                 'cpu_p50_us': row.get('all', {}).get('p50_us'), 'cpu_p99_us': row.get('all', {}).get('p99_us'),
