@@ -57,5 +57,14 @@ fn main() {
             });
         }
         report(pages, "protected_churn", &mut times);
+        let (_idle_cache, mut idle_worker) = StreamCache::new(pages).unwrap();
+        for time in &mut times {
+            support::without_heap(|| {
+                let start = Instant::now();
+                assert!(black_box(idle_worker.next_job()).is_none());
+                *time = start.elapsed().as_nanos();
+            });
+        }
+        report(pages, "idle_worker", &mut times);
     }
 }
