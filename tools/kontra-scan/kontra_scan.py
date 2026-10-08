@@ -158,7 +158,7 @@ def extra_columns(r):
     r['widget_kind_counts']=json.dumps(combine(views,'kinds'),sort_keys=True,separators=(',',':'))
     r['ui_api_refs']=json.dumps(combine([x for x in inventory if x.get('compile_disposition')=='embedded'],'symbols') if inventory else combine(programs,'symbols'),sort_keys=True,separators=(',',':'))
     r['bypassed_ui_api_refs']=json.dumps(combine([x for x in inventory if x.get('bypassed')],'symbols'),sort_keys=True,separators=(',',':')) if raw_known else 'unknown'
-    r['saved_entry_sigils']=json.dumps(combine(inventory,'saved_sigils'),sort_keys=True,separators=(',',':')) if raw_known else 'unknown'
+    r['saved_entry_sigils']=json.dumps(combine(inventory,'saved_sigils'),sort_keys=True,separators=(',',':')) if raw_known and all(x.get('saved_histogram_complete') is True for x in inventory) else 'unknown'
     for target,key in [('custom_font_uses','custom_font_uses'),('picture_strips','image_strips'),('picture_frames','image_frames'),('picture_margins','image_margins')]: r[target]=count(views,key)
     r['resource_failure_reasons']=json.dumps(combine(views,'asset_failure_reasons'),sort_keys=True,separators=(',',':'))
     backgrounds=[x['background'] for x in renders if isinstance(x.get('background'),dict)]
@@ -194,6 +194,7 @@ def probe(engine, item, work, timeout, shots):
     work.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env['KONTRA_SCAN_ACTIVE'] = '1'
+    env['KONTRA_UVI_STATIC_PCM_CACHE'] = '0'
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
     reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
