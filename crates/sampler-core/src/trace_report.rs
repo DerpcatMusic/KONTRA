@@ -233,11 +233,11 @@ impl Session {
                 node.kind, node.processor, node.zone, node.group, node.bus
             );
             let metrics = format!(
-                "{} → {} dBFS; Δ {} dB | applied [{:.6}, {:.6}] | latency {} samples | enabled {} | contributors {}",
+                "{} → {} dBFS; Δ {} dB | {} [{:.6}, {:.6}] | latency {} samples | enabled {} | contributors {}",
                 db(input),
                 db(output),
                 db(if input > 0. { output / input } else { 0. }),
-                row.gain[0], row.gain[1],
+                node.gain_measurement, row.gain[0], row.gain[1],
                 row.latency_samples,
                 row.enabled,
                 row.contributors
