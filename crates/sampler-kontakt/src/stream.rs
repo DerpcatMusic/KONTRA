@@ -344,7 +344,7 @@ impl Default for StreamPolicy {
             block_frames: 64,
             voices: 1024,
             decoders: 4,
-            head_budget: 1 << 30,
+            head_budget: 128 << 20,
             lazy: false,
             resident_budget: None,
         }
