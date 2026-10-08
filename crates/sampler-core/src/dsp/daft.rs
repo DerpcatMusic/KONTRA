@@ -63,6 +63,7 @@ impl DaftSettings {
             lanes: self.parameters().map(|p| p.compile(bindings)),
             // About 2 ms of input frames, in whole control quanta.
             ramp_quanta: ((0.002 * f64::from(rate) / QUANTUM as f64).ceil() as u32).max(1),
+            modulation_index: usize::MAX,
         }
     }
 }
@@ -73,6 +74,7 @@ pub(crate) struct Daft {
     rate: f64,
     lanes: [PreparedParameter; 4],
     ramp_quanta: u32,
+    pub(crate) modulation_index: usize,
 }
 
 // Layout of `ProcessorState::aux`.
@@ -128,8 +130,9 @@ impl Daft {
         c.amplitude * ((1. - c.high) * low + c.high * high)
     }
 
-    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64) {
-        let x = self.lanes.map(|lane| lane.value(parameters, at, None));
+    fn control(&self, state: &mut ProcessorState, parameters: &[ControlRamp], at: u64, cutoff_delta: f64) {
+        let mut x = self.lanes.map(|lane| lane.value(parameters, at, None));
+        x[1] += cutoff_delta;
         let target = Self::targets(x);
         let a = &mut state.aux;
         if a[STARTED] == 0. {
@@ -169,12 +172,13 @@ impl Daft {
         block: &mut Planar,
         len: usize,
         at: u64,
+        cutoff_delta: f64,
     ) {
         let mut i = 0;
         while i < len {
             let t = at + i as u64;
             if t % QUANTUM == 0 || state.aux[STARTED] == 0. {
-                self.control(state, parameters, t);
+                self.control(state, parameters, t, cutoff_delta);
             }
             let run = ((QUANTUM - t % QUANTUM) as usize).min(len - i);
             let ramping = state.aux[DELTA..DELTA + 4].iter().any(|d| *d != 0.);
