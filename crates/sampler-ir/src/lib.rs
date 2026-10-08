@@ -74,6 +74,8 @@ pub struct Instrument {
     pub controls: Vec<Control>,
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
+    /// Ordered per-voice sends at authored processor boundaries.
+    pub voice_send_taps: Vec<VoiceSendTap>,
     pub behaviors: Vec<Behavior>,
     /// Polyphony of the whole instrument.
     pub voice_limit: Option<VoiceLimit>,
@@ -1144,6 +1146,27 @@ pub struct ProcessorControl {
     pub chain: ChainRef,
     pub index: usize,
     pub parameter: ProcessorParameter,
+    pub ramp: Time,
+}
+
+/// Completed authored stages on the named side of the voice amplitude split.
+/// Lowering preserves this boundary when one stage expands to several kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceSendPosition {
+    BeforeAmplitude(usize),
+    AfterAmplitude(usize),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceSendTap {
+    pub chain: ChainRef,
+    pub position: VoiceSendPosition,
+    pub bus: BusRef,
+    pub gain: Gain,
+    pub bypass: bool,
+    /// Optional controls use existing native Continuous ranges (linear gain,
+    /// bypass 0..1), and bind real DSP lanes rather than a parameter mirror.
+    pub gain_control: Option<ControlRef>,
+    pub bypass_control: Option<ControlRef>,
     pub ramp: Time,
 }
 
