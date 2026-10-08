@@ -2094,6 +2094,10 @@ pub(crate) mod tests {
     thread_local! {
         static COUNTING: Cell<bool> = const { Cell::new(false) };
         static CALLS: Cell<usize> = const { Cell::new(0) };
+        static ALLOCATED: Cell<usize> = const { Cell::new(0) };
+        static FREED: Cell<usize> = const { Cell::new(0) };
+        static LIVE: Cell<isize> = const { Cell::new(0) };
+        static PEAK: Cell<isize> = const { Cell::new(0) };
     }
     fn count() {
         if COUNTING.with(Cell::get) {
@@ -2104,10 +2108,19 @@ pub(crate) mod tests {
     unsafe impl GlobalAlloc for Counting {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             count();
-            unsafe { System.alloc(layout) }
+            let ptr = unsafe { System.alloc(layout) };
+            if !ptr.is_null() && COUNTING.with(Cell::get) {
+                ALLOCATED.with(|n| n.set(n.get() + layout.size()));
+                LIVE.with(|n| { n.set(n.get() + layout.size() as isize); PEAK.with(|peak| peak.set(peak.get().max(n.get()))); });
+            }
+            ptr
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             count();
+            if COUNTING.with(Cell::get) {
+                FREED.with(|n| n.set(n.get() + layout.size()));
+                LIVE.with(|n| n.set(n.get() - layout.size() as isize));
+            }
             unsafe { System.dealloc(ptr, layout) }
         }
     }
@@ -2121,6 +2134,13 @@ pub(crate) mod tests {
         f();
         COUNTING.with(|c| c.set(false));
         CALLS.with(Cell::get) - before
+    }
+
+    pub(crate) fn peak_allocated(f: impl FnOnce()) -> usize {
+        LIVE.with(|n| n.set(0));
+        PEAK.with(|n| n.set(0));
+        allocations(f);
+        PEAK.with(Cell::get).max(0) as usize
     }
 
     #[test]
