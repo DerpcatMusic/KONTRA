@@ -296,6 +296,8 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
     let master = [0.25f32; 64];
     support::without_heap(|| {
         rt.trace_host_frames(HostStage::PartFader, &output, [0.5, 0.75], true, 2);
+        rt.trace_host_frames(HostStage::AuxSend, &output, [0.2; 2], true, 2);
+        rt.trace_host_frames(HostStage::Output(2, 1), &[[0.3, 0.]; 64], [1.; 2], true, 2);
         rt.trace_host_planar(
             HostStage::RackBus(2),
             &left,
@@ -318,6 +320,8 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
     let rows = reader.drain();
     for (kind, left, right) in [
         ("host_part_fader", 0.01875, 0.028125),
+        ("host_aux_send", 0.0075, 0.0075),
+        ("host_output", 0.3, 0.),
         ("host_rack_bus", 0.05, 0.15),
         ("host_master", 0.025, 0.05),
     ] {
@@ -330,6 +334,7 @@ fn signal_trace_host_fader_rack_and_master_hooks_are_bounded_and_sample_clocked(
         assert_eq!(row.identity.external_port, Some(2));
         assert!((row.output.rms[0] - left).abs() < 1e-7);
         assert!((row.output.rms[1] - right).abs() < 1e-7);
+        if kind == "host_output" { assert_eq!(row.identity.output_channels, Some(1)); }
     }
 }
 
