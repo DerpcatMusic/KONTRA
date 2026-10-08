@@ -485,6 +485,9 @@ pub(super) fn widget_state(
         }
         Kind::TextEdit => {
             let draft=input.drafts.entry(n).or_insert_with(||match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Text(v))=>v.clone(),_=>String::new()});
+            if !ui.focused(id.as_str()) {
+                if let Some(ir::Value::Text(value))=input.values.get(&n).or(wd.value.as_ref()) {draft.clone_from(value);}
+            }
             let field=text_edit(ui,id.as_str(),draft,TextOpts {blur_on_submit:true,..Default::default()});
             if wd.enabled && field.changed.submitted {
                 let text=ir::Value::Text(draft.clone());

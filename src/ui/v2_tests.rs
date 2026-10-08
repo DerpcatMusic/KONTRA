@@ -730,3 +730,218 @@ fn widget_ids_keep_two_instances_focus_and_capture_separate() {
     assert_eq!(a[&control],was);
     assert_eq!(b[&control],501.);
 }
+
+/// Drives the real renderer, admits its edits, then paints native readback.
+struct NativeGesture<'a> {
+    face: ir::Interface,
+    script_ui: &'a mut crate::sound::ScriptUi,
+    runtime: &'a mut sampler_core::Runtime,
+    ui: Ui,
+    values: ir_view::Values,
+    state: ir_view::InputState,
+    assets: ir_view::Assets,
+}
+impl<'a> NativeGesture<'a> {
+    fn id(&self, n: usize) -> sampler_core::ControlId {
+        let ir::Source::Ksp {slot} = self.face.source else {panic!("not KSP")};
+        self.runtime.widget_id(self.runtime.active_plan(),slot,self.face.widgets[n].source_id.unwrap()).unwrap()
+    }
+    fn read(&self, n: usize) -> sampler_core::WidgetValue {
+        self.runtime.widget_value(self.runtime.active_plan(),self.id(n),0).unwrap()
+    }
+    fn sync(&mut self) {
+        for (n,w) in self.face.widgets.iter().enumerate() {
+            let Some(ui_id) = w.source_id else {continue};
+            let ir::Source::Ksp {slot} = self.face.source else {unreachable!()};
+            let plan=self.runtime.active_plan();
+            let Ok(id)=self.runtime.widget_id(plan,slot,ui_id) else {continue};
+            let Ok(value)=self.runtime.widget_value(plan,id,0) else {continue};
+            let value=match value {
+                sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),
+                sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),
+                sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
+            };
+            if let ir::Binding::Control(c)=w.binding {
+                let scalar=match value {ir::Value::Integer(v)=>f64::from(v),ir::Value::Real(v)=>v,_=>continue};
+                self.values.insert(c,scalar);
+            } else {self.state.values.insert(ir::WidgetRef(n),value);}
+        }
+    }
+    fn tick(&mut self, input: Input) {
+        let el=ir_view::view_state(&mut self.ui,"native-probe",&self.face,ir::PageRef(0),&self.assets,ir::Presentation::Vector,1.,&mut self.values,&mut self.state);
+        self.ui.frame(el,Some(Size::new(f64::from(self.face.pages[0].size.width),f64::from(ir_view::height(&self.face,ir::PageRef(0))))),input,1./60.).unwrap();
+        let pending=std::mem::take(&mut self.state.edits);
+        let plan=self.runtime.active_plan();
+        for edit in pending {
+            let id=self.id(edit.widget.0);
+            let value=match edit.value {
+                ir::Value::Integer(v)=>sampler_core::WidgetValue::Integer(i64::from(v)),
+                ir::Value::Real(v)=>sampler_core::WidgetValue::Real(v),
+                ir::Value::Text(v)=>sampler_core::WidgetValue::Text(sampler_core::Text::try_new(&v).unwrap()),
+                _=>panic!("unexpected array edit"),
+            };
+            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
+            let context=sampler_core::ControlContext {performance:self.runtime.performance(0).unwrap(),origin:sampler_core::ChannelAddress {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0},channels:1};
+            self.runtime.invoke_widget(context,plan,None,&[sampler_core::WidgetEdit {id,index:edit.index,value,interaction}]).unwrap();
+        }
+        self.runtime.render(&mut [[0.;2];16]).unwrap();
+        let mut changed=false;
+        self.runtime.drain_effects(|effect| {
+            if let Some(instance)=effect.instance {changed|=self.script_ui.apply(usize::from(instance.0),effect);}
+            true
+        });
+        if changed {
+            if let Some(face)=self.script_ui.interfaces().into_iter().find(|f|f.source==self.face.source) {self.face=ir_view::resolved(&face);}
+        }
+        self.sync();
+    }
+    fn settle(&mut self) {for _ in 0..4 {self.tick(Input::default());}}
+    fn center(&self, n: usize) -> Point {
+        let s=self.ui.scene().unwrap().surface(&format!("native-probe-ir-{n}")).unwrap();
+        Point::new(s.frame.x+s.frame.size.width/2.,s.frame.y+s.frame.size.height/2.)
+    }
+    fn hit_point(&mut self, n: usize) -> Option<Point> {
+        let id=format!("native-probe-ir-{n}");
+        let frame=self.ui.scene().unwrap().surface(&id).unwrap().frame;
+        for y in [0.5,0.1,0.9] {for x in [0.5,0.1,0.9] {
+            let p=Point::new(frame.x+frame.size.width*x,frame.y+frame.size.height*y);
+            self.pointer(p,false);
+            if self.ui.get(id.as_str()).hovered {return Some(p);}
+        }}
+        println!("CONFLUX_OCCLUDED widget={n} name={} parent={:?} enabled={} z={} hide={:?} frame={frame:?}",self.face.widgets[n].name,self.face.widgets[n].parent,self.face.widgets[n].enabled,self.face.widgets[n].z,self.face.widgets[n].hide);
+        None
+    }
+    fn pointer(&mut self, p: Point, down: bool) {
+        for _ in 0..2 {self.tick(Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()});}
+    }
+    fn key(&mut self, key: Key, mods: Mods) {self.tick(Input {keys:vec![KeyPress {key,mods}],..Default::default()}); self.tick(Input::default());}
+    fn restore(&mut self, n: usize, value: sampler_core::WidgetValue) {
+        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned())};
+        self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),cursor:0,event:0});
+        self.settle();
+    }
+    fn changed_and_retained(&mut self, n: usize, before: sampler_core::WidgetValue, family: &str) {
+        let after=self.read(n);
+        assert_ne!(before,after,"{family} gesture did not change native widget {n}");
+        self.settle();
+        assert_eq!(self.read(n),after,"{family} native readback was not retained for widget {n}");
+        println!("CONFLUX_GESTURE_PASS family={family} widget={n}");
+    }
+}
+
+#[test]
+#[ignore = "real-library gesture gate; set KONTRA_AUDIT_WIDGET_PATCH"]
+fn widget_conflux_native_gestures_and_readback() {
+    let Some(path)=std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").map(std::path::PathBuf::from) else {return};
+    if !path.exists() {return;}
+    let mut source=sampler_kontakt::read(&path).unwrap().instrument;
+    source.zones.clear(); source.assets.clear();
+    let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources};
+    let mut counts=std::collections::BTreeMap::<&str,usize>::new();
+    let mut scalar_unresolved=0;
+    for authored in loaded.interfaces {
+        let face=ir_view::resolved(&authored);
+        let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+        h.sync(); h.settle();
+        for (n,w) in face.widgets.iter().enumerate().filter(|(n,_)|face.visible(ir::WidgetRef(*n))) {
+            if !h.face.visible(ir::WidgetRef(n)) {continue;}
+            let original=if matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..}|ir::Kind::Button{..}|ir::Kind::Switch|ir::Kind::Menu{..}|ir::Kind::ValueEdit{..}|ir::Kind::TextEdit) {h.read(n)} else {continue};
+            if matches!(w.kind,ir::Kind::TextEdit) {
+                scalar_unresolved+=1;
+                println!("CONFLUX_TYPED_BINDING source={:?} ui_id={:?} name={} binding={:?} typed_readback={}",face.source,w.source_id,w.name,w.binding,matches!(h.read(n),sampler_core::WidgetValue::Text(_)));
+            }
+            match &w.kind {
+                ir::Kind::Knob {range,..}|ir::Kind::Slider {range,..} => {
+                    let before=h.read(n);
+                    let scalar=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!()};
+                    let direction=if scalar>=range.max {-1.} else {1.};
+                    let p=h.center(n);
+                    let horizontal=w.drag.is_some_and(|d|d.axis==ir::Orientation::Horizontal);
+                    let q=Point::new(p.x+if horizontal {100.*direction}else{0.},p.y-if horizontal {0.}else{100.*direction});
+                    h.pointer(p,false); h.pointer(p,true); h.pointer(q,true); h.pointer(q,false);
+                    h.changed_and_retained(n,before,"drag"); *counts.entry("drag").or_default()+=1;
+                    let before=h.read(n);
+                    let scalar=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!()};
+                    h.pointer(p,false);
+                    h.tick(Input {pointer:PointerInput {pos:Some(p),..Default::default()},wheel:Vec2::new(0.,if scalar>=range.max {120.}else{-120.}),..Default::default()});
+                    h.settle(); h.changed_and_retained(n,before,"wheel"); *counts.entry("wheel").or_default()+=1;
+                }
+                ir::Kind::Button {..}|ir::Kind::Switch => {
+                    let before=h.read(n); let p=h.hit_point(n).expect("button/switch must have an exposed hit region");
+                    h.pointer(p,false); h.pointer(p,true);
+                    if matches!(w.kind,ir::Kind::Button {momentary:true}) {
+                        let held=h.read(n);assert_ne!(held,before,"momentary press did not change native value");
+                        h.pointer(p,true);assert_eq!(h.read(n),held,"held state was not retained");
+                        h.pointer(p,false);
+                    } else {h.pointer(p,false);h.changed_and_retained(n,before,"click");}
+                    *counts.entry("button/switch click").or_default()+=1;
+                }
+                ir::Kind::Menu {items} => {
+                    let before=h.read(n);
+                    let current=match before {sampler_core::WidgetValue::Integer(v)=>v,_=>panic!()};
+                    let Some((at,_))=items.iter().enumerate().find(|(_,i)|i.visible&&i64::from(i.value)!=current) else {continue};
+                    let Some(p)=h.hit_point(n) else {continue}; h.pointer(p,false);h.pointer(p,true);
+                    println!("MENU_CAPTURE widget={n} enabled={} held={} winners={:?}",w.enabled,h.ui.get(format!("native-probe-ir-{n}")).held,h.ui.scene().unwrap().surfaces().filter(|s|h.ui.get(s.key.as_str()).held).map(|s|s.key.to_string()).collect::<Vec<_>>());
+                    h.pointer(p,false);h.settle();
+                    let s=h.ui.scene().unwrap().surface(&format!("native-probe-ir-{n}-item-{at}")).unwrap_or_else(||panic!("menu {n} enabled={} popup missing after pointer click",w.enabled));
+                    let p=Point::new(s.frame.x+s.frame.size.width/2.,s.frame.y+s.frame.size.height/2.);
+                    h.pointer(p,false);h.pointer(p,true);h.pointer(p,false);h.settle();
+                    h.changed_and_retained(n,before,"menu click"); *counts.entry("menu click").or_default()+=1;
+                }
+                ir::Kind::ValueEdit {range,display,..} => {
+                    let before=h.read(n);let current=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,_=>panic!()};
+                    let step=range.step.unwrap_or(1.);let next=if current+step<=range.max {current+step}else{current-step};
+                    h.ui.focus(format!("native-probe-ir-{n}"));h.key(Key::Enter,Mods::default());h.settle();
+                    h.key(Key::Char('a'),Mods {ctrl:true,..Default::default()});
+                    h.tick(Input {text:format!("{}",next/if display.ratio==0. {1.}else{display.ratio}),..Default::default()});
+                    h.key(Key::Enter,Mods::default());h.settle();
+                    h.changed_and_retained(n,before,"value typing");*counts.entry("value typing").or_default()+=1;
+                }
+                ir::Kind::TextEdit => {
+                    let before=h.read(n);h.ui.focus(format!("native-probe-ir-{n}"));
+                    h.key(Key::Char('a'),Mods {ctrl:true,..Default::default()});
+                    h.tick(Input {text:"W2 gesture probe".into(),..Default::default()});
+                    h.key(Key::Enter,Mods::default());h.settle();
+                    h.changed_and_retained(n,before,"text typing");*counts.entry("text typing").or_default()+=1;
+                }
+                _=>continue,
+            }
+            h.restore(n,original);
+        }
+    }
+    println!("CONFLUX_NATIVE_GESTURES {counts:?} scalar_unresolved_typed={scalar_unresolved}");
+    assert!(counts.get("drag").copied().unwrap_or(0)>=45);
+    assert_eq!(scalar_unresolved,6);
+    for family in ["wheel","button/switch click","menu click","value typing","text typing"] {assert!(counts.get(family).copied().unwrap_or(0)>0,"missing visible family gesture: {family}");}
+}
+
+#[test]
+fn widget_text_draft_preserves_focus_and_refreshes_native_readback() {
+    let script=sampler_ksp::compile("on init declare ui_text_edit @t end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let mut ui=theme::ui();let assets=ir_view::Assets::default();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();
+    state.values.insert(ir::WidgetRef(0),ir::Value::Text("initial".into()));
+    let tick=|ui:&mut Ui,state:&mut ir_view::InputState,values:&mut ir_view::Values,input:Input| {
+        let el=ir_view::view_state(ui,"text",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,values,state);
+        ui.frame(el,Some(Size::new(633.,100.)),input,1./60.).unwrap();
+    };
+    for _ in 0..4 {tick(&mut ui,&mut state,&mut values,Input::default());}
+    ui.focus("text-ir-0");
+    tick(&mut ui,&mut state,&mut values,Input{keys:vec![KeyPress{key:Key::Char('a'),mods:Mods{ctrl:true,..Default::default()}}],..Default::default()});
+    tick(&mut ui,&mut state,&mut values,Input{text:"typing".into(),..Default::default()});
+    state.values.insert(ir::WidgetRef(0),ir::Value::Text("callback".into()));
+    tick(&mut ui,&mut state,&mut values,Input::default());
+    let enter=||Input{keys:vec![KeyPress{key:Key::Enter,mods:Mods::default()}],..Default::default()};
+    tick(&mut ui,&mut state,&mut values,enter());
+    for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
+    assert_eq!(state.edits.last().unwrap().value,ir::Value::Text("typing".into()),"readback must preserve a focused draft");
+    state.values.insert(ir::WidgetRef(0),ir::Value::Text("callback".into()));
+    for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
+    ui.focus("text-ir-0");
+    tick(&mut ui,&mut state,&mut values,enter());
+    for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
+    assert_eq!(state.edits.last().unwrap().value,ir::Value::Text("callback".into()),"unfocused draft must refresh after callback or rejected admission");
+}
