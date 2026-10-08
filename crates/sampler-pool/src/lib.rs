@@ -11,6 +11,8 @@
 //!   slice through a shared reference. A unit can be held by one claim at a
 //!   time; claiming a held unit panics.
 
+mod snapshot;
+pub use snapshot::{Snapshot, SnapshotRead};
 mod claim;
 mod pool;
 
