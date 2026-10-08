@@ -322,7 +322,7 @@ fn articulations_switch_by_their_keys() {
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
         inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
-        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default(), ..Default::default() });
         for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
             let mut z = sir::Zone::new(sir::AssetRef(0));
             z.group = Some(sir::GroupRef(n));
@@ -345,19 +345,20 @@ fn articulations_switch_by_their_keys() {
     h.idle(4);
     h.press("view-0-Articulations");
     h.idle(2);
-    let lit = |h: &Harness, n: usize| h.ui.scene().unwrap().surface(&format!("art-0-{n}")).is_some();
-    assert!(lit(&h, 4), "every articulation has a row");
-    while p.shared.keyboard.pop().is_some() {}
-    h.press("art-0-2");
+    let source = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+    let ids = crate::sound::articulation::identities(&source.articulations);
+    let row_id = |n: usize| super::inside::row_id(0, &ids[n]);
+    assert!(h.ui.scene().unwrap().surface(&row_id(4)).is_some(), "every articulation has a row");
+    h.press(&format!("{}-name", row_id(2)));
     h.idle(2);
-    let sent: Vec<String> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(slot, play)| format!("{slot} {play:?}")).collect();
-    assert_eq!(sent, ["0 Note(26, 1)", "0 Note(26, 0)"], "a row taps its key and lets it go");
+    assert_eq!(p.shared.articulation_edits.pop(), Some((0, 2)), "name selection targets source identity independently of remapped inputs");
     p.shared.heard[27].store(90, Ordering::Relaxed);
     h.idle(2);
     p.shared.heard[27].store(0, Ordering::Relaxed);
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-articulations.png");
-    h.press("remap-0-Channel");
+    h.press("art-driver-0");
+    h.press("menu-item-2");
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-articulations-channel.png");
     h.press("view-0-Mapping");
@@ -374,7 +375,7 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
-        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default(), ..Default::default() });
     }
     inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
     assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
@@ -425,7 +426,7 @@ fn imported_switching_survives_the_first_ui_sync() {
                 let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
                 inst.switching = sir::Switching { owner, driver, keys };
                 for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
-                    inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default(), ..Default::default() });
                 }
                 inst.assign_alternatives(32);
                 let p = Arc::new(crate::plugin::SamplerParams::new());
@@ -461,6 +462,162 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
     super::replace_part(&mut part, "/x/New.nki".into());
     assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
     assert_eq!(part.dynamics, -1);
+}
+
+/// Interaction evidence from OUR editor, including its compact narrow layout.
+#[test]
+fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
+    use crate::sound::articulation::{Input as Trigger, identities};
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    inst.articulations = ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate().map(|(n, name)| sir::Articulation { source: format!("axis:main:{name}"), name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, ..Default::default() }).collect();
+    inst.assign_alternatives(32);
+    inst.articulations[0].alternatives.controller = Some(sir::ControllerRange { controller: 12, low: 3, high: 3 });
+    let source = Arc::new(inst);
+    let ids = identities(&source.articulations);
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/synthetic/Strings.nki".into(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].instrument = Some(source.clone());
+        view.parts[0].active = "Strings".into();
+        view.parts[0].keys = (0..128).map(|key| crate::sound::KeyLook { color: (key == 24).then_some(0), ..Default::default() }).collect::<Vec<_>>().into();
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Articulations");
+    let row = |n: usize| super::inside::row_id(0, &ids[n]);
+    let cell = |n: usize| format!("{}-trigger", row(n));
+    for n in 0..5 {
+        let surface = h.ui.scene().unwrap().surface(&row(n)).unwrap();
+        assert_eq!(surface.frame.size.height, 24., "one compact row");
+    }
+    h.type_into(&cell(0), "C#2");
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[0], &source.articulations[0], sir::Driver::Keys), Trigger::Keys(vec![49]));
+    assert!(p.shared.articulation_edits.pop().is_none(), "editing never auditions");
+    h.type_into(&cell(1), "C#2");
+    assert!(h.ui.scene().unwrap().surface("art-swap-0").is_some(), "conflict offers a swap");
+    h.press("art-swap-0");
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.input(&ids[0], &source.articulations[0], sir::Driver::Keys), Trigger::Keys(vec![25]));
+    assert_eq!(overlay.input(&ids[1], &source.articulations[1], sir::Driver::Keys), Trigger::Keys(vec![49]));
+    let header_text = |h: &Harness| h.ui.scene().unwrap().surfaces()
+        .filter(|s| s.parent.as_ref().is_some_and(|p| p.as_str() == "perf-art-0"))
+        .filter_map(|s| s.text_value.as_deref()).collect::<Vec<_>>().join(" ");
+    assert_eq!(header_text(&h), "Articulation Legato · C#0", "header uses the row's effective trigger after a swap");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "swap preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
+    h.type_into(&cell(2), "G#8");
+    assert!(h.ui.scene().unwrap().surface(&format!("{}-edit", row(2))).is_some(), "invalid input stays editable");
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![26]));
+    // Escape without changing the source or inputs.
+    h.ui.focus(format!("{}-edit", row(2)));
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    h.press(&format!("{}-more", row(2)));
+    assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some(), "row menu opened; focus {:?}", h.ui.focus_key());
+    h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface(&format!("{}-edit", row(2))).is_some(), "learn editor opened; focus {:?}", h.ui.focus_key());
+    p.shared.record_learn(1, 0, 51); // Other part port is ignored.
+    p.shared.record_learn(0, 0, 50); // On and off before a frame still learns.
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![50]));
+    let before = p.selection.read().unwrap().parts[0].articulation_overlay.inputs.clone();
+    h.press(&format!("{}-more", row(2)));
+    let menu_frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let menu_just_opened = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let menu_settled = pixels(&h.ui, 1180, 780);
+    let sample = ((menu_frame.y as usize + 2) * 1180 + menu_frame.x as usize + 20) * 4;
+    assert_eq!(&menu_just_opened[sample..sample+4], &menu_settled[sample..sample+4], "open menu is immediately opaque");
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-menu-open.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+    }
+    h.press("menu-item-5"); // Move down (rule occupies item 3).
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none(), "closed menu has no surface");
+    let just_closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    // Below the list, where no row/focus animation occurs, a closing menu
+    // used to leave its text painted as a fading ghost above the editor.
+    for y in 360..445 {
+        let range = (y * 1180 + 970) * 4 .. (y * 1180 + 1150) * 4;
+        assert_eq!(&just_closed[range.clone()], &settled[range], "closed menu must disappear immediately, scanline {y}");
+    }
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.display_order(&source.articulations), vec![0, 1, 3, 2, 4]);
+    assert_eq!(overlay.inputs, before);
+    assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
+    h.drag(&format!("{}-drag", row(4)), &row(0));
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.display_order(&source.articulations), vec![4, 0, 1, 3, 2]);
+    assert_eq!(overlay.inputs, before, "drag changes display order only");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "reorder preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+        let mut narrow = Harness::new(&p, 900., 640.);
+        narrow.press("view-0-Articulations");
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel-narrow.png"), &pixels(&narrow.ui, 900, 640), 900, 640);
+    }
+    for (driver, input, label) in [
+        (1, Trigger::Velocity(Some((19, 36))), "19–36"),
+        (2, Trigger::Channel(Some(7)), "ch 8"),
+        (3, Trigger::Controller(Some((12, 3, 3))), "CC12 3"),
+        (4, Trigger::Program(Some(90)), "prog 91"),
+        (0, Trigger::Keys(vec![]), "—"),
+    ] {
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts[0].articulation_overlay.driver = Some(driver);
+            selection.parts[0].articulation_overlay.set(&ids[0], input);
+        }
+        h.idle(3);
+        assert_eq!(header_text(&h), format!("Articulation Legato · {label}"), "header follows the effective input family");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(0)).unwrap().text_value.as_deref(), Some(label));
+    }
+}
+
+#[test]
+fn keyswitch_real_afflatus_panel_uses_normalized_rows_and_authored_colours() {
+    use crate::sound::{CoreLoader, LoadRequest, v2::V2Loader};
+    let path = Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki");
+    if !path.is_file() { eprintln!("SKIP: Afflatus missing"); return; }
+    let loaded = V2Loader.prepare(&LoadRequest { path: path.into(), sample_rate: 48000., ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+    let inst = loaded.instrument.unwrap();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: path.to_string_lossy().into_owned(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].active = inst.name.clone();
+        view.parts[0].instrument = Some(inst.clone());
+        view.parts[0].keys = loaded.scripts.keys();
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Articulations");
+    for source in crate::sound::articulation::identities(&inst.articulations) {
+        assert_eq!(h.ui.scene().unwrap().surface(&super::inside::row_id(0, &source)).unwrap().frame.size.height, 24.);
+    }
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-afflatus.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+    }
+}
+
+#[test]
+fn keyswitch_replacing_a_preset_clears_its_user_overlay() {
+    use crate::sound::articulation::Input as Trigger;
+    let mut part = crate::plugin::Part { path: "/old.nki".into(), ..Default::default() };
+    part.articulation_overlay.set("native:groups:0:rows:0:keys:24-24#0", Trigger::Keys(vec![49]));
+    part.articulation_overlay.keep_originals = true;
+    part.articulation_overlay.driver = Some(3);
+    super::replace_part(&mut part, "/new.nki".into());
+    assert_eq!(part.articulation_overlay, Default::default());
 }
 
 #[test]
@@ -514,8 +671,10 @@ fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
     let root = ir_view::view(&mut ui, &face, PageRef(0), &ir_view::Assets::default(), ir::Presentation::Bitmap, 1., &mut ir_view::Values::default());
     ui.frame(root, Some(Size::new(200.,100.)), Input::default(), 1./60.).unwrap();
     assert_eq!(face.widgets.len(),7000);
-    assert!(ui.scene().unwrap().surface("ir-0").is_some());
-    assert!(ui.scene().unwrap().surface("ir-1").is_none());
+    assert!(ui.scene().unwrap().surface("ir-0").is_none(),"visible passive label must not regain a named hit target");
+
+    assert!(ui.scene().unwrap().surface("/ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("/ir-1").is_none());
 }
 
 /// Audit-only gesture probe: the same renderer and input loop as the editor.
@@ -653,7 +812,7 @@ fn widget_conflux_placement_and_capture() {
             println!("CONFLUX_NCKP raw={} parsed={} raw_knobs={knobs}",raw_names.len(),parsed_names.len());
         }
     }
-    source.zones.clear();
+    source.retain_zones(|_|false);
     source.assets.clear();
     let loaded = sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path), ..Default::default()}).unwrap();
     let face = ir_view::resolved(loaded.interfaces.iter().max_by_key(|f|f.widgets.len()).unwrap());
@@ -814,7 +973,8 @@ impl<'a> NativeGesture<'a> {
             let value=match value {
                 sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),
                 sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),
-                sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not stored widget readback"),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
+                sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
+                sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not a readback value"),
             };
             if let ir::Binding::Control(c)=w.binding {
                 let scalar=match value {ir::Value::Integer(v)=>f64::from(v),ir::Value::Real(v)=>v,_=>continue};
@@ -835,7 +995,7 @@ impl<'a> NativeGesture<'a> {
                 ir::Value::Text(v)=>sampler_core::WidgetValue::Text(sampler_core::Text::try_new(&v).unwrap()),
                 _=>panic!("unexpected array edit"),
             };
-            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
+            let interaction=sampler_core::WidgetInteraction {index:edit.index,cursor:edit.cursor,event:edit.event,mouse_over:edit.mouse_over,modifiers:u8::from(edit.mods.shift)|u8::from(edit.mods.ctrl)<<1|u8::from(edit.mods.alt)<<2,..Default::default()};
             let context=sampler_core::ControlContext {performance:self.runtime.performance(0).unwrap(),origin:sampler_core::ChannelAddress {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0},channels:1};
             self.runtime.invoke_widget(context,plan,None,&[sampler_core::WidgetEdit {id,index:edit.index,value,interaction}]).unwrap();
         }
@@ -871,8 +1031,8 @@ impl<'a> NativeGesture<'a> {
     }
     fn key(&mut self, key: Key, mods: Mods) {self.tick(Input {keys:vec![KeyPress {key,mods}],..Default::default()}); self.tick(Input::default());}
     fn restore(&mut self, n: usize, value: sampler_core::WidgetValue) {
-        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not stored widget readback"),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned())};
-        self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),cursor:0,event:0});
+        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload cannot be restored as state")};
+        self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),mouse_over:false,cursor:0,event:0});
         self.settle();
     }
     fn changed_and_retained(&mut self, n: usize, before: sampler_core::WidgetValue, family: &str) {
@@ -890,15 +1050,20 @@ fn widget_conflux_native_gestures_and_readback() {
     let Some(path)=std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").map(std::path::PathBuf::from) else {return};
     if !path.exists() {return;}
     let mut source=sampler_kontakt::read(&path).unwrap().instrument;
-    source.zones.clear(); source.assets.clear();
+    source.retain_zones(|_|false); source.assets.clear();
     let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
     let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
     let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
     let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
     let mut counts=std::collections::BTreeMap::<&str,usize>::new();
     let mut scalar_unresolved=0;
+    let mut main_drag=0;
     for authored in loaded.interfaces {
         let face=ir_view::resolved(&authored);
+        if face.source==(ir::Source::Ksp {slot:2}) {
+            assert_eq!(face.widgets.len(),378);
+            assert_eq!(face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n))&&matches!(w.kind,ir::Kind::Knob{..})).count(),45);
+        }
         let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
         h.sync(); h.settle();
         for (n,w) in face.widgets.iter().enumerate().filter(|(n,_)|face.visible(ir::WidgetRef(*n))) {
@@ -917,12 +1082,19 @@ fn widget_conflux_native_gestures_and_readback() {
                     let horizontal=w.drag.is_some_and(|d|d.axis==ir::Orientation::Horizontal);
                     let q=Point::new(p.x+if horizontal {100.*direction}else{0.},p.y-if horizontal {0.}else{100.*direction});
                     h.pointer(p,false); h.pointer(p,true); h.pointer(q,true); h.pointer(q,false);
-                    h.changed_and_retained(n,before,"drag"); *counts.entry("drag").or_default()+=1;
+                    h.changed_and_retained(n,before,"drag");
+                    let after=match h.read(n) {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!("scalar drag needs numeric readback")};
+                    assert!((after-scalar)*direction>0.,"native drag moved against authored direction");
+                    *counts.entry("drag").or_default()+=1;
+                    if face.source==(ir::Source::Ksp {slot:2}) {main_drag+=1;}
                     let before=h.read(n);
                     let scalar=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!()};
                     h.pointer(p,false);
                     h.tick(Input {pointer:PointerInput {pos:Some(p),..Default::default()},wheel:Vec2::new(0.,if scalar>=range.max {120.}else{-120.}),..Default::default()});
-                    h.settle(); h.changed_and_retained(n,before,"wheel"); *counts.entry("wheel").or_default()+=1;
+                    h.settle(); h.changed_and_retained(n,before,"wheel");
+                    let after=match h.read(n) {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!("scalar wheel needs numeric readback")};
+                    assert!((after-scalar)*if scalar>=range.max {-1.}else{1.}>0.,"native wheel moved against authored direction");
+                    *counts.entry("wheel").or_default()+=1;
                 }
                 ir::Kind::Button {..}|ir::Kind::Switch => {
                     let before=h.read(n); let p=h.hit_point(n).expect("button/switch must have an exposed hit region");
@@ -968,7 +1140,9 @@ fn widget_conflux_native_gestures_and_readback() {
         }
     }
     println!("CONFLUX_NATIVE_GESTURES {counts:?} scalar_unresolved_typed={scalar_unresolved}");
-    assert!(counts.get("drag").copied().unwrap_or(0)>=45);
+    assert_eq!(main_drag,45);
+    assert_eq!(counts.get("drag").copied().unwrap_or(0),48);
+    assert_eq!(counts.get("wheel").copied().unwrap_or(0),48);
     assert_eq!(scalar_unresolved,6);
     for family in ["wheel","button/switch click","menu click","value typing","text typing"] {assert!(counts.get(family).copied().unwrap_or(0)>0,"missing visible family gesture: {family}");}
 }
@@ -1000,4 +1174,282 @@ fn widget_text_draft_preserves_focus_and_refreshes_native_readback() {
     for _ in 0..3 {tick(&mut ui,&mut state,&mut values,Input::default());}
     assert_eq!(state.edits.last().unwrap().value,ir::Value::Text("callback".into()),"unfocused draft must refresh after callback or rejected admission");
 
+}
+
+#[test]
+fn widget_file_drop_uses_hit_order_namespace_and_atomic_path_limits() {
+    let script=sampler_ksp::compile("on init declare ui_mouse_area $drop end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    let assets=ir_view::Assets::default();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();let mut ui=theme::ui();
+    let mut frame=|ui:&mut Ui,face:&ir::Interface| {let el=ir_view::view_state(ui,"part-a",face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);ui.frame(el,Some(Size::new(400.,200.)),Input::default(),1./60.).unwrap();};
+    frame(&mut ui,&face);
+    let at=Point::new(50.,50.);let paths=vec!["/tmp/a.WAV".into(),"/tmp/a.mid".into(),"/tmp/a.nka".into()];
+    let (widget,edits)=ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).expect("MouseArea takes OS drop");
+    assert_eq!(widget,ir::WidgetRef(0));assert_eq!(edits.len(),3);
+    for (index,edit) in edits.iter().enumerate() {assert_eq!(edit.index,index as u32);assert_eq!(edit.event,5);assert!(edit.mouse_over);}
+    assert!(matches!(&edits[0].value,ir::Value::DropPath {kind:ir::DropKind::Audio,path} if path=="/tmp/a.WAV"));
+    assert!(matches!(edits[1].value,ir::Value::DropPath {kind:ir::DropKind::Midi,..}));
+    assert!(matches!(edits[2].value,ir::Value::DropPath {kind:ir::DropKind::Array,..}));
+    assert_eq!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,false).unwrap().1[0].event,4);
+    assert!(ir_view::file_drop(&ui,"part-b",&face,at,&paths,true).is_none());
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&vec!["/tmp/a.wav".into();33],true).is_none());
+    assert_eq!(ir_view::file_drop_target(&ui,"part-a",&face,at),Some(ir::WidgetRef(0)),"invalid batch still targets a widget and must veto rack fallback");
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&["/tmp/unknown.exe".into()],true).is_none());
+    let long=std::path::PathBuf::from(format!("/tmp/{}.wav","x".repeat(sampler_core::TEXT_CAPACITY)));
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&[long],true).is_none());
+    let mut passive=ir::Widget::new("label",ir::PageRef(0),ir::Rect::new(0,0,100,100),ir::Kind::Label);passive.z=10;
+    face.widgets.push(passive);frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_some());
+    face.widgets[1].kind=ir::Kind::Button {momentary:false};frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
+    face.widgets.pop();face.widgets[0].enabled=false;frame(&mut ui,&face);
+    assert!(ir_view::file_drop(&ui,"part-a",&face,at,&paths,true).is_none());
+}
+
+#[test]
+fn widget_xy_modes_preserve_active_cursor_and_relative_axis_scaling() {
+    fn tick(ui:&mut Ui,face:&ir::Interface,state:&mut ir_view::InputState,p:Point,down:bool) {
+        for _ in 0..2 {
+            let el=ir_view::view_state(ui,"xy-test",face,ir::PageRef(0),&ir_view::Assets::default(),ir::Presentation::Vector,1.,&mut ir_view::Values::default(),state);
+            ui.frame(el,Some(Size::new(400.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();
+        }
+    }
+    let script=sampler_ksp::compile("on init declare ui_xy ?pad[4] end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    let values=vec![0.25,0.25,0.75,0.75];
+    face.widgets[0].rect=ir::Rect::new(0,0,100,100);face.widgets[0].active_index=Some(2);face.widgets[0].value=Some(ir::Value::Reals(values.clone()));
+    face.widgets[0].kind=ir::Kind::Xy {cursors:2,sensitivity:[Some(500),Some(500)],mouse_mode:Some(0)};
+    let mut ui=theme::ui();let mut state=ir_view::InputState::default();
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),false);
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),true);
+    assert!(state.edits.is_empty(),"mode0 ignores inactive cursor clicks");
+    tick(&mut ui,&face,&mut state,Point::new(25.,75.),false);
+    tick(&mut ui,&face,&mut state,Point::new(75.,25.),true);
+    assert!(state.edits.iter().all(|e|e.cursor==2));state.edits.clear();
+    tick(&mut ui,&face,&mut state,Point::new(85.,5.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if (v[2]-0.8).abs()<1e-9 && (v[3]-0.85).abs()<1e-9 && v[..2]==values[..2]));
+    assert_eq!(state.edits.iter().map(|e|e.index).collect::<Vec<_>>(),[2,3]);
+    tick(&mut ui,&face,&mut state,Point::new(85.,5.),false);
+    face.widgets[0].kind=ir::Kind::Xy {cursors:2,sensitivity:[Some(500),Some(500)],mouse_mode:Some(1)};
+    state=Default::default();ui=theme::ui();
+    tick(&mut ui,&face,&mut state,Point::new(10.,90.),false);tick(&mut ui,&face,&mut state,Point::new(10.,90.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==values),"mode1 press emits callback without a jump");
+    assert_eq!(state.edits.len(),2);state.edits.clear();
+    tick(&mut ui,&face,&mut state,Point::new(20.,70.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if (v[2]-0.8).abs()<1e-9 && (v[3]-0.85).abs()<1e-9));
+    face.widgets[0].kind=ir::Kind::Xy {cursors:1,sensitivity:[Some(1),Some(1)],mouse_mode:Some(2)};face.widgets[0].active_index=None;face.widgets[0].value=Some(ir::Value::Reals(vec![0.25,0.25]));state=Default::default();ui=theme::ui();
+    tick(&mut ui,&face,&mut state,Point::new(10.,20.),false);tick(&mut ui,&face,&mut state,Point::new(10.,20.),true);
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==vec![0.1,0.8]),"mode2 absolute position ignores sensitivity");
+}
+
+#[test]
+fn widget_table_fast_stroke_edits_crossed_columns_as_one_frame_batch() {
+    let script=sampler_ksp::compile("on init declare ui_table %table[8](1,1,100) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());face.widgets[0].rect=ir::Rect::new(0,0,80,100);
+    let mut ui=theme::ui();let mut state=ir_view::InputState::default();
+    let mut tick=|p:Point,down:bool,state:&mut ir_view::InputState| {for _ in 0..2 {let el=ir_view::view_state(&mut ui,"table-test",&face,ir::PageRef(0),&ir_view::Assets::default(),ir::Presentation::Vector,1.,&mut ir_view::Values::default(),state);ui.frame(el,Some(Size::new(400.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();}};
+    tick(Point::new(5.,80.),false,&mut state);tick(Point::new(5.,80.),true,&mut state);state.edits.clear();
+    tick(Point::new(75.,10.),true,&mut state);
+    let indices=state.edits.iter().map(|e|e.index).collect::<std::collections::BTreeSet<_>>();assert_eq!(indices,(0..8).collect());
+    assert!(state.edits.iter().all(|e|e.cursor==7&&e.event==2));
+    assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==vec![20.,30.,40.,50.,60.,70.,80.,90.]));
+}
+
+#[test]
+fn widget_ksp_global_z_hit_order_crosses_parent_boundaries() {
+    let script=sampler_ksp::compile("on init declare ui_panel $p declare ui_knob $child(0,100,1) declare ui_knob $other(0,100,1) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    for w in &mut face.widgets {w.rect=ir::Rect::new(10,10,80,80);}
+    face.widgets[0].rect=ir::Rect::new(10,10,100,100);
+    face.widgets[1].rect=ir::Rect::new(0,0,80,80);face.widgets[1].parent=Some(ir::WidgetRef(0));face.widgets[1].z=9;face.widgets[2].z=5;
+    let (delta,captured)=audit_motion(&face,1,0.,-30.);assert!(captured&&delta>0.,"child with higher global layer captures over later foreign sibling");
+    face.widgets[0].hidden=true;
+    let (delta,captured)=audit_motion(&face,2,0.,-30.);assert!(captured&&delta>0.,"hidden parent removes child hit target");
+}
+
+#[test]
+fn widget_authored_label_overflow_owns_nested_wheel_and_yields_at_boundary() {
+    let script=sampler_ksp::compile("on init declare ui_label $label(1,1) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    face.widgets[0].rect=ir::Rect::new(0,0,120,60);face.widgets[0].text=(0..50).map(|n|format!("Label line {n}")).collect::<Vec<_>>().join("\n");
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();let assets=ir_view::Assets::default();
+    let mut tick=|ui:&mut Ui,input:Input| {let authored=ir_view::view_state(ui,"label-test",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);let el=col![authored,block(200.,500.)].w(200.).h(120.).scroll().id("label-parent");ui.frame(el,Some(Size::new(200.,120.)),input,1./60.).unwrap();};
+    for _ in 0..4 {tick(&mut ui,Input::default());}
+    let wheel=|delta:f64|Input {pointer:PointerInput {pos:Some(Point::new(50.,30.)),..Default::default()},wheel:Vec2::new(0.,delta),..Default::default()};
+    tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!(ui.scroll("/label-test-ir-0")[1]>0.,"authored label scrolls its own overflow");assert_eq!(ui.scroll("label-parent"),[0.,0.]);
+    tick(&mut ui,wheel(-30.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert_eq!(ui.scroll("/label-test-ir-0")[1],20.);assert_eq!(ui.scroll("label-parent"),[0.,0.]);
+    ui.set_scroll("/label-test-ir-0",[0.,100000.]);for _ in 0..20 {tick(&mut ui,Input::default());}
+    let end=ui.scroll("/label-test-ir-0");tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!((ui.scroll("/label-test-ir-0")[1]-end[1]).abs()<1e-6);
+    // One native-layout tick may settle a subpixel content extent at the boundary.
+    tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!(ui.scroll("label-parent")[1]>0.,"exhausted label yields wheel to parent");
+}
+
+#[test]
+#[ignore = "real-library footer text gate; set KONTRA_AUDIT_WIDGET_PATCH"]
+fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
+    let Some(path)=std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").map(std::path::PathBuf::from) else {return};
+    let mut source=sampler_kontakt::read(&path).unwrap().instrument;
+    let saved=source.behaviors.iter().flat_map(|b|b.state.iter()).filter_map(|(name,value)| {
+        if let sampler_ir::Saved::Text(value)=value {Some((name.trim_start_matches('@').to_owned(),value.clone()))}else{None}
+    }).collect::<std::collections::HashMap<_,_>>();
+    source.retain_zones(|_|false);source.assets.clear();
+    let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path.clone()),..Default::default()}).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let controls=loaded.interfaces.iter().flat_map(|face|face.widgets.iter().enumerate().map(move |(n,w)|(face.source,n,w.clone()))).collect();
+    let face=loaded.interfaces.into_iter().find(|f|f.source==(ir::Source::Ksp {slot:2})).unwrap();
+    let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+    h.sync();
+    let mut count=0;
+    for (n,w) in face.widgets.iter().enumerate().filter(|(_,w)|w.name.starts_with("@Footer__Macro__Name__")) {
+        let sampler_core::WidgetValue::Text(actual)=h.read(n) else {panic!("footer needs typed text")};
+        let published=h.state.values.get(&ir::WidgetRef(n));
+        let expected=saved.get(w.name.trim_start_matches('@')).expect("footer name has saved state");
+        let authored=match &w.value {Some(ir::Value::Text(s))=>Some(s),_=>None};
+        println!("FOOTER_TEXT widget={n} saved_bytes={} saved_chars={} runtime_bytes={} runtime_chars={} authored_matches={} typed_matches={}",expected.len(),expected.chars().count(),actual.as_str().len(),actual.as_str().chars().count(),authored.is_some_and(|s|s==expected),matches!(published,Some(ir::Value::Text(s)) if s==actual.as_str()));
+        assert!(actual.as_str()==expected,"footer native readback differs from complete saved text");
+        assert!(matches!(published,Some(ir::Value::Text(s)) if s==actual.as_str()),"typed publication lost footer text");
+        count+=1;
+    }
+    assert_eq!(count,6);
+    let package=std::sync::Arc::new(super::native_runtime::Package::load(&path).unwrap_or_else(|_|panic!("native package load failed; private details omitted")));
+    let session=super::native_runtime::Session::new(package,&face.native_ui.as_ref().unwrap().entry,controls).unwrap_or_else(|_|panic!("native session init failed; private details omitted"));
+    session.update_view(&face,&h.values,&h.state.values,&h.state.meters);
+    let graph=session.render().unwrap_or_else(|_|panic!("native graph render failed; private details omitted"));
+    fn texts(node:&mlua::Table,out:&mut Vec<(String,String)>) {
+        let kind=node.get::<String>("kind").unwrap_or_default();
+        if matches!(kind.as_str(),"Text"|"TextInput") {
+            let props=node.get::<mlua::Table>("props").unwrap();
+            out.push((kind,props.get::<String>("text").unwrap_or_default()));
+        }
+        if let Ok(children)=node.get::<mlua::Table>("children") {for child in children.sequence_values::<mlua::Table>() {texts(&child.unwrap(),out);}}
+        if let Ok(modifiers)=node.get::<mlua::Table>("modifiers") {for modifier in modifiers.sequence_values::<mlua::Table>() {
+            let modifier=modifier.unwrap();let kind=modifier.get::<String>("name").unwrap_or_default();
+            if matches!(kind.as_str(),"background"|"overlay") {if let Ok(child)=modifier.get::<mlua::Table>("value") {texts(&child,out);}}
+            else if kind=="popover" {if let Ok(value)=modifier.get::<mlua::Table>("value") {if let Ok(child)=value.get::<mlua::Table>("content") {texts(&child,out);}}}
+        }}
+    }
+    let mut labels=Vec::new();texts(&graph,&mut labels);
+    let mut matched=0;
+    for w in face.widgets.iter().filter(|w|w.name.starts_with("@Footer__Macro__Name__")) {
+        let expected=saved.get(w.name.trim_start_matches('@')).unwrap();
+        let matches=labels.iter().filter(|(_,text)|text==expected).collect::<Vec<_>>();
+        println!("FOOTER_NATIVE_TEXT ui_id={:?} chars={} matching_text_nodes={} kinds={:?}",w.source_id,expected.chars().count(),matches.len(),matches.iter().map(|(kind,_)|kind).collect::<Vec<_>>());
+        assert!(!matches.is_empty(),"complete footer text missing from rendered native graph");matched+=1;
+    }
+    assert_eq!(matched,6);
+}
+
+#[test]
+fn widget_mouse_area_press_release_reaches_native_callback_without_drop_configuration() {
+    let instrument=sampler_ir::Instrument {behaviors:vec![sampler_ir::Behavior {name:String::new(),language:sampler_ir::Language::Ksp,source:"on init declare ui_mouse_area $area declare $calls declare $event declare $over end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE $over := $NI_MOUSE_OVER_CONTROL end on".into(),slot:Some(0),state:vec![],requires:vec![]}],..Default::default()};
+    let loaded=sampler_kontakt::prepare(instrument,vec![],&Default::default()).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let mut face=loaded.interfaces.into_iter().next().unwrap();face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    let mut h=NativeGesture {face,script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+    h.sync();h.settle();
+    let plan=h.runtime.active_plan();let cell=|h:&NativeGesture<'_>,index|h.runtime.script_cell(plan,sampler_core::ScriptInstanceId(0),index).unwrap();
+    h.pointer(Point::new(50.,50.),false);h.pointer(Point::new(50.,50.),true);
+    assert_eq!(cell(&h,1),1,"MouseArea press must run ui_control once");assert_eq!(cell(&h,2),0);assert_eq!(cell(&h,3),1);
+    h.pointer(Point::new(50.,50.),true);assert_eq!(cell(&h,1),1,"holding must not repeat press");
+    h.pointer(Point::new(150.,150.),false);
+    assert_eq!(cell(&h,1),2,"captured release outside must run ui_control once");assert_eq!(cell(&h,2),1);assert_eq!(cell(&h,3),0);
+    assert_eq!(h.read(0),sampler_core::WidgetValue::Integer(0),"button metadata must retain the MouseArea handle value");
+}
+
+#[test]
+fn widget_missing_feedback_keeps_current_authored_value_separate_from_reset_default() {
+    let script=sampler_ksp::compile("on init declare ui_knob $k(0,2,1) $k := 1 set_control_par(get_ui_id($k),$CONTROL_PAR_DEFAULT_VALUE,0) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());face.widgets[0].rect=ir::Rect::new(0,0,100,100);
+    assert_eq!(face.widgets[0].value,Some(ir::Value::Integer(1)));
+    let ir::Binding::Control(control)=face.widgets[0].binding else {panic!()};
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();
+    let mut tick=|p:Point,down:bool,values:&mut ir_view::Values,state:&mut ir_view::InputState| {for _ in 0..2 {let el=ir_view::view_state(&mut ui,"missing-feedback",&face,ir::PageRef(0),&Default::default(),ir::Presentation::Vector,1.,values,state);ui.frame(el,Some(Size::new(200.,200.)),Input {pointer:PointerInput {pos:Some(p),buttons:if down {Buttons::PRIMARY}else{Buttons::default()},..Default::default()},..Default::default()},1./60.).unwrap();}};
+    tick(Point::new(50.,50.),false,&mut values,&mut state);
+    assert_eq!(values[&control],1.,"missing readback must seed current authored value, not reset default");
+    assert!(state.edits.is_empty(),"passive paint must not produce a widget edit");
+    tick(Point::new(50.,50.),true,&mut values,&mut state);tick(Point::new(50.,30.),true,&mut values,&mut state);
+    assert!(state.edits.is_empty(),"sub-step drag must stay at current1, never jump to reset0");
+    tick(Point::new(50.,-50.),true,&mut values,&mut state);
+    assert_eq!(values[&control],2.,"unrounded accumulator must eventually cross a step from authored current value");
+}
+
+#[test]
+fn v1_mixer_view_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("tab-mixer");
+    h.idle(4);
+    for id in ["mix-narrow", "mix-wide", "mix-spectrum-off", "mix-spectrum-part", "mix-spectrum-master"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 control missing: {id}");
+    }
+}
+
+#[test]
+fn v1_ram_and_disk_readouts_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let h = Harness::new(&p, 1180., 780.);
+    shoot(&h.ui, 1180, 780, "settings-telemetry.png");
+    for id in ["readout-ram", "readout-disk"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 readout missing: {id}");
+    }
+}
+
+#[test]
+fn v1_mixer_aux_and_host_bus_controls_are_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    {
+        let mut selection = p.selection.write().unwrap();
+        selection.parts = vec![crate::plugin::Part { path: "/synthetic/Piano.nki".into(), output: 1, aux: 0, ..Default::default() }];
+        selection.order = vec![0];
+    }
+    let mut h = Harness::new(&p, 1180., 780.); h.press("tab-mixer"); h.idle(4);
+    for id in ["mt-aux-65536", "mt-send-65536", "mt-strip-1", "mt-strip-2"] {
+        assert!(h.ui.scene().unwrap().surface(id).is_some(), "v1 mixer control missing: {id}");
+    }
+    h.press("mt-out-2"); h.press("mt-pick-2-3");
+    assert_eq!(p.selection.read().unwrap().bus(1).port, 3, "bus remaps to host 7/8");
+    h.press("mt-aux-65536"); h.press("menu-item-4");
+    assert_eq!(p.selection.read().unwrap().parts[0].aux, 2);
+    assert!(h.ui.scene().unwrap().surface("mt-strip-3").is_some(), "send destination has a strip");
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface("mt-rename-2").is_some());
+    h.tick(Input { keys: vec![KeyPress { key: Key::Char('a'), mods: Mods { ctrl: true, ..Default::default() } }], ..Default::default() });
+    h.tick(Input { text: "Piano dry".into(), ..Default::default() });
+    h.press("mt-rename-2");
+    assert_eq!(p.selection.read().unwrap().bus(1).name, "Piano dry");
+    p.selection.write().unwrap().bus_mut(1).gain = -9.; h.idle(2);
+    let at = super::tests::center(&h.ui, "mt-name-2");
+    for buttons in [Buttons::default().set(Button::Secondary, true), Buttons::default()] {
+        h.tick(Input { pointer: PointerInput { pos: Some(at), buttons, ..Default::default() }, ..Default::default() });
+    }
+    h.idle(2); h.press("menu-item-1");
+    let selection = p.selection.read().unwrap();
+    let bus = selection.bus(1);
+    assert_eq!((bus.gain, bus.port, bus.name.as_str()), (0., 3, "Piano dry"), "reset preserves name and host routing");
+    let mut bytes = Vec::new();
+    use moose::core::custom_state::{StateCursor, StateField};
+    selection.write_field(&mut bytes);
+    let restored = crate::plugin::Selection::read_field(&mut StateCursor::new(&bytes)).unwrap();
+    assert!(restored == *selection);
+    shoot(&h.ui, 1180, 780, "settings-routing.png");
+}
+
+#[test]
+fn v1_sample_folder_creator_is_reachable() {
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.); h.press("app-menu");
+    assert!(h.ui.scene().unwrap().surfaces().any(|s| s.text_value.as_deref() == Some("Create library from folder…")), "v1 library creator menu is missing");
 }

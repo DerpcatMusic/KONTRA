@@ -20,9 +20,9 @@ mod lower;
 pub mod model;
 pub mod nckp;
 mod parser;
-mod sema;
 #[cfg(feature = "scan")]
 pub mod scan;
+mod sema;
 pub mod ui;
 
 pub use diag::{Error, Kind};
@@ -678,56 +678,7 @@ pub fn init_engine_pars(
     limits: Limits,
     environment: &Environment,
 ) -> Result<Vec<EnginePar>, Error> {
-    #[cfg(feature="scan")]
-    scan::reset_script();
-    let result=init_engine_pars_inner(source,limits,environment);
-    #[cfg(feature="scan")]
-    scan::record(&result,source,environment.slot);
-    result
-}
-fn init_engine_pars_inner(source: &str,limits: Limits,environment: &Environment)->Result<Vec<EnginePar>,Error>{
-    let mut syms = lexer::Interner::default();
-    (|| {
-        #[cfg(feature="scan")]
-        scan::stage("lex");
-        let mut toks = lexer::lex(source, &mut syms)?;
-        #[cfg(feature="scan")]
-        scan::stage("preprocess");
-        lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        #[cfg(feature="scan")]
-        scan::stage("parse");
-        let ast = parser::parse(&toks, &syms)?;
-        let budget = sema::Budget {
-            variables: limits.variables,
-            array_cells: limits.array_cells,
-        };
-        #[cfg(feature="scan")]
-        scan::stage("sema");
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment)?;
-        let mut writes: Vec<_> = init
-            .engine
-            .iter()
-            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
-                parameter: eval::symbol_name(&hir, parameter)
-                    .unwrap_or_else(|| parameter.to_string()),
-                value,
-                group,
-                slot,
-                generic,
-            })
-            .collect();
-        writes.sort_by(|a, b| {
-            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
-                &b.parameter,
-                b.group,
-                b.slot,
-                b.generic,
-            ))
-        });
-        Ok(writes)
-    })()
-    .map_err(|f: diag::Fault| f.locate(source))
+    initialize(source, limits, environment).map(|initialized| initialized.engine_pars())
 }
 
 /// Compile a script. `on init` runs here on the control thread against
@@ -740,12 +691,7 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
-    #[cfg(feature = "scan")]
-    scan::reset_script();
-    let result = compile_inner(source, rate, limits, controls, environment);
-    #[cfg(feature = "scan")]
-    scan::record(&result, source, environment.slot);
-    result
+    compile_inner(source, rate, limits, controls, environment)
 }
 
 fn compile_inner(
@@ -776,6 +722,217 @@ fn compile_inner(
     if controls.len() > limits.variables {
         return Err(error("control binding budget exceeded"));
     }
+    let initialized = initialize(source, limits, environment)?;
+    compile_initialized(source, rate, limits, controls, initialized)
+}
+
+/// Rate-independent frontend state after one resource-aware `on init`.
+/// Consumed by `compile_initialized`; it is never shared between instances.
+pub struct Initialized {
+    hir: hir::Hir,
+    init: eval::Initial,
+    conditions: BTreeSet<String>,
+    environment: Environment,
+    #[cfg(feature = "scan")]
+    observation: scan::Checkpoint,
+}
+
+impl Initialized {
+    pub fn engine_pars(&self) -> Vec<EnginePar> {
+        let mut writes: Vec<_> = self
+            .init
+            .engine
+            .iter()
+            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
+                parameter: eval::symbol_name(&self.hir, parameter)
+                    .unwrap_or_else(|| parameter.to_string()),
+                value,
+                group,
+                slot,
+                generic,
+            })
+            .collect();
+        writes.sort_by(|a, b| {
+            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
+                &b.parameter,
+                b.group,
+                b.slot,
+                b.generic,
+            ))
+        });
+        writes
+    }
+
+    /// Conservatively retain addressable effect slots when runtime code writes
+    /// engine parameters. No initializer or callback lowering is run to query it.
+    pub fn writes_effect_slots(&self) -> bool {
+        fn arg(a: &hir::Arg) -> bool {
+            match a {
+                hir::Arg::Expr(e) => expr(e),
+                hir::Arg::Place(hir::Place::Elem(_, e)) => expr(e),
+                _ => false,
+            }
+        }
+        fn expr(e: &hir::Expr) -> bool {
+            use hir::ExprKind as E;
+            match &e.kind {
+                E::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                E::Neg(e)
+                | E::BitNot(e)
+                | E::Not(e)
+                | E::Cast(e)
+                | E::LoadElem(_, e)
+                | E::SysElem(_, e) => expr(e),
+                E::Arith(_, a, b) | E::Compare(_, a, b) | E::Logic(_, a, b) => expr(a) || expr(b),
+                E::Concat(es) => es.iter().any(expr),
+                _ => false,
+            }
+        }
+        fn writes(body: &[hir::Stmt]) -> bool {
+            body.iter().any(|s| match &s.kind {
+                hir::StmtKind::Builtin(builtin, args) => {
+                    *builtin == builtins::Builtin::SetEnginePar || args.iter().any(arg)
+                }
+                hir::StmtKind::Assign(place, value) => {
+                    expr(value) || matches!(place, hir::Place::Elem(_, e) if expr(e))
+                }
+                hir::StmtKind::Fill(_, values) => values.iter().any(expr),
+                hir::StmtKind::If(e, yes, no) => expr(e) || writes(yes) || writes(no),
+                hir::StmtKind::While(e, body) => expr(e) || writes(body),
+                hir::StmtKind::Select(e, cases) => expr(e) || cases.iter().any(|c| writes(&c.body)),
+                _ => false,
+            })
+        }
+        // ponytail: conservatively retain slots; precise function reachability if RAM matters.
+        // Functions can be called by runtime callbacks. Conservative admission
+        // avoids dropping a slot reached indirectly or through a variable.
+        self.hir
+            .callbacks
+            .iter()
+            .filter(|c| c.kind != hir::CallbackKind::Init)
+            .any(|c| writes(&c.body))
+            || self.hir.functions.iter().any(|f| writes(&f.body))
+    }
+}
+
+pub fn initialize(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
+    #[cfg(feature = "scan")]
+    scan::reset_script();
+    let result = initialize_inner(source, limits, environment);
+    #[cfg(feature = "scan")]
+    if result.is_err() {
+        scan::record(&result, source, environment.slot);
+    }
+    result
+}
+fn initialize_inner(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
+    let audit_begin = std::time::Instant::now();
+    if source.len() > limits.source_bytes {
+        return Err(Error {
+            offset: 0,
+            line: 1,
+            column: 1,
+            kind: diag::Kind::Error,
+            builtin: None,
+            message: "source byte budget exceeded".into(),
+        });
+    }
+    let mut syms = lexer::Interner::default();
+    let (hir, init, conditions) = (|| {
+        let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature = "scan")]
+        scan::stage("preprocess");
+        let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature = "scan")]
+        scan::stage("parse");
+        let ast = parser::parse(&toks, &syms)?;
+        let budget = sema::Budget {
+            variables: limits.variables,
+            array_cells: limits.array_cells,
+        };
+        #[cfg(feature = "scan")]
+        scan::stage("sema");
+        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_frontend\",\"ms\":{}}}",
+                audit_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        let init_begin = std::time::Instant::now();
+        let init = eval::run(&hir, environment);
+        #[cfg(feature = "scan")]
+        scan::initialized(init.is_ok());
+        let init = init?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",
+                init_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
+        Ok((hir, init, conditions))
+    })()
+    .map_err(|f: diag::Fault| f.locate(source))?;
+    Ok(Initialized {
+        hir,
+        init,
+        conditions,
+        environment: environment.clone(),
+        #[cfg(feature = "scan")]
+        observation: scan::checkpoint(),
+    })
+}
+
+/// Lower callbacks at the actual host rate, consuming the initialized state.
+pub fn compile_initialized(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    #[cfg(feature = "scan")]
+    let slot = initialized.environment.slot;
+    #[cfg(feature = "scan")]
+    scan::restore(initialized.observation.clone());
+    #[cfg(feature = "scan")]
+    scan::stage("lower");
+    let result = compile_initialized_inner(source, rate, limits, controls, initialized);
+    #[cfg(feature = "scan")]
+    scan::record(&result, source, slot);
+    result
+}
+fn compile_initialized_inner(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    let error = |message: &str| Error {
+        offset: 0,
+        line: 1,
+        column: 1,
+        kind: diag::Kind::Error,
+        builtin: None,
+        message: message.into(),
+    };
+    if rate == 0 {
+        return Err(error("sample rate must be positive"));
+    }
+    if controls.len() > limits.variables {
+        return Err(error("control binding budget exceeded"));
+    }
     let mut bindings = BTreeMap::new();
     let mut identities = BTreeSet::new();
     for &(name, id) in controls {
@@ -783,31 +940,16 @@ fn compile_inner(
             return Err(error("duplicate control name or persistent identity"));
         }
     }
-    let mut syms = lexer::Interner::default();
-    let (hir, init, conditions) = (|| {
-        let mut toks = lexer::lex(source, &mut syms)?;
-        #[cfg(feature="scan")]
-        scan::stage("preprocess");
-        let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        #[cfg(feature="scan")]
-        scan::stage("parse");
-        let ast = parser::parse(&toks, &syms)?;
-        let budget = sema::Budget {
-            variables: limits.variables,
-            array_cells: limits.array_cells,
-        };
-        #[cfg(feature="scan")]
-        scan::stage("sema");
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment);
+    let Initialized {
+        hir,
+        init,
+        conditions,
+        environment,
         #[cfg(feature = "scan")]
-        scan::initialized(init.is_ok());
-        let init = init?;
-        Ok((hir, init, conditions))
-    })()
-    .map_err(|f: diag::Fault| f.locate(source))?;
+            observation: _,
+    } = initialized;
 
-    #[cfg(feature="scan")]
+    #[cfg(feature = "scan")]
     scan::stage("lower");
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];
@@ -857,6 +999,7 @@ fn compile_inner(
     }
 
     // Lowering.
+    let lower_begin = std::time::Instant::now();
     let mut unit = lower::Unit {
         hir: &hir,
         controls: &ids,
@@ -872,6 +1015,7 @@ fn compile_inner(
     let mut programs = Vec::new();
     let mut entries = Vec::new();
     let mut starts = Vec::new();
+    let profile_lower = std::env::var_os("KONTRA_AUDIT_LOWER").is_some();
     for callback in &hir.callbacks {
         use hir::CallbackKind as K;
         let (kind, context) = match callback.kind {
@@ -908,6 +1052,8 @@ fn compile_inner(
             .map(|s| Some(*s))
             .chain(timers.is_empty().then_some(None))
         {
+            let started = profile_lower.then(std::time::Instant::now);
+            let remaining = unit.budget;
             let program = unit
                 .program(
                     &callback.body,
@@ -917,6 +1063,13 @@ fn compile_inner(
                     signal,
                 )
                 .map_err(|f| f.locate(source))?;
+            if let Some(started) = started {
+                eprintln!(
+                    "AUDIT {{\"stage\":\"ksp_callback_program\",\"context\":\"{context:?}\",\"ms\":{},\"instructions\":{}}}",
+                    started.elapsed().as_secs_f64() * 1000.,
+                    remaining - unit.budget,
+                );
+            }
             entries.push(Entry {
                 kind,
                 program: programs.len(),
@@ -963,6 +1116,13 @@ fn compile_inner(
             .map(|e| e.program);
     }
 
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_callback_lower\",\"ms\":{}}}",
+            lower_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let state_begin = std::time::Instant::now();
     // Initial instance state: texts plus lowering scratch, the property /
     // engine / PGS mirror, and the dense control table.
     let mut texts = init.texts.clone();
@@ -1013,17 +1173,44 @@ fn compile_inner(
         controls: ids.clone(),
     };
 
-    let mut warnings: Vec<Error> = hir
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_state_mirror\",\"ms\":{}}}",
+            state_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let warnings_begin = std::time::Instant::now();
+    let mut findings: Vec<_> = hir
         .warnings
         .iter()
         .chain(&init.warnings)
         .map(|f| (f, diag::Kind::Warning))
         .chain(unit.warnings.iter().map(|(f, k)| (f, *k)))
-        .map(|(f, kind)| f.clone().locate_as(source, kind))
         .collect();
     // Builtin findings first so the cap never hides an unsupported builtin.
-    warnings.sort_by_key(|w| (w.kind == Kind::Warning, w.offset));
-    warnings.truncate(1000);
+    // Cap before positioning; one source scan serves all retained findings.
+    findings.sort_by_key(|(f, kind)| (*kind == Kind::Warning, f.span.start));
+    findings.truncate(1000);
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+        )
+        .collect();
+    let warnings: Vec<Error> = findings
+        .into_iter()
+        .map(|(f, kind)| f.clone().locate_indexed(source, kind, &line_starts))
+        .collect();
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_diagnostics\",\"ms\":{},\"warnings\":{}}}",
+            warnings_begin.elapsed().as_secs_f64() * 1000.,
+            warnings.len()
+        );
+    }
+    let model_begin = std::time::Instant::now();
     let services = unit.services.iter().map(|b| b.name()).collect();
     let coverage = unit
         .coverage
@@ -1031,6 +1218,14 @@ fn compile_inner(
         .map(|(&(name, c), &n)| (name, c, n))
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_model_assemble\",\"ms\":{},\"widgets\":{},\"instructions\":{}}}",
+            model_begin.elapsed().as_secs_f64() * 1000.,
+            model.interface.widgets.len(),
+            limits.instructions - unit.budget
+        );
+    }
     Ok(Script {
         programs: programs
             .into_iter()

@@ -304,6 +304,8 @@ fn typed_seed_meter_and_waveform_addresses_reach_ir() {
         attach_zone($w,27,3)
         set_ui_wf_property($w,$UI_WF_PROP_PLAY_CURSOR,12000,0)
         set_ui_wf_property($w,$UI_WF_PROP_TABLE_VAL,42,2)
+        declare ui_xy ?pad[4]
+        set_control_par(get_ui_id(?pad),$CONTROL_PAR_ACTIVE_INDEX,2)
     end on"#,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
     let ui = script.ui(&|_|None).unwrap();
     assert_eq!(ui.widgets[0].value,Some(sampler_ui_ir::Value::Integers(vec![0,0,42,0])));
@@ -312,4 +314,5 @@ fn typed_seed_meter_and_waveform_addresses_reach_ir() {
     let waveform = ui.widgets[3].waveform.as_ref().unwrap();
     assert_eq!((waveform.zone,waveform.flags,waveform.cursor_us),(27,3,12000));
     assert_eq!(waveform.table,vec![0,0,42]);
+    assert_eq!(ui.widgets[4].active_index,Some(2));
 }

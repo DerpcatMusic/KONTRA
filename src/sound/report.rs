@@ -108,10 +108,22 @@ pub struct RuntimeProblems {
     pub capacity_drops: u64,
     /// Streamed audio not read in time and played silent.
     pub underruns: u64,
+    #[serde(default)]
+    pub stream_capacity: u64,
+    #[serde(default)]
+    pub stream_disconnected: u64,
+    #[serde(default)]
+    pub stream_failed: u64,
+    #[serde(default)]
+    pub stream_errors: u64,
+    #[serde(default)]
+    pub offline_failures: u64,
     /// Rendered frames replaced by silence for being non-finite.
     pub nonfinite: u64,
     /// Script callbacks that ran past their budget.
     pub script_overruns: u64,
+    #[serde(default)]
+    pub lua_faults: u64,
     /// Input played at lower precision than sent (MIDI 2.0 values narrowed
     /// to the MIDI 1.0 zone) or not played at all (per-note controllers,
     /// program changes): counted, never silently dropped.
@@ -154,6 +166,9 @@ pub struct LoadReport {
     /// Script faults seen in that replay, each with its callback.
     #[serde(default)]
     pub faults: Vec<String>,
+    /// Message-free typed UVI initial diagnostics. Live counts arrive in runtime.
+    #[serde(default)]
+    pub uvi_faults: sampler_uvi::script::FaultCounts,
 }
 
 impl From<&sampler_ir::Unsupported> for Missing {
@@ -203,6 +218,7 @@ impl LoadReport {
             runtime: RuntimeProblems::default(),
             why_silent: None,
             faults: Vec::new(),
+            uvi_faults: Default::default(),
         }
     }
 
