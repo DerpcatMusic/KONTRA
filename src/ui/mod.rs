@@ -38,6 +38,11 @@ pub(crate) mod scan;
 mod load_report;
 mod bridge;
 mod pictures;
+mod picture_decode;
+mod picture_worker;
+mod native_runtime;
+mod native_ui;
+mod render_art;
 mod inside;
 mod part;
 pub(crate) mod picker;
@@ -205,6 +210,7 @@ impl Watch {
         }
         let mut h = DefaultHasher::new();
         self.readouts.hash(&mut h);
+        pictures::revision().hash(&mut h);
         if meters.logs_visible.load(Ordering::Relaxed) {
             crate::diagnostics::revision().hash(&mut h);
             logs::wake().hash(&mut h);
@@ -1198,5 +1204,7 @@ impl Cx<'_> {
     }
 }
 
+#[cfg(feature = "shots")]
+pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
