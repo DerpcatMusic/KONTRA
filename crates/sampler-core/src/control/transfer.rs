@@ -7,6 +7,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 pub enum ControlOperation {
     Invoke(super::ControlContext, ControlWrite),
     InvokeWidget(super::ControlContext, Vec<crate::WidgetEdit>),
+    CaptureWidget(Vec<crate::WidgetEdit>),
     Edit(Box<[ControlWrite]>),
     Recall(Box<[ControlWrite]>),
     Capture(Box<[ControlWrite]>),
@@ -15,7 +16,7 @@ impl ControlOperation {
     fn len(&self) -> usize {
         match self {
             Self::Invoke(..) => 1,
-            Self::InvokeWidget(_, v) => v.len(),
+            Self::InvokeWidget(_, v) | Self::CaptureWidget(v) => v.len(),
             Self::Edit(v) | Self::Recall(v) | Self::Capture(v) => v.len(),
         }
     }
@@ -173,6 +174,7 @@ impl Runtime {
                     reply.behavior = behavior;
                     (edits.len(), revision)
                 }),
+            ControlOperation::CaptureWidget(output) => self.capture_widgets(command.plan, output),
             ControlOperation::Edit(writes) => self
                 .edit_controls_now(command.plan, command.expected_revision, writes)
                 .map(|rev| (writes.len(), rev)),
