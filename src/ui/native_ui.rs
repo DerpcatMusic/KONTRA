@@ -38,6 +38,41 @@ pub(super) struct State {
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
 }
+fn failure(error: &anyhow::Error) -> String {
+    fn category(error: &mlua::Error) -> String {
+        match error {
+            mlua::Error::CallbackError { cause, .. } => category(cause),
+            mlua::Error::FromLuaConversionError { from, to, .. } => {
+                let allowed = [
+                    "nil", "boolean", "integer", "number", "string", "table", "function",
+                    "userdata", "String", "Function", "Table", "Value",
+                ];
+                format!(
+                    "NativeUI conversion {} to {}",
+                    if allowed.contains(from) {
+                        from
+                    } else {
+                        "value"
+                    },
+                    if allowed.contains(&to.as_str()) {
+                        to
+                    } else {
+                        "value"
+                    }
+                )
+            }
+            mlua::Error::SyntaxError { .. } => "NativeUI Lua syntax".into(),
+            mlua::Error::ExternalError(_) => "NativeUI host operation".into(),
+            mlua::Error::RuntimeError(_) => "NativeUI Lua runtime".into(),
+            _ => "NativeUI Lua operation".into(),
+        }
+    }
+    let category = error
+        .downcast_ref::<mlua::Error>()
+        .map(category)
+        .unwrap_or_else(|| "NativeUI package".into());
+    format!("{category}: {error}")
+}
 impl Drop for State {
     fn drop(&mut self) {
         self.canceled.store(true, Ordering::Release);
@@ -94,6 +129,31 @@ impl State {
                 .map_or(Vec::new(), |l| l.session.take_edits())
         })
     }
+    /// Update an already-published source; no private script model or transport.
+    pub fn update_view(
+        &mut self,
+        face: &ir::Interface,
+        values: &super::ir_view::Values,
+        typed: &HashMap<ir::WidgetRef, ir::Value>,
+    ) {
+        for (source, index, widget) in &mut self.seed {
+            if *source == face.source
+                && let Some(current) = face.widgets.get(*index)
+            {
+                widget.clone_from(current);
+                if let Some(value) = typed.get(&ir::WidgetRef(*index)) {
+                    widget.value = Some(value.clone());
+                }
+            }
+        }
+        LOCAL.with(|local| {
+            if let Some(local) = local.borrow().get(&self.id) {
+                local
+                    .session
+                    .update_view(face, values, typed, &HashMap::new());
+            }
+        });
+    }
     pub fn authored(&self) -> Size {
         self.size
     }
@@ -111,9 +171,43 @@ impl State {
     }
     #[cfg(feature = "shots")]
     pub fn diagnostic(&self) -> Option<String> {
-        self.failure
-            .as_ref()
-            .map(|e| crate::scan_metrics::message(e))
+        self.failure.as_ref().map(|raw| {
+            let class = [
+                "NativeUI meter unavailable",
+                "NativeUI module absent",
+                "No readable legacy .nui resources",
+                "NativeUI control unavailable",
+                "error converting Lua table to string",
+                "error converting Lua nil",
+                "error converting Lua string",
+                "NativeUI interrupt budget exceeded",
+                "NativeUI time budget exceeded",
+                "Expected identifier",
+                "Expected '('",
+                "Expected expression",
+                "Unknown NativeUI primitive",
+                "NativeUI conversion boolean to string",
+                "NativeUI conversion table to string",
+                "NativeUI conversion table to String",
+                "NativeUI conversion table to Function",
+                "NativeUI conversion nil to Function",
+                "NativeUI Lua syntax",
+                "NativeUI Lua runtime",
+                "NativeUI host operation",
+                "NativeUI package",
+            ]
+            .into_iter()
+            .find(|class| raw.contains(class));
+            class.map_or_else(
+                || crate::scan_metrics::message(raw),
+                |class| {
+                    format!(
+                        "{class}; hash {}",
+                        &blake3::hash(raw.as_bytes()).to_hex()[..16]
+                    )
+                },
+            )
+        })
     }
     pub fn entry(&self) -> &str {
         &self.entry
@@ -133,7 +227,7 @@ impl State {
                 Ok(package) => self.package = Some(package),
                 Err(error) => {
                     self.failed = true;
-                    self.failure = Some(error.to_string());
+                    self.failure = Some(failure(&error));
                 }
             }
         }
@@ -169,7 +263,7 @@ impl State {
             self.started = true;
             let local = local.get_mut(&self.id).unwrap();
             let session = &local.session;
-            session.update_view(face, values, input);
+            session.update_view(face, values, &input.values, &input.meters);
             if let Some(graph) = &local.graph {
                 events(ui, graph, session, slot, scale, &mut local.hovered)?;
             }
@@ -197,7 +291,7 @@ impl State {
             Ok(el) => el,
             Err(error) => {
                 self.failed = true;
-                self.failure = Some(error.to_string());
+                self.failure = Some(failure(&error));
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
