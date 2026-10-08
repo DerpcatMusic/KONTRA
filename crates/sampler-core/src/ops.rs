@@ -563,6 +563,7 @@ pub(crate) struct ScriptBank {
     pub store: Store,
     pub controls: Box<[Option<ControlId>]>,
     pub text_properties: Vec<([i32; STORE_KEY], Text)>,
+    pub persistence_callback: Option<(BehaviorId, Option<crate::Outcome>)>,
 }
 
 impl Clone for ScriptBank {
@@ -575,6 +576,7 @@ impl Clone for ScriptBank {
             store: self.store.clone(),
             controls: self.controls.clone(),
             text_properties,
+            persistence_callback: self.persistence_callback,
         }
     }
 }

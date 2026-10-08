@@ -927,6 +927,18 @@ impl Runtime {
         program: usize,
         context: PlanContext,
     ) -> Result<BehaviorId, Error> {
+        let id = self.admit_plan_context(plan, program, context)?;
+        self.resume_behavior(id);
+        Ok(id)
+    }
+
+    /// Reserve ownership before a transaction runs any authored callback.
+    pub(super) fn admit_plan_context(
+        &mut self,
+        plan: super::PlanId,
+        program: usize,
+        context: PlanContext,
+    ) -> Result<BehaviorId, Error> {
         self.validate_plan_context(plan, program, context)?;
         let generation = self.plans.get_mut(plan.0).unwrap();
         let id = BehaviorId(self.behaviors.insert(Continuation {
@@ -952,7 +964,6 @@ impl Runtime {
         generation.callbacks += 1;
         let begin = id.0.index * self.behavior_stride;
         self.behavior_locals[begin..begin + generation.prepared.programs[program].locals].fill(0);
-        self.resume_behavior(id);
         Ok(id)
     }
 
@@ -1054,6 +1065,7 @@ impl Runtime {
                 return;
             }
             self.release_controller_reserve(id);
+            self.record_script_state_outcome(id);
             self.behaviors.remove(id.0);
             match c.owner {
                 BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
@@ -1092,6 +1104,7 @@ impl Runtime {
             {
                 let id = BehaviorId(self.behaviors.id(i));
                 self.release_controller_reserve(id);
+                self.record_script_state_outcome(id);
                 self.behaviors.remove(id.0);
                 match c.owner {
                     BehaviorOwner::Note(note) => self.notes.get_mut(note.0).unwrap().work -= 1,
