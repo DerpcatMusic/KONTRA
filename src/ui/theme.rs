@@ -283,6 +283,7 @@ pub enum Icon {
     Plus,
     Close,
     Sidebar,
+    Picture,
     Search,
     #[allow(dead_code, reason = "the mixer's audition")]
     Play,
@@ -345,6 +346,11 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             Icon::Sidebar => vec![
                 line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
                 line(&[(6.5, 3.5), (6.5, 12.5)]),
+            ],
+            Icon::Picture => vec![
+                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[(3., 11.5), (6.5, 7.5), (9., 10.), (11., 8.), (13., 11.5)]),
+                dot(10.5, 5.5),
             ],
             Icon::Search => vec![
                 Draw::stroke(
@@ -643,11 +649,11 @@ pub fn wheel_taken() -> bool {
 thread_local! {
     /// One pointer capture per window thread. The UI address distinguishes
     /// editors whose controls have the same IDs; it is never dereferenced.
-    static GRIPPED: std::cell::RefCell<(usize, String)> = const { std::cell::RefCell::new((0, String::new())) };
+    static GRIPPED: std::cell::RefCell<(usize, String, f64)> = const { std::cell::RefCell::new((0, String::new(), 0.)) };
 }
 
 /// `id` is being dragged: return whether this is its first drag frame.
-fn grip(ui: &Ui, id: &str) -> bool {
+fn grip(ui: &Ui, id: &str, value: f64) -> bool {
     let owner = std::ptr::from_ref(ui) as usize;
     GRIPPED.with(|g| {
         let mut g = g.borrow_mut();
@@ -655,6 +661,7 @@ fn grip(ui: &Ui, id: &str) -> bool {
             g.0 = owner;
             g.1.clear();
             g.1.push_str(id);
+            g.2 = value;
             true
         } else {
             false
@@ -684,18 +691,29 @@ fn drag(ui: &Ui, id: &str, value: &mut f64, range: &RangeInclusive<f64>, travel:
             }
         });
     }
-    if r.dragged && grip(ui, id) && travel.is_finite() && travel > 0.
-        && value.is_finite() && range.start().is_finite() && range.end().is_finite()
-    {
-        let missed = r.drag_total - r.drag_delta;
-        let d = if vertical { -missed.y } else { missed.x };
-        let fine = if r.mods.shift { FINE_DRAG } else { 1. };
-        if d.is_finite() {
-            *value = (*value + d * fine / travel * (range.end() - range.start()))
-                .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
-        }
+    let first = r.dragged && grip(ui, id, *value);
+    if r.dragged {
+        // Keep the grab in authored units. Integer readback must not erase
+        // fractional motion, and a renderer without readback uses the same path.
+        GRIPPED.with(|g| {
+            let mut g = g.borrow_mut();
+            let mut raw = g.2;
+            if first && travel.is_finite() && travel > 0. {
+                let missed = r.drag_total - r.drag_delta;
+                let d = if vertical { -missed.y } else { missed.x };
+                let fine = if r.mods.shift { FINE_DRAG } else { 1. };
+                if d.is_finite() {
+                    raw = (raw + d * fine / travel * (range.end() - range.start()))
+                        .clamp(range.start().min(*range.end()), range.start().max(*range.end()));
+                }
+            }
+            ui.drag(id, &mut raw, range.clone(), travel, vertical);
+            g.2 = raw;
+            *value = raw;
+        });
+    } else {
+        ui.drag(id, value, range.clone(), travel, vertical);
     }
-    ui.drag(id, value, range.clone(), travel, vertical);
 }
 
 /// Pointer, wheel and keys on a continuous control `id`, as Kontakt's: drag

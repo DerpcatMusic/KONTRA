@@ -235,6 +235,11 @@ impl Runtime {
     }
 
     /// The control's id, domain and default in `plan`.
+    /// The immutable schema of an addressed generation, for an off-audio producer.
+    pub fn control_definitions(&self, plan: PlanId) -> Result<&[ControlDefinition], Error> {
+        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.controls)
+    }
+
     pub fn control_definition(
         &self,
         plan: PlanId,
