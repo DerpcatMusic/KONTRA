@@ -123,3 +123,36 @@ replaced the synthetic typed text and rewrote other script slots; that check
 fails before the fix and passes after it. Native meter maps use the existing
 per-source `PartShared.widget_meters` provider. The only new non-owned seam
 edit is the meter-map argument at the Native loop in `src/ui/part.rs`.
+
+## Pacific shared witness and current validation hold
+
+The render auditor's `audit/ui-render-20261008@9791421e` consumes the shared
+49-ID Pacific witness at product `9993db69`. Pinned v1 digest is
+`870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`;
+v2 digest is
+`19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751`.
+These supersede the installed scanner versions for future comparisons; the
+earlier three-item results above keep their original provenance.
+
+All 49 v2 views are legacy-authored: 45 missing-images and four original-ok.
+253 requested lookups resolve 196 images, and all 196 decodes succeed. The
+57 failed lookups comprise 33 instruments with one miss and 12 with two.
+The four successful instruments are the Cluster Risers for 10 Cellos,
+12 Violas, 16 Violins and 8 Basses. Per-ID audio/note outcomes match; no sound
+regression follows from the four silent pairs.
+
+W3 inspected the existing example cache records, not the library resources.
+Their `assets` field is a count; missing references are hashes. This cannot
+establish physical absence or an own-index namespace mismatch. Shared frontend
+`Source::read` currently discards backend resource errors through the `Option`
+API, so the fixed `lookup-not-found` counter also cannot distinguish invalid,
+ambiguous, inaccessible or corrupt resource lookup. No replacement or alias
+artwork is justified. Structured failure propagation and own-index attribution
+remain open; the shared collector is unchanged.
+
+Exact available disk space fell to 19.83 GiB, below the required 25 GiB floor.
+No W3 heavy job is active and its incremental directories have been pruned.
+`f8621061` remains the latest pushed, gated checkpoint. Local `bf4b139a` bounds
+rejected Native image-request metadata and cancels package member reads; its
+failing-first queue-growth check is recorded, but the green check/build gate
+must run after disk headroom returns. Do not integrate that local WIP.
