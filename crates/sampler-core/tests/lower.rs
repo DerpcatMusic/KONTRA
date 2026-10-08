@@ -670,6 +670,64 @@ fn nested_selectors_are_independent_axes() {
 }
 
 #[test]
+fn native_articulation_input_and_source_keys_use_the_same_composed_predicates() {
+    let key = |key| ir::GroupStart {
+        slot: 2,
+        test: ir::StartTest::Key {
+            low: key,
+            high: key,
+        },
+        next: ir::StartJoin::And,
+    };
+    let mut ir = ir::Instrument {
+        assets: vec![asset("first"), asset("second")],
+        default_keyswitch: Some(13),
+        groups: vec![
+            ir::Group {
+                start: vec![key(12)],
+                ..Default::default()
+            },
+            ir::Group {
+                start: vec![key(13)],
+                ..Default::default()
+            },
+        ],
+        articulations: vec![
+            ir::Articulation {
+                switch_keys: vec![12],
+                ..Default::default()
+            },
+            ir::Articulation {
+                switch_keys: vec![13],
+                default: true,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    ir.zones = (0..2)
+        .map(|index| ir::Zone {
+            group: Some(ir::GroupRef(index)),
+            keys: ir::KeyRange { low: 60, high: 60 },
+            pitch: ir::KeyTracking::Fixed,
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(index))
+        })
+        .collect();
+    let plan = lower(&ir, 48000, vec![constant(0.1), constant(0.2)], no_behaviors).unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    assert_eq!(play(&mut rt, 60, 1.), [0.2; 2]);
+    let p = rt.performance(0).unwrap();
+    rt.set_articulation(p, 1).unwrap(); // Overlay selects authored index 0, lowered ID 1.
+    let mut silence = [[0.; 2]; 128];
+    rt.render(&mut silence).unwrap();
+    assert_eq!(play(&mut rt, 60, 1.), [0.1; 2]);
+    rt.trigger(input(13), 13, 1.).unwrap();
+    rt.render(&mut silence).unwrap();
+    assert_eq!(play(&mut rt, 60, 1.), [0.2; 2]);
+}
+
+#[test]
 fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
     use sampler_core::{
         ControlValue, EngineParameterAddress, EngineParameterBinding, EngineParameterLaw,
