@@ -74,6 +74,13 @@ there is no Rust field definition to list. Dynamic arrays, enums and unknown
 regions retain their raw representation rather than assigning fictitious
 fixed fields.
 
+[Declaration coverage](kontakt-census/declaration-coverage.tsv) joins every
+registered field to source evidence, v1 importer evidence where established,
+v2 status, family ownership, RE evidence limits and measured file/non-neutral
+counts by version. `unmeasured; not zero` means the declaration has no matching
+semantic census row. Detailed named FX/mod/source/persistence fields remain
+in their family evidence; unknown tails remain region/byte observations.
+
 The registries are a complete inventory of **discovered source declarations
 and IDs**, not proof that every proprietary field or future version is known.
 Family evidence and measured byte profiles identify the remaining regions.
@@ -274,6 +281,14 @@ falsely called version 2141753362.
 | Counted/tuned loops | 787 loop-bearing files; 0 non-neutral counts/tunes; 733 nonzero crossfades, 3 alternating | count/tune unsupported with zero local activation evidence; crossfade/alternating used | objects/core |
 | Old XML / standalone NKS / NKB | 0 installed fixtures | unvalidated; legacy fixes envelope safety, XML-to-IR and true bank playback remain open | legacy; gaps/core for banks |
 
+The baseline also observed full zone `0x2c` v0x9c in 52 files / 104,760
+records, in addition to v0x98/99/9a. These came from zone-list traversal,
+not compact snapshot inference. Objects corrected its family table and extended borrowed admission to this
+version with common-prefix/truncation checks; its complete 834-file survey
+is underway after its parser checks and broader no-run passed. Its pushed
+implementation is `c8e2fbce`, with the doc correction in `a1f1ff45`.
+No library identity is inferred from the count.
+
 The unknown-offset profile has a 4,096-byte ceiling per region. Bytes past
 that ceiling have aggregate nonzero counts only. Variable-size offsets are
 not semantic fields. Family surveys supply named fields, finer versions,
@@ -291,10 +306,21 @@ after package no-run validation. They correct signed target flag 0x02, Ladder
 offsets/v0x92 byte, malformed occupied-slot handling, 20 fixed FX layouts and
 counted convolution/send/filter fields; retain authored FX/mod IR including
 bypassed/muted state; and overlay snapshot modulation. Unit checks passed;
-real-library and named-field census evidence is still pending. New IDs above
+real-library and named-field census evidence is still pending. The persistence
+family's initial 3,938-path census includes recovery files and has a different
+denominator from this 1,937-path census; its entry counts must stay separate. New IDs above
 0x64 stay opaque. Remaining laws include newer FX/filter controls, envelope
 sync/loop state, unknown LFO sync/type 6, unsupported destinations and external
 source laws. DBD/glide are absent from this baseline census, not certified.
+
+### Corrected metadata acceptance
+
+The targeted metadata traversal accepted all 1,937 presets/snapshots. Every
+observed SaveSettings record now parses: **831 files / 940 records**, with
+no extension bytes and no remaining SaveSettings decoder failures.
+Non-neutral counts: translated reference 831 (baseline all ones), original
+reference 0 (baseline -1), scalar 0 (baseline 0), flags 3 / 399 / 831 (baseline
+false). These observed flags have no assigned native meanings.
 
 ## Tests and integration handoff
 

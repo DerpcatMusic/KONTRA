@@ -210,7 +210,13 @@ impl Survey {
                         self.field(&id, "list", "structure", !list.0.is_empty());
                         for (number, object) in list.0 {
                             self.field(&id, "list", "program_number", number != 0);
-                            self.object(0x28, object, depth);
+                            self.owned(
+                                &OwnedChunk {
+                                    id: 0x28,
+                                    data: object.raw().data().to_vec(),
+                                },
+                                depth,
+                            );
                         }
                     }
                     Err(_) => self.error("program list framing"),
@@ -541,7 +547,9 @@ impl Survey {
         {
             let mut file = std::fs::File::open(path)?;
             let mut head = Vec::new();
-            Read::by_ref(&mut file).take(4 << 20).read_to_end(&mut head)?;
+            Read::by_ref(&mut file)
+                .take(4 << 20)
+                .read_to_end(&mut head)?;
             let marker = b"/\\ NI FC MTD  /\\";
             let start = head
                 .windows(marker.len())
@@ -606,8 +614,12 @@ impl Survey {
                 "index_issues",
                 !archive.issues.is_empty(),
             );
-            for name in archive.entries.keys() {
-                if let Some(entry) = archive.member(&mut file, name)? {
+            // Header offsets preserve disk locality; HashMap iteration makes
+            // a whole-archive census needlessly seek across sample payloads.
+            let mut members: Vec<_> = archive.entries.values().collect();
+            members.sort_unstable_by_key(|entry| entry.header_offset);
+            for indexed in members {
+                if let Some(entry) = archive.member(&mut file, &indexed.name)? {
                     file.seek(SeekFrom::Start(entry.header_offset))?;
                     let mut common = [0; 14];
                     file.read_exact(&mut common)?;
@@ -655,10 +667,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 status,
                 "{}\t{}",
                 path.display(),
-                if survey.resource(path).is_ok() {
-                    "resource-ok"
-                } else {
-                    "resource-error"
+                match survey.resource(path) {
+                    Ok(()) => "resource-ok",
+                    Err(_) => {
+                        survey.error("resource metadata");
+                        "resource-error"
+                    }
                 }
             )?;
             continue;
@@ -817,6 +831,39 @@ fn snapshot_candidates<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_survey_reads_resource_references_inside_program_lists() {
+        let mut public = vec![0; 70]; // empty name/credits, common scalars/categories
+        for reference in [3u32, 4, 5, 6] {
+            public.extend(reference.to_le_bytes());
+        }
+        let mut object = vec![1, 0xa8, 0];
+        object.extend(0u32.to_le_bytes());
+        object.extend((public.len() as u32).to_le_bytes());
+        object.extend(public);
+        object.extend(0u32.to_le_bytes());
+        let mut list = 1i16.to_le_bytes().to_vec();
+        list.extend(7i16.to_le_bytes());
+        list.extend(object);
+        let mut survey = Survey {
+            metadata_only: true,
+            ..Default::default()
+        };
+        survey.owned(
+            &OwnedChunk {
+                id: 0x36,
+                data: list,
+            },
+            0,
+        );
+        let count = &survey.fields[&(
+            "Kontakt:0x28".into(),
+            "0xa8".into(),
+            "container_reference".into(),
+        )];
+        assert_eq!((count.files, count.changed, count.records), (1, 1, 1));
+        assert!(survey.errors.is_empty());
+    }
     #[test]
     fn repeated_records_count_each_file_once_including_late_nondefault() {
         let mut c = Count::default();
