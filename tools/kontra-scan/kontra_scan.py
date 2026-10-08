@@ -12,15 +12,15 @@ import signal
 import subprocess
 import time
 
-NOTE_ROOT = Path.home()/'.cache/kontra-scan/notes'
-SIDECAR = NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'
+NOTE_ROOT = Path(os.environ.get('KONTRA_SCAN_NOTE_ROOT', Path.home()/'.cache/kontra-scan/notes'))
+SIDECAR = Path(os.environ.get('KONTRA_SCAN_SIDECAR', NOTE_ROOT.parent/'bin/kontra-scan-v1-uvi'))
 SIDECAR_SHA = hashlib.sha256(SIDECAR.read_bytes()).hexdigest() if SIDECAR.is_file() else None
-V2_ENGINE = NOTE_ROOT.parent/'bin/kontra-scan-v2'
+V2_ENGINE = Path(os.environ.get('KONTRA_SCAN_V2_ENGINE', NOTE_ROOT.parent/'bin/kontra-scan-v2'))
 V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file() else None
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state']
 
 
 def library(item):
@@ -91,6 +91,10 @@ def extra_columns(r):
     views = [v for p in programs for v in p.get('views', [])]
     renders = [x for v in views for x in v.get('renders', [])]
     renders += [v['render'] for v in views if isinstance(v.get('render'),dict)]
+    r['first_audio_ms']=r.get('first_audio_ms') if isinstance(r.get('first_audio_ms'),(int,float)) else 'unknown'
+    first_frames=[x['ui_first_frame_ms'] for x in renders if isinstance(x.get('ui_first_frame_ms'),(int,float))]
+    r['ui_first_frame_ms']=min(first_frames) if first_frames else r.get('ui_first_frame_ms','unknown')
+    r['cache_state']=r.get('cache_state','unknown')
     for render in renders:
         if 'error_hash' in render: render.update(ok=False,reason=render.get('stage','paint failure'))
         elif 'pixels' in render: render.setdefault('ok',True)
@@ -154,7 +158,7 @@ def extra_columns(r):
     r['widget_kind_counts']=json.dumps(combine(views,'kinds'),sort_keys=True,separators=(',',':'))
     r['ui_api_refs']=json.dumps(combine([x for x in inventory if x.get('compile_disposition')=='embedded'],'symbols') if inventory else combine(programs,'symbols'),sort_keys=True,separators=(',',':'))
     r['bypassed_ui_api_refs']=json.dumps(combine([x for x in inventory if x.get('bypassed')],'symbols'),sort_keys=True,separators=(',',':')) if raw_known else 'unknown'
-    r['saved_entry_sigils']=json.dumps(combine(inventory,'saved_sigils'),sort_keys=True,separators=(',',':')) if raw_known else 'unknown'
+    r['saved_entry_sigils']=json.dumps(combine(inventory,'saved_sigils'),sort_keys=True,separators=(',',':')) if raw_known and all(x.get('saved_histogram_complete') is True for x in inventory) else 'unknown'
     for target,key in [('custom_font_uses','custom_font_uses'),('picture_strips','image_strips'),('picture_frames','image_frames'),('picture_margins','image_margins')]: r[target]=count(views,key)
     r['resource_failure_reasons']=json.dumps(combine(views,'asset_failure_reasons'),sort_keys=True,separators=(',',':'))
     backgrounds=[x['background'] for x in renders if isinstance(x.get('background'),dict)]
@@ -190,6 +194,7 @@ def probe(engine, item, work, timeout, shots):
     work.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env['KONTRA_SCAN_ACTIVE'] = '1'
+    env['KONTRA_UVI_STATIC_PCM_CACHE'] = '0'
     plan_path=note_path(item)
     if plan_path.exists(): env['KONTRA_SCAN_NOTE_PLAN']=str(plan_path)
     reader = Path('/home/derpcat/.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe')
@@ -199,11 +204,17 @@ def probe(engine, item, work, timeout, shots):
         env['KONTRA_SCAN_SHOTS'] = '1'
     worker=engine
     if '::' in item and engine.name=='kontra-scan-v1':
-        sidecar=engine.with_name('kontra-scan-v1-uvi')
+        sidecar=SIDECAR if os.environ.get('KONTRA_SCAN_SIDECAR') else engine.with_name('kontra-scan-v1-uvi')
         if sidecar.exists(): worker=sidecar
+    capture = None
+    if os.environ.get('KONTRA_GATE_CAPTURE'):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gate_evidence', Path(__file__).resolve().parent.parent / 'kontra-gate/evidence.py')
+        evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+        capture = evidence.Capture(work, env)
     with (work / 'stdout.json').open('w') as output:
         child = subprocess.Popen([str(worker), '--worker', item, str(work)], stdout=output,
-                                 stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+                                 stderr=capture.stderr if capture else subprocess.DEVNULL, start_new_session=True, env=env)
         started = time.monotonic()
         rss = 0
         timed_out = False
@@ -220,6 +231,8 @@ def probe(engine, item, work, timeout, shots):
                 break
             time.sleep(0.1)
         child.wait()
+    if capture:
+        capture.finish()
     try:
         r = json.loads((work / 'stdout.json').read_text())
     except (ValueError, OSError):

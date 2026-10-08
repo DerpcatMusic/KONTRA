@@ -461,4 +461,60 @@ fn mouse_area_admits_owned_drop_paths_and_native_enter_leave_metadata() {
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 2), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 3), Ok(0));
     assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 4), Ok(0));
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+                value: WidgetValue::Integer(0),
+            }],
+        )
+        .unwrap();
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(4));
+    assert_eq!(rt.widget_value(plan, id, 0), Ok(WidgetValue::Integer(0)));
+}
+
+#[test]
+fn ordinary_mouse_area_buttons_need_no_drop_configuration() {
+    let mut rt = runtime(
+        "on init declare ui_mouse_area $area declare $calls declare $event end on on ui_control($area) inc($calls) $event := $NI_MOUSE_EVENT_TYPE end on",
+    );
+    let plan = rt.active_plan();
+    let id = rt.widget_id(plan, 0, 32768).unwrap();
+    for event in [
+        WidgetEventType::LeftButtonDown,
+        WidgetEventType::LeftButtonUp,
+    ] {
+        rt.invoke_widget(
+            context(&rt),
+            plan,
+            None,
+            &[WidgetEdit {
+                id,
+                index: 0,
+                value: WidgetValue::Integer(0),
+                interaction: WidgetInteraction {
+                    event: event as i32,
+                    ..Default::default()
+                },
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            rt.script_cell(plan, ScriptInstanceId(0), 2),
+            Ok(event as i64)
+        );
+    }
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(2));
 }

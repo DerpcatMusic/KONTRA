@@ -35,7 +35,7 @@ fn pointer(pos: Point, down: bool) -> Input {
     }
 }
 
-fn center(ui: &Ui, id: &str) -> Point {
+pub(super) fn center(ui: &Ui, id: &str) -> Point {
     let r = ui
         .scene()
         .unwrap()
@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(super) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -104,7 +104,7 @@ impl Harness {
         self.idle(3);
     }
 
-    fn drag(&mut self, from: &str, to: &str) {
+    pub(super) fn drag(&mut self, from: &str, to: &str) {
         let (from, to) = (center(&self.ui, from), center(&self.ui, to));
         for (pos, down) in [
             (from, true),
@@ -117,7 +117,7 @@ impl Harness {
         self.idle(2);
     }
 
-    fn type_into(&mut self, id: &str, text: &str) {
+    pub(super) fn type_into(&mut self, id: &str, text: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(2);
@@ -1612,7 +1612,8 @@ fn idle_editor_rebuilds_only_when_something_moves() {
     // The library is scanned: nothing is pending for the loader.
     p.shared.view.lock().unwrap().scanned = p.shared.libraries.wanted();
     let meters = Meters::default();
-    let mut watch = Watch::default();
+    static IDLE_DISK: AtomicU64 = AtomicU64::new(0);
+    let mut watch = Watch { disk_counter: Some(&IDLE_DISK), ..Default::default() };
     let computer = computer::Computer::default();
     let mut changed = || watch.changed(&p, &meters, &computer);
     assert!(changed(), "the first tick builds");
@@ -2255,11 +2256,12 @@ fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
     for n in 0..40 {
         inst.articulations.push(sampler_ir::Articulation {name:format!("Technique {n}"), switch_keys:vec![n], ..Default::default()});
     }
+    let row = super::inside::row_id(0, &crate::sound::articulation::identities(&inst.articulations)[4]);
     p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(inst));
     let mut h = Harness::new(&p,1180.,900.);
     h.press("view-0-Articulations");
     h.idle(8);
-    let pos = center(&h.ui,"art-0-4");
+    let pos = center(&h.ui,&row);
     let before = h.ui.scroll("arts-0");
     let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
     h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
@@ -2281,3 +2283,38 @@ fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
 
 include!("viewmodel_tests.rs");
 
+/// Every product menu target uses menu::view, so exercise a non-articulation
+/// target too: popup paint must be opaque on entry and absent immediately on exit.
+#[test]
+fn shared_context_menu_never_fades_over_interactive_content() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("app-menu");
+    let frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let first = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    let sample = ((frame.y as usize + 2) * 1180 + frame.x as usize + 20) * 4;
+    assert_eq!(&first[sample..sample+4], &settled[sample..sample+4], "shared menu must be opaque on entry");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none());
+    let closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    for y in 80..200 {
+        let x = frame.x as usize + 10;
+        let range = (y * 1180 + x) * 4 .. (y * 1180 + x + 180) * 4;
+        assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
+    }
+}
+ pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
+    let start = std::time::Instant::now();
+    let mut h=Harness::new(p,1180.,760.);
+    h.idle(4);
+    let build_ms = start.elapsed().as_secs_f64() * 1000.;
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    let status=std::fs::read_to_string("/proc/self/status").unwrap();
+    let kb=|key:&str| status.lines().find_map(|l|l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok()).unwrap_or(0);
+    serde_json::json!({"build_ms":build_ms,"rss_live_mb":kb("VmRSS:") as f64/1024.,"hwm_live_mb":kb("VmHWM:") as f64/1024.})
+ }

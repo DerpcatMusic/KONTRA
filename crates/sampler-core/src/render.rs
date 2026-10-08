@@ -148,6 +148,7 @@ impl Runtime {
             return Err(Error::InvalidInput);
         }
         let start = std::time::Instant::now();
+        self.stream_fault = None;
         self.render_inner(output, outs)?;
         let nanos = u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.render_time = [
@@ -179,6 +180,7 @@ impl Runtime {
             let len = (boundary - self.now) as usize;
             let segment = &mut output[offset..offset + len];
             self.render_segment(segment, outs, offset);
+            if self.stream_fault.is_some() { return Err(Error::NotReady); }
             for frame in segment {
                 if !frame.iter().all(|x| x.is_finite()) {
                     *frame = [0.0; 2];
@@ -223,6 +225,7 @@ impl Runtime {
                 g.dsp.buses.begin();
             }
             self.render_voices(output, at);
+            if self.stream_fault.is_some() { return; }
             for g in self.plans.slots.iter_mut().filter_map(|s| s.value.as_mut()) {
                 let start = offset + (at - self.now) as usize;
                 let faults = g
@@ -236,6 +239,20 @@ impl Runtime {
     }
 
     fn render_voices(&mut self, output: &mut [Frame], at: u64) {
+        if self.offline {
+            // Modulation advance is cached on the absolute control grid. Prepare
+            // the exact steps before requesting pages; rendering at the same
+            // clock reads that ramp without advancing its sources again.
+            let mut next = self.voices.first;
+            while let Some(i) = next {
+                next = self.voices.slots[i].next;
+                self.prepare_voice(i, at, output.len());
+            }
+            if let Err(error) = self.wait_streaming(output.len().min(u32::MAX as usize) as u32, std::time::Duration::from_secs(5)) {
+                self.stream_fault = Some(error);
+                return;
+            }
+        }
         if self.render_voices_parallel(output, at) {
             return;
         }
@@ -255,6 +272,7 @@ impl Runtime {
                 // Dense runs retain the simple contiguous slot loop; sparse
                 // pools skip the untouched Voice storage between those runs.
                 for i in word * 64 + begin..word * 64 + end {
+                    if self.stream_fault.is_some() { return; }
                     let key = self.batch_key(i, output.len());
                     if key.is_none() || key != batch.0 || batch.2 == VOICES {
                         self.render_run(&batch.1[..batch.2], output, at);
@@ -322,6 +340,7 @@ impl Runtime {
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
+            v.last_gains = gains[lane].map(|g| g * v.gain);
             v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
@@ -555,6 +574,12 @@ impl Runtime {
         let plan = self.plans.get_mut(n.plan.0).unwrap();
         // Modulated voices render at most one BLOCK chunk per call (render_segment
         // chunks whenever a plan has programs) into scratch, then mix with ramps.
+        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
+        if let Some(chain) = chain {
+            for &bus in &chain.tap_buses {
+                plan.dsp.feeds[bus].samples = [[0.0; super::dsp::BLOCK]; 2];
+            }
+        }
         let mut scratch = [[0.0; 2]; super::dsp::BLOCK];
         let bank = &mut plan.dsp.filters.as_mut_slice()[0];
         bank.modulation = filter.unwrap_or([1.0; 2]);
@@ -571,11 +596,11 @@ impl Runtime {
         } else {
             (target, None)
         };
-        let chain = v.chain.map(|index| &plan.prepared.voice_chains[index]);
         let mut claimed = plan.dsp.cells.claim(i);
         let states = &mut claimed[..chain.map_or(0, |c| c.stages())];
         let mut delay = plan.dsp.delay_samples.claim(i);
         let context = super::dsp::RenderContext {
+            amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
             parameters: &plan.dsp.parameters,
@@ -586,6 +611,7 @@ impl Runtime {
                 convolutions: &mut [],
             },
             at,
+            feeds: &mut plan.dsp.feeds,
         };
         let (produced, done, faults, underrun) = if let Some(frames) = asset.resident_frames() {
             asset.want_levels(v.cursor.step(), at);
@@ -611,6 +637,7 @@ impl Runtime {
         };
         drop((claimed, delay));
         if let (Some(ramp), Some(target)) = (points, mixed) {
+            let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
             if modulated {
                 plan.modulation
@@ -619,10 +646,25 @@ impl Runtime {
                 ramp_mix(segment, target, ramp, at);
             }
         }
+        if faults == 0 {
+            if let Some(chain) = chain {
+                for &bus in &chain.tap_buses {
+                    let feed = &plan.dsp.feeds[bus].samples;
+                    let target = plan.dsp.buses.input(bus, produced);
+                    for (i, sample) in target.iter_mut().enumerate() {
+                        for c in 0..2 {
+                            sample[c] += (feed[c][i] * f64::from(gains[c])) as f32;
+                        }
+                    }
+                    plan.dsp.buses.fed(bus, produced);
+                }
+            }
+        }
         let applied = points.map_or(gains, |r| {
             let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
             [gains[0] * m(0), gains[1] * m(1)]
         });
+        v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
         self.stream_underruns = self.stream_underruns.saturating_add(u64::from(underrun));

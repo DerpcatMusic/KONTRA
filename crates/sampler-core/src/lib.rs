@@ -43,7 +43,8 @@ mod control;
 pub use control::{
     BUS_VOLUME_SLOT, ControlCallback, ControlClient, ControlContext, ControlDefinition,
     ControlDomain, ControlId, ControlOperation, ControlQueueError, ControlReply, ControlRequest,
-    ControlValue, ControlWrite, RejectedControls, SlotKind, is_slot_control, slot_control,
+    ControlValue, ControlWrite, RejectedControls, ScriptStateAddress, ScriptStateBuffer,
+    ScriptStateCallback, ScriptStateEntry, ScriptStateValue, SlotKind, is_slot_control, slot_control,
 };
 mod controller_event;
 mod performance;
@@ -75,8 +76,8 @@ pub use resample::{ResampleQuality, read_radius};
 mod dsp;
 pub use dsp::{
     Biquad, CompressorSettings, ControlRange, ConvolutionUpload, DaftSettings, Decimator, Delay,
-    FilterKind, Impulse, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
-    StateVariableFilter, StereoSettings, SvfMode, VoiceChain,
+    FilterKind, Impulse, LadderSettings, MAX_IMPULSE_FRAMES, Parameter, Processor, Rectifier, ReverbSettings,
+    StateVariableFilter, StereoSettings, SvfMode, VoiceChain, VoiceSendPosition, VoiceSendTap,
 };
 mod envelope;
 use envelope::EnvelopeState;
@@ -90,7 +91,7 @@ mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name,
+    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name, engine_parameter_control,
 };
 mod steal;
 mod voice_mod;
@@ -446,6 +447,8 @@ struct Voice {
     script_fade: Option<script_params::Fade>,
     envelope: EnvelopeState,
     gain: f32,
+    /// v1 audible_voices: applied channel gains at the last render chunk.
+    last_gains: [f32; 2],
     started: bool,
     /// Admission order, for oldest-first stealing.
     born: u64,
@@ -460,11 +463,15 @@ struct Voice {
 
 #[derive(Clone, Copy, Debug)]
 struct Slot<T> {
+    previous: Option<usize>,
+    next: Option<usize>,
     generation: u64,
     value: Option<T>,
 }
 
 struct Arena<T> {
+    first: Option<usize>,
+    last: Option<usize>,
     runtime: u64,
     slots: Box<[Slot<T>]>,
     occupied: usize,
@@ -485,11 +492,15 @@ impl<T> Arena<T> {
         }
         Self {
             runtime,
+            first: None,
+            last: None,
             occupied: 0,
             available: capacity,
             reserved: 0,
             free,
             slots: std::iter::repeat_with(|| Slot {
+                previous: None,
+                next: None,
                 generation: 0,
                 value: None,
             })
@@ -505,6 +516,8 @@ impl<T> Arena<T> {
             *free.last_mut().unwrap() = (1u64 << (capacity % 64)) - 1;
         }
         let slots = std::iter::repeat_with(|| Slot {
+            previous: None,
+            next: None,
             generation: 0,
             value: None,
         })
@@ -552,13 +565,15 @@ impl<T> Arena<T> {
         let slot = &mut self.slots[index];
         debug_assert!(slot.value.is_none() && slot.generation < u64::MAX);
         slot.generation += 1; // Exhausted generations are quarantined, never wrapped.
+        let generation = slot.generation;
         slot.value = Some(value);
+        self.link(index);
         self.occupied += 1;
         self.available -= 1;
         Ok(Handle {
             runtime: self.runtime,
             index,
-            generation: slot.generation,
+            generation,
         })
     }
 
@@ -584,6 +599,7 @@ impl<T> Arena<T> {
 
     fn take(&mut self, id: Handle) -> Option<T> {
         self.get(id)?;
+        self.unlink(id.index);
         let slot = &mut self.slots[id.index];
         let value = slot.value.take();
         self.occupied -= 1;
@@ -605,6 +621,34 @@ impl<T> Arena<T> {
         self.occupied += 1;
         self.available -= usize::from(slot.generation < u64::MAX);
         self.free[id.index / 64] &= !(1 << (id.index % 64));
+        self.link(id.index);
+    }
+
+    fn link(&mut self, index: usize) {
+        self.slots[index].previous = self.last;
+        self.slots[index].next = None;
+        if let Some(last) = self.last {
+            self.slots[last].next = Some(index);
+        } else {
+            self.first = Some(index);
+        }
+        self.last = Some(index);
+    }
+
+    fn unlink(&mut self, index: usize) {
+        let (previous, next) = (self.slots[index].previous, self.slots[index].next);
+        if let Some(previous) = previous {
+            self.slots[previous].next = next;
+        } else {
+            self.first = next;
+        }
+        if let Some(next) = next {
+            self.slots[next].previous = previous;
+        } else {
+            self.last = previous;
+        }
+        // Keep the successor until slot reuse: retirement can also unlink a
+        // parent that a live traversal has yet to visit.
     }
 
     fn id(&self, index: usize) -> Handle {
@@ -666,6 +710,8 @@ pub struct Runtime {
     kernel: resample::Kernel,
     stream_cache: Option<StreamCache>,
     stream_underruns: u64,
+    offline: bool,
+    stream_fault: Option<StreamError>,
     voice_drops: u64,
     refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -840,6 +886,8 @@ impl Runtime {
             kernel: resample::Kernel::new(ResampleQuality::default()),
             stream_cache: None,
             stream_underruns: 0,
+            offline: false,
+            stream_fault: None,
             voice_drops: 0,
             refused_starts: 0,
             voice_growths: 0,
@@ -930,6 +978,25 @@ impl Runtime {
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }
+    /// Port from v1 0cb7a8a0:src/engine/mod.rs audible_voices predicate.
+    /// Walk occupied voices, including script-muted layers; never scan capacity.
+    pub fn audible_voice_count(&self) -> usize {
+        let mut audible = 0;
+        let mut next = self.voices.first;
+        while let Some(i) = next {
+            let slot = &self.voices.slots[i];
+            let voice = slot.value.as_ref().unwrap();
+            if voice.last_gains != [0.0; 2] {
+                let family = self.families.get(voice.family.0).unwrap();
+                let note = self.notes.get(family.note.0).unwrap();
+                let plan = self.plans.get(note.plan.0).unwrap();
+                audible += usize::from(!plan.script.fader_muted(voice.group));
+            }
+            next = slot.next;
+        }
+        audible
+    }
+
     pub fn pending_commands(&self) -> usize {
         self.commands.len()
     }
@@ -1451,7 +1518,7 @@ impl Runtime {
                 next: next_sibling,
             },
             sample,
-            cursor: if cold { cursor.cold() } else { cursor },
+            cursor: if cold && !self.offline { cursor.cold() } else { cursor },
             base_step,
             chain: None,
             bus: None,
@@ -1460,6 +1527,7 @@ impl Runtime {
             script_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
+            last_gains: [0.0; 2],
             started: at == self.now,
             born: self.voice_order,
             stolen: false,
