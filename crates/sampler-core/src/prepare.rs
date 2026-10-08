@@ -1439,7 +1439,12 @@ impl Prepared {
             nodes.region=index;
             graph.nodes[nodes.amp].parameters = std::iter::once(crate::trace::TraceParameter::constant("region_gain",f64::from(region.gain)))
                 .chain(std::iter::once(crate::trace::TraceParameter::constant("velocity_exponent",match region.velocity_curve {VelocityCurve::Constant=>0.,VelocityCurve::Linear=>1.,VelocityCurve::Power(p)=>p})))
-                .chain(region.envelope.trace_parameters().into_iter().map(|(n,v)|crate::trace::TraceParameter::constant(n,v))).collect();
+                .chain(region.envelope.trace_parameters().into_iter().map(|(n,v)| {
+                    let stage=match n {"attack_frames"=>Some(0),"hold_frames"=>Some(1),"decay_frames"=>Some(2),"sustain"=>Some(3),"release_frames"=>Some(4),"attack_curvature"=>Some(5),_=>None};
+                    let control=group.and_then(|g|self.envelope_controls.get(g as usize)).and_then(|lanes|stage.and_then(|s|lanes[s]));
+                    let binding=control.and_then(|control|self.engine_parameters.iter().find(|b|b.control==control));
+                    crate::trace::TraceParameter::envelope(n,v,binding)
+                })).collect();
             graph.voices.insert(zone, nodes);
         }
         graph.order=graph.topological_order();
