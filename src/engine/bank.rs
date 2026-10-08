@@ -519,11 +519,15 @@ impl Bank {
         };
         check()?;
         let mut issues = Issues::default();
+        let _span = crate::audit_load::Span::new("sample_preload_bank");
         let trace = Trace::new();
         resident::sweep();
         // Resolve each distinct sample once, then open them all in parallel.
         let (zone_ids, paths) = distinct(instrument);
+        let span = crate::audit_load::Span::new("sample_source_resolve");
         let (resolved, cached) = resolve(&instrument.path, &paths);
+        drop(span);
+        let header_span = crate::audit_load::Span::new("sample_headers_latency_probe");
         check()?;
         trace.mark("resolve");
         // Progress runs on from where the caller left it: opening every
@@ -727,12 +731,16 @@ impl Bank {
     }
 
     pub fn load_bare_cancelable(instrument: &Instrument, canceled: &(dyn Fn() -> bool + Sync)) -> Result<Self> {
+        let _span = crate::audit_load::Span::new("sample_headers_bare_bank");
         anyhow::ensure!(!canceled(), "Instrument load canceled");
         let mut issues = Issues::default();
         let trace = Trace::new();
         resident::sweep();
         let (zone_ids, paths) = distinct(instrument);
+        let span = crate::audit_load::Span::new("sample_source_resolve");
         let (resolved, cached) = resolve(&instrument.path, &paths);
+        drop(span);
+        let header_span = crate::audit_load::Span::new("sample_headers_latency_probe");
         let headers: Vec<Result<(Source, Header)>> = match cached {
             Some(headers) => (resolved.into_iter().zip(headers))
                 .map(|(source, header)| Ok((source?, header)))
@@ -752,6 +760,7 @@ impl Bank {
             }
         };
         anyhow::ensure!(!canceled(), "Instrument load canceled");
+        drop(header_span);
         trace.mark("headers");
         let mut kept = Vec::new();
         let opened: Vec<Option<u32>> = (headers.into_iter().zip(&paths))
@@ -1482,9 +1491,11 @@ fn distinct(instrument: &Instrument) -> (Vec<Option<usize>>, Vec<&PathBuf>) {
 fn resolve(preset: &Path, paths: &[&PathBuf]) -> (Vec<Result<Source>>, Option<Vec<Header>>) {
     let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
     if let Some(cached) = header_cache(preset).and_then(|dir| crate::cache::headers(&dir, preset, &paths)) {
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"sample_header_cache\",\"hit\":true}}"); }
         let (sources, headers) = cached.into_iter().map(|(s, h)| (Ok(s), h)).unzip();
         return (sources, Some(headers));
     }
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"sample_header_cache\",\"hit\":false}}"); }
     (audio::Sources::default().sources(&paths), None)
 }
 
