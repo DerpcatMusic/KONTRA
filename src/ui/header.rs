@@ -30,7 +30,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
         // Notes refused for lack of room; zero when all is well.
         [] => match p.shared.dropouts.load(Ordering::Relaxed) {
             0 => String::new(),
-            n => format!("{n} notes dropped"),
+            n => format!("{n} audio dropouts"),
         },
         [one] => format!("Loading {one}…"),
         many => format!("Loading {} instruments…", many.len()),
@@ -125,7 +125,7 @@ pub fn top_bar(ui: &mut Ui, cx: &mut Cx, bridge: &mut Bridge<SamplerParams>) -> 
             .when(!activity.is_empty(), |e| e.tip(activity))
             .id("activity"),
         stat("CPU", format!("{:.0}%", cpu * 100.), "100%"),
-        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running")),
+        stat("Voices", audible.to_string(), "000").tip(format!("{voices} running, {} muted by the script", voices.saturating_sub(audible))),
         // Sample heads sized by use and idle stream rings handed back.
         stat("RAM", megabytes(memory), "00000 MB").tip(format!(
             "Smart memory: {} of samples resident, for this rack · {} freed",

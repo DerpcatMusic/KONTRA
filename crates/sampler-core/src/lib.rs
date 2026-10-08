@@ -424,6 +424,8 @@ struct Voice {
     dsp_fade: Option<(u32, f32)>,
     envelope: EnvelopeState,
     gain: f32,
+    /// v1 audible_voices: applied channel gains at the last render chunk.
+    last_gains: [f32; 2],
     started: bool,
     /// Admission order, for oldest-first stealing.
     born: u64,
@@ -944,6 +946,25 @@ impl Runtime {
     pub fn voice_count(&self) -> usize {
         self.voices.count()
     }
+    /// Port from v1 0cb7a8a0:src/engine/mod.rs audible_voices predicate.
+    /// Walk occupied voices, including script-muted layers; never scan capacity.
+    pub fn audible_voice_count(&self) -> usize {
+        let mut audible = 0;
+        let mut next = self.voices.first;
+        while let Some(i) = next {
+            let slot = &self.voices.slots[i];
+            let voice = slot.value.as_ref().unwrap();
+            if voice.last_gains != [0.0; 2] {
+                let family = self.families.get(voice.family.0).unwrap();
+                let note = self.notes.get(family.note.0).unwrap();
+                let plan = self.plans.get(note.plan.0).unwrap();
+                audible += usize::from(!plan.script.fader_muted(voice.group));
+            }
+            next = slot.next;
+        }
+        audible
+    }
+
     pub fn pending_commands(&self) -> usize {
         self.commands.len()
     }
@@ -1466,6 +1487,7 @@ impl Runtime {
             dsp_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
+            last_gains: [0.0; 2],
             started: at == self.now,
             born: self.voice_order,
             stolen: false,
