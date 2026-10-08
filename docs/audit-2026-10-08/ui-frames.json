@@ -1,0 +1,553 @@
+{
+  "baseline_v2": "7e82b152",
+  "baseline_v1": "0cb7a8a0",
+  "fixtures": {
+    "Conflux": {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki",
+      "file_bytes": 229178,
+      "sha256": "dbe61912507d2ab46404f68a468a5194c039f1e7ca17864af92f2b6f0634d676"
+    },
+    "Vista": {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Performance Samples Vista/Instruments/Vista - 3 Cellos.nki",
+      "file_bytes": 446870,
+      "sha256": "9b16ac003cb1f1c4796a0d7585001182c3b962ac4662a29891d3f94fc1716af4"
+    },
+    "Areia": {
+      "path": "/mnt/MAIN_STORAGE/Libraries/Kontakt/Areia 1.2.0 [Audio Imperia]/Instruments/01 Core Technique Patches/03 Areia - 6 Celli - Core Techniques.nki",
+      "file_bytes": 2968479,
+      "sha256": "359ad9df83a6a78f5215fc01020150923e15ab39c5c03d16a670c56769154b95"
+    }
+  },
+  "size": [
+    1180,
+    900
+  ],
+  "warmup": 8,
+  "samples": 24,
+  "renderer": "Vello offscreen CPU",
+  "content_matched": false,
+  "runs": [
+    {
+      "version": "v1",
+      "library": "conflux",
+      "log": "v1-conflux-idle.log",
+      "stages": [
+        {
+          "mode": "1",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.231,
+          "median_ms": 0.207,
+          "p99_ms": 0.39
+        },
+        {
+          "mode": "1",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.934,
+          "median_ms": 0.848,
+          "p99_ms": 1.512
+        },
+        {
+          "mode": "1",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.081,
+          "median_ms": 0.074,
+          "p99_ms": 0.119
+        },
+        {
+          "mode": "1",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.592,
+          "median_ms": 1.533,
+          "p99_ms": 2.453
+        },
+        {
+          "mode": "1",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.496,
+          "median_ms": 3.362,
+          "p99_ms": 5.259
+        },
+        {
+          "mode": "1",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 6.333,
+          "median_ms": 6.193,
+          "p99_ms": 9.289
+        },
+        {
+          "mode": "3",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.204,
+          "median_ms": 0.185,
+          "p99_ms": 0.416
+        },
+        {
+          "mode": "3",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.745,
+          "median_ms": 0.65,
+          "p99_ms": 1.396
+        },
+        {
+          "mode": "3",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.074,
+          "median_ms": 0.07,
+          "p99_ms": 0.14
+        },
+        {
+          "mode": "3",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.517,
+          "median_ms": 1.509,
+          "p99_ms": 1.678
+        },
+        {
+          "mode": "3",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.184,
+          "median_ms": 3.169,
+          "p99_ms": 3.438
+        },
+        {
+          "mode": "3",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 5.724,
+          "median_ms": 5.583,
+          "p99_ms": 7.069
+        }
+      ]
+    },
+    {
+      "version": "v1",
+      "library": "vista",
+      "log": "v1-vista.log",
+      "stages": [
+        {
+          "changing": "false",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.175,
+          "median_ms": 0.174,
+          "p99_ms": 0.193
+        },
+        {
+          "changing": "false",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.544,
+          "median_ms": 0.543,
+          "p99_ms": 0.575
+        },
+        {
+          "changing": "false",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.042,
+          "median_ms": 0.041,
+          "p99_ms": 0.049
+        },
+        {
+          "changing": "false",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 0.996,
+          "median_ms": 0.995,
+          "p99_ms": 1.02
+        },
+        {
+          "changing": "false",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.186,
+          "median_ms": 3.182,
+          "p99_ms": 3.392
+        },
+        {
+          "changing": "false",
+          "stage": "snapshot_lock",
+          "n": "24",
+          "mean_ms": 0.0,
+          "median_ms": 0.0,
+          "p99_ms": 0.0
+        }
+      ]
+    },
+    {
+      "version": "v1",
+      "library": "areia",
+      "log": "v1-areia.log",
+      "stages": [
+        {
+          "changing": "false",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.214,
+          "median_ms": 0.204,
+          "p99_ms": 0.374
+        },
+        {
+          "changing": "false",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.72,
+          "median_ms": 0.686,
+          "p99_ms": 1.055
+        },
+        {
+          "changing": "false",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.061,
+          "median_ms": 0.059,
+          "p99_ms": 0.086
+        },
+        {
+          "changing": "false",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.26,
+          "median_ms": 1.242,
+          "p99_ms": 1.439
+        },
+        {
+          "changing": "false",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.979,
+          "median_ms": 4.005,
+          "p99_ms": 4.428
+        },
+        {
+          "changing": "false",
+          "stage": "snapshot_lock",
+          "n": "24",
+          "mean_ms": 0.0,
+          "median_ms": 0.0,
+          "p99_ms": 0.0
+        }
+      ]
+    },
+    {
+      "version": "v2",
+      "library": "conflux",
+      "log": "v2-conflux.log",
+      "stages": [
+        {
+          "mode": "Original",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 3.169,
+          "median_ms": 0.816,
+          "p99_ms": 11.963
+        },
+        {
+          "mode": "Original",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 7.676,
+          "median_ms": 8.77,
+          "p99_ms": 20.48
+        },
+        {
+          "mode": "Original",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.134,
+          "median_ms": 0.126,
+          "p99_ms": 0.287
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 9.821,
+          "median_ms": 10.573,
+          "p99_ms": 20.323
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 15.63,
+          "median_ms": 14.004,
+          "p99_ms": 30.078
+        },
+        {
+          "mode": "Original",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 36.43,
+          "median_ms": 35.994,
+          "p99_ms": 53.436
+        },
+        {
+          "mode": "Vector",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 2.372,
+          "median_ms": 0.798,
+          "p99_ms": 12.003
+        },
+        {
+          "mode": "Vector",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 5.237,
+          "median_ms": 2.499,
+          "p99_ms": 13.856
+        },
+        {
+          "mode": "Vector",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.125,
+          "median_ms": 0.119,
+          "p99_ms": 0.189
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 9.31,
+          "median_ms": 8.751,
+          "p99_ms": 22.107
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 14.873,
+          "median_ms": 14.692,
+          "p99_ms": 29.8
+        },
+        {
+          "mode": "Vector",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 31.918,
+          "median_ms": 31.423,
+          "p99_ms": 47.826
+        }
+      ]
+    },
+    {
+      "version": "v2",
+      "library": "vista",
+      "log": "v2-vista.log",
+      "stages": [
+        {
+          "mode": "Original",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.221,
+          "median_ms": 0.218,
+          "p99_ms": 0.258
+        },
+        {
+          "mode": "Original",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.527,
+          "median_ms": 0.523,
+          "p99_ms": 0.567
+        },
+        {
+          "mode": "Original",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.037,
+          "median_ms": 0.036,
+          "p99_ms": 0.048
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.035,
+          "median_ms": 1.033,
+          "p99_ms": 1.056
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 3.333,
+          "median_ms": 3.301,
+          "p99_ms": 4.278
+        },
+        {
+          "mode": "Original",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 5.152,
+          "median_ms": 5.103,
+          "p99_ms": 6.074
+        },
+        {
+          "mode": "Vector",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.431,
+          "median_ms": 0.454,
+          "p99_ms": 0.549
+        },
+        {
+          "mode": "Vector",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 1.267,
+          "median_ms": 1.116,
+          "p99_ms": 3.251
+        },
+        {
+          "mode": "Vector",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.056,
+          "median_ms": 0.058,
+          "p99_ms": 0.066
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.581,
+          "median_ms": 1.629,
+          "p99_ms": 2.666
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 6.028,
+          "median_ms": 5.964,
+          "p99_ms": 9.11
+        },
+        {
+          "mode": "Vector",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 9.364,
+          "median_ms": 9.601,
+          "p99_ms": 12.773
+        }
+      ]
+    },
+    {
+      "version": "v2",
+      "library": "areia",
+      "log": "v2-areia.log",
+      "stages": [
+        {
+          "mode": "Original",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.264,
+          "median_ms": 0.261,
+          "p99_ms": 0.326
+        },
+        {
+          "mode": "Original",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.485,
+          "median_ms": 0.481,
+          "p99_ms": 0.541
+        },
+        {
+          "mode": "Original",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.036,
+          "median_ms": 0.036,
+          "p99_ms": 0.041
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 0.925,
+          "median_ms": 0.921,
+          "p99_ms": 0.974
+        },
+        {
+          "mode": "Original",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 4.257,
+          "median_ms": 4.228,
+          "p99_ms": 4.483
+        },
+        {
+          "mode": "Original",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 5.967,
+          "median_ms": 5.959,
+          "p99_ms": 6.208
+        },
+        {
+          "mode": "Vector",
+          "stage": "build",
+          "n": "24",
+          "mean_ms": 0.289,
+          "median_ms": 0.258,
+          "p99_ms": 0.433
+        },
+        {
+          "mode": "Vector",
+          "stage": "layout",
+          "n": "24",
+          "mean_ms": 0.595,
+          "median_ms": 0.515,
+          "p99_ms": 0.91
+        },
+        {
+          "mode": "Vector",
+          "stage": "scene_clone",
+          "n": "24",
+          "mean_ms": 0.041,
+          "median_ms": 0.037,
+          "p99_ms": 0.059
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_paint",
+          "n": "24",
+          "mean_ms": 1.167,
+          "median_ms": 1.019,
+          "p99_ms": 1.573
+        },
+        {
+          "mode": "Vector",
+          "stage": "cpu_raster",
+          "n": "24",
+          "mean_ms": 4.828,
+          "median_ms": 4.052,
+          "p99_ms": 7.193
+        },
+        {
+          "mode": "Vector",
+          "stage": "total",
+          "n": "24",
+          "mean_ms": 6.92,
+          "median_ms": 5.9,
+          "p99_ms": 9.793
+        }
+      ]
+    }
+  ]
+}
