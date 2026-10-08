@@ -13,6 +13,8 @@
 
 mod snapshot;
 pub use snapshot::{Snapshot, SnapshotRead};
+mod discard;
+pub use discard::discard_f32;
 mod claim;
 mod pool;
 
