@@ -38,8 +38,8 @@ Canonical sweep directories: ../results/v1 and ../results/v2. Publishing script 
 
 ## Binary digests
 
-- kontra-scan-v1 SHA-256 `a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`
-- kontra-scan-v2 SHA-256 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`
+- kontra-scan-v1 SHA-256 `bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438`
+- kontra-scan-v2 SHA-256 `2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0`
 - kontra-scan-v1-uvi SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`
 
 ## Rebuild from the shared source branch
@@ -87,8 +87,14 @@ cd /path/to/scan-v1
 
 The patch contains only feature-gated v1 adapter hooks. The preparer copies the same driver/metrics from this source bundle and disables the v2-only host check; v1's actual VM-yield test remains enabled. UVI sidecar source/rebuild provenance is the separate auditor branch above.
 
-The scanner always sends a safe fallback note when load-time zone coverage is empty (note callbacks can enable zones), avoiding declared invalid/control/keyswitch keys. `sample_zone_count` is the surviving load-time mapping count; sample residency can include reserved cache memory and does not prove usable PCM. Entirely invalid keyboards have no safe audition key: plays_note=no and an explicit reason, rather than silently skipping MIDI while claiming a silent note.
+The scanner always sends a safe fallback note when load-time zone coverage is empty (note callbacks can enable zones), avoiding declared invalid/control/keyswitch keys. `sample_zone_count` is the retained instrument IR mapping count (v1: loaded bank mappings), or unknown if the adapter exposes no retained instrument. Raw decoded mappings remain separately in JSON as decoded_zone_count. Runtime script gating/purge is not inferred from these counts; sample residency can include reserved cache memory and does not prove usable PCM. Entirely invalid keyboards have no safe audition key: plays_note=no and an explicit reason, rather than silently skipping MIDI while claiming a silent note.
 
 Before a rebuild, run `python3 tools/kontra-scan/generate-symbols.py` (v2 source worktree) and `--check` to verify the whitelist matches compiler UI/keyboard/persistence tables plus the pinned public spec. Both adapters use the generated file. The small vendor-extension set is explicit and carries unknown semantics.
 
 `bound_typed` counts visible text/array targets validated against installed KSP models separately from the frozen scalar/ID criterion; it does not certify live typed edits. UVI typed targets and phantom-free counts stay unknown on baselines lacking the necessary origin/readback accessor. Fallback auditions are flagged and excluded from parity. The shared numeric note plan retains the pre-audition declared keyswitch when available. `v1ok-v2missing.tsv` reports authored-UI regressions; `results/v2/symbol-aggregates.tsv` includes coverage, per-ID/program-owner incidence, NKI/NKM splits, initialized widget kinds and fixed saved sigils.
+
+## Load onset (section J)
+
+first_audio_ms is monotonic wall time from the first production program import to the first observed finite, exactly nonzero output block using the shared audition plan. It is unknown when no such output is observed. The audible audition still uses its separate 1e-5 threshold. ui_first_frame_ms is elapsed time to actual CPU paint completion, before pixel hashing/PNG writing. The lexical metadata prepass and worker spawn are outside this clock. Original painting and audition run concurrently in the isolated worker; timing is a scanner observation, not a native plugin scheduling benchmark. Later programs of a multi share the item clock.
+
+load_ms is unchanged: pinned v1 includes script import/init and the deferred initial sample-bank preload; it is NOT first sound. cache_state describes the product cache condition, not the per-item metrics cache or OS page cache. Frozen pinned v1 scanner disables parsed/header cache reads and writes; frozen v2 7e82 has no product metadata cache, so both are cold under this scanner. OS page cache is uncontrolled. New product cache implementations must expose their actual cache condition before their warm/cold acceptance results can use this column.

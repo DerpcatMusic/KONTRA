@@ -8,7 +8,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-fn original(part: &PartView, out: &Path, prefix: &str) -> anyhow::Result<Value> {
+fn original(part: &PartView, load_started: Instant, out: &Path, prefix: &str) -> anyhow::Result<Value> {
     use moose::mui::mui::vello::{
         self,
         vello_cpu::{Pixmap, RenderContext, Resources},
@@ -60,12 +60,14 @@ fn original(part: &PartView, out: &Path, prefix: &str) -> anyhow::Result<Value> 
     ctx.flush();
     let mut pix = Pixmap::new(1180, 900);
     ctx.render(&mut pix, &mut resources);
+    let first_frame_ms=load_started.elapsed().as_secs_f64()*1000.;
     let rgba: Vec<_> = pix
         .take_unpremultiplied()
         .iter()
         .flat_map(|p| [p.r, p.g, p.b, p.a])
         .collect();
     let mut record = metrics::pixels(&rgba);
+    record["ui_first_frame_ms"]=json!(first_frame_ms);
     record["extent"] =
         json!("full v1 editor; blank uses authored visibility, not shell pixel uniformity");
     if std::env::var_os("KONTRA_SCAN_SHOTS").is_some() {
@@ -77,8 +79,9 @@ fn original(part: &PartView, out: &Path, prefix: &str) -> anyhow::Result<Value> 
 }
 
 pub fn one(id: &str, out: &Path) -> Value {
+    let mut first_audio_ms=None;
     let path = Path::new(id);
-    let mut result = json!({"loads":"no","ui":"error","plays_note":"no","controls_bound":"0/0","stage":"parse","programs":[]});
+    let mut result = json!({"loads":"no","ui":"error","plays_note":"no","controls_bound":"0/0","stage":"parse","programs":[],"cache_state":"cold","cache_state_basis":"scanner disables product parsed/header cache reads and writes; OS page cache uncontrolled"});
     PHASES.with(|p| p.borrow_mut().clear());
     result["metadata"] = match import::scan_chunks(path) {
         Ok(c) => metrics::metadata::inspect(&c.0),
@@ -108,6 +111,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut any_heard,
     ) = (true, 0, 0, false, false, false, false, false);
     let mut load_ms = 0.;
+    let load_started=Instant::now();
+    result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
     for program in &programs {
         let start = Instant::now();
         result["stage"] = json!(format!("parse program {program}"));
@@ -147,6 +152,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         }
         load_ms += start.elapsed().as_secs_f64() * 1000.;
         let mut views = Vec::new();
+        let mut paint_jobs=Vec::new();
         if let Some(rt) = rt.as_ref() {
             for (slot, _) in rt.performance_slots() {
                 let face = Arc::new(rt.interface(slot));
@@ -206,9 +212,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                 };
                 result["stage"] = json!(format!("Original UI program {program} slot {slot}"));
                 metrics::checkpoint(out, &result);
-                let rendered = original(&part, out, &format!("program-{program}-slot-{slot}"));
-                error |= rendered.is_err();
-                let render_error = rendered.as_ref().err().map(|e| e.to_string());
+                paint_jobs.push((part,format!("program-{program}-slot-{slot}")));
                 let declared = face
                     .controls
                     .iter()
@@ -231,9 +235,14 @@ pub fn one(id: &str, out: &Path) -> Value {
                     })
                     .count();
                 views.push(json!({"controls_declared":declared,"controls_bound_declared":declared_bound,
-                    "bound_typed":shown.iter().filter(|s|matches!(face.controls[s.control].kind.as_str(),"ui_table"|"ui_xy"|"ui_text_edit")&&face.controls[s.control].id>0).count(),"typed_binding_basis":"visible source UI ID; live typed edit/readback unmeasured","phantom_free_controls":null,"slot":slot,"widgets":face.controls.len(),"visible":shown.len(),"interactive":live,"bound":live_bound,"kinds":kinds,"geometry":geometries,"missing_images":missing_images,"asset_errors":picture_errors.len(),"render":match rendered {Ok(mut r)=>{r["ok"]=json!(true);r},Err(_)=>json!({"ok":false,"budget_hit":render_error.as_deref().is_some_and(metrics::budget),"reason":render_error.as_deref().map(metrics::message)})}}));
+                    "bound_typed":shown.iter().filter(|s|matches!(face.controls[s.control].kind.as_str(),"ui_table"|"ui_xy"|"ui_text_edit")&&face.controls[s.control].id>0).count(),"typed_binding_basis":"visible source UI ID; live typed edit/readback unmeasured","phantom_free_controls":null,"slot":slot,"widgets":face.controls.len(),"visible":shown.len(),"interactive":live,"bound":live_bound,"kinds":kinds,"geometry":geometries,"missing_images":missing_images,"asset_errors":picture_errors.len(),"render":null}));
             }
         }
+        let paint_out=out.to_path_buf();
+        let paint=std::thread::Builder::new().stack_size(32 << 20).spawn(move ||paint_jobs.into_iter().map(|(part,prefix)|match original(&part,load_started,&paint_out,&prefix) {
+            Ok(mut r)=>{r["ok"]=json!(true);r},
+            Err(e)=>{let message=e.to_string();json!({"ok":false,"budget_hit":metrics::budget(&message),"reason":metrics::message(&message)})}
+        }).collect::<Vec<_>>()).expect("paint worker start");
         // v1's initial playable bank validates/resolves sample headers and streams on demand.
         result["stage"] = json!(format!("sample load program {program}"));
         metrics::checkpoint(out, &result);
@@ -241,6 +250,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let bank = match Bank::load_bare(&instrument) {
             Ok(b) => b,
             Err(e) => {
+                let _=paint.join();
                 all_load = false;
                 result["programs"]
                     .as_array_mut()
@@ -286,6 +296,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             if let Some(switch)=keyswitch {
                 engine.note_on(0,switch,64);
                 let (mut l,mut r)=([0f32;128],[0f32;128]);engine.render(&mut l,&mut r);
+                if first_audio_ms.is_none() && metrics::nonzero(l.iter().chain(&r).copied()) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 engine.note_off(0,switch);
             }
             engine.note_on(0, key, vel);
@@ -293,11 +304,16 @@ pub fn one(id: &str, out: &Path) -> Value {
                 std::thread::sleep(Duration::from_millis(3));
                 let (mut l, mut r) = ([0f32; 128], [0f32; 128]);
                 engine.render(&mut l, &mut r);
+                if first_audio_ms.is_none() && metrics::nonzero(l.iter().chain(&r).copied()) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 if l.iter().chain(&r).any(|x| x.is_finite() && x.abs() > 1e-5) {
                     heard = true;
                 }
             }
         }
+        result["stage"]=json!(format!("Original paint join program {program}"));
+        metrics::checkpoint(out,&result);
+        let painted=paint.join().unwrap_or_else(|_|vec![json!({"ok":false,"budget_hit":false,"reason":"paint worker panicked"});views.len()]);
+        for (view,render) in views.iter_mut().zip(painted) {error |= render["ok"]!=true;view["render"]=render;}
         any_heard |= heard;
         // Script failures are recorded separately from successful import/sample-bank construction.
         error |= !script_errors.is_empty();
@@ -328,6 +344,7 @@ pub fn one(id: &str, out: &Path) -> Value {
     });
     result["controls_bound"] = json!(format!("{bound}/{interactive}"));
     result["load_ms"] = json!(load_ms);
+    result["first_audio_ms"]=json!(first_audio_ms);
     result["reason"] = json!(format!(
         "{} programs; Original only; bound {bound}/{interactive}; initial streaming bank; audio {}",
         programs.len(),
