@@ -275,3 +275,35 @@ fn waveform_provider_keeps_sparse_source_identity_plan_epoch_and_shared_display_
     atoms.loop_audit_install_ingress(None);
     assert!(atoms.widget_waveforms(&face,2,0.5).is_empty(),"unmatched Prepared generation cannot publish cached peaks");
 }
+
+#[test]
+fn host_parameter_callback_changes_audio_at_the_exact_host_sample_offset() {
+    use sampler_core::*;
+    let script = sampler_ksp::compile("on init declare ui_knob $k(0,100,1) declare ui_knob $echo(0,1000,1) end on on ui_control($k) $echo := $k + 1 end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let ui_id = script.model().interface.widgets[0].ui_id;
+    let control = script.controls()[0].definition.id;
+    let echo = sampler_ui_ir::ControlId(script.controls()[1].definition.id.0);
+    let pcm = Pcm::new(48000,vec![[0.25;2];512].into_boxed_slice()).unwrap();
+    let region = Region {sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+    let prepared = script.bind(Prepared::new(48000,vec![pcm],vec![region],128).unwrap()).unwrap()
+        .with_automation_bindings(vec![AutomationBinding {source:AutomationSource::HostParameter(2048),source_slot:0,ui_id,low:0.,high:1.,soft_takeover:false}]).unwrap();
+    let prepared = prepared.with_voice_chains(vec![VoiceChain::new(vec![],vec![Processor::ControlGain(ControlRange {control,low:0.,high:1.,ramp_frames:0})],0).unwrap()],vec![Some(0)]).unwrap();
+    let limits = Limits::for_plan(&prepared,8,1);
+    let part = CorePart::new(Runtime::new(prepared,limits).unwrap(),MixTree::instrument("sample-exact host")).unwrap();
+    let p = SamplerParams::new();p.shared.ensure_parts(1);
+    let mut dsp = Dsp::default();dsp.core=V2Core::with_parts(1,48000.);dsp.core.install(0,Some(Box::new(part)));
+    let mut events = EventList::with_capacity(2);
+    events.push(super::Event::new(0,EventBody::NoteOn {group:0,channel:0,note:60,velocity:127}));
+    events.push(super::Event::new(7,EventBody::ParamChange {id:automation::BASE+2048,value:0.25}));
+    let mut output_events = EventList::with_capacity(8);let transport = TransportInfo::default();
+    let mut cx = ProcessContext::new(&transport,48000.,16,&mut output_events);
+    let (mut left,mut right)=([0f32;16],[0f32;16]);
+    let mut channels=[left.as_mut_slice(),right.as_mut_slice()];
+    let mut buffer=AudioBuffer::from_slices_checked(&[],&mut channels,16);
+    assert_eq!(tests::allocations(|| {Sampler::process(&mut dsp,&p,&mut buffer,&events,&mut cx);}),0);
+    assert_eq!(dsp.core.control_value(0,echo),Some(26.));
+    assert!(left[..7].iter().all(|sample|*sample==0.),"host callback must not run at block start");
+    assert!(left[7]>0.,"host callback audio must start on sample7, without block quantization: samples={left:?} unsupported={} problems={:?}",dsp.unsupported,dsp.core.problems(0));
+    assert!(left[7..].iter().all(|sample|*sample>0.));
+    assert_eq!(left,right);
+}
