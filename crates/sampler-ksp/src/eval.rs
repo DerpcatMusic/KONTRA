@@ -4,7 +4,7 @@ use crate::builtins::{self as b, Builtin};
 use crate::diag::{Fault, Result, Span, fault};
 use crate::hir::*;
 use crate::model::{self, Key, KeyRange, MenuItem, Request, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
@@ -13,11 +13,16 @@ pub struct Environment {
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
     pub persisted: BTreeMap<String, Value>,
+    /// Host-saved semantic control values. Unlike Kontakt's menu persistence,
+    /// these are values, never menu-item positions.
+    pub control_values: BTreeMap<sampler_core::ControlId, Value>,
     /// Saved array contents by variable name (`%a`, `?r`); a longer save is
     /// cut to the declared length, a shorter one restores a prefix.
     pub persisted_arrays: BTreeMap<String, Vec<Value>>,
     /// Script slot (`$CURRENT_SCRIPT_SLOT`); also namespaces derived control ids.
     pub slot: u8,
+    pub engine_values: BTreeMap<[i32;4],i32>,
+    pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
     /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
@@ -143,6 +148,9 @@ struct Eval<'h> {
     st: Initial,
     fuel: u64,
     depth: usize,
+    consumed: BTreeSet<VarId>,
+    pending_menus: BTreeMap<usize,i32>,
+    callback_type: i32,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -164,6 +172,9 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         },
         fuel: INIT_FUEL,
         depth: 0,
+        consumed: BTreeSet::new(),
+        pending_menus: BTreeMap::new(),
+        callback_type: b::cb::INIT,
     };
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
@@ -177,10 +188,13 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
     // On load Kontakt restores saved persistent values, then runs
     // `on persistence_changed`, before the interface is shown.
     for (i, var) in hir.vars.iter().enumerate() {
-        if var.persistence != Persistence::None {
+        if !e.consumed.contains(&VarId(i as u32)) && (var.persistence != Persistence::None
+            || matches!(var.home, Home::Control(_)) && e.env.control_values.contains_key(&crate::derived_control_id(e.env.slot, &var.name)))
+        {
             e.restore(VarId(i as u32));
         }
     }
+    e.callback_type = b::cb::PERSISTENCE_CHANGED;
     if let Some(cb) = hir
         .callbacks
         .iter()
@@ -343,18 +357,18 @@ impl Eval<'_> {
             Value::Text(s) => V::S(s.clone()),
         };
         if v.len.is_none() {
-            if let Some(saved) = self.env.persisted.get(&*v.name) {
+            let host = matches!(v.home, Home::Control(_)).then(|| self.env.control_values.get(&crate::derived_control_id(self.env.slot, &v.name))).flatten();
+            if let Some(saved) = host.or_else(|| self.env.persisted.get(&*v.name)) {
                 let mut value = conv(saved);
                 // A menu is saved as its selected item's position; the
                 // variable holds that item's value (Una Corda's velocity
                 // menu stores 5 for "Linear", whose value is 0).
-                if let Home::Control(ui) = v.home
-                    && self.hir.uis[ui as usize].kind == WidgetKind::Menu
-                    && let Some(item) = usize::try_from(value.int())
-                        .ok()
-                        .and_then(|i| self.menu(ui as usize).get(i).cloned())
-                {
-                    value = V::I(item.value);
+                if host.is_none() && let Home::Control(ui) = v.home && self.hir.uis[ui as usize].kind == WidgetKind::Menu {
+                    let ui = ui as usize;
+                    let index = value.int();
+                    let items = self.menu(ui);
+                    if items.is_empty() { self.pending_menus.insert(ui,index); value = V::I(0); }
+                    else { value = V::I(usize::try_from(index).ok().and_then(|i|items.get(i)).or_else(||items.first()).map_or(0,|item|item.value)); }
                 }
                 self.write_var(var, value);
             }
@@ -520,7 +534,7 @@ impl Eval<'_> {
         use b::SysVar::*;
         match sys {
             NumGroups => self.env.groups.len() as i32,
-            CallbackType => b::cb::INIT,
+            CallbackType => self.callback_type,
             DurationQuarter => 500_000,
             DurationEighth => 250_000,
             DurationSixteenth => 125_000,
@@ -530,7 +544,7 @@ impl Eval<'_> {
             DurationBar => 2_000_000,
             SignatureNum | SignatureDenom => 4,
             Tempo => 120,
-            CurrentScriptSlot => 0,
+            CurrentScriptSlot => self.env.slot.into(),
             _ => 0,
         }
     }
@@ -977,11 +991,12 @@ impl Eval<'_> {
                 let ui = self.ui_of(Self::var(args, 0));
                 let (text, value) = (self.text(args, 1)?, self.int(args, 2)?);
                 if let Some(ui) = ui {
-                    self.menu(ui).push(MenuItem {
-                        text,
-                        value,
-                        visible: true,
-                    });
+                    self.menu(ui).push(MenuItem {text,value,visible:true});
+                    if let Some(&index) = self.pending_menus.get(&ui) {
+                        let items = self.menu(ui);
+                        let selected = usize::try_from(index).ok().and_then(|i|items.get(i)).or_else(||items.first()).map_or(0,|item|item.value);
+                        self.write_var(Self::var(args,0),V::I(selected));
+                    }
                 }
                 V::I(0)
             }
@@ -1132,6 +1147,7 @@ impl Eval<'_> {
             ReadPersistentVar => {
                 let var = Self::var(args, 0);
                 self.restore(var);
+                self.consumed.insert(var);
                 V::I(0)
             }
             PgsCreateKey => {
@@ -1223,7 +1239,17 @@ impl Eval<'_> {
                     self.int(args, 2)?,
                     self.int(args, 3)?,
                 ];
-                V::I(self.st.engine.get(&key).copied().unwrap_or(0))
+                // Unwritten group volume, pan and tune read their neutral value.
+                let neutral = match (key[2], key[3], symbol_name(self.hir, key[0])) {
+                    (-1, -1, Some(n)) => match n.trim_start_matches('$') {
+                        "ENGINE_PAR_VOLUME" => 630_957,
+                        "ENGINE_PAR_PAN" | "ENGINE_PAR_TUNE" => 500_000,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                let authored = symbol_name(self.hir,key[0]).and_then(|name|sampler_core::engine_parameter_id(&name)).and_then(|parameter|self.env.engine_values.get(&[parameter.into(),key[1],key[2],key[3]]).copied());
+                V::I(self.st.engine.get(&key).copied().or(authored).unwrap_or(neutral))
             }
             GetEngineParDisp | GetEngineParDispExt => V::S(String::new()),
             GroupName => {
@@ -1241,11 +1267,11 @@ impl Eval<'_> {
                 )
             }
             FindMod | GetModIdx | FindTarget | GetTargetIdx => {
-                // ponytail: no module tables in the environment yet; a stable
-                // opaque index per (owner, name) keeps engine requests consistent.
-                self.request(builtin, args)?;
-                let name = self.text(args, args.len() - 1)?;
-                V::I(lookup_index(&name))
+                let name = self.text(args,args.len()-1)?;
+                let group = self.int(args,0)?;
+                let target = matches!(builtin,FindTarget | GetTargetIdx);
+                let owner = if target {self.int(args,1)?} else {-1};
+                V::I(self.env.engine_lookups.iter().find(|l|l.group==group && l.owner==owner && l.target==target && l.name.eq_ignore_ascii_case(&name)).map_or(-1,|l|l.index))
             }
             OutputChannelName | GetFolder | FsGetFilename => V::S(String::new()),
             FindZone => V::I(b::NOT_FOUND),

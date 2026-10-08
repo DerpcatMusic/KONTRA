@@ -255,6 +255,11 @@ pub enum Op {
         local: u16,
         micros: u32,
     },
+    /// Address registers are parameter, physical group, slot and generic.
+    EngineParameter { address: u16, local: u16, write: bool },
+    EngineDisplay { address: u16, value: Option<u16>, text: TextRef },
+    EngineLookup { group: u16, owner: u16, target: bool, text: TextRef, local: u16 },
+    Purge { group: u16, local: u16, write: bool },
     /// Queue a frontend-defined service request with `count` registers from `args`.
     Emit {
         service: u16,
@@ -281,6 +286,10 @@ impl Op {
             | Self::RealToInteger { local }
             | Self::ReadHost { local, .. }
             | Self::ReadClock { local, .. } => usize::from(*local) + 1,
+            Self::EngineParameter { address, local, .. } => (usize::from(*address) + 4).max(usize::from(*local) + 1),
+            Self::EngineDisplay { address, value, text } => (usize::from(*address) + 4).max(value.map_or(0, |v| usize::from(v)+1)).max(reg(text)),
+            Self::EngineLookup { group, owner, text, local, .. } => usize::from(*group.max(owner).max(local)) + 1 + reg(text),
+            Self::Purge { group, local, .. } => usize::from(*group.max(local)) + 1,
             Self::Call { .. } | Self::Return => 0,
             Self::TextClear { text } => reg(text),
             Self::TextAppend { text: t, part } => reg(t).max(match part {
@@ -330,7 +339,7 @@ impl Op {
             Self::TextFind {
                 text, base, count, ..
             } => (cell(text)?, usize::from(*base) + usize::from(*count)),
-            Self::TextIndex { text, .. } => (cell(text)?, 0),
+            Self::TextIndex { text, .. } | Self::EngineLookup { text, .. } | Self::EngineDisplay { text, .. } => (cell(text)?, 0),
             Self::CompareText { lhs, rhs, .. } => (cell(lhs)?.max(cell(rhs)?), 0),
             Self::Emit { text: Some(t), .. } => (cell(t)?, 0),
             _ => (0, 0),
@@ -525,7 +534,8 @@ impl Default for OpState {
             effects: std::collections::VecDeque::with_capacity(EFFECT_CAPACITY),
             dropped_effects: 0,
             truncated_texts: 0,
-            host: [0; HOST_VALUES],
+            host: { let mut values = [0; HOST_VALUES];
+                for (slot, value) in [(8,500000),(9,250000),(10,125000),(11,333333),(12,166667),(13,83333),(14,2000000),(16,4),(17,4),(19,120000),(24,2)] { values[slot] = value; } values },
             random: 0x9e37_79b9_7f4a_7c15,
         }
     }
@@ -628,6 +638,13 @@ impl Runtime {
         Ok(())
     }
 
+    fn engine_address(&mut self, id: BehaviorId, register: u16) -> Result<Option<crate::EngineParameterAddress>, Error> {
+        let raw = self.reg(id, register)? as i32;
+        let c = *self.behaviors.get(id.0).ok_or(Error::StaleHandle)?;
+        let plan = self.behavior_plan(c.owner)?;
+        let parameter = self.plans.get(plan.0).unwrap().prepared.programs[c.program].engine_symbols.iter().find(|(value, _)| *value == raw).map(|(_, parameter)| *parameter);
+        Ok(match parameter { Some(parameter) => Some(crate::EngineParameterAddress { parameter, group: self.reg(id, register+1)? as i32, slot: self.reg(id, register+2)? as i32, generic: self.reg(id, register+3)? as i32 }), None => None })
+    }
     fn text_cell(&self, id: BehaviorId, text: TextRef) -> Result<usize, Error> {
         Ok(match text {
             TextRef::Cell(cell) => cell as usize,
@@ -829,6 +846,38 @@ impl Runtime {
                         .as_str(),
                 );
                 self.set_reg(id, local, i64::from(index))?;
+            }
+            Op::EngineParameter { address, local, write } => {
+                let plan = self.behavior_plan(owner)?;
+                if let Some(address) = self.engine_address(id, address)? {
+                    if write { self.set_engine_parameter_in(plan, address, self.reg(id, local)? as i32)?; }
+                    else { let value = self.engine_parameter_in(plan, address)?; self.set_reg(id, local, value.into())?; }
+                } else if !write { self.set_reg(id, local, 0)?; }
+            }
+            Op::EngineDisplay { address, value, text } => {
+                let cell = self.text_cell(id, text)?;
+                let mut result = Text::default();
+                if let Some(address) = self.engine_address(id, address)? {
+                    let plan = self.behavior_plan(owner)?;
+                    let value = match value { Some(v) => self.reg(id, v)? as i32, None => self.engine_parameter_in(plan, address)? };
+                    crate::engine_parameters::display(address.parameter, value, &mut result);
+                }
+                *self.behavior_bank(id)?.texts.get_mut(cell).ok_or(Error::InvalidInput)? = result;
+            }
+            Op::EngineLookup { group, owner: lookup_owner, target, text, local } => {
+                let group = self.reg(id, group)? as i32;
+                let lookup_owner = self.reg(id, lookup_owner)? as i32;
+                let cell = self.text_cell(id, text)?;
+                let name = *self.behavior_bank(id)?.texts.get(cell).ok_or(Error::InvalidInput)?;
+                let plan = self.behavior_plan(owner)?;
+                let found = self.plans.get(plan.0).unwrap().prepared.engine_lookups.iter().find(|l| l.group == group && l.owner == lookup_owner && l.target == target && l.name.eq_ignore_ascii_case(name.as_str())).map_or(-1, |l| l.index);
+                self.set_reg(id, local, found.into())?;
+            }
+            Op::Purge { group, local, write } => {
+                let plan = self.behavior_plan(owner)?;
+                let group = self.reg(id, group)?;
+                if write { self.write_param(plan, crate::ParamScope::Group, group, crate::ModTarget::Attenuate, if self.reg(id, local)? == 0 {0} else {1000}, false)?; }
+                else { let value = self.read_param(plan, crate::ParamScope::Group, group, crate::ModTarget::Attenuate)?; self.set_reg(id, local, i64::from(value != 0))?; }
             }
             Op::Store { key, local, write } => {
                 let mut k = [0; STORE_KEY];
