@@ -426,6 +426,8 @@ pub struct Prepared {
     pub(super) monophonic_release: Box<[bool]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
+    /// Bus index by source address, for script group routing.
+    pub(super) bus_addresses: Box<[(i32, usize)]>,
     // Boxed: a Prepared moves by value through every builder, and inline
     // tables of this size made each debug frame hundreds of kilobytes.
     offsets: Box<[usize; 129]>,
@@ -613,6 +615,7 @@ impl Prepared {
             monophonic_release: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
+            bus_addresses: Box::new([]),
             phase_offsets: Box::new(std::array::from_fn(|key| [offsets[key + 1]; 2])),
             release_options: [super::ReleaseOptions::default(); 2],
             release_reserves: Box::new([[super::ReleaseReserve::default(); 2]; 128]),
