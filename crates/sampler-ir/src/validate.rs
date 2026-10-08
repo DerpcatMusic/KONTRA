@@ -214,6 +214,7 @@ impl Check<'_> {
                 }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::Rectify(_) => {}
+                Processor::SendReturnGate { .. } => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
                 Processor::Daft(d) => {
                     self.within(d.gain, 0.0..=1.0, "daft gain")?;
