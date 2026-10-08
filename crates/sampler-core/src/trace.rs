@@ -375,6 +375,7 @@ pub(crate) struct VoiceTrace<'a> {
     pub graph: &'a TraceGraph,
     pub nodes: &'a VoiceNodes,
     pub identity: TraceIdentity,
+    pub envelope_parameters: [f64; 10],
 }
 impl VoiceTrace<'_> {
     pub fn record(
@@ -407,6 +408,13 @@ impl VoiceTrace<'_> {
             parameters,
             &self.graph.nodes[id],
         );
+        if id == self.nodes.amp {
+            let record = &mut self.recorder.scratch[id].record;
+            for (i, value) in self.envelope_parameters.into_iter().enumerate() {
+                record.values[i + 2] = value;
+                record.normalized[i + 2] = self.graph.nodes[id].parameters[i + 2].native(value);
+            }
+        }
     }
 }
 
@@ -430,6 +438,11 @@ impl TraceParameter {
         }
     }
 
+    pub(crate) fn envelope(name: &'static str, initial: f64, binding: Option<&crate::EngineParameterBinding>) -> Self {
+        let mut p = Self::constant(name, initial);
+        if let Some(b) = binding { p.address = Some(b.address); p.law = Some(b.law); }
+        p
+    }
     pub(crate) fn constant(name: &'static str, initial: f64) -> Self {
         Self {
             name,
