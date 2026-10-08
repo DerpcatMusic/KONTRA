@@ -636,12 +636,20 @@ impl Runtime {
                         amplifier_control_gain:points.map_or([1.;2],|r|r.gains_at(at+1)).map(f64::from),
                         envelope_level:f64::from(v.envelope.current()), ..Default::default() } }))
         } else { None };
+        let mut parameter_scratch = (!plan.dsp.modulated_parameters.is_empty())
+            .then(|| plan.dsp.modulated_parameters.claim(0));
+        let parameters = if let Some(scratch) = parameter_scratch.as_mut() {
+            if plan.modulation.project_parameters(
+                &plan.prepared.voice_modulation, i, &plan.dsp.parameters,
+                &plan.prepared.dsp_bindings, chain.map_or(0..0, |c| c.parameter_span.clone()), scratch,
+            ) { &scratch[..] } else { &plan.dsp.parameters[..] }
+        } else { &plan.dsp.parameters[..] };
         let context = super::dsp::RenderContext {
             trace,
             amplifier: chain.and(points),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: gains,
-            parameters: &plan.dsp.parameters,
+            parameters,
             filters: super::dsp::svf::FilterContext {
                 bank: &mut plan.dsp.filters.as_mut_slice()[0],
                 expression: Some((n.expression, expression.value)),
@@ -673,7 +681,7 @@ impl Runtime {
             };
             render_source::<TRACE>(v, &source, segment, chain, states, context, &self.kernel)
         };
-        drop((claimed, delay));
+        drop((claimed, delay, parameter_scratch));
         if let (Some(ramp), Some(target)) = (points, mixed) {
             let ramp = if chain.is_some() { ramp.without_gains() } else { ramp };
             plan.dsp.filters.as_mut_slice()[0].modulation = [1.0; 2];
