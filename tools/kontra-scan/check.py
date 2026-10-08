@@ -77,4 +77,8 @@ pending=scanner.extra_columns({'loads':'yes','ui':'original-ok','ui_first_frame_
 assert pending['ui']=='error' and pending['paint_ok']=='no' and pending['ui_first_frame_ms']=='unknown'
 native=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'source_presentation':'native-package','font_declared':0,'native_diagnostic':'Native runtime; time-budget#safe','renders':[{'ok':True}]}]}]})
 assert native['ui']=='budget-hit' and 'time-budget#safe' not in native['reason']
+partial=scanner.extra_columns({'loads':'no','ui':'missing-images','reason':'audio audible','programs':[{'stage':'import','error_hash':'opaque'},{'loaded':True}]})
+assert 'admission: 1/2 embedded programs failed import/plan construction' in partial['reason']
+before=partial['reason'];scanner.extra_columns(partial);assert partial['reason']==before
+assert 'opaque' not in partial['reason']
 print('shared scanner checks passed')
