@@ -52,6 +52,31 @@ thread_local! {
     static PRESENT:Cell<(Option<bool>,Option<bool>)>=const{Cell::new((None,None))};
     static PHASES:RefCell<Vec<(&'static str,Option<Site>)>>=const{RefCell::new(Vec::new())};
 }
+/// Keeps one initializer's observation through deferred callback lowering.
+#[derive(Clone)]
+pub(crate) struct Checkpoint {
+    attempt: &'static str,
+    initialized: Option<bool>,
+    context: (&'static str, &'static str, Option<&'static str>),
+    present: (Option<bool>, Option<bool>),
+    phases: Vec<(&'static str, Option<Site>)>,
+}
+pub(crate) fn checkpoint() -> Checkpoint {
+    Checkpoint {
+        attempt: ATTEMPT.get(),
+        initialized: INITIALIZED.get(),
+        context: CONTEXT.get(),
+        present: PRESENT.get(),
+        phases: PHASES.with(|p| p.borrow().clone()),
+    }
+}
+pub(crate) fn restore(checkpoint: Checkpoint) {
+    ATTEMPT.set(checkpoint.attempt);
+    INITIALIZED.set(checkpoint.initialized);
+    CONTEXT.set(checkpoint.context);
+    PRESENT.set(checkpoint.present);
+    PHASES.with(|p| *p.borrow_mut() = checkpoint.phases);
+}
 pub fn begin() {
     RECORDS.lock().unwrap().clear();
     ENABLED.store(true, Ordering::Relaxed);
