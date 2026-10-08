@@ -494,3 +494,47 @@ Synthetic16part×768page pools (384MiB allocated decoded storage); same probe, f
 | Reactivation PCM equal | yes | yes |
 
 Idle RSS decreases85.85%; storage capacity stays384MiB and physical edge pages remain resident. Single synthetic A/B; setup time is not a real-library load gate. Frozen `idle-pool-before` SHA256`4ad2b87240e73bf7347996fe9cf33a56b3ac2a6d1723c2d75cedb9e300a34588`, after`93777e30604e86b29fcc03786f2e729b00725286645502d2e9d5dfc81acd0935`. CPU candidate `admission-idle-pool` SHA256`8e69ea921f4dcddc14b0af51b43d502da966101c9a22e9cead6e497104330f44`; original warm/cold nine-cell same-window A/B matrix and repeated64 cells running. **HOLD** until CPU/underrun checks complete; overall v1 gate remains unmet.
+
+Completed52 original-cell runs: one same-window A/B pair for all nine warm/cold cells plus two more alternating64pairs for piano/FX. All exits0; all event/render heap calls0 and underruns0. Every26 cold eviction reports pages_after0.
+
+| Cell | Temperature | Before median / p99 µs | After median / p99 µs | Underruns before / after | Deadline misses before / after |
+|---|---|---:|---:|---:|---:|
+| piano-32 | cold | 16.410 / 38.341 | 15.500 / 34.811 | 0 / 0 | 0 / 0 |
+| piano-32 | warm | 15.650 / 37.821 | 16.280 / 37.071 | 0 / 0 | 0 / 0 |
+| strings-32 | cold | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 23 / 23 |
+| strings-32 | warm | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 23 / 23 |
+| fx-32 | cold | 45.801 / 113.812 | 72.702 / 320.426 | 0 / 0 | 0 / 12 |
+| fx-32 | warm | 47.951 / 113.762 | 50.931 / 113.812 | 0 / 0 | 0 / 0 |
+| piano-64 | cold | 25.260 / 47.531 | 27.320 / 52.531 | 0 / 0 | 0 / 0 |
+| piano-64 | warm | 25.780 / 45.861 | 26.140 / 55.001 | 0 / 0 | 0 / 0 |
+| strings-64 | cold | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 15 / 15 |
+| strings-64 | warm | unscorable (no steady voices) | unscorable (no steady voices) | 0 / 0 | 15 / 15 |
+| fx-64 | cold | 52.621 / 120.142 | 53.121 / 125.292 | 0 / 0 | 0 / 0 |
+| fx-64 | warm | 50.991 / 105.402 | 52.621 / 125.462 | 0 / 0 | 0 / 0 |
+| piano-256 | cold | 86.731 / 127.793 | 87.731 / 112.762 | 0 / 0 | 0 / 0 |
+| piano-256 | warm | 87.621 / 149.783 | 87.952 / 136.442 | 0 / 0 | 0 / 0 |
+| strings-256 | cold | 15636.884 / 21268.149 | 12885.151 / 13726.968 | 0 / 0 | 591 / 591 |
+| strings-256 | warm | 13465.873 / 14551.753 | 14004.723 / 14496.402 | 0 / 0 | 591 / 591 |
+| fx-256 | cold | 178.803 / 343.456 | 184.313 / 258.575 | 0 / 0 | 0 / 0 |
+| fx-256 | warm | 185.393 / 277.685 | 180.443 / 272.315 | 0 / 0 | 0 / 0 |
+
+Three-pair64 aggregate (median of the three run medians / median of the three run p99s):
+| Cell | Before µs | After µs |
+|---|---:|---:|
+| piano-cold | 25.260 / 47.071 | 24.901 / 51.081 |
+| piano-warm | 25.780 / 48.011 | 25.630 / 47.131 |
+| fx-cold | 52.621 / 119.582 | 52.271 / 123.752 |
+| fx-warm | 50.991 / 110.062 | 52.401 / 121.762 |
+
+**HOLD.** Repeated piano cold p99 rises47.071→51.081; FX cold119.582→123.752 and warm110.062→121.762. No claim that these increases are noise, and no v1/1ed parity acceptance. Vista32/64 still has no steady voices; Vista256 remains a severe deadline failure. RSS correctness does not certify CPU parity or historical rare underruns resolved. Evidence:~/.cache/kontakto-fix-cpu/idle-pool-matrix/.
+
+Follow-up diagnostics of frozen3a→8c cold64 (perf9999Hz; timings perturbed and not acceptance): piano30.130/66.311→23.820/43.011µs; FX54.321/117.072→55.421/133.393µs, all heap/underruns/deadlines0. Audio-TID samples have zero lost samples. Stream service2.95%→3.88% piano and5.54%→4.95% FX; bus11.05%→13.51% and8.76%→8.66%; source filtered8.84%→9.58% piano, resample window10.20%→8.94%. No evidence of madvise/sysconf/decoder-reader cleanup on the audio path. These sparse leaf percentages do not establish a cause for the p99 increases. Evidence:~/.cache/kontakto-fix-cpu/idle-pool-profile/.
+
+Cold32FX repeated alternating pairs:
+| Pair | Before median / p99 µs | After median / p99 µs | Deadline misses before / after |
+|---|---:|---:|---:|
+| 1 | 45.801 / 113.812 | 72.702 / 320.426 | 0 / 12 |
+| 2 | 45.401 / 98.782 | 45.731 / 99.412 | 0 / 0 |
+| 3 | 46.111 / 102.622 | 52.051 / 111.193 | 0 / 0 |
+
+Cold32FX aggregate 45.801 / 102.622→52.051 / 111.193µs; the12 deadline misses in the first after run did not recur in repeats2/3, but were not proven noise or fixed. **HOLD**, cold64 and warmFX p99 remain above the acceptance baseline.
