@@ -88,3 +88,9 @@ with tempfile.TemporaryDirectory(prefix='kontra-gate-cache-', dir='/dev/shm') as
     finally:
         os.environ.clear();os.environ.update(saved)
 print('empty cache, enabled warm reload, resume re-prime and zero-optimum checks passed')
+# A repeat load without a production restore witness must never become restored-state evidence.
+unknown=scanner.extra_columns({'programs':[], 'gate_condition':'restored-state', 'loads':'yes', 'load_ms':10, 'first_audio_ms':11, 'peak_rss_mb':12})
+assert unknown['restored_state_status']=='unknown' and unknown['load_ms']=='unknown'
+restored=scanner.extra_columns({'gate_condition':'restored-state', 'loads':'yes', 'load_ms':10, 'restored_state':{'status':'single-init','timer_excludes_seed':True}, 'programs':[{'loaded':True,'source':'kontakt','restored_state':{'status':'single-init','scalar_overrides':3,'init_runs':1,'expected_init_runs':1,'timer_excludes_seed':True}}]})
+assert restored['restored_state_status']=='single-init' and restored['script_init_runs']==1 and restored['load_ms']==10
+print('restored-state witness checks passed')
