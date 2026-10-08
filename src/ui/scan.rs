@@ -260,9 +260,19 @@ pub fn one(id: &str, out: &Path) -> Value {
             }
         };
         load_ms += bank_started.elapsed().as_secs_f64() * 1000.;
-        let native = rt.as_ref().map(|r| r.live().keys).unwrap_or_default();
-        let valid:std::collections::BTreeSet<u8>=native.iter().filter(|(_,k)|matches!(k.color,Some(crate::ksp::Value::Int(18|19)))||matches!(&k.color,Some(crate::ksp::Value::Text(t))if t=="$KEY_COLOR_WHITE"||t=="$KEY_COLOR_NONE")).map(|(n,_)|*n).collect();
-        let invalid:std::collections::BTreeSet<u8>=native.iter().filter(|(_,k)|matches!(k.color,Some(crate::ksp::Value::Int(17)))||matches!(k.kind,Some(crate::ksp::Value::Int(1|2)))||matches!(&k.kind,Some(crate::ksp::Value::Text(t))if t=="$NI_KEY_TYPE_CONTROL"||t=="$NI_KEY_TYPE_NONE")).map(|(n,_)|*n).collect();
+        let native = rt.as_ref().map(|r| &r.host().keyboard);
+        let public = |value: &crate::ksp::Value| match value {
+            crate::ksp::Value::Int(n) => *n as i32,
+            crate::ksp::Value::Text(t) => match t.as_str() {
+                "$NI_KEY_TYPE_DEFAULT"=>0,"$NI_KEY_TYPE_CONTROL"=>1,"$NI_KEY_TYPE_NONE"=>2,
+                "$KEY_COLOR_DEFAULT"=>16,"$KEY_COLOR_INACTIVE"=>17,"$KEY_COLOR_NONE"=>18,"$KEY_COLOR_WHITE"=>19,
+                _=>-1,
+            },
+            _=>-1,
+        };
+        let (valid, invalid, keyboard_reason_counts) = metrics::ksp_keyboard(native.into_iter()
+            .flat_map(|keys| keys.iter()).map(|(key,k)|(*key,k.kind.as_ref().map(&public),k.color.as_ref().map(&public))));
+        let keyboard_reason_counts=if native.is_some(){keyboard_reason_counts}else{serde_json::Value::Null};
         let candidate = (0..=127u8)
             .filter(|k| {
                 !invalid.contains(k)
@@ -273,13 +283,13 @@ pub fn one(id: &str, out: &Path) -> Value {
             })
             .max_by_key(|k| (valid.contains(k), std::cmp::Reverse(k.abs_diff(60))))
             .map(|k| (k, 64));
-        let pick = metrics::note(*program).or(candidate).or_else(||metrics::fallback_note(&invalid));
+        let pick = metrics::note(*program).filter(|(key,_)|!invalid.contains(key)).or(candidate).or_else(||metrics::fallback_note(&invalid));
         let pick_source = match pick {
             Some((k, 64)) if candidate==pick && valid.contains(&k) => "native_declared",
             Some((_, 64)) if candidate==pick => "zone_coverage",
             _ => "fallback",
         };
-        let declared_switch=native.iter().find(|(_,k)|matches!(k.kind,Some(crate::ksp::Value::Int(1)))||matches!(&k.kind,Some(crate::ksp::Value::Text(t))if t=="$NI_KEY_TYPE_CONTROL")).map(|(key,_)|*key);
+        let declared_switch=invalid.iter().copied().next();
         let keyswitch=metrics::planned_keyswitch(*program).unwrap_or(declared_switch);
         let skipped = bank.skipped_zones;
         let sample_zone_count=bank.zones().len();
@@ -317,7 +327,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         any_heard |= heard;
         // Script failures are recorded separately from successful import/sample-bank construction.
         error |= !script_errors.is_empty();
-        result["programs"].as_array_mut().unwrap().push(json!({"ksp":ksp,"keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==0 {Some("unknown")} else {None},"sample_zone_count":sample_zone_count,"sample_resident_bytes":crate::engine::resident_bytes(),"underruns":engine.underruns(),"pick_source":pick_source,"native_valid_keys":valid,"native_key_conflicts":0,"native_preferred_note":candidate.filter(|(k,_)|valid.contains(k)),"admitted_saved_entries_by_sigil":instrument.script_state.iter().flat_map(|s|s.keys()).fold(BTreeMap::<String,usize>::new(),|mut m,n|{*m.entry(metrics::metadata::sigil(n.as_bytes()).into()).or_default()+=1;m}),"load_path":"kontakt-v1-loader","program":program,"loaded":true,"source":"kontakt","symbols":symbols,"views":views,"script_error_count":script_errors.len(),"missing_samples":instrument.missing_samples.len(),"skipped_zones":skipped,"plays_note":if heard{"yes"}else{"silent"},"pick":pick}));
+        result["programs"].as_array_mut().unwrap().push(json!({"ksp":ksp,"keyboard_reason_counts":keyboard_reason_counts,"keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==0 {Some("unknown")} else {None},"sample_zone_count":sample_zone_count,"sample_resident_bytes":crate::engine::resident_bytes(),"underruns":engine.underruns(),"pick_source":pick_source,"native_valid_keys":valid,"native_key_conflicts":0,"native_preferred_note":candidate.filter(|(k,_)|valid.contains(k)),"admitted_saved_entries_by_sigil":instrument.script_state.iter().flat_map(|s|s.keys()).fold(BTreeMap::<String,usize>::new(),|mut m,n|{*m.entry(metrics::metadata::sigil(n.as_bytes()).into()).or_default()+=1;m}),"load_path":"kontakt-v1-loader","program":program,"loaded":true,"source":"kontakt","symbols":symbols,"views":views,"script_error_count":script_errors.len(),"missing_samples":instrument.missing_samples.len(),"skipped_zones":skipped,"plays_note":if heard{"yes"}else{"silent"},"pick":pick}));
     }
     result["loads"] = json!(if all_load && !programs.is_empty() {
         "yes"

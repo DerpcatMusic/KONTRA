@@ -120,6 +120,32 @@ pub fn fallback_note(invalid: &std::collections::BTreeSet<u8>) -> Option<(u8, u8
         .map(|key| (key, 64))
 }
 
+/// Merge declared properties in slot order; appearance resets never forbid a note.
+pub fn ksp_keyboard(writes: impl IntoIterator<Item=(u8, Option<i32>, Option<i32>)>)
+    -> (std::collections::BTreeSet<u8>, std::collections::BTreeSet<u8>, Value)
+{
+    let mut keys = [(None, None); 128];
+    for (key, kind, colour) in writes {
+        if let Some(k) = keys.get_mut(usize::from(key)) {
+            if kind.is_some() { k.0 = kind; }
+            if colour.is_some() { k.1 = colour; }
+        }
+    }
+    let mut valid = std::collections::BTreeSet::new();
+    let mut invalid = std::collections::BTreeSet::new();
+    let mut kinds: BTreeMap<_, usize> = ["default","control","reset","other","unset"].into_iter().map(|k|(k,0)).collect();
+    let mut colours: BTreeMap<_, usize> = ["mapped-default","inactive-reset","native-reset","white","other","unset"].into_iter().map(|k|(k,0)).collect();
+    for (key, (kind, colour)) in keys.into_iter().enumerate() {
+        *kinds.entry(match kind {Some(0)=>"default",Some(1)=>"control",Some(2)=>"reset",Some(_)=>"other",None=>"unset"}).or_default() += 1;
+        *colours.entry(match colour {Some(16)=>"mapped-default",Some(17)=>"inactive-reset",Some(18)=>"native-reset",Some(19)=>"white",Some(_)=>"other",None=>"unset"}).or_default() += 1;
+        if kind == Some(1) { invalid.insert(key as u8); }
+        else if kind == Some(0) || matches!(colour, Some(16 | 19)) { valid.insert(key as u8); }
+    }
+    let report = json!({"phase":"post-load-before-audition", "kind":kinds,"colour":colours,
+        "excluded":{"explicit-control":invalid.len()},"reset-exclusions":0});
+    (valid, invalid, report)
+}
+
 pub fn planned_keyswitch(program: u32) -> Option<Option<u8>> {
     let path = std::env::var_os("KONTRA_SCAN_NOTE_PLAN")?;
     let value: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
@@ -153,6 +179,40 @@ pub fn budget(raw: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keyboard_resets_use_mapped_coverage() {
+        for colour in [17, 18] {
+            let (valid, invalid, counts) = super::ksp_keyboard((0..=127).map(|k|(k,Some(2),Some(colour))));
+            assert!(valid.is_empty()); // NONE colour is not evidence of a playable key.
+            assert!(invalid.is_empty());
+            assert_eq!(counts["kind"]["reset"],128);
+            assert_eq!(super::fallback_note(&invalid),Some((60,64)));
+            let mapped = [48u8,60,72];
+            assert_eq!(mapped.into_iter().filter(|k|!invalid.contains(k)).min_by_key(|k|k.abs_diff(60)),Some(60));
+        }
+    }
+
+    #[test]
+    fn keyboard_control_and_last_writer_win() {
+        let (valid, invalid, _) = super::ksp_keyboard([
+            (60,Some(1),Some(19)), (60,Some(2),Some(18)),
+            (61,Some(0),Some(16)), (61,Some(1),None),
+            (62,None,Some(19)), (62,None,Some(17)),
+        ]);
+        assert!(!invalid.contains(&60));
+        assert!(invalid.contains(&61));
+        assert!(valid.is_empty());
+        assert_eq!(super::fallback_note(&invalid),Some((60,64)));
+    }
+
+    #[test]
+    fn keyboard_all_control_has_no_safe_note() {
+        let (valid, invalid, counts) = super::ksp_keyboard((0..=127).map(|k|(k,Some(1),Some(18))));
+        assert!(valid.is_empty());
+        assert_eq!(counts["excluded"]["explicit-control"],128);
+        assert_eq!(super::fallback_note(&invalid),None);
+    }
+
     #[test]
     fn scanner_metrics_skip_source_text_and_detect_uniform_render() {
         assert_eq!(super::fallback_note(&Default::default()), Some((60,64)));
@@ -195,6 +255,10 @@ mod tests {
         assert_eq!(parsed.0,"decoded");assert_eq!(parsed.1.get("!"),Some(&1));
         table.pop();assert_eq!(crate::ui::scan::strict_table(&table,0x50).0,"malformed");
         sampler_ksp::scan::begin();
+        // Full-suite peers also compile scripts into the process-wide capture.
+        sampler_ksp::scan::attempt("scanner-phase-test");
+        let take = || sampler_ksp::scan::take().into_iter()
+            .filter(|o| o.attempt == "scanner-phase-test").collect::<Vec<_>>();
         sampler_ksp::compile(
             "on init\ndeclare $x := 1\nend on",
             48000,
@@ -202,13 +266,15 @@ mod tests {
             &[],
         )
         .unwrap();
-        let ok = sampler_ksp::scan::take();
+        let ok = take();
+        assert_eq!(ok.len(), 1);
         assert!(ok.iter().any(|o| o.compile_ok && o.init_ok == Some(true)));
         assert!(
             sampler_ksp::compile("this is not KSP", 48000, sampler_ksp::Limits::LIBRARY, &[])
                 .is_err()
         );
-        let failed = sampler_ksp::scan::take();
+        let failed = take();
+        assert_eq!(failed.len(), 1);
         assert!(failed.iter().any(|o| !o.compile_ok && o.init_ok.is_none()));
         sampler_ksp::compile(
             "on init\ndeclare $x\nend on\non persistence_changed\nwhile(1)\nend while\nend on",
@@ -217,7 +283,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        let callback = sampler_ksp::scan::take();
+        let callback = take();
+        assert_eq!(callback.len(), 1);
         assert_eq!(callback[0].init.completion, "completed");
         assert_eq!(callback[0].persistence_changed.completion, "failed");
         assert_eq!(
@@ -229,6 +296,7 @@ mod tests {
                 .category,
             "fuel-budget"
         );
+        sampler_ksp::scan::attempt("standalone");
         let xml = "<UVI4><Program><ScriptProcessor><script><![CDATA[function onInit() error('private init') end function onNote(e) error('private runtime') end]]></script></ScriptProcessor></Program></UVI4>";
         let mut host = sampler_uvi::script::ScriptHost::new(xml, (), Default::default()).unwrap();
         assert_eq!(host.scan_faults().init_count, 1);
