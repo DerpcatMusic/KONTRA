@@ -17,6 +17,8 @@ type Shape = Box<[(f32, f32)]>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LfoShape {
+    /// Bipolar zero, including every phase, delay and fade state.
+    Zero,
     Sine,
     Triangle,
     Square,
@@ -517,6 +519,7 @@ fn wave(shape: LfoShape, phase: f64, seed: u64) -> f64 {
     let cycle = phase.floor();
     let t = phase - cycle;
     match shape {
+        LfoShape::Zero => 0.,
         LfoShape::Sine => (t * std::f64::consts::TAU).sin(),
         LfoShape::Triangle => {
             if t < 0.25 {
@@ -927,6 +930,7 @@ impl VoiceModState {
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
         for (i, source) in p.sources.iter().enumerate() {
             values[i] = match *source {
+                Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
                         LfoRate::Hertz(hz) => hz,

@@ -1255,6 +1255,9 @@ impl Translation {
     ) -> Option<ir::Lfo> {
         let [fade_ms, rate, width, phase] = lfo.initial_values.map(f64::from);
         let shape = match (lfo.waveform, lfo.trailing_values) {
+            // Native core 0x140b07290: the five weighted components sum to zero.
+            // Verified original-byte waveform checks; the bipolar view is still 0.5.
+            (5, Some(weights)) if weights == [0.; 5] && width > 0. && width < 1. => ir::LfoShape::Zero,
             (0, _) => ir::LfoShape::Sine,
             (1, _) if width == 0.5 => ir::LfoShape::Square,
             (2, _) => ir::LfoShape::Triangle,
@@ -2183,6 +2186,18 @@ mod modulation {
             assert!(t.ir.routes[0].invert);
             assert_eq!(t.ir.routes[0].smoothing, ir::Time::Milliseconds(15.));
         }
+    }
+
+    #[test]
+    fn zero_wave_multi_lfo_retains_its_bipolar_source_instead_of_disappearing() {
+        let mut t = translation();
+        let lfo = Lfo { structured: false, version: 0x73, waveform: 5,
+            initial_values: [0., 1., 0.5, 0.],
+            records: [LfoRecord { flag: true, values: [-1., 0., 1.] },
+                LfoRecord { flag: false, values: [-1., 0., 1.] }],
+            trailing_flag: false, trailing_values: Some([0.; 5]), additional_flag: Some(true) };
+        let source = t.lfo("g", &lfo, true).expect("authored zero-wave Multi still has a bipolar output");
+        assert_eq!(source.shape, ir::LfoShape::Zero);
     }
 
     #[test]
