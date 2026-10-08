@@ -52,7 +52,7 @@ def main():
         # The root/caches are read-only; TMPDIR and LOG_DIR cannot be created.
         # Capture output in memory and persist only the sanitized probe metadata.
         cmd = ["bwrap", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
-               "--tmpfs", "/tmp", str(Path(binary).resolve()), "--ignored", "--exact", "plugin::tests::probe_load", "--nocapture"]
+               "--tmpfs", "/tmp", str(Path(binary).resolve()), "--ignored", "--exact", env.get("PROBE_TEST", "plugin::tests::probe_load"), "--nocapture"]
         stages, result = [], {}
         begin = time.monotonic()
         try:

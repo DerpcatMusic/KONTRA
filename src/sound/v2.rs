@@ -1068,7 +1068,7 @@ fn kontakt(
     if canceled() {
         return Err(CoreError::Canceled);
     }
-    let streamed = sampler_kontakt::load_read_streamed(source, &options, &Default::default(), progress).map_err(load)?;
+    let streamed = sampler_kontakt::load_read_streamed_cancelable(source, &options, &sampler_kontakt::StreamPolicy { lazy: true, head_budget: 8 << 20, block_frames: super::MAX_BLOCK, max_step: 16.0, ..Default::default() }, progress, canceled).map_err(load)?;
     let sampler_kontakt::Streamed { loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     report.decoded.dynamics = loaded.dynamics().iter().map(|&(cc, v)| (cc, (v * 127.).round().clamp(0., 127.) as u8)).collect();
@@ -1103,7 +1103,7 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     let tree = nest(&mut t.instrument);
-    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &Default::default()).map_err(|e| load(&*e))?;
+    let streamed = sampler_uvi::assemble_translated_streamed(t, rate, &sampler_kontakt::StreamPolicy { lazy: true, head_budget: 8 << 20, block_frames: super::MAX_BLOCK, max_step: 16.0, ..Default::default() }).map_err(|e| load(&*e))?;
     let sampler_kontakt::Streamed { mut loaded, assets, cache, streamer, report: stream } = streamed;
     report.decoded.full_bytes = stream.full_bytes;
     let driver = attached.map(|a| {

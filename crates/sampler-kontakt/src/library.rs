@@ -34,6 +34,7 @@ pub struct Kontakt {
     /// Each asset's resolved location, in asset order.
     pub locations: Vec<PathBuf>,
     pub samples: Samples,
+    pub(crate) initialized: Option<crate::load::ScriptInit>,
 }
 
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
@@ -261,54 +262,42 @@ fn translate(
         .filter(|g| !g.muted)
         .map(|g| g.name)
         .collect();
-    let span = crate::audit::Span::new("translate_ksp_engine_init");
-    let writes: Vec<_> = out
-        .ir
-        .behaviors
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .filter_map(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
-            let result = sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment);
-            if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
-                if let Err(e) = &result { eprintln!("AUDIT {{\"stage\":\"translate_init_error\",\"line\":{},\"budget_exceeded\":{}}}", e.line, e.message.contains("budget")); }
+    if let Some(snapshot) = snapshot {
+        for behavior in &mut out.ir.behaviors {
+            if let Some(entries) = behavior
+                .slot
+                .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
+            {
+                for (name, value) in saved(entries) {
+                    match behavior.state.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => behavior.state.push((name, value)),
+                    }
+                }
             }
-            result.ok()
-        })
-        .flatten()
-        .collect();
-    out.engine = writes;
-    drop(span);
-    let span = crate::audit::Span::new("translate_ksp_dynamic_compile");
-    // Scripts that set slot bypass or levels while playing get runtime blocks.
-    let dynamic = out
-        .ir
-        .behaviors
+        }
+    }
+    let span = crate::audit::Span::new("translate_ksp_init");
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names);
+    out.engine = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .any(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
-            sampler_ksp::compile_with(
-                &b.source,
-                48_000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &environment,
-            )
-            .is_ok_and(|script| script.writes_effect_slots())
-        });
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .flat_map(|s| s.engine_pars())
+        .collect();
+    let dynamic = initialized
+        .states
+        .iter()
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
     drop(span);
-    let span = crate::audit::Span::new("translate_group_dsp");
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
     }
-    drop(span);
     let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
@@ -416,6 +405,7 @@ fn translate(
         instrument: out.ir,
         locations: out.locations,
         samples,
+        initialized: Some(initialized),
     })
 }
 
@@ -900,7 +890,9 @@ impl Translation {
     /// (`$ENGINE_PAR_OUTPUT_CHANNEL` = `$NI_BUS_OFFSET` + n).
     fn script_bus(&self, index: usize) -> Option<u8> {
         let value = self.script_par("ENGINE_PAR_OUTPUT_CHANNEL", index as i32, -1, -1)?;
-        u8::try_from(value.checked_sub(1000)?).ok().filter(|&n| n < 16)
+        u8::try_from(value.checked_sub(1000)?)
+            .ok()
+            .filter(|&n| n < 16)
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
