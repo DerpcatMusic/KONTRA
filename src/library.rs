@@ -294,7 +294,7 @@ impl Settings {
                 Sort::Recent => (u64::MAX - self.used.get(dir.as_ref()).map_or(0, |&t| t + 1), String::new()),
                 Sort::Vendor => (u64::from(l.vendor.is_empty()), l.vendor.to_lowercase()),
             };
-            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, self.library_name(l).to_lowercase())
+            (!self.pinned.iter().any(|p| Path::new(p) == l.dir), rank, vendor, natural(&self.library_name(l)))
         });
         out
     }
@@ -782,7 +782,7 @@ fn cached_scan(roots: &[Root], progress: &Progress, cache: &mut cache::Cache) ->
                 .into_iter()
                 .find(|v| !v.is_empty())
                 .unwrap_or_default();
-            let multis = found.iter().filter(|p| is_multi(p)).count();
+            let multis = found.iter().filter(|p| is_multi(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("nkm"))).count();
             libraries.push(Library {
                 name: if name.is_empty() { folder_name } else { name },
                 vendor,
@@ -1118,9 +1118,13 @@ impl Scanner {
         }
     }
 
-    /// `dir`'s size on disk once measured; the first ask measures it on a
-    /// thread of its own.
+    /// Cached size only: displaying a library must never walk its sample tree.
     pub fn size(&self, dir: &Path) -> Option<u64> {
+        lock(&self.sizes).get(dir).copied().flatten()
+    }
+
+    /// Explicit size measurement on its own worker.
+    pub fn measure_size(&self, dir: &Path) -> Option<u64> {
         let mut sizes = lock(&self.sizes);
         if let Some(size) = sizes.get(dir) {
             return *size;
@@ -1145,6 +1149,20 @@ impl Scanner {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn looking_up_library_size_does_not_walk_sample_directories() {
+        let scanner = super::Scanner::default();
+        assert_eq!(scanner.size(std::path::Path::new("/virtual/library")), None);
+        assert!(super::lock(&scanner.sizes).is_empty(), "a browser lookup must never start a sample-directory walk");
+    }
+
+    #[test]
+    fn library_names_sort_numbers_naturally() {
+        let libraries = ["Library 10", "Library 2"].map(|name| super::Library { name: name.into(), dir: name.into(), ..Default::default() });
+        let names: Vec<_> = super::Settings::default().arrange(&libraries).iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Library 2", "Library 10"]);
+    }
+
     #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
