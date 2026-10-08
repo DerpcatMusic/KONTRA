@@ -1,5 +1,5 @@
 //! Read-only shared scanner adapter. Only the Original authored presentation is rendered.
-use super::{ir_view, pictures, theme};
+use super::{ir_view, theme};
 use crate::{
     scan_metrics as metrics,
     sound::{
@@ -23,22 +23,31 @@ fn add(counts: &mut BTreeMap<String, usize>, key: impl Into<String>) {
 
 fn render(
     face: &ir::Interface,
-    source: &mut pictures::Source,
+    path: &Path,
+    interfaces: &[ir::Interface],
     values: &mut ir_view::Values,
     out: &Path,
     prefix: &str,
 ) -> Value {
     let face = ir_view::resolved(face);
-    let before = source.scan;
     let mut missing = Vec::new();
     let mut assets = ir_view::Assets::default();
-    assets.sync(&face, ir::Presentation::Bitmap, |a| {
-        let image = source.load(a);
-        if image.is_none() {
-            missing.push(blake3::hash(a.path.as_bytes()).to_hex().to_string());
-        }
-        image
+    let mut native = face.native_ui.as_ref().map(|n| {
+        super::native_ui::State::new(
+            path,
+            &n.entry,
+            interfaces
+                .iter()
+                .flat_map(|f| {
+                    f.widgets
+                        .iter()
+                        .enumerate()
+                        .map(move |(n, w)| (f.source, n, w.clone()))
+                })
+                .collect(),
+        )
     });
+    let input = ir_view::InputState::default();
     let (mut geometry, mut kinds, mut placeholders, mut properties) = (
         BTreeMap::new(),
         BTreeMap::new(),
@@ -116,18 +125,6 @@ fn render(
         ) {
             add(&mut placeholders, kind);
         }
-        if w.drag.is_some() {
-            add(
-                &mut properties,
-                "renderer ignores authored drag sensitivity",
-            );
-        }
-        if !w.enabled {
-            add(&mut properties, "renderer ignores disabled state");
-        }
-        if w.text.contains('\n') {
-            add(&mut properties, "renderer collapses multiline labels");
-        }
         let r = face.page_rect(ir::WidgetRef(n));
         let page = &face.pages[w.page.0];
         if r.width == 0 || r.height == 0 {
@@ -149,25 +146,46 @@ fn render(
         let scale = (1200. / f64::from(face.pages[p].size.width.max(1)))
             .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)))
             .min(1.);
-        let w = (f64::from(face.pages[p].size.width.max(1)) * scale)
+        let authored = native.as_ref().map(|n| n.authored());
+        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
             .ceil()
             .clamp(1., 1200.) as u16;
-        let h = (f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)) * scale)
+        let h = (authored.map_or(
+            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)),
+            |s| s.height,
+        ) * scale)
             .ceil()
             .clamp(1., 900.) as u16;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, String> {
                 let mut ui = theme::ui();
-                for _ in 0..2 {
-                    let el = ir_view::view(
-                        &mut ui,
-                        &face,
-                        ir::PageRef(p),
-                        &assets,
-                        ir::Presentation::Bitmap,
-                        scale,
-                        values,
-                    );
+                let deadline = Instant::now() + Duration::from_secs(15);
+                let mut settled = 0;
+                while settled < 2 {
+                    if Instant::now() > deadline {
+                        return Err("authored image preparation time budget exceeded".into());
+                    }
+                    let el = if let Some(native) = &mut native {
+                        native.view(&mut ui, 0, scale, &face, values, &input)
+                    } else {
+                        assets.prepare(
+                            path,
+                            &face,
+                            ir::PageRef(p),
+                            ir::Presentation::Bitmap,
+                            scale,
+                            values,
+                        );
+                        ir_view::view(
+                            &mut ui,
+                            &face,
+                            ir::PageRef(p),
+                            &assets,
+                            ir::Presentation::Bitmap,
+                            scale,
+                            values,
+                        )
+                    };
                     ui.frame(
                         el,
                         Some(Size::new(w as f64, h as f64)),
@@ -175,6 +193,18 @@ fn render(
                         1. / 60.,
                     )
                     .map_err(|e| e.to_string())?;
+                    if let Some(error) = native.as_ref().and_then(|n| n.diagnostic()) {
+                        return Err(error);
+                    }
+                    let pending = native
+                        .as_ref()
+                        .map_or_else(|| assets.pending(), |n| n.pending());
+                    if pending == 0 {
+                        settled += 1;
+                    } else {
+                        settled = 0;
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
                 }
                 let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
                 let mut resources = vello::vello_cpu::Resources::default();
@@ -228,20 +258,38 @@ fn render(
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
+    let scan = native.as_ref().map_or_else(|| assets.scan(), |n| n.scan());
+    missing.extend(
+        native
+            .as_ref()
+            .map_or_else(|| assets.failures(), |n| n.failures()),
+    );
+    missing.sort();
+    missing.dedup();
+    let font_success = face
+        .styles
+        .iter()
+        .filter(|s| match s.font {
+            ir::Font::Stock(_) => true,
+            ir::Font::Default | ir::Font::Named(_) => false,
+            ir::Font::Bitmap(a) => assets.get(a).is_some(),
+            ir::Font::File(a) => assets.font(&a).is_some(),
+        })
+        .count();
     json!({"controls_declared":declared,"controls_bound_declared":declared_bound,
-        "asset_lookup_requested":source.scan.lookups-before.lookups,"asset_lookup_ok":source.scan.lookup_ok-before.lookup_ok,
-        "asset_decode_requested":source.scan.decodes-before.decodes,"asset_decode_ok":source.scan.decode_ok-before.decode_ok,
-        "font_declared":fonts_declared,"font_success":0,
+        "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
+        "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
+        "font_declared":fonts_declared,"font_success":font_success,
         "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(source.scan.lookups-before.lookups)-(source.scan.lookup_ok-before.lookup_ok),
-            "decode-failed":(source.scan.decodes-before.decodes)-(source.scan.decode_ok-before.decode_ok),"font-service-unavailable":fonts_declared},
+        "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
+            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
-        "decoded_image_bytes":assets.bytes(),"passive_value_changes":passive,"renders":renders})
+        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
 }
 
 pub fn one(id: &str, out: &Path) -> Value {
@@ -371,7 +419,6 @@ pub fn one(id: &str, out: &Path) -> Value {
         }
         result["stage"] = json!(format!("Original UI program {program}"));
         metrics::checkpoint(out, &result);
-        let mut source = pictures::Source::of(&path);
         let mut views = Vec::new();
         for (slot, face) in loaded.interfaces.iter().enumerate() {
             if face.widgets.is_empty() {
@@ -380,7 +427,8 @@ pub fn one(id: &str, out: &Path) -> Value {
             any_ui = true;
             let view = render(
                 face,
-                &mut source,
+                &path,
+                &loaded.interfaces,
                 &mut values,
                 out,
                 &format!("program-{program}-slot-{slot}"),
