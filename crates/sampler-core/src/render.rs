@@ -243,14 +243,6 @@ impl Runtime {
     }
 
     fn render_voices<const TRACE: bool>(&mut self, output: &mut [Frame], at: u64) {
-        if TRACE {
-            for word in 0..self.voice_activity.len() {
-                let mut occupied = self.voice_activity[word];
-                while occupied != 0 { let bit = occupied.trailing_zeros() as usize; occupied &= occupied - 1;
-                    self.render_voice::<true>(word * 64 + bit, output, at); }
-            }
-            return;
-        }
         if self.offline {
             // Modulation advance is cached on the absolute control grid. Prepare
             // the exact steps before requesting pages; rendering at the same
@@ -264,6 +256,14 @@ impl Runtime {
                 self.stream_fault = Some(error);
                 return;
             }
+        }
+        if TRACE {
+            for word in 0..self.voice_activity.len() {
+                let mut occupied = self.voice_activity[word];
+                while occupied != 0 { let bit = occupied.trailing_zeros() as usize; occupied &= occupied - 1;
+                    self.render_voice::<true>(word * 64 + bit, output, at); }
+            }
+            return;
         }
         if self.render_voices_parallel(output, at) {
             return;
@@ -307,7 +307,7 @@ impl Runtime {
     pub(super) fn batch_key(&self, i: usize, frames: usize) -> Option<(usize, usize)> {
         let v = self.voices.slots[i].value.as_ref()?;
         let chain = v.chain?;
-        if !v.started || frames > super::dsp::BLOCK {
+        if !v.started || frames > super::dsp::BLOCK || v.cursor.waiting() {
             return None;
         }
         let f = self.families.get(v.family.0).unwrap();
@@ -422,7 +422,7 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let len = batch.ends[2 * lane];
-            lanes::scale(&mut block, lane, &super::dsp::levels(v, len), len);
+            lanes::scale(&mut block, lane, &super::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]
