@@ -1835,4 +1835,3 @@ fn widget_missing_feedback_keeps_current_authored_value_separate_from_reset_defa
     tick(Point::new(50.,-50.),true,&mut values,&mut state);
     assert_eq!(values[&control],2.,"unrounded accumulator must eventually cross a step from authored current value");
 }
-

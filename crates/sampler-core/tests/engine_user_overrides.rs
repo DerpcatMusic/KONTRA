@@ -192,3 +192,75 @@ fn all_group_amplitude_offsets_follow_real_lanes_across_physical_slots() {
         );
     }
 }
+
+#[test]
+fn v1_user_offsets_preserve_signed_native_gain_base_and_bounds() {
+    let id = ControlId(10);
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("ENGINE_PAR_GAIN").unwrap(),
+        group: 0,
+        slot: 3,
+        generic: -1,
+    };
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_controls(vec![ControlDefinition {
+            id,
+            domain: ControlDomain::Real { min: -1., max: 1. },
+            default: ControlValue::Real(-0.6),
+        }])
+        .unwrap()
+        .with_engine_parameters(
+            vec![EngineParameterBinding {
+                address,
+                control: id,
+                law: EngineParameterLaw::SignedNormalized,
+            }],
+            vec![],
+        )
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 16, 16);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    rt.set_engine_offsets(&[EngineParameterOffset {
+        address,
+        offset: 0.1,
+    }])
+    .unwrap();
+    assert!(
+        (number(rt.control_value(rt.active_plan(), id).unwrap()) + 0.5).abs() < 1e-6,
+        "a negative native gain stays negative after a positive player offset"
+    );
+    assert_eq!(
+        rt.engine_parameter(address).unwrap(),
+        -600000,
+        "scripts still read the signed base"
+    );
+    rt.set_engine_offsets(&[EngineParameterOffset {
+        address,
+        offset: -0.8,
+    }])
+    .unwrap();
+    assert_eq!(
+        rt.control_value(rt.active_plan(), id).unwrap(),
+        ControlValue::Real(-1.)
+    );
+    rt.set_engine_parameter(address, -250000).unwrap();
+    assert_eq!(rt.engine_parameter(address).unwrap(), -250000);
+    rt.set_engine_offsets(&[EngineParameterOffset {
+        address,
+        offset: 0.1,
+    }])
+    .unwrap();
+    assert!((number(rt.control_value(rt.active_plan(), id).unwrap()) + 0.15).abs() < 1e-6);
+    rt.set_engine_offsets(&[]).unwrap();
+    assert_eq!(
+        rt.control_value(rt.active_plan(), id).unwrap(),
+        ControlValue::Real(-0.25)
+    );
+    fn number(v: ControlValue) -> f64 {
+        let ControlValue::Real(v) = v else {
+            panic!("native real gain")
+        };
+        v
+    }
+}
