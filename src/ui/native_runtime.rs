@@ -744,6 +744,16 @@ impl Session {
     pub fn lua(&self) -> &Lua {
         &self.lua
     }
+    pub fn paint_callback(&self, paint:Function) -> mlua::Result<Function> {
+        let fuel=self.fuel.clone();
+        let deadline=self.deadline.clone();
+        self.lua.create_function(move |_,args:mlua::MultiValue| {
+            // Canvas paint is deferred until after layout, beyond the graph's deadline.
+            fuel.store(100_000,Ordering::Relaxed);
+            *deadline.lock().unwrap()=std::time::Instant::now()+std::time::Duration::from_millis(250);
+            paint.call::<()>(args)
+        })
+    }
     pub fn call<A: mlua::IntoLuaMulti>(&self, function: Function, args: A) -> mlua::Result<()> {
         self.fuel.store(100_000, Ordering::Relaxed);
         *self.deadline.lock().unwrap() =

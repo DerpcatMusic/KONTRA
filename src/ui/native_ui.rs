@@ -853,7 +853,7 @@ fn draw_base(
             })
         }
         "Canvas" => {
-            let paint: Function = props.get("paint")?;
+            let paint = session.paint_callback(props.get("paint")?)?;
             let vm = session.lua().clone();
             canvas(move |size| {
                 match canvas_draw(&vm, &paint, Size::new(size.width / s, size.height / s), s) {
@@ -1351,6 +1351,29 @@ mod tests {
         assert!(gate_targets(1).is_empty());
         gate_clear(); assert!(gate_targets(0).is_empty());
         LOCAL.with(|local| { local.borrow_mut().remove(&97); });
+    }
+
+    #[test]
+    fn deferred_canvas_gets_a_fresh_callback_budget() {
+        let dir=std::env::temp_dir().join(format!("kontra-native-canvas-budget-{}",std::process::id()));
+        std::fs::create_dir_all(dir.join("Resources/native_ui")).unwrap();
+        std::fs::write(dir.join("Resources/native_ui/main.nui"),br#"
+            local ui=require('native_ui')
+            return function() return @ui.Canvas {paint=function(painter,frame)
+                for i=1,600 do painter:move_to(0,0);painter:line_to(16,16) end
+                painter.stroke_style=ui.Color.white;painter:draw_path()
+            end}.frame(width=16,height=16) end
+        "#).unwrap();
+        let package=Arc::new(Package::load(&dir.join("fixture.nki")).unwrap());
+        let session=Session::new(package.clone(),"main",vec![]).unwrap();
+        let graph=session.render().unwrap();
+        let mut ui=super::super::theme::ui();
+        let el=draw(&mut ui,&graph,&package,&session,0,1.,Style::default(),&mut HashMap::new()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        ui.frame(el,Some(Size::new(16.,16.)),Input::default(),1./60.).unwrap();
+        let _=super::super::tests::pixels(&ui,16,16);
+        assert!(session.lua().globals().get::<Value>("__canvas_error").unwrap().is_nil(),"deferred Canvas reused an expired graph budget");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
