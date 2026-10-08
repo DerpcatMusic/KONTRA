@@ -2028,11 +2028,6 @@ impl PluginLogic for Sampler {
                 let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
                 atoms.store_problems(s.core.problems(slot));
                 atoms.clock.store(s.core.clock(slot), Ordering::Relaxed);
-                if shared.editor_watch.load(Ordering::Relaxed)==slot {
-                    for (to,tap) in atoms.editor_taps.iter().zip(s.core.voice_taps(slot)) {
-                        to.store(tap.map_or(0,|t|crate::sound::edits::Tap::from_native(t).pack()),Ordering::Relaxed);
-                    }
-                }
                 let playing = s.core.articulation(slot).map_or(u32::MAX, |a| a as u32);
                 atoms.articulation.store(playing, Ordering::Relaxed);
                 if s.core.epoch(slot) == atoms.generation.load(Ordering::Acquire) {
@@ -2182,6 +2177,11 @@ impl PluginLogic for Sampler {
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
             let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
+            if shared.editor_watch.load(Ordering::Relaxed)==slot && atoms.generation.load(Ordering::Acquire)==epoch {
+                for (to,tap) in atoms.editor_taps.iter().zip(s.core.voice_taps(slot)) {
+                    to.store(tap.map_or(0,|t|crate::sound::edits::Tap::from_native(t).pack()),Ordering::Relaxed);
+                }
+            }
             let revision = s.core.ui_revision(slot);
             if atoms.generation.load(Ordering::Acquire) == epoch && revision != atoms.native_revision.load(Ordering::Relaxed) {
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
