@@ -1,5 +1,8 @@
 //! Presentation-independent control state. Metadata is prepared off audio; values
 //! have one audio-side writer and are captured into caller-owned storage.
+mod script_state;
+pub use script_state::{ScriptStateAddress, ScriptStateBuffer, ScriptStateCallback, ScriptStateEntry, ScriptStateValue};
+
 use super::{Error, Instruction, PlanId, Prepared, Runtime};
 mod transfer;
 pub(super) use transfer::ControlQueues;
