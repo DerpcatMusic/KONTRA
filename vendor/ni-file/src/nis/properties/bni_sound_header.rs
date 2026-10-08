@@ -14,14 +14,23 @@ pub struct BNISoundHeader(pub BPatchHeaderV42);
 impl BNISoundHeader {
     pub fn read<R: ReadBytesExt>(mut reader: R) -> Result<Self, Error> {
         let magic = reader.read_u32_le()?;
+        if magic != 0x7fa89012 {
+            return Err(Error::Generic(format!(
+                "Invalid BNISoundHeader magic: 0x{magic:08x}"
+            )));
+        }
         let _zlib_length = reader.read_u32_le()?;
         let header_version = reader.read_u16_le()?;
-        let header = BPatchHeaderV42::read_le(&mut reader)?;
-
-        assert_eq!(magic, 0x7fa89012);
-        assert_eq!(header_version, 0x0110);
-
-        Ok(Self(header))
+        if header_version != 0x0110 {
+            return Err(Error::context(
+                "BNISoundHeader".into(),
+                Error::VersionMismatch {
+                    expected: 0x0110,
+                    got: u32::from(header_version),
+                },
+            ));
+        }
+        Ok(Self(BPatchHeaderV42::read_le(&mut reader)?))
     }
 }
 
@@ -29,7 +38,13 @@ impl std::convert::TryFrom<&ItemData> for BNISoundHeader {
     type Error = NIFileError;
 
     fn try_from(frame: &ItemData) -> Result<Self, NIFileError> {
-        debug_assert_eq!(frame.header.item_type(), ItemType::BNISoundHeader);
+        let got = frame.header.item_type();
+        if got != ItemType::BNISoundHeader {
+            return Err(NIFileError::ItemWrapError {
+                expected: ItemType::BNISoundHeader,
+                got,
+            });
+        }
         Self::read(Cursor::new(&frame.data))
     }
 }
