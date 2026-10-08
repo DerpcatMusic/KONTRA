@@ -104,6 +104,8 @@ enum Law {
     Factor,
     /// `Pitch` or `Pan`: adds `ratio · value`.
     Add(ir::Target),
+    /// OnePole: base Hz times 1000^(ratio * source).
+    Frequency(ir::Target),
 }
 
 /// A `ControlSignalMapper`: an evenly spaced table over the input's unipolar
@@ -208,7 +210,15 @@ impl Translation {
 
     /// Translate `connection` (owned by a Keygroup or SamplePlayer) into `out`.
     pub(crate) fn connect(&mut self, connection: Node, out: &mut Modulation) -> Result<(), String> {
-        if let Err(gap) = self.try_connect(connection, out)? {
+        if let Err(gap) = self.try_connect(connection, out, None)? {
+            self.gap(connection, gap);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn connect_frequency(&mut self, connection: Node, chain: ir::ChainRef, index: usize, out: &mut Modulation) -> Result<(), String> {
+        let law = Law::Frequency(ir::Target::Processor { chain, index, parameter: ir::ProcessorParameter::Cutoff });
+        if let Err(gap) = self.try_connect(connection, out, Some(law))? {
             self.gap(connection, gap);
         }
         Ok(())
@@ -218,6 +228,7 @@ impl Translation {
         &mut self,
         connection: Node,
         out: &mut Modulation,
+        frequency: Option<Law>,
     ) -> Result<Result<(), Gap>, String> {
         use ir::Reason::{NotModeled, UnknownLaw};
         if inert(connection)? {
@@ -231,6 +242,7 @@ impl Translation {
             "Gain" => Law::Factor,
             "Pitch" => Law::Add(ir::Target::Pitch),
             "Pan" => Law::Add(ir::Target::Pan),
+            "Freq" if frequency.is_some() => frequency.unwrap(),
             _ => return Ok(Err(gap("modulation destination", "", NotModeled))),
         };
         let mut ratio = number(connection, "Ratio", 1.0)?;
@@ -314,6 +326,16 @@ impl Translation {
                     }
                     Law::Add(ir::Target::Pitch) => out.pitch += ratio * value,
                     Law::Add(_) => out.pan += ratio * value,
+                    Law::Frequency(ir::Target::Processor { chain, index, .. }) => {
+                        let chain = &mut self.ir.chains[chain.0];
+                        let processor = chain.pre_amplitude.iter_mut().chain(&mut chain.post_amplitude).nth(index).unwrap();
+                        if let ir::Processor::Filter(filter) = processor {
+                            if let ir::Frequency::Hertz(hz) = &mut filter.cutoff {
+                                *hz = (*hz * 1000f64.powf(ratio * value)).clamp(20.0, 20000.0);
+                            }
+                        }
+                    }
+                    Law::Frequency(_) => unreachable!("frequency is a placed filter"),
                 }
             }
             Signal::Live {
@@ -384,6 +406,7 @@ impl Translation {
                         ir::Depth::Pitch(ir::Pitch::Semitones(ratio)),
                     ),
                     Law::Add(target) => (target, ir::Depth::Normalized(ratio)),
+                    Law::Frequency(target) => (target, ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * 1000f64.log2() * ratio))),
                 };
                 for (modulator, curve) in std::iter::once((modulator, curve)).chain(extra) {
                     let ir_bipolar = self.ir.modulators[modulator.0].source.bipolar();
@@ -391,8 +414,8 @@ impl Translation {
                         match self.live_points(connection, &curve, bipolar, |m| match law {
                             Law::Factor if ratio >= 0.0 => Mapper::position(m, bipolar),
                             Law::Factor => 1.0 - Mapper::position(m, bipolar),
-                            Law::Add(_) if ir_bipolar => (m + 1.0) * 0.5,
-                            Law::Add(_) => m,
+                            Law::Add(_) | Law::Frequency(_) if ir_bipolar => (m + 1.0) * 0.5,
+                            Law::Add(_) | Law::Frequency(_) => m,
                         })? {
                             Ok(points) => points,
                             Err(gap) => return Ok(Err(gap)),

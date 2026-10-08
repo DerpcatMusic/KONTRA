@@ -6,6 +6,10 @@ rust-version = "1.92"
 license = "Apache-2.0"
 publish = false
 
+[features]
+# Read-only compiler phase observations for the shared scanner.
+scan = []
+
 [dependencies]
 sampler-core = { path = "../sampler-core" }
 sampler-ui-ir = { path = "../sampler-ui-ir" }

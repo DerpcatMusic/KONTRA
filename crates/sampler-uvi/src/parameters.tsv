@@ -1,0 +1,2877 @@
+ThreeBandComp	Bypass	boolean	0.0	1.0	0.0	
+ThreeBandComp	GainIn	float	-30.0	30.0	0.0	decibel
+ThreeBandComp	GainOut	float	-30.0	30.0	0.0	decibel
+ThreeBandComp	GlobalMix	float	0.0	1.0	1.0	% normalized
+ThreeBandComp	LowMidFreq	float	10.0	22000.0	400.0	Hz
+ThreeBandComp	MidHighFreq	float	10.0	22000.0	800.0	Hz
+ThreeBandComp	Solo0	boolean	0.0	1.0	0.0	
+ThreeBandComp	Threshold0	float	-130.0	0.0	0.0	decibel
+ThreeBandComp	Ratio0	float	1.0	30.0	10.0	
+ThreeBandComp	Attack0	float	0.0	500.0	10.0	millisecond
+ThreeBandComp	Release0	float	0.0	5000.0	100.0	millisecond
+ThreeBandComp	Makeup0	float	-30.0	30.0	0.0	decibel
+ThreeBandComp	Mix0	float	0.0	1.0	1.0	% normalized
+ThreeBandComp	AutoMakeup0	boolean	0.0	1.0	0.0	
+ThreeBandComp	Solo1	boolean	0.0	1.0	0.0	
+ThreeBandComp	Threshold1	float	-130.0	0.0	0.0	decibel
+ThreeBandComp	Ratio1	float	1.0	30.0	10.0	
+ThreeBandComp	Attack1	float	0.0	500.0	10.0	millisecond
+ThreeBandComp	Release1	float	0.0	5000.0	100.0	millisecond
+ThreeBandComp	Makeup1	float	-30.0	30.0	0.0	decibel
+ThreeBandComp	Mix1	float	0.0	1.0	1.0	% normalized
+ThreeBandComp	AutoMakeup1	boolean	0.0	1.0	0.0	
+ThreeBandComp	Solo2	boolean	0.0	1.0	0.0	
+ThreeBandComp	Threshold2	float	-130.0	0.0	0.0	decibel
+ThreeBandComp	Ratio2	float	1.0	30.0	10.0	
+ThreeBandComp	Attack2	float	0.0	500.0	10.0	millisecond
+ThreeBandComp	Release2	float	0.0	5000.0	100.0	millisecond
+ThreeBandComp	Makeup2	float	-30.0	30.0	0.0	decibel
+ThreeBandComp	Mix2	float	0.0	1.0	1.0	% normalized
+ThreeBandComp	AutoMakeup2	boolean	0.0	1.0	0.0	
+ThreeBandLimiter	Bypass	boolean	0.0	1.0	0.0	
+ThreeBandLimiter	Threshold0	float	-20.0	0.0	0.0	decibel
+ThreeBandLimiter	Margin0	float	-5.0	0.0	0.0	decibel
+ThreeBandLimiter	Release0	float	10.0	500.0	100.0	millisecond
+ThreeBandLimiter	Mix0	float	0.0	1.0	1.0	% normalized
+ThreeBandLimiter	Threshold1	float	-20.0	0.0	0.0	decibel
+ThreeBandLimiter	Margin1	float	-5.0	0.0	0.0	decibel
+ThreeBandLimiter	Release1	float	10.0	500.0	100.0	millisecond
+ThreeBandLimiter	Mix1	float	0.0	1.0	1.0	% normalized
+ThreeBandLimiter	Threshold2	float	-20.0	0.0	0.0	decibel
+ThreeBandLimiter	Margin2	float	-5.0	0.0	0.0	decibel
+ThreeBandLimiter	Release2	float	10.0	500.0	100.0	millisecond
+ThreeBandLimiter	Mix2	float	0.0	1.0	1.0	% normalized
+ThreeBandLimiter	LowMidFreq	float	20.0	20000.0	250.0	Hz
+ThreeBandLimiter	MidHighFreq	float	20.0	20000.0	2000.0	Hz
+ThreeBandShelves	Bypass	boolean	0.0	1.0	0.0	
+ThreeBandShelves	FreqLowMid	float	20.0	1000.0	200.0	Hz
+ThreeBandShelves	FreqMidHigh	float	2000.0	20000.0	4000.0	Hz
+ThreeBandShelves	GainLow	float	-24.0	24.0	0.0	decibel
+ThreeBandShelves	GainMid	float	-24.0	24.0	0.0	decibel
+ThreeBandShelves	GainHigh	float	-24.0	24.0	0.0	decibel
+AnalogChorus	Bypass	boolean	0.0	1.0	0.0	
+AnalogChorus	Speed	float	0.1	10.0	2.0	Hz
+AnalogChorus	Width	float	0.0	6.0	4.0	
+AnalogChorus	Intensity	float	0.0	6.0	3.0	
+AnalogChorus	TransientEnhancement	float	0.0	10.0	2.0	
+GarageFuzz	Bypass	boolean	0.0	1.0	0.0	
+GarageFuzz	InputGain	float	-30.0	20.0	0.0	decibel
+GarageFuzz	Overdrive	float	0.0	10.0	0.0	
+GarageFuzz	Trash	float	0.0	1.0	0.0	% normalized
+GarageFuzz	Mix	float	0.0	100.0	100.0	%
+GarageFuzz	OutputGain	float	-40.0	10.0	0.0	decibel
+GarageFuzz	Oversampling	integer	0.0	4.0	0.0	
+Retro	Bypass	boolean	0.0	1.0	0.0	
+Retro	Freq	float	20.0	20000.0	1000.0	Hz
+Retro	Q	float	0.0	1.0	0.0	% normalized
+Retro	KeyTracking	float	0.0	1.0	0.0	% normalized
+Retro	Mode	integer	0.0	2.0	0.0	
+AnalogFlanger	Bypass	boolean	0.0	1.0	0.0	
+AnalogFlanger	Speed	float	0.1	10.0	2.0	Hz
+AnalogFlanger	Width	float	0.0	6.0	4.0	
+AnalogFlanger	Intensity	float	0.0	6.0	3.0	
+AnalogFlanger	TransientEnhancement	float	0.0	10.0	2.0	
+Buzz	Bypass	boolean	0.0	1.0	0.0	
+Buzz	SyncToHost	boolean	0.0	1.0	0.0	
+Buzz	Trash	float	0.0	1.0	0.25	% normalized
+Buzz	Spread	float	0.0	2.0	1.0	% normalized
+Buzz	Delay	float	40.0	2000.0	200.0	millisecond (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Buzz	Feedback	float	0.0	1.0	0.2	% normalized
+Buzz	Wet	float	0.0	1.0	0.5	% normalized
+Buzz	Dry	float	0.0	1.0	0.5	% normalized
+Buzz	DistortionMode	integer	0.0	2.0	0.0	
+Buzz	InterpolationTime	float	0.01	1.0	0.1	second
+Autopan	Bypass	boolean	0.0	1.0	0.0	
+Autopan	SyncToHost	boolean	0.0	1.0	0.0	
+Autopan	Depth	float	0.0	1.0	1.0	% normalized
+Autopan	Speed	float	0.0	20.0	3.0	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Autopan	Mode	integer	0.0	3.0	2.0	
+BigMuffTone	Bypass	boolean	0.0	1.0	0.0	
+BigMuffTone	Tone	float	0.0	10.0	5.0	
+BigMuffTone	Gain	float	0.0	10.0	6.0	decibel
+BiquadFilter	Bypass	boolean	0.0	1.0	0.0	
+BiquadFilter	Mode	integer	0.0	3.0	1.0	
+BiquadFilter	Freq	float	20.0	20000.0	1000.0	Hz
+BiquadFilter	Q	float	0.0	1.0	0.0	% normalized
+BiquadFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+Bloom	Bypass	boolean	0.0	1.0	0.0	
+Bloom	SyncToHost	boolean	0.0	1.0	0.0	
+Bloom	ReverbGain	float	-20.0	20.0	0.0	decibel
+Bloom	ModDepth	float	0.0	20.0	4.0	cents
+Bloom	ModRate	float	0.1	10.0	1.0	
+Bloom	Diffusion	float	0.0	1.0	1.0	% normalized
+Bloom	Rise	float	0.0	1.0	0.5	% normalized
+Bloom	Width	float	0.0	1.0	1.0	% normalized
+Bloom	RoomSize	float	4.0	50.0	20.0	
+Bloom	DecayTime	float	0.1	10.0	1.0	
+Bloom	DecayLow	float	0.1	10.0	1.0	
+Bloom	DecayHigh	float	0.1	10.0	1.0	
+Bloom	FreqLow	float	10.0	1000.0	250.0	Hz
+Bloom	FreqHigh	float	2000.0	20000.0	12000.0	Hz
+Bloom	Shape	float	0.0	1.0	0.3	% normalized
+Bloom	Mix	float	0.0	1.0	0.5	% normalized
+Bloom	StructuralMode	integer	0.0	2.0	0.0	
+Bloom	TapoutMode	integer	0.0	4.0	1.0	
+Bloom	Freeze	boolean	0.0	1.0	0.0	
+Bloom	Rolloff	float	2000.0	20000.0	20000.0	Hz
+Bloom	PreDelay	float	0.0	250.0	0.0	millisecond (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Bloom	TapAmount	float	0.0	1.0	1.0	% normalized
+BrickwallFilter	Bypass	boolean	0.0	1.0	0.0	
+BrickwallFilter	Slope	integer	0.0	2.0	2.0	
+BrickwallFilter	SoftBypass	boolean	0.0	1.0	0.0	
+BrickwallFilter	Freq	float	20.0	20000.0	1000.0	Hz
+CombFilter	Bypass	boolean	0.0	1.0	0.0	
+CombFilter	Mode	integer	0.0	1.0	0.0	
+CombFilter	Freq	float	20.0	20000.0	1000.0	Hz
+CombFilter	Q	float	0.0	1.0	0.0	% normalized
+CombFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+CompExp	Bypass	boolean	0.0	1.0	0.0	
+CompExp	AutoMakeUp	boolean	0.0	1.0	0.0	
+CompExp	MakeUpGain	float	-30.0	30.0	0.0	decibel
+CompExp	CompThreshold	float	-130.0	0.0	0.0	decibel
+CompExp	CompRatio	float	1.0	30.0	10.0	
+CompExp	CompAttack	float	0.0	500.0	10.0	millisecond
+CompExp	CompRelease	float	0.0	5000.0	100.0	millisecond
+CompExp	GateThreshold	float	-130.0	0.0	-130.0	decibel
+CompExp	GateRatio	float	0.1	30.0	1.0	
+CompExp	GateAttack	float	0.0	500.0	10.0	millisecond
+CompExp	GateRelease	float	0.0	5000.0	100.0	millisecond
+CompExp	Mix	float	0.0	1.0	1.0	% normalized
+Convolver	Bypass	boolean	0.0	1.0	0.0	
+Convolver	Dry	float	0.0	1.0	0.0	% normalized
+Convolver	Wet	float	0.0	1.0	1.0	% normalized
+Convolver	NormalizePower	boolean	0.0	1.0	1.0	
+CrossOverFilter	Bypass	boolean	0.0	1.0	0.0	
+CrossOverFilter	LowFrequency	float	20.0	20000.0	200.0	Hz
+CrossOverFilter	HighFrequency	float	20.0	20000.0	2000.0	Hz
+DiffuseDelay	Bypass	boolean	0.0	1.0	0.0	
+DiffuseDelay	SyncToHost	boolean	0.0	1.0	0.0	
+DiffuseDelay	DelayTime	float	0.01	1.0	0.125	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+DiffuseDelay	TimeSpread	float	0.0	1.0	1.0	% normalized
+DiffuseDelay	Diffusion	float	0.0	1.0	0.5	% normalized
+DiffuseDelay	Feedback	float	0.0	1.0	0.0	% normalized
+DiffuseDelay	Damp	float	0.0	1.0	0.0	% normalized
+DiffuseDelay	CrossTalk	float	-1.0	1.0	0.0	% normalized
+DiffuseDelay	Mix	float	0.0	1.0	0.5	% normalized
+DiffuseDelay	Randomness	float	0.0	0.5	0.0	% normalized
+DiffuseDelay	ModRate	float	0.1	10.0	1.0	Hz
+DiffuseDelay	ModDepth	float	0.0	20.0	0.0	cents
+Diffusion	Bypass	boolean	0.0	1.0	0.0	
+Diffusion	Diffusion	float	0.0	1.0	0.618	% normalized
+Diffusion	DiffusionStart	float	0.1	20.0	5.0	millisecond
+Diffusion	Mix	float	0.0	1.0	1.0	% normalized
+DigitalEq	Bypass	boolean	0.0	1.0	0.0	
+DigitalEq	StereoMode	integer	0.0	1.0	0.0	
+DigitalEq	Transpose	float	-10.0	10.0	0.0	
+DigitalEq	KeyTracking	float	-1.0	1.0	0.0	% normalized
+DigitalEq	OverallGain	float	-30.0	30.0	0.0	decibel
+DigitalEq	GainScale	float	-2.0	2.0	1.0	% normalized
+DigitalEq	Enabled1	boolean	0.0	1.0	1.0	
+DigitalEq	Type1	integer	0.0	6.0	0.0	
+DigitalEq	Slope1	integer	0.0	7.0	1.0	
+DigitalEq	Channels1	integer	0.0	2.0	0.0	
+DigitalEq	Freq1	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q1	float	0.018	28.284	0.707	
+DigitalEq	Gain1	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth1	float	0.01	10.0	1.0	
+DigitalEq	Enabled2	boolean	0.0	1.0	1.0	
+DigitalEq	Type2	integer	0.0	6.0	0.0	
+DigitalEq	Slope2	integer	0.0	7.0	1.0	
+DigitalEq	Channels2	integer	0.0	2.0	0.0	
+DigitalEq	Freq2	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q2	float	0.018	28.284	0.707	
+DigitalEq	Gain2	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth2	float	0.01	10.0	1.0	
+DigitalEq	Enabled3	boolean	0.0	1.0	1.0	
+DigitalEq	Type3	integer	0.0	6.0	0.0	
+DigitalEq	Slope3	integer	0.0	7.0	1.0	
+DigitalEq	Channels3	integer	0.0	2.0	0.0	
+DigitalEq	Freq3	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q3	float	0.018	28.284	0.707	
+DigitalEq	Gain3	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth3	float	0.01	10.0	1.0	
+DigitalEq	Enabled4	boolean	0.0	1.0	1.0	
+DigitalEq	Type4	integer	0.0	6.0	0.0	
+DigitalEq	Slope4	integer	0.0	7.0	1.0	
+DigitalEq	Channels4	integer	0.0	2.0	0.0	
+DigitalEq	Freq4	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q4	float	0.018	28.284	0.707	
+DigitalEq	Gain4	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth4	float	0.01	10.0	1.0	
+DigitalEq	Enabled5	boolean	0.0	1.0	1.0	
+DigitalEq	Type5	integer	0.0	6.0	0.0	
+DigitalEq	Slope5	integer	0.0	7.0	1.0	
+DigitalEq	Channels5	integer	0.0	2.0	0.0	
+DigitalEq	Freq5	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q5	float	0.018	28.284	0.707	
+DigitalEq	Gain5	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth5	float	0.01	10.0	1.0	
+DigitalEq	Enabled6	boolean	0.0	1.0	1.0	
+DigitalEq	Type6	integer	0.0	6.0	0.0	
+DigitalEq	Slope6	integer	0.0	7.0	1.0	
+DigitalEq	Channels6	integer	0.0	2.0	0.0	
+DigitalEq	Freq6	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q6	float	0.018	28.284	0.707	
+DigitalEq	Gain6	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth6	float	0.01	10.0	1.0	
+DigitalEq	Enabled7	boolean	0.0	1.0	1.0	
+DigitalEq	Type7	integer	0.0	6.0	0.0	
+DigitalEq	Slope7	integer	0.0	7.0	1.0	
+DigitalEq	Channels7	integer	0.0	2.0	0.0	
+DigitalEq	Freq7	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q7	float	0.018	28.284	0.707	
+DigitalEq	Gain7	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth7	float	0.01	10.0	1.0	
+DigitalEq	Enabled8	boolean	0.0	1.0	1.0	
+DigitalEq	Type8	integer	0.0	6.0	0.0	
+DigitalEq	Slope8	integer	0.0	7.0	1.0	
+DigitalEq	Channels8	integer	0.0	2.0	0.0	
+DigitalEq	Freq8	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q8	float	0.018	28.284	0.707	
+DigitalEq	Gain8	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth8	float	0.01	10.0	1.0	
+DigitalEq	Enabled9	boolean	0.0	1.0	1.0	
+DigitalEq	Type9	integer	0.0	6.0	0.0	
+DigitalEq	Slope9	integer	0.0	7.0	1.0	
+DigitalEq	Channels9	integer	0.0	2.0	0.0	
+DigitalEq	Freq9	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q9	float	0.018	28.284	0.707	
+DigitalEq	Gain9	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth9	float	0.01	10.0	1.0	
+DigitalEq	Enabled10	boolean	0.0	1.0	1.0	
+DigitalEq	Type10	integer	0.0	6.0	0.0	
+DigitalEq	Slope10	integer	0.0	7.0	1.0	
+DigitalEq	Channels10	integer	0.0	2.0	0.0	
+DigitalEq	Freq10	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q10	float	0.018	28.284	0.707	
+DigitalEq	Gain10	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth10	float	0.01	10.0	1.0	
+DigitalEq	Enabled11	boolean	0.0	1.0	1.0	
+DigitalEq	Type11	integer	0.0	6.0	0.0	
+DigitalEq	Slope11	integer	0.0	7.0	1.0	
+DigitalEq	Channels11	integer	0.0	2.0	0.0	
+DigitalEq	Freq11	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q11	float	0.018	28.284	0.707	
+DigitalEq	Gain11	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth11	float	0.01	10.0	1.0	
+DigitalEq	Enabled12	boolean	0.0	1.0	1.0	
+DigitalEq	Type12	integer	0.0	6.0	0.0	
+DigitalEq	Slope12	integer	0.0	7.0	1.0	
+DigitalEq	Channels12	integer	0.0	2.0	0.0	
+DigitalEq	Freq12	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q12	float	0.018	28.284	0.707	
+DigitalEq	Gain12	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth12	float	0.01	10.0	1.0	
+DigitalEq	Enabled13	boolean	0.0	1.0	1.0	
+DigitalEq	Type13	integer	0.0	6.0	0.0	
+DigitalEq	Slope13	integer	0.0	7.0	1.0	
+DigitalEq	Channels13	integer	0.0	2.0	0.0	
+DigitalEq	Freq13	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q13	float	0.018	28.284	0.707	
+DigitalEq	Gain13	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth13	float	0.01	10.0	1.0	
+DigitalEq	Enabled14	boolean	0.0	1.0	1.0	
+DigitalEq	Type14	integer	0.0	6.0	0.0	
+DigitalEq	Slope14	integer	0.0	7.0	1.0	
+DigitalEq	Channels14	integer	0.0	2.0	0.0	
+DigitalEq	Freq14	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q14	float	0.018	28.284	0.707	
+DigitalEq	Gain14	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth14	float	0.01	10.0	1.0	
+DigitalEq	Enabled15	boolean	0.0	1.0	1.0	
+DigitalEq	Type15	integer	0.0	6.0	0.0	
+DigitalEq	Slope15	integer	0.0	7.0	1.0	
+DigitalEq	Channels15	integer	0.0	2.0	0.0	
+DigitalEq	Freq15	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q15	float	0.018	28.284	0.707	
+DigitalEq	Gain15	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth15	float	0.01	10.0	1.0	
+DigitalEq	Enabled16	boolean	0.0	1.0	1.0	
+DigitalEq	Type16	integer	0.0	6.0	0.0	
+DigitalEq	Slope16	integer	0.0	7.0	1.0	
+DigitalEq	Channels16	integer	0.0	2.0	0.0	
+DigitalEq	Freq16	float	10.0	22000.0	1000.0	Hz
+DigitalEq	Q16	float	0.018	28.284	0.707	
+DigitalEq	Gain16	float	-30.0	30.0	0.0	decibel
+DigitalEq	Bandwidth16	float	0.01	10.0	1.0	
+DigitalFilter	Bypass	boolean	0.0	1.0	0.0	
+DigitalFilter	Slope	integer	0.0	7.0	1.0	
+DigitalFilter	Freq	float	10.0	22000.0	1000.0	Hz
+DigitalFilter	KeyTracking	float	-1.0	1.0	0.0	% normalized
+DigitalFilter	Spread	float	-48.0	48.0	0.0	semitones
+DigitalFilter	Q	float	0.018	28.284	0.707	
+DigitalFilter	Gain	float	-30.0	30.0	0.0	decibel
+DigitalFilter	Bandwidth	float	0.01	10.0	1.0	
+DiodeClipper	Bypass	boolean	0.0	1.0	0.0	
+DiodeClipper	Drive	float	0.0	30.0	0.0	decibel
+DiodeClipper	Tone	float	100.0	20000.0	20000.0	Hz
+DiodeClipper	HighPass	float	1.0	20000.0	1.0	Hz
+DiodeClipper	Asymmetry	float	0.0	1.0	0.0	% normalized
+DiodeClipper	OutputGain	float	-40.0	10.0	0.0	decibel
+Dispersor	Bypass	boolean	0.0	1.0	0.0	
+Dispersor	Spread	float	0.0	1000.0	20.0	millisecond
+Dispersor	Freq	float	0.0	20000.0	40.0	Hz
+Dispersor	Order	integer	1.0	2.0	1.0	
+Dispersor	Stages	integer	1.0	64.0	64.0	
+Drive	Bypass	boolean	0.0	1.0	0.0	
+Drive	DriveAmount	float	0.0	1.0	0.0	% normalized
+Drive	Mode	integer	0.0	2.0	0.0	
+Drive	Oversampling	integer	0.0	4.0	0.0	
+DualDelayX	Bypass	boolean	0.0	1.0	0.0	
+DualDelayX	SyncToHost	boolean	0.0	1.0	0.0	
+DualDelayX	TapeSaturation	boolean	0.0	1.0	0.0	
+DualDelayX	TapeDrive	float	0.0	1.0	0.0	% normalized
+DualDelayX	TapeWarmth	float	0.0	1.0	0.5	% normalized
+DualDelayX	Reflection	boolean	0.0	1.0	0.0	
+DualDelayX	DelayTime	float	0.001	5.0	0.125	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+DualDelayX	LowCut	float	20.0	4000.0	20.0	Hz
+DualDelayX	HighCut	float	1000.0	20000.0	20000.0	Hz
+DualDelayX	PeakFreq	float	20.0	20000.0	1000.0	Hz
+DualDelayX	PeakGain	float	-20.0	20.0	0.0	decibel
+DualDelayX	PeakQ	float	0.1	10.0	1.0	
+DualDelayX	PeakCompensation	float	0.0	1.0	1.0	% normalized
+DualDelayX	Feedback	float	0.0	1.0	0.3	% normalized
+DualDelayX	Mix	float	0.0	1.0	0.5	% normalized
+DualDelayX	Rotation	float	-180.0	180.0	0.0	
+DualDelayX	InputWidth	float	0.0	1.0	1.0	% normalized
+DualDelayX	OutputWidth	float	0.0	1.0	1.0	% normalized
+DualDelayX	DelayRatio	float	-0.9	0.9	0.0	
+DualDelayX	FeedbackRatio	float	-0.9	0.9	0.0	
+DualDelayX	InputRotation	float	-1.0	1.0	0.0	% normalized
+DualDelayX	OutputRotation	float	-1.0	1.0	0.0	% normalized
+DualDelayX	Modulation	boolean	0.0	1.0	1.0	
+DualDelayX	ModDepth	float	0.0	20.0	0.0	cents
+DualDelayX	ModRate	float	0.1	10.0	1.0	Hz
+DualDelayX	ModChannelOffset	float	0.0	1.0	1.0	% normalized
+DualDelayX	Interpolation	integer	0.0	2.0	1.0	
+DualDelayX	DispersionSpread	float	1.0	100.0	20.0	millisecond
+DualDelayX	DispersionFreq	float	0.0	20000.0	200.0	Hz
+DualDelayX	Dispersion	boolean	0.0	1.0	0.0	
+DualDelayX	DiffusionSpread	float	1.0	100.0	20.0	millisecond
+DualDelayX	DiffusionAmount	float	0.0	1.0	0.2	% normalized
+DualDelayX	Diffusion	boolean	0.0	1.0	0.0	
+DualDelayX	CrusherFreq	integer	0.0	9.0	9.0	
+DualDelayX	CrusherBits	integer	4.0	16.0	16.0	
+DualDelayX	Crusher	boolean	0.0	1.0	0.0	
+DualDelayX	Filtering	boolean	0.0	1.0	1.0	
+DualDelayX	DuckerThreshold	float	-100.0	0.0	-10.0	decibel
+DualDelayX	DuckerAttack	float	1.0	100.0	1.0	millisecond
+DualDelayX	DuckerHold	float	1.0	1000.0	1.0	millisecond
+DualDelayX	DuckerDecay	float	10.0	1000.0	200.0	millisecond
+DualDelayX	DuckerAttenuation	float	0.0	50.0	20.0	decibel
+DualDelayX	DuckerBypass	boolean	0.0	1.0	1.0	
+EffectRack	Bypass	boolean	0.0	1.0	0.0	
+Ensemble	Bypass	boolean	0.0	1.0	0.0	
+Ensemble	Mode	integer	0.0	2.0	0.0	
+Ensemble	Tone	float	3000.0	10000.0	6000.0	Hz
+Ensemble	Mix	float	0.0	1.0	1.0	% normalized
+Exciter	Bypass	boolean	0.0	1.0	0.0	
+Exciter	InputGain	float	-30.0	20.0	0.0	decibel
+Exciter	Amount	float	0.0	15.0	0.0	
+Exciter	Mix	float	0.0	100.0	100.0	%
+Exciter	Mode	integer	0.0	1.0	1.0	
+Exciter	OutputGain	float	-40.0	10.0	0.0	decibel
+Exciter	Oversampling	integer	0.0	4.0	0.0	
+FeedbackCompressor	Bypass	boolean	0.0	1.0	0.0	
+FeedbackCompressor	Threshold	float	-100.0	0.0	-10.0	decibel
+FeedbackCompressor	Ratio	float	2.0	20.0	4.0	
+FeedbackCompressor	Knee	float	1.0	30.0	10.0	decibel
+FeedbackCompressor	DynamicRange	float	10.0	100.0	100.0	decibel
+FeedbackCompressor	Attack	float	0.0	100.0	0.0	millisecond
+FeedbackCompressor	Release	float	50.0	1000.0	100.0	millisecond
+FeedbackCompressor	Makeup	float	0.0	1.0	0.5	% normalized
+FeedbackCompressor	Mix	float	0.0	1.0	1.0	% normalized
+FeedbackCompressor	OutputGain	float	-40.0	40.0	0.0	decibel
+FeedbackCompressor	InputGain	float	-40.0	40.0	0.0	decibel
+FeedbackMachine	Bypass	boolean	0.0	1.0	0.0	
+FeedbackMachine	DelayTime	float	0.002	1.0	0.005	second
+FeedbackMachine	Feedback	float	0.0	1.0	0.5	% normalized
+FeedbackMachine	Mix	float	0.0	1.0	0.5	% normalized
+Flanger	Bypass	boolean	0.0	1.0	0.0	
+Flanger	SyncToHost	boolean	0.0	1.0	0.0	
+Flanger	Speed	float	0.01	10.0	0.8	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Flanger	Feedback	float	0.0	1.0	0.0	% normalized
+Flanger	DelayTime	float	0.0	1.0	0.2	second
+Flanger	Depth	float	0.0	1.0	0.08	% normalized
+Flanger	Mix	float	0.0	1.0	1.0	% normalized
+FormantCrusher	Bypass	boolean	0.0	1.0	0.0	
+FormantCrusher	Morph	float	0.0	1.0	0.0	% normalized
+FormantCrusher	Q	float	10.0	20.0	10.0	
+FormantCrusher	Formant	float	-1.0	1.0	0.0	% normalized
+FormantCrusher	Mix	float	0.0	1.0	1.0	% normalized
+FormantCrusher	Bite	float	0.0	1.0	0.0	% normalized
+FormantCrusher	FilterA	integer	0.0	10.0	0.0	
+FormantCrusher	FilterB	integer	0.0	10.0	2.0	
+FreqShifter	Bypass	boolean	0.0	1.0	0.0	
+FreqShifter	CoarseFreq	float	-10000.0	10000.0	0.0	Hz
+FreqShifter	FineFreq	float	-200.0	200.0	0.0	Hz
+FreqShifter	ChannelSpread	float	-200.0	200.0	0.0	Hz
+FreqShifter	CrossoverFreq	float	20.0	20000.0	20.0	Hz
+FreqShifter	PreHighPassFreq	float	20.0	20000.0	20.0	Hz
+FreqShifter	Mix	float	0.0	1.0	1.0	% normalized
+FreqShifter	WetGain	float	-12.0	12.0	0.0	decibel
+FreqShifter	Mirror	boolean	0.0	1.0	0.0	
+FreqShifter	PreHighPassEnabled	boolean	0.0	1.0	0.0	
+FreqShifter	CrossoverEnabled	boolean	0.0	1.0	0.0	
+StraightFuzz	Bypass	boolean	0.0	1.0	0.0	
+StraightFuzz	InputGain	float	-30.0	20.0	0.0	decibel
+StraightFuzz	Overdrive	float	0.0	10.0	0.0	
+StraightFuzz	Trash	float	0.0	1.0	0.0	% normalized
+StraightFuzz	Mix	float	0.0	100.0	100.0	%
+StraightFuzz	OutputGain	float	-40.0	10.0	0.0	decibel
+StraightFuzz	Oversampling	integer	0.0	4.0	0.0	
+Gain	Bypass	boolean	0.0	1.0	0.0	
+Gain	Volume	float	0.0	3.981	1.0	
+GainMatrix	Bypass	boolean	0.0	1.0	0.0	
+GainMatrix	Gain_1_1	float	-1.0	1.0	1.0	
+GainMatrix	Gain_1_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_1_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_2	float	-1.0	1.0	1.0	
+GainMatrix	Gain_2_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_2_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_3	float	-1.0	1.0	1.0	
+GainMatrix	Gain_3_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_3_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_4	float	-1.0	1.0	1.0	
+GainMatrix	Gain_4_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_4_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_5	float	-1.0	1.0	1.0	
+GainMatrix	Gain_5_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_5_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_6	float	-1.0	1.0	1.0	
+GainMatrix	Gain_6_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_6_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_7	float	-1.0	1.0	1.0	
+GainMatrix	Gain_7_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_7_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_8	float	-1.0	1.0	1.0	
+GainMatrix	Gain_8_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_8_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_9	float	-1.0	1.0	1.0	
+GainMatrix	Gain_9_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_9_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_10	float	-1.0	1.0	1.0	
+GainMatrix	Gain_10_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_10_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_11_11	float	-1.0	1.0	1.0	
+GainMatrix	Gain_11_12	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_1	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_2	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_3	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_4	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_5	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_6	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_7	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_8	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_9	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_10	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_11	float	-1.0	1.0	0.0	
+GainMatrix	Gain_12_12	float	-1.0	1.0	1.0	
+Gate	Bypass	boolean	0.0	1.0	0.0	
+Gate	Threshold	float	0.0	1.0	0.5	
+Gate	Attack	float	0.0	0.1	0.02	second
+Gate	Release	float	0.01	1.0	0.05	second
+Gate	Mix	float	0.0	1.0	1.0	% normalized
+Granulizer	Bypass	boolean	0.0	1.0	0.0	
+Granulizer	CoarseTune	integer	-12.0	12.0	0.0	semitones
+Granulizer	FineTune	float	-100.0	100.0	0.0	cents
+Granulizer	DetuneSpread	float	0.0	100.0	0.0	cents
+Granulizer	Delay	float	0.0	2.0	0.001	second
+Granulizer	DelaySpread	float	0.0	0.005	0.001	second
+Granulizer	Period	float	0.01	2.0	0.05	second
+Granulizer	Jitter	float	0.0	1.0	0.0	% normalized
+Granulizer	Density	float	1.0	10.0	1.0	
+Granulizer	Mix	float	0.0	1.0	1.0	% normalized
+Granulizer	Feedback	float	0.0	1.0	0.0	% normalized
+Granulizer	Direction	integer	0.0	3.0	0.0	
+Granulizer	DensityCompensation	float	0.0	1.0	0.5	% normalized
+BoxModeler	Bypass	boolean	0.0	1.0	0.0	
+BoxModeler	Mix	float	0.0	1.0	1.0	% normalized
+BoxModeler	Separation	float	-30.0	30.0	0.0	millisecond
+BoxModeler	Spread	float	0.0	1.0	1.0	% normalized
+BoxModeler	Model	integer	0.0	14.0	0.0	
+BoxModeler	MicType	integer	0.0	2.0	0.0	
+HarmonicResonators	Bypass	boolean	0.0	1.0	0.0	
+HarmonicResonators	BandCoarse1	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine1	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain1	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling1	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable1	boolean	0.0	1.0	1.0	
+HarmonicResonators	BandCoarse2	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine2	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain2	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling2	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable2	boolean	0.0	1.0	0.0	
+HarmonicResonators	BandCoarse3	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine3	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain3	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling3	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable3	boolean	0.0	1.0	0.0	
+HarmonicResonators	BandCoarse4	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine4	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain4	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling4	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable4	boolean	0.0	1.0	0.0	
+HarmonicResonators	BandCoarse5	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine5	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain5	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling5	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable5	boolean	0.0	1.0	0.0	
+HarmonicResonators	BandCoarse6	integer	-24.0	24.0	0.0	semitones
+HarmonicResonators	BandFine6	float	-50.0	50.0	0.0	cents
+HarmonicResonators	BandGain6	float	0.0	2.0	1.0	
+HarmonicResonators	BandCoupling6	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	BandEnable6	boolean	0.0	1.0	0.0	
+HarmonicResonators	Note	integer	12.0	84.0	48.0	midi key
+HarmonicResonators	Tone	float	0.0	1.0	1.0	% normalized
+HarmonicResonators	Decay	float	20.0	20000.0	100.0	millisecond
+HarmonicResonators	DecayScaling	float	0.0	1.0	0.0	% normalized
+HarmonicResonators	Gain	float	-20.0	20.0	0.0	decibel
+HarmonicResonators	Mix	float	0.0	1.0	1.0	% normalized
+HarmonicResonators	ModDepth	float	0.0	20.0	0.0	cents
+HarmonicResonators	CouplingMode	integer	0.0	2.0	0.0	
+HarmonicResonators	KeyTracking	boolean	0.0	1.0	0.0	
+Harmonizer	Bypass	boolean	0.0	1.0	0.0	
+Harmonizer	Enabled0	boolean	0.0	1.0	1.0	
+Harmonizer	Detune0	float	-12.0	12.0	0.0	semitones
+Harmonizer	Gain0	float	-40.0	0.0	0.0	decibel
+Harmonizer	Enabled1	boolean	0.0	1.0	0.0	
+Harmonizer	Detune1	float	-12.0	12.0	0.0	semitones
+Harmonizer	Gain1	float	-40.0	0.0	0.0	decibel
+Harmonizer	Enabled2	boolean	0.0	1.0	0.0	
+Harmonizer	Detune2	float	-12.0	12.0	0.0	semitones
+Harmonizer	Gain2	float	-40.0	0.0	0.0	decibel
+Harmonizer	Enabled3	boolean	0.0	1.0	0.0	
+Harmonizer	Detune3	float	-12.0	12.0	0.0	semitones
+Harmonizer	Gain3	float	-40.0	0.0	0.0	decibel
+Harmonizer	Enabled4	boolean	0.0	1.0	0.0	
+Harmonizer	Detune4	float	-12.0	12.0	0.0	semitones
+Harmonizer	Gain4	float	-40.0	0.0	0.0	decibel
+Harmonizer	GrainSize	float	10.0	60.0	20.0	millisecond
+SampledReverb	Bypass	boolean	0.0	1.0	0.0	
+SampledReverb	Dry	float	0.0	1.0	0.5	% normalized
+SampledReverb	Wet	float	0.0	1.0	0.5	% normalized
+SampledReverb	Time	float	0.1	1.0	1.0	% normalized
+SampledReverb	DampingLow	float	-1.0	1.0	0.0	% normalized
+SampledReverb	DampingHigh	float	-1.0	1.0	0.0	% normalized
+SampledReverb	PreDelay	float	0.0	100.0	50.0	millisecond
+SampledReverb	Width	float	-1.0	1.0	0.0	% normalized
+SampledReverb	NormalizePower	boolean	0.0	1.0	1.0	
+MoogLadder	Bypass	boolean	0.0	1.0	0.0	
+MoogLadder	Freq	float	20.0	20000.0	1000.0	Hz
+MoogLadder	Q	float	0.0	1.0	0.0	% normalized
+MoogLadder	KeyTracking	float	0.0	1.0	0.0	% normalized
+MoogLadder	VoltageRef	float	0.01	1.0	0.1	
+MoogLadder	ResonanceTrim	float	0.0	0.5	0.0	% normalized
+MoogLadder	GainCompensation	float	0.0	1.0	0.0	% normalized
+MoogLadder	Algorithm	integer	0.0	2.0	2.0	
+MoogLadder	Oversampling	integer	2.0	4.0	2.0	
+MoogLadder	OversamplingType	integer	0.0	1.0	0.0	
+IIRLFOFilter	Bypass	boolean	0.0	1.0	0.0	
+IIRLFOFilter	Freq	float	20.0	20000.0	1000.0	Hz
+IIRLFOFilter	Q	float	0.0	1.0	0.0	% normalized
+IIRLFOFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+MoogFilter	Bypass	boolean	0.0	1.0	0.0	
+MoogFilter	Freq	float	20.0	20000.0	1000.0	Hz
+MoogFilter	Q	float	0.0	1.0	0.0	% normalized
+MoogFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+HighpassFilterRL	Bypass	boolean	0.0	1.0	0.0	
+HighpassFilterRL	HighPass	float	1.0	500.0	1.0	Hz
+HighpassFilterRL	Drive	float	0.0	30.0	0.0	decibel
+HighpassFilterRL	InputGain	float	-30.0	30.0	0.0	decibel
+HighpassFilterRL	OutputGain	float	-30.0	30.0	0.0	decibel
+HighpassFilterRL	Model	integer	1.0	2.0	1.0	
+HighpassFilterRL	Inductor	integer	2.0	3.0	2.0	
+Maximizer	Bypass	boolean	0.0	1.0	0.0	
+Maximizer	Threshold	float	-40.0	0.0	-6.0	decibel
+Maximizer	Attack	float	0.0	20.0	0.0	millisecond
+Maximizer	Lookahead	float	1.0	20.0	2.0	millisecond
+Maximizer	Release	float	0.1	1000.0	10.0	millisecond
+Maximizer	Ceiling	float	-20.0	0.0	-0.1	decibel
+Maximizer	Knee	float	0.0	10.0	0.0	decibel
+Maximizer	ReleaseBlend	float	0.0	1.0	0.1	% normalized
+Maximizer	SlewRate	float	0.0	200.0	20.0	millisecond
+OnePole	Bypass	boolean	0.0	1.0	0.0	
+OnePole	Freq	float	20.0	20000.0	1000.0	Hz
+OnePole	KeyTracking	float	0.0	1.0	0.0	% normalized
+OnePole	Mode	integer	0.0	1.0	0.0	
+LA2A	Bypass	boolean	0.0	1.0	0.0	
+LA2A	InputGain	float	-20.0	20.0	0.0	decibel
+LA2A	Compression	float	0.0	100.0	0.0	%
+LA2A	Presence	float	0.0	100.0	0.0	%
+LA2A	Limiter	boolean	0.0	1.0	0.0	
+LA2A	Makeup	float	0.0	100.0	23.0	%
+LA2A	MakeupDrive	float	-40.0	40.0	0.0	decibel
+LA2A	Tube	boolean	0.0	1.0	1.0	
+LA2A	Mix	float	0.0	100.0	100.0	%
+LA2A	LinkMode	integer	0.0	4.0	4.0	
+LA2A	OptoType	integer	0.0	6.0	4.0	
+LA2A	Treble	boolean	0.0	1.0	1.0	
+LA2A	External	boolean	0.0	1.0	0.0	
+LA2A	VU	integer	0.0	1.0	1.0	
+LA2A	Responsiveness	float	0.1	10.0	1.0	
+SmoothOverdrive	Bypass	boolean	0.0	1.0	0.0	
+SmoothOverdrive	InputGain	float	-30.0	20.0	0.0	decibel
+SmoothOverdrive	Overdrive	float	0.0	10.0	0.0	
+SmoothOverdrive	Trash	float	0.0	1.0	0.0	% normalized
+SmoothOverdrive	Mix	float	0.0	100.0	100.0	%
+SmoothOverdrive	OutputGain	float	-40.0	10.0	0.0	decibel
+SmoothOverdrive	Oversampling	integer	0.0	4.0	0.0	
+PhaseMeter	Bypass	boolean	0.0	1.0	0.0	
+PhaseMeter	RefreshRate	float	20.0	100.0	20.0	millisecond
+PhaseMeter	Decay	float	0.0	1000.0	100.0	millisecond
+PhaseMeter	AmpMode	integer	0.0	1.0	0.0	
+Phasor	Bypass	boolean	0.0	1.0	0.0	
+Phasor	SyncToHost	boolean	0.0	1.0	0.0	
+Phasor	Speed	float	0.01	10.0	0.3	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Phasor	MinFreq	float	20.0	20000.0	200.0	Hz
+Phasor	MaxFreq	float	20.0	20000.0	3000.0	Hz
+Phasor	Feedback	float	-0.99	0.99	0.7	% normalized
+Phasor	Depth	float	0.0	1.0	1.0	% normalized
+Phasor	Spread	float	0.0	1.0	1.0	% normalized
+Phasor	Order	integer	1.0	12.0	3.0	
+Phasor	LFOSHape	integer	0.0	3.0	0.0	
+PhasorFilter	Bypass	boolean	0.0	1.0	0.0	
+PhasorFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+PhasorFilter	Freq	float	20.0	20000.0	1000.0	Hz
+PhasorFilter	Feedback	float	-0.99	0.99	0.7	% normalized
+PhasorFilter	Depth	float	0.0	1.0	1.0	% normalized
+PhasorFilter	Spread	float	-12.0	12.0	0.0	semitones
+PhasorFilter	Order	integer	1.0	12.0	3.0	
+PhasorFilter	CutoffMode	integer	0.0	1.0	0.0	
+Redux2	Bypass	boolean	0.0	1.0	0.0	
+Redux2	Frequency	float	200.0	44100.0	44100.0	Hz
+Redux2	Bits	float	1.0	32.0	32.0	
+Redux2	Jitter	float	0.0	1.0	0.0	% normalized
+Redux2	QuantizeLaw	integer	0.0	1.0	0.0	
+Redux2	Dither	float	0.0	2.0	0.0	% normalized
+Redux2	FilterFreq	float	20.0	20000.0	10000.0	Hz
+Redux2	FilterRes	float	0.0	1.0	0.0	% normalized
+Redux2	FilterMode	integer	0.0	2.0	0.0	
+Redux2	FilterPosition	integer	0.0	2.0	0.0	
+Redux2	Antialiasing	boolean	0.0	1.0	1.0	
+Redux2	Mix	float	0.0	1.0	1.0	% normalized
+Redux2	BandLimitFreq	float	200.0	20000.0	20000.0	Hz
+Rez	Bypass	boolean	0.0	1.0	0.0	
+Rez	Freq	float	20.0	20000.0	1000.0	Hz
+Rez	Q	float	0.0	1.0	0.0	% normalized
+Rez	KeyTracking	float	0.0	1.0	0.0	% normalized
+Rez	Mode	integer	0.0	2.0	0.0	
+Rotary2	Bypass	boolean	0.0	1.0	0.0	
+Rotary2	HornAccelerationTime	float	0.1	10.0	1.0	second
+Rotary2	HornDecelerationTime	float	0.1	10.0	0.5	second
+Rotary2	DrumAccelerationTime	float	0.1	10.0	6.28	second
+Rotary2	DrumDecelerationTime	float	0.1	10.0	3.08	second
+Rotary2	TremoloSpeed	float	3.0	10.0	6.8	Hz
+Rotary2	ChoraleSpeed	float	0.1	3.0	0.8	Hz
+Rotary2	SpeedMode	integer	0.0	2.0	2.0	
+Rotary2	Model	integer	0.0	6.0	0.0	
+Rotary2	MicDistance	float	0.1	2.0	1.0	
+Rotary2	MicAngle	float	-180.0	180.0	90.0	
+Rotary2	AngleSkew	float	-1.0	1.0	0.0	% normalized
+Rotary2	DistanceSkew	float	-1.0	1.0	0.0	% normalized
+Rotary2	Drive	float	0.0	1.0	0.0	% normalized
+Rotary2	Order	integer	0.0	3.0	2.0	
+Rotary2	Reflection	float	0.0	1.0	0.9	% normalized
+Rotary2	HornFilter	integer	0.0	3.0	3.0	
+Rotary2	DrumFilter	integer	0.0	1.0	1.0	
+Rotary2	DrumVolume	float	0.0	1.0	1.0	
+Rotary2	HornVolume	float	0.0	1.0	1.0	
+Rotary2	OutputGain	float	0.0	4.0	1.0	
+Rotary2	Radius	float	0.0	1.0	1.0	% normalized
+Rotary2	EnableCrossover	boolean	0.0	1.0	1.0	
+Rotary2	DrumHP	boolean	0.0	1.0	1.0	
+Rotary2	HornDirectivity	integer	0.0	6.0	0.0	
+Rotary2	DrumDirectivity	integer	0.0	8.0	5.0	
+Rotary2	ReverbType	integer	0.0	1.0	0.0	
+Rotary2	DelayCompensation	boolean	0.0	1.0	1.0	
+Rotary2	HornLengthMod	float	0.0	1.0	1.0	% normalized
+Rotary2	BoxReverb	boolean	0.0	1.0	1.0	
+Rotary2	ReverbGain	float	0.0	1.0	0.3	% normalized
+Rotary2	EnableSaturation	boolean	0.0	1.0	1.0	
+Rotary2	SphericalDamp	float	0.0	1.0	1.0	% normalized
+Rotary2	EnablePreemphasis	boolean	0.0	1.0	1.0	
+Rotary2	PreemphasisDepth	float	0.0	1.0	0.5	% normalized
+SVF	Bypass	boolean	0.0	1.0	0.0	
+SVF	Freq	float	20.0	20000.0	1000.0	Hz
+SVF	Q	float	0.0	1.0	0.0	% normalized
+SVF	KeyTracking	float	0.0	1.0	0.0	% normalized
+SVF	FilterMode	integer	0.0	4.0	0.0	
+SVF	DriveMode	integer	0.0	1.0	0.0	
+SKF	Bypass	boolean	0.0	1.0	0.0	
+SKF	Freq	float	20.0	20000.0	1000.0	Hz
+SKF	Q	float	0.0	1.0	0.0	% normalized
+SKF	KeyTracking	float	0.0	1.0	0.0	% normalized
+SKF	SaturationRange	float	0.0	15.0	15.0	
+SKF	SaturationBias	float	-1.0	1.0	0.0	% normalized
+SKF	Output	integer	0.0	1.0	0.0	
+Shifter	Bypass	boolean	0.0	1.0	0.0	
+Shifter	Detune	float	-12.0	12.0	0.0	semitones
+Shifter	FineTune	float	-100.0	100.0	0.0	cents
+Shifter	QuantizeTune	boolean	0.0	1.0	0.0	
+Shifter	GrainSize	float	10.0	60.0	20.0	millisecond
+Shifter	Mix	float	0.0	1.0	1.0	% normalized
+SparkVerb	Bypass	boolean	0.0	1.0	0.0	
+SparkVerb	ModDepth	float	0.0	20.0	4.0	cents
+SparkVerb	ModRate	float	0.25	4.0	1.0	
+SparkVerb	Diffusion	float	0.0	1.0	0.618	% normalized
+SparkVerb	DiffusionStart	float	1.0	10.0	5.0	millisecond
+SparkVerb	Width	float	0.0	1.0	1.0	% normalized
+SparkVerb	RoomSize	float	4.0	50.0	20.0	
+SparkVerb	DecayTime	float	0.1	10.0	1.0	
+SparkVerb	DecayLow	float	0.1	10.0	1.0	
+SparkVerb	DecayHigh	float	0.1	10.0	1.0	
+SparkVerb	FreqLow	float	10.0	1000.0	250.0	Hz
+SparkVerb	FreqHigh	float	2000.0	20000.0	12000.0	Hz
+SparkVerb	Shape	float	0.0	1.0	0.0	% normalized
+SparkVerb	Mix	float	0.0	1.0	0.5	% normalized
+SparkVerb	Quality	integer	2.0	4.0	3.0	
+SparkVerb	Mode	integer	0.0	2.0	1.0	
+SparkVerb	Freeze	boolean	0.0	1.0	0.0	
+SparkVerb	HiCut	boolean	0.0	1.0	0.0	
+SparkVerb	LowCut	boolean	0.0	1.0	0.0	
+SparkVerb	Rolloff	float	2000.0	20000.0	20000.0	Hz
+SparkVerb	DiffusionOnOff	boolean	0.0	1.0	0.0	
+SparkVerb	PreDelay	float	0.0	100.0	0.0	millisecond
+SparkVerb	MixMode	integer	0.0	1.0	1.0	
+SparkVerb	UseOldInputMatrix	boolean	0.0	1.0	1.0	
+SparkVerb	UseOldOutputMatrix	boolean	0.0	1.0	1.0	
+SparkVerb	UseFilterInFeedback	boolean	0.0	1.0	1.0	
+SparkVerb	EarlyShape	float	-1.0	1.0	0.0	% normalized
+SpectrumAnalyzer	Bypass	boolean	0.0	1.0	0.0	
+SpectrumAnalyzer	LogFFTSize	integer	10.0	15.0	11.0	
+SpectrumAnalyzer	GraphType	integer	0.0	2.0	0.0	
+SpectrumAnalyzer	XScaleType	integer	0.0	3.0	1.0	
+SpectrumAnalyzer	WindowType	integer	0.0	2.0	1.0	
+SpectrumAnalyzer	RefreshRate	float	40.0	200.0	100.0	millisecond
+SpectrumAnalyzer	MaxDecibels	float	-200.0	40.0	0.0	decibel
+SpectrumAnalyzer	RangeDecibels	float	10.0	200.0	90.0	decibel
+BrickwallLimiter	Bypass	boolean	0.0	1.0	0.0	
+BrickwallLimiter	Threshold	float	-20.0	0.0	0.0	decibel
+BrickwallLimiter	Margin	float	-5.0	0.0	0.0	decibel
+BrickwallLimiter	Release	float	10.0	500.0	100.0	millisecond
+BrickwallLimiter	Mix	float	0.0	1.0	1.0	% normalized
+TSDrive	Bypass	boolean	0.0	1.0	0.0	
+TSDrive	Drive	float	0.0	1.0	0.0	% normalized
+TSDrive	InputVoltage	float	0.1	2.0	0.2	
+TSDrive	OutputGain	float	0.1	10.0	1.0	
+TSDrive	LowFreq	float	100.0	2000.0	720.484	Hz
+TSDrive	HighFreq	float	10000.0	100000.0	61189.906	Hz
+TSDrive	Asymmetry	float	0.0	1.0	0.0	% normalized
+TapeEcho	Bypass	boolean	0.0	1.0	0.0	
+TapeEcho	SyncToHost	boolean	0.0	1.0	0.0	
+TapeEcho	Speed	float	1.0	3.0	2.0	% normalized
+TapeEcho	Feedback	float	0.0	2.0	0.5	% normalized
+TapeEcho	Mode	integer	1.0	12.0	1.0	
+TapeEcho	Bass	float	-10.0	10.0	0.0	
+TapeEcho	Treble	float	-10.0	10.0	0.0	
+TapeEcho	Delay1	float	0.05	0.5	0.165	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+TapeEcho	Delay2	float	0.05	0.5	0.324	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+TapeEcho	Delay3	float	0.05	0.5	0.487	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+TapeEcho	Mix	float	0.0	1.0	0.5	% normalized
+TapeEcho	ReverbGain	float	0.0	1.0	1.0	% normalized
+TapeEcho	NoiseLevel	float	0.0	0.001	0.0	
+TapeEcho	TapeStop	boolean	0.0	1.0	0.0	
+WhiteChorus	Bypass	boolean	0.0	1.0	0.0	
+WhiteChorus	Speed	float	0.1	1.0	0.2	Hz
+WhiteChorus	Depth	float	1.0	40.0	5.0	cents
+WhiteChorus	Edge	float	-1.0	1.0	0.0	% normalized
+WhiteChorus	Tone	float	2000.0	22050.0	22050.0	Hz
+WhiteChorus	Crossover	float	20.0	5000.0	20.0	Hz
+WhiteChorus	LowGain	float	0.0	2.0	1.0	% normalized
+WhiteChorus	Mix	float	0.0	1.0	1.0	% normalized
+WhiteChorus	Trim	float	-12.0	0.0	0.0	decibel
+WhiteChorus	NumVoices	integer	2.0	8.0	4.0	
+WhiteChorus	Mode	integer	0.0	1.0	0.0	
+Tilt	Bypass	boolean	0.0	1.0	0.0	
+Tilt	Tilt	float	-6.0	6.0	0.0	decibel
+Tilt	Freq	float	20.0	20000.0	1000.0	Hz
+ToneStack	Bypass	boolean	0.0	1.0	0.0	
+ToneStack	Bass	float	0.0	1.0	0.5	% normalized
+ToneStack	Mid	float	0.0	1.0	0.5	% normalized
+ToneStack	Treble	float	0.0	1.0	0.5	% normalized
+ToneStack	Gain	float	0.0	1.0	0.3	% normalized
+ToneStack	Model	integer	0.0	25.0	0.0	
+TrackDelay	Bypass	boolean	0.0	1.0	0.0	
+TrackDelay	SyncToHost	boolean	0.0	1.0	0.0	
+TrackDelay	DelayTime	float	0.0	5.0	0.0	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Tremolo	Bypass	boolean	0.0	1.0	0.0	
+Tremolo	SyncToHost	boolean	0.0	1.0	0.0	
+Tremolo	Depth	float	0.0	1.0	1.0	% normalized
+Tremolo	Freq	float	0.0	20.0	5.0	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+JCMAmp	Bypass	boolean	0.0	1.0	0.0	
+JCMAmp	Drive	float	0.001	1.0	0.5	% normalized
+JCMAmp	Bass	float	0.001	1.0	0.5	% normalized
+JCMAmp	Middle	float	0.001	1.0	0.5	% normalized
+JCMAmp	Treble	float	0.001	1.0	0.5	% normalized
+JCMAmp	InputVoltage	float	0.1	2.0	1.0	
+JCMAmp	OutputGain	float	0.1	10.0	1.0	
+Tuner	Bypass	boolean	0.0	1.0	0.0	
+Tuner	RefreshRate	float	40.0	200.0	100.0	millisecond
+Tuner	FreqMin	integer	0.0	127.0	24.0	midi key
+Tuner	FreqMax	integer	0.0	127.0	127.0	midi key
+UviFilter	Bypass	boolean	0.0	1.0	0.0	
+UviFilter	Cutoff	float	-1.0	1.0	0.0	
+UviFilter	Q	float	0.0	1.0	0.0	
+UviFilter	MappingMode	integer	0.0	2.0	0.0	
+Widener	Bypass	boolean	0.0	1.0	0.0	
+Widener	Delay	float	-15.0	15.0	0.0	millisecond
+Widener	Width	float	-1.0	1.0	0.0	% normalized
+Widener	HighShelfFreqSide	float	2000.0	20000.0	10000.0	Hz
+Widener	HighSelfGainSide	float	-15.0	15.0	0.0	decibel
+Vinyl	Bypass	boolean	0.0	1.0	0.0	
+Vinyl	MechanicalNoiseGain	float	-30.0	20.0	-30.0	decibel
+Vinyl	Wear	float	0.0	100.0	0.0	%
+Vinyl	ElectricalNoiseGain	float	-30.0	20.0	-30.0	decibel
+Vinyl	DustGain	float	-30.0	20.0	-30.0	decibel
+Vinyl	DustAmount	float	0.0	100.0	0.0	%
+Vinyl	ScratchGain	float	-60.0	40.0	-60.0	decibel
+Vinyl	ScratchAmount	float	0.0	100.0	0.0	%
+Vinyl	Year	integer	0.0	5.0	5.0	
+Vinyl	RPMType	integer	0.0	2.0	0.0	
+Vinyl	MixToMono	boolean	0.0	1.0	0.0	
+MS20	Bypass	boolean	0.0	1.0	0.0	
+MS20	Freq	float	20.0	20000.0	1000.0	Hz
+MS20	Q	float	0.0	1.0	0.0	% normalized
+MS20	KeyTracking	float	0.0	1.0	0.0	% normalized
+MS20	ResonanceTrim	float	0.0	1.0	0.5	% normalized
+MS20	ReferenceVoltage	float	0.5	5.0	1.0	
+MS20	Morph	float	0.0	1.0	0.0	% normalized
+MS20Dual	Bypass	boolean	0.0	1.0	0.0	
+MS20Dual	Freq	float	20.0	20000.0	1000.0	Hz
+MS20Dual	Q	float	0.0	1.0	0.0	% normalized
+MS20Dual	KeyTracking	float	0.0	1.0	0.0	% normalized
+MS20Dual	FreqHP	float	20.0	20000.0	20.0	Hz
+MS20Dual	Q_HP	float	0.0	1.0	0.0	% normalized
+MS20Dual	ResonanceTrim	float	0.0	1.0	0.5	% normalized
+MS20Dual	ReferenceVoltage	float	0.5	5.0	1.0	
+ARP4023	Bypass	boolean	0.0	1.0	0.0	
+ARP4023	VoltageReference	float	1.0	15.0	5.0	
+ARP4023	Oversampling	integer	1.0	4.0	1.0	
+ARP4023	HighPassCutoff	float	0.0	1.0	0.0	% normalized
+ARP4023	OTA_Saturation	boolean	0.0	1.0	1.0	
+ARP4023	OPA_Saturation	boolean	0.0	1.0	1.0	
+ARP4023	AltOutput	boolean	0.0	1.0	0.0	
+ARP4023	Freq	float	20.0	20000.0	1000.0	Hz
+ARP4023	Q	float	0.0	1.0	0.0	% normalized
+ARP4023	KeyTracking	float	0.0	1.0	0.0	% normalized
+DiffuseDelayNested	Bypass	boolean	0.0	1.0	0.0	
+DiffuseDelayNested	SyncToHost	boolean	0.0	1.0	0.0	
+DiffuseDelayNested	DelayTime	float	0.001	1.0	0.05	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+DiffuseDelayNested	TimeSpread	float	0.1	1.0	1.0	% normalized
+DiffuseDelayNested	Diffusion	float	0.0	0.9	0.1	% normalized
+DiffuseDelayNested	Mix	float	0.0	1.0	1.0	% normalized
+DiffuseDelayNested	Seed	integer	0.0	100.0	0.0	
+DiffuseDelayNested	Shape	integer	0.0	6.0	0.0	
+DiffuseDelayNested	ShapeCurve	float	-1.0	1.0	0.0	% normalized
+VowelFilter	Bypass	boolean	0.0	1.0	0.0	
+VowelFilter	Morph	float	0.0	1.0	0.0	% normalized
+VowelFilter	Q	float	10.0	20.0	10.0	
+VowelFilter	Formant	float	-1.0	1.0	0.0	% normalized
+VowelFilter	FilterA	integer	0.0	10.0	0.0	
+VowelFilter	FilterB	integer	0.0	10.0	2.0	
+VowelFilter	Mode	integer	0.0	2.0	1.0	
+VowelFilter	NumFormants	integer	1.0	4.0	3.0	
+Vowels	Bypass	boolean	0.0	1.0	0.0	
+Vowels	MorphX	float	0.0	1.0	0.0	% normalized
+Vowels	MorphY	float	0.0	1.0	0.0	% normalized
+Vowels	Formant	float	-1.0	1.0	0.0	% normalized
+Vowels	Mode	integer	0.0	2.0	1.0	
+Vowels	NumFormants	integer	2.0	5.0	2.0	
+WahWah	Bypass	boolean	0.0	1.0	0.0	
+WahWah	Wah	float	0.0	1.0	0.5	% normalized
+WahWah	Drive	float	0.0	1.0	0.0	% normalized
+WahWah	Master	float	0.0	10.0	3.162	
+WahWah	Model	integer	0.0	6.0	0.0	
+WaveShaper	Bypass	boolean	0.0	1.0	0.0	
+WaveShaper	InputGain	float	-40.0	40.0	0.0	decibel
+WaveShaper	OutputGain	float	-40.0	40.0	0.0	decibel
+WaveShaper	Amount	float	0.0	1.0	0.0	% normalized
+WaveShaper	Knee	float	-10.0	10.0	0.0	
+WaveShaper	Mix	float	0.0	1.0	1.0	% normalized
+WaveShaper	PreFreq	float	20.0	22000.0	20000.0	Hz
+WaveShaper	PostFreq	float	2.0	20000.0	20.0	Hz
+WaveShaper	Oversampling	integer	0.0	4.0	0.0	
+WaveShaper	Mode	integer	0.0	11.0	0.0	
+XpanderFilter	Bypass	boolean	0.0	1.0	0.0	
+XpanderFilter	Freq	float	20.0	20000.0	1000.0	Hz
+XpanderFilter	Q	float	0.0	1.0	0.0	% normalized
+XpanderFilter	KeyTracking	float	0.0	1.0	0.0	% normalized
+XpanderFilter	Mode	integer	0.0	36.0	3.0	
+XpanderFilter	DistortionType	integer	0.0	2.0	0.0	
+XpanderFilter	Drive	float	-20.0	20.0	0.0	decibel
+XpanderFilter	Fat	float	0.0	1.0	1.0	% normalized
+XpanderFilter	Algorithm	integer	0.0	1.0	0.0	
+XpanderFilter	Oversampling	integer	0.0	1.0	1.0	
+AHD	Bypass	boolean	0.0	1.0	0.0	
+AHD	AttackTime	float	0.0	10.0	0.0	second
+AHD	AttackCurve	float	-1.0	1.0	0.0	
+AHD	HoldTime	float	0.0	10.0	1.0	second
+AHD	DecayTime	float	0.0	30.0	0.1	second
+AHD	DecayCurve	float	-1.0	1.0	0.0	
+AHD	VelocityAmount	float	0.0	1.0	0.0	% normalized
+AHD	VelocitySens	float	-1.0	1.0	0.75	% normalized
+AHD	Retrigger	integer	0.0	2.0	1.0	
+AHD	NoteOffRetrigger	boolean	0.0	1.0	0.0	
+AnalogADSR	Bypass	boolean	0.0	1.0	0.0	
+AnalogADSR	AttackTime	float	0.0	10.0	0.001	second
+AnalogADSR	DecayTime	float	0.0	10.0	0.05	second
+AnalogADSR	KeyToDecay	float	-2.0	2.0	0.0	% normalized
+AnalogADSR	KeyToAttack	float	-2.0	2.0	0.0	% normalized
+AnalogADSR	VelToDecay	float	-1.0	1.0	0.0	% normalized
+AnalogADSR	Punch	float	0.0	1.0	0.0	% normalized
+AnalogADSR	VelToAttack	float	-1.0	1.0	0.0	% normalized
+AnalogADSR	DynamicRange	float	0.0	40.0	0.0	decibel
+AnalogADSR	SustainLevel	float	0.0	1.0	1.0	% normalized
+AnalogADSR	ReleaseTime	float	0.0	10.0	0.01	second
+AnalogADSR	ManualTrigger	float	0.0	1.0	0.0	
+AnalogADSR	TriggerMode	integer	0.0	1.0	0.0	
+AnalogADSR	InvertVelocity	boolean	0.0	1.0	0.0	
+AnalogADSR	AttackDecayMode	boolean	0.0	1.0	0.0	
+AttackDecayEnv	Bypass	boolean	0.0	1.0	0.0	
+AttackDecayEnv	Attack	float	0.0	1.0	0.1	% normalized
+AttackDecayEnv	DecayTime	float	0.001	10.0	0.3	second
+DAHDSR	Bypass	boolean	0.0	1.0	0.0	
+DAHDSR	DelayTime	float	0.0	10.0	0.0	second
+DAHDSR	AttackTime	float	0.0	10.0	0.0	second
+DAHDSR	AttackCurve	float	-1.0	1.0	0.0	
+DAHDSR	HoldTime	float	0.0	10.0	0.0	second
+DAHDSR	DecayTime	float	0.0	30.0	0.0	second
+DAHDSR	DecayCurve	float	-1.0	1.0	0.0	
+DAHDSR	SustainLevel	float	0.0	1.0	1.0	% normalized
+DAHDSR	ReleaseTime	float	0.0	20.0	0.05	second
+DAHDSR	ReleaseCurve	float	-1.0	1.0	0.0	
+DAHDSR	VelocityAmount	float	0.0	1.0	0.0	% normalized
+DAHDSR	VelocitySens	float	-1.0	1.0	0.75	% normalized
+DAHDSR	Retrigger	integer	0.0	2.0	1.0	
+DAHDSR	NoteOffRetrigger	boolean	0.0	1.0	0.0	
+Drunk	Bypass	boolean	0.0	1.0	0.0	
+Drunk	InitialValue	float	-1.0	1.0	0.0	
+Drunk	Bias	float	-1.0	1.0	0.0	
+Drunk	Step	float	0.1	1000.0	4.0	Hz
+Drunk	Rate	float	0.1	1000.0	100.0	Hz
+Drunk	TriggerMode	integer	0.0	2.0	1.0	
+Drunk	Bipolar	boolean	0.0	1.0	1.0	
+InterpolationRandom	Bypass	boolean	0.0	1.0	0.0	
+InterpolationRandom	Rate	float	0.1	100.0	1.0	Hz
+InterpolationRandom	TriggerMode	integer	0.0	2.0	1.0	
+InterpolationRandom	Depth	float	0.0	1.0	1.0	% normalized
+InterpolationRandom	Bipolar	boolean	0.0	1.0	1.0	
+InterpolationRandom	RandomStart	boolean	0.0	1.0	0.0	
+LFO	Bypass	boolean	0.0	1.0	0.0	
+LFO	SyncToHost	boolean	0.0	1.0	0.0	
+LFO	DelayTime	float	0.0	10.0	0.0	second
+LFO	RiseTime	float	0.0	10.0	0.0	second
+LFO	Freq	float	0.0	20.0	0.5	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+LFO	Depth	float	0.0	1.0	1.0	% normalized
+LFO	Phase	float	0.0	1.0	0.0	
+LFO	WaveFormType	integer	0.0	9.0	0.0	
+LFO	ManualTrigger	float	0.0	1.0	0.0	
+LFO	Retrigger	integer	0.0	3.0	1.0	
+LFO	Bipolar	boolean	0.0	1.0	1.0	
+LFO	Smooth	float	0.0	1.0	0.0	second
+ConstantModulation	Bypass	boolean	0.0	1.0	0.0	
+ConstantModulation	Bipolar	boolean	0.0	1.0	0.0	
+ConstantModulation	Style	integer	0.0	1.0	0.0	
+ConstantModulation	Value	float	0.0	1.0	0.0	% normalized
+MultiEnvelope	Bypass	boolean	0.0	1.0	0.0	
+MultiEnvelope	SyncToHost	boolean	0.0	1.0	0.0	
+MultiEnvelope	VelocityAmount	float	0.0	1.0	0.0	% normalized
+MultiEnvelope	VelocitySens	float	-1.0	1.0	0.75	% normalized
+MultiEnvelope	Retrigger	integer	0.0	2.0	1.0	
+MultiEnvelope	NumSteps	integer	1.0	128.0	1.0	
+MultiEnvelope	Speed	float	0.1	10.0	1.0	
+MultiEnvelope	Smooth	float	0.0	1.0	0.0	second
+MultiEnvelope	Bipolar	boolean	0.0	1.0	0.0	
+MultiEnvelope	NoteOffRetrigger	boolean	0.0	1.0	0.0	
+MultiLFO	Bypass	boolean	0.0	1.0	0.0	
+MultiLFO	SyncToHost	boolean	0.0	1.0	0.0	
+MultiLFO	SineDepth	float	-1.0	1.0	0.0	% normalized
+MultiLFO	TriangleDepth	float	-1.0	1.0	0.0	% normalized
+MultiLFO	SawDepth	float	-1.0	1.0	0.0	% normalized
+MultiLFO	SquareDepth	float	-1.0	1.0	0.0	% normalized
+MultiLFO	NoiseDepth	float	-1.0	1.0	0.0	% normalized
+MultiLFO	PulseWidth	float	0.05	0.95	0.5	% normalized
+MultiLFO	RiseTime	float	0.0	10.0	0.0	second
+MultiLFO	Freq	float	0.0	20.0	0.5	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+MultiLFO	Depth	float	0.0	1.0	1.0	% normalized
+MultiLFO	Phase	float	0.0	1.0	0.0	
+MultiLFO	ManualTrigger	float	0.0	1.0	0.0	
+MultiLFO	Retrigger	integer	0.0	3.0	1.0	
+MultiLFO	Bipolar	boolean	0.0	1.0	1.0	
+MultiLFO	Invert	boolean	0.0	1.0	0.0	
+MultiLFO	NormalizeOutput	boolean	0.0	1.0	1.0	
+MultiLFO	Smooth	float	0.0	1.0	0.0	second
+ParametricLFO	Bypass	boolean	0.0	1.0	0.0	
+ParametricLFO	SyncToHost	boolean	0.0	1.0	0.0	
+ParametricLFO	Freq	float	0.0	50.0	0.5	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+ParametricLFO	Phase	float	-1.0	1.0	0.0	
+ParametricLFO	Depth	float	0.0	1.0	1.0	% normalized
+ParametricLFO	Shape	float	-1.0	1.0	0.0	% normalized
+ParametricLFO	PulseWidth	float	0.0	1.0	0.5	% normalized
+ParametricLFO	Symmetry	float	-1.0	1.0	0.0	% normalized
+ParametricLFO	Swing	float	0.0	2.0	0.0	% normalized
+ParametricLFO	Bipolar	boolean	0.0	1.0	1.0	
+ParametricLFO	Retrigger	integer	0.0	3.0	1.0	
+ScriptEventModulation	Bypass	boolean	0.0	1.0	0.0	
+ScriptEventModulation	EventId	integer	0.0	127.0	0.0	
+ScriptEventModulation	Bipolar	boolean	0.0	1.0	1.0	
+StdRandom	Bypass	boolean	0.0	1.0	0.0	
+StdRandom	Rate	float	0.0	1000.0	1.0	Hz
+StdRandom	TriggerMode	integer	0.0	2.0	1.0	
+StdRandom	Depth	float	0.0	1.0	1.0	% normalized
+StdRandom	Bipolar	boolean	0.0	1.0	1.0	
+StdRandom	RandomStart	boolean	0.0	1.0	0.0	
+StepEnvelope	Bypass	boolean	0.0	1.0	0.0	
+StepEnvelope	SyncToHost	boolean	0.0	1.0	0.0	
+StepEnvelope	NumSteps	integer	1.0	128.0	16.0	
+StepEnvelope	Freq	float	0.0	20.0	1.0	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+StepEnvelope	ManualTrigger	float	0.0	1.0	0.0	
+StepEnvelope	Retrigger	integer	0.0	2.0	0.0	
+StepEnvelope	Bipolar	boolean	0.0	1.0	0.0	
+StepEnvelope	InterpolationMode	integer	0.0	1.0	0.0	
+StepEnvelope	Smooth	float	0.0	1.0	0.0	second
+StepEnvelope	Depth	float	0.0	1.0	1.0	% normalized
+VoiceModulator	Bypass	boolean	0.0	1.0	0.0	
+VoiceModulator	NumSteps	integer	1.0	16.0	8.0	
+VoiceModulator	Legato	boolean	0.0	1.0	0.0	
+Arpeggiator	Bypass	boolean	0.0	1.0	0.0	
+Arpeggiator	Mode	integer	0.0	27.0	0.0	
+Arpeggiator	TriggerMode	integer	0.0	2.0	1.0	
+Arpeggiator	OctaveMode	integer	0.0	1.0	1.0	
+Arpeggiator	Octave	integer	-6.0	6.0	0.0	
+Arpeggiator	NumStrike	integer	1.0	4.0	1.0	
+Arpeggiator	RepeatBottomNote	boolean	0.0	1.0	0.0	
+Arpeggiator	RepeatTopNote	boolean	0.0	1.0	0.0	
+Arpeggiator	Resolution	integer	0.0	29.0	22.0	
+Arpeggiator	StepLength	float	0.0	1.1	1.0	% normalized
+Arpeggiator	ArpVelocityBlend	float	0.0	1.0	0.5	% normalized
+Arpeggiator	GrooveAmount	float	0.0	1.0	0.0	% normalized
+Arpeggiator	Hold	boolean	0.0	1.0	0.0	
+Arpeggiator	Record	boolean	0.0	1.0	0.0	
+Arpeggiator	RecordIndex	integer	0.0	128.0	0.0	
+Arpeggiator	NumSteps	integer	1.0	128.0	16.0	
+Arpeggiator	Step0State	integer	0.0	3.0	0.0	
+Arpeggiator	Step1State	integer	0.0	3.0	0.0	
+Arpeggiator	Step2State	integer	0.0	3.0	0.0	
+Arpeggiator	Step3State	integer	0.0	3.0	0.0	
+Arpeggiator	Step4State	integer	0.0	3.0	0.0	
+Arpeggiator	Step5State	integer	0.0	3.0	0.0	
+Arpeggiator	Step6State	integer	0.0	3.0	0.0	
+Arpeggiator	Step7State	integer	0.0	3.0	0.0	
+Arpeggiator	Step8State	integer	0.0	3.0	0.0	
+Arpeggiator	Step9State	integer	0.0	3.0	0.0	
+Arpeggiator	Step10State	integer	0.0	3.0	0.0	
+Arpeggiator	Step11State	integer	0.0	3.0	0.0	
+Arpeggiator	Step12State	integer	0.0	3.0	0.0	
+Arpeggiator	Step13State	integer	0.0	3.0	0.0	
+Arpeggiator	Step14State	integer	0.0	3.0	0.0	
+Arpeggiator	Step15State	integer	0.0	3.0	0.0	
+Arpeggiator	Step16State	integer	0.0	3.0	0.0	
+Arpeggiator	Step17State	integer	0.0	3.0	0.0	
+Arpeggiator	Step18State	integer	0.0	3.0	0.0	
+Arpeggiator	Step19State	integer	0.0	3.0	0.0	
+Arpeggiator	Step20State	integer	0.0	3.0	0.0	
+Arpeggiator	Step21State	integer	0.0	3.0	0.0	
+Arpeggiator	Step22State	integer	0.0	3.0	0.0	
+Arpeggiator	Step23State	integer	0.0	3.0	0.0	
+Arpeggiator	Step24State	integer	0.0	3.0	0.0	
+Arpeggiator	Step25State	integer	0.0	3.0	0.0	
+Arpeggiator	Step26State	integer	0.0	3.0	0.0	
+Arpeggiator	Step27State	integer	0.0	3.0	0.0	
+Arpeggiator	Step28State	integer	0.0	3.0	0.0	
+Arpeggiator	Step29State	integer	0.0	3.0	0.0	
+Arpeggiator	Step30State	integer	0.0	3.0	0.0	
+Arpeggiator	Step31State	integer	0.0	3.0	0.0	
+Arpeggiator	Step32State	integer	0.0	3.0	0.0	
+Arpeggiator	Step33State	integer	0.0	3.0	0.0	
+Arpeggiator	Step34State	integer	0.0	3.0	0.0	
+Arpeggiator	Step35State	integer	0.0	3.0	0.0	
+Arpeggiator	Step36State	integer	0.0	3.0	0.0	
+Arpeggiator	Step37State	integer	0.0	3.0	0.0	
+Arpeggiator	Step38State	integer	0.0	3.0	0.0	
+Arpeggiator	Step39State	integer	0.0	3.0	0.0	
+Arpeggiator	Step40State	integer	0.0	3.0	0.0	
+Arpeggiator	Step41State	integer	0.0	3.0	0.0	
+Arpeggiator	Step42State	integer	0.0	3.0	0.0	
+Arpeggiator	Step43State	integer	0.0	3.0	0.0	
+Arpeggiator	Step44State	integer	0.0	3.0	0.0	
+Arpeggiator	Step45State	integer	0.0	3.0	0.0	
+Arpeggiator	Step46State	integer	0.0	3.0	0.0	
+Arpeggiator	Step47State	integer	0.0	3.0	0.0	
+Arpeggiator	Step48State	integer	0.0	3.0	0.0	
+Arpeggiator	Step49State	integer	0.0	3.0	0.0	
+Arpeggiator	Step50State	integer	0.0	3.0	0.0	
+Arpeggiator	Step51State	integer	0.0	3.0	0.0	
+Arpeggiator	Step52State	integer	0.0	3.0	0.0	
+Arpeggiator	Step53State	integer	0.0	3.0	0.0	
+Arpeggiator	Step54State	integer	0.0	3.0	0.0	
+Arpeggiator	Step55State	integer	0.0	3.0	0.0	
+Arpeggiator	Step56State	integer	0.0	3.0	0.0	
+Arpeggiator	Step57State	integer	0.0	3.0	0.0	
+Arpeggiator	Step58State	integer	0.0	3.0	0.0	
+Arpeggiator	Step59State	integer	0.0	3.0	0.0	
+Arpeggiator	Step60State	integer	0.0	3.0	0.0	
+Arpeggiator	Step61State	integer	0.0	3.0	0.0	
+Arpeggiator	Step62State	integer	0.0	3.0	0.0	
+Arpeggiator	Step63State	integer	0.0	3.0	0.0	
+Arpeggiator	Step64State	integer	0.0	3.0	0.0	
+Arpeggiator	Step65State	integer	0.0	3.0	0.0	
+Arpeggiator	Step66State	integer	0.0	3.0	0.0	
+Arpeggiator	Step67State	integer	0.0	3.0	0.0	
+Arpeggiator	Step68State	integer	0.0	3.0	0.0	
+Arpeggiator	Step69State	integer	0.0	3.0	0.0	
+Arpeggiator	Step70State	integer	0.0	3.0	0.0	
+Arpeggiator	Step71State	integer	0.0	3.0	0.0	
+Arpeggiator	Step72State	integer	0.0	3.0	0.0	
+Arpeggiator	Step73State	integer	0.0	3.0	0.0	
+Arpeggiator	Step74State	integer	0.0	3.0	0.0	
+Arpeggiator	Step75State	integer	0.0	3.0	0.0	
+Arpeggiator	Step76State	integer	0.0	3.0	0.0	
+Arpeggiator	Step77State	integer	0.0	3.0	0.0	
+Arpeggiator	Step78State	integer	0.0	3.0	0.0	
+Arpeggiator	Step79State	integer	0.0	3.0	0.0	
+Arpeggiator	Step80State	integer	0.0	3.0	0.0	
+Arpeggiator	Step81State	integer	0.0	3.0	0.0	
+Arpeggiator	Step82State	integer	0.0	3.0	0.0	
+Arpeggiator	Step83State	integer	0.0	3.0	0.0	
+Arpeggiator	Step84State	integer	0.0	3.0	0.0	
+Arpeggiator	Step85State	integer	0.0	3.0	0.0	
+Arpeggiator	Step86State	integer	0.0	3.0	0.0	
+Arpeggiator	Step87State	integer	0.0	3.0	0.0	
+Arpeggiator	Step88State	integer	0.0	3.0	0.0	
+Arpeggiator	Step89State	integer	0.0	3.0	0.0	
+Arpeggiator	Step90State	integer	0.0	3.0	0.0	
+Arpeggiator	Step91State	integer	0.0	3.0	0.0	
+Arpeggiator	Step92State	integer	0.0	3.0	0.0	
+Arpeggiator	Step93State	integer	0.0	3.0	0.0	
+Arpeggiator	Step94State	integer	0.0	3.0	0.0	
+Arpeggiator	Step95State	integer	0.0	3.0	0.0	
+Arpeggiator	Step96State	integer	0.0	3.0	0.0	
+Arpeggiator	Step97State	integer	0.0	3.0	0.0	
+Arpeggiator	Step98State	integer	0.0	3.0	0.0	
+Arpeggiator	Step99State	integer	0.0	3.0	0.0	
+Arpeggiator	Step100State	integer	0.0	3.0	0.0	
+Arpeggiator	Step101State	integer	0.0	3.0	0.0	
+Arpeggiator	Step102State	integer	0.0	3.0	0.0	
+Arpeggiator	Step103State	integer	0.0	3.0	0.0	
+Arpeggiator	Step104State	integer	0.0	3.0	0.0	
+Arpeggiator	Step105State	integer	0.0	3.0	0.0	
+Arpeggiator	Step106State	integer	0.0	3.0	0.0	
+Arpeggiator	Step107State	integer	0.0	3.0	0.0	
+Arpeggiator	Step108State	integer	0.0	3.0	0.0	
+Arpeggiator	Step109State	integer	0.0	3.0	0.0	
+Arpeggiator	Step110State	integer	0.0	3.0	0.0	
+Arpeggiator	Step111State	integer	0.0	3.0	0.0	
+Arpeggiator	Step112State	integer	0.0	3.0	0.0	
+Arpeggiator	Step113State	integer	0.0	3.0	0.0	
+Arpeggiator	Step114State	integer	0.0	3.0	0.0	
+Arpeggiator	Step115State	integer	0.0	3.0	0.0	
+Arpeggiator	Step116State	integer	0.0	3.0	0.0	
+Arpeggiator	Step117State	integer	0.0	3.0	0.0	
+Arpeggiator	Step118State	integer	0.0	3.0	0.0	
+Arpeggiator	Step119State	integer	0.0	3.0	0.0	
+Arpeggiator	Step120State	integer	0.0	3.0	0.0	
+Arpeggiator	Step121State	integer	0.0	3.0	0.0	
+Arpeggiator	Step122State	integer	0.0	3.0	0.0	
+Arpeggiator	Step123State	integer	0.0	3.0	0.0	
+Arpeggiator	Step124State	integer	0.0	3.0	0.0	
+Arpeggiator	Step125State	integer	0.0	3.0	0.0	
+Arpeggiator	Step126State	integer	0.0	3.0	0.0	
+Arpeggiator	Step127State	integer	0.0	3.0	0.0	
+Arpeggiator	Step0Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step1Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step2Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step3Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step4Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step5Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step6Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step7Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step8Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step9Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step10Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step11Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step12Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step13Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step14Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step15Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step16Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step17Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step18Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step19Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step20Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step21Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step22Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step23Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step24Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step25Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step26Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step27Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step28Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step29Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step30Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step31Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step32Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step33Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step34Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step35Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step36Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step37Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step38Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step39Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step40Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step41Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step42Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step43Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step44Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step45Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step46Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step47Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step48Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step49Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step50Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step51Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step52Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step53Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step54Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step55Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step56Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step57Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step58Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step59Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step60Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step61Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step62Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step63Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step64Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step65Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step66Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step67Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step68Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step69Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step70Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step71Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step72Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step73Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step74Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step75Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step76Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step77Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step78Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step79Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step80Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step81Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step82Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step83Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step84Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step85Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step86Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step87Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step88Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step89Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step90Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step91Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step92Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step93Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step94Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step95Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step96Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step97Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step98Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step99Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step100Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step101Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step102Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step103Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step104Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step105Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step106Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step107Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step108Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step109Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step110Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step111Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step112Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step113Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step114Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step115Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step116Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step117Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step118Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step119Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step120Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step121Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step122Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step123Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step124Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step125Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step126Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step127Size	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step0Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step1Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step2Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step3Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step4Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step5Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step6Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step7Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step8Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step9Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step10Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step11Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step12Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step13Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step14Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step15Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step16Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step17Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step18Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step19Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step20Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step21Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step22Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step23Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step24Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step25Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step26Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step27Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step28Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step29Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step30Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step31Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step32Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step33Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step34Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step35Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step36Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step37Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step38Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step39Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step40Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step41Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step42Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step43Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step44Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step45Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step46Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step47Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step48Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step49Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step50Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step51Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step52Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step53Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step54Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step55Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step56Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step57Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step58Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step59Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step60Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step61Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step62Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step63Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step64Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step65Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step66Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step67Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step68Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step69Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step70Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step71Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step72Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step73Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step74Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step75Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step76Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step77Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step78Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step79Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step80Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step81Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step82Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step83Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step84Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step85Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step86Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step87Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step88Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step89Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step90Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step91Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step92Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step93Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step94Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step95Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step96Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step97Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step98Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step99Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step100Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step101Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step102Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step103Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step104Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step105Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step106Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step107Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step108Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step109Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step110Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step111Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step112Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step113Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step114Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step115Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step116Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step117Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step118Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step119Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step120Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step121Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step122Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step123Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step124Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step125Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step126Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step127Level	float	0.0	1.0	1.0	% normalized
+Arpeggiator	Step0Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step1Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step2Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step3Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step4Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step5Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step6Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step7Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step8Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step9Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step10Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step11Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step12Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step13Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step14Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step15Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step16Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step17Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step18Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step19Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step20Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step21Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step22Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step23Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step24Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step25Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step26Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step27Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step28Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step29Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step30Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step31Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step32Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step33Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step34Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step35Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step36Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step37Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step38Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step39Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step40Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step41Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step42Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step43Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step44Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step45Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step46Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step47Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step48Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step49Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step50Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step51Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step52Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step53Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step54Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step55Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step56Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step57Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step58Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step59Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step60Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step61Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step62Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step63Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step64Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step65Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step66Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step67Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step68Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step69Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step70Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step71Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step72Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step73Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step74Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step75Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step76Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step77Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step78Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step79Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step80Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step81Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step82Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step83Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step84Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step85Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step86Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step87Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step88Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step89Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step90Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step91Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step92Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step93Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step94Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step95Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step96Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step97Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step98Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step99Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step100Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step101Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step102Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step103Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step104Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step105Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step106Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step107Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step108Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step109Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step110Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step111Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step112Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step113Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step114Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step115Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step116Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step117Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step118Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step119Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step120Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step121Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step122Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step123Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step124Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step125Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step126Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step127Offset	integer	-48.0	48.0	0.0	semitones
+Arpeggiator	Step0CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step1CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step2CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step3CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step4CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step5CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step6CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step7CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step8CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step9CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step10CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step11CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step12CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step13CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step14CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step15CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step16CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step17CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step18CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step19CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step20CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step21CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step22CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step23CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step24CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step25CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step26CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step27CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step28CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step29CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step30CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step31CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step32CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step33CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step34CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step35CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step36CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step37CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step38CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step39CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step40CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step41CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step42CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step43CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step44CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step45CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step46CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step47CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step48CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step49CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step50CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step51CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step52CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step53CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step54CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step55CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step56CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step57CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step58CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step59CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step60CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step61CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step62CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step63CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step64CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step65CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step66CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step67CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step68CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step69CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step70CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step71CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step72CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step73CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step74CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step75CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step76CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step77CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step78CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step79CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step80CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step81CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step82CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step83CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step84CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step85CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step86CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step87CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step88CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step89CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step90CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step91CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step92CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step93CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step94CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step95CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step96CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step97CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step98CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step99CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step100CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step101CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step102CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step103CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step104CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step105CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step106CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step107CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step108CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step109CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step110CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step111CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step112CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step113CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step114CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step115CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step116CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step117CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step118CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step119CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step120CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step121CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step122CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step123CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step124CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step125CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step126CC	integer	0.0	127.0	0.0	
+Arpeggiator	Step127CC	integer	0.0	127.0	0.0	
+Arpeggiator	StepCCId	integer	-1.0	127.0	-1.0	
+MidiOut	Bypass	boolean	0.0	1.0	0.0	
+MidiOut	MidiChannel	integer	0.0	16.0	0.0	
+MidiPlayer	Bypass	boolean	0.0	1.0	0.0	
+MidiPlayer	BaseNote	integer	0.0	127.0	60.0	midi key
+MidiPlayer	Loop	boolean	0.0	1.0	0.0	
+MidiPlayer	Transpose	boolean	0.0	1.0	1.0	
+MidiPlayer	AutoPlay	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass0	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass1	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass2	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass3	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass4	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass5	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass6	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass7	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass8	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass9	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass10	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass11	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass12	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass13	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass14	boolean	0.0	1.0	0.0	
+MidiPlayer	ChannelBypass15	boolean	0.0	1.0	0.0	
+MicroTuner	Bypass	boolean	0.0	1.0	0.0	
+ScriptProcessor	Bypass	boolean	0.0	1.0	0.0	
+BassDrumOscillator	Bypass	boolean	0.0	1.0	0.0	
+BassDrumOscillator	Decay	float	0.0	1.0	0.8	% normalized
+BassDrumOscillator	Tone	float	0.0	1.0	1.0	% normalized
+BassDrumOscillator	Mode	integer	0.0	2.0	1.0	
+BassDrumOscillator	Legato	boolean	0.0	1.0	0.0	
+BassDrumOscillator	Play	integer	0.0	1.0	0.0	
+BassDrumOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+BassDrumOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+BassDrumOscillator	Gain	float	0.0	1.995	1.0	
+BassDrumOscillator	Pitch	float	1.0	0.0	0.0	semitones
+BassDrumOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+BassDrumOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+Additive	Bypass	boolean	0.0	1.0	0.0	
+Additive	Stretch	float	0.0	1.0	0.0	% normalized
+Additive	Slope	float	-1.0	1.0	0.0	% normalized
+Additive	EvenOdd	float	-1.0	1.0	0.0	% normalized
+Additive	CombFreq	float	0.0	1.0	0.0	% normalized
+Additive	CombDepth	float	-1.0	1.0	0.0	% normalized
+Additive	SafeBass	boolean	0.0	1.0	0.0	
+Additive	HarmShift	float	0.0	48.0	0.0	semitones
+Additive	Cutoff	float	20.0	20000.0	20000.0	Hz
+Additive	Q	float	0.5	100.0	1.0	
+Additive	Dissonance	float	0.0	8.0	1.0	% normalized
+Additive	QuantizeDissonance	boolean	0.0	1.0	0.0	
+Additive	FreqShift	float	0.0	20000.0	0.0	Hz
+Additive	Beating	float	0.0	10.0	0.0	Hz
+Additive	Detune	float	0.0	40.0	0.0	cents
+Additive	FilterType	integer	0.0	5.0	0.0	
+Additive	NumVoices	integer	1.0	3.0	1.0	
+Additive	FilterOrder	float	0.0	8.0	4.0	
+Additive	MaxHarmonics	integer	1.0	256.0	256.0	
+Additive	RampTime	float	0.0	1000.0	5.0	millisecond
+Additive	StartPhase	float	0.0	1.0	0.0	% normalized
+Additive	PhaseSpread	float	0.0	1.0	1.0	% normalized
+Additive	CoarseTune	integer	-24.0	24.0	0.0	semitones
+Additive	FineTune	integer	-100.0	100.0	0.0	cents
+Additive	Gain	float	0.0	1.995	1.0	
+Additive	Pitch	float	1.0	0.0	0.0	semitones
+Additive	NoteTracking	float	-2.0	2.0	1.0	% normalized
+Additive	BaseNote	integer	0.0	127.0	60.0	midi key
+MinBlepGenerator	Bypass	boolean	0.0	1.0	0.0	
+MinBlepGenerator	Waveform	integer	1.0	6.0	4.0	
+MinBlepGenerator	Pwm	float	0.01	0.99	0.5	% normalized
+MinBlepGenerator	StartPhase	float	0.0	1.0	0.0	% normalized
+MinBlepGenerator	Polarity	boolean	0.0	1.0	0.0	
+MinBlepGenerator	HardSync	boolean	0.0	1.0	0.0	
+MinBlepGenerator	HardSyncShift	float	0.0	36.0	0.0	semitones
+MinBlepGenerator	NumOscillators	integer	1.0	8.0	1.0	
+MinBlepGenerator	MultiOscSpread	float	0.0	1.0	0.1	% normalized
+MinBlepGenerator	Stereo	boolean	0.0	1.0	0.0	
+MinBlepGenerator	PhaseSpread	integer	0.0	2.0	1.0	
+MinBlepGenerator	DetuneMode	integer	0.0	1.0	0.0	
+MinBlepGenerator	StereoSpread	float	0.0	1.0	0.1	% normalized
+MinBlepGenerator	StereoSpreadMode	integer	0.0	1.0	1.0	
+MinBlepGenerator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+MinBlepGenerator	FineTune	integer	-100.0	100.0	0.0	cents
+MinBlepGenerator	Gain	float	0.0	1.995	1.0	
+MinBlepGenerator	Pitch	float	1.0	0.0	0.0	semitones
+MinBlepGenerator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+MinBlepGenerator	BaseNote	integer	0.0	127.0	60.0	midi key
+MinBlepGeneratorStack	Bypass	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Waveform1	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm1	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase1	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning1	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase1	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass1	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave1	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune1	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune1	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode1	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain1	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan1	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch1	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform2	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm2	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase2	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning2	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase2	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass2	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave2	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune2	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune2	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode2	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain2	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan2	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch2	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform3	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm3	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase3	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning3	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase3	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass3	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave3	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune3	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune3	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode3	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain3	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan3	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch3	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform4	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm4	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase4	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning4	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase4	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass4	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave4	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune4	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune4	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode4	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain4	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan4	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch4	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform5	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm5	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase5	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning5	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase5	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass5	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave5	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune5	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune5	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode5	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain5	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan5	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch5	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform6	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm6	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase6	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning6	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase6	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass6	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave6	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune6	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune6	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode6	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain6	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan6	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch6	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform7	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm7	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase7	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning7	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase7	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass7	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave7	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune7	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune7	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode7	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain7	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan7	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch7	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	Waveform8	integer	1.0	6.0	4.0	
+MinBlepGeneratorStack	Pwm8	float	0.01	0.99	0.5	% normalized
+MinBlepGeneratorStack	InvPhase8	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	FreeRunning8	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	StartPhase8	float	0.0	1.0	0.0	% normalized
+MinBlepGeneratorStack	Bypass8	boolean	0.0	1.0	1.0	
+MinBlepGeneratorStack	Octave8	integer	-2.0	2.0	0.0	
+MinBlepGeneratorStack	CoarseTune8	integer	-12.0	12.0	0.0	semitones
+MinBlepGeneratorStack	FineTune8	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	SyncMode8	boolean	0.0	1.0	0.0	
+MinBlepGeneratorStack	Gain8	float	0.0	1.0	1.0	
+MinBlepGeneratorStack	Pan8	float	-1.0	1.0	0.0	
+MinBlepGeneratorStack	Pitch8	float	1.0	0.0	0.0	
+MinBlepGeneratorStack	CoarseTune	integer	-24.0	24.0	0.0	semitones
+MinBlepGeneratorStack	FineTune	integer	-100.0	100.0	0.0	cents
+MinBlepGeneratorStack	Gain	float	0.0	1.995	1.0	
+MinBlepGeneratorStack	Pitch	float	1.0	0.0	0.0	semitones
+MinBlepGeneratorStack	NoteTracking	float	-2.0	2.0	1.0	% normalized
+MinBlepGeneratorStack	BaseNote	integer	0.0	127.0	60.0	midi key
+BowedStringOscillatorModal	Bypass	boolean	0.0	1.0	0.0	
+BowedStringOscillatorModal	SyncToHost	boolean	0.0	1.0	0.0	
+BowedStringOscillatorModal	BowForce	float	0.0	2.0	0.7	
+BowedStringOscillatorModal	BowVelocity	float	-1.0	1.0	0.25	
+BowedStringOscillatorModal	BowPosition	float	0.01	0.49	0.2	% normalized
+BowedStringOscillatorModal	Absorbtion	float	0.0	1.0	0.5	% normalized
+BowedStringOscillatorModal	AirAbsorbtion	float	0.0	1.0	0.1	% normalized
+BowedStringOscillatorModal	Decay	float	0.1	1000.0	1.0	second
+BowedStringOscillatorModal	VelToForce	float	0.0	1.0	0.0	% normalized
+BowedStringOscillatorModal	VelToVelocity	float	0.0	1.0	1.0	% normalized
+BowedStringOscillatorModal	BridgeVolume	float	0.0	1.0	1.0	% normalized
+BowedStringOscillatorModal	BowVolume	float	0.0	1.0	0.0	% normalized
+BowedStringOscillatorModal	DynamicFriction	float	0.0	0.5	0.35	% normalized
+BowedStringOscillatorModal	Inharmonicity	float	0.0	1.0	0.1	% normalized
+BowedStringOscillatorModal	TensionMult	float	0.5	2.0	1.0	
+BowedStringOscillatorModal	PlayingMode	integer	0.0	8.0	0.0	
+BowedStringOscillatorModal	Instrument	integer	0.0	2.0	2.0	
+BowedStringOscillatorModal	StringNumber	integer	0.0	3.0	0.0	
+BowedStringOscillatorModal	StrokeDuration	float	0.005	0.5	0.2	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+BowedStringOscillatorModal	StrokeFreq	float	0.1	10.0	2.0	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+BowedStringOscillatorModal	StrokePulseWidth	float	0.05	1.0	0.25	% normalized
+BowedStringOscillatorModal	StrokePhaseOffset	float	0.0	1.0	0.294	% normalized
+BowedStringOscillatorModal	StrokeAttackSlope	float	0.0	1.0	1.0	% normalized
+BowedStringOscillatorModal	StrokeReleaseSlope	float	0.0	1.0	1.0	% normalized
+BowedStringOscillatorModal	BouncingDamp	float	0.0	1.0	0.1	% normalized
+BowedStringOscillatorModal	ManualBowPosition	float	0.0	1.0	0.0	% normalized
+BowedStringOscillatorModal	CoarseTune	integer	-24.0	24.0	0.0	semitones
+BowedStringOscillatorModal	FineTune	integer	-100.0	100.0	0.0	cents
+BowedStringOscillatorModal	Gain	float	0.0	1.995	1.0	
+BowedStringOscillatorModal	Pitch	float	1.0	0.0	0.0	semitones
+BowedStringOscillatorModal	NoteTracking	float	-2.0	2.0	1.0	% normalized
+BowedStringOscillatorModal	BaseNote	integer	0.0	127.0	60.0	midi key
+DrumOscillator	Bypass	boolean	0.0	1.0	0.0	
+DrumOscillator	Mix	float	0.0	1.0	0.5	
+DrumOscillator	EqFreq	float	20.0	20000.0	1000.0	Hz
+DrumOscillator	EqGain	float	-40.0	40.0	0.0	decibel
+DrumOscillator	Volume	float	-40.0	40.0	0.0	decibel
+DrumOscillator	Distortion	float	0.0	1.0	0.0	% normalized
+DrumOscillator	Waveform	integer	0.0	3.0	0.0	
+DrumOscillator	OscFreq	float	20.0	20000.0	1000.0	Hz
+DrumOscillator	PitchModType	integer	0.0	2.0	0.0	
+DrumOscillator	PitchModAmount	float	-96.0	96.0	0.0	
+DrumOscillator	PitchModRate	float	0.0	20000.0	1.0	Hz
+DrumOscillator	OscAttack	float	0.0	10.0	0.0	second
+DrumOscillator	OscDecay	float	0.01	10.0	0.1	second
+DrumOscillator	NoiseFilterMode	integer	0.0	2.0	0.0	
+DrumOscillator	NoiseFilterFreq	float	20.0	20000.0	1000.0	Hz
+DrumOscillator	NoiseFilterQ	float	0.1	10000.0	0.7	
+DrumOscillator	NoiseEnvType	integer	0.0	1.0	0.0	
+DrumOscillator	NoiseAttack	float	0.0	10.0	0.0	second
+DrumOscillator	NoiseDecay	float	0.005	10.0	0.1	second
+DrumOscillator	OscVelSens	float	0.0	1.0	0.0	% normalized
+DrumOscillator	NoiseVelSens	float	0.0	1.0	0.0	% normalized
+DrumOscillator	ModVelSens	float	0.0	1.0	0.0	% normalized
+DrumOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+DrumOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+DrumOscillator	Gain	float	0.0	1.995	1.0	
+DrumOscillator	Pitch	float	1.0	0.0	0.0	semitones
+DrumOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+DrumOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+FmOscillator	Bypass	boolean	0.0	1.0	0.0	
+FmOscillator	LevelA	float	0.0	20.0	1.0	
+FmOscillator	LevelB	float	0.0	20.0	1.0	
+FmOscillator	LevelC	float	0.0	20.0	1.0	
+FmOscillator	LevelD	float	0.0	20.0	1.0	
+FmOscillator	RatioA	float	1.0	40.0	1.0	
+FmOscillator	RatioB	float	1.0	40.0	1.0	
+FmOscillator	RatioC	float	1.0	40.0	1.0	
+FmOscillator	RatioD	float	1.0	40.0	1.0	
+FmOscillator	RatioFineA	float	-1200.0	1200.0	0.0	cents
+FmOscillator	RatioFineB	float	-1200.0	1200.0	0.0	cents
+FmOscillator	RatioFineC	float	-1200.0	1200.0	0.0	cents
+FmOscillator	RatioFineD	float	-1200.0	1200.0	0.0	cents
+FmOscillator	PhaseA	float	0.0	1.0	0.0	
+FmOscillator	PhaseB	float	0.0	1.0	0.0	
+FmOscillator	PhaseC	float	0.0	1.0	0.0	
+FmOscillator	PhaseD	float	0.0	1.0	0.0	
+FmOscillator	FreqA	float	0.0	2.0	0.1	
+FmOscillator	FreqB	float	0.0	2.0	0.1	
+FmOscillator	FreqC	float	0.0	2.0	0.1	
+FmOscillator	FreqD	float	0.0	2.0	0.1	
+FmOscillator	FreqMultiplierA	integer	0.0	4.0	3.0	
+FmOscillator	FreqMultiplierB	integer	0.0	4.0	3.0	
+FmOscillator	FreqMultiplierC	integer	0.0	4.0	3.0	
+FmOscillator	FreqMultiplierD	integer	0.0	4.0	3.0	
+FmOscillator	FixedFreqA	boolean	0.0	1.0	0.0	
+FmOscillator	FixedFreqB	boolean	0.0	1.0	0.0	
+FmOscillator	FixedFreqC	boolean	0.0	1.0	0.0	
+FmOscillator	FixedFreqD	boolean	0.0	1.0	0.0	
+FmOscillator	SnapRatioA	boolean	0.0	1.0	0.0	
+FmOscillator	SnapRatioB	boolean	0.0	1.0	0.0	
+FmOscillator	SnapRatioC	boolean	0.0	1.0	0.0	
+FmOscillator	SnapRatioD	boolean	0.0	1.0	0.0	
+FmOscillator	Feedback	float	0.0	1.0	0.0	% normalized
+FmOscillator	Topology	integer	0.0	10.0	0.0	
+FmOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+FmOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+FmOscillator	Gain	float	0.0	1.995	1.0	
+FmOscillator	Pitch	float	1.0	0.0	0.0	semitones
+FmOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+FmOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+NewGranularOscillator	Bypass	boolean	0.0	1.0	0.0	
+NewGranularOscillator	SyncToHost	boolean	0.0	1.0	0.0	
+NewGranularOscillator	FormantShift	float	-12.0	12.0	0.0	semitones
+NewGranularOscillator	SchedulingMode	integer	0.0	2.0	0.0	
+NewGranularOscillator	PitchCompMode	integer	0.0	2.0	2.0	
+NewGranularOscillator	DurationVariation	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	Period	float	0.001	2.0	0.1	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+NewGranularOscillator	AutoPeriod	boolean	0.0	1.0	1.0	
+NewGranularOscillator	SkipFirstGap	boolean	0.0	1.0	1.0	
+NewGranularOscillator	RandomPan	boolean	0.0	1.0	0.0	
+NewGranularOscillator	GrainSize	float	0.002	2.0	0.25	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+NewGranularOscillator	Position	float	0.0	1.0	0.5	% normalized
+NewGranularOscillator	LinkLoopStart	boolean	0.0	1.0	0.0	
+NewGranularOscillator	LoopSize	float	0.001	1.0	1.0	% normalized
+NewGranularOscillator	LoopStart	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	Density	float	0.1	10.0	1.0	
+NewGranularOscillator	Direction	float	-1.0	1.0	1.0	
+NewGranularOscillator	Speed	float	0.0	10.0	0.0	
+NewGranularOscillator	Reverse	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	Skip	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	Jitter	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	PanSpread	float	0.0	1.0	1.0	% normalized
+NewGranularOscillator	PositionVariation	float	0.0	1.0	0.0	second
+NewGranularOscillator	PitchVariation	float	0.0	12.0	0.0	semitones
+NewGranularOscillator	NumVoices	integer	1.0	8.0	1.0	
+NewGranularOscillator	PositionSpread	float	0.0	10.0	0.0	second
+NewGranularOscillator	TimeSpread	float	0.0	1.0	0.0	% normalized
+NewGranularOscillator	Detune	float	0.0	50.0	0.0	cents
+NewGranularOscillator	EnvelopeSymmetry	float	-1.0	1.0	0.0	% normalized
+NewGranularOscillator	EnvelopeWidth	float	-1.0	1.0	0.0	% normalized
+NewGranularOscillator	EnvelopePeakiness	float	-1.0	1.0	0.0	% normalized
+NewGranularOscillator	BandWidth	float	0.01	1.0	0.05	% normalized
+NewGranularOscillator	BandCenter	float	0.0	1.0	0.5	% normalized
+NewGranularOscillator	BandLimitGrains	boolean	0.0	1.0	0.0	
+NewGranularOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+NewGranularOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+NewGranularOscillator	Gain	float	0.0	1.995	1.0	
+NewGranularOscillator	Pitch	float	1.0	0.0	0.0	semitones
+NewGranularOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+NewGranularOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+HarmonicResonatorsOscillator	Bypass	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	TextureKeyFollow	float	0.0	1.0	1.0	% normalized
+HarmonicResonatorsOscillator	TransientKeyFollow	float	0.0	1.0	1.0	% normalized
+HarmonicResonatorsOscillator	Width	float	0.0	2.0	1.0	% normalized
+HarmonicResonatorsOscillator	PitchTexture	float	-24.0	24.0	0.0	
+HarmonicResonatorsOscillator	PitchTransient	float	-24.0	24.0	0.0	
+HarmonicResonatorsOscillator	GainTexture	float	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	GainTransient	float	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	GainNoise	float	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	Mix	float	0.0	1.0	1.0	% normalized
+HarmonicResonatorsOscillator	SampleStart	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	RandomStartDepth	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandCoarse1	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine1	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain1	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling1	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable1	boolean	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	BandCoarse2	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine2	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain2	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling2	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable2	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	BandCoarse3	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine3	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain3	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling3	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable3	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	BandCoarse4	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine4	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain4	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling4	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable4	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	BandCoarse5	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine5	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain5	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling5	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable5	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	BandCoarse6	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	BandFine6	float	-50.0	50.0	0.0	cents
+HarmonicResonatorsOscillator	BandGain6	float	0.0	2.0	1.0	
+HarmonicResonatorsOscillator	BandCoupling6	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	BandEnable6	boolean	0.0	1.0	0.0	
+HarmonicResonatorsOscillator	TextureOnOff	boolean	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	TransientOnOff	boolean	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	NoiseOnOff	boolean	0.0	1.0	1.0	
+HarmonicResonatorsOscillator	Tone	float	0.0	1.0	1.0	% normalized
+HarmonicResonatorsOscillator	Decay	float	20.0	20000.0	100.0	millisecond
+HarmonicResonatorsOscillator	DecayScaling	float	0.0	1.0	0.0	% normalized
+HarmonicResonatorsOscillator	ModDepth	float	0.0	20.0	0.0	cents
+HarmonicResonatorsOscillator	CouplingMode	integer	0.0	2.0	0.0	
+HarmonicResonatorsOscillator	Tilt	float	-6.0	6.0	0.0	decibel
+HarmonicResonatorsOscillator	TiltFreq	float	20.0	20000.0	1000.0	Hz
+HarmonicResonatorsOscillator	NoiseDensity	float	0.0	1.0	1.0	% normalized
+HarmonicResonatorsOscillator	NoiseCutoff	float	-1.0	1.0	0.0	
+HarmonicResonatorsOscillator	AttackTime	float	0.0	10.0	0.0	second
+HarmonicResonatorsOscillator	HoldTime	float	-0.0	10.0	0.0	second
+HarmonicResonatorsOscillator	DecayTime	float	0.005	10.0	1.0	second
+HarmonicResonatorsOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+HarmonicResonatorsOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+HarmonicResonatorsOscillator	Gain	float	0.0	1.995	1.0	
+HarmonicResonatorsOscillator	Pitch	float	1.0	0.0	0.0	semitones
+HarmonicResonatorsOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+HarmonicResonatorsOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+GranularOscillator	Bypass	boolean	0.0	1.0	0.0	
+GranularOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+GranularOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+GranularOscillator	Gain	float	0.0	1.995	1.0	
+GranularOscillator	Pitch	float	1.0	0.0	0.0	semitones
+GranularOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+GranularOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+GranularOscillator	Direction	float	-1.0	1.0	1.0	
+GranularOscillator	Speed	float	0.0	10.0	1.0	
+GranularOscillator	GrainSize	float	5.0	500.0	100.0	millisecond
+GranularOscillator	GrainSymmetry	float	0.0	1.0	0.5	% normalized
+GranularOscillator	GrainFade	float	0.0	1.0	1.0	% normalized
+GranularOscillator	Density	float	0.1	10.0	1.0	
+GranularOscillator	Jitter	float	0.0	1.0	0.0	% normalized
+GranularOscillator	Position	float	0.0	1.0	0.0	% normalized
+GranularOscillator	PositionVariation	float	0.0	500.0	0.0	millisecond
+GranularOscillator	PitchVariation	float	0.0	1200.0	0.0	cents
+GranularOscillator	LoopMode	integer	0.0	2.0	0.0	
+GranularOscillator	PitchCompMode	integer	1.0	2.0	2.0	
+GranularOscillator	Window	integer	0.0	3.0	0.0	
+MultiGrainOscillator	Bypass	boolean	0.0	1.0	0.0	
+MultiGrainOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+MultiGrainOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+MultiGrainOscillator	Gain	float	0.0	1.995	1.0	
+MultiGrainOscillator	Pitch	float	1.0	0.0	0.0	semitones
+MultiGrainOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+MultiGrainOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+MultiGrainOscillator	Direction	float	-1.0	1.0	1.0	
+MultiGrainOscillator	Speed	float	0.0	10.0	1.0	
+MultiGrainOscillator	Position	float	0.0	1.0	0.0	% normalized
+MultiGrainOscillator	GrainSize	float	5.0	500.0	100.0	millisecond
+MultiGrainOscillator	GrainSymmetry	float	0.0	1.0	0.5	% normalized
+MultiGrainOscillator	GrainFade	float	0.0	1.0	1.0	% normalized
+MultiGrainOscillator	PositionVariation	float	0.0	500.0	0.0	millisecond
+MultiGrainOscillator	NumVoices	integer	1.0	8.0	1.0	
+MultiGrainOscillator	PositionSpread	float	0.0	10000.0	0.0	millisecond
+MultiGrainOscillator	Density	float	0.1	10.0	1.0	
+MultiGrainOscillator	Jitter	float	0.0	1.0	0.0	% normalized
+MultiGrainOscillator	DurationVariation	float	0.0	1.0	0.0	% normalized
+MultiGrainOscillator	Detune	float	0.0	50.0	0.0	cents
+MultiGrainOscillator	Window	integer	0.0	3.0	0.0	
+MultiGrainOscillator	LoopMode	integer	0.0	2.0	0.0	
+MultiGrainOscillator	Reverse	boolean	0.0	1.0	0.0	
+MultiGrainOscillator	TimeSpread	float	0.0	1.0	0.0	% normalized
+MultiGrainOscillator	PitchVariation	float	0.0	1200.0	0.0	cents
+MultiGrainOscillator	PitchCompMode	integer	1.0	2.0	2.0	
+SuperVPScrub	Position	float	0.0	1.0	0.0	% normalized
+SuperVPScrub	Speed	float	0.0	10.0	1.0	
+SuperVPScrub	Direction	float	-1.0	1.0	1.0	
+SuperVPScrub	WindowOverlap	integer	3.0	8.0	4.0	
+SuperVPScrub	WindowSize	float	40.0	200.0	92.0	millisecond
+SuperVPScrub	SpectrumOversampling	integer	0.0	2.0	0.0	
+SuperVPScrub	TransientPreservation	boolean	0.0	1.0	1.0	
+SuperVPScrub	ShapeInvariant	boolean	0.0	1.0	0.0	
+SuperVPScrub	EnvelopePreservation	boolean	0.0	1.0	0.0	
+SuperVPScrub	PreserveStereo	boolean	0.0	1.0	0.0	
+SuperVPScrub	Remixing	boolean	0.0	1.0	0.0	
+SuperVPScrub	SinMix	float	0.0	3.981	1.0	
+SuperVPScrub	NoiseMix	float	0.0	3.981	1.0	
+SuperVPScrub	TransientMix	float	0.0	3.981	1.0	
+SuperVPScrub	Bypass	boolean	0.0	1.0	0.0	
+SuperVPScrub	CoarseTune	integer	-24.0	24.0	0.0	semitones
+SuperVPScrub	FineTune	integer	-100.0	100.0	0.0	cents
+SuperVPScrub	Gain	float	0.0	1.995	1.0	
+SuperVPScrub	Pitch	float	1.0	0.0	0.0	semitones
+SuperVPScrub	NoteTracking	float	-2.0	2.0	1.0	% normalized
+SuperVPScrub	BaseNote	integer	0.0	127.0	60.0	midi key
+TimeAndPitchOscillator	Legato	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	SampleStart	float	0.0	1.0	0.0	% normalized
+TimeAndPitchOscillator	Speed	float	0.0	10.0	1.0	
+TimeAndPitchOscillator	TempoMultiplicator	float	0.25	4.0	1.0	
+TimeAndPitchOscillator	FineTempoMultiplicator	float	-0.5	0.5	0.0	% normalized
+TimeAndPitchOscillator	WindowOverlap	integer	3.0	8.0	4.0	
+TimeAndPitchOscillator	WindowSize	float	40.0	200.0	92.0	millisecond
+TimeAndPitchOscillator	SpectrumOversampling	integer	0.0	2.0	0.0	
+TimeAndPitchOscillator	TransientPreservation	boolean	0.0	1.0	1.0	
+TimeAndPitchOscillator	ShapeInvariant	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	EnvelopePreservation	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	PreserveStereo	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	Remixing	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	SinMix	float	0.0	3.981	1.0	
+TimeAndPitchOscillator	NoiseMix	float	0.0	3.981	1.0	
+TimeAndPitchOscillator	TransientMix	float	0.0	3.981	1.0	
+TimeAndPitchOscillator	Tempo	float	0.0	300.0	0.0	
+TimeAndPitchOscillator	SyncMode	integer	0.0	1.0	1.0	
+TimeAndPitchOscillator	Bypass	boolean	0.0	1.0	0.0	
+TimeAndPitchOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+TimeAndPitchOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+TimeAndPitchOscillator	Gain	float	0.0	1.995	1.0	
+TimeAndPitchOscillator	Pitch	float	1.0	0.0	0.0	semitones
+TimeAndPitchOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+TimeAndPitchOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+TimeAndPitchOscillator	SampleStartMillisecond	float	0.0	3.4028234663852886e+38	0.0	millisecond
+NoiseOscillator	Bypass	boolean	0.0	1.0	0.0	
+NoiseOscillator	Value	float	0.0	1.0	0.0	% normalized
+NoiseOscillator	NoiseType	integer	0.0	14.0	0.0	
+NoiseOscillator	Stereo	boolean	0.0	1.0	0.0	
+NoiseOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+NoiseOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+NoiseOscillator	Gain	float	0.0	1.995	1.0	
+NoiseOscillator	Pitch	float	1.0	0.0	0.0	semitones
+NoiseOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+NoiseOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+Organ	Bypass	boolean	0.0	1.0	0.0	
+Organ	DrawbarGain0	float	0.0	8.0	0.0	
+Organ	DrawbarPan0	float	-1.0	1.0	0.0	
+Organ	DrawbarGain1	float	0.0	8.0	0.0	
+Organ	DrawbarPan1	float	-1.0	1.0	0.0	
+Organ	DrawbarGain2	float	0.0	8.0	8.0	
+Organ	DrawbarPan2	float	-1.0	1.0	0.0	
+Organ	DrawbarGain3	float	0.0	8.0	0.0	
+Organ	DrawbarPan3	float	-1.0	1.0	0.0	
+Organ	DrawbarGain4	float	0.0	8.0	0.0	
+Organ	DrawbarPan4	float	-1.0	1.0	0.0	
+Organ	DrawbarGain5	float	0.0	8.0	0.0	
+Organ	DrawbarPan5	float	-1.0	1.0	0.0	
+Organ	DrawbarGain6	float	0.0	8.0	0.0	
+Organ	DrawbarPan6	float	-1.0	1.0	0.0	
+Organ	DrawbarGain7	float	0.0	8.0	0.0	
+Organ	DrawbarPan7	float	-1.0	1.0	0.0	
+Organ	DrawbarGain8	float	0.0	8.0	0.0	
+Organ	DrawbarPan8	float	-1.0	1.0	0.0	
+Organ	Percussion	boolean	0.0	1.0	0.0	
+Organ	FastPercussion	boolean	0.0	1.0	0.0	
+Organ	PercussionHarmonic	integer	0.0	8.0	3.0	
+Organ	CoarseTune	integer	-24.0	24.0	0.0	semitones
+Organ	FineTune	integer	-100.0	100.0	0.0	cents
+Organ	Gain	float	0.0	1.995	1.0	
+Organ	Pitch	float	1.0	0.0	0.0	semitones
+Organ	NoteTracking	float	-2.0	2.0	1.0	% normalized
+Organ	BaseNote	integer	0.0	127.0	60.0	midi key
+PdOscillator	Bypass	boolean	0.0	1.0	0.0	
+PdOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+PdOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+PdOscillator	Gain	float	0.0	1.995	1.0	
+PdOscillator	Pitch	float	1.0	0.0	0.0	semitones
+PdOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+PdOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+PdOscillator	Symmetry	float	0.0	1.0	0.0	% normalized
+PdOscillator	Shape	float	-1.0	1.0	0.0	% normalized
+PdOscillator	Swing	float	0.0	1.0	0.0	% normalized
+PdOscillator	Inflexion	float	0.0	1.0	0.0	% normalized
+PdOscillator	Depth	float	0.0	1.0	0.2	% normalized
+PdOscillator	Random	boolean	0.0	1.0	0.0	
+PdOscillator	Oversampling	integer	0.0	4.0	0.0	
+PdOscillator	Fuzz	float	0.0	1.0	0.0	% normalized
+PdOscillator	Scale	float	0.0	1.0	1.0	% normalized
+PluckOscillator	Bypass	boolean	0.0	1.0	0.0	
+PluckOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+PluckOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+PluckOscillator	Gain	float	0.0	1.995	1.0	
+PluckOscillator	Pitch	float	1.0	0.0	0.0	semitones
+PluckOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+PluckOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+PluckOscillator	Decay	float	0.1	1000.0	60.0	second
+PluckOscillator	DecayType	integer	0.0	3.0	0.0	
+PluckOscillator	NumStrings	integer	1.0	2.0	1.0	
+PluckOscillator	ExcitationBrightness	float	0.0	1.0	0.0	% normalized
+PluckOscillator	ExcitationCutoff	float	20.0	20000.0	20000.0	Hz
+PluckOscillator	Inharmonicity	float	0.0	1.0	0.0	% normalized
+PluckOscillator	Release	float	0.1	100.0	0.1	second
+PluckOscillator	Brightness	float	0.0	1.0	0.9	% normalized
+PluckOscillator	HFBridgeLoss	float	0.0	1.0	0.1	decibel
+PluckOscillator	DecayFreqHigh	float	20.0	20000.0	20000.0	Hz
+PluckOscillator	PickPosition	float	0.02	0.5	0.15	
+PluckOscillator	PickDepth	float	0.0	1.0	0.0	% normalized
+PluckOscillator	PickFilterEnabled	boolean	0.0	1.0	1.0	
+PluckOscillator	Stretch	boolean	0.0	1.0	0.0	
+PluckOscillator	StretchProb	float	0.0	1.0	0.5	% normalized
+PluckOscillator	Detune	float	0.0	20.0	4.0	cents
+PluckOscillator	Coupling	float	0.0	1.0	0.1	% normalized
+PluckOscillator	Shape	float	-1.0	1.0	0.0	
+PluckOscillator	HarmonicRatio	float	1.0	4.0	1.0	
+PluckOscillator	HarmonicDamp	float	0.0	1.0	1.0	% normalized
+PluckOscillator	DynamicRange	float	0.0	30.0	20.0	decibel
+PluckOscillator	InterpolationMode	integer	0.0	2.0	1.0	
+PluckOscillator	CouplingMode	integer	4.0	7.0	6.0	
+PluckOscillator	StringCoarseTune	integer	0.0	24.0	0.0	semitones
+PluckOscillator	NoiseVolume	float	0.0	1.0	0.0	
+PluckOscillator	SynthVolume	float	0.0	1.0	1.0	
+PluckOscillator	SampleVolume	float	0.0	1.0	1.0	
+PluckOscillator	SampleStart	float	0.0	1.0	0.0	% normalized
+PluckOscillator	SampleDetune	float	-48.0	48.0	0.0	semitones
+PluckOscillator	SampleKeyFollow	float	0.0	1.0	0.0	% normalized
+PluckOscillator	Sustained	boolean	0.0	1.0	0.0	
+PluckOscillator	Stereo	boolean	0.0	1.0	0.0	
+SamplePlayer	Bypass	boolean	0.0	1.0	0.0	
+SamplePlayer	CoarseTune	integer	-24.0	24.0	0.0	semitones
+SamplePlayer	FineTune	integer	-100.0	100.0	0.0	cents
+SamplePlayer	Gain	float	0.0	1.995	1.0	
+SamplePlayer	Pitch	float	1.0	0.0	0.0	semitones
+SamplePlayer	NoteTracking	float	-2.0	2.0	1.0	% normalized
+SamplePlayer	BaseNote	integer	0.0	127.0	60.0	midi key
+SamplePlayer	SampleStartMillisecond	float	0.0	3.4028234663852886e+38	0.0	millisecond
+SamplePlayer	SampleStart	float	0.0	1.0	0.0	% normalized
+SamplePlayer	InterpolationMode	integer	0.0	2.0	1.0	
+SamplePlayer	AllowStreaming	boolean	0.0	1.0	1.0	
+SamplePlayer	Reverse	boolean	0.0	1.0	0.0	
+LoopLabOscillator	Bypass	boolean	0.0	1.0	0.0	
+LoopLabOscillator	SyncMode	integer	0.0	2.0	2.0	
+LoopLabOscillator	SliceStart	integer	1.0	0.0	0.0	
+LoopLabOscillator	Tempo	float	1.0	300.0	120.0	
+LoopLabOscillator	TempoMultiplicator	float	0.25	4.0	1.0	
+LoopLabOscillator	FineTempoMultiplicator	float	-0.5	0.5	0.0	% normalized
+LoopLabOscillator	Playing	boolean	0.0	1.0	0.0	
+LoopLabOscillator	AutoPlay	boolean	0.0	1.0	0.0	
+LoopLabOscillator	Attack	float	0.0	100.0	0.0	millisecond
+LoopLabOscillator	Hold	float	0.0	2.0	0.0	second
+LoopLabOscillator	Decay	float	0.01	2.0	2.0	second
+LoopLabOscillator	Sustain	float	0.0	1.0	0.0	% normalized
+LoopLabOscillator	EnableEnvelope	boolean	0.0	1.0	0.0	
+LoopLabOscillator	SliceExtension	float	0.0	2.0	1.0	% normalized
+LoopLabOscillator	ExtensionTime	float	0.0	1.0	0.5	% normalized
+LoopLabOscillator	AutoSliceExtension	boolean	0.0	1.0	0.0	
+LoopLabOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+LoopLabOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+LoopLabOscillator	Gain	float	0.0	1.995	1.0	
+LoopLabOscillator	Pitch	float	1.0	0.0	0.0	semitones
+LoopLabOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+LoopLabOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+LoopLabOscillator	SampleStartMillisecond	float	0.0	3.4028234663852886e+38	0.0	millisecond
+OmegaOscillator	Bypass	boolean	0.0	1.0	0.0	
+OmegaOscillator	SyncToHost	boolean	0.0	1.0	1.0	
+OmegaOscillator	Tempo	float	0.0	300.0	120.0	
+OmegaOscillator	TempoMultiplicator	float	0.25	4.0	1.0	
+OmegaOscillator	FineTempoMultiplicator	float	-0.5	0.5	0.0	% normalized
+OmegaOscillator	SampleStart	float	0.0	1.0	0.0	% normalized
+OmegaOscillator	SoloMode	boolean	0.0	1.0	0.0	
+OmegaOscillator	Legato	boolean	0.0	1.0	0.0	
+OmegaOscillator	AdaptiveWindowMillis	float	10.0	100.0	37.1	millisecond
+OmegaOscillator	TransientSensitivity	float	0.1	10.0	1.0	
+OmegaOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+OmegaOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+OmegaOscillator	Gain	float	0.0	1.995	1.0	
+OmegaOscillator	Pitch	float	1.0	0.0	0.0	semitones
+OmegaOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+OmegaOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+OmegaOscillator	SampleStartMillisecond	float	0.0	3.4028234663852886e+38	0.0	millisecond
+HyperSaw	Bypass	boolean	0.0	1.0	0.0	
+HyperSaw	NumOscs	integer	1.0	24.0	11.0	
+HyperSaw	StackMode	integer	0.0	11.0	0.0	
+HyperSaw	DetuneKeyTrack	boolean	0.0	1.0	0.0	
+HyperSaw	PhaseSpread	float	0.0	1.0	1.0	% normalized
+HyperSaw	Detune	float	0.0	100.0	20.0	cents
+HyperSaw	PanSpread	float	0.0	1.0	0.0	% normalized
+HyperSaw	DetuneCurve	float	-1.0	1.0	0.33	% normalized
+HyperSaw	ModDepth	float	0.0	50.0	0.0	cents
+HyperSaw	ModSpeed	float	0.1	10.0	0.1	Hz
+HyperSaw	Blend	float	0.0	1.0	0.75	% normalized
+HyperSaw	OscMode	integer	0.0	1.0	0.0	
+HyperSaw	CoarseTune	integer	-24.0	24.0	0.0	semitones
+HyperSaw	FineTune	integer	-100.0	100.0	0.0	cents
+HyperSaw	Gain	float	0.0	1.995	1.0	
+HyperSaw	Pitch	float	1.0	0.0	0.0	semitones
+HyperSaw	NoteTracking	float	-2.0	2.0	1.0	% normalized
+HyperSaw	BaseNote	integer	0.0	127.0	60.0	midi key
+TextureOscillator	Bypass	boolean	0.0	1.0	0.0	
+TextureOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+TextureOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+TextureOscillator	Gain	float	0.0	1.995	1.0	
+TextureOscillator	Pitch	float	1.0	0.0	0.0	semitones
+TextureOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+TextureOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+TextureOscillator	Width	float	0.0	2.0	1.0	% normalized
+TextureOscillator	Pitch1	float	-24.0	24.0	0.0	
+TextureOscillator	Pitch2	float	-24.0	24.0	0.0	
+TextureOscillator	Gain1	float	-12.0	12.0	0.0	decibel
+TextureOscillator	Gain2	float	-12.0	12.0	0.0	decibel
+TextureOscillator	Pan1	float	-1.0	1.0	0.0	
+TextureOscillator	Pan2	float	-1.0	1.0	0.0	
+TextureOscillator	Mix	float	0.0	1.0	0.5	% normalized
+TextureOscillator	SampleStart	float	0.0	1.0	0.0	% normalized
+TextureOscillator	RandomStartDepth	float	0.0	1.0	0.0	% normalized
+TextureOscillator	Legato	boolean	0.0	1.0	0.0	
+TextureOscillator	Lowpass	float	10.0	22000.0	22000.0	Hz
+TextureOscillator	Highpass	float	10.0	22000.0	10.0	Hz
+TextureOscillator	PlaybackMode1	integer	0.0	3.0	1.0	
+TextureOscillator	PlaybackMode2	integer	0.0	3.0	1.0	
+TextureOscillator	BPOnOff	boolean	0.0	1.0	0.0	
+TextureOscillator	Bandpass	float	20.0	20000.0	1000.0	Hz
+TextureOscillator	Bandwidth	float	0.0	1.0	0.0	% normalized
+TextureOscillator	PeakOnOff	boolean	0.0	1.0	0.0	
+TextureOscillator	PeakFreq	float	20.0	20000.0	1000.0	Hz
+TextureOscillator	PeakGain	float	-20.0	20.0	0.0	decibel
+TextureOscillator	PeakQ	float	0.1	10.0	1.0	
+VosimOscillator	Bypass	boolean	0.0	1.0	0.0	
+VosimOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+VosimOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+VosimOscillator	Gain	float	0.0	1.995	1.0	
+VosimOscillator	Pitch	float	1.0	0.0	0.0	semitones
+VosimOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+VosimOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+VosimOscillator	Formant	float	20.0	4000.0	600.0	Hz
+VosimOscillator	Resonance	float	0.0	1.0	0.8	% normalized
+VosimOscillator	PulseWidth	float	0.0	1.0	0.8	% normalized
+VosimOscillator	ModRate	float	4.0	15.0	6.0	Hz
+VosimOscillator	ModDepth	float	0.0	1200.0	50.0	cents
+VosimOscillator	ModType	integer	0.0	1.0	1.0	
+VosimOscillator	Phonem	integer	0.0	14.0	0.0	
+VosimOscillator	MorphTime	float	0.01	1.0	0.1	second
+VosimOscillator	FormantShift	float	-12.0	12.0	0.0	semitones
+VosimOscillator	NumFormants	integer	2.0	5.0	5.0	
+VosimOscillator	Mode	integer	0.0	1.0	0.0	
+WaveTableOscillator	Bypass	boolean	0.0	1.0	0.0	
+WaveTableOscillator	CoarseTune	integer	-24.0	24.0	0.0	semitones
+WaveTableOscillator	FineTune	integer	-100.0	100.0	0.0	cents
+WaveTableOscillator	Gain	float	0.0	1.995	1.0	
+WaveTableOscillator	Pitch	float	1.0	0.0	0.0	semitones
+WaveTableOscillator	NoteTracking	float	-2.0	2.0	1.0	% normalized
+WaveTableOscillator	BaseNote	integer	0.0	127.0	60.0	midi key
+WaveTableOscillator	StartPhase	float	0.0	1.0	0.0	% normalized
+WaveTableOscillator	PhaseDistortionAmount	float	0.0	1.0	0.0	% normalized
+WaveTableOscillator	PhaseDistortionMode	integer	0.0	9.0	3.0	
+WaveTableOscillator	Spread	float	0.0	1.0	0.1	% normalized
+WaveTableOscillator	DetuneMode	integer	0.0	1.0	0.0	
+WaveTableOscillator	WaveIndex	float	0.0	1.0	0.0	% normalized
+WaveTableOscillator	WaveIndexSpread	float	0.0	1.0	0.0	% normalized
+WaveTableOscillator	StereoSpread	float	0.0	1.0	0.1	% normalized
+WaveTableOscillator	StereoSpreadMode	integer	0.0	1.0	1.0	
+WaveTableOscillator	NumOscs	integer	1.0	8.0	1.0	
+WaveTableOscillator	FadeMipMap	boolean	0.0	1.0	0.0	
+WaveTableOscillator	FadeWaveIndex	boolean	0.0	1.0	1.0	
+WaveTableOscillator	Stereo	boolean	0.0	1.0	0.0	
+WaveTableOscillator	PhaseSpread	integer	0.0	2.0	1.0	
+WaveTableOscillator	EnableFM	boolean	0.0	1.0	0.0	
+WaveTableOscillator	FMDepth	float	0.0	1.0	0.1	% normalized
+WaveTableOscillator	FMRatio	float	-48.0	48.0	0.0	semitones
+WaveTableOscillator	FMRatioFine	float	-1200.0	1200.0	0.0	cents
+WaveTableOscillator	FMRatioMode	integer	0.0	6.0	1.0	
+WaveTableOscillator	FMFreq	float	0.0	2.0	0.1	
+WaveTableOscillator	FMFixedFreq	boolean	0.0	1.0	0.0	
+WaveTableOscillator	FMFreqMultiplier	integer	0.0	4.0	3.0	
+WaveTableOscillator	AliasingTolerance	float	0.0	1.0	0.0	% normalized
+TwoBandEq	Bypass	boolean	0.0	1.0	0.0	
+TwoBandEq	LowFreq	float	20.0	1200.0	80.0	Hz
+TwoBandEq	LowGain	float	-24.0	24.0	0.0	decibel
+TwoBandEq	HighFreq	float	4000.0	20000.0	10000.0	Hz
+TwoBandEq	HighGain	float	-24.0	24.0	0.0	decibel
+ThreeBandEq	Bypass	boolean	0.0	1.0	0.0	
+ThreeBandEq	LowGain	float	-24.0	24.0	0.0	decibel
+ThreeBandEq	MidFreq	float	120.0	12000.0	2500.0	Hz
+ThreeBandEq	MidGain	float	-18.0	18.0	0.0	decibel
+ThreeBandEq	MidQ	float	0.0	1.0	0.0	
+ThreeBandEq	HighGain	float	-24.0	24.0	0.0	decibel
+ParametricEQ	Bypass	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq1	float	10.0	20000.0	30.0	Hz
+ParametricEQ	Q1	float	0.2	12.0	0.7	
+ParametricEQ	Gain1	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable1	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq2	float	10.0	20000.0	70.0	Hz
+ParametricEQ	Q2	float	0.2	12.0	12.0	
+ParametricEQ	Gain2	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable2	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq3	float	10.0	20000.0	180.0	Hz
+ParametricEQ	Q3	float	0.2	12.0	0.7	
+ParametricEQ	Gain3	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable3	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq4	float	10.0	20000.0	520.0	Hz
+ParametricEQ	Q4	float	0.2	12.0	0.7	
+ParametricEQ	Gain4	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable4	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq5	float	10.0	20000.0	1870.0	Hz
+ParametricEQ	Q5	float	0.2	12.0	0.7	
+ParametricEQ	Gain5	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable5	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq6	float	10.0	20000.0	3900.0	Hz
+ParametricEQ	Q6	float	0.2	12.0	0.7	
+ParametricEQ	Gain6	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable6	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq7	float	10.0	20000.0	7400.0	Hz
+ParametricEQ	Q7	float	0.2	12.0	12.0	
+ParametricEQ	Gain7	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable7	boolean	0.0	1.0	0.0	
+ParametricEQ	Freq8	float	10.0	20000.0	16000.0	Hz
+ParametricEQ	Q8	float	0.2	12.0	0.7	
+ParametricEQ	Gain8	float	-30.0	20.0	0.0	decibel
+ParametricEQ	Enable8	boolean	0.0	1.0	0.0	
+AutoWah	Bypass	boolean	0.0	1.0	0.0	
+AutoWah	Q	float	0.0	1.0	1.0	
+AutoWah	Sensitivity	float	0.1	0.9	0.69	
+AutoWah	Drive	float	0.0	1.0	0.0	
+AutoWah	Gain	float	0.125	2.0	1.0	
+BeatRepeat	Bypass	boolean	0.0	1.0	0.0	
+BeatRepeat	SyncToHost	boolean	0.0	1.0	0.0	
+BeatRepeat	Time	float	0.001	4.0	0.125	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+BeatRepeat	FadeTime	float	0.0	0.05	0.0	second
+BeatRepeat	Mix	float	0.0	1.0	0.5	% normalized
+BeatRepeat	Active	boolean	0.0	1.0	0.0	
+Chorus	Bypass	boolean	0.0	1.0	0.0	
+Chorus	SyncToHost	boolean	0.0	1.0	0.0	
+Chorus	Speed	float	0.01	10.0	0.8	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Chorus	DelayTime	float	0.0	1.0	0.01	second
+Chorus	Depth	float	0.0	1.0	0.38	% normalized
+Chorus	Mix	float	0.0	1.0	1.0	% normalized
+Compressor	Bypass	boolean	0.0	1.0	0.0	
+Compressor	Threshold	float	0.0	1.0	0.5	
+Compressor	Attack	float	0.0	0.1	0.02	second
+Compressor	Release	float	0.01	1.0	0.05	second
+Compressor	Ratio	float	0.0	1.0	1.0	
+Compressor	MakeUp	float	1.0	16.0	1.0	
+Compressor	Mix	float	0.0	1.0	1.0	% normalized
+CrossPhaser	Bypass	boolean	0.0	1.0	0.0	
+CrossPhaser	SyncToHost	boolean	0.0	1.0	0.0	
+CrossPhaser	Speed	float	0.0	10.0	0.8	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+CrossPhaser	MinFreq	float	100.0	20000.0	400.0	Hz
+CrossPhaser	MaxFreq	float	100.0	20000.0	800.0	Hz
+CrossPhaser	Feedback	float	0.0	1.0	0.7	% normalized
+CrossPhaser	Depth	float	0.0	1.0	0.8	% normalized
+DoubleDrive	Bypass	boolean	0.0	1.0	0.0	
+DoubleDrive	PreDrive	float	0.0	1.0	0.0	% normalized
+DoubleDrive	PostDrive	float	0.0	1.0	0.0	% normalized
+DoubleDrive	LowFreq	float	-1.0	0.0	0.0	
+DoubleDrive	HighFreq	float	0.0	1.0	0.0	
+DoubleDrive	Gain	float	0.0	1.0	1.0	
+DualDelay	Bypass	boolean	0.0	1.0	0.0	
+DualDelay	SyncToHost	boolean	0.0	1.0	0.0	
+DualDelay	DelayTime	float	0.001	5.0	0.125	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+DualDelay	Feedback	float	0.0	1.0	0.3	% normalized
+DualDelay	LowCut	float	20.0	4000.0	20.0	Hz
+DualDelay	HighCut	float	1000.0	20000.0	20000.0	Hz
+DualDelay	PeakFreq	float	20.0	20000.0	1000.0	Hz
+DualDelay	PeakGain	float	-20.0	20.0	0.0	decibel
+DualDelay	PeakQ	float	0.1	10.0	1.0	
+DualDelay	Mix	float	0.0	1.0	0.5	% normalized
+DualDelay	Rotation	float	-180.0	180.0	0.0	
+DualDelay	InputWidth	float	0.0	1.0	1.0	% normalized
+DualDelay	OutputWidth	float	0.0	1.0	1.0	% normalized
+DualDelay	DelayRatio	float	-0.9	0.9	0.0	
+DualDelay	FeedbackRatio	float	-0.9	0.9	0.0	
+DualDelay	InputRotation	float	-1.0	1.0	0.0	
+DualDelay	OutputRotation	float	-1.0	1.0	0.0	
+DualDelay	ModDepth	float	0.0	20.0	0.0	millisecond
+DualDelay	ModRate	float	0.1	10.0	1.0	Hz
+DualDelay	ModChannelOffset	float	0.0	1.0	1.0	% normalized
+DualDelay	Interpolation	integer	0.0	2.0	1.0	
+FxDelay	Bypass	boolean	0.0	1.0	0.0	
+FxDelay	SyncToHost	boolean	0.0	1.0	0.0	
+FxDelay	DelayTime	float	0.01	10.0	1.0	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+FxDelay	Feedback	float	0.0	1.0	0.0	% normalized
+FxDelay	Cutoff	float	-1.0	1.0	0.0	
+FxDelay	Speed	float	0.0	20.0	0.5	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+FxDelay	Mix	float	0.0	1.0	1.0	% normalized
+FxDelay	BypassDrive	boolean	0.0	1.0	0.0	
+FxFilter	Bypass	boolean	0.0	1.0	0.0	
+FxFilter	LowFreq	float	-1.0	0.0	0.0	
+FxFilter	HighFreq	float	0.0	1.0	0.0	
+FxFilter	LowQ	float	0.0	1.0	0.0	
+FxFilter	HighQ	float	0.0	1.0	0.0	
+FatDelay	Bypass	boolean	0.0	1.0	0.0	
+FatDelay	SyncToHost	boolean	0.0	1.0	0.0	
+FatDelay	DelayTime	float	0.01	10.0	0.1	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+FatDelay	Feedback	float	0.0	1.0	0.0	% normalized
+FatDelay	Diffusion	float	0.0	1.0	1.0	% normalized
+FatDelay	Cutoff	float	-1.0	1.0	0.0	
+FatDelay	Mix	float	0.0	1.0	1.0	% normalized
+GateReverb	Bypass	boolean	0.0	1.0	0.0	
+GateReverb	SyncToHost	boolean	0.0	1.0	0.0	
+GateReverb	DecayTime	float	0.0	10.0	2.0	second
+GateReverb	HighDamp	float	0.0	1.0	0.0	% normalized
+GateReverb	GateTime	float	0.05	1.0	0.4	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+GateReverb	PreDelay	float	0.01	2.0	0.05	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+GateReverb	Mix	float	0.0	1.0	0.5	% normalized
+Limiter	Bypass	boolean	0.0	1.0	0.0	
+Limiter	Gain	float	0.25	4.0	1.0	
+Limiter	Threshold	float	0.1	1.0	0.5	
+Limiter	Release	float	0.0	1.0	0.01	second
+Limiter	Ceiling	float	0.1	1.0	1.0	
+Limiter	Mix	float	0.0	1.0	1.0	% normalized
+Phaser	Bypass	boolean	0.0	1.0	0.0	
+Phaser	SyncToHost	boolean	0.0	1.0	0.0	
+Phaser	Speed	float	0.0	10.0	0.8	Hz (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+Phaser	MinFreq	float	100.0	20000.0	400.0	Hz
+Phaser	MaxFreq	float	100.0	20000.0	800.0	Hz
+Phaser	Feedback	float	0.0	1.0	0.7	% normalized
+Phaser	Depth	float	0.0	1.0	0.8	% normalized
+PingPongDelay	Bypass	boolean	0.0	1.0	0.0	
+PingPongDelay	SyncToHost	boolean	0.0	1.0	0.0	
+PingPongDelay	DelayTime	float	0.01	10.0	0.1	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+PingPongDelay	Feedback	float	0.0	1.0	0.5	% normalized
+PingPongDelay	Cutoff	float	-1.0	1.0	0.0	
+PingPongDelay	Spread	float	-1.0	1.0	-1.0	% normalized
+PingPongDelay	Mix	float	0.0	1.0	1.0	% normalized
+PlainReverb	Bypass	boolean	0.0	1.0	0.0	
+PlainReverb	DecayTime	float	0.0	10.0	2.0	second
+PlainReverb	HighDamp	float	0.0	1.0	0.0	% normalized
+PlainReverb	Mix	float	0.0	1.0	0.5	% normalized
+DelayedReverb	Bypass	boolean	0.0	1.0	0.0	
+DelayedReverb	SyncToHost	boolean	0.0	1.0	0.0	
+DelayedReverb	DecayTime	float	0.0	10.0	2.0	second
+DelayedReverb	HighDamp	float	0.0	1.0	0.0	% normalized
+DelayedReverb	PreDelay	float	0.01	2.0	0.05	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+DelayedReverb	Mix	float	0.0	1.0	0.5	% normalized
+Redux	Bypass	boolean	0.0	1.0	0.0	
+Redux	Frequency	float	200.0	44100.0	44100.0	Hz
+Redux	Bits	integer	1.0	32.0	32.0	
+Redux	Jitter	float	0.0	1.0	0.0	% normalized
+Redux	QuantizeLaw	integer	0.0	1.0	0.0	
+Redux	Dither	float	0.0	1.0	0.0	% normalized
+Redux	FilterFreq	float	20.0	20000.0	10000.0	Hz
+Redux	FilterRes	float	0.0	1.0	0.0	% normalized
+Redux	FilterMode	integer	0.0	2.0	0.0	
+Redux	FilterPosition	integer	0.0	2.0	0.0	
+Redux	Antialiasing	boolean	0.0	1.0	1.0	
+Redux	Mix	float	0.0	1.0	1.0	% normalized
+RingModulator	Bypass	boolean	0.0	1.0	0.0	
+RingModulator	Freq	float	0.1	2000.0	1000.0	Hz
+RingModulator	Mix	float	0.0	1.0	1.0	% normalized
+Robotizer	Bypass	boolean	0.0	1.0	0.0	
+Robotizer	Freq	float	0.1	2000.0	1000.0	Hz
+Robotizer	Depth	float	0.0	1.0	1.0	% normalized
+Robotizer	FM	float	0.25	20.0	1.0	Hz
+Robotizer	Cutoff	float	-1.0	1.0	0.0	
+Robotizer	Mix	float	0.0	1.0	0.5	% normalized
+Rotary	Bypass	boolean	0.0	1.0	0.0	
+Rotary	TremoloSpeed	float	3.0	10.0	6.8	Hz
+Rotary	ChoraleSpeed	float	0.1	3.0	0.8	Hz
+Rotary	SpeedMode	integer	0.0	2.0	2.0	
+Rotary	Model	integer	0.0	6.0	0.0	
+Rotary	MicDistance	float	0.0	10.0	1.0	
+Rotary	MicAngle	float	0.0	180.0	90.0	
+Rotary	Drive	float	0.0	1.0	0.0	% normalized
+Rotary	Order	integer	0.0	3.0	2.0	
+Rotary	Reflection	float	0.0	1.0	0.9	% normalized
+Rotary	BoxReverb	boolean	0.0	1.0	1.0	
+Rotary	HornFilter	integer	0.0	2.0	1.0	
+Rotary	DrumVolume	float	0.0	1.0	1.0	
+Rotary	HornVolume	float	0.0	1.0	1.0	
+Rotary	Radius	float	0.0	1.0	1.0	% normalized
+Rotary	DrumCrossover	boolean	0.0	1.0	1.0	
+Rotary	DrumHP	boolean	0.0	1.0	1.0	
+OneWayRotarySpeaker	Bypass	boolean	0.0	1.0	0.0	
+OneWayRotarySpeaker	Speed	float	0.0	20.0	1.57	Hz
+OneWayRotarySpeaker	Depth	float	0.01	1.0	0.27	% normalized
+OneWayRotarySpeaker	MicDistance	float	1.1	20.0	1.1	
+OneWayRotarySpeaker	Mix	float	0.0	1.0	1.0	% normalized
+TwoWayRotarySpeaker	Bypass	boolean	0.0	1.0	0.0	
+TwoWayRotarySpeaker	LowSpeed	float	0.0	20.0	1.57	Hz
+TwoWayRotarySpeaker	HighSpeed	float	0.0	20.0	1.92	Hz
+TwoWayRotarySpeaker	Depth	float	0.01	1.0	0.27	% normalized
+TwoWayRotarySpeaker	MicDistance	float	1.1	20.0	1.1	
+TwoWayRotarySpeaker	CrossFrequency	float	20.0	10000.0	2601.0	Hz
+SimpleDelay	Bypass	boolean	0.0	1.0	0.0	
+SimpleDelay	SyncToHost	boolean	0.0	1.0	0.0	
+SimpleDelay	DelayTime	float	0.0	10.0	0.8	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+SimpleDelay	Feedback	float	0.0	1.0	0.0	% normalized
+SimpleDelay	Cutoff	float	-1.0	1.0	0.0	
+SimpleDelay	Mix	float	0.0	1.0	1.0	% normalized
+FilteredReverb	Bypass	boolean	0.0	1.0	0.0	
+FilteredReverb	DecayTime	float	0.0	10.0	2.0	second
+FilteredReverb	Cutoff	float	-1.0	1.0	0.0	
+FilteredReverb	HighDamp	float	0.0	1.0	0.0	% normalized
+FilteredReverb	Mix	float	0.0	1.0	0.5	% normalized
+StereoDelay	Bypass	boolean	0.0	1.0	0.0	
+StereoDelay	SyncToHost	boolean	0.0	1.0	0.0	
+StereoDelay	Feedback	float	0.0	1.0	0.0	% normalized
+StereoDelay	LeftDelayTime	float	0.0	10.0	0.8	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+StereoDelay	RightDelayTime	float	0.0	10.0	0.1	second (beat ratio when synced: 4 is 1/1, 0.25 is 1/16, ...)
+StereoDelay	Cutoff	float	-1.0	1.0	0.0	
+StereoDelay	Mix	float	0.0	1.0	1.0	% normalized
+TalkBox	Bypass	boolean	0.0	1.0	0.0	
+TalkBox	Freq	float	20.0	20000.0	1000.0	Hz
+TalkBox	Q	float	0.0	1.0	0.0	% normalized
+TalkBox	FilterMode	integer	0.0	2.0	0.0	
+TalkBox	VowelMode	integer	0.0	4.0	0.0	
+BitCrusher	Bypass	boolean	0.0	1.0	0.0	
+BitCrusher	EffectiveSampleRate	float	2000.0	48000.0	22050.0	Hz
+BitCrusher	BitSize	float	1.0	24.0	16.0	
+BitCrusher	Drive	float	0.0	1.0	0.0	% normalized
+BitCrusher	Cutoff	float	-1.0	1.0	0.0	
+BitCrusher	Mix	float	0.0	1.0	1.0	% normalized
+UviDrive	Bypass	boolean	0.0	1.0	0.0	
+UviDrive	Drive	float	0.0	1.0	0.0	% normalized
+UviDrive	Cutoff	float	-1.0	1.0	0.0	
+UviDrive	Q	float	0.0	1.0	0.0	
+UviDrive	Gain	float	0.0	1.0	1.0	
+UVIMastering	Bypass	boolean	0.0	1.0	0.0	
+UVIMastering	TubeAmount	float	0.0	15.0	0.0	
+UVIMastering	LowVolume	float	0.251	1.995	1.0	
+UVIMastering	MediumVolume	float	0.251	1.995	1.0	
+UVIMastering	HighVolume	float	0.251	1.995	1.0	
+UVIMastering	CompThres	float	-20.0	0.0	0.0	decibel
+UVIMastering	CompAttack	float	0.0	500.0	10.0	millisecond
+UVIMastering	LimiterThres	float	-20.0	0.0	0.0	decibel
+UVIMastering	LowMidFreq	float	20.0	20000.0	250.0	Hz
+UVIMastering	MidHighFreq	float	20.0	20000.0	2000.0	Hz
+AuxEffect	Bypass	boolean	0.0	1.0	0.0	
+AuxEffect	Gain	float	0.0	1.995	1.0	
+AuxEffect	Pan	float	-1.0	1.0	0.0	
+AuxEffect	PreInsert	boolean	0.0	1.0	1.0	
+BusRouter	Bypass	boolean	0.0	1.0	0.0	
+BusRouter	Gain	float	0.0	1.995	0.0	
+BusRouter	PreFader	boolean	0.0	1.0	0.0	
+Engine	MemorySize	float	1.0	0.0	0.0	MegaByte
+Engine	Bypass	boolean	0.0	1.0	0.0	
+Engine	GlobalTune	float	391.995	493.883	440.0	Hz
+Engine	Tempo	float	10.0	400.0	120.0	
+Engine	Playing	boolean	0.0	1.0	0.0	
+Engine	Recording	boolean	0.0	1.0	0.0	
+Engine	AutoPlay	boolean	0.0	1.0	1.0	
+Engine	MeterNumerator	integer	1.0	99.0	4.0	
+Engine	MeterDenominator	integer	1.0	16.0	4.0	
+Engine	SyncToHost	boolean	0.0	1.0	0.0	
+Keygroup	Bypass	boolean	0.0	1.0	0.0	
+Keygroup	BypassInsertFX	boolean	0.0	1.0	0.0	
+Keygroup	Gain	float	0.0	1.995	1.0	
+Keygroup	Pan	float	-1.0	1.0	0.0	
+Keygroup	PanLaw	integer	0.0	1.0	1.0	
+Keygroup	ExclusiveGroup	integer	0.0	32.0	0.0	
+Keygroup	LowKey	integer	0.0	127.0	0.0	midi key
+Keygroup	HighKey	integer	0.0	127.0	127.0	midi key
+Keygroup	LowVelocity	integer	1.0	127.0	1.0	
+Keygroup	HighVelocity	integer	1.0	127.0	127.0	
+Keygroup	LowKeyFade	integer	0.0	127.0	0.0	
+Keygroup	HighKeyFade	integer	0.0	127.0	0.0	
+Keygroup	LowVelocityFade	integer	0.0	127.0	0.0	
+Keygroup	HighVelocityFade	integer	0.0	127.0	0.0	
+Keygroup	FadeCurve	float	1.0	2.0	2.0	
+Keygroup	TriggerMode	integer	0.0	4.0	0.0	
+Keygroup	TriggerSync	integer	0.0	2.0	0.0	
+Keygroup	TriggerRule	integer	0.0	3.0	0.0	
+Keygroup	LatchTrigger	boolean	0.0	1.0	0.0	
+Keygroup	FXPostGain	boolean	0.0	1.0	0.0	
+Layer	Bypass	boolean	0.0	1.0	0.0	
+Layer	BypassInsertFX	boolean	0.0	1.0	0.0	
+Layer	Gain	float	0.0	1.995	1.0	
+Layer	Pan	float	-1.0	1.0	0.0	
+Layer	PanLaw	integer	0.0	1.0	1.0	
+Layer	Mute	boolean	0.0	1.0	0.0	
+Layer	MidiMute	boolean	0.0	1.0	0.0	
+Layer	Solo	boolean	0.0	1.0	0.0	
+Layer	LowKey	integer	0.0	127.0	0.0	midi key
+Layer	HighKey	integer	0.0	127.0	127.0	midi key
+Layer	CustomPolyphony	integer	0.0	256.0	0.0	
+Layer	PlayMode	integer	0.0	4.0	0.0	
+Layer	PortamentoTime	float	0.0	10.0	0.03	second
+Layer	PortamentoCurve	float	-1.0	1.0	0.0	% normalized
+Layer	PortamentoMode	integer	0.0	1.0	0.0	
+Layer	VoiceCount	integer	1.0	0.0	0.0	
+Layer	NumVoicesPerNote	integer	1.0	256.0	1.0	
+Layer	VelocityCurve	float	-1.0	127.0	0.0	
+Part	Bypass	boolean	0.0	1.0	0.0	
+Part	BypassInsertFX	boolean	0.0	1.0	0.0	
+Part	Gain	float	0.0	1.995	1.0	
+Part	Pan	float	-1.0	1.0	0.0	
+Part	PanLaw	integer	0.0	1.0	1.0	
+Part	Mute	boolean	0.0	1.0	0.0	
+Part	MidiMute	boolean	0.0	1.0	0.0	
+Part	Solo	boolean	0.0	1.0	0.0	
+Part	CoarseTune	integer	-24.0	24.0	0.0	semitones
+Part	FineTune	integer	-100.0	100.0	0.0	cents
+Part	TransposeOctaves	integer	-2.0	2.0	0.0	
+Part	TransposeSemiTones	integer	-24.0	24.0	0.0	
+Part	ExclusiveGroup	integer	0.0	32.0	0.0	
+Part	MidiInput	integer	-1.0	128.0	0.0	
+Part	MidiChannel	integer	-1.0	15.0	0.0	
+Part	LowKey	integer	0.0	127.0	0.0	midi key
+Part	HighKey	integer	0.0	127.0	127.0	midi key
+Part	LowVelocity	integer	1.0	127.0	1.0	
+Part	HighVelocity	integer	1.0	127.0	127.0	
+Part	LowKeyFade	integer	0.0	127.0	0.0	
+Part	HighKeyFade	integer	0.0	127.0	0.0	
+Part	LowVelocityFade	integer	0.0	127.0	0.0	
+Part	HighVelocityFade	integer	0.0	127.0	0.0	
+Part	RestrictVelocityRange	boolean	0.0	1.0	0.0	
+Part	RestrictKeyRange	boolean	0.0	1.0	0.0	
+Part	Streaming	boolean	0.0	1.0	1.0	
+Program	MemorySize	float	1.0	0.0	0.0	MegaByte
+Program	Bypass	boolean	0.0	1.0	0.0	
+Program	BypassInsertFX	boolean	0.0	1.0	0.0	
+Program	Gain	float	0.0	1.995	1.0	
+Program	Pan	float	-1.0	1.0	0.0	
+Program	PanLaw	integer	0.0	1.0	1.0	
+Program	TransposeOctaves	integer	-2.0	2.0	0.0	
+Program	TransposeSemiTones	integer	-24.0	24.0	0.0	
+Program	Polyphony	integer	1.0	256.0	16.0	
+Program	NotePolyphony	integer	0.0	256.0	0.0	
+Program	LoopProgram	boolean	0.0	1.0	0.0	
+Program	Streaming	boolean	0.0	1.0	1.0	
+Synth	Bypass	boolean	0.0	1.0	0.0	
+Synth	BypassInsertFX	boolean	0.0	1.0	0.0	
+Synth	Gain	float	0.0	1.995	1.0	
+Synth	Pan	float	-1.0	1.0	0.0	
+Synth	PanLaw	integer	0.0	1.0	1.0	
