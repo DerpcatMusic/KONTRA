@@ -24,6 +24,7 @@ assert 'secret' not in json.dumps(gate.redact({'message': 'secret', 'secret': 4,
 assert gate.redact({'count': 2}) == {'count': 2}
 print('gate checks passed')
 import adapters
+assert adapters.CPU_V1 == Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
 adapters.HEAVY = Path('/usr/bin/env')
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
@@ -35,7 +36,30 @@ with tempfile.TemporaryDirectory() as tmp:
     assert adapters.cpu(root, root)['status'] == 'UNKNOWN'
     assert adapters.gestures(root, root)['status'] == 'UNKNOWN'
     assert adapters.host(root, root)['status'] == 'UNKNOWN'
+    records, witness, _ = adapters.capture(['/usr/bin/python3', '-c', 'import os,json; print(json.dumps({"cache":os.environ["XDG_CACHE_HOME"]}))'], root / 'cpu-env', {'XDG_CACHE_HOME': '/dev/null'})
+    assert witness['returncode'] == 0 and records == [{'cache': '/dev/null'}]
 print('owner adapter checks passed')
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp); (root / 'examples').mkdir()
+    root.joinpath('examples/cpu_audit.rs').write_text('fixture')
+    binary = root / 'cpu-audit-v1'; binary.write_bytes(b'fixture')
+    receipt = {'sha256': adapters.CPU_V1_SHA256, 'source_sha': '0cb7a8a0b4d43086596a64c77320caa1b26d6d98',
+               'adapter_commit': '42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad', 'equivalence': 'PASS'}
+    root.joinpath('BUILD.json').write_text(json.dumps(receipt))
+    saved_binary, saved_hash, saved_capture = adapters.CPU_V1, adapters.CPU_V1_SHA256, adapters.capture
+    adapters.CPU_V1 = binary
+    adapters.capture = lambda *args, **kwargs: ([], {'returncode': 1}, '')  # never build or benchmark in this check
+    try:
+        assert adapters.cpu(root, root)['reason'] == 'frozen-v1-cpu-adapter-integrity-failed'
+        receipt['sha256'] = adapters.CPU_V1_SHA256 = adapters.hashlib.sha256(binary.read_bytes()).hexdigest()
+        root.joinpath('BUILD.json').write_text(json.dumps(receipt))
+        admitted = adapters.cpu(root, root)
+        assert admitted['reason'] == 'v2-cpu-adapter-build-failed' and admitted['v1_adapter'] == receipt
+        root.joinpath('BUILD.json').write_text('{}')
+        assert adapters.cpu(root, root)['reason'] == 'frozen-v1-cpu-adapter-integrity-failed'
+    finally:
+        adapters.CPU_V1, adapters.CPU_V1_SHA256, adapters.capture = saved_binary, saved_hash, saved_capture
+print('frozen CPU adapter receipt and digest checks passed')
 from evidence import Capture
 with tempfile.TemporaryDirectory() as tmp:
     out = Path(tmp)
