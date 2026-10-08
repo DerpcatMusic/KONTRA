@@ -232,6 +232,20 @@ Callbacks sampled independently in the prepared native runtime (32 voice slots, 
 | 1 | 18.200 | True / Finished | 3 / 2 / {'set_knob_label': 1} | None / 0 |
 | 2 | 0.810 | False / None | 0 / 0 / {} | None / 0 |
 
+### Shared-scanner Conflux rerun after disk recovery — unmatched
+
+At the coordinator’s request, reran **only Conflux** with the installed shared `kontra-scan-v2`, baseline 7e82b152 and scanner revision/digest `1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`. No pruning, independent metadata collector, full-corpus duplicate or rebuild was performed. The bounded heavy call completed successfully: **loads yes; plays_note yes; UI missing-images; visible interactive bindings 107/113; load 5763.089 ms; peak RSS 231.64 MiB; worker wall 5809.54 ms**. These are **unmatched** observations, not a v1 comparison or evidence that disk recovery improved load speed.
+
+The three interface records remain 411/22/1 widgets, 134/5/0 visible; main visible bindings 102/108, secondary 5/5. Main has one missing image, four visible level-meter placeholders and six text-edit placeholders. Original-only painting neither measures gestures/callback feedback nor exercises the editor’s default-mode selection. This confirms the rendered-census classification while leaving the loop defects and shared corpus counts unchanged.
+
+```bash
+~/.cache/kontakto-heavy ~/.cache/kontra-scan/bin/kontra-scan-v2 \
+  --list ~/.cache/kontra-scan/kontakt-items.tsv --start 0 --count 1 \
+  --out ~/.cache/kontakto-audit-ui-loop/shared-conflux
+```
+
+Receipt: `~/.cache/kontakto-audit-ui-loop/shared-conflux/cache/5ab4964a42d56b2d94e1be1e8179b207d398fd40c2af0fee6837d27e72d58ad5.json`; SHA-256 `24ee16bef81ab557b34ebb12b7d6365427cb2df66385a71d0b2b7349af7dc2e8`. Log: `shared-conflux.log`. The shared 834-item census remains with its owner.
+
 ### Whole installed Kontakt source exposure
 
 Manifest **834 rows: 781 NKI + 53 NKM**. Shared scanner metadata snapshot: **1/834** cached items; **1** successfully loaded Kontakt program records. **Whole-corpus counts are Pending**, owned by the ongoing shared census. Coordinator instruction: push this report with counts Pending; census will publish `~/.cache/kontra-scan/results/v2/symbol-aggregates.tsv` and fill the exposure counts alongside UI_PARAMS. Tables below show only observed snapshot incidence, as distinct **NKI / NKM containers / successful programs**; every cell explicitly retains Pending. No absent symbol in this limited snapshot is a corpus-wide negative. NCKP/imported/generated widget declarations are not lexical source tokens; rendered IR widget counts must be joined separately. The current scanner has a restricted identifier whitelist: uncollected names are marked Uncollected, never zero. Lexical source exposure is not callback execution, compiled support, a distinct-library count or a fully usable/unlocked instrument. Source branches, computed identifiers, failed/bypassed scripts and encrypted/unreadable sources limit inference. UVI is outside these counts.
