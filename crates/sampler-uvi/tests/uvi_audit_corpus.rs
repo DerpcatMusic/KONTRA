@@ -37,7 +37,7 @@ fn corpus_script_commands_and_faults() {
         if !id.contains(&only) { continue; }
         let (file, member) = id.split_once("::").unwrap();
         if open.as_ref().is_none_or(|(p, _)| p != file) {
-            open = Some((file.to_owned(), Bank::open(file).unwrap()));
+            open = Some((file.to_owned(), Bank::open(file.as_ref()).unwrap()));
         }
         let bank = &open.as_ref().unwrap().1;
         let (xml, _) = bank.program(member).unwrap();
