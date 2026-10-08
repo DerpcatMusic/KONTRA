@@ -11,7 +11,7 @@ publish = false
 
 # A native window: nothing here builds for wasm.
 [dependencies]
-mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects"] }
+mui = { git = "https://github.com/Matari-Audio/MUI", features = ["gpu-effects", "software-window"] }
 baseview = { package = "moose-baseview", git = "https://github.com/Matari-Audio/MUI" }
 # Public accessibility and IME bridges; not shadowed by this custom host.
 mui-native = { package = "mui-baseview", git = "https://github.com/Matari-Audio/MUI" }
