@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import hashlib
 import sys
 import time
 
@@ -61,10 +62,21 @@ def main():
             numeric = cache_home / "kontra" / "v2-headers"
             numeric.mkdir(parents=True, exist_ok=True)
             env["XDG_CACHE_HOME"] = str(cache_home)
+        product_root = os.environ.get('PROBE_PRODUCT_CACHE_ROOT')
+        product_cache = None
+        if product_root:
+            root = Path(product_root).resolve()
+            if root.parent != Path('/dev/shm') or not root.name.startswith('kontra-gate-cache-'):
+                raise ValueError('probe cache must be private tmpfs')
+            product_cache = root / 'v1-probes' / hashlib.sha256(path.encode()).hexdigest()
+            product_cache.mkdir(parents=True, exist_ok=True)
+            env['XDG_CACHE_HOME'] = str(product_cache)
         # Everything else stays read-only; TMPDIR and LOG_DIR cannot be created.
         # Capture output in memory and persist only the sanitized probe metadata.
         cmd = ["bwrap", "--die-with-parent", "--ro-bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
                "--tmpfs", "/tmp", str(Path(binary).resolve()), "--ignored", "--exact", env.get("PROBE_TEST", "plugin::tests::probe_load"), "--nocapture"]
+        if product_cache:
+            cmd[5:5] = ['--bind', str(product_cache), str(product_cache)]
         if cache_home:
             cmd[5:5] = ["--bind", str(numeric), str(numeric)]
         stages, result = [], {}
