@@ -500,6 +500,14 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
     assert_eq!(overlay.input(&ids[0], &source.articulations[0], sir::Driver::Keys), Trigger::Keys(vec![25]));
     assert_eq!(overlay.input(&ids[1], &source.articulations[1], sir::Driver::Keys), Trigger::Keys(vec![49]));
+    let header_text = |h: &Harness| h.ui.scene().unwrap().surfaces()
+        .filter(|s| s.parent.as_ref().is_some_and(|p| p.as_str() == "perf-art-0"))
+        .filter_map(|s| s.text_value.as_deref()).collect::<Vec<_>>().join(" ");
+    assert_eq!(header_text(&h), "Articulation Legato · C#0", "header uses the row's effective trigger after a swap");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "swap preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
     h.type_into(&cell(2), "G#8");
     assert!(h.ui.scene().unwrap().surface(&format!("{}-edit", row(2))).is_some(), "invalid input stays editable");
     assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![26]));
@@ -543,13 +551,35 @@ fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
     assert_eq!(overlay.inputs, before);
     assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
     h.drag(&format!("{}-drag", row(4)), &row(0));
-    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.display_order(&source.articulations), vec![4, 0, 1, 3, 2]);
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.display_order(&source.articulations), vec![4, 0, 1, 3, 2]);
+    assert_eq!(overlay.inputs, before, "drag changes display order only");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "reorder preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
     if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
         std::fs::create_dir_all(&dir).unwrap();
         moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
         let mut narrow = Harness::new(&p, 900., 640.);
         narrow.press("view-0-Articulations");
         moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel-narrow.png"), &pixels(&narrow.ui, 900, 640), 900, 640);
+    }
+    for (driver, input, label) in [
+        (1, Trigger::Velocity(Some((19, 36))), "19–36"),
+        (2, Trigger::Channel(Some(7)), "ch 8"),
+        (3, Trigger::Controller(Some((12, 3, 3))), "CC12 3"),
+        (4, Trigger::Program(Some(90)), "prog 91"),
+        (0, Trigger::Keys(vec![]), "—"),
+    ] {
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts[0].articulation_overlay.driver = Some(driver);
+            selection.parts[0].articulation_overlay.set(&ids[0], input);
+        }
+        h.idle(3);
+        assert_eq!(header_text(&h), format!("Articulation Legato · {label}"), "header follows the effective input family");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(0)).unwrap().text_value.as_deref(), Some(label));
     }
 }
 
