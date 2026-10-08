@@ -8,6 +8,7 @@ const SKIP_AHEAD: u64 = 16384;
 pub(crate) struct Reader {
     pub rate: u32,
     pub frames: u64,
+    pub frame_bytes: usize,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn codecs::Decoder>,
     track: u32,
@@ -24,14 +25,16 @@ impl Reader {
         let end = (u64::from(u32::from_be_bytes(head[4..8].try_into().unwrap())) + 8).min(source.byte_len().unwrap_or(u64::MAX));
         let mut at = 12u64;
         let mut declared = None;
+        let mut bits = 32;
         while at + 8 <= end {
             source.seek(SeekFrom::Start(at))?;
             let mut chunk = [0; 8]; source.read_exact(&mut chunk)?;
             let size = u64::from(u32::from_be_bytes(chunk[4..].try_into().unwrap()));
             ensure!(at + 8 + size <= end, "Truncated AIFF chunk");
             if &chunk[..4] == b"COMM" && size >= 18 {
-                let mut common = [0; 6]; source.read_exact(&mut common)?;
-                declared = Some(u64::from(u32::from_be_bytes(common[2..].try_into().unwrap()))); break;
+                let mut common = [0; 8]; source.read_exact(&mut common)?;
+                declared = Some(u64::from(u32::from_be_bytes(common[2..6].try_into().unwrap())));
+                bits = u16::from_be_bytes(common[6..8].try_into().unwrap()); break;
             }
             at += 8 + size + (size & 1);
         }
@@ -58,7 +61,8 @@ impl Reader {
         let decoder = symphonia::default::get_codecs().make(params, &DecoderOptions::default())?;
         let track = track.id;
         ensure!(rate > 0 && frames > 0, "Empty sample or invalid rate");
-        Ok(Self { rate, frames, format, decoder, track, buffer: Vec::new(), start: 0 })
+        Ok(Self {
+            frame_bytes: match bits { ..=16 => 4, ..=24 => 6, _ => 8 }, rate, frames, format, decoder, track, buffer: Vec::new(), start: 0 })
     }
 }
 impl Reader {
@@ -127,5 +131,36 @@ impl Reader {
                 .map(|s| [s[0], s[channels - 1]]),
         );
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn aiff_native_width_and_declared_frames_survive_random_access() {
+        for bits in [16u16,24,32] {
+            let mut bytes = b"FORM\0\0\0\0AIFFCOMM".to_vec();
+            bytes.extend(18u32.to_be_bytes());
+            bytes.extend(2u16.to_be_bytes());
+            bytes.extend(2u32.to_be_bytes());
+            bytes.extend(bits.to_be_bytes());
+            bytes.extend([0x40,0x0e,0xbb,0x80,0,0,0,0,0,0]);
+            bytes.extend(b"SSND");
+            let width = usize::from(bits/8);
+            bytes.extend((8+4*width as u32).to_be_bytes());
+            bytes.extend([0;8]);
+            for sample in [1i32,-1,-1,1] {
+                let q = sample * (1 << (bits-2));
+                bytes.extend(&q.to_be_bytes()[4-width..]);
+            }
+            let form_len = bytes.len()-8;
+            bytes[4..8].copy_from_slice(&(form_len as u32).to_be_bytes());
+            let mut reader = Reader::open(Box::new(std::io::Cursor::new(bytes))).unwrap();
+            assert_eq!((reader.rate,reader.frames,reader.frame_bytes),(48000,2,usize::from(bits/8)*2));
+            let mut frame=[[0.;2]];
+            reader.read(1,&mut frame).unwrap();
+            assert_eq!(frame,[[-0.5,0.5]]);
+        }
     }
 }

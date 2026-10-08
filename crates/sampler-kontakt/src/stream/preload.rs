@@ -10,6 +10,7 @@ pub(super) fn plan(
     instrument: &ir::Instrument,
     assets: &[Pcm],
     reachable: &[(u32, u32)],
+    frame_bytes: &[usize],
     budget: usize,
 ) -> (Vec<Vec<Range<usize>>>, usize) {
     assert_eq!(reachable.len(), instrument.zones.len());
@@ -25,12 +26,17 @@ pub(super) fn plan(
     let at = |reach: &[(u64, u64)], preload: usize, cover: u64| {
         spans(instrument, assets, reach, preload, cover)
     };
-    // Pcm packs exactly after decoding; eight bytes is the conservative bound.
+    assert_eq!(frame_bytes.len(), assets.len());
+    // Port v1 source-width planning; predictive packing only reduces the result.
     let fits = |ranges: &[Vec<Range<usize>>]| {
         ranges
             .iter()
-            .flatten()
-            .try_fold(0usize, |n, r| n.checked_add(r.len().checked_mul(8)?))
+            .zip(frame_bytes)
+            .try_fold(0usize, |n, (ranges, &width)| {
+                ranges
+                    .iter()
+                    .try_fold(n, |n, r| n.checked_add(r.len().checked_mul(width)?))
+            })
             .is_some_and(|n| n <= budget)
     };
     let largest = |lo: u64, hi: u64, at: &dyn Fn(u64) -> Vec<Vec<Range<usize>>>| {
@@ -186,6 +192,34 @@ fn spans(
         .collect()
 }
 
+/// v1 keeps short/whole resident loops raw; ordinary onset spans may be predictive.
+pub(super) fn compression(
+    instrument: &ir::Instrument,
+    assets: &[Pcm],
+    ranges: &[Vec<Range<usize>>],
+    preload: usize,
+) -> Vec<bool> {
+    let mut compressed = vec![true; assets.len()];
+    for zone in &instrument.zones {
+        let id = zone.asset.0;
+        let p = zone.playback;
+        let whole = ranges[id].len() == 1 && ranges[id][0] == (0..assets[id].frame_count());
+        let resident = |r: ir::LoopRange| {
+            whole
+                || (!p.reverse
+                    && r.end <= p.start.saturating_add(4 * preload as u64)
+                    && p.start < r.end)
+        };
+        let looping = match p.looping {
+            ir::Looping::Continuous(r) | ir::Looping::UntilRelease(r) => resident(r),
+            ir::Looping::Slots(slots) => slots.into_iter().flatten().any(|s| resident(s.range)),
+            _ => false,
+        };
+        compressed[id] &= !looping;
+    }
+    compressed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,11 +250,18 @@ mod tests {
         );
     }
     #[test]
+    fn native_width_budget_keeps_the_full_preload_and_wider_sources_shrink() {
+        let (i, pcm) = source(20000, vec![ir::Zone::new(ir::AssetRef(0))]);
+        assert_eq!(plan(&i, &pcm, &[(0,0)], &[4], 17000).1, PRELOAD);
+        assert!(plan(&i, &pcm, &[(0,0)], &[8], 17000).1 < PRELOAD);
+        assert_eq!(plan(&i, &pcm, &[(0,0)], &[4], 0).1, FLOOR_PRELOAD);
+    }
+    #[test]
     fn initialized_reach_fits_before_discarding_the_preload() {
         let mut zone = ir::Zone::new(ir::AssetRef(0));
         zone.playback.start_range = 12000;
         let (i, pcm) = source(100000, vec![zone]);
-        let (ranges, preload) = plan(&i, &pcm, &[(8000, 8000)], 32768);
+        let (ranges, preload) = plan(&i, &pcm, &[(8000, 8000)], &[8], 32768);
         assert_eq!(preload, PRELOAD);
         assert!(!ranges[0].iter().any(|r| r.contains(&0)));
         assert!(
@@ -261,10 +302,14 @@ mod tests {
             spans(&i, &pcm, &[(0, 0)], PRELOAD, u64::MAX),
             vec![vec![0..14048]]
         );
+        let ranges = spans(&i, &pcm, &[(0, 0)], PRELOAD, u64::MAX);
+        assert_eq!(compression(&i, &pcm, &ranges, PRELOAD), vec![false]);
         let (i, pcm) = source(8000, vec![ir::Zone::new(ir::AssetRef(0))]);
         assert_eq!(
             spans(&i, &pcm, &[(0, 0)], PRELOAD, u64::MAX),
             vec![vec![0..8000]]
         );
+        let ranges = spans(&i, &pcm, &[(0, 0)], PRELOAD, u64::MAX);
+        assert_eq!(compression(&i, &pcm, &ranges, PRELOAD), vec![true]);
     }
 }

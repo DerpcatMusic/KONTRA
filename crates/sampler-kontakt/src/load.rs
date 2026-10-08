@@ -297,7 +297,13 @@ pub fn load_read_streamed_cancelable(
     let opened = crate::stream::Streamer::open(registry, options.rate, policy, 32, canceled)?;
     if !hit && !canceled() {
         if let Some(preset) = options.library.as_deref() {
-            crate::header_cache::store(preset, &listed, &sources, &opened.assets);
+            crate::header_cache::store(
+                preset,
+                &listed,
+                &sources,
+                &opened.assets,
+                &opened.frame_bytes,
+            );
         }
     }
     drop(sources);

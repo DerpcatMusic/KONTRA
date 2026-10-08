@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-const MAGIC: &[u8] = b"KONTRA v2 numeric headers 1\n";
+const MAGIC: &[u8] = b"KONTRA v2 numeric headers 2\n";
 const BUDGET: u64 = 64 << 20;
 
 fn u64le(reader: &mut impl Read) -> Option<u64> {
@@ -79,7 +79,10 @@ fn decode(bytes: &[u8], paths: &[&Path], samples: &mut Samples) -> Option<Vec<So
         }
         let rate = u32le(&mut reader)?;
         let frames = usize::try_from(u64le(&mut reader)?).ok()?;
-        let _bits = u32le(&mut reader)?;
+        let frame_bytes = u32le(&mut reader)? as usize;
+        if !matches!(frame_bytes, 4 | 6 | 8) {
+            return None;
+        }
         let mut keyed = [0];
         reader.read_exact(&mut keyed).ok()?;
         if rate == 0 || rate > 768000 || keyed[0] > 1 {
@@ -92,6 +95,7 @@ fn decode(bytes: &[u8], paths: &[&Path], samples: &mut Samples) -> Option<Vec<So
             size,
             keyed[0] == 1,
             (rate, frames),
+            frame_bytes,
         )?);
     }
     (reader.position() as usize == reader.get_ref().len()).then_some(sources)
@@ -106,7 +110,7 @@ pub(crate) fn load(preset: &Path, paths: &[&Path], samples: &mut Samples) -> Opt
     }
     None
 }
-fn encode(sources: &[Arc<Source>], pcm: &[Pcm]) -> Option<Vec<u8>> {
+fn encode(sources: &[Arc<Source>], pcm: &[Pcm], frame_bytes: &[usize]) -> Option<Vec<u8>> {
     if sources.len() != pcm.len() {
         return None;
     }
@@ -139,22 +143,34 @@ fn encode(sources: &[Arc<Source>], pcm: &[Pcm]) -> Option<Vec<u8>> {
         bytes.extend(stamp(file)?);
     }
     bytes.extend((sources.len() as u64).to_le_bytes());
-    for (source, pcm) in sources.iter().zip(pcm) {
+    if sources.len() != frame_bytes.len() {
+        return None;
+    }
+    for ((source, pcm), &width) in sources.iter().zip(pcm).zip(frame_bytes) {
+        if !matches!(width, 4 | 6 | 8) {
+            return None;
+        }
         bytes.extend(ids[&source.path].to_le_bytes());
         bytes.extend(source.offset.to_le_bytes());
         bytes.extend(source.size.to_le_bytes());
         bytes.extend(pcm.sample_rate().to_le_bytes());
         bytes.extend((pcm.frame_count() as u64).to_le_bytes());
-        bytes.extend(u32::MAX.to_le_bytes());
+        bytes.extend((width as u32).to_le_bytes());
         bytes.push(source.key.is_some() as u8);
     }
     (bytes.len() as u64 <= BUDGET).then_some(bytes)
 }
-pub(crate) fn store(preset: &Path, paths: &[&Path], sources: &[Arc<Source>], pcm: &[Pcm]) {
+pub(crate) fn store(
+    preset: &Path,
+    paths: &[&Path],
+    sources: &[Arc<Source>],
+    pcm: &[Pcm],
+    frame_bytes: &[usize],
+) {
     let Some(dir) = dirs::cache_dir().map(|d| d.join("kontra/v2-headers")) else {
         return;
     };
-    let Some(bytes) = encode(sources, pcm) else {
+    let Some(bytes) = encode(sources, pcm, frame_bytes) else {
         return;
     };
     let file = entry(&dir, preset, paths);
@@ -202,15 +218,25 @@ mod tests {
         let mut samples = Samples::new(&root);
         let sources = vec![Arc::new(samples.source(&path).unwrap())];
         let pcm = vec![Pcm::streamed(48000, 200).unwrap()];
-        let bytes = encode(&sources, &pcm).unwrap();
+        let bytes = encode(&sources, &pcm, &[6]).unwrap();
         let mut legacy = b"KONTRA headers 1\n".to_vec();
         legacy.extend(&bytes[MAGIC.len()..]);
         assert!(decode(&legacy, &[&path], &mut samples).is_none());
         let got = decode(&bytes, &[&path], &mut samples).unwrap();
         assert_eq!(got[0].header, Some((48000, 200)));
+        assert_eq!(got[0].frame_bytes, Some(6));
+        let opened = crate::stream::Streamer::open(vec![(Arc::new(got[0].clone()), path.as_path())], 48000, &crate::StreamPolicy::default(), 0, &||false).unwrap();
+        assert_eq!(opened.frame_bytes, vec![6]); // Invalid file bytes prove this numeric hit did not open a codec.
         for end in 0..bytes.len() {
             assert!(decode(&bytes[..end], &[&path], &mut samples).is_none());
         }
+        let mut invalid_width = bytes.clone();
+        let width_at = bytes.len() - 5;
+        invalid_width[width_at..width_at + 4].copy_from_slice(&12u32.to_le_bytes());
+        assert!(decode(&invalid_width, &[&path], &mut samples).is_none());
+        let mut previous_version = bytes.clone();
+        previous_version[MAGIC.len()-2] = b'1';
+        assert!(decode(&previous_version, &[&path], &mut samples).is_none());
         let mut invalid = bytes.clone();
         let size_at = bytes.len() - 37 + 12;
         invalid[size_at..size_at + 8].copy_from_slice(&1024u64.to_le_bytes());
