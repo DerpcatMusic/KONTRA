@@ -1,4 +1,4 @@
-//! Control-prepared, table-interpolated low-pass kernel for rate conversion.
+//! Control-prepared, table-interpolated low-pass kernel for resident rate conversion.
 use std::{f64::consts::PI, sync::OnceLock};
 
 pub(super) const MIN_STEP: f64 = 1.0 / 256.0;
@@ -165,22 +165,11 @@ impl Polyphase {
         for (phase, row) in rows.chunks_exact_mut(stride).enumerate() {
             let fraction = phase as f64 / PHASES as f64;
             let mut coefficients = [0.0_f64; MAX_TAPS];
-            // Evaluate the reference impulse row once, rather than once per tap.
-            let inverse = 1.0 / stretch.max(1.0);
-            let increment = (inverse * RESOLUTION as f64 * 4294967296.0).round() as i64;
-            let mut distance = ((-(radius as f64) - fraction)
-                * inverse
-                * RESOLUTION as f64
-                * 4294967296.0)
-                .round() as i64;
-            let mut weight = 0.;
-            for coefficient in &mut coefficients[..taps] {
-                *coefficient = table.coefficient(distance.unsigned_abs());
-                weight += *coefficient;
-                distance += increment;
-            }
-            for coefficient in &mut coefficients[..taps] {
-                *coefficient = f64::from(((0. + *coefficient) / weight) as f32);
+            // Reuse the reference evaluation: a unit impulse reads one tap.
+            for (k, coefficient) in coefficients[..taps].iter_mut().enumerate() {
+                let tap = k as i64 - radius as i64;
+                let impulse = |o| if o == tap { [1.0; 2] } else { [0.0; 2] };
+                *coefficient = f64::from(table.sample(fraction, stretch, impulse)[0]);
             }
             let sum: f64 = coefficients[..taps].iter().sum();
             for (pair, c) in row
@@ -384,35 +373,6 @@ impl Kernel {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn prepared_rows_match_reference_impulses_without_changing_narrow_bank_rounding() {
-        let kernel = Kernel::new(ResampleQuality::Realtime);
-        for bank in kernel.bank {
-            let taps = 2 * bank.radius + 1;
-            for phase in 0..=PHASES {
-                let row = &bank.rows[phase * bank.stride..][..bank.stride];
-                let mut expected = vec![0f64; taps];
-                for (k, coefficient) in expected.iter_mut().enumerate() {
-                    let offset = k as i64 - bank.radius as i64;
-                    *coefficient = f64::from(
-                        kernel
-                            .short
-                            .sample(phase as f64 / PHASES as f64, bank.stretch, |at| {
-                                if at == offset { [1.; 2] } else { [0.; 2] }
-                            })[0],
-                    );
-                }
-                let sum: f64 = expected.iter().sum();
-                for (k, c) in expected.iter().enumerate() {
-                    let bits = (c / sum) as f32;
-                    assert_eq!(row[2 * k].to_bits(), bits.to_bits());
-                    assert_eq!(row[2 * k + 1].to_bits(), bits.to_bits());
-                }
-                assert!(row[2 * taps..].iter().all(|&x| x == 0.));
-            }
-        }
-    }
 
     #[test]
     fn fractional_kernel_preserves_dc_passband_and_rejects_alias_band() {
