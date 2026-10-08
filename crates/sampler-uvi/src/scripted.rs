@@ -7,6 +7,8 @@
 //! no parallel voice mechanism. The script host only runs when a note event or
 //! a `wait` is due, so an idle program costs nothing per block.
 mod thread;
+#[cfg(test)]
+mod lifecycle_tests;
 use crate::script::{Change, Command, MidiOut, Param, Play, Scope, ScriptHost};
 use crate::OscGroup;
 use sampler_core::{
@@ -548,15 +550,13 @@ impl<S: Script> Driver<S> {
         let note = match parent {
             Some(parent) => rt.child(parent, play.key, velocity, open, Inheritance::Expression),
             None => {
-                let input = Input {
+                let address = sampler_core::ChannelAddress {
                     protocol: Protocol::Native,
                     port: 0,
                     group: 0,
                     channel: 0,
-                    key: play.key,
-                    external_id: None,
                 };
-                rt.note_on(input, play.key, velocity)
+                rt.generated_note(address, play.key, velocity)
             }
         };
         let note = match note {
@@ -590,6 +590,9 @@ impl<S: Script> Driver<S> {
             Some(_) => {}
             None if parent.is_none() || closing => self.release(rt, note, now + DETACHED_MS)?,
             None => {}
+        }
+        if play.duration_ms == Some(0.0) {
+            rt.retire_when_silent(note)?;
         }
         Ok(())
     }
@@ -697,6 +700,7 @@ impl Player {
             self.rt.render(&mut out[done..done + step])?;
             done += step;
         }
+        self.rt.flush_ended(|_| true);
         Ok(())
     }
 }

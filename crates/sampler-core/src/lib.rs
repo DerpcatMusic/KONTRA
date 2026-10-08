@@ -1206,6 +1206,35 @@ impl Runtime {
         )
     }
 
+    /// Admit a script-generated root without owning a physical input key.
+    pub fn generated_note(
+        &mut self,
+        address: ChannelAddress,
+        key: u8,
+        velocity: f64,
+    ) -> Result<NoteId, Error> {
+        self.apply_due();
+        if address.channel >= 16 || address.group >= 16 {
+            return Err(Error::InvalidInput);
+        }
+        self.performance(0)?;
+        self.admit(
+            NoteOrigin::Generated(self.active_plan, address, 0),
+            NotePitch::Key(key),
+            velocity,
+        )
+    }
+
+    /// Retire an admitted source-owned note after its voices, tails and work finish.
+    pub fn retire_when_silent(&mut self, note: NoteId) -> Result<(), Error> {
+        let state = self.notes.get_mut(note.0).ok_or(Error::StaleHandle)?;
+        if state.input.is_some() || state.attack == AttackStatus::Pending {
+            return Err(Error::InvalidInput);
+        }
+        state.retire_when_silent = true;
+        Ok(())
+    }
+
     pub fn child_pitched(
         &mut self,
         parent: NoteId,
