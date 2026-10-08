@@ -8,6 +8,24 @@ below record reviewed source checkpoints; they are not claims about pending work
 
 ## Unreleased
 
+### Accepted 0.3.224 — Original view, verified readers and runtime storage
+
+Sixteen reviewed logical fixes advance the accepted counter from 0.3.208.
+
+### Fixed after 0.3.208
+
+- Default to Original and preserve saved view selection, script/page state, control values and artwork identities through sparse runtime UI publications. Both selectors expose Original, Vector and generated KONTRA; fit uses both axes and explicit zoom remains exact.
+- Admit native scalar edits through their bounded request/reply service, guard replaced source generations, and route UI alias effects by widget identity. Picker results become visible only after the owned worker operation closes.
+- Decode complete verified versioned Program and NIS records. Program resource metadata uses the same public reader; neutral F1/F2 values retain their verified layout without guessed wallpaper semantics. Failed occupied FX slots remain diagnosed while valid siblings survive.
+- Traverse live note/callback owners, flush callback outcomes at host-block end, wait for exact offline sample readiness with bounded failure, and retry transient protected pages with backoff and storage counters.
+- Build CI Linux packages on Ubuntu 22.04 and reject GLIBC requirements newer than 2.35. Local user builds use the machine's normal toolchain.
+
+### Known limits for 0.3.224
+
+- The urgent local release uses the pinned ready W1 checkpoint and green integration no-run, root library, KSP/UI IR and release-core checks. Remaining post-install integration shards and current-HEAD quick regression follow; broader fix branches are queued.
+- Authored image/font gaps, specialized widget support and full native sound parity remain separate acceptance work. The CI baseline check is implemented; its actual KONTRA 2.35 artifact proof follows CI execution.
+
+
 ### Accepted 0.3.148 — primary envelope processing and visible crash receipts
 
 Two reviewed logical fixes advance the accepted counter from 0.3.146.
