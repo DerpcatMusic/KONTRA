@@ -139,6 +139,7 @@ pub struct InputState {
     pub values: HashMap<WidgetRef, ir::Value>,
     pub meters: HashMap<WidgetRef, f64>,
     pub peaks: HashMap<WidgetRef, Arc<[(f32, f32)]>>,
+    pub wave_duration_us: HashMap<WidgetRef, u64>,
     pub edits: Vec<Edit>,
     menu: Option<WidgetRef>,
     typing: Option<(WidgetRef, String)>,
@@ -705,13 +706,10 @@ pub(super) fn widget_state(
             }
             col(rows).gap(0).scroll().fill(Role::Ink.alpha(0.06))
         }
-        Kind::Waveform | Kind::Wavetable {..} => {
-            let peaks=input.peaks.get(&n).cloned().unwrap_or_default();
-            canvas(move |s| {
-                let width=s.width/peaks.len().max(1) as f64;
-                peaks.iter().enumerate().map(|(i,(lo,hi))|Draw::fill(rect(i as f64*width,(1.-f64::from(*hi))*s.height/2.,width.max(1.),f64::from(hi-lo)*s.height/2.),Role::Ink)).collect()
-            }).fill(Role::Ink.alpha(0.06))
-        }
+        Kind::Waveform | Kind::Wavetable {..} => super::render_art::waveform(
+            input.peaks.get(&n).cloned().unwrap_or_default(), wd.waveform.clone(),
+            input.wave_duration_us.get(&n).copied(), wd.colors, wd.hide.background,
+        ),
         Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
     };
     if let Some(c) = control && wd.components.is_empty() {
