@@ -457,7 +457,12 @@ impl UserData for Parameter {
                 trace_parameter(lua,this,"property")?;
                 let bridge = this.bridge.lock().unwrap();
                 let Some(w) = bridge.controls.get(this.binding) else {
-                    return Ok(LuaValue::Nil);
+                    return Ok(match property {
+                        0 | 1 | 14 | 18 => LuaValue::String(lua.create_string("")?),
+                        17 => LuaValue::Integer(0),
+                        20 => LuaValue::Boolean(false),
+                        _ => LuaValue::Nil,
+                    });
                 };
                 let range = bounds(w);
                 Ok(match property {
@@ -907,6 +912,11 @@ mod tests {
             assert(missing.connected==false and missing_bool.connected==false)
             assert(meter.connected==false and meter:level_value()==0)
             assert(missing:value()==0 and missing_bool:value()==false)
+            for _,property in ipairs({0,1,14,18}) do
+                assert(missing:ksp_control_property(property)=='')
+            end
+            assert('caption:'..missing:ksp_control_property(0)=='caption:')
+            assert(missing:ksp_control_property(17)==0 and missing:ksp_control_property(20)==false)
             missing:set_value(0.75)
             missing:update_touch()
             assert(missing:is_touch_active()==false)

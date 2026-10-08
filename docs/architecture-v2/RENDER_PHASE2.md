@@ -334,3 +334,22 @@ Conflux and BigScreen program 1 painted with no native failure categories on
 Receipts: `~/.cache/kontakto-w3/ui-audit-stack/`. The evidence build contained
 additional test-only diagnostics; this commit excludes those probes.
 BigScreen program 0 and the 50-multi count remain separate pending checks.
+
+
+### Unconnected native string properties
+
+Keep property return types when a requested face has an unmatched declaration:
+caption, tooltip, value text and menu item text return empty strings; the menu
+has zero items and no visible item. Other unavailable properties remain nil.
+Bindings remain disconnected/inert and meters have no level; no other program
+supplies their values. This extends the PROVISIONAL unmatched-binding policy
+above; no Kontakt reference capture exists.
+
+Failing-first legacy binding regression rejects nil captions, then passes with
+typed empty strings. BigScreen program 0 now paints the requested face without
+native failures on an explicit 2 MiB full-editor thread: debug peak 1,120,160
+bytes; optimized CI peak 269,207 bytes. The CI area no-run and both explicit
+2 MiB lowering/full-editor regressions pass. Receipts are under
+`~/.cache/kontakto-w3/ui-audit-stack/`; the evidence build includes test-only
+diagnostics omitted from this commit. The corpus count and scanner receipts
+are recorded separately under `~/.cache/kontakto-w3/native-caption/`.
