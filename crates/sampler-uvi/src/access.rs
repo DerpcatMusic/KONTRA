@@ -16,22 +16,38 @@ pub(crate) struct ReaderNamespaces {
     pub(crate) program: Vec<u8>,
 }
 
+fn reader_digest(reader: impl Read, limit: u64) -> Result<[u8;32]> {
+    let mut reader=reader.take(limit.saturating_add(1));
+    let mut hash=Sha256::new();
+    let mut buffer=[0u8;8192];
+    let mut size=0u64;
+    loop {
+        let n=match reader.read(&mut buffer) {
+            Err(e) if e.kind()==std::io::ErrorKind::Interrupted=>continue,
+            result=>result?,
+        };
+        if n==0 { break; }
+        size=size.checked_add(n as u64).context("UVI reader size overflow")?;
+        ensure!(size<=limit,"UVI reader exceeds size limit");
+        hash.update(&buffer[..n]);
+    }
+    Ok(hash.finalize().into())
+}
+
 impl ReaderNamespaces {
     pub(crate) fn open(path: &Path) -> Result<Self> {
-        let mut bytes = Vec::new();
-        File::open(path)?
-            .take((64 << 20) + 1)
-            .read_to_end(&mut bytes)?;
-        ensure!(bytes.len() <= 64 << 20, "UVI reader exceeds size limit");
-        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let mut file=File::open(path)?;
+        let digest=format!("{:x}",sha2::digest::generic_array::GenericArray::from(reader_digest(&mut file,64<<20)?));
         ensure!(
             digest == "78729e96b752aea746280275072ad24cb4399a053739c49a161ff1fcfbf85721",
             "Reader namespace layout is verified only for official UVI Workstation 4.0.9 x64"
         );
-        Ok(Self {
-            metadata: bytes[0x1ea4e58..0x1ea4e58 + 36].to_vec(),
-            program: bytes[31_586_936..31_586_936 + 39].to_vec(),
-        })
+        let mut namespaces=Self {metadata:vec![0;36],program:vec![0;39]};
+        file.seek(SeekFrom::Start(0x1ea4e58))?;
+        file.read_exact(&mut namespaces.metadata)?;
+        file.seek(SeekFrom::Start(31_586_936))?;
+        file.read_exact(&mut namespaces.program)?;
+        Ok(namespaces)
     }
 }
 
@@ -468,5 +484,24 @@ mod tests {
         let crc = crc32fast::hash(&oversized[12..29]);
         oversized[29..33].copy_from_slice(&crc.to_be_bytes());
         assert!(validate_png(&oversized).is_err());
+    }
+}
+
+#[cfg(test)]
+mod reader_memory_test {
+    use super::*;
+    struct BoundedRead(std::io::Cursor<Vec<u8>>);
+    impl Read for BoundedRead {
+        fn read(&mut self,b:&mut [u8])->std::io::Result<usize> {
+            if b.len()>8192 { return Err(std::io::Error::other("reader hash must use bounded chunks")); }
+            self.0.read(b)
+        }
+    }
+    #[test]
+    fn reader_hash_is_streamed_bounded_and_complete() {
+        let bytes=vec![37;128*1024];
+        let expected:[u8;32]=Sha256::digest(&bytes).into();
+        assert_eq!(reader_digest(BoundedRead(std::io::Cursor::new(bytes)),128*1024).unwrap(),expected);
+        assert!(reader_digest(std::io::Cursor::new(vec![0;17]),16).is_err());
     }
 }
