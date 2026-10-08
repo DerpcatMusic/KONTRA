@@ -108,3 +108,37 @@ On this checkpoint Native consumer attempts and decoded package font files are o
 The exporter treats a Native loading/error caption as authored UI failure even when its framebuffer paints successfully. A pending/unavailable Native package keeps asset/font counters unknown. `reason` appends only fixed UI categories and positive resource-failure counts. Missing first-frame timing is `unknown` in TSV, including a null sidecar field. These exporter rules apply to resumed cached metrics without rerunning a library.
 
 Keyswitch audition safety: `NI_KEY_TYPE_NONE` is a display hint, not a MIDI veto; scripts may leave that type on recoloured playable notes. The scanner first selects an enabled source articulation, excludes actual control/keyswitch and inactive keys, then chooses a covered musical note/velocity. Numeric program receipts expose `selected_articulation`.
+
+Native fidelity evidence: diagnostic builds retain `dsp_slots` per program,
+with every occupied FX/filter/modulator slot's physical address, enabled state,
+`implemented`/`approximated`/`dropped` disposition and typed reason. The three
+`*_slots_dropped` columns contain JSON `{enabled,bypassed}`; incomplete inventory
+is `unknown`. Both classes fail parity, with enabled drops ranked first.
+
+`family_native` contains native-reader numeric ranges, group criteria, cycle
+classes, starts, direction and loops; it contains no sample/audio/script payload.
+`native_family.py` is an independent reader/evaluator of this record, with no
+runtime selection calls. With `KONTRA_SCAN_FAMILY_REPEATS=32`, `family_takes`
+records actual admitted voices for repeated attack/release auditions, including
+original source IDs and final cursors/loops. Repeats are untimed fidelity work;
+keep timing/CPU/RSS runs separate. The cache signature includes this protocol.
+The family CSV verdict is `MATCH`, typed `MISMATCH`, or `UNKNOWN`;
+`family_script_driven_count` counts programs whose native script can select beyond
+static metadata. These stay UNKNOWN until independent native captures arrive.
+Unsupported native laws and incomplete repeated evidence also stay UNKNOWN.
+
+For slot receipts without audition/rendering, build the `sampler-uvi`
+`slot_inventory` example with `sampler-kontakt/scan,sampler-uvi/scan`, then run
+small shards with `tools/kontra-gate/slot-census.py` through `kontakto-heavy`.
+This uses the native importer's actual translation outcomes. Its counts are
+condition-independent authored topology evidence, not warm-cache execution proof.
+
+Each modulator slot also has `targets`: native target ordinal/parameter,
+serialized module slot, enabled state, disposition and reason. `module_basis`
+labels the physical insert lookup or native XML owner; a source-control target's
+slot namespace is unverified. Loss tallies group by the native parameter name.
+Kontakt target status joins the actual translator's route return by physical
+source address and ordinal; an admitted sibling is excluded from loss counts.
+`tools/kontra-gate/slot-report.py RECEIPT_DIRECTORY` aggregates both slot and
+per-target losses, with enabled/bypassed totals and engine SHA provenance.
+Keep before/after receipt directories separate for each product SHA.

@@ -206,6 +206,8 @@ fn translate(
         engine: Vec::new(),
         dynamic: false,
         send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
     };
     match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
         Ok(records) => for record in records {
@@ -477,6 +479,8 @@ fn translate(
     let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
         instrument: out.ir,
@@ -521,6 +525,8 @@ struct Translation {
     /// A script writes effect slots while playing.
     dynamic: bool,
     send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
+    #[cfg(feature="scan")]
+    target_outcomes: crate::coverage::Targets,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
@@ -948,16 +954,15 @@ impl Translation {
                 { address.runtime = Some(modulator); }
                 if envelope_source && volume && envelope.is_none() {
                     envelope = Some(modulator);
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,0),true);
                     continue;
                 }
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        envelope_source,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,envelope_source,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -1001,6 +1006,8 @@ impl Translation {
                     // gain × velocity: the attenuate law at full intensity,
                     // kept on the voice so no per-voice modulation is needed.
                     velocity = ir::VelocityResponse::Linear;
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,0),true);
                     continue;
                 }
                 let source = match params.source {
@@ -1056,14 +1063,11 @@ impl Translation {
                 {
                     address.runtime = Some(modulator);
                 }
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        !bipolar,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,!bipolar,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -2005,6 +2009,8 @@ mod modulation {
             engine: Vec::new(),
             dynamic: false,
             send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
         }
     }
 

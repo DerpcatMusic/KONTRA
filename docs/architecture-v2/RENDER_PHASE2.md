@@ -298,3 +298,58 @@ Evidence: `~/.cache/kontakto-w3/stack-safety/{manifest,evidence}.json`,
 The shared collector CLI/metrics and driver stayed unchanged. The scanner was
 built at 74718ad7; later commits add tests/reporting only, with unchanged
 production lowering and scanner code.
+
+## Native binding and telemetry checkpoint (W3)
+
+The shared Native bridge preserves declared text and arrays when only scalar
+telemetry is available. The focused test fails before the guard and passes for
+text, integer arrays and real arrays afterward. Valid bindings retain the live
+0.625 meter readback and typed edit routing.
+
+**PROVISIONAL (no Kontakt reference capture):** retain the requested face;
+unmatched parameters report `connected=false` and ignore edits/touch; unmatched
+meters report `connected=false` and no level. Program ownership is unchanged.
+NI documents [identifier-only KSP exposure](https://docs.native-instruments.com/ni-tech-manuals/ksp-manual/en/user-interface-commands#expose_controls)
+and [unconnected meters](https://developer.native-instruments.com/komplete-ui/docs/Packages/kontakt/Classes/KSPLevelMeter/).
+All 12 installed NKRs were inspected; Conflux has 134 readable Native modules.
+The two quoted program-0 candidate identifiers reached no binding call during
+requested-face initialization/rendering, including tagged indirect flow. This
+does not prove inactive branches or Kontakt-observed legacy Native behavior.
+
+This checkpoint does not claim full-editor Native painting or a final N/50
+Original-OK count. Those remain a separate, timeboxed investigation.
+
+
+### Deferred Canvas callback budget
+
+Canvas paint executes after graph construction and layout. Give each deferred
+paint callback the same bounded 100,000-instruction/250 ms budget as an input
+callback; the graph deadline may have expired while layout loaded fonts.
+
+Failing-first regression waits 300 ms after lowering a Canvas, then paints it:
+old code reports an expired NativeUI budget; the fixed callback paints. An
+explicit 2 MiB full-editor fixture also paints a nested native graph. Real
+Conflux and BigScreen program 1 painted with no native failure categories on
+2 MiB threads: debug peak 1,120,160 bytes, optimized CI peak 269,079 bytes.
+Receipts: `~/.cache/kontakto-w3/ui-audit-stack/`. The evidence build contained
+additional test-only diagnostics; this commit excludes those probes.
+BigScreen program 0 and the 50-multi count remain separate pending checks.
+
+
+### Unconnected native string properties
+
+Keep property return types when a requested face has an unmatched declaration:
+caption, tooltip, value text and menu item text return empty strings; the menu
+has zero items and no visible item. Other unavailable properties remain nil.
+Bindings remain disconnected/inert and meters have no level; no other program
+supplies their values. This extends the PROVISIONAL unmatched-binding policy
+above; no Kontakt reference capture exists.
+
+Failing-first legacy binding regression rejects nil captions, then passes with
+typed empty strings. BigScreen program 0 now paints the requested face without
+native failures on an explicit 2 MiB full-editor thread: debug peak 1,120,160
+bytes; optimized CI peak 269,207 bytes. The CI area no-run and both explicit
+2 MiB lowering/full-editor regressions pass. Receipts are under
+`~/.cache/kontakto-w3/ui-audit-stack/`; the evidence build includes test-only
+diagnostics omitted from this commit. The corpus count and scanner receipts
+are recorded separately under `~/.cache/kontakto-w3/native-caption/`.

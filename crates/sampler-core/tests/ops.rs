@@ -193,3 +193,122 @@ fn programs_reject_unbacked_text_and_runaway_calls_fault() {
         Ok(Some(Outcome::Fault(Error::Capacity)))
     );
 }
+
+#[test]
+fn borrowed_constants_and_tables_keep_utf8_truncation_and_self_append_without_heap() {
+    let constant = "é".repeat(TEXT_CAPACITY / 2);
+    let expected_self = format!("x{}x", "é".repeat(TEXT_CAPACITY / 2 - 1));
+    let program = Program::new(vec![
+        op(Op::TextAppend {
+            text: TextRef::Cell(0),
+            part: TextPart::Constant(0),
+        }),
+        op(Op::TextAppend {
+            text: TextRef::Cell(0),
+            part: TextPart::Constant(1),
+        }),
+        set(0, -1),
+        op(Op::TextAppend {
+            text: TextRef::Cell(0),
+            part: TextPart::Table {
+                base: 0,
+                count: 1,
+                index: 0,
+            },
+        }),
+        op(Op::TextAppend {
+            text: TextRef::Cell(1),
+            part: TextPart::Constant(1),
+        }),
+        set(0, 0),
+        op(Op::TextAppend {
+            text: TextRef::Cell(1),
+            part: TextPart::Table {
+                base: 0,
+                count: 1,
+                index: 0,
+            },
+        }),
+        op(Op::TextAppend {
+            text: TextRef::Cell(1),
+            part: TextPart::Text(TextRef::Cell(1)),
+        }),
+        Instruction::End,
+    ])
+    .unwrap()
+    .with_texts(&[&constant, "x"])
+    .unwrap()
+    .with_script_instance(ScriptInstanceId(0))
+    .with_wait_lifetime(WaitLifetime::Callback);
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_script_instances(vec![vec![]])
+        .unwrap()
+        .with_script_resources(vec![ScriptResources {
+            texts: vec![String::new(), String::new()],
+            text_properties: vec![],
+            store: vec![],
+            store_capacity: 0,
+            controls: vec![],
+        }])
+        .unwrap()
+        .with_programs(vec![program], None)
+        .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    let plan = rt.active_plan();
+    support::without_heap(|| {
+        let id = rt.start_plan_behavior(plan, 0).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+        assert_eq!(
+            rt.script_text(plan, ScriptInstanceId(0), 0)
+                .unwrap()
+                .as_str(),
+            constant
+        );
+        assert_eq!(
+            rt.script_text(plan, ScriptInstanceId(0), 1)
+                .unwrap()
+                .as_str(),
+            expected_self
+        );
+        assert_eq!(rt.truncated_texts(), 3);
+    });
+}
+
+#[test]
+fn nested_subroutine_frames_survive_each_fuel_boundary_without_heap() {
+    let program = Program::new(vec![
+        set(0, 0),
+        op(Op::Call { target: 4 }),
+        Instruction::End,
+        Instruction::End,
+        op(Op::Call { target: 7 }),
+        op(Op::Return),
+        Instruction::End,
+        Instruction::AddLocal { local: 0, value: 1 },
+        op(Op::Return),
+    ])
+    .unwrap()
+    .with_wait_lifetime(WaitLifetime::Callback);
+    let plan = Prepared::new(48000, vec![], vec![], 0)
+        .unwrap()
+        .with_programs(vec![program], None)
+        .unwrap();
+    let mut limits = limits();
+    limits.behavior_fuel = 2;
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        let id = rt.start_plan_behavior(rt.active_plan(), 0).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(None));
+        assert_eq!(rt.behavior_local(id, 0), Ok(0));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(None));
+        assert_eq!(rt.behavior_local(id, 0), Ok(1));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(None));
+        rt.render(&mut [[0.; 2]; 1]).unwrap();
+        assert_eq!(rt.behavior_outcome(id), Ok(Some(Outcome::Finished)));
+        assert_eq!(rt.behavior_local(id, 0), Ok(1));
+        assert_eq!(rt.preemptions(), 3);
+    });
+}

@@ -24,12 +24,15 @@ fn runtime(source: &str) -> Runtime {
     runtime_script(compile(source).unwrap())
 }
 fn runtime_script(script: sampler_ksp::Script) -> Runtime {
+    runtime_script_pcm(script, Pcm::new(48000, Box::from([[1.; 2]; 16])).unwrap())
+}
+fn runtime_script_pcm(script: sampler_ksp::Script, pcm: Pcm) -> Runtime {
     let note_cells = script.note_cells() * 12;
     let plan = script
         .bind(
             Prepared::new(
                 48000,
-                vec![Pcm::new(48000, Box::from([[1.; 2]; 16])).unwrap()],
+                vec![pcm],
                 vec![Region {
                     sample: 0,
                     key_low: 60,
@@ -75,6 +78,62 @@ fn input(key: u8) -> Input {
         channel: 0,
         key,
         external_id: Some(i32::from(key)),
+    }
+}
+
+#[test]
+fn ignore_other_event_discards_pending_and_held_notes_without_key_up() {
+    for pending in [false, true] {
+        let source = "on init declare $old declare $releases end on
+            on note
+                if ($EVENT_NOTE = 60)
+                    $old := $EVENT_ID
+                else
+                    ignore_event($old)
+                    ignore_event($EVENT_ID)
+                end if
+            end on
+            on release inc($releases) end on";
+        let (cache, mut worker) = StreamCache::new(2).unwrap();
+        let script = compile(source).unwrap();
+        assert!(script.coverage().iter().any(|&(name, coverage, _)|
+            name == "ignore_event" && coverage == sampler_ksp::Coverage::Native));
+        assert!(!script.coverage().iter().any(|&(name, coverage, _)|
+            name == "ignore_event" && coverage == sampler_ksp::Coverage::Approximate));
+        let mut rt = if pending {
+            runtime_script_pcm(script, Pcm::streamed(48000, PAGE_FRAMES).unwrap())
+                .with_stream_cache(cache)
+        } else { runtime_script(script) };
+        rt.set_cold_starts(true);
+        support::without_heap(|| {
+            let old = rt.trigger(input(60), 60, 1.).unwrap();
+            rt.render(&mut [[0.; 2]; 1]).unwrap();
+            assert_eq!(rt.voice_count(), 1);
+            let target = rt.resolve_source_event(rt.active_plan(),
+                rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 0).unwrap() as i32).unwrap().unwrap();
+            if pending { rt.service_streaming(16).unwrap(); }
+            rt.trigger(input(61), 61, 1.).unwrap();
+            assert_eq!(rt.script_cell(rt.active_plan(), ScriptInstanceId(0), 1), Ok(0),
+                "discard cannot manufacture a release callback");
+            assert!(rt.release_context(target).unwrap().key.is_none(), "discard cannot manufacture key-up");
+            assert!(rt.input_held(old).unwrap());
+            assert_eq!(rt.voice_count(), 0);
+            if pending {
+                let mut job = worker.next_job().unwrap();
+                job.frames_mut().fill([1.; 2]);
+                worker.complete(job, Ok(())).unwrap();
+                rt.service_streaming(16).unwrap();
+            }
+            let mut output = [[1.; 2]; 128];
+            rt.render(&mut output).unwrap();
+            assert_eq!(output, [[0.; 2]; 128], "discarded delayed attacks must stay cancelled");
+            rt.flush_behaviors(|_, _, _| true);
+            rt.note_off(input(60), None).unwrap();
+            rt.note_off(input(61), None).unwrap();
+            rt.flush_behaviors(|_, _, _| true);
+            rt.flush_ended(|_| true);
+            assert_eq!((rt.note_count(), rt.pending_commands()), (0, 0));
+        });
     }
 }
 
