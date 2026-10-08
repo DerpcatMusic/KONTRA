@@ -38,7 +38,7 @@ Owner adapters run after scanner/probes when present. They may also be run witho
 # --adapter gestures, host or all
 ```
 
-CPU consumes immutable `~/.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1` and builds the exact-source `cpu_audit` example. The binary SHA256 must be `b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab`; adjacent `BUILD.json` must match that digest, v1 source `0cb7a8a0`, adapter commit `42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad` and equivalence PASS. Its receipt is retained in `cpu.json`. Both CPU workers run with `XDG_CACHE_HOME=/dev/null`, using `PATH BLOCK piano|strings|fx` at 32/64/256 frames. Raw output stays in RAM. Cells remain unknown when the adapter is missing, fails integrity or is inaudible; UVI and multi support is absent from the existing v1 CPU adapter. Gesture invokes W2's exact ignored native Conflux sweep and requires one executed test plus nonzero gesture witnesses; this does not certify the other gate instruments. Family stays unknown: the current scanner exposes MIDI audition picks and zone counts, not selected family/RR identity.
+CPU consumes immutable `~/.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1` and builds the exact-source `cpu_audit` example. The binary SHA256 must be `b9998ca2ce2f2ed4f9f88bbfb11c5e884fa162a87cdf89f26ece6f1248fdc6ab`; adjacent `BUILD.json` must match that digest, v1 source `0cb7a8a0`, adapter commit `42a0ae9103b1a1cc31a93b3c08e5b86462ccfcad` and equivalence PASS. Its receipt is retained in `cpu.json`. Both CPU workers run with `XDG_CACHE_HOME=/dev/null`, using `PATH BLOCK piano|strings|fx` at 32/64/256 frames. Raw output stays in RAM. Cells remain unknown when the adapter is missing, fails integrity or is inaudible; UVI and multi support is absent from the existing v1 CPU adapter. Gesture coverage is measured per item and condition by the Original editor probe below. Family stays unknown: the current scanner exposes MIDI audition picks and zone counts, not selected family/RR identity.
 
 Host consumes the existing CPU audit CLAP host probe and an existing exact-source v2 artifact, never builds or installs a plugin release. Set `KONTRA_GATE_CLAP_INCLUDE` to the SDK include path and `KONTRA_GATE_V2_CLAP_RECEIPT` to a JSON file with `path`, `source_sha` and `sha256`. The source/hash must match the gate. Both installed v1 and supplied v2 process/flush cells must complete; they measure an empty exported plugin, not loaded-library host CPU. Initial baseline manifest/metrics/summary/diff are preserved before adapter extensions.
 
@@ -53,7 +53,8 @@ Conflux Vector/readback witness cannot certify another cell.
 
 `gestures/<condition>/<item-sha256>/metrics.json` contains passed/total counts,
 per-program observations and typed reasons: parameter-unchanged, navigation-only,
-occluded-or-outside-viewport, save-reload-mismatch, script-or-render-fault, probe-budget,
+occluded-or-outside-viewport, save-reload-mismatch, save-reload-load-failed,
+script-or-render-fault, probe-budget,
 probe-timeout, probe-crash-or-no-receipt, invalid-receipt. Target identity is hashed;
 resources, parameter values and serialized host state are never exported. Native
 menus use real popup item clicks. Passive meters/panels/images and disabled controls

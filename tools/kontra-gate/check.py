@@ -26,6 +26,8 @@ print('gate checks passed')
 import adapters
 assert adapters.CPU_V1 == Path.home() / '.cache/kontra-scan/cpu-v1/bin/cpu-audit-v1'
 adapters.HEAVY = Path('/usr/bin/env')
+assert adapters.QUIET_REQUEST == Path.home() / '.cache/kontra-quiet-request'
+adapters.QUIET_REQUEST = Path('/proc/self/kontra-test-quiet-absent')
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp)
     records, witness, raw = adapters.capture(['/usr/bin/python3', '-c', 'import sys; print("secret"); print("{\\"block\\":64}"); print("secret",file=sys.stderr)'], root / 'capture')
@@ -124,3 +126,15 @@ with tempfile.TemporaryDirectory() as tmp:
     assert adapters.gesture_cell([dict(record, coverage_complete=False)], item, 'cold')['status'] == 'UNKNOWN'
     assert adapters.gesture_cell([dict(record, faults=1)], item, 'cold')['status'] == 'FAIL'
 print('per-item gesture receipt checks passed')
+
+# A quiet request must prevent submitting a heavy job, including untimed gestures.
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp); (root / '.cache').mkdir()
+    (root / '.cache/kontra-quiet-request').touch()
+    with patch('adapters.QUIET_REQUEST', root / '.cache/kontra-quiet-request'), patch('adapters.subprocess.run') as run:
+        records, witness, raw = adapters.capture(['unreachable'], root / 'quiet')
+        assert records == [] and raw == '' and witness['returncode'] == 75
+        assert witness['reason'] == 'quiet-request-active'
+        run.assert_not_called()
+print('quiet request admission check passed')
