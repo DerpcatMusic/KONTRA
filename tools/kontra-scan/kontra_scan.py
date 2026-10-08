@@ -21,7 +21,7 @@ V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state', 'contention']
 
 
 def library(item):
@@ -51,6 +51,7 @@ def signature(item, revision):
     if '::' in item and SIDECAR_SHA: identity += [SIDECAR_SHA]
     plan=note_path(item)
     identity += ['declared-keys-then-zone-v1', hashlib.sha256(plan.read_bytes()).hexdigest() if plan.exists() else 'unplanned']
+    if os.environ.get('KONTRA_GATE_ACTIVITY') == '1': identity += ['gate-contention-v1']
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
@@ -94,7 +95,8 @@ def extra_columns(r):
     renders += [v['render'] for v in views if isinstance(v.get('render'),dict)]
     r['first_audio_ms']=r.get('first_audio_ms') if isinstance(r.get('first_audio_ms'),(int,float)) else 'unknown'
     first_frames=[x['ui_first_frame_ms'] for x in renders if isinstance(x.get('ui_first_frame_ms'),(int,float))]
-    r['ui_first_frame_ms']=min(first_frames) if first_frames else r.get('ui_first_frame_ms','unknown')
+    first_frame=min(first_frames) if first_frames else r.get('ui_first_frame_ms')
+    r['ui_first_frame_ms']=first_frame if isinstance(first_frame,(int,float)) else 'unknown'
     r['cache_state']=r.get('cache_state','unknown')
     for render in renders:
         if 'error_hash' in render: render.update(ok=False,reason=render.get('stage','paint failure'))
@@ -128,8 +130,18 @@ def extra_columns(r):
     # v1's retained full-editor render is itself the render record.
     errors += [v for v in views if v.get('ok') is False]
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
+    font_failures=count(views,'missing_fonts')
+    if not errors and r.get('ui') in {'original-ok','missing-images','missing_font'} and isinstance(font_failures,(int,float)) and font_failures>0:
+        r['ui']='missing_font'
     r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
+    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None)]
+    if native_failures:
+        r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
+        r['paint_ok']='no'
+        r['paint_error']='native-authored-frontend-unavailable' # successfully painting an error/loading label is not authored UI success
+        authored_frames=[x['ui_first_frame_ms'] for v in views if v not in native_failures for x in (v.get('renders',[]) or [v.get('render',{})]) if x.get('ok') is not False and isinstance(x.get('ui_first_frame_ms'),(int,float))]
+        r['ui_first_frame_ms']=min(authored_frames) if authored_frames else 'unknown'
     slots=[x for p in ksp for x in p.get('slots',[])]
     inventory=r.get('metadata',{}).get('slots',[])
     raw_known=isinstance(r.get('metadata',{}).get('slots'),list)
@@ -175,6 +187,20 @@ def extra_columns(r):
     if r.get('script_phase_observation') == 'disabled-for-product-cache':
         for key in ['ksp_compile_ok', 'ksp_init_ok', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors']:
             r[key] = 'unknown'
+    # Explain failure with fixed categories/counts; never copy authored diagnostics into the reason.
+    base=r.get('reason','').split('; UI diagnosis:',1)[0].split('; admission:',1)[0]
+    failed=sum(p.get('loaded') is not True for p in programs)
+    if r.get('loads')=='no' and failed:
+        base+='; admission: '+str(failed)+'/'+str(len(programs))+' embedded programs failed import/plan construction'
+    r['reason']=base
+    if r.get('ui') in ['blank','missing-images','missing_font','error','budget-hit']:
+        detail=r['ui']
+        failure_counts=combine(views,'asset_failure_reasons')
+        positive=[f'{k}={failure_counts[k]}' for k in ['lookup-not-found','decode-failed','font-service-unavailable'] if failure_counts.get(k,0)>0]
+        if positive:detail+=' ('+', '.join(positive)+')'
+        elif r['ui']=='missing-images':detail+=' (missing references='+str(sum(v.get('missing_images',0) for v in views))+')'
+        if native_failures:detail+='; native authored frontend unavailable'
+        r['reason']=base+'; UI diagnosis: '+detail
     return r
 
 
@@ -240,7 +266,8 @@ def probe(engine, item, work, timeout, shots):
         import importlib.util
         spec = importlib.util.spec_from_file_location('gate_evidence', Path(__file__).resolve().parent.parent / 'kontra-gate/evidence.py')
         evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
-        capture = evidence.Capture(work, env)
+        try: capture = evidence.Capture(work, env)
+        except evidence.QuietBusy: return {'gate_quiet_retry': True}
     with (work / 'stdout.json').open('w') as output:
         child = subprocess.Popen([str(worker), '--worker', item, str(work)], stdout=output,
                                  stderr=capture.stderr if capture else subprocess.DEVNULL, start_new_session=True, env=env)
@@ -306,6 +333,7 @@ def probe(engine, item, work, timeout, shots):
     # stdout is metrics only; keep one canonical cached record, not a second copy.
     (work / 'stdout.json').unlink(missing_ok=True)
     (work / 'progress.json').unlink(missing_ok=True)
+    if capture and capture.activity: r['contention'] = capture.activity.result['status']
     return r
 
 
@@ -334,14 +362,17 @@ def main():
         for item in selected:
             key = signature(item, revision)
             cached = args.out / 'cache' / (key + '.json')
-            if cached.exists() and json.loads(cached.read_text()).get("audition_status")!="audition-mismatch":
-                reused += 1
-                continue
+            if cached.exists():
+                previous = json.loads(cached.read_text())
+                if previous.get('audition_status') != 'audition-mismatch' and (os.environ.get('KONTRA_GATE_REQUIRE_QUIET') != '1' or previous.get('contention') == 'QUIET'):
+                    reused += 1
+                    continue
             remaining = args.budget_seconds - (time.monotonic() - started)
             needed = args.timeout_seconds * (2 if os.environ.get('KONTRA_GATE_CACHE_CONDITION') == 'product-warm' else 1)
             if remaining < min(needed,args.budget_seconds):
                 break
             r = probe(engine, item, args.out / 'items' / key, min(args.timeout_seconds, args.budget_seconds), args.shots)
+            if r.get('gate_quiet_retry'): break  # Release this shard's slot before waiting for quiet.
             r.update(path=item, library=library(item), revision=revision)
             extra_columns(r)
             cached=args.out/'cache'/(signature(item,revision)+'.json')

@@ -3,6 +3,55 @@
 use sampler_core::*;
 mod support;
 
+#[test]
+fn note_parameter_pages_grow_without_moving_live_state_or_audio_heap_work() {
+    fn make(initial: usize) -> (Runtime, PlanControl) {
+        let plan = Prepared::new(48000,
+            vec![Pcm::new(48000, vec![[0.002; 2]; 6000].into_boxed_slice()).unwrap()],
+            vec![Region { sample: 0, key_low: 60, key_high: 60, root_key: Some(60),
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: Envelope::default(), playback: Playback::default() }], 512).unwrap();
+        let limits = Limits { families: 512, ..Limits::for_plan(&plan, 512, 1024) };
+        Runtime::with_plan_updates_and_note_capacity(plan, limits, 2, 1, initial).unwrap()
+    }
+    fn note(rt: &mut Runtime, id: i32) -> Result<NoteId, Error> {
+        rt.trigger(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0,
+            key: 60, external_id: Some(id) }, 60, 1.)
+    }
+    fn block(a: &mut Runtime, b: &mut Runtime) {
+        let mut left = [[0.; 2]; 64]; let mut right = left;
+        support::without_heap(|| { a.render(&mut left).unwrap(); b.render(&mut right).unwrap(); });
+        assert_eq!(left.map(|p| p.map(f32::to_bits)), right.map(|p| p.map(f32::to_bits)));
+        assert!(left.iter().any(|p| p[0] != 0.));
+    }
+    let (mut small, mut control) = make(128);
+    let (mut full, _) = make(512);
+    for id in 0..97 {
+        let a = note(&mut small, id).unwrap(); let b = note(&mut full, id).unwrap();
+        small.set_note_param(a, ModTarget::Decibels, -6., false).unwrap();
+        full.set_note_param(b, ModTarget::Decibels, -6., false).unwrap();
+    }
+    assert!(control.note_pressure());
+    block(&mut small, &mut full);
+    assert_eq!(control.grow_note_params(256), Ok(256));
+    assert_eq!(small.note_params_capacity(), 128);
+    assert_eq!(control.grow_note_params(512), Err(PlanError::Capacity));
+    note(&mut small, 97).unwrap(); note(&mut full, 97).unwrap();
+    assert!(!control.note_pressure(), "pressure on the old capacity must not request growth of the queued capacity");
+    block(&mut small, &mut full);
+    assert_eq!(small.note_params_capacity(), 256);
+    assert!(!control.note_pressure(), "adoption clears pressure against the old capacity");
+    for id in 98..256 { note(&mut small, id).unwrap(); note(&mut full, id).unwrap(); }
+    assert_eq!(note(&mut small, 256), Err(Error::Capacity));
+    assert_eq!(control.grow_note_params(512), Ok(512));
+    block(&mut small, &mut full);
+    assert_eq!(small.note_params_capacity(), 512);
+    for id in 256..300 { note(&mut small, id).unwrap(); note(&mut full, id).unwrap(); }
+    block(&mut small, &mut full);
+    assert_eq!(small.stats().voice_growths, 0);
+    assert_eq!(control.grow_note_params(513), Err(PlanError::Capacity));
+}
+
 const LAYERS: usize = 4;
 const NOTES: usize = 40;
 

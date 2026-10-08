@@ -604,7 +604,9 @@ pub(crate) fn script_environment(
     sampler_ksp::Environment {
         evaluation_budget: None,
         groups,
-        engine_values: Default::default(),
+        engine_values: source.engine_values.iter().map(|value| (
+            [i32::from(value.parameter), value.group, value.slot, value.generic], value.value,
+        )).collect(),
         engine_lookups: sampler_core::lower::source_engine_lookups(source),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),

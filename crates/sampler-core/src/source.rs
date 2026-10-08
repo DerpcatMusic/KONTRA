@@ -152,7 +152,7 @@ impl Playback {
             starvation: None,
             fade_in: 0,
             fade_frames: output_rate.div_ceil(1000),
-            cold_hold: 0,
+            cold_hold: false,
         };
         if let Some(range) = self.loop_range
             && let Some(passes) = range.passes
@@ -238,8 +238,8 @@ pub(super) struct Cursor {
     // Remaining fade-in frames after a recovered miss.
     fade_in: u32,
     fade_frames: u32,
-    /// Bounded onset hold; later streaming misses still advance in source time.
-    cold_hold: u32,
+    /// Initial storage hold; lifecycle events still end an unsounded voice.
+    cold_hold: bool,
 }
 
 struct ReadAddress {
@@ -318,6 +318,9 @@ impl Cursor {
                 .any(|(i, slot)| slot.is_some() && loops.exits[i].is_none())
         }) || self.loop_range.is_some() && self.exit.is_none()
     }
+
+    pub(super) fn trace_start(&self) -> u64 { self.start as u64 }
+    pub(super) fn trace_position(&self) -> u64 { self.index(self.position as i128).map_or(self.start as u64, |i| i as u64) }
 
     pub(super) fn step(&self) -> f64 {
         if let Some(loops) = self.loops {
@@ -462,7 +465,7 @@ impl Cursor {
     /// Start silent, waiting for its stream window (a cold start).
     pub(super) fn cold(mut self) -> Self {
         self.starvation = Some(0);
-        self.cold_hold = self.fade_frames.saturating_mul(50);
+        self.cold_hold = true;
         self
     }
 
@@ -470,6 +473,8 @@ impl Cursor {
     pub(super) fn waiting(&self) -> bool {
         self.starvation == Some(0)
     }
+
+    pub(super) fn holding_onset(&self) -> bool { self.cold_hold }
 
     /// One millisecond of native fade from the last complete resampled frame.
     /// No incomplete resampler frame is published. The cursor keeps advancing in
@@ -509,25 +514,13 @@ impl Cursor {
         gains: [f32; 2],
         kernel: &Kernel,
     ) -> usize {
-        if self.cold_hold > 0 {
+        if self.cold_hold {
             if self.sample(pcm, kernel).is_some() {
-                self.cold_hold = 0;
+                self.cold_hold = false;
             } else {
-                let count = output.len().min(self.cold_hold as usize);
-                self.cold_hold -= count as u32;
-                // Hold both source and envelope: never skip the first transient.
-                if count == output.len() {
-                    return count;
-                }
-                return count
-                    + self.render_starved(
-                        pcm,
-                        &mut output[count..],
-                        envelope,
-                        gain,
-                        gains,
-                        kernel,
-                    );
+                // An unpreloaded onset must keep its requested offset, even
+                // when storage takes longer than the old 50 ms deadline.
+                return output.len();
             }
         }
         let count = if self.starvation != Some(0) {

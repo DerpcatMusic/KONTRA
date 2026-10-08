@@ -53,6 +53,47 @@ Renderer digest: `9fc219822bddb2b38463992cced542314ca62beb9a8d71f18827c27657774c
 
 ## Scanner provenance and limits
 
+### Resumed script state and native compressor comparison
+
+`103a46d1` fixes the shared rack detector: W5's `Op::EngineParameter`
+writes now retain real FX control lanes. Register-computed addresses require
+conservative detection. The failing importer fixture is green. After merging
+W5 `f040122b`, Analog's physical script slot 2 completes persistence;
+the global compressor's snapshot toggle is **1 (ON)** and output is **560434**.
+Layer compressor toggles are both zero. Physical instrument insert slot 1
+(`group=-1, generic=1`) remains bypass 0. No compensating trim is justified.
+
+The read-only native `an_c4_b`, `an_e4_b`, `an_g4_b` captures were compared
+with both corresponding `an_byp_*` repetitions. Onset-aligned stereo power
+over 1–3 seconds gives native ON/BYPASS **+8.24757 to +8.78953 dB**,
+mean **+8.43852 dB**. The rounded session RMS log gives +8.44367 dB.
+This supports the saved output law; the 0.55 dB difference from the shorter
+v2 probe is confounded by window, compressor reduction and sample choice.
+Native capture calibration passed at 0.1 dB. Reference WAVs were read in place.
+
+`4a49033f` ports v1 `src/fx/processor.rs` bypassed-send admission into a
+return gate on the **existing** physical slot bypass control. V2's dynamic
+Mix formerly returned unprocessed send input when bypassed, adding a dry copy.
+The failing unity probe measured 0.25 → 0.5 (+6.0206 dB); it now preserves
+0.25, and live engine enable/bypass writes correctly restore/mute the return.
+Kontakt lib: 57 passed, 4 ignored; required root no-run passed.
+
+Bounded C4 grid, keys 60, velocities 20/60/100/127, four repetitions each:
+on W5 persistence head with native UI enabled, the send fix changes mean
+native level error **+14.21787 → +8.37009 dB** (−5.84778 dB), zero native
+audible windows silent in v2. Per-velocity changes are −5.85488, −5.84365,
+−5.84364, −5.84894 dB. This attributes the restored-routing level increase
+to bypassed send returns. The remaining excess remains open; this is a family/distribution comparison, not an exact RR match.
+
+`4376a74e` directly copies pinned v1 `src/engine/filter/ladder.rs`, including
+native float32 arithmetic and 32/4-frame control scheduling. Its adapter
+reserves state only for Ladder stages in the worker-allocated arena; generic
+ProcessorState is unchanged. Native physical probes and exact fragmented
+adapter/voice-reuse parity pass (six selected core tests). `f699534d` adds
+typed normalized Ladder LP4 IR, record version, and shared gain/cutoff/resonance
+lowering; the public engine-parameter audio witness passes (core lower 21/21).
+`130f0fe9` imports subtype33/version90–92 using the pinned v1 versioned reader, including static physical ownership. Per-family census and remaining kernels are not yet complete.
+
 The candidate merges the shared adapter `9dcf05e5`. Frozen before binaries are copied into `~/.cache/kontakto-w6/bin/`, and are used only as before baselines.
 
 | Artifact | SHA256 |
@@ -72,3 +113,71 @@ The public Program reader and occupied-FX slot diagnostics listed as dirty work 
 ## Coordination and remaining acceptance
 
 W5 owns shared engine parameters and generic lowering. W10 owns the typed UVI catalog, Lua and bindings. W9 owns callback CPU/streaming. W6 must finish runtime send controls and remaining bus-scope send positions, new FX controls through the shared service, native kernel/clock gaps, full per-family admission counts, Analog state attribution and the full load/play comparison. Existing generic convolution and FDN tests establish core numerical behavior, not Kontakt-native IR preparation or reverb topology.
+
+### Native GRID state and frozen v1 bisection
+
+The GRID's four C4 velocity-100 repeats, onset-aligned 0.10–0.45 s stereo
+RMS, are −24.295 / −23.199 / −22.795 / −22.457 dBFS. The active native
+session is −25.177 dBFS; bypass repetitions are −33.838 / −34.176 dBFS.
+This supports active, not bypassed; the GRID must not be relabelled off.
+Session MIDI CC1 is 0 versus GRID 64; other initial CC values match. The
+window comparison controls duration (GRID notes are shorter), but CC and
+round robin differences prevent certifying identical state.
+
+Frozen v1 `bin/kontakto-v1` passes all frozen SHA256SUMS and reports clean
+`0cb7a8a0`. Its CLI caps renders at 60 s, so the full GRID misses the last
+C4 notes; the complete bounded 16-note C4 shard is used for both versions.
+Both use GRID CC1=64, CC7=127, CC10=64, CC11=127 and CC64=0. Pinned v1
+`src/main.rs` writes engine output ×0.25, whereas v2 writes unity: undoing
+that diagnostic-only −12.0412 dB scale gives v1 mean native error **+7.50092
+dB**, versus v2 **+8.37009 dB**. V1 per velocity is +5.82473 / +8.21732 /
++8.20747 / +7.75418 dB. Raw v1 WAV error is −4.54028 dB. The excess is
+largely shared; the additional v2 mean is +0.86917 dB. Stage attribution
+remains open; no compressor gain-law correction is justified by this result.
+
+Native UI metadata confirms completed persistence re-applies compressor
+bypass 0 and output 560434 on physical group −1, insert slot 1, generic 1.
+The probe reports only target names, addresses and integer values, never
+library script text. Its setter-site test excludes comments/strings/wrappers.
+
+### Trace-based Analog upstream attribution
+
+Shared traces `11ab86bd`, plugin mixer extension `32796758`, and live-envelope
+correction `aac993e6` expose the contribution and parameter evidence. Bounded
+C4 v100, GRID CC1=64/CC7=127/CC11=127, sounds two voices: zone28307/group88
+on layer5 and zone46025/group139 on layer6. Their zone outputs are −26.304 /
+−31.835 dBFS; post-layer outputs are −26.448 / −38.235. The coherent layer
+sum is −26.360 dBFS, only +0.088 dB over the dominant layer. Static crossfade
+and velocity gains are unity; CC1 0/64/127 does not change layer volumes.
+The amp multiplier0.741651714 (−2.596dB) is entirely the script's per-note gain.
+Group88 pre-gain is +2.007dB. Live amplitude-envelope attack times are5184 /
+50324frames, matching native engine values449120 /702000 within one frame;
+attack curve values413050 /411450 are applied. Saved instrument gain1.005088
+(+0.044dB) cannot account for the residual. No equal/full-layer crossfade or
+main-envelope init-loss explanation is supported by these observations.
+
+Layer gains match the intended init VOLUME requests593624 /525135 numerically,
+but the shared getter at group−1/slot−1/generic1002 /1003 returns unsupported.
+Do not treat a static match as proof that every corresponding write succeeded.
+The compressor trim560434 still gives +8.994dB and remains consistent with the
+native on/off delta; it does not explain the upstream difference.
+
+Both active groups report unmodeled source mode3. Their filter type100 at
+normalized cutoff0.214 /0.0, zero resonance, and the associated cutoff targets
+are omitted. Script init explicitly sets both slot0 bypasses to0 (enabled). The source-mode identity is retained numerically; no unverified
+source-engine mapping or compensation is inferred. A sixteen-C4-window Hann
+spectrum comparison shows v100 v2 excess~8.29dB below200Hz and~13.40dB above
+5kHz; corrected frozen v1 excess is~6.88 /13.30dB. These are band-energy
+comparisons across uncontrolled sample choices, not native internal taps. The
+remaining level/tone cause is unresolved; source/filter/modulation behavior
+needs attribution before changing a gain law. Remaining ports stay paused.
+
+Complete, zero-loss trace and chart:
+`~/.cache/kontakto-w6/analog-trace-envelope/signal-trace.json` and `.svg`.
+`analog-c4-window.svg` / `.png` / `.json` summarize frames52800–69600, with
+native final-output and explicitly inferred pre-compressor markers.
+`tools/dsp/chart_signal_trace.py` rejects incomplete/lossy input and can render
+any numeric node window, with measured/inferred reference markers.
+Numeric intent/contribution/envelope receipts remain beside the run artifacts;
+reference WAVs were only read in place, and no sample payload or script source
+is exported in the trace.

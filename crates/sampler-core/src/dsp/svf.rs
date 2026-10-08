@@ -75,6 +75,7 @@ pub(crate) struct PreparedFilter {
 }
 
 impl PreparedFilter {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, PreparedParameter); 2] { [("cutoff_hz",self.cutoff),("q",self.q)] }
     pub fn requires_expression(self) -> bool {
         self.cutoff.requires_expression() || self.q.requires_expression()
     }
