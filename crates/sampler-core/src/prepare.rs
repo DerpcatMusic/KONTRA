@@ -2,8 +2,8 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use predicates::Matching;
+pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
@@ -133,15 +133,30 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
+        Ok(std::mem::replace(
+            &mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()),
+            ranges,
+        ))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.len())
+            .sum()
     }
     /// Bytes resident ranges hold, packed.
     pub fn head_bytes(&self) -> usize {
-        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
+        self.0
+            .head
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.bytes())
+            .sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {
@@ -420,10 +435,19 @@ pub struct Prepared {
     /// Controller values a script set in `on init`, before any input.
     pub(super) initial_controllers: Vec<(u8, u32)>,
     pub(super) region_groups: Box<[Option<u32>]>,
+    pub(super) region_zone_ids: Box<[u32]>,
+    pub(super) native_start: Box<[Box<[sampler_ir::GroupStart]>]>,
+    pub(super) native_articulation_keys: Box<[Option<u8>]>,
+    pub(super) native_default_key: Option<u8>,
+    pub(super) native_rr_length: u32,
+    pub(super) native_random_groups: Box<[u32]>,
     pub(super) voice_limit: Option<super::VoiceLimit>,
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
+    pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) envelope_controls: Box<[[Option<super::ControlId>; 6]]>,
+    pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
     /// Bus index by source address, for script group routing.
@@ -439,6 +463,8 @@ pub struct Prepared {
     pub(super) script_initial: Box<[super::ops::ScriptBank]>,
     pub(super) stages: Box<[super::Stage]>,
     pub(super) note_cells: usize,
+    pub(super) automation: Box<[super::AutomationBinding]>,
+    pub(super) widgets: Box<[super::WidgetDefinition]>,
     pub(super) controls: Box<[super::ControlDefinition]>,
     pub(super) control_programs: Box<[super::ControlCallback]>,
     pub(super) plan_programs: Box<[super::PlanProgram]>,
@@ -609,10 +635,19 @@ impl Prepared {
             script_release_triggers: false,
             initial_controllers: Vec::new(),
             region_groups: Box::new([]),
+            region_zone_ids: Box::new([]),
+            native_start: Box::new([]),
+            native_articulation_keys: Box::new([]),
+            native_default_key: None,
+            native_rr_length: 0,
+            native_random_groups: Box::new([]),
             voice_limit: None,
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
+            engine_parameters: Box::new([]),
+            envelope_controls: Box::new([]),
+            engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
             bus_addresses: Box::new([]),
@@ -625,6 +660,8 @@ impl Prepared {
             script_initial: Box::new([]),
             stages: Box::new([]),
             note_cells: 0,
+            automation: Box::new([]),
+            widgets: Box::new([]),
             controls: Box::new([]),
             control_programs: Box::new([]),
             plan_programs: Box::new([]),
@@ -713,7 +750,16 @@ impl Prepared {
         regions: Vec<Option<usize>>,
         start_ranges: Vec<u32>,
     ) -> Result<Self, Error> {
-        if regions.len() != self.regions.len() {
+        if regions.len() != self.regions.len()
+            || programs
+                .iter()
+                .flat_map(|p| &p.routes)
+                .any(|r| match r.target {
+                    super::ModTarget::ProcessorCutoff(i)
+                    | super::ModTarget::ProcessorResonance(i) => i as usize >= self.filters.len(),
+                    _ => false,
+                })
+        {
             return Err(Error::InvalidInput);
         }
         self.voice_modulation =
@@ -729,6 +775,10 @@ impl Prepared {
 
     pub fn sample_rate(&self) -> u32 {
         self.rate
+    }
+
+    pub(crate) fn region_chain(&self, region: usize) -> Option<usize> {
+        self.regions[region].chain
     }
 
     /// Required cells per logical note across all script-instance namespaces.
@@ -789,6 +839,21 @@ impl Prepared {
     pub fn region_count(&self) -> usize {
         self.regions.len()
     }
+    /// Resolve the positive source zone ID used by EventInfo::ZoneId, retaining source holes.
+    /// Control-side lookup; zero, omitted zones and absent source maps return None.
+    /// No fallback to runtime region ordinals.
+    pub fn source_zone_region(&self, zone_id: u32) -> Option<usize> {
+        if zone_id == 0 {
+            return None;
+        }
+        self.region_zone_ids.iter().position(|&id| id == zone_id)
+    }
+
+    /// The immutable prepared sample asset behind a region, for control-side peak work.
+    pub fn region_asset(&self, region: usize) -> Option<&Pcm> {
+        self.regions.get(region).and_then(|r| self.pcm.get(r.sample))
+    }
+
     pub fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
