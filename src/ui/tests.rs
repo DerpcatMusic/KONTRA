@@ -691,20 +691,22 @@ fn rack_interactions() {
     assert!(s.parts[1].path.ends_with("Strings.nki"));
 
     let ui = &h.ui;
+    let drag = std::sync::Mutex::new(None);
     let files = vec![PathBuf::from("/external/Native.nki")];
     let at = Point::new(10., 10.);
-    assert!(native_files(&p, &Default::default(), ui, at, &files, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, false));
     assert!(parts(&p)[0].path.is_empty(), "hovering does not load");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[0].path.ends_with("Native.nki"),
         "a dropped file takes the free slot"
     );
-    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("notes.txt")], true));
+    assert!(!native_files(&p, &Default::default(), &drag, ui, at, &[PathBuf::from("notes.txt")], true));
     let before_append = parts(&p).len();
     assert!(native_files(
         &p,
         &Default::default(),
+        &drag,
         ui,
         at,
         &vec![PathBuf::from("full.nki"); 17],
@@ -712,16 +714,16 @@ fn rack_interactions() {
     ));
     assert_eq!(parts(&p).len(), before_append + 17, "a native drop grows the rack rather than rejecting files");
     let at = center(ui, "header-1");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.kontra-multi")];
     let before = p.selection.read().unwrap().clone();
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
         "/external/Multi.kontra-multi"

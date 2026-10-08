@@ -268,7 +268,7 @@ fn render(
                 r
             }
             Ok(Err(e)) => {
-                json!({"ok":false,"budget_hit":metrics::budget(&e),"reason":metrics::message(&e)})
+                json!({"ok":false,"budget_hit":metrics::budget(&e),"reason":native.as_ref().and_then(|n|n.diagnostic()).unwrap_or_else(||metrics::message(&e))})
             }
             Err(_) => json!({"ok":false,"budget_hit":false,"reason":"Original renderer panic"}),
         });
@@ -311,6 +311,7 @@ fn render(
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
         "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
             "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
+        "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
 
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
