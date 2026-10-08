@@ -36,7 +36,9 @@ mod stream;
 #[cfg(feature = "library-access")]
 pub use access::library_key;
 pub use container::{Multi, read_chunks, read_multi};
-pub use library::{Kontakt, read, read_program, read_with_snapshot};
+pub use library::{Kontakt, read, read_program, read_with_snapshot, read_with_controls, read_program_with_controls, read_with_snapshot_and_controls};
+#[cfg(feature = "scan")]
+pub use load::take_script_init_runs;
 // Stage and Kind are defined below with LoadError.
 pub use load::{
     ArticulationMigration, Loaded, Options, Progress, articulation_migration, finish, load,
