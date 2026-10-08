@@ -1440,6 +1440,8 @@ impl Core for V2Core {
             nonfinite: stats.nonfinite_frames,
             underruns: stats.stream_underruns,
             capacity_drops: p.problems.capacity_drops + stats.voice_drops,
+            stream_capacity: p.problems.stream_capacity + stats.stream_capacity_refusals,
+            stream_disconnected: p.problems.stream_disconnected + stats.stream_disconnected_refusals,
             stolen_voices: p.runtime.steals(),
             refused_starts: stats.refused_starts,
             ..p.problems
@@ -1565,11 +1567,8 @@ fn render_threads(request: &LoadRequest) -> Threads {
     }
 }
 
-/// Memory a part preallocates for per-voice state. Voices start sized to this,
-/// not to a fixed polyphony, and the pool doubles off the audio thread (see
-/// `Grower`) past three quarters full, up to `GROWTH` times as many if memory allows. A note is
-/// refused only when that is exhausted too, and it is counted
-/// (`RuntimeStats::voice_drops`).
+/// Maximum per-voice memory, including slot and parallel scratch overhead.
+/// The pool grows off audio within this budget and the streaming page budget.
 const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
 // port from v1 0cb7a8a0:src/engine/mod.rs; growth remains off audio.
@@ -1581,17 +1580,25 @@ const INITIAL_NOTE_PARAMS: usize = 4096;
 const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
-/// the voice count the pool may grow to. Event ownership is bounded by v1
-/// capacity; multiple voices can still share each event.
-fn limits(plan: &Prepared) -> (Limits, usize) {
-    let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
-    let ceiling = voices * GROWTH;
+/// the voice count the pool may grow to. Notes, families and decisions are
+/// sized for that ceiling so growing voices is not capped by them.
+#[cfg(test)]
+fn limits(plan: &Prepared) -> (Limits, usize) { budgeted_limits(plan, None) }
+
+fn budgeted_limits(plan: &Prepared, stream_voices: Option<usize>) -> (Limits, usize) {
+    let cost = plan.voice_state_bytes().saturating_add(VOICE_OVERHEAD);
+    let ceiling = (VOICE_BUDGET / cost).clamp(1, MAX_VOICES * GROWTH).min(stream_voices.unwrap_or(usize::MAX));
+    let voices = ceiling.min(MIN_VOICES);
+    // Notes outlive their voices only in release, and each holds a few voices.
+    // Capped: script cells are allocated per note.
     let notes = INITIAL_NOTE_PARAMS;
-    let limits = Limits {
+    let mut limits = Limits {
         families: (ceiling / 2).clamp(256, notes),
         decisions: (ceiling / 2).clamp(256, notes),
         ..Limits::for_plan(plan, notes, voices)
     };
+    // Script release reserves share the same ceiling as ordinary voices.
+    limits.voices = limits.voices.min(ceiling);
     (limits, ceiling)
 }
 
@@ -1976,7 +1983,7 @@ impl V2Loader {
             .map(|c| (sampler_ui_ir::ControlId(c.id.0), number(c.default)))
             .collect();
         if let Some(script) = &script { controls.extend(script.ui().values()); }
-        let (limits, ceiling) = limits(&prepared);
+        let (limits, ceiling) = budgeted_limits(&prepared, cache.as_ref().map(StreamCache::voice_budget));
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
@@ -2012,6 +2019,9 @@ impl V2Loader {
         let streams = cache.is_some();
         if let Some(cache) = cache {
             runtime = runtime.with_stream_cache(cache);
+            if let Some(stream) = &stream {
+                runtime.set_stream_horizon((stream.report.head_frames.max(PAGE_FRAMES) + MAX_BLOCK) as u32).map_err(core)?;
+            }
         }
         // Full polyphony steals (released, then quietest) rather than refusing notes.
         runtime.set_voice_stealing(Some(Stealing::for_limits(runtime.sample_rate(), voices))).map_err(core)?;
@@ -2964,6 +2974,19 @@ mod tests {
         assert_eq!((Limits::script_capacity(&one), Limits::script_capacity(&four)), (4 * Limits::SCRIPT_KEYS + 1, 16 * Limits::SCRIPT_KEYS + 4));
         let limits = limits(&four).0;
         assert!(Runtime::new(four, limits).is_ok());
+    }
+
+    #[test]
+    fn streaming_polyphony_and_growth_share_the_storage_budget() {
+        let plan = Prepared::new(48000, vec![], vec![], 0).unwrap();
+        let (limits, ceiling) = budgeted_limits(&plan, Some(1024));
+        assert_eq!(ceiling, 1024);
+        assert_eq!(limits.voices, 512);
+        assert!(limits.notes >= ceiling);
+        assert!(limits.families >= ceiling);
+        assert!(ceiling * (plan.voice_state_bytes() + VOICE_OVERHEAD) <= VOICE_BUDGET);
+        let (small, ceiling) = budgeted_limits(&plan, Some(8));
+        assert_eq!((small.voices, ceiling), (8, 8));
     }
 
     #[test]

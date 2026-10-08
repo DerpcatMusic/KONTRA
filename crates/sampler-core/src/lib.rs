@@ -761,6 +761,8 @@ pub struct Runtime {
     stream_underruns: u64,
     offline: bool,
     stream_fault: Option<StreamError>,
+    stream_horizon: u32,
+    stream_admission_errors: [u64; 2],
     voice_drops: u64,
     refused_starts: u64,
     /// Voice-pool growths adopted, and refused (see `grow`).
@@ -951,6 +953,8 @@ impl Runtime {
             stream_underruns: 0,
             offline: false,
             stream_fault: None,
+            stream_horizon: 1,
+            stream_admission_errors: [0; 2],
             voice_drops: 0,
             refused_starts: 0,
             voice_growths: 0,
@@ -1603,7 +1607,19 @@ impl Runtime {
         let note = self.notes.get(f.note.0).unwrap();
         let asset = &self.plans.get(note.plan.0).unwrap().prepared.pcm[sample];
         let cold = self.check_source_ready(asset, cursor, envelope)?;
+        let streamed = asset.resident_frames().is_none();
         f.voices.checked_add(1).ok_or(Error::Capacity)?;
+        let plan = note.plan;
+        if streamed && self.stream_cache.is_some() {
+            if let Err(error) = self.admit_streaming(plan, sample, cursor, envelope, at) {
+                if matches!(error, StreamError::Capacity | StreamError::Disconnected) {
+                    let index = usize::from(error == StreamError::Disconnected);
+                    self.stream_admission_errors[index] = self.stream_admission_errors[index].saturating_add(1);
+                }
+                self.voice_drops = self.voice_drops.saturating_add(1);
+                return Err(if error == StreamError::Capacity { Error::Capacity } else { Error::NotReady });
+            }
+        }
         self.steal_voices(1);
         if at > self.now && self.available_commands() == 0 {
             return Err(Error::Capacity);
@@ -1654,8 +1670,6 @@ impl Runtime {
             source_zone: 0,
             quiet: 0,
         })?);
-        self.cold_started += u64::from(cold);
-        self.voice_order += 1;
         self.voice_activity[id.0.index / 64] |= 1 << (id.0.index % 64);
         let index = Index::new(id.0.index);
         if let Some(next) = next_sibling {
@@ -1667,6 +1681,8 @@ impl Runtime {
         if at > self.now {
             self.queue(at, Action::Start(id));
         }
+        self.cold_started += u64::from(cold);
+        self.voice_order += 1;
         Ok(id)
     }
 

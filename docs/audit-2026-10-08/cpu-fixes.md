@@ -51,3 +51,32 @@ Three repeats per cell, fresh output directories, frozen original audit binary v
 | fx | 3 | 201.676 / 272.418 | 176.185 / 266.159 | 5 / 4 |
 
 This does **not** establish that every cold256 regression was noise. Median-of-run medians and median-of-run p99s improve for all three cells, but Vista repeat 2 and ANALOG STRINGS repeat 1 regress. ANALOG STRINGS also has 14 versus 11 total underruns. Do not infer sonic or streaming parity from CPU medians.
+
+## Findings 4–5: offline readiness and transient page retry
+
+Checkpoint `87b23907` waits at offline render boundaries after due starts and pitch preparation, with a bounded timeout and visible failure counters. Transient decode failures retry three times with wall-clock backoff; corrupt data and exhausted retries report a failure. Realtime streaming never waits. Delayed storage, delayed starts, script pitch changes, timeout/disconnection, corrupt pages, transient retry, and counter round trips have regression checks. The delayed-start/pitch fixture and adapter fixture reproduce lost PCM before this fix, then match resident rendering exactly after it with zero audio heap work.
+
+Each entry below is steady block median / p99 in microseconds. These runs retain machine contention. Storage is a correctness checkpoint, not a realtime CPU optimization; nonzero underruns are explicit. The integrated column is a separately frozen merge baseline `88b89722`, including origin/integrate/core-v2 at `1ed8c470`, before further W9 changes. All 36 runs have zero event/render allocations/frees; every cold eviction reports `pages_after=0`.
+
+| Cell | Lifecycle | Storage | Integrated baseline | Underruns lifecycle / storage / integrated |
+|---|---:|---:|---:|---:|
+| piano-32 | 15.361 / 30.821 | 24.371 / 52.701 | 14.371 / 34.811 | 0 / 0 / 0 |
+| piano-64 | 39.041 / 64.412 | 39.281 / 70.461 | 24.391 / 46.341 | 0 / 0 / 0 |
+| piano-256 | 87.533 / 124.603 | 162.133 / 229.965 | 80.182 / 117.203 | 0 / 0 / 0 |
+| strings-32 | 34.641 / 76.432 | 25.181 / 42.741 | 26.850 / 51.681 | 0 / 0 / 0 |
+| strings-64 | 36.431 / 72.122 | 34.991 / 53.731 | 36.810 / 60.472 | 0 / 0 / 0 |
+| strings-256 | 141.633 / 261.476 | 139.233 / 191.234 | 130.933 / 161.854 | 0 / 0 / 0 |
+| fx-32 | 48.031 / 113.453 | 52.290 / 125.582 | 48.131 / 110.763 | 0 / 0 / 0 |
+| fx-64 | 75.562 / 144.224 | 114.672 / 403.208 | 75.432 / 129.243 | 0 / 0 / 0 |
+| fx-256 | 181.385 / 289.447 | 236.465 / 358.056 | 175.543 / 253.096 | 0 / 5 / 0 |
+| piano-32-cold | 25.330 / 54.381 | 16.990 / 41.121 | 16.671 / 37.311 | 0 / 0 / 0 |
+| piano-64-cold | 24.190 / 46.241 | 39.561 / 102.132 | 23.380 / 43.701 | 0 / 0 / 0 |
+| piano-256-cold | 90.262 / 124.533 | 89.692 / 127.792 | 95.602 / 215.974 | 0 / 14 / 0 |
+| strings-32-cold | 25.021 / 43.791 | 24.810 / 41.440 | 37.900 / 113.862 | 0 / 0 / 0 |
+| strings-64-cold | 35.271 / 64.192 | 55.791 / 173.583 | 36.970 / 62.862 | 0 / 0 / 0 |
+| strings-256-cold | 242.515 / 638.074 | 191.544 / 666.951 | 126.112 / 158.013 | 0 / 0 / 0 |
+| fx-32-cold | 44.510 / 97.073 | 50.891 / 119.204 | 40.201 / 88.222 | 0 / 0 / 0 |
+| fx-64-cold | 114.902 / 258.125 | 88.412 / 234.216 | 64.221 / 113.413 | 0 / 0 / 0 |
+| fx-256-cold | 258.395 / 551.561 | 187.534 / 332.799 | 167.254 / 254.675 | 0 / 4 / 4 |
+
+The 64-frame target is still unmet. Storage warm medians are piano 39.281, Vista 34.991, and ANALOG STRINGS 114.672 µs versus v1 6.920, 3.500, and 45.571 µs. Streaming robustness also remains unproven: this storage run has 14 piano cold/256, five ANALOG STRINGS warm/256, and four ANALOG STRINGS cold/256 underruns.
