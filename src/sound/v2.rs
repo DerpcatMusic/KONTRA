@@ -61,6 +61,7 @@ pub struct Part {
     pub(crate) engine_bindings: Arc<[sampler_core::EngineParameterBinding]>,
     editor_offsets: Option<Arc<[sampler_core::EngineParameterOffset]>>,
     mpe: Mpe,
+    force_articulation_once: bool,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
     buses: Box<[Option<usize>]>,
@@ -196,6 +197,7 @@ impl Part {
             runtime,
             editor_offsets:None,
             mpe,
+            force_articulation_once: false,
             tune: 0.0,
             buses: (0..count).map(|n| n.checked_sub(1)).collect(),
             tree,
@@ -315,6 +317,11 @@ struct Held {
 
 pub struct V2Core {
     parts: Vec<Option<Box<Part>>>,
+    align: crate::timing::Align,
+    holding: bool,
+    aligned_buses: Box<[Block; BUSES]>,
+    aligned_tap: Box<[f32;MAX_BLOCK]>,
+    exact_work: Vec<HostNote>,
     rate: f64,
     mix: Mix,
     empty_editor_offsets: Arc<[sampler_core::EngineParameterOffset]>,
@@ -627,6 +634,7 @@ fn wire_packet(part: &mut Part, words: &[u32]) {
 
 /// Run the articulation driver on a packet; false when it took the packet.
 fn articulated(part: &mut Part, words: &[u32]) -> bool {
+    if std::mem::take(&mut part.force_articulation_once) { return true; }
     let Some(articulator) = part.articulator.as_mut() else { return true };
     let Some(Ok(packet)) = Packets::new(words).next() else { return true };
     !matches!(articulator.intercept(&mut part.runtime, packet), Ok(Intercept::Consumed(_)))
@@ -792,6 +800,11 @@ impl V2Core {
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
             parts: (0..parts).map(|_| None).collect(),
+            align: crate::timing::Align::with_slots(parts),
+            holding: false,
+            aligned_buses: Box::new([[[0.;MAX_BLOCK];2];BUSES]),
+            aligned_tap: Box::new([0.;MAX_BLOCK]),
+            exact_work: Vec::with_capacity(HELD),
             rate: sample_rate,
             mix,
             empty_editor_offsets,
@@ -810,6 +823,7 @@ impl V2Core {
     /// Adopt larger worker-prepared storage, keeping every playing part.
     /// The replaced storage stays in `grown` to be dropped off audio.
     pub fn adopt(&mut self, grown: &mut Self) {
+        self.align.adopt_parts(&mut grown.align);
         for (old, new) in self.parts.iter_mut().zip(&mut grown.parts) {
             std::mem::swap(old, new);
         }
@@ -827,87 +841,7 @@ impl V2Core {
         std::mem::swap(&mut self.peaks.parts, &mut grown.peaks.parts);
     }
 
-    fn reaches(&self, part: usize, port: u8, channel: Option<u8>) -> bool {
-        self.mix.parts.get(part).is_some_and(|c| {
-            c.port == port && (c.mpe || c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
-        })
-    }
-
-    fn deliver(&mut self, part: usize, event: Event) {
-        let Some(Some(p)) = self.parts.get_mut(part) else { return };
-        deliver(p, part, &mut self.held, &mut self.overflow, event);
-    }
-}
-
-fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
-    use sampler_core::StreamError;
-    match error {
-        StreamError::Capacity => problems.stream_capacity += 1,
-        StreamError::Disconnected => problems.stream_disconnected += 1,
-        StreamError::DecodeFailed(_) => problems.stream_failed += 1,
-        _ => problems.stream_errors += 1,
-    }
-}
-
-impl Core for V2Core {
-    /// `None` empties the part.
-    type Prepared = Option<Box<Part>>;
-    type Retired = Retired;
-
-    fn parts(&self) -> usize {
-        self.parts.len()
-    }
-
-    fn sample_rate(&self) -> f64 {
-        self.rate
-    }
-
-    fn reset(&mut self, sample_rate: f64) {
-        // ponytail: parts keep their prepared rate; the shell reloads them on a rate change.
-        self.rate = sample_rate;
-        self.panic();
-    }
-
-    fn panic(&mut self) {
-        for p in self.parts.iter_mut().flatten() {
-            p.runtime.panic();
-        }
-    }
-
-    fn install(&mut self, part: usize, mut prepared: Option<Box<Part>>) -> Retired {
-        let Some(slot) = self.parts.get_mut(part) else { return Retired(prepared) };
-        for held in self.held.iter_mut().filter(|h| h.part == part) {
-            held.part = ORPHAN;
-        }
-        if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
-            p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
-            p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
-        }
-        Retired(std::mem::replace(slot, prepared))
-    }
-
-    fn begin_block(&mut self, block: &BlockInfo) {
-        for part in self.parts.iter_mut().flatten() { part.runtime.set_offline(block.offline); }
-    }
-
-    fn event(&mut self, port: u8, event: Event) {
-        let channel = event.channel();
-        for part in 0..self.parts.len() {
-            if self.reaches(part, port, channel) {
-                self.deliver(part, event);
-            }
-        }
-    }
-
-    fn play(&mut self, part: usize, event: Event) {
-        self.deliver(part, event);
-    }
-
-    fn key_held(&self, channel: u8, key: u8) -> bool {
-        self.held.iter().any(|h| h.part != ORPHAN && h.note.channel == channel && h.note.key == key)
-    }
-
-    fn render(&mut self, frames: usize) -> Rendered<'_> {
+    fn render_chunk(&mut self, frames: usize) -> Rendered<'_> {
         let n = frames.min(MAX_BLOCK);
         for bus in self.buses.iter_mut() {
             bus[0][..n].fill(0.0);
@@ -1025,21 +959,172 @@ impl Core for V2Core {
         Rendered { buses: &self.buses, live: self.written }
     }
 
+    /// Port v1 Align::release: stable original events, with their captured articulation.
+    fn release_aligned(&mut self, now:u64) {
+        for slot in 0..self.parts.len() {
+            while let Some((event,row))=self.align.parts[slot].pop_due(now) {
+                if row!=crate::timing::NO_ART && let Some(Some(p))=self.parts.get_mut(slot)
+                    && let Some(Some(action))=p.source_actions.get(row)
+                    && p.articulator.as_mut().is_some_and(|a|a.select(&mut p.runtime,*action).is_ok()) {
+                    p.force_articulation_once=true;
+                }
+                self.deliver(slot,event);
+                if let Some(Some(p))=self.parts.get_mut(slot) {p.force_articulation_once=false;}
+            }
+        }
+    }
+    fn flush_aligned(&mut self) {
+        self.release_aligned(u64::MAX);
+        for s in &mut self.align.parts {s.cancel();}
+    }
+    fn enqueue(&mut self,slot:usize,event:Event) {
+        // Wildcards may also reach owners which predate alignment. Dispatch
+        // only those exact tuples immediately; the scheduler retains its own holds.
+        if let Event::NoteOff(pattern)|Event::Choke(pattern)|Event::Expression(pattern,_)=event
+            && self.align.parts[slot].hosts().any(|n|pattern.matches(n)) {
+            self.exact_work.clear();
+            for h in self.held.iter().filter(|h|h.part==slot&&pattern.matches(h.note)) {
+                if !self.align.parts[slot].hosts().any(|n|n==h.note) {self.exact_work.push(h.note);}
+            }
+            for at in 0..self.exact_work.len() {
+                let note=self.exact_work[at];
+                let p=super::event::HostPattern{port:i32::from(note.port),channel:i32::from(note.channel),key:i32::from(note.key),id:note.id,clap:note.clap};
+                self.deliver(slot,match event{Event::NoteOff(_)=>Event::NoteOff(p),Event::Choke(_)=>Event::Choke(p),Event::Expression(_,x)=>Event::Expression(p,x),_=>unreachable!()});
+            }
+        }
+        let Some(Some(p))=self.parts.get_mut(slot) else {return};
+        let keys=p.user_route.as_ref().map(|r|r.keys.as_slice()).unwrap_or_else(|| {
+            let driver=if p.switching&0x80!=0 {usize::from(p.switching>>1&7)}else{p.inherited};
+            p.drivers.get(driver).map_or(&[],|(_,keys)|keys.as_slice())
+        });
+        let router=crate::timing::Router{switching:p.runtime.switching(),keys,actions:&p.source_actions,mpe:p.mpe_zone};
+        let holds=self.align.plan.parts.get(slot).map_or(&self.align.empty,|h|h.as_ref());
+        if let Some(event)=self.align.parts[slot].arrive(event,self.align.clock,holds,self.rate,&router) {self.deliver(slot,event);}
+    }
+
+    fn reaches(&self, part: usize, port: u8, channel: Option<u8>) -> bool {
+        self.mix.parts.get(part).is_some_and(|c| {
+            c.port == port && (c.mpe || c.channel < 0 || channel.is_none_or(|channel| c.channel == i16::from(channel)))
+        })
+    }
+
+    fn deliver(&mut self, part: usize, event: Event) {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return };
+        deliver(p, part, &mut self.held, &mut self.overflow, event);
+    }
+}
+
+fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
+    use sampler_core::StreamError;
+    match error {
+        StreamError::Capacity => problems.stream_capacity += 1,
+        StreamError::Disconnected => problems.stream_disconnected += 1,
+        StreamError::DecodeFailed(_) => problems.stream_failed += 1,
+        _ => problems.stream_errors += 1,
+    }
+}
+
+impl Core for V2Core {
+    /// `None` empties the part.
+    type Prepared = Option<Box<Part>>;
+    type Retired = Retired;
+
+    fn parts(&self) -> usize {
+        self.parts.len()
+    }
+
+    fn sample_rate(&self) -> f64 {
+        self.rate
+    }
+
+    fn reset(&mut self, sample_rate: f64) {
+        // ponytail: parts keep their prepared rate; the shell reloads them on a rate change.
+        self.rate = sample_rate;
+        self.panic();
+    }
+
+    fn panic(&mut self) {
+        for s in &mut self.align.parts {s.cancel();}
+        for p in self.parts.iter_mut().flatten() {
+            p.runtime.panic();
+        }
+    }
+
+    fn install(&mut self, part: usize, mut prepared: Option<Box<Part>>) -> Retired {
+        let Some(slot) = self.parts.get_mut(part) else { return Retired(prepared) };
+        self.align.parts[part].cancel();
+        for held in self.held.iter_mut().filter(|h| h.part == part) {
+            held.part = ORPHAN;
+        }
+        if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
+            p.apply_editor_offsets(self.mix.editor_offsets.get(part).unwrap_or(&self.empty_editor_offsets));
+            p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
+        }
+        Retired(std::mem::replace(slot, prepared))
+    }
+
+    fn begin_block(&mut self, block: &BlockInfo) {
+        let holding=self.align.holding(block.transport.playing);
+        if self.holding&&!holding {self.flush_aligned();}
+        self.holding=holding;
+        for part in self.parts.iter_mut().flatten() { part.runtime.set_offline(block.offline); }
+    }
+
+    fn event(&mut self, port: u8, event: Event) {
+        let channel = event.channel();
+        for part in 0..self.parts.len() {
+            if self.reaches(part, port, channel) {
+                if self.holding {self.enqueue(part,event);} else {self.deliver(part,event);}
+            }
+        }
+    }
+
+    fn play(&mut self, part: usize, event: Event) {
+        self.deliver(part, event);
+    }
+
+    fn key_held(&self, channel: u8, key: u8) -> bool {
+        self.held.iter().any(|h| h.part != ORPHAN && h.note.channel == channel && h.note.key == key) || self.holding&&self.align.host_key_held(channel,key)
+    }
+
+    fn render(&mut self, frames: usize) -> Rendered<'_> {
+        let n=frames.min(MAX_BLOCK);
+        if !self.holding {
+            self.align.clock=self.align.clock.saturating_add(n as u64);
+            return self.render_chunk(n);
+        }
+        let mut at=0;let mut live=[false;BUSES];
+        for b in self.aligned_buses.iter_mut() {for c in b {c[..n].fill(0.);}}
+        while at<n {
+            self.release_aligned(self.align.clock);
+            let until=self.align.next_due().map_or(n-at,|due|due.saturating_sub(self.align.clock).min((n-at)as u64)as usize);
+            if until==0 {continue;}
+            self.render_chunk(until);
+            self.aligned_tap[at..at+until].copy_from_slice(&self.tapped[..until]);
+            for (bus,on) in self.written.iter().copied().enumerate() {
+                live[bus]|=on;
+                for c in 0..2 {self.aligned_buses[bus][c][at..at+until].copy_from_slice(&self.buses[bus][c][..until]);}
+            }
+            at+=until;self.align.clock=self.align.clock.saturating_add(until as u64);
+        }
+        Rendered{buses:&self.aligned_buses,live}
+    }
+
     fn owns(&self, note: HostNote) -> bool {
-        self.held.iter().any(|h| h.part != ORPHAN && h.note == note)
+        self.held.iter().any(|h| h.part != ORPHAN && h.note == note) || self.align.parts.iter().any(|s|s.hosts().any(|n|n==note))
     }
 
     fn end_block(&mut self, _frames: usize, end: &mut dyn FnMut(HostNote) -> bool) -> u64 {
-        let Self { parts, held, .. } = self;
+        let Self { parts, held, align, .. } = self;
         // A layered note ends once its last part lets it go.
         let last = |held: &[Held], at: usize| held.iter().filter(|h| h.note == held[at].note).count() == 1;
         // Notes of replaced parts end now; their sound went with the part.
         let mut i = 0;
         while i < held.len() {
-            if held[i].part != ORPHAN {
+            if held[i].part != ORPHAN || align.host_note_waiting(held[i].note) {
                 i += 1;
             } else if !held[i].note.clap || !last(held, i) || end(held[i].note) {
-                held.swap_remove(i);
+                let note=held[i].note;let final_owner=last(held,i);held.swap_remove(i);if final_owner {align.retire_host_note(note);}
             } else {
                 return 1;
             }
@@ -1056,21 +1141,33 @@ impl Core for V2Core {
             });
             part.runtime.flush_ended(|input| {
                 let Some(at) = held.iter().position(|h| h.part == index && h.input == input) else { return true };
-                if held[at].note.clap && last(held, at) && !end(held[at].note) {
+                let note=held[at].note;
+                if align.host_note_waiting(note) {return false;}
+                if note.clap && last(held, at) && !end(note) {
                     refused = 1;
                     return false;
                 }
-                held.swap_remove(at);
+                let final_owner=last(held,at);held.swap_remove(at);if final_owner {align.retire_host_note(note);}
                 true
             });
             if refused > 0 {
                 break;
             }
         }
+        // Port v1 finish_host_notes: a queued root which failed admission
+        // still ends exactly once after key-up and all delayed exact work.
+        if refused==0 {
+            let mut at=0;
+            while let Some((note,down))=align.host_note_at(at) {
+                if down||align.host_note_waiting(note)||held.iter().any(|h|h.note==note) {at+=1;continue;}
+                if !note.clap||end(note) {align.retire_host_note(note);}else{refused=1;break;}
+            }
+        }
         refused
     }
 
     fn set_mix(&mut self, mix: &Mix) {
+        self.align.plan=mix.timing.clone();
         // Field-wise so the parts vector keeps its audio-thread allocation.
         for (to, from) in self.mix.parts.iter_mut().zip(&mix.parts) {
             *to = *from;
@@ -1095,7 +1192,7 @@ impl Core for V2Core {
     }
 
     fn tapped(&self, frames: usize) -> Option<&[f32]> {
-        self.tap.map(|_| &self.tapped[..frames.min(MAX_BLOCK)])
+        self.tap.map(|_| if self.holding {&self.aligned_tap[..frames.min(MAX_BLOCK)]}else{&self.tapped[..frames.min(MAX_BLOCK)]})
     }
 
     fn peaks_mut(&mut self) -> &mut Peaks {
@@ -1123,7 +1220,7 @@ impl Core for V2Core {
         let active = self.parts.iter().flatten().map(|p| p.runtime.voice_count()).sum();
         // Port from v1 0cb7a8a0:src/plugin.rs: rendered voices and IO/command loss.
         let audible = self.parts.iter().flatten().map(|p| p.runtime.audible_voice_count()).sum();
-        let dropouts = self.parts.iter().flatten().fold(self.overflow, |n, p| {
+        let dropouts = self.parts.iter().flatten().fold(self.overflow.saturating_add(self.align.overflows()), |n, p| {
             n.saturating_add(p.runtime.stats().stream_underruns).saturating_add(p.problems.capacity_drops)
         });
         Voices { active, audible, dropouts }
@@ -1171,13 +1268,15 @@ impl Core for V2Core {
     }
 
     fn latency(&self) -> u32 {
-        0
+        self.align.plan.latency(self.rate)
     }
 
     fn select_articulation(&mut self, part: usize, articulation: usize) -> bool {
         let Some(Some(p)) = self.parts.get_mut(part) else { return false };
         let Some(Some(switch)) = p.source_actions.get(articulation) else { return false };
-        p.articulator.as_mut().is_some_and(|a| a.select(&mut p.runtime, *switch).is_ok())
+        let selected=p.articulator.as_mut().is_some_and(|a| a.select(&mut p.runtime, *switch).is_ok());
+        if selected {self.align.parts[part].picked(articulation);}
+        selected
     }
 
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
