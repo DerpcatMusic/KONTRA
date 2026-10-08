@@ -600,7 +600,7 @@ fn widget_conflux_placement_and_capture() {
     assert_eq!(face.widgets.len(),378,"unresolved handles must not publish widgets");
     let mut count = [0;3];
     for (n, _) in face.widgets.iter().enumerate().filter(|(n,w)| face.visible(ir::WidgetRef(*n)) && matches!(w.kind,ir::Kind::Knob{..}|ir::Kind::Slider{..})) {
-        let (delta,captured) = audit_motion(&face,n,0.,-30.);
+        let (delta,captured) = audit_motion(&face,n,0.,-100.);
         count[0] += 1;
         count[1] += usize::from(captured);
         count[2] += usize::from(delta>0.);
