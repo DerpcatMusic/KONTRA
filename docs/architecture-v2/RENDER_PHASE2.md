@@ -170,5 +170,7 @@ separately from invalid/ambiguous/corrupt/limit/read/unavailable errors, and emi
 those fixed categories through the existing scanner adapter. Native module
 lookup errors retain only fixed category messages. The common collector is
 unchanged. A synthetic two-provider found/absent/invalid/failed-authority test
-is prepared; integration, compilation and test execution remain pending below
-the disk floor. This does not reclassify any frozen Pacific observation.
+is prepared. Owner-resolved `ab818e2d` merged locally without conflicts; its
+resource API and origin helpers are retained, with no W3 Bank resolver edits.
+Compilation and test execution remain pending below the disk floor. This does
+not reclassify any frozen Pacific observation.

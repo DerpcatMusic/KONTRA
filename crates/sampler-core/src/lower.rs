@@ -23,6 +23,21 @@ pub fn source_engine_lookups(source: &ir::SourceIndices) -> Vec<crate::EngineLoo
     }).collect()
 }
 
+/// Defaults, lawful service conversions and DSP identities for native LP4 lanes.
+fn ladder_lanes(d: ir::LadderLP4) -> Vec<(ControlDefinition, crate::EngineParameterBinding)> {
+    let Some(slot) = d.address else { return Vec::new(); };
+    [("ENGINE_PAR_CUTOFF", d.cutoff, false), ("ENGINE_PAR_RESONANCE", d.resonance, false),
+        ("ENGINE_PAR_GAIN", d.gain, true)].into_iter().map(|(name, value, signed)| {
+        let address = crate::EngineParameterAddress { parameter: crate::engine_parameter_id(name).unwrap(),
+            group: slot.group, slot: slot.slot, generic: slot.generic };
+        let id = crate::engine_parameter_control(address);
+        (ControlDefinition { id, domain: ControlDomain::Real { min: if signed { -1. } else { 0. }, max: 1. },
+            default: ControlValue::Real(value) }, crate::EngineParameterBinding { address, control: id,
+                law: if signed { crate::EngineParameterLaw::SignedNormalized }
+                    else { crate::EngineParameterLaw::Linear { low: 0., high: 1. } } })
+    }).collect()
+}
+
 /// Seed for random sequences; fixed so renders are reproducible.
 const SEED: u64 = 0x5eed_1a7e;
 /// Decay allowance for bus filters after their input stops, in seconds.
@@ -40,6 +55,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Controls,
     Modulation,
 }
 
@@ -379,6 +395,16 @@ pub fn lower_with(
             .and_then(|p| p.with_group_params(params))
             .map_err(core(Stage::Regions, "groups"))?;
     }
+    // Only source modulators that actually own an amplitude envelope get lanes.
+    // Muted/unmodeled names remain findable without inventing a DSP consumer.
+    for source in &instrument.source_indices.modulators {
+        let Some(modulator) = source.runtime else { continue };
+        let runtime_group = instrument.source_indices.groups.get(source.group).copied().flatten().unwrap_or(ir::GroupRef(source.group));
+        if source.external || !instrument.zones.iter().any(|z|z.group == Some(runtime_group) && z.amplitude == Some(modulator)) { continue }
+        let ir::ModulationSource::Envelope(envelope) = &instrument.modulators[modulator.0].source else { continue };
+        let authored=lowering.adsr("source amplitude envelope",envelope,false)?;
+        plan=plan.with_group_envelope_parameters(runtime_group.0 as u32,source.group as i32,source.slot as i32,authored).map_err(core(Stage::Envelope,"source amplitude envelope"))?;
+    }
     if instrument.voice_limit.is_some() || !instrument.voice_limits.is_empty() {
         let limit = |l: &ir::VoiceLimit| crate::VoiceLimit {
             voices: l.voices,
@@ -505,6 +531,19 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
+    let mut engine_bindings = plan.engine_parameter_bindings().to_vec();
+    let mut native = std::collections::BTreeMap::new();
+    for chain in &instrument.chains {
+        for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+            if let ir::Processor::LadderLP4(d) = p {
+                for (_, binding) in ladder_lanes(*d) { native.insert(binding.address, binding); }
+            }
+        }
+    }
+    engine_bindings.extend(native.into_values());
+    plan = plan
+        .with_engine_parameters(engine_bindings, source_engine_lookups(&instrument.source_indices))
+        .map_err(core(Stage::Controls, "source engine lookups"))?;
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {
@@ -592,6 +631,8 @@ impl Lowering<'_> {
                 law: zone.pan.law,
             })));
         }
+        let mut taps = Vec::new();
+        let mut tail = 0u32;
         if let Some(chain) = zone.chain {
             let source_chain = chain;
             let chain = &self.ir.chains[chain.0];
@@ -623,11 +664,80 @@ impl Lowering<'_> {
                 chain.pre_amplitude.len(),
                 &chain.post_amplitude.iter().collect::<Vec<_>>(),
             )?);
+            for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                tail = tail.saturating_add(match processor {
+                    ir::Processor::Delay {
+                        time,
+                        feedback: 0.0,
+                        ..
+                    } => self.frames(*time),
+                    ir::Processor::StereoModeller { pseudo: true, .. } => {
+                        (self.rate / 100).min(1023)
+                    }
+                    _ => 0,
+                });
+            }
+            for tap in self
+                .ir
+                .voice_send_taps
+                .iter()
+                .filter(|t| t.chain == source_chain)
+            {
+                let (side, native_len, position, before) = match tap.position {
+                    ir::VoiceSendPosition::BeforeAmplitude(n) => {
+                        (&chain.pre_amplitude, pre.len(), n, true)
+                    }
+                    ir::VoiceSendPosition::AfterAmplitude(n) => {
+                        (&chain.post_amplitude, post.len(), n, false)
+                    }
+                };
+                let mut authored_len = 0;
+                let mut after = 0;
+                for (index, processor) in side.iter().enumerate() {
+                    let count = self.processors(&owner, *processor)?.len();
+                    authored_len += count;
+                    if index < position {
+                        after += count;
+                    }
+                }
+                let after = native_len - authored_len + after;
+                let parameter = |control: Option<ir::ControlRef>,
+                                 value: f64|
+                 -> Result<Parameter, LowerError> {
+                    let Some(control) = control else {
+                        return Ok(Parameter::Constant(value));
+                    };
+                    let authored = &self.ir.controls[control.0];
+                    let ir::ControlValue::Continuous { min, max, .. } = authored.value else {
+                        return Err(unsupported(&owner, Feature::Controls));
+                    };
+                    Ok(Parameter::Control(ControlRange {
+                        control: ir_control_id(&authored.key),
+                        low: min,
+                        high: max,
+                        ramp_frames: self.frames(tap.ramp),
+                    }))
+                };
+                taps.push(crate::VoiceSendTap {
+                    position: if before {
+                        crate::VoiceSendPosition::BeforeAmplitude(after)
+                    } else {
+                        crate::VoiceSendPosition::AfterAmplitude(after)
+                    },
+                    bus: tap.bus.0,
+                    gain: parameter(tap.gain_control, tap.gain.linear())?,
+                    bypass: parameter(tap.bypass_control, f64::from(tap.bypass))?,
+                });
+            }
         }
-        let chain = if pre.is_empty() && post.is_empty() {
+        let chain = if pre.is_empty() && post.is_empty() && taps.is_empty() {
             None
         } else {
-            Some(VoiceChain::new(pre, post, 0).map_err(core(Stage::VoiceChains, owner.clone()))?)
+            Some(
+                VoiceChain::new(pre, post, tail)
+                    .and_then(|chain| chain.with_taps(taps))
+                    .map_err(core(Stage::VoiceChains, owner.clone()))?,
+            )
         };
         let loop_range = |range: ir::LoopRange, mode| {
             let crossfade = range.crossfade.frames(asset_rate) as usize;
@@ -1128,6 +1238,9 @@ impl Lowering<'_> {
             (Processor::Daft(filter), Cutoff) => filter.cutoff = parameter,
             (Processor::Daft(filter), Resonance) => filter.resonance = parameter,
             (Processor::Daft(filter), Response) => filter.response = parameter,
+            (Processor::LadderLP4(filter), Gain) => filter.gain = parameter,
+            (Processor::LadderLP4(filter), Cutoff) => filter.cutoff = parameter,
+            (Processor::LadderLP4(filter), Resonance) => filter.resonance = parameter,
             (Processor::Gainer { gain, .. }, Gain) => *gain = parameter,
             (Processor::StereoModeller(settings), Width) => settings.width = parameter,
             (Processor::StereoModeller(settings), Pan) => settings.pan = parameter,
@@ -1152,6 +1265,9 @@ impl Lowering<'_> {
         let mut all = std::collections::BTreeMap::new();
         for chain in &self.ir.chains {
             for p in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
+                if let ir::Processor::LadderLP4(d) = *p {
+                    for (control, _) in ladder_lanes(d) { all.entry(control.id).or_insert(control); }
+                }
                 let ir::Processor::Mix {
                     address,
                     dry,
@@ -1197,6 +1313,12 @@ impl Lowering<'_> {
         for (index, p) in listed.iter().enumerate() {
             starts.push(processors.len());
             let mut stages = self.processors(owner, **p)?;
+            // A physical native owner already binds these fields to the shared
+            // service; replacing them would leave writes on an unused mirror.
+            if matches!(**p, ir::Processor::LadderLP4(d) if d.address.is_some())
+                && self.ir.processor_controls.iter().any(|b| b.chain == chain && b.index == start + index) {
+                return Err(unsupported(owner, Feature::Controls));
+            }
             for binding in self
                 .ir
                 .processor_controls
@@ -1306,6 +1428,15 @@ impl Lowering<'_> {
                 resonance: Parameter::Constant(d.resonance),
                 response: Parameter::Constant(if d.highpass { 1.0 } else { 0.0 }),
             }),
+            ir::Processor::LadderLP4(d) => {
+                let lanes = ladder_lanes(d);
+                let parameter = |index: usize, value: f64| lanes.get(index).map_or(Parameter::Constant(value), |(c, _)| {
+                    let ControlDomain::Real { min, max } = c.domain else { unreachable!() };
+                    Parameter::Control(ControlRange { control: c.id, low: min, high: max, ramp_frames: 0 })
+                });
+                Processor::LadderLP4(crate::LadderSettings { cutoff: parameter(0, d.cutoff),
+                    resonance: parameter(1, d.resonance), gain: parameter(2, d.gain), record_version: d.record_version })
+            },
             ir::Processor::Rectify(mode) => Processor::Rectify(match mode {
                 ir::Rectifier::Full => Rectifier::Full,
                 ir::Rectifier::Half => Rectifier::Half,
@@ -1317,6 +1448,10 @@ impl Lowering<'_> {
                 wet: self.slot_range(SlotKind::Output, address),
                 bypass: self.slot_range(SlotKind::Bypass, address),
             },
+            ir::Processor::SendReturnGate { address } => Processor::ControlGain(ControlRange {
+                low: 1.0, high: 0.0,
+                ..self.slot_range(SlotKind::Bypass, address)
+            }),
             ir::Processor::Convolution { impulse, dry, wet } => Processor::Convolution {
                 impulse: impulse.0,
                 dry,
@@ -1664,7 +1799,10 @@ impl Lowering<'_> {
                     ir::Driver::Program => alt.program.map(|p| (0, p, p))?,
                 };
                 let switch = if behavior {
-                    Switch::Tap(*a.switch_keys.first()?)
+                    match a.switch_keys.first() {
+                        Some(&key) => Switch::Tap(key),
+                        None => Switch::Control { id: a.control?, articulation: id(i) },
+                    }
                 } else {
                     Switch::Articulation(id(i))
                 };

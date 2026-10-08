@@ -1333,3 +1333,20 @@ mod tests {
     }
 }
 
+/// Kontakt's authored KEY_COLOR indices. Source colours are preserved, including warm hues.
+pub fn ksp_key_color(index: u8) -> Option<Color> {
+    const COLORS: [[u8; 3]; 21] = [
+        [220, 55, 64], [240, 116, 37], [255, 168, 85], [245, 195, 65], [242, 224, 72],
+        [177, 213, 66], [71, 178, 85], [89, 208, 160], [74, 198, 225], [43, 164, 180],
+        [76, 121, 219], [134, 97, 165], [138, 99, 220], [174, 79, 204], [209, 75, 171], [231, 80, 125],
+        [180, 180, 180], [90, 90, 90], [180, 180, 180], [235, 235, 235], [35, 35, 35],
+    ];
+    if matches!(index, 16 | 18) { return None; }
+    let [r, g, b] = *COLORS.get(index as usize)?;
+    Some(Color::srgb(f32::from(r) / 255., f32::from(g) / 255., f32::from(b) / 255.))
+}
+
+// Port from v1 0cb7a8a0:src/ui/theme.rs.
+pub fn megabytes(bytes: usize) -> String {
+    format!("{:.0} MB", bytes as f64 / 1_048_576.)
+}
