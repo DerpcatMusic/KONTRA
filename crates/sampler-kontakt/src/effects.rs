@@ -183,10 +183,7 @@ pub(crate) fn program_racks(
 /// saved output gain and dry level follow the script's init writes (396280 ->
 /// 0.99570, 303068 -> 0.44539, 560434 -> 2.8164, 3305 -> 5.776e-7).
 pub(crate) fn engine_gain(value: i32) -> f32 {
-    if value <= 0 {
-        return 0.0;
-    }
-    (f64::from(value) / 396_851.0).powi(3) as f32
+    sampler_core::EngineParameterLaw::CubicGain { unity: 396_851.0 }.decode(value) as f32
 }
 
 /// Apply the `set_engine_par` writes a script left at init to a rack's slots.
@@ -1570,6 +1567,59 @@ mod tests {
             output_set: true,
             public,
         }
+    }
+
+    #[test]
+    fn compressor_output_and_bypass_init_writes_use_the_shared_slot_law() {
+        // Pinned v1 0cb7a8a0, engine/params.rs: effect_gain = 16*x^3.
+        // The shared service's rounded unity differs by less than 0.00005 dB.
+        for value in [0, 125_919, 396_851, 560_434, 1_000_000] {
+            let native = 16.0 * (f64::from(value) / 1_000_000.0).powi(3);
+            let gain = f64::from(engine_gain(value));
+            if native > 0.0 {
+                assert!((20.0 * (gain / native).log10()).abs() < 0.00005);
+            } else {
+                assert_eq!(gain, 0.0);
+            }
+        }
+        assert_eq!(engine_gain(-1), 0.0);
+        assert_eq!(engine_gain(i32::MAX), engine_gain(1_000_000));
+        let mut fx = slot(0x19, Vec::new(), 1.0);
+        fx.slot = 1;
+        let mut writes = vec![sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_INSERT_EFFECT_OUTPUT_GAIN".into(),
+            value: 560_434, group: -1, slot: 1, generic: 1,
+        }, sampler_ksp::EnginePar {
+            parameter: "$ENGINE_PAR_EFFECT_BYPASS".into(),
+            value: 1, group: -1, slot: 1, generic: 1,
+        }];
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(fx.bypass && fx.output_set);
+        assert!((20.0 * f64::from(fx.output_gain).log10() - 8.99385).abs() < 0.0001);
+        writes[1].value = 0;
+        apply_writes(std::slice::from_mut(&mut fx), &writes, -1, 1);
+        assert!(!fx.bypass);
+    }
+
+    #[test]
+    #[ignore = "installed library metadata probe; run through kontakto-heavy"]
+    fn analog_saved_compressor_state() {
+        let path = std::path::Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/ANALOG STRINGS/Instruments/ANALOG STRINGS.nki");
+        if !path.exists() { return; }
+        let chunks = crate::read_chunks(path).unwrap();
+        let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+        let racks = program_racks(&program, &[], |_, _| panic!("rack decode failed"));
+        let (_, insert) = racks.iter().find(|(name, _)| name == "instrument insert").unwrap();
+        let compressors: Vec<_> = insert.iter().filter(|slot| slot.module == 0x19).collect();
+        assert_eq!(compressors.len(), 1);
+        let fx = compressors[0];
+        eprintln!("saved compressor slot={} bypass={} output_gain={} output_db={}",
+            fx.slot, fx.bypass, fx.output_gain, 20.0 * f64::from(fx.output_gain).log10());
+        assert_eq!(fx.slot, 1);
+        assert!(!fx.bypass);
+        let v1_gain = 16.0 * (560_434.0f64 / 1_000_000.0).powi(3);
+        assert!((f64::from(fx.output_gain) - v1_gain).abs() < 1e-6);
+        assert!((20.0 * (f64::from(fx.output_gain) / f64::from(engine_gain(560_434))).log10()).abs() < 0.00005);
     }
 
     #[test]
