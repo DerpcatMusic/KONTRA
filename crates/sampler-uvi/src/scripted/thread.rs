@@ -48,6 +48,7 @@ enum Message {
 
 /// What loading the scripts found, for the host's report and interface.
 pub struct Loaded {
+    pub insert_overrides: Vec<(usize, String, String)>,
     pub findings: Vec<Finding>,
     pub interface: sampler_ui_ir::Interface,
     pub ui: Arc<UiBridge>,
@@ -113,6 +114,7 @@ impl ScriptThread {
                     #[cfg(feature = "scan")]
                     { *scan.lock().unwrap() = host.scan_faults(); }
                     let report = Loaded {
+                        insert_overrides: host.insert_overrides(),
                         findings: host.findings(),
                         interface: host.interface(),
                         ui: ui.clone(),

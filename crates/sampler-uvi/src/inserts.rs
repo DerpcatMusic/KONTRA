@@ -1,6 +1,6 @@
 //! UVI insert effects as IR processors: aux-bus chains, effect racks and
-//! keygroup inserts. Values are the program's static ones; a script that
-//! writes them later does not reach these processors yet.
+//! keygroup inserts. Exact catalog fields with supported native DSP lanes
+//! receive live controls in `engine_parameters`; other writes stay reported.
 use super::{Translation, number, path};
 use roxmltree::Node;
 use sampler_ir as ir;

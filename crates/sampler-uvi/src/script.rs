@@ -18,7 +18,7 @@ use std::{
 
 mod ui;
 #[path = "parameters.rs"]
-mod parameters;
+pub(crate) mod parameters;
 pub use ui::{UiState, SavedValue, control_id};
 
 const PRELUDE: &str = include_str!("script_prelude.lua");
@@ -159,6 +159,8 @@ pub struct Play {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
+    /// A typed insert write, normalized by the shared native law.
+    EngineParameter { address: sampler_core::EngineParameterAddress, value: i32 },
     Play(Play),
     Release {
         id: u64,
@@ -826,6 +828,14 @@ impl ScriptHost {
         native.set(
             "setParam",
             lua.create_function(move |_, (id, name, value): (usize, String, f64)| {
+                let processor = s.nodes.borrow().get(id).copied()
+                    .filter(|(_, insert)| *insert)
+                    .and_then(|(node, _)| crate::engine_parameters::binding(node, s.kinds.borrow().get(id)?.as_str(), &name));
+                if let Some(binding) = processor {
+                    let Ok(value) = binding.law.normalized_value(value) else { return Ok(false) };
+                    s.command(Command::EngineParameter { address: binding.address, value });
+                    return Ok(true);
+                }
                 let Some(scope) = s.scopes.borrow().get(id).copied().flatten() else {
                     return Ok(false);
                 };

@@ -19,6 +19,7 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+mod engine_parameters;
 pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
@@ -263,6 +264,7 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             );
         }
     }
+    engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -1007,6 +1009,7 @@ impl Translated {
                         .at(sampler_kontakt::Stage::ScriptCompile)
                 },
             )?;
+        engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
         if scripted::Script::handles_notes(&thread) {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
@@ -1279,7 +1282,10 @@ fn assemble_streamed(
         scripts: true,
         ..Default::default()
     };
-    Ok(sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut streamed = sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+    streamed.loaded.plan = streamed.loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(streamed)
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
@@ -1523,7 +1529,10 @@ fn assemble(
         pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(loaded)
 }
 
 #[cfg(all(test, feature = "library-access"))]
