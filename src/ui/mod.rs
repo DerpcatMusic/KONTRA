@@ -40,6 +40,8 @@ mod bridge;
 mod pictures;
 mod picture_decode;
 mod picture_worker;
+mod native_runtime;
+mod native_ui;
 mod render_art;
 mod inside;
 mod part;
