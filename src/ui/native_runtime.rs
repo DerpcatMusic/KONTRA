@@ -116,7 +116,8 @@ impl Package {
                 continue;
             }
             let bytes = source
-                .read(&name)
+                .read_result(&name)
+                .map_err(|e| anyhow::anyhow!("NativeUI resource {}", super::pictures::resource_category(e)))?
                 .ok_or_else(|| anyhow::anyhow!("NativeUI member unreadable"))?;
             anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             total += bytes.len();

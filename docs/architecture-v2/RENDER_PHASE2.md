@@ -156,3 +156,19 @@ No W3 heavy job is active and its incremental directories have been pruned.
 rejected Native image-request metadata and cancels package member reads; its
 failing-first queue-growth check is recorded, but the green check/build gate
 must run after disk headroom returns. Do not integrate that local WIP.
+
+The auditor's follow-up `661bd9d2` confirms no retained own-index/namespace
+observations exist in the supplemental historical 7e82 cache either. Its
+different path hashes are not equated with current 9993 request identities.
+The 57 current failures remain **reported lookup-not-found**, not clean absence.
+
+W10 supplies typed UVI resource errors at `4f033c79`, with origin prerequisites
+bundled in `6cfcad4b`. Import through the owner-resolved integration ancestry
+`ab818e2d`, not a standalone cherry-pick or a second Bank resolver. W3's local
+Source-side preparation calls both providers' Result APIs, preserves absence
+separately from invalid/ambiguous/corrupt/limit/read/unavailable errors, and emits
+those fixed categories through the existing scanner adapter. Native module
+lookup errors retain only fixed category messages. The common collector is
+unchanged. A synthetic two-provider found/absent/invalid/failed-authority test
+is prepared; integration, compilation and test execution remain pending below
+the disk floor. This does not reclassify any frozen Pacific observation.
