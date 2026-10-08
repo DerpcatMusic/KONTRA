@@ -298,6 +298,7 @@ pub(crate) struct FilterBank {
     /// Cutoff and Q factors of the voice being rendered (per-voice modulation).
     /// Set around one voice's render; 1.0 uses the cached shared coefficients.
     pub modulation: [f64; 2],
+    addressed_modulation: Box<[[f64; 2]]>,
 }
 impl FilterBank {
     pub fn new(filters: &[PreparedFilter], expressions: usize) -> Result<Self, Error> {
@@ -330,6 +331,7 @@ impl FilterBank {
             expressions: caches.into_boxed_slice(),
             stride,
             modulation: [1.0; 2],
+            addressed_modulation: vec![[1.0; 2]; filters.len()].into_boxed_slice(),
         })
     }
 }
@@ -350,6 +352,14 @@ pub(crate) enum CacheRef {
 }
 
 impl FilterBank {
+    pub(crate) fn set_addressed_modulation(
+        &mut self,
+        modulation: &crate::voice_mod::VoiceModulation,
+        state: &crate::voice_mod::VoiceModState,
+        voice: usize,
+    ) {
+        state.fill_filter_factors(modulation, voice, &mut self.addressed_modulation);
+    }
     /// Fill `index`'s coefficients for one voice's block; see [`FilterContext::process`].
     pub(super) fn prepare(
         &mut self,
@@ -412,7 +422,9 @@ impl FilterContext<'_> {
             }
         };
         let expression = self.expression.as_ref().map(|(_, value)| value);
-        let [cutoff, q] = self.bank.modulation;
+        let [cutoff, q] = std::array::from_fn(|i| {
+            self.bank.modulation[i] * self.bank.addressed_modulation[index][i]
+        });
         if cutoff != 1.0 || q != 1.0 {
             // A modulated voice's coefficients are its own: one set per chunk at
             // its midpoint, outside the shared cache.
