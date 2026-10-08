@@ -806,3 +806,6 @@ mod tests {
         assert_eq!(ui.validate(), Err(Error::AssetKind(AssetRef(2))));
     }
 }
+
+mod publication;
+pub use publication::InterfacePatch;

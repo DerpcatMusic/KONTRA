@@ -283,6 +283,7 @@ pub enum Icon {
     Plus,
     Close,
     Sidebar,
+    Picture,
     Search,
     #[allow(dead_code, reason = "the mixer's audition")]
     Play,
@@ -345,6 +346,11 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             Icon::Sidebar => vec![
                 line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
                 line(&[(6.5, 3.5), (6.5, 12.5)]),
+            ],
+            Icon::Picture => vec![
+                line(&[(2.5, 3.5), (13.5, 3.5), (13.5, 12.5), (2.5, 12.5), (2.5, 3.5)]),
+                line(&[(3., 11.5), (6.5, 7.5), (9., 10.), (11., 8.), (13., 11.5)]),
+                dot(10.5, 5.5),
             ],
             Icon::Search => vec![
                 Draw::stroke(
