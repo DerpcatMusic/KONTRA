@@ -289,6 +289,14 @@ struct Parameter {
     boolean: bool,
     bridge: Arc<Mutex<Bridge>>,
 }
+#[cfg(test)]
+fn trace_parameter(lua:&Lua, parameter:&Parameter, access:&str) -> mlua::Result<()> {
+    if let Ok(trace)=lua.globals().get::<Function>("__audit_parameter") {
+        trace.call::<()>((parameter.identifier.clone(),parameter.binding as i64,
+            lua.globals().get::<String>("__audit_path").unwrap_or_default(),access))?;
+    }
+    Ok(())
+}
 fn bounds(widget: &ir::Widget) -> ir::Range {
     match widget.kind {
         ir::Kind::Knob { range, .. }
@@ -320,10 +328,7 @@ impl UserData for Parameter {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
-            if let Ok(trace) = lua.globals().get::<Function>("__audit_parameter") {
-                trace.call::<()>((this.identifier.clone(), this.binding as i64,
-                    lua.globals().get::<String>("__audit_path").unwrap_or_default()))?;
-            }
+            trace_parameter(lua,this,"value")?;
             let mut bridge = this.bridge.lock().unwrap();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
@@ -363,7 +368,9 @@ impl UserData for Parameter {
         });
         methods.add_method(
             "set_value",
-            |_, this, (v, index): (LuaValue, Option<usize>)| {
+            |_lua, this, (v, index): (LuaValue, Option<usize>)| {
+                #[cfg(test)]
+                trace_parameter(_lua,this,"write")?;
                 let mut bridge = this.bridge.lock().unwrap();
                 let widget = bridge
                     .controls
@@ -431,6 +438,8 @@ impl UserData for Parameter {
         methods.add_method(
             "ksp_control_property",
             |lua, this, (property, index): (i32, Option<usize>)| {
+                #[cfg(test)]
+                trace_parameter(lua,this,"property")?;
                 let bridge = this.bridge.lock().unwrap();
                 let Some(w) = bridge.controls.get(this.binding) else {
                     return Ok(LuaValue::Nil);
@@ -677,22 +686,19 @@ impl Session {
         let mut bridge = self.bridge.lock().unwrap();
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
-            if source == face.source
-                && let Some(w) = face.widgets.get(index)
+            if source != face.source {continue;}
+            if let Some(w) = face.widgets.get(index)
                 && &bridge.controls[at] != w
             {
                 bridge.controls[at].clone_from(w);
             }
-            if source == face.source {
-                if let Some(value) = typed.get(&ir::WidgetRef(index)) {
-                    bridge.controls[at].value = Some(value.clone());
-                }
-                if let Some(level) = meters.get(&ir::WidgetRef(index)) {
-                    bridge.meters.insert(at, *level);
-                }
+            if let Some(level) = meters.get(&ir::WidgetRef(index)) {
+                bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
-            if let ir::Binding::Control(c) = w.binding
+            if let Some(value) = typed.get(&ir::WidgetRef(index)) {
+                w.value = Some(value.clone());
+            } else if let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -787,9 +793,10 @@ mod tests {
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
             local kontakt=require("kontakt")
             local p=kontakt.connect_parameter("gain")
+            local meter=kontakt.connect_level_meter("gain")
             return function()
                 p:set_value(0.75)
-                return @ui.ZStack { @ui.Text {text="Authored",}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
+                return @ui.ZStack { @ui.Text {text=tostring(meter:level_value()),}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
             end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
         let font=Font::new(super::super::theme::NOTO_SANS).unwrap();
         let (names,weight)=font_metadata(&font);
@@ -832,7 +839,7 @@ mod tests {
         };
         session.update_view(
             &source,
-            &Default::default(),
+            &HashMap::from([(ir::ControlId(42),75.)]),
             &HashMap::from([(
                 ir::WidgetRef(0),
                 ir::Value::Text("callback readback".into()),
@@ -843,14 +850,18 @@ mod tests {
             session.bridge.lock().unwrap().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
+        assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
+            "another source is not overwritten by this source's scalar fallback");
         session.update_view(
             &source,
             &Default::default(),
             &HashMap::from([(ir::WidgetRef(0), ir::Value::Integer(20))]),
-            &Default::default(),
+            &HashMap::from([(ir::WidgetRef(0),0.625)]),
         );
         let graph = session.render().unwrap();
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
+        let meter:Table=graph.get::<Table>("children").unwrap().get(1).unwrap();
+        assert_eq!(meter.get::<Table>("props").unwrap().get::<String>("text").unwrap(),"0.625");
         let edits = session.take_edits();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].value, ir::Value::Integer(75));

@@ -88,9 +88,10 @@ font-service category; it does not silently use a different font.
 
 The initial Native Edit graph reads values from `Edit__Synth__Src__WTSelect`,
 `SPLSelect` and `WTShaper` parameters, all from KSP slot 2 (UI IDs 32809, 32820,
-32815). Their three aliases are not read through `Parameter.value()` in this
-active graph. Option-list/property authority and picker writes are not yet
-traced, so this does not classify their complete interaction intent. The
+32815). Their three aliases are not read through `Parameter.value()` or
+`ksp_control_property` in this active graph (extended probe: 127.33 seconds).
+Picker writes and other states remain untested, so this does not classify
+their complete interaction intent. The
 `Edit__Synth__Shp__SelectAlias` state remains unclassified. This RAM-only probe
 invokes the authored tab callback and records primitive kinds plus binding
 metadata; it does not certify pointer gestures or native-host stacking.
@@ -108,3 +109,17 @@ Arc; selected views retain only their bounded pixels. The synthetic check
 covers both strip axes, frame clamping, window overflow, downscale, cancellation
 and alpha preservation. The merged UI suite passes 94 tests with 11 ignored.
 Whole-worker memory and corpus acceptance remain open as listed above.
+
+The fresh common-driver **debug** capture at `d0354672` loads Conflux but aborts
+the Native graph at its unchanged 250 ms time guard, before image decoding.
+There is no updated Native screenshot from that run. Its fixed diagnostic is
+`NativeUI graph, NativeUI time budget exceeded`, digest `669a58cce2375280`.
+The optimized three-item results above apply only to their recorded earlier
+adapter, not to the latest branch. No guard was relaxed for the fixture.
+
+Native readback now applies only to the addressed source and gives its typed
+snapshot precedence over scalar fallback. A conflicting scalar value formerly
+replaced the synthetic typed text and rewrote other script slots; that check
+fails before the fix and passes after it. Native meter maps use the existing
+per-source `PartShared.widget_meters` provider. The only new non-owned seam
+edit is the meter-map argument at the Native loop in `src/ui/part.rs`.

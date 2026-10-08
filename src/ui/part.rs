@@ -215,7 +215,8 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
             let current=published.updates.get(index).filter(|patch|**patch!=Default::default()).map(|patch| {let mut current=source.clone();patch.apply(source,&Default::default(),&mut current);current});
             let current=current.as_ref().unwrap_or(source);
             let typed=shared.as_ref().map(|shared|shared.widget_values(current)).unwrap_or_default();
-            native.update_view(current,&face.values,&typed);
+            let meters=shared.as_ref().map(|shared|shared.widget_meters(current,generation)).unwrap_or_default();
+            native.update_view(current,&face.values,&typed,&meters);
         }
         let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
         let view=native.view(ui,slot,scale,&face.face,&face.values,&face.input);
