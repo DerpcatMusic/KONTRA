@@ -86,11 +86,18 @@ W12 recounts each READY slice and preserves native identity/bypass flags.
 
 ## CPU execution and acceptance budgets
 
-Reserved for W6 on its branch: dense compiled lanes, absolute 64-frame default
-control grid, explicitly audio-rate fast shapes, targeted smoothing, dirty
-dependencies/coefficients, settled reuse and SIMD with ordered sums. W6 will
-separate budget targets from quiet measurements against frozen v1 and specify
-per-route/per-section acceptance cells; agreement is pending.
+Compile addresses into dense lanes by scope. Propagate dirty dependencies in
+prepared order; reuse settled values and coefficients. Use absolute 64-frame
+modern control cells, verified native cadences, and explicit audio-rate lanes
+where fidelity requires them. Smooth affected targets. Batch independent
+voices/channels through SIMD while preserving cascade and sum order; preallocate
+all state and scratch.
+
+Adopt indirect adapter dispatch only after quiet paired benchmarks show no p50
+or p99 regression against enum dispatch; otherwise use enum presets. Per-route
+and per-section budgets, benchmark cells and v1/native acceptance protocols are
+in the [CPU plan](MODULATION_V2_CPU.md). These are proposed targets, not measured
+performance claims.
 
 ## READY sequence
 
