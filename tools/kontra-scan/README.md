@@ -39,7 +39,7 @@ Canonical sweep directories: ../results/v1 and ../results/v2. Publishing script 
 ## Binary digests
 
 - kontra-scan-v1 SHA-256 `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`
-- kontra-scan-v2 SHA-256 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`
+- kontra-scan-v2 SHA-256 `f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a`
 - kontra-scan-v1-uvi SHA-256 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`
 
 ## Rebuild from the shared source branch
@@ -87,7 +87,7 @@ cd /path/to/scan-v1
 
 The patch contains only feature-gated v1 adapter hooks. The preparer copies the same driver/metrics from this source bundle and disables the v2-only host check; v1's actual VM-yield test remains enabled. UVI sidecar source/rebuild provenance is the separate auditor branch above.
 
-The scanner always sends a safe fallback note when load-time zone coverage is empty (note callbacks can enable zones), avoiding declared invalid/control/keyswitch keys. `sample_zone_count` is the surviving load-time mapping count; sample residency can include reserved cache memory and does not prove usable PCM. Entirely invalid keyboards have no safe audition key: plays_note=no and an explicit reason, rather than silently skipping MIDI while claiming a silent note.
+The scanner always sends a safe fallback note when load-time zone coverage is empty (note callbacks can enable zones), avoiding declared invalid/control/keyswitch keys. `sample_zone_count` is the retained instrument IR mapping count (v1: loaded bank mappings), or unknown if the adapter exposes no retained instrument. Raw decoded mappings remain separately in JSON as decoded_zone_count. Runtime script gating/purge is not inferred from these counts; sample residency can include reserved cache memory and does not prove usable PCM. Entirely invalid keyboards have no safe audition key: plays_note=no and an explicit reason, rather than silently skipping MIDI while claiming a silent note.
 
 Before a rebuild, run `python3 tools/kontra-scan/generate-symbols.py` (v2 source worktree) and `--check` to verify the whitelist matches compiler UI/keyboard/persistence tables plus the pinned public spec. Both adapters use the generated file. The small vendor-extension set is explicit and carries unknown semantics.
 
