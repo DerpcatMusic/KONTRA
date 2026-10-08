@@ -111,6 +111,8 @@ def summarize(run, complete=False):
                     a = a if old.get('loads') == 'yes' else None
                     b = b if new.get('loads') == 'yes' else None
                 state = compare(a, b, 0 if metric in ['underruns', 'nonfinite'] else None)
+                if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb']:
+                    state='UNKNOWN'  # trace specialization changes performance; diagnostic only
                 if metric in ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'cpu_p50_us', 'cpu_p99_us']:
                     axes['beats-v1-every-metric'].append(state)
                 elif metric in ['underruns', 'nonfinite']:
@@ -194,31 +196,47 @@ def diff(run, previous):
     def stages(folder):
         result = {}
         if not folder: return result
-        def visit(value, address, target):
-            if isinstance(value, dict):
-                for key, val in value.items():
-                    if key in ['peak', 'rms', 'dc', 'enabled', 'level_db', 'rms_db', 'peak_db', 'gain_db', 'gain', 'latency', 'latency_frames', 'bypass', 'bypassed'] and isinstance(val, (int, float, bool)):
-                        target[address + '/' + key] = val
-                    else: visit(val, address + '/' + key, target)
-            elif isinstance(value, list):
-                for i, val in enumerate(value):
-                    identity = val.get('node_id', val.get('id', i)) if isinstance(val, dict) else i
-                    visit(val, address + '/' + str(identity), target)
         for path in folder.glob('v2/**/plugin-diagnostics.json'):
-            # Use the stable item path from the cache rather than a signature containing note plans.
-            cache = path.parents[2] / 'cache' / (path.parent.name + '.json')
+            cache=path.parents[2]/'cache'/(path.parent.name+'.json')
             if not cache.exists(): continue
-            item = json.loads(cache.read_text())['path']
-            target = result.setdefault((path.parents[2].name, hashlib.sha256(item.encode()).hexdigest()), {})
-            trace = path.with_name('signal-trace.json')
-            if trace.is_file():
-                visit(json.loads(trace.read_text()), '', target)
-            else:
-                for record in json.loads(path.read_text()).get('files', []):
-                    if 'signal_graph_trace' in record: visit(record['signal_graph_trace'], '', target)
+            item=json.loads(cache.read_text())['path']
+            target=result.setdefault((path.parents[2].name,hashlib.sha256(item.encode()).hexdigest()),{})
+            for trace in path.parent.rglob('signal-trace.json'):
+                value=json.loads(trace.read_text())
+                if value.get('schema')!=1 or value.get('complete') is not True or value.get('dropped')!=0: continue
+                nodes={n['id']:n for n in value.get('graph',{}).get('nodes',[])}
+                accumulated={}
+                for record in value.get('records',[]):
+                    node=record.get('node'); frames=record.get('frames',0)
+                    if node not in nodes or not isinstance(frames,int) or frames<=0: continue
+                    # Voice contributions and coherent sums are separate observations.
+                    key=(node,record.get('contribution') is True)
+                    stats=accumulated.setdefault(key,{'frames':0,'peak':[0.,0.],'energy':[0.,0.],'dc':[0.,0.],'enabled_frames':0,'latency_samples':0})
+                    metrics=record.get('output',{})
+                    if any(not isinstance(metrics.get(k),list) or len(metrics[k])!=2 or any(number(v) is None for v in metrics[k]) for k in ['peak','rms','dc']): continue
+                    stats['frames']+=frames
+                    for ch in range(2):
+                        stats['peak'][ch]=max(stats['peak'][ch],metrics['peak'][ch])
+                        stats['energy'][ch]+=metrics['rms'][ch]**2*frames
+                        stats['dc'][ch]+=metrics['dc'][ch]*frames
+                    stats['enabled_frames']+=frames*(record.get('enabled') is True)
+                    stats['latency_samples']=max(stats['latency_samples'],record.get('latency_samples',0))
+                runtime=str(trace.parent.relative_to(path.parent))
+                for (node,contribution), stats in accumulated.items():
+                    frames=stats['frames']
+                    if not frames: continue
+                    public=nodes[node]
+                    address=f"runtime/{runtime}/node/{node}/{public.get('kind','unknown')}/{public.get('processor','unknown')}/"+('contributions' if contribution else 'coherent')
+                    for ch in range(2):
+                        target[f'{address}/peak/{ch}']=stats['peak'][ch]
+                        target[f'{address}/rms/{ch}']=math.sqrt(stats['energy'][ch]/frames)
+                        target[f'{address}/dc/{ch}']=stats['dc'][ch]/frames
+                    target[address+'/enabled_fraction']=stats['enabled_frames']/frames
+                    target[address+'/latency_samples']=stats['latency_samples']
         return result
     before_stages, after_stages = stages(previous), stages(run)
     text += ['', '## Per-stage signal graph changes', '', '| Item | Condition | Stage/metric | Previous | Current | Delta |', '| --- | --- | --- | ---: | ---: | ---: |']
+    text.append('Only schema1, complete, zero-drop traces are compared. RMS/DC are frame-weighted block observations; peaks are maxima. Voice contributions remain separate from coherent sums; RR identities are not matched.')
     changes = 0
     for (condition, item), values in after_stages.items():
         for address, value in values.items():
@@ -301,6 +319,7 @@ def main():
     parser.add_argument('--resume', type=Path)
     parser.add_argument('--items', type=Path, help='targeted diagnostic manifest; default is the fixed acceptance set')
     parser.add_argument('--conditions', nargs='+', choices=['cold','product-warm','os-warm','restored-state'], help='targeted diagnostic conditions; default runs all')
+    parser.add_argument('--signal-trace', action='store_true', help='diagnostic trace run; do not use trace-enabled timings for performance acceptance')
     parser.add_argument('--adapter', choices=['cpu', 'gestures', 'host', 'all'], help='run owner adapter(s) on an existing run without repeating scanner cells')
     args = parser.parse_args()
     sha = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', args.sha + '^{commit}'], text=True).strip()
@@ -337,7 +356,7 @@ def main():
             print(run / 'summary.md', flush=True)
             return 0 if result['verdict'] == 'PASS' else 2
         binaries = {str(p.relative_to(V1)): sha256(p) for p in V1.rglob('*') if p.is_file() and p.name not in ['README.md', 'SHA256SUMS']}
-        manifest = {'sha': sha, 'created_utc': utc(), 'state': 'running', 'binaries': binaries, 'driver_sha256': sha256(DRIVER), 'gate_sha256': sha256(__file__), 'items_sha256': sha256(run / 'items.tsv'), 'source_checkout': str(args.source) if args.source else None, 'evidence_sha256': sha256(HERE / 'evidence.py'), 'conditions': args.conditions or ['cold', 'product-warm', 'os-warm', 'restored-state'], 'scope': 'targeted-diagnostic' if args.items or args.conditions else 'fixed-acceptance-set', 'restored_state_scope': 'Kontakt scalar controls; in-memory seed then timed production reload; v1 and UVI unsupported', 'cache_protocol': 'empty-writable-tmpfs-then-enabled-reload', 'profile': 'ci (release optimization, no cross-crate LTO)', 'previous_run': str(previous) if previous else None, 'plugin_host_run': False, 'os_page_cache': 'uncontrolled', 'no_release_or_install': True}
+        manifest = {'signal_trace': args.signal_trace, 'sha': sha, 'created_utc': utc(), 'state': 'running', 'binaries': binaries, 'driver_sha256': sha256(DRIVER), 'gate_sha256': sha256(__file__), 'items_sha256': sha256(run / 'items.tsv'), 'source_checkout': str(args.source) if args.source else None, 'evidence_sha256': sha256(HERE / 'evidence.py'), 'conditions': args.conditions or ['cold', 'product-warm', 'os-warm', 'restored-state'], 'scope': 'targeted-diagnostic' if args.items or args.conditions else 'fixed-acceptance-set', 'restored_state_scope': 'Kontakt scalar controls; in-memory seed then timed production reload; v1 and UVI unsupported', 'cache_protocol': 'empty-writable-tmpfs-then-enabled-reload', 'profile': 'ci (release optimization, no cross-crate LTO)', 'previous_run': str(previous) if previous else None, 'plugin_host_run': False, 'os_page_cache': 'uncontrolled', 'no_release_or_install': True}
         if args.resume:
             manifest = json.loads((run / 'manifest.json').read_text())
         write_json(run / 'manifest.json', manifest); summarize(run)
@@ -359,6 +378,7 @@ def main():
             env.update(KONTRA_GATE_PRODUCT_CACHE_ROOT=product_cache.name, KONTRA_GATE_CAPTURE='1', KONTRA_SCAN_NOTE_ROOT=str(run / 'notes'), KONTRA_SCAN_SIDECAR=str(V1 / 'scan/kontra-scan-v1-uvi'), KONTRA_SCAN_V2_ENGINE=str(engine), KONTRA_REPORT_DIR=str(run / 'reports'), KONTRA_DISABLE_NETWORK='1')
             scans(run, engine, 'v2', env)
             scans(run, V1 / 'scan/kontra-scan-v1', 'v1', env)
+            if manifest.get('signal_trace'): env['KONTRA_SIGNAL_TRACE']='1'
             if any(c != 'restored-state' for c in manifest['conditions']): probes(run, env)
             import adapters
             source = Path(manifest['source_checkout']) if manifest.get('source_checkout') else Path.home() / '.t3/worktrees/KONTAKTO' / ('gate-' + sha[:12])

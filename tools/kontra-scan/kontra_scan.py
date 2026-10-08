@@ -358,7 +358,14 @@ def main():
             r = probe(engine, item, args.out / 'items' / key, min(args.timeout_seconds, args.budget_seconds), args.shots)
             r.update(path=item, library=library(item), revision=revision)
             extra_columns(r)
-            cached=args.out/'cache'/(signature(item,revision)+'.json')
+            final_key=signature(item,revision)
+            if final_key!=key:
+                old_work=args.out/'items'/key; new_work=args.out/'items'/final_key
+                if old_work.exists():
+                    new_work.mkdir(parents=True,exist_ok=True)
+                    shutil.copytree(old_work,new_work,dirs_exist_ok=True)
+                    shutil.rmtree(old_work)
+            cached=args.out/'cache'/(final_key+'.json')
             atomic(cached, r)
             done += 1
             print(f'{done}: {r["loads"]} {r["ui"]} {item}', flush=True)
