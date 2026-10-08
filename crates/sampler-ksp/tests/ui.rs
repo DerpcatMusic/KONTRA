@@ -98,7 +98,7 @@ fn ksp_interface_maps_to_validated_ui_ir() {
     assert_eq!(
         knob.drag,
         Some(sampler_ui_ir::Drag {
-            axis: sampler_ui_ir::Orientation::Horizontal,
+            axis: sampler_ui_ir::Orientation::Vertical,
             sensitivity: 500
         })
     );

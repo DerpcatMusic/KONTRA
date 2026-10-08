@@ -20,7 +20,7 @@ pub struct Environment {
     pub slot: u8,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
-    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
 }
 
@@ -1316,6 +1316,7 @@ pub fn lookup_index(name: &str) -> i32 {
 
 fn placeholder() -> model::Widget {
     model::Widget {
+        unresolved: false,
         name: String::new(),
         kind: WidgetKind::Label,
         ui_id: 0,

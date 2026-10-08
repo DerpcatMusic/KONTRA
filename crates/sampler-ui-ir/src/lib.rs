@@ -210,7 +210,7 @@ impl Default for Automation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drag {
     pub axis: Orientation,
-    /// Source units: KSP's magnitude, larger is finer.
+    /// Source units: KSP's magnitude, larger is faster; travel is picture-relative.
     pub sensitivity: u32,
 }
 
