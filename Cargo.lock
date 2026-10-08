@@ -3811,6 +3811,9 @@ dependencies = [
 [[package]]
 name = "sampler-ir"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "sampler-kontakt"
@@ -3826,6 +3829,8 @@ dependencies = [
  "sampler-ksp",
  "sampler-ui-ir",
  "symphonia",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3834,6 +3839,7 @@ version = "0.1.0"
 dependencies = [
  "sampler-core",
  "sampler-ui-ir",
+ "serde",
  "serde_json",
 ]
 
