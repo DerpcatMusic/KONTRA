@@ -161,11 +161,11 @@ fn ir_view_vector_mode_releases_control_bitmaps() {
     assets.sync(&face, ir::Presentation::Bitmap, load);
     let bitmap = assets.bytes();
     let mut values = ir_view::Values::default();
-    let ui = settle(633., 300., |ui| ir_view::view(ui, &face, page, &assets, ir::Presentation::Bitmap, 1., &mut values));
+    let ui = settle(633., 300., |ui| ir_view::view(ui, "", &face, page, &assets, ir::Presentation::Bitmap, 1., &mut values));
     shoot(&ui, 633, 300, "ir-bitmap-synthetic.png");
     assets.sync(&face, ir::Presentation::Vector, load);
     let vector = assets.bytes();
-    let ui = settle(633., 300., |ui| ir_view::view(ui, &face, page, &assets, ir::Presentation::Vector, 1., &mut values));
+    let ui = settle(633., 300., |ui| ir_view::view(ui, "", &face, page, &assets, ir::Presentation::Vector, 1., &mut values));
     shoot(&ui, 633, 300, "ir-vector-synthetic.png");
     assert_eq!(bitmap - vector, 64 * 64 * 4 * 64 + 80 * 24 * 4 * 2, "strips released");
     assert_eq!(vector, (633 * 300 + 300 * 120) * 4, "wallpaper and panel art kept");
@@ -187,7 +187,7 @@ fn both_modes(face: &ir::Interface, load: &mut dyn FnMut(&ir::Asset) -> Option<A
     for (n, (p, mode)) in [(ir::Presentation::Bitmap, "bitmap"), (ir::Presentation::Vector, "vector")].into_iter().enumerate() {
         assets.sync(&face, p, &mut *load);
         bytes[n] = assets.bytes();
-        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, p, 1., &mut values));
+        let ui = settle(f64::from(w), f64::from(h), |ui| ir_view::view(ui, "", &face, ir::PageRef(0), &assets, p, 1., &mut values));
         shoot(&ui, w, h, &format!("{dir}/{stem}-{mode}.png"));
     }
     bytes

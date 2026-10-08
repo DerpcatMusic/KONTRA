@@ -60,6 +60,8 @@ pub struct Settings {
     pub imported: bool,
     /// The performance view parts show unless they choose their own.
     pub view_mode: ViewMode,
+    /// Saved view override by instrument path; rack overrides take precedence.
+    pub instrument_views: BTreeMap<String, ViewMode>,
     /// What an older version kept instead: true was KONTRA's controls.
     /// Read once into `view_mode`, never written.
     #[serde(skip_serializing)]
@@ -67,7 +69,7 @@ pub struct Settings {
     /// Legacy dimmed-wallpaper preference; Vectorized keeps the library backdrop.
     #[serde(skip_serializing)]
     pub vector_backdrop: bool,
-    /// The original performance view's scale; 0 fits the part's width.
+    /// The performance view's scale; 0 fits the available width and height.
     pub view_scale: f32,
     /// Overall interface zoom, independent of physical display DPI; 0 means 100%.
     pub ui_scale: f64,

@@ -252,6 +252,13 @@ impl ScriptUi {
         keys.into()
     }
 
+    /// Regenerate only a script changed by this batch.
+    pub fn interface(&mut self, instance: usize) -> Option<sampler_ui_ir::Interface> {
+        let resources = std::cell::RefCell::new(&mut self.resources);
+        let picture = |path: &str| resources.borrow_mut().as_mut()?.picture(path);
+        self.views.get(instance)?.ui(&picture).ok()
+    }
+
     /// The interfaces as they stand, like [`Loaded::interfaces`].
     pub fn interfaces(&mut self) -> Vec<sampler_ui_ir::Interface> {
         let resources = std::cell::RefCell::new(&mut self.resources);
