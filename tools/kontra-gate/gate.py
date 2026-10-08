@@ -361,6 +361,8 @@ def probes(run, env):
         probe_env = env.copy(); probe_env.pop('KONTRA_GATE_CAPTURE', None)
         probe_env['PROBE_PRODUCT_CACHE_ROOT'] = env['KONTRA_GATE_PRODUCT_CACHE_ROOT']
         probe_env.pop('KONTRA_SCAN_ACTIVE', None)
+        reader = Path.home() / '.codex/cache/kontakto-uvi-official-reader/app/UVIWorkstationx64.exe'
+        if reader.is_file(): probe_env.setdefault('KONTRA_UVI_READER', str(reader))
         probe_env.update(PROBE_TEST='uvi::scan::tests::probe_load_onset' if uvi else 'plugin::tests::probe_load', KONTRA_AUDIT_ONSET_ONLY='1')
         for mode in ['v1fresh', 'v1user']:
             args = [sys.executable, run / 'harness-contention-v1/audit-load.py', manifest, run / 'probes', binary, mode, '0', str(len(selected))]

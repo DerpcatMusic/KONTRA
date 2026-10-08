@@ -516,6 +516,7 @@ fn translate(
     #[cfg(feature = "scan")]
     { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
+    drop(_span);
     let mut kontakt=Kontakt {
         instrument:out.ir,locations:out.locations,samples,initialized:Some(initialized),
     };

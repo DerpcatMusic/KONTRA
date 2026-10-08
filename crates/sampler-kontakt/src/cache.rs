@@ -128,9 +128,12 @@ fn load_from(
     }
     let len = usize::try_from(u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?)).ok()?;
     let (head_bytes, tables) = bytes.get(8..)?.split_at_checked(len)?;
+    let decode_span = crate::audit::Span::new("preset_cache_decode");
     let head: Head<'static> = serde_json::from_slice(head_bytes).ok()?;
     let (zones, physical) = crate::cache_zones::decode(tables)?;
     drop(bytes);
+    drop(decode_span);
+    let validation_span = crate::audit::Span::new("preset_cache_validate");
     if !current(&head.dependencies)
         || head.instrument.assets.len() != head.locations.len()
         || head.states.len() != head.instrument.behaviors.len()
@@ -152,6 +155,7 @@ fn load_from(
     if !head.root.is_dir() || !path.starts_with(&head.root) {
         return None;
     }
+    drop(validation_span);
     let mut samples = Samples::new(&head.root);
     let mut instrument = head.instrument.into_owned();
     instrument.zones = zones;
@@ -167,6 +171,7 @@ fn load_from(
         );
     }
     instrument.validate().ok()?;
+    let restore_span = crate::audit::Span::new("preset_cache_restore_scripts");
     let states = head
         .states
         .into_iter()
@@ -183,6 +188,7 @@ fn load_from(
             .map(|s| Some(Ok(s))),
         })
         .collect::<Option<Vec<_>>>()?;
+    drop(restore_span);
     let _ = OpenOptions::new()
         .write(true)
         .open(filename)
