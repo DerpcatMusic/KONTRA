@@ -1107,3 +1107,33 @@ fn widget_authored_label_overflow_owns_nested_wheel_and_yields_at_boundary() {
     tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
     assert!(ui.scroll("label-parent")[1]>0.,"exhausted label yields wheel to parent");
 }
+
+#[test]
+#[ignore = "real-library footer text gate; set KONTRA_AUDIT_WIDGET_PATCH"]
+fn widget_conflux_footer_text_reaches_typed_publication_without_truncation() {
+    let Some(path)=std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").map(std::path::PathBuf::from) else {return};
+    let mut source=sampler_kontakt::read(&path).unwrap().instrument;
+    let saved=source.behaviors.iter().flat_map(|b|b.state.iter()).filter_map(|(name,value)| {
+        if let sampler_ir::Saved::Text(value)=value {Some((name.trim_start_matches('@').to_owned(),value.clone()))}else{None}
+    }).collect::<std::collections::HashMap<_,_>>();
+    source.zones.clear();source.assets.clear();
+    let loaded=sampler_kontakt::prepare(source,vec![],&sampler_kontakt::Options {library:Some(path),..Default::default()}).unwrap();
+    let limits=sampler_core::Limits::for_plan(&loaded.plan,16,16);
+    let mut runtime=sampler_core::Runtime::new(loaded.plan,limits).unwrap();
+    let mut script_ui=crate::sound::ScriptUi {views:loaded.scripts,resources:loaded.resources,..Default::default()};
+    let face=loaded.interfaces.into_iter().find(|f|f.source==(ir::Source::Ksp {slot:2})).unwrap();
+    let mut h=NativeGesture {face:face.clone(),script_ui:&mut script_ui,runtime:&mut runtime,ui:theme::ui(),values:Default::default(),state:Default::default(),assets:Default::default()};
+    h.sync();
+    let mut count=0;
+    for (n,w) in face.widgets.iter().enumerate().filter(|(_,w)|w.name.starts_with("@Footer__Macro__Name__")) {
+        let sampler_core::WidgetValue::Text(actual)=h.read(n) else {panic!("footer needs typed text")};
+        let published=h.state.values.get(&ir::WidgetRef(n));
+        let expected=saved.get(w.name.trim_start_matches('@')).expect("footer name has saved state");
+        let authored=match &w.value {Some(ir::Value::Text(s))=>Some(s),_=>None};
+        println!("FOOTER_TEXT widget={n} saved_bytes={} saved_chars={} runtime_bytes={} runtime_chars={} authored_matches={} typed_matches={}",expected.len(),expected.chars().count(),actual.as_str().len(),actual.as_str().chars().count(),authored.is_some_and(|s|s==expected),matches!(published,Some(ir::Value::Text(s)) if s==actual.as_str()));
+        assert!(actual.as_str()==expected,"footer native readback differs from complete saved text");
+        assert!(matches!(published,Some(ir::Value::Text(s)) if s==actual.as_str()),"typed publication lost footer text");
+        count+=1;
+    }
+    assert_eq!(count,6);
+}
