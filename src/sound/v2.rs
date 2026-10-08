@@ -165,11 +165,13 @@ impl Part {
         let count = tree.nodes.len();
         let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
         let plan = runtime.active_plan();
+        let widgets = runtime.widget_definitions(plan).unwrap_or_default().to_vec();
+        let widget_values = widgets.iter().filter(|w| !matches!(w.storage, sampler_core::WidgetStorage::Control(_))).filter_map(|w| widget_value(&runtime, plan, w).map(|value| (sampler_ui_ir::ControlId(w.id.0), value))).collect();
         let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
-        let (runtime, client) = runtime.with_control_updates(256, 256).map_err(core)?;
+        let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
             mpe,
             tune: 0.0,
@@ -290,10 +292,38 @@ pub(crate) struct ControlIngress {
     plan: sampler_core::PlanId,
     context: ControlContext,
     definitions: Vec<ControlDefinition>,
+    widgets: Vec<sampler_core::WidgetDefinition>,
+    widget_values: std::collections::BTreeMap<sampler_ui_ir::ControlId, sampler_ui_ir::Value>,
+    pending_widgets: std::collections::BTreeMap<(sampler_ui_ir::ControlId, u32), (u64, sampler_ui_ir::Value)>,
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
 }
 
 impl ControlIngress {
+    pub(crate) fn submit_ui_widgets(&mut self, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
+        let definition = self.widgets.iter().find(|w| w.source_slot == source_slot && Some(w.ui_id) == widget.source_id)
+            .or_else(|| self.widgets.iter().find(|w| matches!(widget.binding, sampler_ui_ir::Binding::Control(id) if matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control.0 == id.0))));
+        let Some(definition) = definition else {
+            if let sampler_ui_ir::Binding::Control(id) = widget.binding && edits.len() == 1 && edits[0].0 == 0 {
+                return match edits[0].1 { sampler_ui_ir::Value::Integer(value) => self.submit(id, f64::from(value)), sampler_ui_ir::Value::Real(value) => self.submit(id, value), _ => false };
+            }
+            return false;
+        };
+        let mut native = Vec::with_capacity(edits.len());
+        for (index, value) in edits {
+            let value = match value {
+                sampler_ui_ir::Value::Integer(value) => sampler_core::WidgetValue::Integer(i64::from(value)),
+                sampler_ui_ir::Value::Real(value) if value.is_finite() => match definition.storage {
+                    sampler_core::WidgetStorage::Control(id) if self.definitions.iter().any(|d| d.id == id && matches!(d.domain, ControlDomain::Integer { .. } | ControlDomain::Toggle)) => sampler_core::WidgetValue::Integer(value.round() as i64),
+                    _ => sampler_core::WidgetValue::Real(value),
+                },
+                sampler_ui_ir::Value::Text(value) => { let text = sampler_core::Text::new(&value); if text.as_str() != value { return false; } sampler_core::WidgetValue::Text(text) },
+                _ => return false,
+            };
+            native.push(sampler_core::WidgetEdit { id: definition.id, index, value, interaction });
+        }
+        self.submit_widgets(native)
+    }
+
     pub(crate) fn submit(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
         if !value.is_finite() { return false; }
         let Some(d) = self.definitions.iter().find(|d| d.id.0 == id.0) else { return false };
@@ -303,6 +333,13 @@ impl ControlIngress {
             ControlDomain::Toggle if value == 0. || value == 1. => ControlValue::Toggle(value == 1.),
             _ => return false,
         };
+        if let Some(widget) = self.widgets.iter().find(|w| matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control == d.id)) {
+            return self.submit_widgets(vec![sampler_core::WidgetEdit { id: widget.id, index: 0, value: match value {
+                ControlValue::Integer(v) => sampler_core::WidgetValue::Integer(v),
+                ControlValue::Real(v) => sampler_core::WidgetValue::Real(v),
+                ControlValue::Toggle(v) => sampler_core::WidgetValue::Integer(i64::from(v)),
+            }, interaction: Default::default() }]);
+        }
         let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
             operation: sampler_core::ControlOperation::Invoke(self.context, ControlWrite { id: d.id, value }) };
         match self.client.submit(command) {
@@ -311,24 +348,111 @@ impl ControlIngress {
         }
     }
 
-    pub(crate) fn settle(&mut self) {
+    pub(crate) fn submit_widgets(&mut self, edits: Vec<sampler_core::WidgetEdit>) -> bool {
+        let Some(first) = edits.first() else { return false };
+        let Some(widget) = self.widgets.iter().find(|w| w.id == first.id) else { return false };
+        if edits.len() > sampler_core::WIDGET_EDIT_CAPACITY || edits.iter().any(|e| e.id != first.id || ui_value(e.value).is_none()) { return false; }
+        let id = sampler_ui_ir::ControlId(first.id.0);
+        let preview: Vec<_> = edits.iter().map(|e| (e.index, ui_value(e.value).unwrap())).collect();
+        let scalar = match widget.storage { sampler_core::WidgetStorage::Control(control) => Some(sampler_ui_ir::ControlId(control.0)), _ => None };
+        let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::InvokeWidget(self.context, edits) };
+        match self.client.submit(command) {
+            Ok(request) => {
+                for (index, value) in preview {
+                    if let Some(control) = scalar {
+                        let number = match value { sampler_ui_ir::Value::Integer(v) => f64::from(v), sampler_ui_ir::Value::Real(v) => v, _ => continue };
+                        self.pending.insert(control, (request, number));
+                    }
+                    self.pending_widgets.insert((id, index), (request, value));
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub(crate) fn settle(&mut self) -> bool {
+        let mut changed = false;
         while let Some(reply) = self.client.reply() {
-            if let sampler_core::ControlOperation::Invoke(_, write) = reply.command.operation {
+            if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
                 if self.pending.get(&id).is_some_and(|(request, _)| *request == reply.request) {
                     self.pending.remove(&id);
+                    changed = true;
+                }
+            }
+            if let sampler_core::ControlOperation::InvokeWidget(_, edits) = &reply.command.operation {
+                for edit in edits {
+                    let id = sampler_ui_ir::ControlId(edit.id.0);
+                    if self.pending_widgets.get(&(id, edit.index)).is_some_and(|(request, _)| *request == reply.request) { self.pending_widgets.remove(&(id, edit.index)); changed = true; }
+                    if let Some(widget) = self.widgets.iter().find(|w| w.id == edit.id)
+                        && let sampler_core::WidgetStorage::Control(control) = widget.storage {
+                        let control = sampler_ui_ir::ControlId(control.0);
+                        if self.pending.get(&control).is_some_and(|(request, _)| *request == reply.request) { self.pending.remove(&control); }
+                    }
+                    if reply.result.is_ok() { changed |= self.accept_value(edit); }
                 }
             }
             if let Err(error) = reply.result {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
             }
         }
+        changed
+    }
+
+    fn accept_value(&mut self, edit: &sampler_core::WidgetEdit) -> bool {
+        let Some(value) = ui_value(edit.value) else { return false };
+        let Some(current) = self.widget_values.get_mut(&sampler_ui_ir::ControlId(edit.id.0)) else { return false };
+        match (current, value) {
+            (sampler_ui_ir::Value::Integers(values), sampler_ui_ir::Value::Integer(value)) => values.get_mut(edit.index as usize).is_some_and(|old| { let changed = *old != value; *old = value; changed }),
+            (sampler_ui_ir::Value::Reals(values), sampler_ui_ir::Value::Real(value)) => values.get_mut(edit.index as usize).is_some_and(|old| { let changed = *old != value; *old = value; changed }),
+            (current, value) if edit.index == 0 => { let changed = *current != value; *current = value; changed },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        let mut values = std::collections::HashMap::new();
+        for (n, widget) in face.widgets.iter().enumerate() {
+            let sampler_ui_ir::Binding::Variable { script, name } = &widget.binding else { continue };
+            let id = sampler_ui_ir::ControlId(sampler_ksp::derived_control_id(*script, name).0);
+            let Some(mut current) = self.widget_values.get(&id).cloned() else { continue };
+            for (&(_, index), (_, value)) in self.pending_widgets.range((id, 0)..=(id, u32::MAX)) {
+                match (&mut current, value) {
+                    (sampler_ui_ir::Value::Integers(values), sampler_ui_ir::Value::Integer(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
+                    (sampler_ui_ir::Value::Reals(values), sampler_ui_ir::Value::Real(value)) => { if let Some(old) = values.get_mut(index as usize) { *old = *value; } }
+                    (current, value) if index == 0 => current.clone_from(value),
+                    _ => {},
+                }
+            }
+            values.insert(sampler_ui_ir::WidgetRef(n), current);
+        }
+        values
     }
 
     pub(crate) fn overlay(&mut self, values: &mut Vec<(sampler_ui_ir::ControlId, f64)>) {
         self.settle();
         for (id, value) in values { if let Some((_, pending)) = self.pending.get(id) { *value = *pending; } }
     }
+}
+
+fn ui_value(value: sampler_core::WidgetValue) -> Option<sampler_ui_ir::Value> {
+    Some(match value {
+        sampler_core::WidgetValue::Integer(value) => sampler_ui_ir::Value::Integer(value.try_into().ok()?),
+        sampler_core::WidgetValue::Real(value) if value.is_finite() => sampler_ui_ir::Value::Real(value),
+        sampler_core::WidgetValue::Text(value) => sampler_ui_ir::Value::Text(value.as_str().into()),
+        _ => return None,
+    })
+}
+
+fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_core::WidgetDefinition) -> Option<sampler_ui_ir::Value> {
+    use sampler_core::{WidgetStorage, WidgetValue};
+    Some(match widget.storage {
+        WidgetStorage::Control(_) | WidgetStorage::Texts { .. } => ui_value(runtime.widget_value(plan, widget.id, 0).ok()?)?,
+        WidgetStorage::Cells { len, real: false, .. } => sampler_ui_ir::Value::Integers((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Integer(value) => value.try_into().ok(), _ => None }).collect::<Option<_>>()?),
+        WidgetStorage::Cells { len, real: true, .. } => sampler_ui_ir::Value::Reals((0..len).map(|index| match runtime.widget_value(plan, widget.id, index).ok()? { WidgetValue::Real(value) => Some(value), _ => None }).collect::<Option<_>>()?),
+    })
 }
 
 impl V2Core {
@@ -341,6 +465,16 @@ impl V2Core {
 impl Default for V2Core {
     fn default() -> Self {
         Self::with_parts(RACK_SLOTS, 48000.0)
+    }
+}
+
+#[cfg(feature = "shots")]
+impl V2Core {
+    pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
+        let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
+    }
+    pub fn scan_lua(&self, part: usize) -> Option<sampler_uvi::script::ScanFaults> {
+        self.parts.get(part)?.as_ref()?.script.as_ref().map(|s| s.scan_faults())
     }
 }
 
@@ -1126,6 +1260,7 @@ fn kontakt(
         library: Some(path.clone()),
         mpe: request.mpe.then(|| sampler_core::lower::MpeDefaults::for_instrument(&source.instrument)),
         dynamics_start: request.dynamics_start,
+        control_values: request.control_values.iter().filter(|(_, value)| value.is_finite()).map(|&(id, value)| (sampler_core::ControlId(id.0), value.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32)).collect(),
         ..Default::default()
     };
     let progress = |p: sampler_kontakt::Progress<'_>| {

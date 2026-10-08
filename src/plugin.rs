@@ -82,6 +82,8 @@ pub struct Part {
     /// How articulations are selected, as `sampler_ir::Switching::to_bits`
     /// with bit 7 set once the player remapped; 0 keeps the instrument's own.
     pub switching: u8,
+    /// Kontakt control identities and semantic values, independent of presentation.
+    pub control_values: Vec<SavedControl>,
 }
 
 impl Default for Part {
@@ -111,7 +113,25 @@ impl Default for Part {
             dynamics: -1,
             bend_range: 0,
             switching: 0,
+            control_values: Vec::new(),
         }
+    }
+}
+
+/// Split identity words stay exact in JSON and in the host's state codec.
+#[derive(State, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedControl {
+    pub high: u64,
+    pub low: u64,
+    pub value: f64,
+}
+
+impl SavedControl {
+    fn new(id: sampler_ui_ir::ControlId, value: f64) -> Self {
+        Self { high: (id.0 >> 64) as u64, low: id.0 as u64, value }
+    }
+    fn id(&self) -> sampler_ui_ir::ControlId {
+        sampler_ui_ir::ControlId(u128::from(self.high) << 64 | u128::from(self.low))
     }
 }
 
@@ -230,7 +250,7 @@ impl Selection {
 }
 
 #[derive(Params)]
-#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision")]
+#[params(output_port_name = "port_name", output_port_names_revision = "port_names_revision", pre_save = "capture_ui_controls", post_load = "reload_ui_controls")]
 pub struct SamplerParams {
     #[param(name = "Volume", range = "linear(-60, 6)", default = 0.0, unit = "dB", smooth = "exp(5)")]
     pub volume: FloatParam,
@@ -245,6 +265,20 @@ pub struct SamplerParams {
 pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
+    fn capture_ui_controls(&self) {
+        let mut selection = self.selection.read().unwrap().clone();
+        self.shared.capture_ui_controls(&mut selection);
+        let mut current = self.selection.write().unwrap();
+        for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
+            if part.source() == captured.source() { part.control_values = captured.control_values; }
+        }
+    }
+
+    fn reload_ui_controls(&self) {
+        // Recall of the same source still needs fresh script initialization.
+        for part in &mut self.shared.view.lock().unwrap().parts { part.attempted = None; }
+    }
+
     /// Host output port `index`'s name, as last published (`routing.rs`).
     fn port_name(&self, index: u32) -> Option<String> {
         let names = self.shared.port_names.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -303,7 +337,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct PartShared {
     pub(crate) generation: AtomicU64,
     pub(crate) scalar_revision: AtomicU64,
-    native_revision: AtomicU64,
+    pub(crate) native_revision: AtomicU64,
     ingress: Mutex<Option<crate::sound::v2::ControlIngress>>,
     /// Out of [`Progress::DONE`], rising within each load.
     pub(crate) load_progress: AtomicU32,
@@ -378,6 +412,13 @@ impl PartShared {
         let mut values = self.control_values();
         if let Some(ingress) = self.ingress.lock().unwrap().as_mut() { ingress.overlay(&mut values); }
         values
+    }
+
+    pub(crate) fn widget_values(&self, face: &sampler_ui_ir::Interface) -> std::collections::HashMap<sampler_ui_ir::WidgetRef, sampler_ui_ir::Value> {
+        let mut ingress = self.ingress.lock().unwrap();
+        let Some(ingress) = ingress.as_mut() else { return Default::default() };
+        if ingress.settle() { self.scalar_revision.fetch_add(1, Ordering::Release); }
+        ingress.values(face)
     }
 
     pub(crate) fn problems(&self) -> RuntimeProblems {
@@ -910,6 +951,18 @@ impl Shared {
         }
     }
 
+    /// Capture only the source actually loaded; a recalled or pending source
+    /// must not be overwritten with values from the previous instrument.
+    pub(crate) fn capture_ui_controls(&self, selection: &mut Selection) {
+        let sources: Vec<_> = self.view.lock().unwrap().parts.iter().map(|p| if p.loading { None } else { p.attempted.as_ref().map(|(path, program, ..)| (path.clone(), *program)) }).collect();
+        for (slot, part) in selection.parts.iter_mut().enumerate() {
+            if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
+            if let Some(atoms) = self.part(slot) {
+                part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
+            }
+        }
+    }
+
     /// Edit a control of the part in `slot` as its widget would; the
     /// script's `on ui_control` runs on the audio thread. False when the
     /// queue is full.
@@ -928,6 +981,24 @@ impl Shared {
         let mut ingress = part.ingress.lock().unwrap();
         if part.generation.load(Ordering::Acquire) != epoch || !value.is_finite() { return false; }
         ingress.as_mut().is_some_and(|client| client.submit(control, value))
+    }
+
+    /// One authored gesture; XY axes and touched table cells stay one transaction.
+    pub(crate) fn set_widget_batch_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
+        let Some(part) = self.part(slot) else { return false };
+        let mut ingress = part.ingress.lock().unwrap();
+        if part.generation.load(Ordering::Acquire) != epoch { return false; }
+        ingress.as_mut().is_some_and(|ingress| ingress.submit_ui_widgets(source_slot, widget, edits, interaction))
+    }
+
+    pub(crate) fn set_widget_at(&self, slot: usize, epoch: u64, source_slot: u8, widget: &sampler_ui_ir::Widget, index: Option<usize>, value: sampler_ui_ir::Value) -> bool {
+        let Some(index) = u32::try_from(index.unwrap_or(0)).ok() else { return false };
+        let edits = match value {
+            sampler_ui_ir::Value::Integers(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Integer(value)))).collect::<Option<Vec<_>>>(),
+            sampler_ui_ir::Value::Reals(values) => values.into_iter().enumerate().map(|(n, value)| u32::try_from(n).ok().and_then(|n| index.checked_add(n)).map(|n| (n, sampler_ui_ir::Value::Real(value)))).collect::<Option<Vec<_>>>(),
+            value => Some(vec![(index, value)]),
+        };
+        edits.is_some_and(|edits| self.set_widget_batch_at(slot, epoch, source_slot, widget, edits, Default::default()))
     }
 
     /// Apply the script effects the audio thread queued to their parts'
@@ -1105,6 +1176,11 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         shared.apply_effects();
         shared.refresh_uvi(&params);
+        shared.with_parts(|parts| { for part in parts {
+            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.settle() {
+                part.scalar_revision.fetch_add(1, Ordering::Release);
+            }
+        } });
         shared.trim_streams(params.selection.read().unwrap().memory_budget_mb);
         // Dropping what the audio thread replaced is this thread's job.
         while shared.discard.pop().is_some() {}
@@ -1245,6 +1321,7 @@ fn load_part(params: &SamplerParams, slot: usize) -> bool {
         sample_rate: rate,
         mpe: part.mpe,
         dynamics_start: u8::try_from(part.dynamics).ok().filter(|v| *v < 128),
+        control_values: part.control_values.iter().map(|c| (c.id(), c.value)).collect(),
         threads: match shared.libraries.settings().threads {
             crate::library::ThreadSetting::Single => None,
             crate::library::ThreadSetting::Auto => Some(crate::sound::ThreadChoice::Auto),

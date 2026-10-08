@@ -19,7 +19,11 @@ stub_mt.__index = function(t, k)
   rawset(t, k, c)
   return c
 end
-stub_mt.__call = function(self) return stub(rawget(self, "__root")) end
+stub_mt.__call = function(self, ...)
+  local root = rawget(self, "__root")
+  if native.scanKey and (root == "setKeyColour" or root == "resetKeyColour") then native.scanKey(root, {...}) end
+  return stub(root)
+end
 stub_mt.__tostring = function(self) return "" end
 stub_mt.__concat = function(a, b) return tostring(a) .. tostring(b) end
 local function zero() return 0 end

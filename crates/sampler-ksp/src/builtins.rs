@@ -307,6 +307,7 @@ pub enum SysVar {
     NumZones,
     NumOutputChannels,
     MouseOverControl,
+    WidgetInteraction(u8),
     Date(u8),
     Time(u8),
 }
@@ -352,6 +353,8 @@ pub fn sys_var(name: &str) -> Option<SysVar> {
         "$NUM_ZONES" => NumZones,
         "$NUM_OUTPUT_CHANNELS" => NumOutputChannels,
         "$NI_MOUSE_OVER_CONTROL" => MouseOverControl,
+        "$NI_CONTROL_PAR_IDX" => WidgetInteraction(0),
+        "$NI_MOUSE_EVENT_TYPE" => WidgetInteraction(5),
         "$NI_DATE_YEAR" => Date(0),
         "$NI_DATE_MONTH" => Date(1),
         "$NI_DATE_DAY" => Date(2),

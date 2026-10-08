@@ -37,6 +37,10 @@ fn audit_ui_real_frames() {
         original.unsupported.len()
     );
     let p = Arc::new(SamplerParams::new());
+    if let Some(scale) = std::env::var_os("KONTRA_AUDIT_UI_SCALE") {
+        let scale: f32 = scale.to_str().unwrap().parse().unwrap();
+        p.shared.libraries.edit(|settings| settings.view_scale = scale);
+    }
     p.selection
         .write()
         .unwrap()
@@ -128,6 +132,8 @@ fn audit_ui_real_frames() {
                 }
             }
         }
+        let canvas = ui.scene().unwrap().surface("ir-view").or_else(|| ui.scene().unwrap().surface("part-0-epoch-0-script-0-ir-view")).unwrap().frame;
+        println!("AUDIT_UI mode={mode} output={width}x{height} canvas={:.3}x{:.3}", canvas.size.width, canvas.size.height);
         for (stage, mut t) in [
             "build",
             "layout",
