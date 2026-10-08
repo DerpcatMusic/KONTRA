@@ -3030,6 +3030,15 @@
       ],
       "validation": "Owner metadata/backend failing-first checks pass without audio allocation; combined targeted and release factory checks retained. Tone post-FX placement is disclosed.",
       "accepted": true
+    },
+    {
+      "id": "source-owned-uvi-script-gate-retirement",
+      "summary": "Retire empty duration-zero UVI gates after source completion without fabricated physical roots",
+      "source_commits": [
+        "ba537b6f246cf8fc9cdc1f06de8a855ef4fc9276"
+      ],
+      "validation": "Four failing-first ownership/lifecycle checks and source-policy tests pass; real Contrabassoon finishes at 2248 ms with zero voices/notes/pressed keys and faults.",
+      "accepted": true
     }
   ]
 }

@@ -14,10 +14,12 @@ below record reviewed source checkpoints; they are not claims about pending work
 - Native UI uses deterministic work limits and reports asset/process watchdog expiry as incomplete. Picture cache rejects oversized wanted sets without endless requeues.
 - Bank-volume samples reach their existing UVI resolver. Browser artwork, chrome, versioned Settings, upper-zone MPE and editor telemetry ownership are corrected.
 - Native Ladder/Daft cutoff, Q and Gain routes are retained, authored zero-weight Multi LFOs stay bipolar Zero, and settled modulation results are reused without changing PCM.
-- Correction: Contrabassoon's 748 ms onRelease sample ends at 2,248 ms. Its voice at the old 2,000 ms check was legitimate. Quick checks now wait for zero voices, with a five-second maximum release drain; empty script-note gate cleanup remains separate work.
+- Correction: Contrabassoon's 748 ms onRelease sample ends at 2,248 ms. Its voice at the old 2,000 ms check was legitimate. Quick checks now wait for zero voices, with a five-second maximum release drain; the separate empty script-note gate cleanup now ships in this follow-up.
 - Restore stable Attack/Release/Tone host controls alongside Volume and 2,049 generic IDs (2,053 total). Fallback envelopes exclude authored AHDSR/FLEX/amplitude routes; Tone bypasses exactly by default.
 
-### Known limits for 0.3.325
+- Retire duration-zero source-owned UVI script gates when their samples finish, preserving explicit looping release tails and physical input ownership.
+
+### Known limits for 0.3.326
 
 - Global Tone is currently after part FX, before faders/rack routing; v1 pre-insert placement remains unverified.
 - CPU/RSS and native-law parity remain incomplete. W9 streaming and W8 chain sharing remain excluded pending acceptance. Existing KSP compile and DSP gaps are retained in the fidelity ledger. Native persistence is restored in this follow-up; the exclusion below describes the historical 0.3.306 freeze.
