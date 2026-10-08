@@ -424,6 +424,8 @@ pub struct Prepared {
     pub(super) voice_limits: Box<[super::VoiceLimit]>,
     pub(super) group_voice_limits: Box<[Option<usize>]>,
     pub(super) monophonic_release: Box<[bool]>,
+    pub(super) engine_parameters: Box<[super::EngineParameterBinding]>,
+    pub(super) engine_lookups: Box<[super::EngineLookup]>,
     pub(super) group_params: Box<[super::GroupParams]>,
     pub(super) group_faders: Box<[Option<super::GroupFader>]>,
     /// Bus index by source address, for script group routing.
@@ -613,6 +615,8 @@ impl Prepared {
             voice_limits: Box::new([]),
             group_voice_limits: Box::new([]),
             monophonic_release: Box::new([]),
+            engine_parameters: Box::new([]),
+            engine_lookups: Box::new([]),
             group_params: Box::new([]),
             group_faders: Box::new([]),
             bus_addresses: Box::new([]),
