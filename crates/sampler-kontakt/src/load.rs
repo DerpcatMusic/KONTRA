@@ -552,13 +552,14 @@ pub(crate) fn script_environment(
     behavior: &ir::Behavior,
     index: usize,
     groups: Vec<String>,
+    source: &ir::SourceIndices,
     performance_view: sampler_ksp::model::PerformanceView,
 ) -> sampler_ksp::Environment {
     sampler_ksp::Environment {
         evaluation_budget: None,
         groups,
         engine_values: Default::default(),
-        engine_lookups: Vec::new(),
+        engine_lookups: sampler_core::lower::source_engine_lookups(source),
         slot: behavior.slot.unwrap_or(index.min(u8::MAX.into()) as u8),
         control_values: Default::default(),
         persisted: behavior
@@ -635,7 +636,7 @@ pub fn compile_ui(
                 }),
             }
         }
-        let mut environment = script_environment(behavior, index, groups.clone(), performance_view);
+        let mut environment = script_environment(behavior, index, groups.clone(), &instrument.source_indices, performance_view);
         environment.control_values.extend(
             options
                 .control_values
@@ -942,5 +943,30 @@ mod automation_tests {
         let id = rt.widget_id(rt.active_plan(), 3, 32771).unwrap();
         assert_eq!(rt.widget_value(rt.active_plan(),id,0),Ok(sampler_core::WidgetValue::Integer(60)));
         assert_eq!(rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),1),Ok(60));
+    }
+}
+
+#[cfg(test)]
+mod native_lookup_tests {
+    use super::*;
+    #[test]
+    fn physical_mod_and_target_names_resolve_during_init_and_note() {
+        let mut instrument = ir::Instrument::default();
+        instrument.groups = ["muted", "hole", "live"].into_iter().map(|name| ir::Group { name:name.into(), ..Default::default() }).collect();
+        instrument.source_indices.engine_lookups = vec![
+            ir::SourceEngineLookup {group:2,owner:-1,target:false,name:"Source".into(),index:12},
+            ir::SourceEngineLookup {group:2,owner:12,target:true,name:"Cutoff".into(),index:3},
+        ];
+        instrument.behaviors.push(ir::Behavior { name:"lookup".into(),language:ir::Language::Ksp,slot:Some(3),state:vec![],requires:vec![],
+            source:"on init declare $mod := get_mod_idx(2,\"source\") declare $target := get_target_idx(2,$mod,\"cutoff\") declare $group := find_group(\"live\") declare $note_mod declare $note_target end on on note $note_mod := get_mod_idx(2,\"SOURCE\") $note_target := get_target_idx(2,$note_mod,\"CUTOFF\") end on".into() });
+        let lookups = sampler_core::lower::source_engine_lookups(&instrument.source_indices);
+        let loaded = prepare(instrument,vec![],&Options::default()).unwrap();
+        let plan=loaded.plan.with_engine_parameters(vec![],lookups).unwrap();
+        let limits=sampler_core::Limits::for_plan(&plan,4,8);
+        let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
+        let cell=|rt:&sampler_core::Runtime,index| rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index);
+        assert_eq!(cell(&rt,0),Ok(12)); assert_eq!(cell(&rt,1),Ok(3)); assert_eq!(cell(&rt,2),Ok(2));
+        rt.trigger(sampler_core::Input { protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None },60,1.).unwrap();
+        assert_eq!(cell(&rt,3),Ok(12)); assert_eq!(cell(&rt,4),Ok(3));
     }
 }

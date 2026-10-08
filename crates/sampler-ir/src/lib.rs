@@ -96,6 +96,8 @@ pub struct SourceIndices {
     pub groups: Vec<Option<GroupRef>>,
     pub zones: Vec<Option<ZoneRef>>,
     pub modulators: Vec<SourceModulator>,
+    /// Authored native mod/target names and physical lookup addresses, including omitted DSP.
+    pub engine_lookups: Vec<SourceEngineLookup>,
     pub slots: Vec<Option<usize>>,
 }
 
@@ -106,6 +108,17 @@ pub struct SourceModulator {
     pub external: bool,
     pub name: String,
     pub runtime: Option<ModulatorRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEngineLookup {
+    pub group: i32,
+    /// -1 for a modulator; physical modulator slot for a target.
+    pub owner: i32,
+    pub target: bool,
+    pub name: String,
+    /// Physical modulator slot or authored target ordinal, never a runtime DSP index.
+    pub index: i32,
 }
 
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
