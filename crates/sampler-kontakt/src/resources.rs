@@ -117,7 +117,7 @@ impl Resources {
         let bytes = self
             .read(&normalized)
             .or_else(|| self.read(&format!("Resources/scripts/{normalized}")))?;
-        String::from_utf8(bytes).ok()
+        Some(ni_file::kontakt::objects::BParScript::decode_source(bytes))
     }
     /// The layout of the picture at `path` (`.png`): its `.txt` and its
     /// frame size from the image header, whichever the library has.
