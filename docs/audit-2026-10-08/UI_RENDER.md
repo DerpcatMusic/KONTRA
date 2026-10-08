@@ -15,9 +15,9 @@ resizing, several image states and actual table/meter/waveform painting. Conflux
 authored frontend is absent. Passing a CPU render means that our fallback drew;
 it does not establish the authored UI, working callbacks or native fidelity.
 
-The requested whole-corpus census denominator is 834 installed Kontakt paths.
-Shared-scanner columns and affected/unlocked counts are pending, by the
-coordinator’s instruction to push the implementation handoff now. A multi counts
+The requested Kontakt census denominator is 834 installed paths; the shared paired
+sweep also covers 660 UVI IDs, for 1,494 total. The scanner extension is installed;
+affected/unlocked counts remain pending until its coverage is complete. A multi counts
 once as a file; every program/script within it is inspected separately. Counts overlap and must not be added as independent
 instruments unlocked. An affected-file count is potential reach of a mechanism,
 not a promise that fixing it alone completes that file's UI.
@@ -84,13 +84,31 @@ The shared scanner independently reports `loads=yes`, `ui=missing-images`,
 `controls_bound=107/113` across the visible views, and `plays_note=yes` for its
 bounded audition. Its main-view pixel hash is identical to this witness:
 `1de618412e4997cd4436556a4f9f77da5dead3c7b130d0a00c6c41a24dd13011`.
-Conflux load admission was 18,941.86 ms with 229.71 MiB peak process RSS in that
-run. These whole-worker figures include playback/asset work absent from the
-render-only probe. Shared binary SHA-256:
-`1d28987a6aa6afd089277221b1249561b478a9ae387181ee945e9df6ac4c919a`;
-record `~/.cache/kontra-scan/results/v2/cache/5ab4964a42d56b2d94e1be1e8179b207d398fd40c2af0fee6837d27e72d58ad5.json`.
+The installed extension records **93.90%** declared cream background with its
+one-unit pixel tolerance; the supplemental **94.94%** above uses ±2. These are
+different measurement definitions, not a changed screenshot. The extension
+snapshot reports 17,338.28 ms load admission and 230.84 MiB peak worker RSS.
+These whole-worker figures include playback/asset work absent from the render-only
+probe. Shared v2 binary SHA-256:
+`18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`;
+record `~/.cache/kontra-scan/results/v2/cache/70c67b9c5e48dfa082f09f49941b681d89ff920179ae6911a0d781c7dad8b8f2.json`.
+The prior scanner witness reported 18,941.86 ms / 229.71 MiB under its older
+digest; neither observation establishes a controlled performance improvement.
 Audible output and bound scalar controls do not prove gesture, callback or native
 UI fidelity.
+
+The extension observes five raw wire slots: two empty and three inline active,
+with no bypassed, linked-only or decode-failed slots. All three final runtime
+compilations are admitted and clean; three init callbacks and two actual
+`persistence_changed` callbacks complete, with no load-fault records. Slot 4 has
+no persistence callback, rather than a failed completion. Import-harvest and
+dynamic-rack attempts are kept separate from these final counts. Raw saved
+sigils are `$:223`, `%:15`, `@:6`, `!:13`; production-admitted state excludes the
+13 `!` entries. Admission alone does not establish declaration-aware restoration.
+The main page has one strip, nine frames and one margin-bearing picture. Asset
+failures distinguish one lookup miss from six unavailable font-service uses;
+custom bitmap-font uses remain zero. Its audition uses MIDI 60 / velocity 64
+from zone coverage and is marked `matched-note-plan`.
 
 The causal chain is:
 
@@ -211,13 +229,43 @@ Do not replace the working authored presentation with a generic theme.
 | R11 source colours / alpha / hide | `src/ui/perf_view.rs:1113` hide-background / ARGB handling, `:1125` meter background/off and wave/cursor colours; `:597` value hide and `:1045` knob title/value masks | Restore the source colours/parts that v1 actually paints. Bar/peak/overload/zero-line/gradient and independent alpha coverage remain incomplete in the pinned path and require the parameter/native fixtures. |
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
-The shared scanner is already published. Canonical measurement uses
+The shared scanner extension is published at
+`tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`. Canonical measurement uses
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
 `kontra-scan-v2` (integration baseline), with their adjacent README and frozen
 Kontakt manifest. Use existing census outputs and requested extra columns;
 do not build another collector. Preserve Original in both comparisons and
 record the scanner digests, installed-file identity, values and render dimensions.
 The matching Conflux v2 hash above comes from that published scanner.
+Pinned Kontakt v1 remains `0cb7a8a0`; its installed scanner digest is
+`a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`.
+The UVI sidecar is a distinct later-v1 baseline, source `1c198e60` on product
+base `4bffbb18`, digest
+`d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`.
+
+### Shared schema and coverage update
+
+The adjacent `bin/kontra_scan.py:COLUMNS` defines **63** columns; its first nine
+remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
+with per-ID evidence in `{v1,v2}/cache`. At this read, the summary files have no
+data rows and `v2/results.tsv` contains three smoke rows; v1 has none. The owner
+is running the serial paired sweep. This partial snapshot cannot supply
+whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
+
+| Matrix evidence | Shared column / detailed JSON | Interpretation |
+|---|---|---|
+| Widget declarations | `widget_kind_counts`; views' `kinds`, `widgets`, `visible` | Kind histogram includes hidden declarations; it is not a visible-kind count. |
+| UI API and control-parameter source references | `ui_api_refs`; raw slots' `symbols` | `$CONTROL_PAR_*` keys share this dictionary; there is no separate `control_par_refs` TSV column. Union matching IDs across programs/slots for affected-file counts; do not sum token occurrences as files. |
+| Bypassed references and slot ownership | `bypassed_ui_api_refs`, `slots_*`; metadata slots' owner/program/wire/runtime identity | Exclude bypassed uses from active reach while retaining their separate evidence. Raw and compacted runtime slots are distinct. |
+| Actual execution and saved state | `compiled_script_slots`, `clean_compiled_slots`, `disabled_block_errors`, `init_callbacks_completed`, `persistence_changed_completed`, `load_fault_records`, raw/admitted saved sigils | Use phase records for completion/faults; successful admission is not successful persistence. Disabled callback errors do not establish preprocessor-inactive errors. |
+| Fonts, strips and slicing | `custom_font_uses`, `font_declared`, `font_success`, `picture_strips`, `picture_frames`, `picture_margins` | Preserve lookup/decode/font-service distinctions and declared versus resolved evidence. |
+| Asset failures and paint | `asset_lookup_*`, `asset_decode_*`, `resource_failure_reasons`, `paint_ok`, `paint_error` | A successful paint is not authored frontend or native-host fidelity. |
+| Pale or empty authored page | `page_background_rgba`, `plain_background_fraction`; renders' background method | Declared colour uses one-unit tolerance; modal colour is explicitly inferred. V1 page coverage remains unknown. |
+
+`unknown` stays unknown, never zero. Lua init/runtime faults and safe categories,
+load path, sample residency/underruns and common note-plan evidence remain
+separate from renderer fidelity. No authored diagnostic text, names or payloads
+are needed for these matrix counts. No new collector or independent sweep is used.
 
 ## Prior work to reuse, not reimplement
 
@@ -312,8 +360,8 @@ kept visible rather than presented as invented APIs.
 
 **Counts:** `Refs/834` and `Census` are **pending** for source references,
 whole-corpus active widgets/assets, affected rendering and fixes that unlock
-authored interfaces. The coordinator has routed the columns to the shared scanner
-owner. Source references must be unioned across programs and scripts per file;
+authored interfaces. The shared columns now exist; complete paired coverage is
+pending as described above. Source references must be unioned across programs and scripts per file;
 Creator Tools can supply widgets/properties without a script token. Do not
 substitute reference counts for unlocked files.
 
@@ -564,5 +612,6 @@ fixtures before declaring native parity; R10 requires real service-backed data.
 **Measurement update contract:** shared scanner provides the active/declaration
 widget counts, known property/API uses, fonts, margins/strip axes, resource/decode
 failures and background/ground fraction. Add counts here with manifest denominator
-and scanner digest. The coordinator explicitly requested this push before the
-columns land. Keep later dynamic-state/native-host validation open.
+and scanner digest. The extension schema is installed, but the current smoke
+coverage does not fill the corpus-count cells. Keep later dynamic-state/native-host
+validation open.
