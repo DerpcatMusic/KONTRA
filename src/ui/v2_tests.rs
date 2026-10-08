@@ -514,8 +514,9 @@ fn uvi_scene_culls_offscreen_controls_without_dropping_the_model() {
     let root = ir_view::view(&mut ui, &face, PageRef(0), &ir_view::Assets::default(), ir::Presentation::Bitmap, 1., &mut ir_view::Values::default());
     ui.frame(root, Some(Size::new(200.,100.)), Input::default(), 1./60.).unwrap();
     assert_eq!(face.widgets.len(),7000);
-    assert!(ui.scene().unwrap().surface("ir-0").is_some());
-    assert!(ui.scene().unwrap().surface("ir-1").is_none());
+    assert!(ui.scene().unwrap().surface("ir-0").is_none(),"visible passive label must not regain a named hit target");
+    assert!(ui.scene().unwrap().surface("/ir-0").is_some());
+    assert!(ui.scene().unwrap().surface("/ir-1").is_none());
 }
 
 /// Audit-only gesture probe: the same renderer and input loop as the editor.
@@ -923,13 +924,19 @@ fn widget_conflux_native_gestures_and_readback() {
                     let horizontal=w.drag.is_some_and(|d|d.axis==ir::Orientation::Horizontal);
                     let q=Point::new(p.x+if horizontal {100.*direction}else{0.},p.y-if horizontal {0.}else{100.*direction});
                     h.pointer(p,false); h.pointer(p,true); h.pointer(q,true); h.pointer(q,false);
-                    h.changed_and_retained(n,before,"drag"); *counts.entry("drag").or_default()+=1;
+                    h.changed_and_retained(n,before,"drag");
+                    let after=match h.read(n) {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!("scalar drag needs numeric readback")};
+                    assert!((after-scalar)*direction>0.,"native drag moved against authored direction");
+                    *counts.entry("drag").or_default()+=1;
                     if face.source==(ir::Source::Ksp {slot:2}) {main_drag+=1;}
                     let before=h.read(n);
                     let scalar=match before {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!()};
                     h.pointer(p,false);
                     h.tick(Input {pointer:PointerInput {pos:Some(p),..Default::default()},wheel:Vec2::new(0.,if scalar>=range.max {120.}else{-120.}),..Default::default()});
-                    h.settle(); h.changed_and_retained(n,before,"wheel"); *counts.entry("wheel").or_default()+=1;
+                    h.settle(); h.changed_and_retained(n,before,"wheel");
+                    let after=match h.read(n) {sampler_core::WidgetValue::Integer(v)=>v as f64,sampler_core::WidgetValue::Real(v)=>v,_=>panic!("scalar wheel needs numeric readback")};
+                    assert!((after-scalar)*if scalar>=range.max {-1.}else{1.}>0.,"native wheel moved against authored direction");
+                    *counts.entry("wheel").or_default()+=1;
                 }
                 ir::Kind::Button {..}|ir::Kind::Switch => {
                     let before=h.read(n); let p=h.hit_point(n).expect("button/switch must have an exposed hit region");
