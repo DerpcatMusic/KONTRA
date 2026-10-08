@@ -344,6 +344,16 @@ impl Default for V2Core {
     }
 }
 
+#[cfg(feature = "shots")]
+impl V2Core {
+    pub fn scan_runtime_faults(&mut self,part:usize)->Vec<(usize,sampler_core::Outcome)> {
+        let mut out=Vec::new();if let Some(Some(p))=self.parts.get_mut(part){p.runtime.flush_behaviors_at(|_,_,outcome,program|{if matches!(outcome,sampler_core::Outcome::Fault(_)|sampler_core::Outcome::FuelExhausted){out.push((program,outcome));}true});}out
+    }
+    pub fn scan_lua(&self, part: usize) -> Option<sampler_uvi::script::ScanFaults> {
+        self.parts.get(part)?.as_ref()?.script.as_ref().map(|s| s.scan_faults())
+    }
+}
+
 fn wire(key: u8, external_id: Option<i32>) -> Input {
     Input { protocol: WIRE.protocol, port: WIRE.port, group: WIRE.group, channel: WIRE.channel, key, external_id }
 }
