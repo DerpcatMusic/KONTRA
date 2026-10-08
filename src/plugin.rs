@@ -2670,6 +2670,8 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod loop_audit;
 #[cfg(test)]
+mod uvi_save_tests;
+#[cfg(test)]
 mod pressed_tests;
 #[cfg(test)]
 mod persistence_tests;
