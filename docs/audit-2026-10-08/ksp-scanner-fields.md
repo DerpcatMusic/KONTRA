@@ -2,7 +2,7 @@
 
 Handoff for `tools/kontra-scan@54f7ea57` extension. Source references below use v2 `7e82b152` or pinned v1 `0cb7a8a0`; measurement evidence is on `audit/ksp-20261008`. This specifies scanner instrumentation, not product fixes. All counters belong to the shared collector.
 
-Current installed implementation: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`. It resolves the source-slot counting defect by separating successful parameter decoding from independent saved-table integrity; incomplete raw histograms export `unknown`. The validated first 100 shared NKI IDs and current paired Conflux witness are recorded in [ksp.md](ksp.md#shared-scanner-production-follow-up). Await completed shared coverage for whole-corpus production rates.
+Historical 7e82 implementation: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`, resolving source-slot counting independently of saved-table integrity; incomplete raw histograms export `unknown`. Current installed product checkpoint is 9993 with scanner-only Native observer `ef88dcb6`; see [checkpoint evidence](ksp.md#integration-checkpoint-9993-preliminary-current-witness). The sigil admission map/source spans below describe 7e82: current 9993 admits `!` as `ir::Saved::Texts` and sets the persistence callback type separately. Keep this version distinction when using the accessor handoff. Await completed current-digest shared coverage for whole-corpus production rates.
 
 ## Slot admission and ownership
 
