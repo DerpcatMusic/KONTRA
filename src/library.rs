@@ -63,13 +63,6 @@ pub struct Settings {
     pub view_mode: ViewMode,
     /// Saved view override by instrument path; rack overrides take precedence.
     pub instrument_views: BTreeMap<String, ViewMode>,
-    /// What an older version kept instead: true was KONTRA's controls.
-    /// Read once into `view_mode`, never written.
-    #[serde(skip_serializing)]
-    pub vector_view: bool,
-    /// Legacy dimmed-wallpaper preference; Vectorized keeps the library backdrop.
-    #[serde(skip_serializing)]
-    pub vector_backdrop: bool,
     /// The performance view's scale; 0 fits the available width and height.
     pub view_scale: f32,
     /// Overall interface zoom, independent of physical display DPI; 0 means 100%.
@@ -99,8 +92,7 @@ pub struct Settings {
     /// Voice-rendering threads for parts loaded from now on (`KONTRA_THREADS`
     /// overrides it).
     pub threads: ThreadSetting,
-    /// Settings this version does not know, such as KONTRA v1's `uvi_reader`:
-    /// both versions share the file, so a save must keep them.
+    /// Additional v2 preferences, including the UVI reader path.
     #[serde(flatten)]
     pub other: serde_json::Map<String, serde_json::Value>,
 }
@@ -239,6 +231,13 @@ pub fn natural(text: &str) -> Vec<(u64, String)> {
     out
 }
 
+#[derive(Serialize, Deserialize)]
+struct SettingsFile<T> {
+    version: u32,
+    #[serde(flatten)]
+    settings: T,
+}
+
 impl Settings {
     /// Overall UI zoom; legacy/invalid values keep the default.
     pub fn editor_scale(&self) -> f64 {
@@ -256,11 +255,8 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Option<Self> {
-        let mut s: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        if std::mem::take(&mut s.vector_view) {
-            s.view_mode = ViewMode::Kontra;
-        }
-        Some(s)
+        let file: SettingsFile<Self> = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        (file.version == 2).then_some(file.settings)
     }
 
     /// Browser text only: resource and source identities keep `Library::name`.
@@ -324,7 +320,7 @@ impl Settings {
             std::fs::create_dir_all(dir)?;
         }
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&SettingsFile { version: 2, settings: self })?)?;
         std::fs::rename(tmp, path)
     }
 }
@@ -1166,7 +1162,7 @@ mod tests {
     #[test]
     fn a_save_keeps_settings_this_version_does_not_know() {
         let path = std::env::temp_dir().join(format!("kontra-settings-{}.json", std::process::id()));
-        std::fs::write(&path, r#"{"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"uvi_reader":"/x/UVIWorkstationx64.exe","ui_scale":1.5}"#).unwrap();
         let settings = super::Settings::load(&path).unwrap();
         settings.save(&path).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1318,18 +1314,15 @@ mod tests {
     }
 
     #[test]
-    fn the_view_mode_survives_a_restart_and_the_old_switch_migrates() {
+    fn v2_view_mode_survives_restart_without_legacy_switch_migration() {
         let dir = tree("view-mode", &[]);
         let path = dir.join("settings.json");
-        std::fs::write(&path, r#"{"vector_view": true}"#).unwrap();
-        assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Kontra, "KONTRA's controls, as chosen before");
-        std::fs::write(&path, r#"{"vector_view": false}"#).unwrap();
+        std::fs::write(&path, r#"{"version":2,"vector_view":true,"vector_backdrop":true}"#).unwrap();
         assert_eq!(Settings::load(&path).unwrap().view_mode, ViewMode::Original);
-        let s = Settings { view_mode: ViewMode::Vectorized, ..Settings::default() };
-        s.save(&path).unwrap();
-        assert!(!std::fs::read_to_string(&path).unwrap().contains("vector_view"), "the old switch is not written");
-        assert_eq!(Settings::load(&path), Some(s));
-        let _ = std::fs::remove_dir_all(dir);
+        let settings = Settings { view_mode: ViewMode::Vectorized, ..Settings::default() };
+        settings.save(&path).unwrap();
+        assert_eq!(Settings::load(&path), Some(settings));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1526,4 +1519,21 @@ mod thread_setting_tests {
         assert_eq!(serde_json::from_str::<Settings>(&kept).unwrap().threads, ThreadSetting::Fixed(4));
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap().threads, ThreadSetting::Single);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn v2_settings_reject_legacy_and_unversioned_files() {
+    let path = std::env::temp_dir().join(format!("kontra-settings-version-{}.json", std::process::id()));
+    for json in [r#"{"view_mode":"Original"}"#, r#"{"version":1}"#, r#"{"version":3}"#] {
+        std::fs::write(&path, json).unwrap();
+        assert!(Settings::load(&path).is_none(), "only the version-2 document is accepted");
+    }
+    std::fs::write(&path, r#"{"roots":[{"path":"old-library","single":true}],"ui_scale":1.5,"vector_view":true,"uvi_reader":"old-reader"}"#).unwrap();
+    let settings = Settings::load(&path).unwrap_or_default();
+    assert_eq!(settings, Settings::default(), "legacy fields never seed v2 defaults");
+    settings.save(&path).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved.get("version").and_then(|v| v.as_u64()), Some(2));
+    std::fs::remove_file(path).unwrap();
 }
