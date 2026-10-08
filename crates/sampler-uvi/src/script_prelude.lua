@@ -1,5 +1,5 @@
 -- The UVI script environment that the host does not implement natively:
--- inert stand-ins for the user interface and for unmodeled engine parts, the
+-- stateful user-interface widgets and stand-ins for unmodeled engine parts, the
 -- element tree helpers, and the threading helpers built on coroutines.
 -- Anything inert is reported once through __report, never silently.
 local ENV = _G -- the main environment; a coroutine's own is a proxy
@@ -36,11 +36,7 @@ setmetatable(_G, {
       if v ~= nil then return v end
     end
     if type(name) ~= "string" then return nil end
-    if native.assigned(name) then return nil end
-    report("global " .. name, "")
-    local s = stub(name)
-    rawset(_G, name, s)
-    return s
+    return nil
   end,
 })
 
@@ -52,6 +48,8 @@ Event = {
   NoteOn = 1, NoteOff = 2, Controller = 3, PitchBend = 4, AfterTouch = 5,
   PolyAfterTouch = 6, ProgramChange = 7, Transport = 8,
 }
+Event.ControlChange = Event.Controller
+bit = bit32
 Unit = setmetatable({}, { __index = function(t, k) local v = k; rawset(t, k, v); return v end })
 Engine = setmetatable({}, { __index = function(t, k)
   report("Engine " .. tostring(k), "")
@@ -60,170 +58,234 @@ end })
 
 -- Widgets ------------------------------------------------------------------
 local kinds = {
-  "Panel", "Knob", "Slider", "OnOffButton", "Button", "Menu", "NumBox", "Label",
-  "Image", "Table", "AudioMeter", "XY", "Multi", "WaveForm", "Envelope", "Display",
-  "Text", "Frame",
+  "Panel", "Viewport", "Knob", "Slider", "OnOffButton", "Button", "Menu",
+  "MultiStateButton", "NumBox", "Label", "Image", "SVG", "Table", "AudioMeter",
+  "XY", "WaveView", "WaveForm", "FileSelector", "DnDArea", "Text", "Frame",
+  "ParamKnob", "ParamSlider", "ParamOnOffButton", "ParamMenu", "ParamNumBox",
+  "ParameterValue",
 }
-local widget_mt = {}
+Mapper = setmetatable({}, { __index = function(t, k) rawset(t, k, k); return k end })
+FileFormat = {Audio="Audio", Midi="Midi", All="All", Data="Data"}
+local widget_mt, methods = {}, {}
 local registry = {}
-local ui = { widgets = registry }
-local function widget(kind, name, value, min, max, integer)
-  -- Kind{"name", value, min, max, integer, size=..., changed=...} passes one table.
-  local named
-  if type(name) == "table" then
-    named = name
-    name, value, min, max, integer = named[1], named[2], named[3], named[4], named[5]
-    if kind == "Table" then integer = named[6] end
-  end
-  local w = setmetatable({
-    kind = kind, name = name, value = value, min = min or 0, max = max or 1,
-    integer = integer, x = 0, y = 0, width = 100, height = 100, alpha = 1,
-    visible = true, enabled = true, text = "", tooltip = "", displayName = name,
-  }, widget_mt)
-  if value == nil then
-    if kind == "OnOffButton" or kind == "Button" then w.value = false else w.value = 0 end
-  end
-  if type(value) == "table" then w.items, w.value, w.text = value, 1, value[1] end
-  if kind == "Table" then
-    w.length, w.values = value or 0, {}
-    w.value, w.min, w.max = 0, named and named[4] or 0, named and named[5] or 1
-    for i = 1, w.length do w.values[i] = named and named[3] or 0 end
-  end
-  if named then
-    for k, v in pairs(named) do
-      if type(k) == "string" then w[k] = v end
-    end
-    if type(named.size) == "table" then w.width, w.height = named.size[1], named.size[2] end
-    if type(named.pos) == "table" then w.x, w.y = named.pos[1], named.pos[2] end
-    if type(named.bounds) == "table" then
-      w.x, w.y, w.width, w.height = named.bounds[1], named.bounds[2], named.bounds[3], named.bounds[4]
-    end
-  end
-  -- The preset's saved value, applied once the scripts have initialised.
-  local saved = name and named and named.persistent ~= false and native.saved(name)
-  if saved then rawset(w, "__saved", saved) end
-  report("ui", kind)
-  registry[#registry + 1] = w
-  rawset(w, "id", #registry)
-  return w
+local ui = { widgets = registry, revision = 0, keys = {} }
+local rawtype = type
+local function data(w) return rawget(w, "__data") end
+local function notify(w, index)
+  local f = data(w).changed
+  if rawtype(f) == "function" then f(w, index) end
 end
-for _, kind in ipairs(kinds) do
-  _G[kind] = function(...)
-    local first = ...
-    -- Panel("name") or Kind("name", value, min, max, integer).
-    return widget(kind, ...)
+local function clamp(w, v)
+  local d = data(w)
+  if d.kind == "ParameterValue" then return v end
+  if d.kind == "OnOffButton" or d.kind == "Button" or d.kind == "ParamOnOffButton" then
+    return v == true or (rawtype(v) == "number" and v >= 0.5)
   end
+  if rawtype(v) ~= "number" or v ~= v or math.abs(v) == math.huge then error("invalid widget value") end
+  if d.items then return math.max(1, math.min(math.max(1, #d.items), math.floor(v + 0.5))) end
+  v = math.max(d.min, math.min(d.max, v))
+  if d.integer then v = math.floor(v + 0.5) end
+  return v
 end
--- Persistent widgets take the preset's saved value after initialisation, and
--- their `changed` runs, between the script body and onInit.
-function __restore()
-  for _, w in ipairs(registry) do
-    local saved = rawget(w, "__saved")
-    if saved then
-      rawset(w, "__saved", nil)
-      local kind = w.kind
-      if kind == "OnOffButton" or kind == "Button" then
-        w.value = (saved == "1" or saved == "true")
-      elseif kind == "Table" then
-        local i = 0
-        for number in string.gmatch((string.gsub(saved, ",", ".")), "%S+") do
-          i = i + 1
-          if i <= w.length then w.values[i] = tonumber(number) or 0 end
-        end
-      elseif tonumber((string.gsub(saved, ",", "."))) then
-        w.value = tonumber((string.gsub(saved, ",", ".")))
-      end
-      if kind ~= "Table" and type(w.changed) == "function" then
-        local ok, err = pcall(w.changed, w)
-        if not ok then report("lua error", tostring(err)) end
-      end
-    end
-  end
-end
-local methods = {}
-function methods.setValue(self, v, notify)
-  if self.kind == "Table" then
-    -- Table:setValue(index, value)
-    self.values[v] = notify
-    if type(self.changed) == "function" then self:changed(v) end
+function methods.setValue(w, v, arg, callChanged)
+  local d = data(w)
+  if d.kind == "Table" then
+    if v < 1 or v > d.length or v % 1 ~= 0 then error("table index out of range") end
+    d.values[v] = clamp(w, arg)
+    ui.revision = ui.revision + 1
+    if callChanged ~= false then notify(w, v) end
     return
   end
-  local items = rawget(self, "items")
-  if items and type(v) == "number" and v < 1 then v = 1 end
-  self.value = v
-  if items and type(v) == "number" then self.text = items[v] or self.text end
-  if notify ~= false and type(self.changed) == "function" then self:changed() end
+  if d.kind ~= "ParameterValue" then v = clamp(w, v) end
+  if d.element then d.element:setParameter(d.parameter, v) else d.value = v end
+  ui.revision = ui.revision + 1
+  if arg ~= false then notify(w) end
 end
-function methods.getValue(self, i)
-  if self.kind == "Table" then return self.values[i] or 0 end
-  return self.value
+function methods.getValue(w, i)
+  if w.kind == "Table" then return data(w).values[i] or 0 end
+  return w.value
 end
-function methods.setRange(self, lo, hi) self.min, self.max = lo, hi end
-function methods.setPosition(self, x, y) self.x, self.y = x, y end
-function methods.setSize(self, w, h) self.width, self.height = w, h end
-function methods.setItem(self, i, text) end
-function methods.setStripImage(self, path, frames) self.stripImage, self.frames = path, frames end
-function methods.setValueNormalized(self, v) self.value = self.min + v * (self.max - self.min) end
-function methods.getValueNormalized(self)
-  if self.max == self.min then return 0 end
-  return (self.value - self.min) / (self.max - self.min)
+function methods.setRange(w, lo, hi) w.min, w.max = lo, hi end
+function methods.setPosition(w, x, y) w.position = {x, y} end
+function methods.setSize(w, width, height) w.size = {width, height} end
+function methods.setItem(w, i, text) data(w).items[i] = text; ui.revision = ui.revision + 1 end
+function methods.addItem(w, text)
+  local items = data(w).items
+  items[#items+1] = text; ui.revision = ui.revision + 1
+  return #items
 end
-widget_mt.__index = function(t, k)
+function methods.clear(w) data(w).items = {}; ui.revision = ui.revision + 1 end
+function methods.getText(w, i) return data(w).items[i] end
+function methods.setStripImage(w, path, frames) w.stripImage, w.frames = path, frames end
+function methods.setViewPosition(w, x, y) w.viewPosition = {x, y} end
+function methods.loadFont(w, path) w.font = path end
+function methods.toString(w) return tostring(w.value) end
+local function mapped(w, x, inverse)
+  local m = w.mapper or "Linear"
+  if m == "Exponential" and w.min > 0 and w.max > w.min then
+    if inverse then return math.log(x/w.min)/math.log(w.max/w.min) end
+    return w.min * (w.max/w.min)^x
+  end
+  local powers = {Quadratic=2,Cubic=3,Quartic=4,Quintic=5,SquareRoot=0.5,CubeRoot=1/3,QuarticRoot=0.25,QuinticRoot=0.2}
+  local power = powers[m] or 1
+  if inverse then return ((x-w.min)/(w.max-w.min))^(1/power) end
+  return w.min + (w.max-w.min)*x^power
+end
+function methods.setValueNormalized(w, v, notify) w:setValue(mapped(w, math.max(0,math.min(1,v)), false), notify) end
+function methods.getValueNormalized(w)
+  if w.min == w.max then return 0 end
+  return mapped(w, w.value, true)
+end
+local widget
+widget_mt.__index = function(w, k)
   if methods[k] then return methods[k] end
+  local d = data(w)
+  if k == "size" then return {d.width, d.height} end
+  if k == "position" or k == "pos" then return {d.x, d.y} end
+  if k == "bounds" then return {d.x, d.y, d.width, d.height} end
+  if k == "selected" then return d.value end
+  if k == "selectedText" then return d.items and d.items[d.value] or "" end
+  if k == "length" and d.items then return #d.items end
+  if k == "value" and d.element then return d.element:getParameter(d.parameter) end
+  if d[k] ~= nil then return d[k] end
   for _, kind in ipairs(kinds) do
-    if kind == k then
-      return function(self, ...)
-        local child = widget(k, ...)
-        rawset(child, "parent_id", rawget(self, "id"))
-        return child
+    if kind == k then return function(self, ...)
+      local child = widget(k, ...)
+      data(child).parent_id = rawget(self, "id")
+      return child
+    end end
+  end
+  -- Optional properties are nil; unknown method calls fail visibly instead of
+  -- inventing truthy values that change a script's control flow.
+  return nil
+end
+widget_mt.__newindex = function(w, k, v)
+  local d = data(w)
+  if type(v) == 'string' and (k == 'font' or string.match(k, 'Image$') or k == 'image') then
+    v = native.resourcePath(v)
+  end
+  if k == "value" or k == "selected" then
+    if v ~= w.value then methods.setValue(w, v) end
+    return
+  elseif k == "bounds" then d.x,d.y,d.width,d.height = v[1],v[2],v[3],v[4]
+  elseif k == "size" then d.width,d.height = v[1],v[2]
+  elseif k == "position" or k == "pos" then d.x,d.y = v[1],v[2]
+  else d[k] = v end
+  ui.revision = ui.revision + 1
+end
+local sizes = {Knob={80,80},Slider={120,20},NumBox={80,20},Button={100,25},OnOffButton={100,25},
+  MultiStateButton={100,25},Menu={100,25},Label={100,20},Panel={720,100},Viewport={200,200}}
+widget = function(kind, ...)
+  local args = {...}
+  local named = rawtype(args[1]) == "table" and rawget(args[1],"__id") == nil and args[1] or {}
+  if next(named) then args = named end
+  local name, value, lo, hi, integer = args[1],args[2],args[3],args[4],args[5]
+  local basekind = string.gsub(kind, "^Param", "")
+  local size = sizes[basekind] or {100,100}
+  local d = {kind=kind,name=name or named.name or kind,value=value or 0,min=lo or 0,max=hi or 1,
+    default=value or 0,integer=integer==true,x=0,y=0,width=size[1],height=size[2],alpha=1,visible=true,enabled=true,
+    persistent=true,exported=false,text="",tooltip=name or "",displayName=name or "",showLabel=true,
+    interceptsMouseClicks=true, mapper="Linear",unit="Generic"}
+  local w = setmetatable({__data=d}, widget_mt)
+  if kind == "Table" then
+    d.length,d.value,d.min,d.max,d.integer = value or 0,0,args[4] or 0,args[5] or 1,args[6]==true
+    d.values = {}; for i=1,d.length do d.values[i] = args[3] or 0 end
+  elseif kind == "Menu" or kind == "MultiStateButton" then
+    d.items,d.value,d.integer = value or named.items or {},lo or 1,true
+    d.min,d.max = 1,math.max(1,#d.items)
+  elseif kind == "Button" or kind == "OnOffButton" then
+    d.value = value == true; if kind == "Button" then d.persistent=false end
+  elseif kind == "AudioMeter" then
+    d.meter_element,d.stereo,d.channel,d.vertical,d.value,d.persistent = value,args[3]~=false,args[4] or 0,args[5]~=false,0,false
+  elseif kind == "XY" then
+    d.paramX,d.paramY,d.value = name,value,0
+  elseif kind == "Image" or kind == "SVG" then d.image = native.resourcePath(name)
+  end
+  if string.sub(kind,1,5) == "Param" or kind == "ParameterValue" then
+    d.element,d.parameter = name,value
+    d.name,d.displayName,d.value = tostring(value),tostring(value),nil
+    d.bound = rawtype(name) == "table" and rawget(name,"__id") ~= nil
+    if d.bound then
+      for _, def in ipairs(name.parameterDefinitions) do
+        if def.id == value or def.name == value then
+          d.parameter = def.name
+          d.min,d.max,d.integer,d.unit,d.mapper = def.min or 0,def.max or 1,def.type=="int",def.unit or "Generic",def.mapper or "Linear"
+          break
+        end
+      end
+    else report("ui parameter binding", "unresolved target") end
+    if kind == "ParameterValue" then d.visible=false end
+  end
+  -- Named options use the same setters as later property writes.
+  for k,v in pairs(named) do
+    if rawtype(k)=="string" and k~="changed" then
+      if k=="value" then methods.setValue(w,v,false) else w[k]=v end
+    end
+  end
+  d.changed=named.changed
+  if kind=="Slider" and args[6]~=nil then d.vertical=args[6] end
+  registry[#registry+1] = w; rawset(w,"id",#registry)
+  d.id = #registry
+  -- A default grid per parent; explicit bounds/position override it.
+  if not named.bounds and not named.position and not named.pos and named.x == nil and named.y == nil then
+    d.x,d.y = ((#registry-1)%6)*120,math.floor((#registry-1)/6)*90
+  end
+  return w
+end
+for _, kind in ipairs(kinds) do _G[kind] = function(...) return widget(kind, ...) end end
+function __restore()
+  for _, w in ipairs(registry) do
+    local d = data(w)
+    local saved = d.persistent and native.saved(d.name)
+    if saved then
+      if d.kind == "Table" then
+        local i=0
+        for number in string.gmatch(string.gsub(saved,",","."),"%S+") do
+          i=i+1; if i<=d.length then d.values[i] = clamp(w,tonumber(number) or 0) end
+        end
+        for j=1,d.length do
+          local ok,err=pcall(notify,w,j); if not ok then report("lua error",tostring(err)) end
+        end
+      else
+        local v = tonumber((string.gsub(saved,",",".")))
+        if d.kind == "OnOffButton" then v = saved=="1" or saved=="true" end
+        if v ~= nil then
+          local ok,err=pcall(methods.setValue,w,v); if not ok then report("lua error",tostring(err)) end
+        end
       end
     end
   end
-  if type(k) ~= "string" then return nil end
-  local c = stub("ui")
-  rawset(t, k, c)
-  return c
+end
+function __ui_edit(id, component, value)
+  local w = registry[id]; if not w or not w.enabled then error("invalid UI control") end
+  if w.kind == "Table" then w:setValue(component,value)
+  elseif w.kind == "XY" then
+    local name = component==1 and w.paramX or w.paramY
+    for _, target in ipairs(registry) do if target.name==name then target:setValue(value); return end end
+    error("unbound XY axis")
+  elseif w.kind == "Button" then
+    if value >= 0.5 then notify(w) end
+  else w:setValue(value) end
 end
 
 -- Elements -----------------------------------------------------------------
--- Parameters the shipped scripts look up by name on elements whose presets
--- often omit them (defaults).
-local known_params = {
-  Keygroup = { "Gain", "Pan" },
-  Layer = { "Gain", "Pan" },
-  SamplePlayer = { "Gain", "Pan", "Pitch" },
-  BusRouter = { "Gain" },
-  CombFilter = { "Freq", "Q", "Bypass", "Mode" },
-  MS20 = { "Freq", "Q", "Bypass" },
-  XpanderFilter = { "Freq", "Q", "Drive", "Mode", "Bypass" },
-  OnePole = { "Freq", "Bypass", "Mode" },
-  Flanger = { "Feedback", "Mix", "Speed", "Bypass" },
-  Phasor = { "Depth", "Feedback", "Speed", "Bypass" },
-  WaveShaper = { "Amount", "Mix", "Bypass" },
-  LFO = { "Depth", "Freq" },
-  MultiLFO = { "Depth", "Freq" },
-}
 local element = {}
 element.__index = function(t, k)
   local m = rawget(element, k)
   if m then return m end
   if k == "parameterDefinitions" then
-    -- `id` is what setParameter takes back: the parameter's name. Parameters
-    -- a preset leaves at their default are still defined.
-    local defs, seen = {}, {}
-    local function add(n)
-      if not seen[n] then
-        seen[n] = true
-        defs[#defs + 1] = { id = n, name = n, min = 0, max = 1, default = native.param(rawget(t, "__id"), n) or 0 }
-      end
-    end
-    for _, n in ipairs(native.paramNames(rawget(t, "__id"))) do add(n) end
-    for _, n in ipairs(known_params[rawget(t, "type")] or {}) do add(n) end
+    local defs = native.definitions(rawget(t, "__id"))
+    rawset(t, k, defs)
     return defs
   end
+  if k == "numParams" then return #t.parameterDefinitions end
   return nil
 end
 function element.getParameter(self, name)
+  if type(name) == "number" then
+    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
+    name = d.name
+  end
   local overlay = rawget(self, "__set")
   if overlay and overlay[name] ~= nil then return overlay[name] end
   local v = native.param(rawget(self, "__id"), name)
@@ -233,9 +295,27 @@ function element.getParameter(self, name)
   end
   return v
 end
+function element.hasParameter(self, name)
+  return self.parameterDefinitions[name] ~= nil or native.param(rawget(self,'__id'), name) ~= nil
+end
 __touched = {}
 function element.setParameter(self, name, value)
   if name == nil then report("setParameter", "nil name"); return end
+  if type(name) == "number" then
+    local d = self.parameterDefinitions[name]; if not d then error("invalid parameter id") end
+    name = d.name
+  end
+  local def = self.parameterDefinitions[name]
+  if def then
+    if def.type == 'bool' then
+      if type(value) ~= 'boolean' then error('expected boolean parameter') end
+    else
+      if type(value) ~= 'number' or value ~= value or math.abs(value) == math.huge then error('expected finite parameter') end
+      -- Keep reversed documented bounds intact; native semantics need a measurement.
+      if def.min <= def.max then value = math.max(def.min, math.min(def.max, value)) end
+      if def.type == 'int' then value = math.floor(value + 0.5) end
+    end
+  end
   local overlay = rawget(self, "__set")
   if not overlay then
     overlay = {}; rawset(self, "__set", overlay)
@@ -245,17 +325,16 @@ function element.setParameter(self, name, value)
   if type(value) == "number" and native.setParam(rawget(self, "__id"), name, value) then return end
   report("setParameter " .. rawget(self, "type") .. "." .. tostring(name), "")
 end
--- Connections are not modeled: any index answers with one inert element.
-local inert, connections = {}, nil
-connections = setmetatable({}, { __index = function(_, k)
-  if type(k) == "number" then return inert end
-end })
-function inert.getParameterConnections() return connections end
-function inert.setParameter(_, n) report("setParameter", "connection." .. tostring(n)) end
-function inert.getParameter(_, n) report("getParameter", "connection." .. tostring(n)); return 0 end
 function element.getParameterConnections(self, name)
-  report("getParameterConnections " .. rawget(self, "type") .. "." .. tostring(name), "")
-  return connections
+  if type(name) == 'number' then
+    local d = self.parameterDefinitions[name]; if not d then error('invalid parameter id') end
+    name = d.name
+  end
+  local result = {}
+  for _, c in ipairs(self.connections or {}) do
+    if c:getParameter('Destination') == name then result[#result+1] = c end
+  end
+  return result
 end
 function element.sendScriptModulation(self, ...) report("sendScriptModulation", "") end
 element.__element = true
@@ -275,25 +354,26 @@ function waitForRelease() return coroutine.yield("release") end
 
 function postEvent(e, delta)
   if delta and delta > 0 then
-    local id = native.nextId()
+    local id = e.id or e.voiceId
+    if not id then id = native.nextId(); e.id = id end
     spawn(function() wait(delta); postEvent(e) end)
     return id
   end
   local t = e.type
   if t == Event.NoteOn then
-    return playNote(e)
+    return native.postNote(e)
   elseif t == Event.NoteOff then
     if e.id or e.voiceId then releaseVoice(e.id or e.voiceId) end
   elseif t == Event.Controller then
     controlChange(e.controller or e.number or 0, e.value or 0, e.channel)
   elseif t == Event.PitchBend then
-    pitchBend(e.value or 0, e.channel)
+    pitchBend(e.bend or e.value or 0, e.channel)
   elseif t == Event.AfterTouch then
     afterTouch(e.value or 0, e.channel)
   elseif t == Event.PolyAfterTouch then
     polyAfterTouch(e.value or 0, e.note or 0, e.channel)
   elseif t == Event.ProgramChange then
-    programChange(e.value or 0, e.channel)
+    programChange(e.program or e.value or 0, e.channel)
   else
     report("postEvent", tostring(t))
   end
@@ -375,6 +455,10 @@ function type(v)
 end
 
 -- What the interface export reads (see ScriptHost::interface).
-function setBackground(path) ui.background = path end
+function setBackground(path) ui.background = native.resourcePath(path) end
 function setSize(w, h) ui.width, ui.height = w, h end
+function setBackgroundColour(c) ui.backgroundColour = c end
+function setKeyColour(key, c) ui.keys[key+1] = c; ui.revision = ui.revision + 1 end
+function resetKeyColour(key) ui.keys[key+1] = nil; ui.revision = ui.revision + 1 end
+function makePerformanceView() ui.performance = true end
 __ui = ui
