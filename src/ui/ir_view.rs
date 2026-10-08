@@ -144,6 +144,8 @@ pub struct InputState {
     typing: Option<(WidgetRef, String)>,
     drafts: HashMap<WidgetRef, String>,
     cursors: HashMap<WidgetRef, usize>,
+    xy_drags: HashMap<WidgetRef, (usize, [f64;2], Point)>,
+    table_drags: HashMap<WidgetRef, (usize, f64)>,
     files: HashMap<WidgetRef, (std::path::PathBuf, Vec<std::path::PathBuf>)>,
 }
 
@@ -597,37 +599,64 @@ pub(super) fn widget_state(
             };
             samples.resize(*columns as usize,range.default);
             let response = ui.get(id.as_str());
+            if !response.held {input.table_drags.remove(&n);}
             if can_edit && (response.pressed || response.dragged) && !samples.is_empty() {
                 if let Some(point) = ui.local(id.as_str()) {
-                    let column = ((point.x/w.max(1.)).clamp(0.,1.)*samples.len() as f64).floor() as usize;
-                    let column = column.min(samples.len()-1);
-                    let value = quantized(range.min+(1.-point.y/h.max(1.)).clamp(0.,1.)*(range.max-range.min),range);
-                    samples[column]=value;
-                    let value = if range.step == Some(1.) {ir::Value::Integer(value as i32)} else {ir::Value::Real(value)};
-                    input.edits.push(Edit{widget:n,index:column as u32,value,mods:response.mods,mouse_over:response.hovered,cursor:column as u32,event:if response.dragged {2} else {0}});
-                    input.values.insert(n,ir::Value::Reals(samples.clone()));
+                    let column = (((point.x/w.max(1.)).clamp(0.,1.)*samples.len() as f64).floor() as usize).min(samples.len()-1);
+                    let raw=range.min+(1.-point.y/h.max(1.)).clamp(0.,1.)*(range.max-range.min);
+                    let (start,previous)=if response.pressed {(column,raw)}else{input.table_drags.get(&n).copied().unwrap_or((column,raw))};
+                    let distance=start.abs_diff(column);
+                    if distance<sampler_core::WIDGET_EDIT_CAPACITY {
+                        for step in 0..=distance {
+                            let at=if start<=column {start+step}else{start-step};
+                            let value=quantized(if distance==0 {raw}else{previous+(raw-previous)*step as f64/distance as f64},range);
+                            samples[at]=value;
+                            let value=if range.step==Some(1.) {ir::Value::Integer(value as i32)}else{ir::Value::Real(value)};
+                            input.edits.push(Edit {widget:n,index:at as u32,value,mods:response.mods,mouse_over:response.hovered,cursor:column as u32,event:if response.dragged {2}else{0}});
+                        }
+                        input.table_drags.insert(n,(column,raw));
+                        input.values.insert(n,ir::Value::Reals(samples.clone()));
+                    }
                 }
             }
             super::render_art::table(samples,*range,*bipolar,*steps_shown,wd.colors).cursor(Cursor::Crosshair).focusable()
         }
-        Kind::Xy { cursors, .. } => {
+        Kind::Xy { cursors, sensitivity, mouse_mode } => {
             let mut points = match input.values.get(&n).or(wd.value.as_ref()) {Some(ir::Value::Reals(v))=>v.clone(), _=>vec![0.; *cursors as usize*2]};
             points.resize(*cursors as usize*2,0.);
             let response=ui.get(id.as_str());
-            if can_edit && (response.pressed || response.dragged) && !points.is_empty() {
-                if let Some(point)=ui.local(id.as_str()) {
-                    let (x,y)=((point.x/w.max(1.)).clamp(0.,1.),(1.-point.y/h.max(1.)).clamp(0.,1.));
-                    let cursor=if response.pressed {
-                        let nearest=points.chunks_exact(2).enumerate().min_by(|(_,a),(_,b)| ((a[0]-x).powi(2)+(a[1]-y).powi(2)).total_cmp(&((b[0]-x).powi(2)+(b[1]-y).powi(2)))).map_or(0,|(i,_)|i);
-                        input.cursors.insert(n,nearest); nearest
-                    } else {input.cursors.get(&n).copied().unwrap_or(0)};
-                    for (index,value) in [(cursor*2,x),(cursor*2+1,y)] {
+            let mode=mouse_mode.unwrap_or(0);
+            if can_edit && !points.is_empty() {
+                if response.pressed && let Some(point)=ui.local(id.as_str()) {
+                    let active=wd.active_index.unwrap_or(0);
+                    let active=if active>=0&&active%2==0 {(active as usize/2).min(points.len()/2-1)}else{0};
+                    let on_cursor=|cursor:usize| (point.x-points[cursor*2]*w).abs()<=6.*scale&&(point.y-(1.-points[cursor*2+1])*h).abs()<=6.*scale;
+                    let cursor=if mode==2 {(0..points.len()/2).rev().find(|&cursor|on_cursor(cursor)).unwrap_or(active)}else{active};
+                    if mode!=0||on_cursor(cursor) {
+                        input.cursors.insert(n,cursor);
+                        input.xy_drags.insert(n,(cursor,[points[cursor*2],points[cursor*2+1]],point));
+                    } else {input.xy_drags.remove(&n);}
+                }
+                if (response.pressed||response.dragged||response.released) && let Some((cursor,raw,last))=input.xy_drags.get_mut(&n) {
+                    if let Some(point)=ui.local(id.as_str()) {
+                        if mode==2 {
+                            *raw=[(point.x/w.max(1.)).clamp(0.,1.),(1.-point.y/h.max(1.)).clamp(0.,1.)];
+                        } else if response.dragged {
+                            let fine=if response.mods.shift {FINE_DRAG}else{1.};
+                            for (axis,delta,size) in [(0,point.x-last.x,w),(1,last.y-point.y,h)] {
+                                raw[axis]=(raw[axis]+delta/size.max(1.)*f64::from(sensitivity[axis].unwrap_or(1000))/1000.*fine).clamp(0.,1.);
+                            }
+                        }
+                        *last=point;
+                    }
+                    for (index,value) in [(*cursor*2,raw[0]),(*cursor*2+1,raw[1])] {
                         points[index]=value;
-                        input.edits.push(Edit{widget:n,index:index as u32,value:ir::Value::Real(value),mods:response.mods,mouse_over:response.hovered,cursor:(cursor*2) as u32,event:if response.dragged {2} else {0}});
+                        input.edits.push(Edit {widget:n,index:index as u32,value:ir::Value::Real(value),mods:response.mods,mouse_over:response.hovered,cursor:(*cursor*2) as u32,event:if response.released {1}else if response.dragged {2}else{0}});
                     }
                     input.values.insert(n,ir::Value::Reals(points.clone()));
                 }
             }
+            if !response.held {input.xy_drags.remove(&n);}
             canvas(move |s|points.chunks_exact(2).map(|point|Draw::fill(rect(point[0]*s.width-3.,(1.-point[1])*s.height-3.,6.,6.),value_ink(0.))).collect()).fill(Role::Ink.alpha(0.06)).cursor(Cursor::Crosshair).focusable()
         }
         Kind::TextEdit => {
@@ -756,20 +785,25 @@ pub(super) fn menu_popup(ui:&mut Ui, namespace:&str, face:&Interface, scale:f64,
     Some(col(rows).gap(0).w(w).h(h).scroll().fill(Role::Field).stroke(Role::Ink.alpha(0.3)).stroke_width(1).id(popup).at(x,y))
 }
 
-/// One OS gesture, targeting the same painted surface as pointer input.
-/// The caller forwards these edits together through native widget admission.
-pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
-    if paths.is_empty() {return None;}
+/// Detect the owning target before validating a payload, so an invalid batch
+/// cannot fall through into a rack/instrument drop.
+pub(super) fn file_drop_target(ui:&Ui,namespace:&str,face:&Interface,at:Point)->Option<WidgetRef> {
     let mut hit=moose::mui::mui::input::Hit::default();
     for surface in ui.scene()?.surfaces().filter(|s|(Id::is_named(&s.key)||s.pointer_states)&&!s.disabled) {
         if surface.hits.is_empty() {hit.push_placed(surface.key.clone(),None,&surface.path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
         for (tag,path) in &surface.hits {hit.push_placed(surface.key.clone(),Some(tag.clone()),path,surface.offset,surface.clip,surface.clip_paths()).ok()?;}
     }
     let winner=hit.at(at)?;
-    let n=face.widgets.iter().enumerate().find_map(|(n,w)| {
+    face.widgets.iter().enumerate().find_map(|(n,w)| {
         let n=WidgetRef(n);
-        (matches!(w.kind,Kind::MouseArea)&&face.visible(n)&&w.enabled&&w.opacity>0.&&w.intercepts_mouse&&target(namespace,n)==winner).then_some(n)
-    })?;
+        (matches!(w.kind,Kind::MouseArea)&&face.visible(n)&&w.enabled&&w.intercepts_mouse&&target(namespace,n)==winner).then_some(n)
+    })
+}
+
+/// One OS gesture; forward all returned edits in one admission transaction.
+pub(super) fn file_drop(ui:&Ui,namespace:&str,face:&Interface,at:Point,paths:&[std::path::PathBuf],dropped:bool)->Option<(WidgetRef,Vec<Edit>)> {
+    if paths.is_empty() {return None;}
+    let n=file_drop_target(ui,namespace,face,at)?;
     let mut counts=[0u32;3];
     let mut edits=Vec::with_capacity(paths.len().min(96));
     for (index,path) in paths.iter().enumerate() {
