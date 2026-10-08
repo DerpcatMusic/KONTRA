@@ -269,7 +269,7 @@ pub fn badge_text(controllers: &str, picked: i16, loaded: u8, needs: bool) -> St
 }
 
 /// What the part plays and listens to, in one line under its header: the
-/// articulation (with its switch keys), the instrument volume, the dynamics
+/// articulation (with its effective trigger), the instrument volume, the dynamics
 /// controller it waits for (one click sets where it starts) and MPE.
 pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     let v = cx.view.parts.get(slot)?;
@@ -281,8 +281,9 @@ pub fn performance(ui: &mut Ui, cx: &mut Cx, slot: usize) -> Option<El> {
     if let Some(inst) = inst.as_deref() {
         if let Some(n) = inside::active(cx, slot).filter(|&n| n < inst.articulations.len()) {
             let a = &inst.articulations[n];
-            let keys = a.switch_keys.iter().map(|&k| note_name(k)).collect::<Vec<_>>().join(" ");
-            let text = if keys.is_empty() { a.name.clone() } else { format!("{} · {keys}", a.name) };
+            let id = &crate::sound::articulation::identities(&inst.articulations)[n];
+            let input = cx.selection.parts[slot].articulation_overlay.input(id, a, inside::mode(cx, slot, inst));
+            let text = format!("{} · {}", a.name, inside::input_label(&input));
             items.push(row![caption("Articulation").fill(secondary()), body(text).lines(1)].gap(SPACE).align(Align::Center).named("Articulation").id(format!("perf-art-{slot}")));
         }
         if let Some(text) = volume_text(inst) {

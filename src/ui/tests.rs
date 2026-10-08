@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(super) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -104,7 +104,7 @@ impl Harness {
         self.idle(3);
     }
 
-    fn drag(&mut self, from: &str, to: &str) {
+    pub(super) fn drag(&mut self, from: &str, to: &str) {
         let (from, to) = (center(&self.ui, from), center(&self.ui, to));
         for (pos, down) in [
             (from, true),
@@ -117,7 +117,7 @@ impl Harness {
         self.idle(2);
     }
 
-    fn type_into(&mut self, id: &str, text: &str) {
+    pub(super) fn type_into(&mut self, id: &str, text: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(2);
@@ -2246,3 +2246,29 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
 }
 
 include!("viewmodel_tests.rs");
+
+/// Every product menu target uses menu::view, so exercise a non-articulation
+/// target too: popup paint must be opaque on entry and absent immediately on exit.
+#[test]
+fn shared_context_menu_never_fades_over_interactive_content() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("app-menu");
+    let frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let first = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    let sample = ((frame.y as usize + 2) * 1180 + frame.x as usize + 20) * 4;
+    assert_eq!(&first[sample..sample+4], &settled[sample..sample+4], "shared menu must be opaque on entry");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none());
+    let closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    for y in 80..200 {
+        let x = frame.x as usize + 10;
+        let range = (y * 1180 + x) * 4 .. (y * 1180 + x + 180) * 4;
+        assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
+    }
+}
