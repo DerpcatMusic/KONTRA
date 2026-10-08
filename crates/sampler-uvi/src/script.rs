@@ -516,6 +516,8 @@ fn element(
     parent: Option<&Table>,
     insert: bool,
     deadline: Instant,
+    class: &Table,
+    list_class: &Table,
 ) -> mlua::Result<Table> {
     if Instant::now() >= deadline {
         return Err(mlua::Error::runtime(INIT_BUDGET));
@@ -548,8 +550,9 @@ fn element(
     if let Some(parent) = parent {
         table.raw_set("parent", parent.clone())?;
     }
-    let class: Table = lua.globals().raw_get("__element_mt")?;
-    table.set_metatable(Some(class))?;
+    table.set_metatable(Some(class.clone()))?;
+    let fields = ["layers", "keygroups", "oscillators", "inserts", "auxs", "sends", "modulations", "eventProcessors", "connections"];
+    let mut lists: [Option<Table>; 9] = std::array::from_fn(|_| None);
     for container in node.children().filter(|n| n.is_element()) {
         let field = match container.tag_name().name() {
             "Layers" => "layers",
@@ -564,29 +567,28 @@ fn element(
             _ => continue,
         };
         let list = lua.create_table()?;
-        list.set_metatable(Some(lua.globals().raw_get("__list_mt")?))?;
+        list.set_metatable(Some(list_class.clone()))?;
         for child in container.children().filter(|n| n.is_element()) {
-            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", deadline)?)?;
+            list.raw_push(element(lua, tree, child, Some(&table), field == "inserts", deadline, class, list_class)?)?;
         }
-        table.raw_set(field, list)?;
+        table.raw_set(field, list.clone())?;
+        lists[fields.iter().position(|f| *f == field).unwrap()] = Some(list);
     }
     let children = lua.create_table()?;
-    let synthesis = lua.create_table()?;
-    for field in ["layers", "keygroups", "oscillators", "inserts", "auxs", "sends", "modulations", "eventProcessors", "connections"] {
-        let list = match table.raw_get::<Table>(field) {
-            Ok(list) => list,
-            Err(_) => { let list = lua.create_table()?; table.raw_set(field, list.clone())?; list },
-        };
+    let synthesis = (matches!(node.tag_name().name(), "Program" | "Layer" | "Keygroup") || lists[0].is_some() || lists[1].is_some()).then(|| lua.create_table()).transpose()?;
+    for (field, list) in fields.into_iter().zip(lists) {
+        // v1 host.rs builds only collections present on leaf processors.
+        let Some(list) = list else { continue };
         for child in list.sequence_values::<Table>().flatten() {
             let name: String = child.raw_get("name")?;
             if !name.is_empty() { children.raw_set(name, child.clone())?; }
-            if matches!(field, "layers" | "keygroups") { synthesis.raw_push(child.clone())?; }
+            if matches!(field, "layers" | "keygroups") && let Some(synthesis) = &synthesis { synthesis.raw_push(child.clone())?; }
             children.raw_push(child)?;
         }
     }
     table.raw_set("children", children)?;
-    table.raw_set("synthChildren", synthesis)?;
-    table.raw_set("mods", table.raw_get::<Table>("modulations")?)?;
+    if let Some(synthesis) = synthesis { table.raw_set("synthChildren", synthesis)?; }
+    if let Some(list) = table.raw_get::<Option<Table>>("modulations")? { table.raw_set("mods", list)?; }
     Ok(table)
 }
 
@@ -744,7 +746,10 @@ impl ScriptHost {
             }
         }
         let mut tree = Tree { params: Vec::new(), scopes: Vec::new(), nodes: Vec::new(), kinds: Vec::new(), layers: 0 };
-        let root = element(&self.lua, &mut tree, program, None, false, self.shared.deadline.get().unwrap())?;
+        // Port v1 host.rs's shared metatable handles outside the object loop.
+        let class: Table = self.lua.globals().raw_get("__element_mt")?;
+        let list_class: Table = self.lua.globals().raw_get("__list_mt")?;
+        let root = element(&self.lua, &mut tree, program, None, false, self.shared.deadline.get().unwrap(), &class, &list_class)?;
         // The part the program sits in (MidiChannel, MidiInput...): inert.
         let part = self.lua.create_table()?;
         part.raw_set("__id", tree.params.len())?;
@@ -754,7 +759,7 @@ impl ScriptHost {
         tree.kinds.push("Part".into());
         part.raw_set("type", "Part")?;
         part.raw_set("name", "")?;
-        part.set_metatable(Some(self.lua.globals().raw_get("__element_mt")?))?;
+        part.set_metatable(Some(class))?;
         root.raw_set("parent", part.clone())?;
         root.raw_set("part", part)?;
         *self.shared.params.borrow_mut() = tree.params;
@@ -1047,7 +1052,7 @@ impl ScriptHost {
             "compile",
             lua.create_function(move |lua, (source, name): (mlua::LuaString, String)| {
                 let _span = Span::new("uvi_lua_module_compile");
-                s.note_assigned(&source.to_string_lossy());
+                {let _span=Span::new("uvi_lua_module_names");s.note_assigned(&source.to_string_lossy());}
                 let name = s.files.script_path(&name).unwrap_or(name);
                 match lua
                     .load(source.as_bytes().as_ref())
