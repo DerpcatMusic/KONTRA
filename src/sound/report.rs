@@ -101,6 +101,24 @@ pub fn range_bits(low: u8, high: u8) -> u128 {
     if low > high { 0 } else { (u128::MAX >> (127 - high)) & (u128::MAX << low) }
 }
 
+/// Preallocated RT-to-loader fault transport; messages are resolved only by the loader.
+#[derive(Debug)]
+pub struct FaultInbox {
+    pub(crate) queue: crossbeam_queue::ArrayQueue<(usize, sampler_core::Outcome)>,
+    dropped: std::sync::atomic::AtomicU64,
+}
+impl Default for FaultInbox {
+    fn default() -> Self { Self { queue: crossbeam_queue::ArrayQueue::new(256), dropped: Default::default() } }
+}
+impl FaultInbox {
+    pub(crate) fn record(&self, program: usize, outcome: sampler_core::Outcome) {
+        if self.queue.push((program, outcome)).is_err() {
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    pub(crate) fn take_dropped(&self) -> u64 { self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed) }
+}
+
 /// Problems while playing, cumulative since the part was installed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProblems {
@@ -243,6 +261,19 @@ impl LoadReport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(feature = "plugin")]
+    fn fault_transport_is_bounded_and_does_not_allocate_on_audio() {
+        let inbox = super::FaultInbox::default();
+        let allocations = crate::plugin::tests::allocations(|| {
+            for program in 0..300 { inbox.record(program, sampler_core::Outcome::Fault(sampler_core::Error::InvalidInput)); }
+        });
+        assert_eq!(allocations, 0);
+        assert_eq!(inbox.take_dropped(), 44);
+        assert_eq!(inbox.take_dropped(), 0);
+        assert_eq!(inbox.queue.pop().unwrap().0, 0);
+    }
+
     #[test]
     fn the_mpe_mapping_is_stated_in_the_report() {
         let text = super::mpe_summary(&sampler_core::lower::MpeDefaults::default());

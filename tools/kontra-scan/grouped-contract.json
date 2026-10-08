@@ -1,0 +1,13 @@
+{
+  "events": [
+    {"kind":"ModTarget","reason":"TargetsDropped","subject":"filterQ","enabled":true,"location":{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":208,"slot":0,"target":1},"count":3},
+    {"kind":"ModTarget","reason":"TargetsDropped","subject":"filterQ","enabled":false,"location":{"path":"/Libraries/Kontakt/B/b.nki","program":1,"group":2,"slot":0},"count":2},
+    {"kind":"ModTarget","reason":"SourceNotExecuted","subject":"pan","enabled":null,"location":{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":0,"slot":1},"count":5},
+    {"kind":"ModTarget","reason":"TargetsDropped","subject":"pan","enabled":true,"location":{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":0,"slot":1},"count":3}
+  ],
+  "groups": [
+    {"schema":"grouped-diagnostics-v1","key":{"kind":"ModTarget","reason":"TargetsDropped","subject":"filterQ"},"enabled":3,"bypassed":2,"unknown":0,"impact_rank":1,"libraries":2,"locations":[{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":208,"slot":0,"target":1},{"path":"/Libraries/Kontakt/B/b.nki","program":1,"group":2,"slot":0}],"locations_total":2},
+    {"schema":"grouped-diagnostics-v1","key":{"kind":"ModTarget","reason":"TargetsDropped","subject":"pan"},"enabled":3,"bypassed":0,"unknown":0,"impact_rank":1,"libraries":1,"locations":[{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":0,"slot":1}],"locations_total":1},
+    {"schema":"grouped-diagnostics-v1","key":{"kind":"ModTarget","reason":"SourceNotExecuted","subject":"pan"},"enabled":0,"bypassed":0,"unknown":5,"impact_rank":3,"libraries":1,"locations":[{"path":"/Libraries/Kontakt/A/a.nki","program":0,"group":0,"slot":1}],"locations_total":1}
+  ]
+}
