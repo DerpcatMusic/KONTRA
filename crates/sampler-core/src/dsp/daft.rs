@@ -207,11 +207,7 @@ impl Daft {
 
 /// Unity-slope soft limit to +-1 (a rational tanh).
 fn soft(x: f64) -> f64 {
-    if x.abs() >= 3. {
-        x.signum()
-    } else {
-        x * (27. + x * x) / (27. + 9. * x * x)
-    }
+    if x.abs() >= 3. { x.signum() } else { x * (27. + x * x) / (27. + 9. * x * x) }
 }
 
 #[cfg(test)]
@@ -242,24 +238,14 @@ mod tests {
     #[test]
     fn ramp_length_follows_the_sample_rate() {
         // Ramp countdown at a 32-frame quantum, from the same table.
-        for (rate, quanta) in [
-            (8_000, 1),
-            (44_100, 3),
-            (48_000, 3),
-            (96_000, 6),
-            (192_000, 12),
-        ] {
+        for (rate, quanta) in [(8_000, 1), (44_100, 3), (48_000, 3), (96_000, 6), (192_000, 12)] {
             let s = DaftSettings {
                 gain: Parameter::Constant(0.),
                 cutoff: Parameter::Constant(0.),
                 resonance: Parameter::Constant(0.),
                 response: Parameter::Constant(0.),
             };
-            assert_eq!(
-                s.compile(rate, &mut Vec::new()).ramp_quanta,
-                quanta,
-                "{rate}"
-            );
+            assert_eq!(s.compile(rate, &mut Vec::new()).ramp_quanta, quanta, "{rate}");
         }
     }
 }
