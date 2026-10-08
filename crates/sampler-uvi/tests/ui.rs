@@ -130,6 +130,16 @@ fn positional_widgets_restore_and_table_callbacks_keep_indices() {
 }
 
 #[test]
+fn ready_snapshot_includes_widget_changes_from_on_save() {
+    let source = xml("local k=Knob('Gain',0.25,0,1); function onSave() k:setValue(0.75,false); return {} end");
+    let (_thread, loaded) =
+        sampler_uvi::scripted::ScriptThread::spawn(source, (), Config::default()).unwrap();
+    assert_eq!(loaded.ui.value(control_id(1, 0)), Some(0.75));
+    assert_eq!(*loaded.ui.interface(), loaded.interface);
+    assert_eq!(loaded.ui.state().unwrap().widgets[0].2, sampler_uvi::script::SavedValue::Number(0.75));
+}
+
+#[test]
 fn script_thread_ui_edits_publish_values_text_and_saved_state() {
     let source = xml(r#"
       local k=Knob('Gain',0,0,1)

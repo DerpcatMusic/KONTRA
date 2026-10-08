@@ -130,6 +130,7 @@ impl Grower {
         mut control: PlanControl,
         ceiling: usize,
         per_voice: usize,
+        note_ceiling: usize,
     ) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::Builder::new().name("sampler-grow".into()).spawn({
@@ -137,6 +138,13 @@ impl Grower {
             move || {
                 while !stop.load(Ordering::Relaxed) {
                     let capacity = control.voice_capacity();
+                    let notes = control.note_params_capacity();
+                    if control.note_pressure() && notes < note_ceiling {
+                        let next = (notes * 2).min(note_ceiling);
+                        let fits = mem_available().is_none_or(|free|
+                            (next - notes).saturating_mul(control.note_params_bytes()) <= free / GROWTH_SHARE);
+                        if fits { let _ = control.grow_note_params(next); }
+                    }
                     if control.voice_pressure() && capacity < ceiling {
                         let next = (capacity * 2).min(ceiling);
                         let fits = mem_available()
@@ -330,6 +338,7 @@ pub struct V2Core {
     overflow: u64,
     buses: Box<[Block; BUSES]>,
     written: [bool; BUSES],
+    signal_trace_active: bool,
     scratch: Box<[Frame; MAX_BLOCK]>,
     /// Nodes routed straight to a DAW pair, per pair.
     direct: Box<[[Frame; MAX_BLOCK]; BUSES]>,
@@ -812,6 +821,7 @@ impl V2Core {
             overflow: 0,
             buses: Box::new([[[0.0; MAX_BLOCK]; 2]; BUSES]),
             written: [false; BUSES],
+            signal_trace_active: false,
             scratch: Box::new([[0.0; 2]; MAX_BLOCK]),
             direct: Box::new([[[0.0; 2]; MAX_BLOCK]; BUSES]),
             tap: None,
@@ -848,6 +858,7 @@ impl V2Core {
             bus[1][..n].fill(0.0);
         }
         self.written = [false; BUSES];
+        self.signal_trace_active = false;
         self.tapped[..n].fill(0.0);
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
         for (index, part) in self.parts.iter_mut().enumerate() {
@@ -905,6 +916,10 @@ impl V2Core {
                 part.problems.silent = silent.pack();
             }
             let c = self.mix.parts[index];
+            if part.runtime.signal_trace_enabled() {
+                self.signal_trace_active = true;
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::PartFader, out, balance(c.gain, c.pan), !(c.mute || solo && !c.solo), usize::from(c.output).min(BUSES - 1));
+            }
             if c.mute || solo && !c.solo {
                 continue;
             }
@@ -935,6 +950,9 @@ impl V2Core {
                 }
             }
             let aux = usize::from(c.aux) < BUSES && c.aux != c.output && c.aux_gain != 0.0;
+            if self.signal_trace_active && part.runtime.signal_trace_enabled() && aux {
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::AuxSend, out, [c.aux_gain; 2], true, usize::from(c.aux));
+            }
             for (bus, gain) in [(usize::from(c.output), 1.0), (usize::from(c.aux), c.aux_gain)].into_iter().take(1 + usize::from(aux)) {
                 let bus = bus.min(BUSES - 1);
                 self.written[bus] = true;
@@ -948,6 +966,20 @@ impl V2Core {
         let solo = self.mix.buses.iter().any(|c| c.solo);
         for (bus, c) in self.mix.buses.iter().enumerate().filter(|(bus, _)| self.written[*bus]) {
             let gains = if c.mute || solo && !c.solo { [0.0; 2] } else { balance(c.gain, c.pan) };
+            if self.signal_trace_active {
+                for (index, part) in self.parts.iter_mut().enumerate() {
+                    let Some(part) = part else { continue };
+                    let settings = self.mix.parts[index];
+                    let routed = usize::from(settings.output).min(BUSES - 1) == bus
+                        || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                        || part.direct & (1 << bus) != 0;
+                    if part.runtime.signal_trace_enabled() && routed {
+                        part.runtime.trace_host_planar(sampler_core::trace::HostStage::RackBus(bus),
+                            &self.buses[bus][0][..n], &self.buses[bus][1][..n], gains, None,
+                            !(c.mute || solo && !c.solo), usize::from(c.port));
+                    }
+                }
+            }
             let meter = &mut self.peaks.buses[bus];
             for ((signal, g), m) in self.buses[bus].iter_mut().zip(gains).zip(meter.iter_mut()) {
                 if g != 1.0 {
@@ -1108,6 +1140,41 @@ impl Core for V2Core {
             at+=until;self.align.clock=self.align.clock.saturating_add(until as u64);
         }
         Rendered{buses:&self.aligned_buses,live}
+    }
+
+    fn trace_master(&mut self, gains: &[f32]) -> bool {
+        if !self.signal_trace_active { return false }
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            if !part.runtime.signal_trace_enabled() { continue }
+            let settings = self.mix.parts[index];
+            for bus in 0..BUSES {
+                let routed = usize::from(settings.output).min(BUSES - 1) == bus
+                    || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                    || part.direct & (1 << bus) != 0;
+                if self.written[bus] && routed {
+                    part.runtime.trace_host_planar(sampler_core::trace::HostStage::Master(bus),
+                        &self.buses[bus][0][..gains.len()], &self.buses[bus][1][..gains.len()],
+                        [1.; 2], Some(gains), true, usize::from(self.mix.buses[bus].port));
+                }
+            }
+        }
+        true
+    }
+
+    fn trace_output(&mut self, port: usize, frames: &[[f32; 2]], channels: u8) {
+        if !self.signal_trace_active { return }
+        for (index, part) in self.parts.iter_mut().enumerate() {
+            let Some(part) = part else { continue };
+            if !part.runtime.signal_trace_enabled() { continue }
+            let settings = self.mix.parts[index];
+            if (0..BUSES).any(|bus| self.written[bus] && usize::from(self.mix.buses[bus].port) == port
+                && (usize::from(settings.output).min(BUSES - 1) == bus
+                    || usize::from(settings.aux) == bus && settings.aux_gain != 0.
+                    || part.direct & (1 << bus) != 0)) {
+                part.runtime.trace_host_frames(sampler_core::trace::HostStage::Output(port, channels), frames, [1.; 2], true, port);
+            }
+        }
     }
 
     fn owns(&self, note: HostNote) -> bool {
@@ -1364,23 +1431,24 @@ fn render_threads(request: &LoadRequest) -> Threads {
 /// (`RuntimeStats::voice_drops`).
 const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
-const MAX_VOICES: usize = 16384;
+// port from v1 0cb7a8a0:src/engine/mod.rs; growth remains off audio.
+const MAX_VOICES: usize = 1024;
 const GROWTH: usize = 8;
+// port from v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY.
+const INITIAL_NOTE_PARAMS: usize = 4096;
 /// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
 const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
-/// the voice count the pool may grow to. Notes, families and decisions are
-/// sized for that ceiling so growing voices is not capped by them.
+/// the voice count the pool may grow to. Event ownership is bounded by v1
+/// capacity; multiple voices can still share each event.
 fn limits(plan: &Prepared) -> (Limits, usize) {
     let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
     let ceiling = voices * GROWTH;
-    // Notes outlive their voices only in release, and each holds a few voices.
-    // Capped: script cells are allocated per note.
-    let notes = (ceiling / 4).clamp(NOTES, 16384);
+    let notes = INITIAL_NOTE_PARAMS;
     let limits = Limits {
-        families: (ceiling / 2).clamp(256, 32768),
-        decisions: (ceiling / 2).clamp(256, 32768),
+        families: (ceiling / 2).clamp(256, notes),
+        decisions: (ceiling / 2).clamp(256, notes),
         ..Limits::for_plan(plan, notes, voices)
     };
     (limits, ceiling)
@@ -1779,7 +1847,9 @@ impl V2Loader {
                 }
             }
         }
-        let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
+        let (runtime, control) = Runtime::with_plan_updates_and_note_capacity(
+            prepared, limits, 2, 1, limits.notes.min(INITIAL_NOTE_PARAMS),
+        ).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
@@ -1802,7 +1872,7 @@ impl V2Loader {
                 runtime.bus_count()
             )));
         }
-        let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
+        let grower = Grower::start(&mut runtime, control, ceiling, per_voice, limits.notes)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
         part.waveform_sources = waveform_sources;
@@ -1906,6 +1976,41 @@ mod tests {
     fn load(path: &Path) -> Option<Box<Part>> {
         let request = LoadRequest { path: path.into(), sample_rate: 48000.0, ..Default::default() };
         V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().part
+    }
+
+    #[test]
+    fn host_signal_trace_records_aux_and_physical_mono_sum_on_the_routed_port() {
+        let pcm = Pcm::new(48000, vec![[0.2, 0.4]; 512].into_boxed_slice()).unwrap();
+        let region = Region {sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,envelope:Envelope::default(),playback:Playback::default()};
+        let plan = Prepared::new(48000,vec![pcm],vec![region],1).unwrap().with_signal_trace(4096).unwrap();
+        let runtime = {let limits=limits(&plan).0; Runtime::new(plan, limits).unwrap()};
+        let reader = runtime.signal_trace_reader().unwrap();
+        let part = Box::new(Part::new(runtime,MixTree::instrument("fixture")).unwrap());
+        let mut core = V2Core::with_parts(1,48000.);
+        core.install(0,Some(part));
+        let mut mix = Mix::default();
+        mix.parts[0].gain = 0.5; mix.parts[0].output = 0; mix.parts[0].aux = 1; mix.parts[0].aux_gain = 0.25;
+        mix.buses[0].gain = 0.5; mix.buses[0].port = 2; mix.buses[1].port = 2;
+        core.set_mix(&mix);
+        core.event(0,Event::NoteOn {note:HostNote {port:0,channel:0,key:60,id:7,clap:true},velocity:1.,tune:0.});
+        let physical = {
+            let rendered = core.render(64);
+            std::array::from_fn::<_,64,_>(|i| {
+                let sum = (rendered.buses[0][0][i]+rendered.buses[0][1][i]
+                    +rendered.buses[1][0][i]+rendered.buses[1][1][i])*0.25;
+                [sum,0.]
+            })
+        };
+        assert!(core.trace_master(&[0.5;64]));
+        core.trace_output(2,&physical,1);
+        let rows = reader.drain();
+        let aux = rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_aux_send").unwrap();
+        assert!((aux.output.rms[0]-0.025).abs()<1e-6);
+        let output = rows.iter().find(|r|reader.graph.nodes[r.node].kind=="host_output").unwrap();
+        assert_eq!(output.identity.external_port,Some(2));
+        assert_eq!(output.identity.output_channels,Some(1));
+        assert!((output.output.rms[0]-0.05625).abs()<1e-6);
+        assert_eq!(output.output.rms[1],0.);
     }
 
     #[test]
@@ -2564,6 +2669,28 @@ mod tests {
         assert!(matches!(err, CoreError::Unsupported(_)), "{err}");
     }
 
+    #[test]
+    fn loader_starts_note_parameters_at_v1_event_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note-capacity.wav");
+        sine(&path);
+        let part = load(&path).unwrap();
+        assert_eq!(part.runtime.note_params_capacity(), 4096);
+        assert_eq!(part.runtime.voice_capacity(), 1024);
+    }
+
+    #[test]
+    fn production_ownership_limits_use_v1_event_capacity() {
+        let plan = Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let (limits, ceiling) = limits(&plan);
+        assert_eq!(limits.notes, 4096);
+        assert_eq!(limits.expressions, 4096);
+        assert_eq!(limits.families, 4096);
+        assert_eq!(limits.decisions, 4096);
+        assert_eq!(limits.voices, 1024);
+        assert_eq!(ceiling, 8192);
+    }
+
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
     /// Scripted instruments must sound: with their scripts on, a played note is
     /// audible within a few seconds. Set `KONTRA_KONTAKT_LIBRARIES` to run.
@@ -3025,6 +3152,10 @@ mod send_tests {
 #[cfg(test)]
 #[path = "keyswitch_tests.rs"]
 mod keyswitch_tests;
+
+#[cfg(test)]
+#[path = "envelope_init_tests.rs"]
+mod envelope_init_tests;
 
 // Port from v1 0cb7a8a0:src/import.rs; v2 containers retain native metadata.
 /// Container identity only, for the off-thread snapshot catalog. Snapshot

@@ -790,7 +790,21 @@ impl VoiceModState {
             }
         }
         for factor in factors {
-            *factor = [(factor[0] / 12.0).exp2(), 10f64.powf(factor[1] / 20.0)];
+            let deltas = *factor;
+            *factor = [1.; 2];
+            // v1 0cb7a8a0:src/engine/filter.rs skips neutral modulation deltas.
+            for (n, (v, d)) in factor
+                .iter_mut()
+                .zip(&deltas)
+                .enumerate()
+                .filter(|(_, (_, d))| **d != 0.0)
+            {
+                *v = if n == 0 {
+                    (d / 12.0).exp2()
+                } else {
+                    10f64.powf(d / 20.0)
+                };
+            }
         }
     }
 
@@ -1111,6 +1125,45 @@ impl crate::Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factor_projection_preserves_units_cancellation_and_reused_voice_scratch() {
+        let program = ModProgram {
+            sources: vec![ModSource::Velocity],
+            routes: vec![
+                ModRoute::new(0, ModTarget::ProcessorCutoff(0), 1.),
+                ModRoute::new(0, ModTarget::ProcessorCutoff(0), 1.),
+                ModRoute::new(0, ModTarget::ProcessorResonance(1), 1.),
+                ModRoute::new(0, ModTarget::ProcessorCutoff(2), 1.),
+                ModRoute::new(0, ModTarget::Pitch, 1.),
+            ],
+            ..ModProgram::default()
+        };
+        let modulation = VoiceModulation::new(vec![program], vec![Some(0)], vec![0]).unwrap();
+        let mut state = VoiceModState::new(&modulation, 2).unwrap();
+        state.program[0] = Some(0);
+        let mut actual = [[9., 9.]; 4];
+        for delta in [-24., -0., 0., 6., 20.] {
+            state.processor_values[..5].copy_from_slice(&[12., -12., delta, 9., 127.]);
+            state.previous_processor_values[..5].copy_from_slice(&[12., -12., delta, 3., -127.]);
+            state.fill_filter_factors(&modulation, 0, &mut actual);
+            let expected = [
+                [1., 1.],
+                [1., 10f64.powf(delta / 20.)],
+                [(6f64 / 12.).exp2(), 1.],
+                [1., 1.],
+            ];
+            assert_eq!(
+                actual.map(|v| v.map(f64::to_bits)),
+                expected.map(|v| v.map(f64::to_bits))
+            );
+            state.fill_filter_factors(&modulation, 1, &mut actual);
+            assert_eq!(
+                actual, [[1.; 2]; 4],
+                "unbound voice must clear the previous voice's factors"
+            );
+        }
+    }
 
     #[test]
     fn waves_start_where_their_documented_shapes_do() {

@@ -109,6 +109,7 @@ impl Default for Envelope {
 }
 
 impl Envelope {
+    pub(crate) fn trace_parameters(&self) -> [(&'static str, f64); 10] { [("delay_frames",self.delay as f64),("attack_frames",self.attack as f64),("hold_frames",self.hold as f64),("decay_frames",self.decay as f64),("sustain",self.sustain as f64),("release_frames",self.release as f64),("one_shot",f64::from(self.one_shot)),("attack_curvature",self.curves[0].curvature),("decay_curvature",self.curves[1].curvature),("release_curvature",self.curves[2].curvature)] }
     pub fn new(
         attack: u32,
         hold: u32,
@@ -251,6 +252,7 @@ pub(super) struct EnvelopeState {
 }
 
 impl EnvelopeState {
+    pub(crate) fn trace_parameters(&self) -> [f64; 10] { self.shape.trace_parameters().map(|(_,v)|v) }
     pub(super) fn new(shape: Envelope) -> Self {
         let mut state = Self {
             shape,
@@ -335,6 +337,15 @@ impl EnvelopeState {
     pub(super) fn release(&mut self) {
         if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
             self.release_level = self.level();
+            self.enter(Phase::Release);
+        }
+    }
+
+    /// A note released before its storage onset enters release from sustain;
+    /// its source and release clock still wait for the first complete window.
+    pub(super) fn release_onset(&mut self) {
+        if !self.shape.one_shot && !matches!(self.phase, Phase::Release | Phase::Done) {
+            self.release_level = self.shape.sustain;
             self.enter(Phase::Release);
         }
     }

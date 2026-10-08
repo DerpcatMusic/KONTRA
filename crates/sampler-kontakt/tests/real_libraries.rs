@@ -423,6 +423,74 @@ fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
 }
 
 #[test]
+fn dolce_init_getter_feedback_preserves_authored_envelope_lanes() {
+    let Some(path) = find(
+        "Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki",
+    ) else {
+        return;
+    };
+    let streamed = sampler_kontakt::load_streamed(
+        &path,
+        &sampler_kontakt::Options {
+            keys: 60..=60,
+            mpe: None,
+            ..Default::default()
+        },
+        &Default::default(),
+        |_| {},
+    )
+    .unwrap_or_else(|_| panic!("production load failed; authored diagnostics omitted"));
+    let plan = streamed.loaded.plan;
+    let addresses: Vec<_> = plan
+        .engine_parameter_bindings()
+        .iter()
+        .filter(|binding| {
+            binding.address.slot == 1
+                && [
+                    "$ENGINE_PAR_ATTACK",
+                    "$ENGINE_PAR_RELEASE",
+                    "$ENGINE_PAR_SUSTAIN",
+                ]
+                .contains(&sampler_core::engine_parameter_name(binding.address.parameter).unwrap())
+        })
+        .map(|binding| {
+            (
+                binding.address,
+                binding.law.encode(
+                    match plan
+                        .controls()
+                        .iter()
+                        .find(|control| control.id == binding.control)
+                        .unwrap()
+                        .default
+                    {
+                        sampler_core::ControlValue::Real(value) => value,
+                        _ => panic!("envelope lane requires a native real value"),
+                    },
+                ),
+            )
+        })
+        .collect();
+    assert!(
+        !addresses.is_empty(),
+        "physical envelope bindings must be installed"
+    );
+    let limits = Limits::for_plan(&plan, 128, 16);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    for (address, authored) in &addresses {
+        assert!(*authored > 0);
+        assert!(
+            (runtime.engine_parameter(*address).unwrap() - authored).abs() <= 1,
+            "init getter feedback must retain authored envelope at physical group {} slot {} parameter {}",
+            address.group,
+            address.slot,
+            address.parameter
+        );
+    }
+    println!("DOLCE_AUTHORED_ENVELOPE retained_lanes={}", addresses.len());
+}
+
+#[test]
 fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
     let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else { return };
     let streamed = sampler_kontakt::load_streamed(&path, &sampler_kontakt::Options {

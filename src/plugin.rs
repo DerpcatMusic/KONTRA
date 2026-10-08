@@ -377,6 +377,7 @@ impl SamplerParams {
         drop(view);
         let mut context = serde_json::json!({
             "instance_id": self.shared.instance_id, "build": crate::build_info::BUILD,
+            "signal_traces": sampler_core::trace_report::reports(),
             "host": {"sample_rate": self.shared.rate()},
             "rack": {"parts": parts, "buses": selection.buses, "outputs": selection.outputs,
                 "midi_thru": selection.midi_thru},
@@ -2172,6 +2173,22 @@ impl PluginLogic for Sampler {
                     }
                 }
             }
+            if s.core.trace_master(&gains[..len]) {
+                let mut observed = [[0f32; 2]; MAX_BLOCK];
+                for port in 0..BUSES {
+                    let route = cx.bus_routing.output(port).map(|r| (r.channel_start(), r.channel_count()));
+                    let (start, count) = route.unwrap_or(if port == 0 { (0, channels.min(2)) } else { (0, 0) });
+                    let count = count.min(2).min(channels.saturating_sub(start));
+                    if count == 0 { continue }
+                    observed[..len].fill([0.; 2]);
+                    for channel in 0..count {
+                        for (frame, sample) in observed[..len].iter_mut().zip(&b.output(start + channel)[at..at + len]) {
+                            frame[channel] = *sample;
+                        }
+                    }
+                    s.core.trace_output(port, &observed[..len], count as u8);
+                }
+            }
             if let Some(tapped) = s.core.tapped(len) {
                 shared.scope.push(tapped);
             }
@@ -2254,8 +2271,14 @@ impl PluginLogic for Sampler {
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[path = "allocation_audit.rs"]
+mod allocation_audit;
+
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    use super::allocation_audit;
     use super::*;
 
     #[test]
@@ -2305,6 +2328,8 @@ pub(crate) mod tests {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             count();
             let ptr = unsafe { System.alloc(layout) };
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            allocation_audit::record(ptr, layout.size(), false);
             if !ptr.is_null() && COUNTING.with(Cell::get) {
                 ALLOCATED.with(|n| n.set(n.get() + layout.size()));
                 LIVE.with(|n| { n.set(n.get() + layout.size() as isize); PEAK.with(|peak| peak.set(peak.get().max(n.get()))); });
@@ -2313,6 +2338,8 @@ pub(crate) mod tests {
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             count();
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            allocation_audit::record(ptr, layout.size(), true);
             if COUNTING.with(Cell::get) {
                 FREED.with(|n| n.set(n.get() + layout.size()));
                 LIVE.with(|n| n.set(n.get() - layout.size() as isize));
@@ -2490,6 +2517,19 @@ pub(crate) mod tests {
         }
     }
 
+    /// Source and instruction-layout sizes without exporting authored script text.
+    #[test]
+    #[ignore]
+    fn probe_ksp_sizes() {
+        let path = std::path::PathBuf::from(std::env::var("PROBE_PATH").expect("PROBE_PATH"));
+        let kontakt = sampler_kontakt::read(&path).unwrap();
+        let source_bytes: Vec<_> = kontakt.instrument.behaviors.iter()
+            .filter(|b| b.language == sampler_ir::Language::Ksp)
+            .map(|b| b.source.len()).collect();
+        println!("AUDIT {}", serde_json::json!({"stage":"ksp_sizes", "source_bytes":source_bytes,
+            "instruction_bytes":std::mem::size_of::<sampler_core::Instruction>()}));
+    }
+
     /// Numeric-only audit: real loader, publication, C4 audio, retained editor RSS.
     #[test]
     #[ignore]
@@ -2505,6 +2545,10 @@ pub(crate) mod tests {
         let rss0 = proc_kb("VmRSS:");
         let mut dsp = Dsp::default(); dsp.core.set_mix(&mix(&params.selection.read().unwrap()));
         let t0 = Instant::now();
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        let allocation_output = std::env::var_os("PROBE_ALLOCS");
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if allocation_output.is_some() { allocation_audit::start(); }
         let worker = { let p = params.clone(); std::thread::spawn(move || { Load.run(&p); t0.elapsed() }) };
         let mut publication_ms = None;
         let mut first_audio_ms = None;
@@ -2534,6 +2578,8 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_micros(1333));
         }
         let total = worker.join().unwrap();
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if let Some(output) = allocation_output { allocation_audit::finish(std::path::Path::new(&output)); }
         let rss_done = proc_kb("VmRSS:");
         let hwm_done = proc_kb("VmHWM:");
         let ui = crate::ui::audit_frames(&params);

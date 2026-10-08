@@ -38,6 +38,15 @@ pub(crate) fn strict_table(data: &[u8], version: u16) -> (&'static str,BTreeMap<
     }
 }
 
+// Preparation publishes the current page; scanner success spans every painted page.
+fn observed_font_styles(styles:&[ir::TextStyle],ready:&std::collections::BTreeSet<usize>)->usize {
+    styles.iter().filter(|s| match s.font {
+        ir::Font::Stock(_) => true,
+        ir::Font::Default | ir::Font::Named(_) => false,
+        ir::Font::Bitmap(a) | ir::Font::File(a) => ready.contains(&a.0),
+    }).count()
+}
+
 fn render(
     face: &ir::Interface,
     path: &Path,
@@ -164,6 +173,7 @@ fn render(
     let typed_refs=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(w.binding,ir::Binding::Variable{..})).count();
     let typed_bound=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(&w.binding,ir::Binding::Variable{script,name} if typed_targets.contains(&(*script,name.clone())))).count();
     let mut renders = Vec::new();
+    let mut ready_fonts = std::collections::BTreeSet::new();
     let initial = values.clone();
     for p in 0..face.pages.len() {
         let start = Instant::now();
@@ -183,6 +193,8 @@ fn render(
             .clamp(1., 900.) as u16;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, String> {
+                #[cfg(target_os = "linux")]
+                let watermark = std::env::var_os("KONTRA_SCAN_STACK").map(|_| super::native_ui::stack_watermark());
                 let mut ui = theme::ui();
                 let deadline = Instant::now() + Duration::from_secs(15);
                 let mut settled = 0;
@@ -262,6 +274,13 @@ fn render(
                     report["shot"] = json!(shot);
                 }
                 report["size"] = json!([w, h]);
+                #[cfg(target_os = "linux")]
+                if let Some(watermark) = watermark {
+                    let peak = super::native_ui::stack_peak(watermark);
+                    report["stack_peak_bytes"] = json!(peak);
+                    report["stack_watermark_unmarked_top_bytes"] = json!(watermark.2 - watermark.1);
+                    report["stack_watermark_saturated"] = json!(peak >= watermark.2 - watermark.0 - 4096);
+                }
                 Ok(report)
             }));
         renders.push(match result {
@@ -275,51 +294,132 @@ fn render(
             }
             Err(_) => json!({"ok":false,"budget_hit":false,"reason":"Original renderer panic"}),
         });
+        missing.extend(native.as_ref().map_or_else(|| assets.failures(),|n|n.failures()));
+        for (i,asset) in face.assets.iter().enumerate() {
+            let ready=match asset.kind {
+                ir::AssetKind::TrueTypeFont => assets.font(&ir::AssetRef(i)).is_some(),
+                ir::AssetKind::BitmapFont => assets.get(ir::AssetRef(i)).is_some(),
+                _ => false,
+            };
+            if ready { ready_fonts.insert(i); }
+        }
     }
     let passive = values
         .iter()
         .filter(|(c, v)| initial.get(c).is_some_and(|old| old != *v))
         .count();
-    let fonts_declared = face
+    let legacy_fonts_declared = face
         .styles
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
     let scan = native.as_ref().map_or_else(|| assets.scan(), |n| n.scan());
-    missing.extend(
-        native
-            .as_ref()
-            .map_or_else(|| assets.failures(), |n| n.failures()),
-    );
     missing.sort();
     missing.dedup();
-    let font_success = face
-        .styles
-        .iter()
-        .filter(|s| match s.font {
-            ir::Font::Stock(_) => true,
-            ir::Font::Default | ir::Font::Named(_) => false,
-            ir::Font::Bitmap(a) => assets.get(a).is_some(),
-            ir::Font::File(a) => assets.font(&a).is_some(),
-        })
-        .count();
+    let legacy_font_success = observed_font_styles(&face.styles,&ready_fonts);
+    let native_fonts=native.as_ref().and_then(|n|n.font_success());
+    let fonts_declared=if native.is_some(){native_fonts}else{Some(legacy_fonts_declared)};
+    let font_success=if native.is_some(){native_fonts}else{Some(legacy_font_success)};
+    let resources_known=native.is_none()||native_fonts.is_some();
+    // The worker hashes asset identity, including its kind. Separate font requests.
+    let font_hashes: std::collections::BTreeSet<_> = face.assets.iter()
+        .filter(|a| matches!(a.kind,ir::AssetKind::TrueTypeFont|ir::AssetKind::BitmapFont))
+        .map(|a| blake3::hash(format!("{}:{:?}",a.path,a.kind).as_bytes()).to_hex().to_string())
+        .collect();
+    let missing_font_hashes:Vec<_>=missing.iter().filter(|h|font_hashes.contains(*h)).cloned().collect();
+    missing.retain(|h| !font_hashes.contains(h));
+    let missing_fonts=resources_known.then(|| scan.fonts.saturating_sub(scan.font_ok).max(missing_font_hashes.len()));
+    let mut failures=BTreeMap::new();
+    if resources_known {
+        failures.insert("lookup-not-found",scan.lookup_missing);
+        failures.insert("lookup-invalid",scan.lookup_invalid);
+        failures.insert("lookup-ambiguous",scan.lookup_ambiguous);
+        failures.insert("lookup-corrupt",scan.lookup_corrupt);
+        failures.insert("lookup-limit",scan.lookup_limit);
+        failures.insert("lookup-read",scan.lookup_read);
+        failures.insert("lookup-unavailable",scan.lookup_unavailable);
+        failures.insert("decode-failed",scan.decodes-scan.decode_ok);
+    }
+    if let Some(missing_fonts)=missing_fonts {
+        failures.insert("font-service-unavailable",missing_fonts);
+    }
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
-        "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
-        "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
-        "font_declared":fonts_declared,"font_success":font_success,
+        "asset_lookup_requested":resources_known.then_some(scan.lookups),"asset_lookup_ok":resources_known.then_some(scan.lookup_ok),
+        "asset_decode_requested":resources_known.then_some(scan.decodes),"asset_decode_ok":resources_known.then_some(scan.decode_ok),
+        "font_declared":fonts_declared,"font_success":font_success,"font_unresolved_styles":fonts_declared.zip(font_success).map(|(declared,success)|declared.saturating_sub(success)),
 
-        "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
+        "custom_font_uses":if native.is_some(){None}else{Some(face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_)|ir::Font::File(_))).count())},
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
-            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
+        "asset_failure_reasons":failures,"source_presentation":if native.is_some(){"native-package"}else{"legacy-authored"},"native_frontend_consumed":native.as_ref().map(|_|!renders.is_empty()),"native_paint_ok":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
-        "native_frontend_consumed":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
+        "native_graph_depth":native.as_ref().and_then(|n|n.graph_depth()),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
-        "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
+        "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
         "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
+}
+
+// NONE is a display type: scripts can recolour mapped notes without changing it.
+fn audition_key(key: &sampler_ksp::model::Key) -> Option<bool> {
+    if key.kind == Some(1) || key.color == Some(17) {
+        Some(false)
+    } else if matches!(key.color, Some(16 | 18 | 19 | 20)) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn audition_candidate(
+    instrument: &sampler_ir::Instrument,
+    valid: &std::collections::BTreeSet<u8>,
+    invalid: &std::collections::BTreeSet<u8>,
+) -> Option<(u8, u8)> {
+    let switches: std::collections::BTreeSet<_> = instrument
+        .articulations
+        .iter()
+        .flat_map(|a| a.switch_keys.iter().copied())
+        .collect();
+    (0..=127u8)
+        .filter(|k| !switches.contains(k) && !invalid.contains(k))
+        .filter_map(|key| {
+            let velocity = instrument
+                .zones
+                .iter()
+                .filter(|z| {
+                    (z.keys.low..=z.keys.high).contains(&key)
+                        && z.velocities.low <= z.velocities.high
+                        && z.velocities.high > 0
+                })
+                .map(|z| 64u8.clamp(z.velocities.low.max(1), z.velocities.high))
+                .min_by_key(|v| v.abs_diff(64))?;
+            let count = instrument
+                .zones
+                .iter()
+                .filter(|z| {
+                    (z.keys.low..=z.keys.high).contains(&key)
+                        && (z.velocities.low..=z.velocities.high).contains(&velocity)
+                })
+                .count();
+            Some((
+                valid.contains(&key),
+                std::cmp::Reverse(key.abs_diff(60)),
+                std::cmp::Reverse(velocity.abs_diff(64)),
+                count,
+                key,
+                velocity,
+            ))
+        })
+        .max()
+        .map(|(.., key, velocity)| (key, velocity))
+}
+
+fn audition_switch(instrument: &sampler_ir::Instrument, inactive: &std::collections::BTreeSet<u8>) -> Option<u8> {
+    instrument.articulations.iter().filter(|a|a.default)
+        .chain(instrument.articulations.iter().filter(|a|!a.default))
+        .flat_map(|a|a.switch_keys.iter().copied()).find(|key|!inactive.contains(key))
 }
 
 pub fn one(id: &str, out: &Path) -> Value {
@@ -365,10 +465,11 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut any_heard,
         mut ui_error,
         mut ui_missing,
+        mut ui_missing_font,
         mut any_ui,
         mut any_blank,
         mut budget_hit,
-    ) = (true, 0, 0, false, false, false, false, false, false);
+    ) = (true, 0, 0, false, false, false, false, false, false, false);
     let mut load_ms = 0.;
     let load_started=Instant::now();
     result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
@@ -454,14 +555,14 @@ pub fn one(id: &str, out: &Path) -> Value {
         metrics::checkpoint(out, &result);
         let typed_targets=loaded.scripts.views.iter().flat_map(|view|view.model().interface.widgets.iter().filter(|w|matches!(w.value,sampler_ksp::model::WidgetValue::Text(_)|sampler_ksp::model::WidgetValue::Ints(_)|sampler_ksp::model::WidgetValue::Reals(_))).map(|w|(view.slot(),w.name.clone()))).collect();
         let faces = loaded.interfaces.clone();
-        any_ui |= faces.iter().any(|face| !face.widgets.is_empty());
+        any_ui |= faces.iter().any(|face| !face.widgets.is_empty() || face.native_ui.is_some());
         let paint_path = path.clone();
         let paint_out = out.to_path_buf();
         let paint = std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
 
         let mut views = Vec::new();
         for (slot, face) in faces.iter().enumerate() {
-            if face.widgets.is_empty() {
+            if face.widgets.is_empty() && face.native_ui.is_none() {
                 continue;
             }
             let view = render(
@@ -482,6 +583,17 @@ pub fn one(id: &str, out: &Path) -> Value {
         let failed_script = script_errors.get("script").copied().unwrap_or(0) > 0
             || script_errors.get("script interface").copied().unwrap_or(0) > 0;
         ui_error |= failed_script;
+        let inactive_switches: std::collections::BTreeSet<_> = loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).filter(|(_,k)|k.color==Some(17)).map(|(key,_)|key as u8).collect();
+        let declared_switch=loaded.instrument.as_ref().and_then(|i|audition_switch(i,&inactive_switches))
+            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
+        let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
+        core.event(0, Event::midi1(0xb0, 1, 100));
+        core.event(0, Event::midi1(0xb0, 11, 127));
+        if let Some(switch)=keyswitch {
+            core.event(0, Event::midi1(0x90,switch,64));
+            core.render(128);
+            core.event(0, Event::midi1(0x80,switch,0));
+        }
         let native = core.scan_lua(0);
         let mut native_valid: std::collections::BTreeSet<u8> = native
             .as_ref()
@@ -493,89 +605,30 @@ pub fn one(id: &str, out: &Path) -> Value {
             .unwrap_or_default();
         for view in &loaded.scripts.views {
             for (key, k) in view.model().interface.keys.iter().enumerate() {
-                if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                    native_invalid.insert(key as u8);
-                } else if matches!(k.color, Some(18 | 19)) {
-                    native_valid.insert(key as u8);
+                match audition_key(k) {
+                    Some(false) => { native_invalid.insert(key as u8); }
+                    Some(true) => { native_valid.insert(key as u8); }
+                    None => {}
                 }
             }
         }
-        let candidate = (|| {
-            loaded.instrument.as_ref().and_then(|i| {
-                let switch: std::collections::BTreeSet<_> = i
-                    .articulations
-                    .iter()
-                    .flat_map(|a| a.switch_keys.iter().copied())
-                    .collect();
-                let mut valid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_valid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                let mut invalid: std::collections::BTreeSet<_> = native
-                    .as_ref()
-                    .map(|n| n.native_invalid_keys.iter().copied().collect())
-                    .unwrap_or_default();
-                for view in &loaded.scripts.views {
-                    for (key, k) in view.model().interface.keys.iter().enumerate() {
-                        if matches!(k.kind, Some(1 | 2)) || k.color == Some(17) {
-                            invalid.insert(key as u8);
-                        } else if matches!(k.color, Some(18 | 19)) {
-                            valid.insert(key as u8);
-                        }
-                    }
-                }
-                let best = (0..=127u8)
-                    .filter(|k| !switch.contains(k) && !invalid.contains(k))
-                    .map(|k| {
-                        let n = i
-                            .zones
-                            .iter()
-                            .filter(|z| {
-                                (z.keys.low..=z.keys.high).contains(&k)
-                                    && (z.velocities.low..=z.velocities.high).contains(&64)
-                            })
-                            .count();
-                        (
-                            n > 0,
-                            valid.contains(&k),
-                            std::cmp::Reverse(k.abs_diff(60)),
-                            n,
-                            k,
-                        )
-                    })
-                    .max()
-                    .filter(|(mapped, ..)| *mapped)
-                    .map(|(.., k)| (k, 64));
-                best
-            })
-        })();
+        let candidate = loaded.instrument.as_ref().and_then(|i| audition_candidate(i, &native_valid, &native_invalid));
         let mut excluded = native_invalid.clone();
         if let Some(i)=&loaded.instrument { excluded.extend(i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied())); }
-        let pick = metrics::note(program as u32).or(candidate).or_else(||metrics::fallback_note(&excluded));
+        let pick = metrics::note(program as u32).filter(|(key,_)|!excluded.contains(key)).or(candidate).or_else(||metrics::fallback_note(&excluded));
         let pick_source = match pick {
-            Some((key, 64)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
+            Some((key, _)) if candidate==pick && native_valid.contains(&key) && !native_invalid.contains(&key) => {
                 "native_declared"
             }
-            Some((_, 64)) if candidate==pick => "zone_coverage",
+            Some((_, _)) if candidate==pick => "zone_coverage",
             _ => "fallback",
         };
-        let declared_switch=loaded.instrument.as_ref().and_then(|i|i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied()).min())
-            .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
-        let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
         let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
         let mut heard = false;
         result["stage"] = json!(format!("play program {program}"));
         metrics::checkpoint(out, &result);
         if let Some((key, velocity)) = pick {
-            core.event(0, Event::midi1(0xb0, 1, 100));
-            core.event(0, Event::midi1(0xb0, 11, 127));
-            if let Some(switch)=keyswitch {
-                core.event(0, Event::midi1(0x90,switch,64));
-                let audio=core.render(128);
-                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
-                core.event(0, Event::midi1(0x80,switch,0));
-            }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
@@ -598,6 +651,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             total_bound += view["bound"].as_u64().unwrap_or(0);
             total_interactive += view["interactive"].as_u64().unwrap_or(0);
             ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
+            ui_missing_font |= view["missing_fonts"].as_u64().unwrap_or(0) > 0;
             for r in view["renders"].as_array().unwrap() {
                 ui_error |= r["ok"] != true;
                 budget_hit |= r["budget_hit"] == true;
@@ -617,7 +671,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":native_consumed,"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
             "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "keyswitch":keyswitch,"selected_articulation":core.articulation(0),"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
@@ -629,6 +683,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         "error"
     } else if any_blank {
         "blank"
+    } else if ui_missing_font {
+        "missing_font"
     } else if ui_missing {
         "missing-images"
     } else if !any_ui {
@@ -705,4 +761,89 @@ fn ksp_observations() -> Value {
         "compile_fault":o.error.as_ref().filter(|e|!matches!(e.phase,"init"|"persistence_changed")).map(&diagnostic),
         "init":phase(&o.init),"persistence_changed":phase(&o.persistence_changed)})).collect();
     json!({"compile_ok":compile,"init_ok":init,"first_error":first,"scripts":obs.len(),"slots":slots,"attempts":attempts.iter().map(|o|json!({"attempt":o.attempt,"wire_slot":o.slot,"compile_admitted":o.compile_ok,"init":phase(&o.init),"persistence_changed":phase(&o.persistence_changed),"error":o.error.as_ref().map(&diagnostic)})).collect::<Vec<_>>()})
+}
+
+#[cfg(test)]
+mod font_observation_tests {
+    use super::*;
+    #[test]
+    fn font_success_spans_pages_and_keeps_unrequested_fonts_unsuccessful() {
+        let styles:Vec<_>=(0..3).map(|i|ir::TextStyle {font:ir::Font::File(ir::AssetRef(i)),size:None,color:ir::Rgba::rgb(0xffffff),align:ir::Align::Center}).collect();
+        let mut ready=std::collections::BTreeSet::new();
+        ready.insert(0); // First page.
+        ready.insert(1); // Second page, whose preparation no longer holds font 0.
+        assert_eq!(observed_font_styles(&styles,&ready),2);
+    }
+}
+
+#[cfg(test)]
+mod audition_tests {
+    use super::*;
+    #[test]
+    fn audition_selects_the_valid_authored_default_before_playing() {
+        let i=sampler_ir::Instrument {articulations:vec![
+            sampler_ir::Articulation{switch_keys:vec![24],..Default::default()},
+            sampler_ir::Articulation{switch_keys:vec![30],default:true,..Default::default()},
+        ],..Default::default()};
+        assert_eq!(audition_switch(&i,&Default::default()),Some(30));
+        assert_eq!(audition_switch(&i,&[30].into()),Some(24));
+        assert_eq!(audition_switch(&i,&[24,30].into()),None);
+    }
+    #[test]
+    fn mapped_audition_avoids_switches_controls_and_velocity_holes() {
+        let mut i = sampler_ir::Instrument::default();
+        i.articulations.push(sampler_ir::Articulation {
+            switch_keys: vec![59, 60],
+            ..Default::default()
+        });
+        let mut zone = sampler_ir::Zone::new(sampler_ir::AssetRef(0));
+        zone.keys = sampler_ir::KeyRange { low: 59, high: 62 };
+        zone.velocities = sampler_ir::VelocityRange {
+            low: 100,
+            high: 127,
+        };
+        i.zones.push(zone);
+        assert_eq!(
+            audition_candidate(&i, &Default::default(), &[61].into()),
+            Some((62, 100))
+        );
+        assert_eq!(
+            audition_candidate(&i, &Default::default(), &[61, 62].into()),
+            None
+        );
+        i.articulations.clear();
+        i.zones[0].velocities = sampler_ir::VelocityRange { low: 1, high: 127 };
+        assert_eq!(
+            audition_candidate(&i, &[62].into(), &Default::default()),
+            Some((62, 64)),
+            "authored playable range wins over nearest uncoloured map"
+        );
+    }
+    #[test]
+    fn recoloured_playable_keys_survive_a_script_none_reset() {
+        let key = |kind, color| sampler_ksp::model::Key {
+            kind: Some(kind),
+            color: Some(color),
+            ..Default::default()
+        };
+        assert_eq!(
+            audition_key(&key(2, 16)),
+            Some(true),
+            "default-colour playable notes retain NONE after a blanket reset"
+        );
+        assert_eq!(audition_key(&key(2, 18)), Some(true));
+        assert_eq!(audition_key(&key(2, 19)), Some(true));
+        assert_eq!(audition_key(&key(2, 20)), Some(true));
+        assert_eq!(
+            audition_key(&key(2, 17)),
+            Some(false),
+            "inactive notes remain excluded"
+        );
+        assert_eq!(
+            audition_key(&key(1, 16)),
+            Some(false),
+            "control notes remain excluded even with a playable colour"
+        );
+        assert_eq!(audition_key(&key(1, 4)), Some(false));
+    }
 }

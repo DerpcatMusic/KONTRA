@@ -386,6 +386,7 @@ impl View<'_> {
         let segment = &mut scratch[0][..self.frames];
         segment.fill([0.; 2]);
         let context = RenderContext {
+            trace: None,
             amplifier: chain.and(prelude.and_then(|p| p.points)),
             delay: &mut delay[..chain.map_or(0, |c| c.delay_frames)],
             expression: expression.rendered.gains,
@@ -416,7 +417,7 @@ impl View<'_> {
                 frames,
                 levels: guard.as_deref().map_or(&[], |l| l),
             };
-            render_source(v, &pcm, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &pcm, segment, chain, states, context, self.kernel)
         } else {
             asset.touch(self.at + self.frames as u64);
             let head = asset.try_head();
@@ -425,7 +426,7 @@ impl View<'_> {
                 asset: asset.asset_id(),
                 head: head.as_deref().map_or(&[], |h| h),
             };
-            render_source(v, &source, segment, chain, states, context, self.kernel)
+            render_source::<false>(v, &source, segment, chain, states, context, self.kernel)
         };
         if prelude.is_some_and(|p| p.points.is_some()) {
             bank[0].modulation = [1.0; 2];
@@ -528,7 +529,7 @@ impl View<'_> {
         for (k, slot) in slots.iter_mut().enumerate().take(voices.len()) {
             let v = slot.as_mut().unwrap()[0].value.as_mut().unwrap();
             let len = batch.ends[2 * k];
-            lanes::scale(&mut block, k, &crate::dsp::levels(v, len), len);
+            lanes::scale(&mut block, k, &crate::dsp::levels(v, len, 0), len);
         }
         sampler_simd::dispatch(
             #[inline(always)]

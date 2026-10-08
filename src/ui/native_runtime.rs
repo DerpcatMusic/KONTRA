@@ -34,6 +34,7 @@ pub(super) struct Images {
 }
 impl Images {
     pub fn get(&self, name: &str) -> Option<Arc<Image>> {
+        if name.len()>4096 {return None;}
         let name = name.replace('\\', "/").to_lowercase();
         if name.split('/').any(|s| s == ".." || s.is_empty())
             || name.starts_with('/')
@@ -44,12 +45,14 @@ impl Images {
         let mut cache = self.cache.lock().ok()?;
         cache.tick = cache.tick.wrapping_add(1);
         let tick = cache.tick;
-        cache.touch.insert(name.clone(), tick);
         if let Some(image) = cache.loaded.get(&name) {
-            return image.clone();
+            let image=image.clone();
+            cache.touch.insert(name,tick);
+            return image;
         }
         if !cache.pending.contains(&name) && self.request.try_send(name.clone()).is_ok() {
-            cache.pending.insert(name);
+            cache.pending.insert(name.clone());
+            cache.touch.insert(name,tick);
         }
         None
     }
@@ -88,6 +91,10 @@ impl Package {
         })
     }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
+        Self::load_cancel(path,||false)
+    }
+    pub fn load_cancel(path: &Path, canceled: impl Fn()->bool) -> anyhow::Result<Self> {
+        anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
         let mut source = Source::of(path);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
@@ -95,6 +102,7 @@ impl Package {
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
+            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             let relative = name
                 .strip_prefix("resources/native_ui/")
                 .or_else(|| name.strip_prefix("native_ui/"))
@@ -108,8 +116,10 @@ impl Package {
                 continue;
             }
             let bytes = source
-                .read(&name)
+                .read_result(&name)
+                .map_err(|e| anyhow::anyhow!("NativeUI resource {}", super::pictures::resource_category(e)))?
                 .ok_or_else(|| anyhow::anyhow!("NativeUI member unreadable"))?;
+            anyhow::ensure!(!canceled(),"NativeUI preparation canceled");
             total += bytes.len();
             anyhow::ensure!(
                 total <= 16 << 20,
@@ -289,6 +299,14 @@ struct Parameter {
     boolean: bool,
     bridge: Arc<Mutex<Bridge>>,
 }
+#[cfg(test)]
+fn trace_parameter(lua:&Lua, parameter:&Parameter, access:&str) -> mlua::Result<()> {
+    if let Ok(trace)=lua.globals().get::<Function>("__audit_parameter") {
+        trace.call::<()>((parameter.identifier.clone(),parameter.binding as i64,
+            lua.globals().get::<String>("__audit_path").unwrap_or_default(),access))?;
+    }
+    Ok(())
+}
 fn bounds(widget: &ir::Widget) -> ir::Range {
     match widget.kind {
         ir::Kind::Knob { range, .. }
@@ -320,10 +338,7 @@ impl UserData for Parameter {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("value", |lua, this, index: Option<usize>| {
             #[cfg(test)]
-            if let Ok(trace) = lua.globals().get::<Function>("__audit_parameter") {
-                trace.call::<()>((this.identifier.clone(), this.binding as i64,
-                    lua.globals().get::<String>("__audit_path").unwrap_or_default()))?;
-            }
+            trace_parameter(lua,this,"value")?;
             let mut bridge = this.bridge.lock().unwrap();
             let Some(widget) = bridge.controls.get(this.binding) else {
                 if bridge.unavailable.len() < 128 {
@@ -363,7 +378,9 @@ impl UserData for Parameter {
         });
         methods.add_method(
             "set_value",
-            |_, this, (v, index): (LuaValue, Option<usize>)| {
+            |_lua, this, (v, index): (LuaValue, Option<usize>)| {
+                #[cfg(test)]
+                trace_parameter(_lua,this,"write")?;
                 let mut bridge = this.bridge.lock().unwrap();
                 let widget = bridge
                     .controls
@@ -431,6 +448,8 @@ impl UserData for Parameter {
         methods.add_method(
             "ksp_control_property",
             |lua, this, (property, index): (i32, Option<usize>)| {
+                #[cfg(test)]
+                trace_parameter(lua,this,"property")?;
                 let bridge = this.bridge.lock().unwrap();
                 let Some(w) = bridge.controls.get(this.binding) else {
                     return Ok(LuaValue::Nil);
@@ -677,22 +696,19 @@ impl Session {
         let mut bridge = self.bridge.lock().unwrap();
         for at in 0..bridge.controls.len() {
             let (source, index) = bridge.locations[at];
-            if source == face.source
-                && let Some(w) = face.widgets.get(index)
+            if source != face.source {continue;}
+            if let Some(w) = face.widgets.get(index)
                 && &bridge.controls[at] != w
             {
                 bridge.controls[at].clone_from(w);
             }
-            if source == face.source {
-                if let Some(value) = typed.get(&ir::WidgetRef(index)) {
-                    bridge.controls[at].value = Some(value.clone());
-                }
-                if let Some(level) = meters.get(&ir::WidgetRef(index)) {
-                    bridge.meters.insert(at, *level);
-                }
+            if let Some(level) = meters.get(&ir::WidgetRef(index)) {
+                bridge.meters.insert(at, *level);
             }
             let w = &mut bridge.controls[at];
-            if let ir::Binding::Control(c) = w.binding
+            if let Some(value) = typed.get(&ir::WidgetRef(index)) {
+                w.value = Some(value.clone());
+            } else if let ir::Binding::Control(c) = w.binding
                 && let Some(&n) = values.get(&c)
             {
                 w.value = Some(if matches!(w.value, Some(ir::Value::Real(_))) {
@@ -783,18 +799,25 @@ mod tests {
     use super::*;
     #[test]
     fn legacy_component_reads_the_published_ir_and_produces_a_typed_edit() {
+        assert_eq!(Package::load_cancel(Path::new("/unopened/synthetic.nki"),||true)
+            .err().unwrap().to_string(),"NativeUI preparation canceled");
         let (request, _jobs) = std::sync::mpsc::sync_channel(1);
         let package=Arc::new(Package{members:BTreeMap::from([("main.nui".into(),Arc::from(br#"local ui=require("native_ui")
             local kontakt=require("kontakt")
             local p=kontakt.connect_parameter("gain")
+            local meter=kontakt.connect_level_meter("gain")
             return function()
                 p:set_value(0.75)
-                return @ui.ZStack { @ui.Text {text="Authored",}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
+                return @ui.ZStack { @ui.Text {text=tostring(meter:level_value()),}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
             end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
         let font=Font::new(super::super::theme::NOTO_SANS).unwrap();
         let (names,weight)=font_metadata(&font);
         assert!(names.iter().any(|n|n=="Noto Sans"));
         let mut package=package;
+        assert!(package.images.get("queued.png").is_none());
+        for n in 0..5000 {assert!(package.images.get(&format!("rejected-{n}.png")).is_none());}
+        assert_eq!(package.images.cache.lock().unwrap().touch.len(),1,
+            "a full worker queue must not retain rejected image-name metadata");
         let supplied=Arc::get_mut(&mut package).unwrap();
         supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
         supplied.font_names=names.into_iter().map(|n|(n,weight,font.clone())).collect();
@@ -832,7 +855,7 @@ mod tests {
         };
         session.update_view(
             &source,
-            &Default::default(),
+            &HashMap::from([(ir::ControlId(42),75.)]),
             &HashMap::from([(
                 ir::WidgetRef(0),
                 ir::Value::Text("callback readback".into()),
@@ -843,14 +866,18 @@ mod tests {
             session.bridge.lock().unwrap().controls[1].value,
             Some(ir::Value::Text("callback readback".into()))
         );
+        assert_eq!(session.bridge.lock().unwrap().controls[0].value,Some(ir::Value::Integer(20)),
+            "another source is not overwritten by this source's scalar fallback");
         session.update_view(
             &source,
             &Default::default(),
             &HashMap::from([(ir::WidgetRef(0), ir::Value::Integer(20))]),
-            &Default::default(),
+            &HashMap::from([(ir::WidgetRef(0),0.625)]),
         );
         let graph = session.render().unwrap();
         assert_eq!(graph.get::<String>("kind").unwrap(), "ZStack");
+        let meter:Table=graph.get::<Table>("children").unwrap().get(1).unwrap();
+        assert_eq!(meter.get::<Table>("props").unwrap().get::<String>("text").unwrap(),"0.625");
         let edits = session.take_edits();
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].value, ir::Value::Integer(75));
