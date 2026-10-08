@@ -823,7 +823,9 @@ fn prepare_inner(
     let rate = options.rate;
     host_volume(&mut instrument);
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
+    let ui_span=crate::audit::Span::new("script_ui_prepare");
     let (compiled, interfaces, resources) = compile_ui_initialized(&mut instrument, options, initialized);
+    drop(ui_span);
     // ponytail: lowering hands the closure every behavior but binding uses
     // only the compiled ones; failed scripts simply have no module.
     if compiled.is_empty() && !instrument.behaviors.is_empty() {
@@ -879,6 +881,7 @@ fn prepare_inner(
         }
     }
     let scripts = compiled.iter().map(sampler_ksp::Script::view).collect();
+    let lower_span=crate::audit::Span::new("core_lower_bindings");
     let lowered =
         sampler_core::lower::lower_with(&instrument, rate, pcm, &lower_options, |_, plan| {
             sampler_ksp::bind_modules(compiled, plan).and_then(|plan| plan.with_automation_bindings(automation)).map_err(|e| LowerError::Behavior {
@@ -886,6 +889,7 @@ fn prepare_inner(
                 message: e.to_string(),
             })
         });
+    drop(lower_span);
     let dynamics = power_on(&instrument, options.dynamics_start);
     Ok(Loaded {
         plan: powered(lowered.map_err(LoadError::Lower)?, &instrument, &dynamics),
