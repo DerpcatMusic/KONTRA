@@ -336,6 +336,8 @@ pub trait Core: Send {
     fn key_held(&self, channel: u8, key: u8) -> bool;
     /// Render `frames` (≤ [`MAX_BLOCK`]) onto the output pairs.
     fn render(&mut self, frames: usize) -> Rendered<'_>;
+    /// Optional shared-engine trace of the host master gain, after rack mixing.
+    fn trace_master(&mut self, _gains: &[f32]) {}
     /// Whether anything still owns exact host note `note`. A note-on that
     /// created no owner ends at once.
     fn owns(&self, note: event::HostNote) -> bool;
