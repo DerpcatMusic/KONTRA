@@ -2858,6 +2858,169 @@
       ],
       "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
       "accepted": true
+    },
+    {
+      "id": "native-script-host-recall",
+      "summary": "Restore live Original script values in instrument callback context",
+      "source_commits": [
+        "65e345e3c17b3971387dd8a4ec6cdfcb6cf97f90",
+        "629c55af2b8ab3a6e3191ffb73e6ef794c28dae2"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "picture-budget-terminal-admission",
+      "summary": "Stop endlessly requeueing rejected picture wanted sets",
+      "source_commits": [
+        "648c6def9cac2b0a971bdb8ad9deca42a16f5cc2"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "native-work-budget-scheduler-independence",
+      "summary": "Bound Native evaluation by deterministic work rather than scheduler time",
+      "source_commits": [
+        "ec4d4c3fb40dfb07f51fcca315ebb040ca5ce241"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "asset-observation-incomplete",
+      "summary": "Keep asset watchdog expiry as incomplete paint observation",
+      "source_commits": [
+        "44cbe179b5088d886faf04841c03ec2204f1adc7"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "bank-program-volume-resolution",
+      "summary": "Resolve authored bank-volume sample references",
+      "source_commits": [
+        "3302d8025a3bd34943f415ecc824d75c7ea6f6f3"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "library-art-resource-resolution",
+      "summary": "Find and display complete nested library artwork",
+      "source_commits": [
+        "52f032ef1edf3ec1de2d272e904d0aff0c11f9f7"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "minimum-window-settings-layout",
+      "summary": "Fit Settings inside the minimum editor window",
+      "source_commits": [
+        "3604f17c9e0a508959ca08b1e16b65b5a196aba7"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "versioned-v2-settings-schema",
+      "summary": "Use the current versioned Settings schema without legacy ambiguity",
+      "source_commits": [
+        "8f49c1eee9ce32e98a6aa5bee049925cfb5e1373"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "performance-strip-window-fit",
+      "summary": "Keep performance readouts within rack width",
+      "source_commits": [
+        "42aa785c25e0e377dee81f76157e9b127e403691"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "inside-toolbar-control-width",
+      "summary": "Align panel insets and preserve keyswitch control widths",
+      "source_commits": [
+        "bf030e239887229629528903e8f3471c2b4d2978"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "upper-mpe-keyboard-manager",
+      "summary": "Route upper-zone on-screen keyboard expression through its loaded MPE manager",
+      "source_commits": [
+        "347c7a5d5a33d31d906537362e5ea5413445c9b1"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "closed-editor-probe-retirement",
+      "summary": "Stop Sound telemetry when its editor closes",
+      "source_commits": [
+        "b2233da818066980c208cd7362cdf284f7a98c63"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "native-normalized-filter-cutoff",
+      "summary": "Retain authored Ladder and Daft cutoff modulation",
+      "source_commits": [
+        "ec4a79bb066fada05af8b4ddfcda1d5907a28c9e"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "zero-weight-authored-multi-lfo",
+      "summary": "Preserve authored bipolar Zero Multi LFO sources",
+      "source_commits": [
+        "1e14ef337c584bfb1e30134e0b349a008afb731f"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "native-normalized-filter-q-gain",
+      "summary": "Route authored normalized filter Q and Gain",
+      "source_commits": [
+        "42062adcc9b0aa87ab3858626a85a10421904d42"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "settled-modulation-result-reuse",
+      "summary": "Reuse unchanged time-independent modulation results while advancing addressed ramps",
+      "source_commits": [
+        "59a86c89675e898c5e53dbc8b8764320f2d7d2fe"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "process-watchdog-incomplete",
+      "summary": "Preserve partial scanner work on operational timeout",
+      "source_commits": [
+        "459221488e2fb584289c3a910c5d6aa0032d3cd1"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
+    },
+    {
+      "id": "bounded-corpus-release-drain",
+      "summary": "Wait for actual voice completion up to five seconds after release",
+      "source_commits": [
+        "c762636aa5a2c2feffe186e9e92d5dad91692722"
+      ],
+      "validation": "Owner targeted failing-first checks green; combined serial workspace and quick corpus validation recorded with this release. Timing/native fidelity limits remain disclosed.",
+      "accepted": true
     }
   ]
 }
