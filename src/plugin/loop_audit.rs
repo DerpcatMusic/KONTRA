@@ -205,3 +205,38 @@ fn host_parameter_events_and_epoch_channel_run_the_saved_widget_callback_without
     assert_eq!(ingress.client.reply().unwrap().result, Err(sampler_core::Error::RevisionConflict));
     assert_eq!(dsp.core.control_value(0, k), Some(60.));
 }
+
+#[test]
+fn widget_meter_reads_native_bus_channel_without_heap_and_rejects_old_epoch() {
+    use sampler_core::*;
+    let pcm = Pcm::new(48000, vec![[0.2, 0.6]; 512].into_boxed_slice()).unwrap();
+    let region = Region { sample:0,key_low:60,key_high:60,root_key:Some(60),velocity_low:0.,velocity_high:1.,gain:1.,
+        envelope:Envelope::default(),playback:Playback::default() };
+    let plan = Prepared::new(48000,vec![pcm],vec![region],128).unwrap()
+        .with_buses(vec![sampler_core::Bus {processors:vec![],sends:vec![BusSend {bus:None,gain:1.}],tail_frames:0}],vec![Some(0)]).unwrap()
+        .with_bus_addresses(vec![(7,0)]);
+    let limits = Limits::for_plan(&plan,4,1);
+    let mut tree = MixTree::instrument("meter");
+    tree.nodes.push(crate::sound::tree::MixNode {name:"bus".into(),kind:crate::sound::tree::NodeKind::Group,parent:Some(0),inserts:vec![],sends:vec![]});
+    let part = CorePart::new(Runtime::new(plan,limits).unwrap(),tree).unwrap();
+    let mut core = V2Core::with_parts(1,48000.);
+    core.install(0,Some(Box::new(part)));
+    core.event(0,CoreEvent::Ump([0x2090_3c7f,0]));core.render(128);
+    let atoms = PartShared::default();atoms.generation.store(1,Ordering::Release);
+    let mut face = sampler_ui_ir::Interface::default();
+    for channel in 0..2 {
+        let mut widget = sampler_ui_ir::Widget::new("meter",sampler_ui_ir::PageRef(0),Default::default(),sampler_ui_ir::Kind::LevelMeter {orientation:sampler_ui_ir::Orientation::Vertical});
+        widget.meter=Some(sampler_ui_ir::MeterAddress {group:999,slot:-1,channel,bus:Some(7)});
+        face.widgets.push(widget);
+    }
+    assert!(atoms.widget_meters(&face,0).is_empty());
+    atoms.widget_meters(&face,1);
+    assert_eq!(tests::allocations(|| atoms.refresh_widget_meters(1,|address|core.widget_meter(0,address))),0);
+    let values=atoms.widget_meters(&face,1);
+    assert!(values[&sampler_ui_ir::WidgetRef(0)]>0.);
+    assert!(values[&sampler_ui_ir::WidgetRef(1)]>values[&sampler_ui_ir::WidgetRef(0)]);
+    let revision=atoms.scalar_revision.load(Ordering::Acquire);assert!(revision>0);
+    atoms.refresh_widget_meters(0, |_|Some(0.));
+    assert_eq!(atoms.widget_meters(&face,1),values);
+    assert_eq!(atoms.scalar_revision.load(Ordering::Acquire),revision);
+}
