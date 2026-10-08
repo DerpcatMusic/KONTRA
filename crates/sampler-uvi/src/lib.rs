@@ -194,6 +194,22 @@ fn translate_bank(text: &str) -> Result<(ir::Instrument, Vec<String>), Translate
     translate_with(text, Source::Bank)
 }
 
+#[cfg(all(test, feature = "library-access"))]
+#[test]
+fn bank_volume_sample_reaches_the_bank_resource_resolver() {
+    let xml = r#"<Program><Layers><Layer><Keygroups><Keygroup><Oscillators>
+        <SamplePlayer SamplePath="$Authored.ufs/Samples/note.wav"/>
+        </Oscillators></Keygroup></Keygroups></Layer></Layers></Program>"#;
+    let (bank, locations) = translate_bank(xml).unwrap();
+    assert_eq!(bank.zones.len(), 1, "bank authority resolves its own volume");
+    assert_eq!(locations, ["$Authored.ufs/Samples/note.wav"]);
+    let disk = translate(xml, Path::new(".")).unwrap();
+    assert!(
+        disk.instrument.zones.is_empty(),
+        "a loose file has no bank authority"
+    );
+}
+
 fn translate_with(text: &str, source: Source) -> Result<(ir::Instrument, Vec<String>), Translate> {
     translate_full(text, source).map(|(instrument, locations, ..)| (instrument, locations))
 }
@@ -890,7 +906,9 @@ impl Translation {
             Some("ogg") => ir::Encoding::Ogg,
             _ => ir::Encoding::Unknown,
         };
-        if relative.starts_with('$') || relative.contains(".ufs/") {
+        if matches!(&self.source, Source::Disk(_))
+            && (relative.starts_with('$') || relative.contains(".ufs/"))
+        {
             self.unsupported(at, "sample outside the program's bank", sample);
             return None;
         }
