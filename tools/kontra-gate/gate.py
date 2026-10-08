@@ -142,7 +142,7 @@ def summarize(run, complete=False):
                 if metric == 'signal_graph_trace':
                     a, b = (traces[v].get(path, 'unknown') for v in ['v1', 'v2'])
                     state = 'PASS' if b == 'complete' else 'UNKNOWN'
-                if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb']:
+                if manifest.get('signal_trace') and metric in ['load_ms','first_audio_ms','peak_rss_mb'] and state != 'CONTENDED':
                     state='UNKNOWN'  # trace specialization changes performance; diagnostic only
                 if metric in ['load_ms', 'first_audio_ms', 'peak_rss_mb', 'cpu_p50_us', 'cpu_p99_us']:
                     axes['beats-v1-every-metric'].append(state)
