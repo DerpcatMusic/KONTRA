@@ -1990,6 +1990,13 @@ pub(crate) mod tests {
         CALLS.with(Cell::get) - before
     }
 
+    pub(crate) fn peak_allocated(f: impl FnOnce()) -> usize {
+        LIVE.with(|n| n.set(0));
+        PEAK.with(|n| n.set(0));
+        allocations(f);
+        PEAK.with(Cell::get).max(0) as usize
+    }
+
     #[test]
     fn plugin_contract() {
         assert!(
