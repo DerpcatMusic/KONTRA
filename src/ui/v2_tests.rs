@@ -1827,3 +1827,46 @@ fn v1_editor_zero_offset_keeps_exact_native_graph_and_reset() {
     assert!(reset.playing.envelope==original.base.envelope);
 }
 
+#[test]
+fn native_ladder_editor_uses_hertz_for_readout_typing_and_graph() {
+    use sampler_core::{ControlId, EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    use sampler_ir as I;
+    use crate::sound::edits::{Edits, Param};
+    let owner = I::SlotAddress { group:0, slot:3, generic:-1 };
+    let mut instrument = I::Instrument::default();
+    instrument.groups.push(I::Group { chain:Some(I::ChainRef(0)), ..Default::default() });
+    instrument.chains.push(I::Chain { scope:I::Scope::Group(I::GroupRef(0)), pre_amplitude:vec![I::Processor::LadderLP4(I::LadderLP4 {
+        address:Some(owner), gain:0., cutoff:0.5, resonance:0.2, record_version:0x92,
+    })], post_amplitude:vec![] });
+    let bindings = ["ENGINE_PAR_CUTOFF", "ENGINE_PAR_RESONANCE"].map(|name| EngineParameterBinding {
+        address:EngineParameterAddress { parameter:sampler_core::engine_parameter_id(name).unwrap(), group:owner.group, slot:owner.slot, generic:owner.generic },
+        control:ControlId(if name == "ENGINE_PAR_CUTOFF" { 10 } else { 11 }),
+        law:EngineParameterLaw::Linear { low:0., high:1. },
+    });
+    let model = super::editor_model::Model::new(&instrument,0,&Edits::default(),&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    let param = Param::Cutoff(3);
+    let expected = 2f32.powf((1481.8816 + 575. * 0.5) / 60. - 20.);
+    assert!((model.display(param,0.5) - expected).abs() < 0.2,"native normalized ladder cutoff must display in hertz");
+    let typed = model.typed(param,"1 kHz").unwrap();
+    assert!((model.display(param,typed) - 1000.).abs() < 0.5,"typing hertz must invert the native cutoff law");
+    let handle = super::viz::filter_handles(&model.playing).remove(0);
+    assert!((0.0..=1.0).contains(&handle.at[0]),"ladder handle belongs on the audible frequency axis");
+    assert!(model.playing.magnitude(100.) > model.playing.magnitude(10000.) * 10.,"the graph must include the native LP4 response");
+    let expected_scale = 1000f32.log2() / (575. / 60.);
+    assert!((handle.x.unwrap().1 - expected_scale).abs() < 0.001,"graph drag follows native frequency octaves");
+    let mut edits = Edits::default();
+    edits.set(crate::sound::edits::Override { group:None, param, offset:0.2 });
+    let changed = super::editor_model::Model::new(&instrument,0,&edits,&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    assert_eq!(changed.base.magnitude(1000.),model.base.magnitude(1000.));
+    assert!(changed.playing.magnitude(1000.) > model.playing.magnitude(1000.) * 2.,"graph follows the native edit layer");
+    let mut with_gain = bindings.to_vec();
+    with_gain.push(EngineParameterBinding {
+        address:EngineParameterAddress { parameter:sampler_core::engine_parameter_id("ENGINE_PAR_GAIN").unwrap(), group:0, slot:3, generic:-1 },
+        control:ControlId(12), law:EngineParameterLaw::SignedNormalized,
+    });
+    let scripted = super::editor_model::Model::new(&instrument,0,&Edits::default(),&with_gain,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2),(ir::ControlId(12),0.5)],48000.);
+    assert!(scripted.base.magnitude(100.) > model.base.magnitude(100.) * 1.8,"graph includes the current native gain lane");
+}
