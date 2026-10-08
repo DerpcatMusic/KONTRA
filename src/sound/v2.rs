@@ -516,6 +516,16 @@ impl V2Core {
     }
 }
 
+fn record_stream_error(problems: &mut RuntimeProblems, error: sampler_core::StreamError) {
+    use sampler_core::StreamError;
+    match error {
+        StreamError::Capacity => problems.stream_capacity += 1,
+        StreamError::Disconnected => problems.stream_disconnected += 1,
+        StreamError::DecodeFailed(_) => problems.stream_failed += 1,
+        _ => problems.stream_errors += 1,
+    }
+}
+
 impl Core for V2Core {
     /// `None` empties the part.
     type Prepared = Option<Box<Part>>;
@@ -552,7 +562,9 @@ impl Core for V2Core {
         Retired(std::mem::replace(slot, prepared))
     }
 
-    fn begin_block(&mut self, _block: &BlockInfo) {}
+    fn begin_block(&mut self, block: &BlockInfo) {
+        for part in self.parts.iter_mut().flatten() { part.runtime.set_offline(block.offline); }
+    }
 
     fn event(&mut self, port: u8, event: Event) {
         let channel = event.channel();
@@ -609,11 +621,17 @@ impl Core for V2Core {
             }
             if let Some(horizon) = part.horizon {
                 // Pending pages play silent and count as underruns.
-                let _ = part.runtime.service_streaming(horizon);
+                if let Err(error) = part.runtime.service_streaming(horizon) {
+                    record_stream_error(&mut part.problems, error);
+                }
             }
             let out = &mut self.scratch[..n];
             let mut outs: [&mut [Frame]; BUSES] = self.direct.each_mut().map(|d| &mut d[..n]);
             if part.runtime.render_split(out, &mut outs).is_err() {
+                if let Some(error) = part.runtime.take_stream_fault() {
+                    part.problems.offline_failures += 1;
+                    record_stream_error(&mut part.problems, error);
+                }
                 continue;
             }
             if let Some((program, error)) = part.runtime.take_fault() {
@@ -1358,6 +1376,52 @@ mod tests {
     fn load(path: &Path) -> Option<Box<Part>> {
         let request = LoadRequest { path: path.into(), sample_rate: 48000.0, ..Default::default() };
         V2Loader.prepare(&request, &mut |_| {}, &|| false).unwrap().part
+    }
+
+    #[test]
+    fn offline_sound_seam_waits_for_delayed_storage_without_changing_pcm() {
+        fn player(pcm: Pcm, cache: Option<StreamCache>) -> V2Core {
+            let plan = Prepared::new(48000, vec![pcm], vec![Region {
+                sample: 0, key_low: 0, key_high: 127, root_key: None,
+                velocity_low: 0., velocity_high: 1., gain: 1.,
+                envelope: Envelope::default(), playback: Playback::default(),
+            }], 128).unwrap();
+            let limits = Limits::for_plan(&plan, 128, 8);
+            let mut runtime = Runtime::new(plan, limits).unwrap();
+            runtime.set_cold_starts(true);
+            let streamed = cache.is_some();
+            if let Some(cache) = cache { runtime = runtime.with_stream_cache(cache); }
+            let mut part = Part::new(runtime, MixTree::instrument("test")).unwrap();
+            part.horizon = streamed.then_some(128);
+            let mut core = V2Core::with_parts(1, 48000.);
+            core.install(0, Some(Box::new(part)));
+            core.begin_block(&BlockInfo { frames: 128, offline: true, ..Default::default() });
+            core.event(0, on(HostNote { port: 0, channel: 0, key: 60, id: 1, clap: true }));
+            core
+        }
+        let resident = Pcm::new(48000, vec![[0.25; 2]; PAGE_FRAMES].into_boxed_slice()).unwrap();
+        let streamed = Pcm::headed(48000, PAGE_FRAMES, &[[0.25; 2]; 32]).unwrap();
+        let (cache, mut worker) = StreamCache::new(2).unwrap();
+        let ready = std::sync::Arc::new(AtomicBool::new(false));
+        let done = ready.clone();
+        let decoder = std::thread::spawn(move || {
+            let mut job = loop {
+                if let Some(job) = worker.next_job() { break job; }
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            };
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            job.frames_mut().fill([0.25; 2]);
+            worker.complete(job, Ok(())).unwrap();
+            while !done.load(Ordering::Relaxed) { std::thread::sleep(std::time::Duration::from_micros(100)); }
+        });
+        let mut expected = player(resident, None);
+        let mut bounced = player(streamed, Some(cache));
+        let expected = *expected.render(128).buses;
+        let got = *bounced.render(128).buses;
+        ready.store(true, Ordering::Relaxed);
+        decoder.join().unwrap();
+        assert!(got == expected, "offline must wait, preserving source phase and envelope");
+        assert_eq!(bounced.problems(0).underruns, 0);
     }
 
     #[test]
