@@ -402,6 +402,7 @@ struct PreparedRegion {
     chain: Option<usize>,
     bus: Option<usize>,
     envelope: Envelope,
+    fallback_envelope: bool,
     cursor: super::source::Cursor,
     root_key: Option<u8>,
     transpose_semitones: f64,
@@ -589,6 +590,7 @@ impl Prepared {
                 chain: None,
                 bus: None,
                 envelope: r.envelope,
+                fallback_envelope: false,
                 cursor,
                 root_key: r.root_key,
                 transpose_semitones: r.playback.transpose_semitones,
@@ -1299,6 +1301,15 @@ impl Prepared {
 }
 
 impl Prepared {
+    /// Host fallback times apply only to regions without authored AHDSR or FLEX.
+    pub fn with_fallback_envelopes(mut self, regions: Vec<bool>) -> Result<Self, Error> {
+        if regions.len() != self.regions.len() { return Err(Error::InvalidInput); }
+        for (region, fallback) in self.regions.iter_mut().zip(regions) {
+            region.fallback_envelope = fallback;
+        }
+        Ok(self)
+    }
+
     /// Bind shared immutable processor chains in authored region order. Runtime
     /// state remains per voice, per channel and per retained generation.
     pub fn with_voice_chains(
