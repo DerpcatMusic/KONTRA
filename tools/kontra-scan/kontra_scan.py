@@ -56,6 +56,7 @@ def signature(item, revision):
     identity += ['native-fidelity-v1',os.environ.get('KONTRA_SCAN_FAMILY_REPEATS','0')]
     identity += ['declared-keys-then-zone-v1', hashlib.sha256(plan.read_bytes()).hexdigest() if plan.exists() else 'unplanned']
     if os.environ.get('KONTRA_GATE_ACTIVITY') == '1': identity += ['gate-contention-v1']
+    if 'KONTRA_UVI_AUDIT_SEED' in os.environ: identity += ['uvi-audit-owner-clock-v1', os.environ['KONTRA_UVI_AUDIT_SEED']]
     return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
 
 
@@ -355,6 +356,7 @@ def probe(engine, item, work, timeout, shots):
     else: r['audition_status']='not-auditioned'
     # stdout is metrics only; keep one canonical cached record, not a second copy.
     (work / 'stdout.json').unlink(missing_ok=True)
+    if 'KONTRA_UVI_AUDIT_SEED' in env: r['audit_seed']=int(env['KONTRA_UVI_AUDIT_SEED'])
     (work / 'progress.json').unlink(missing_ok=True)
     if capture and capture.activity: r['contention'] = capture.activity.result['status']
     return r
@@ -369,10 +371,14 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--budget-seconds', type=float, default=235)
     parser.add_argument('--timeout-seconds', type=float, default=90)
+    parser.add_argument('--audit-seed', type=int, default=os.environ.get('KONTRA_UVI_AUDIT_SEED'), help='audit-only UVI Lua/engine seed and owner-clock barrier (scan builds)')
     parser.add_argument('--shots', action='store_true', help='retain small screenshots of OUR Original renderer')
     args = parser.parse_args()
     if args.start < 0 or args.count < 0 or not 0 < args.budget_seconds <= 240:
         parser.error('start/count must be nonnegative; shard budget must be in (0,240]')
+    if args.audit_seed is not None:
+        if not 0 <= args.audit_seed <= 0xffffffff: parser.error('audit seed must fit u32')
+        os.environ['KONTRA_UVI_AUDIT_SEED']=str(args.audit_seed)
     engine = Path(args.engine).resolve()
     revision = hashlib.sha256(engine.read_bytes()).hexdigest()
     args.out.mkdir(parents=True, exist_ok=True)

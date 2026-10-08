@@ -175,3 +175,7 @@ lto = false
 [[example]]
 name = "uvi_ui_health"
 required-features = ["shots"]
+
+[[example]]
+name = "uvi_audit_pcm"
+required-features = ["shots"]

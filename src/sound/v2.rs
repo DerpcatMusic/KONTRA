@@ -1779,7 +1779,10 @@ fn uvi(request: &LoadRequest) -> Result<Loaded<Plan>, CoreError> {
     drop(span);
     let span = sampler_kontakt::audit::Span::new("uvi_lua_init");
     let rate = request.sample_rate as u32;
-    let attached = t.attach_script_with_ui_state(rate, sampler_uvi::script::Config::realtime(), request.uvi_state.clone()).map_err(|e| load(&e))?;
+    let config = sampler_uvi::script::Config::realtime();
+    #[cfg(feature = "shots")]
+    let config = sampler_uvi::script::Config { audit_seed: sampler_uvi::script::audit_seed().map_err(|e| load(&e))?, ..config };
+    let attached = t.attach_script_with_ui_state(rate, config, request.uvi_state.clone()).map_err(|e| load(&e))?;
     drop(span);
     let mut report = LoadReport::of(&t.instrument, &request.path, t.locations.len());
     if let Some(a) = &attached { report.uvi_faults = a.driver.ui().fault_counts(); }
@@ -1944,6 +1947,11 @@ impl V2Loader {
             prepared, limits, 2, 1, limits.notes.min(INITIAL_NOTE_PARAMS),
         ).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
+        #[cfg(feature = "shots")]
+        if let Some(seed) = sampler_uvi::script::audit_seed().map_err(CoreError::Invalid)? {
+            runtime.seed_random(u64::from(seed));
+            runtime.reset_native_cycles(u64::from(seed));
+        }
         // A source whose first window is not resident starts silent and fades in
         // rather than being refused NotReady.
         runtime.set_cold_starts(true);
