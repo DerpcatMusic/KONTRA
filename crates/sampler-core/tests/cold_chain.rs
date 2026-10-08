@@ -60,7 +60,7 @@ fn player(envelope: Envelope, voices: usize) -> (Runtime, StreamWorker) {
     )
     .unwrap();
     let limits = Limits::for_plan(&plan, voices, voices);
-    let (cache, worker) = StreamCache::new(2).unwrap();
+    let (cache, worker) = StreamCache::new(voices.max(2)).unwrap();
     let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
     rt.set_cold_starts(true);
     for id in 0..voices {
