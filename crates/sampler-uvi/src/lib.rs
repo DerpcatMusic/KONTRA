@@ -19,6 +19,8 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+#[cfg(feature = "scan")]
+mod coverage;
 mod engine_parameters;
 pub use inserts::InsertNode;
 mod modulation;
@@ -237,6 +239,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
+        #[cfg(feature="scan")]
+        dropped_connections: Default::default(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
@@ -265,6 +269,8 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         }
     }
     engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = Some(coverage::slots(&out, program)); }
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -358,6 +364,8 @@ struct Translation {
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,

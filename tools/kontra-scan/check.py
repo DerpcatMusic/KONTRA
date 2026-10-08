@@ -97,3 +97,7 @@ unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'fo
 assert unrequested['ui']=='original-ok'
 
 print('shared scanner checks passed')
+# A complete zero-slot inventory is zero, absent/partial evidence is unknown.
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':True,'counts':{'fx_slots_dropped':{'enabled':2,'bypassed':3},'filter_slots_dropped':{'enabled':0,'bypassed':1},'mod_slots_dropped':{'enabled':4,'bypassed':0}}}}]})['fx_slots_dropped']=='{"enabled":2,"bypassed":3}'
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':False}}]})['mod_slots_dropped']=='unknown'
+assert scanner.extra_columns({'programs':[]})['filter_slots_dropped']=='unknown'
