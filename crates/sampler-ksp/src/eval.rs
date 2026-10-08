@@ -27,7 +27,7 @@ pub struct Environment {
     pub engine_lookups: Vec<sampler_core::EngineLookup>,
     /// The Creator Tools performance view (`.nckp`, see [`crate::nckp`]) the
     /// script loads with `load_performance_view`. Names the script uses but
-    /// it lacks are assumed (see `PerformanceControl::assumed`), with a warning.
+    /// it lacks stay unbound script handles, with a diagnostic.
     pub performance_view: model::PerformanceView,
 }
 
@@ -208,12 +208,14 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         }
     }
     e.callback_type = b::cb::PERSISTENCE_CHANGED;
-    if let Some(cb) = hir.callbacks.iter().find(|c| c.kind == CallbackKind::PersistenceChanged) {
-        #[cfg(feature="scan")]
-        crate::scan::stage("persistence_changed");
-        let result = e.block(&cb.body);
-        #[cfg(feature="scan")]
-        crate::scan::phase("persistence_changed", result.as_ref().err());
+    if let Some(cb) = hir
+        .callbacks
+        .iter()
+        .find(|c| c.kind == CallbackKind::PersistenceChanged)
+    {
+        #[cfg(feature="scan")] crate::scan::stage("persistence_changed");
+        let result=e.block(&cb.body);
+        #[cfg(feature="scan")] crate::scan::phase("persistence_changed",result.as_ref().err());
         e.st.model.persistence_completion = match result {
             Ok(_) => model::PersistenceCompletion::Completed,
             Err(f) => {
@@ -226,7 +228,6 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
                 model::PersistenceCompletion::Failed {category, offset:f.span.start, builtin:f.builtin}
             }
         };
-
     }
     Ok(e.st)
 }
@@ -759,9 +760,10 @@ impl Eval<'_> {
         for i in 0..args.len() {
             let v = match &args[i] {
                 Arg::Var(v, _) => V::S(self.hir.vars[v.0 as usize].name.to_string()),
-                // Engine parameters are recorded by name: hashed ids are unreadable.
-                _ if i == 0 && builtin == Builtin::SetEnginePar => {
-                    let id = self.int(args, 0)?;
+                // Record symbolic parameter keys by name; opaque ids cannot cross the IR.
+                _ if (i == 0 && builtin == Builtin::SetEnginePar)
+                    || (i == 1 && builtin == Builtin::SetUiWfProperty) => {
+                    let id = self.int(args, i)?;
                     symbol_name(self.hir, id).map_or(V::I(id), V::S)
                 }
                 _ => self.arg(args, i)?,
@@ -1137,7 +1139,7 @@ impl Eval<'_> {
                     fonts.push(name);
                     fonts.len() - 1
                 });
-                V::I(index as i32)
+                V::I(26 + index as i32)
             }
             SetKeyColor | SetKeyType | SetKeyPressed | SetKeyName => {
                 let key = self.int(args, 0)?;
@@ -1446,6 +1448,7 @@ pub fn lookup_index(name: &str) -> i32 {
 
 fn placeholder() -> model::Widget {
     model::Widget {
+        unresolved: false,
         name: String::new(),
         kind: WidgetKind::Label,
         ui_id: 0,
