@@ -2,7 +2,7 @@
 
 Handoff for `tools/kontra-scan@54f7ea57` extension. Source references below use v2 `7e82b152` or pinned v1 `0cb7a8a0`; measurement evidence is on `audit/ksp-20261008`. This specifies scanner instrumentation, not product fixes. All counters belong to the shared collector.
 
-Installed implementation: `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`; the shared README confirms these extensions. The current partial production witness is recorded in [ksp.md](ksp.md#extended-shared-scanner-partial-production-witness). Await completed shared coverage for corpus rates.
+Current installed implementation: `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`, superseding `9dcf05e5`; the shared README confirms these extensions. The current paired production witness is recorded in [ksp.md](ksp.md#current-shared-scanner-paired-phase-witness-e340c39a). Await completed shared coverage for corpus rates.
 
 ## Slot admission and ownership
 

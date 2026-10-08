@@ -298,7 +298,7 @@ The canonical v2 JSON also records ignored engine-display queries (441 ordinary 
 
 Evidence: `~/.cache/kontra-scan/results/v2/results.tsv` and its digest-keyed JSON cache; own shared-v1 output `~/.cache/kontakto-audit-ksp/shared-scanner/v1/{results.tsv,cache/}`; `shared-v1.log`. At inspection the canonical v2 TSV had **one row** and the full sweep was still in progress. Requested additions through the coordinator: active/cleanly compiled script slots, init completion, load-time fault records, and separate init/persistence callback outcomes. That initial scanner could not supply a fresh whole-corpus KSP compile/init rate; the extension below supersedes its field-availability limitation.
 
-### Extended shared scanner: partial production witness
+### Extended shared scanner: historical smoke witness (`9dcf05e5`)
 
 The installed extension is `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`. Verified installed SHA-256: v2 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`, v1 `a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`. Kontakt product baselines remain unchanged. The shared collector now records the requested raw slot partition, ownership/wire/runtime mapping, compile cleanliness, actual callback phases and safe fault categories, and raw/admitted saved sigils. The [accessor handoff](ksp-scanner-fields.md) explains why these measures differ from importer success.
 
@@ -321,6 +321,28 @@ The init/persistence counts exclude the three import-harvest attempts and the on
 The instantiated UI inventory contains 242 knobs, 20 menus, 6 tables, 2 sliders, 34 labels, 41 switches, 16 buttons, 6 level meters, 46 panels, 6 text edits and 15 value edits. These total 434 authored widgets across three views; they include hidden controls and differ from the 113 visible interactive population. The same witness observes six declared fonts with the font service unavailable. Its original main page has declared RGBA `[240,239,228,255]` covering 93.90% of rendered pixels; this is a measured authored cream background, not a blank-page defect classification.
 
 Evidence: shared `results/v2/cache/70c67b9c5e48dfa082f09f49941b681d89ff920179ae6911a0d781c7dad8b8f2.json` and its 63-column local TSV, filtered to the installed v2 digest. No independent collector or new sweep was started. Unsupported-command exposure ranking and completed-phase corpus denominators will use the shared per-slot data after the coordinator publishes completed coverage.
+
+### Current shared scanner: paired phase witness (`e340c39a`)
+
+Current scanner-only source is `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`, pinned v1 adapter `788f41fafa7e21ddf7b1917bc4cf43e0a83876b8`. Verified binary SHA-256: v2 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`, v1 `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`. The previous smoke witness above is historical. The restarted paired sweep adds strict saved framing, typed-target binding counts, sample-zone/zero-zone evidence and actual safe note/keyswitch selection. No safe key means no audition; fallback auditions are excluded from parity. Frozen-base phantom-free control counts remain unknown, with no instrument-specific subtraction.
+
+Although published TSVs still had headers only at first inspection, the detailed cache already supplied this **current paired Conflux witness**. Both records match the shared driver's complete signature, including current binary and note plan. Both have five raw slots (two empty, three active), three clean compilations, three completed init callbacks, and zero retained load/audition runtime fault records.
+
+| Conflux load-boundary phase/state | Pinned v1 | v2 |
+|---|---|---|
+| Persistence at wire slot 2 | **Waiting**, present; runtime slot 0 | Completed; runtime slot 2 |
+| Persistence at wire slot 3 | Completed; runtime slot 1 | Completed; runtime slot 3 |
+| Persistence at wire slot 4 | Absent; runtime slot 2 | Absent; runtime slot 4 |
+| Raw text-array entries | 13 | 13 |
+| Admitted text-array entries | **13** | **0** |
+| Visible scalar/ID binding criterion | 78/78 | 107/113 |
+| Additional validated typed targets (`bound_typed`) | 5 | 6 |
+| Actual audition | Key 60, velocity 64; audible | Key 60, velocity 64; audible |
+| Surviving load-time sample zones | 1,985 | 1,985 |
+
+The suspended v1 phase is neither an init failure nor a proven permanent failure: this observation is its load-boundary status, not a later completion measurement. It provides a production scheduling witness beyond the authored tests. V2 runs persistence in the same init evaluator; `eval.rs:1278` treats Wait/WaitTicks/WaitAsync as warning-producing no-ops there, allowing synchronous completion. More completed callbacks therefore do not imply better timing fidelity. Both auditions use `zone_coverage`, `fallback_note=false` and `matched-note-plan`; audible output remains a selected-note observation rather than native PCM parity. Typed-target counts are separate from the frozen scalar criterion, not extra identical native controls or proof of working gestures.
+
+Evidence: v1 cache `c63dffe4968f449627be69b37918711a42665a905fc076f52de0d425bdbf33c9.json`, v2 cache `8d50917a5a616f5bffbf5d207e427ad5e37612f814847b9def39bec6ed503135.json`, under the shared `results/{v1,v2}/cache`. Publication and caches advance independently during shards; no partial row count is a completed-corpus denominator. Whole-corpus rates remain the earlier specialized frontend measurements pending completed shared publication. The new `results/v2/symbol-aggregates.tsv` must be read with its coverage counters and digest: its initial zero-coverage rows are unmeasured, not evidence of zero use. Its generated UI/keyboard/persistence whitelist does not replace the broader unsupported-builtin ranking above. The shared `v1ok-v2missing.tsv` provides separate authored-UI candidates; gesture and native-host verification remain outstanding.
 
 ## Unknowns and concrete measurement plan
 
