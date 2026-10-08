@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(trigger(Driver::Velocity, &[], 1, 2).as_deref(), Some("vel 64–127"));
         assert_eq!(trigger(Driver::Channel, &[], 15, 16).as_deref(), Some("ch 16"));
         assert_eq!(trigger(Driver::Channel, &[], 0, 17), None, "more than 16 do not fit on channels");
-        let arts = |keys: &[&[u8]]| keys.iter().map(|k| ir::Articulation { name: String::new(), switch_keys: k.to_vec(), alternatives: Default::default(), default: false }).collect::<Vec<_>>();
+        let arts = |keys: &[&[u8]]| keys.iter().map(|k| ir::Articulation { source: String::new(), control: None, name: String::new(), switch_keys: k.to_vec(), alternatives: Default::default(), default: false }).collect::<Vec<_>>();
         assert_eq!(order(&arts(&[&[26], &[], &[24]])), vec![1, 2, 0], "by lowest key, keyless last");
     }
 }
