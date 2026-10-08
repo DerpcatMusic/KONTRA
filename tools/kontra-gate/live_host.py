@@ -99,6 +99,13 @@ def frozen_underruns(rows):
     return total if audio else None
 
 
+def measured_status(live):
+    complete = (live.get('returncode') == 0 and live.get('events_dispatched', 0) > 0
+                and live.get('events_dispatched') == live.get('events_planned')
+                and live.get('peak', 0) > 0 and live.get('nonfinite') == 0)
+    return 'MEASURED' if complete and live.get('contention') == 'QUIET' else 'UNKNOWN'
+
+
 def observe(host, plugin, state, plan, block, seconds, folder, version):
     folder.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kontra-live-', dir='/dev/shm') as temp:
@@ -111,8 +118,9 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
         capture = Capture(folder, env)
         activity = Activity(folder)
         job = None
+        live = {}
+        activity.start()
         try:
-            activity.start()
             with tempfile.TemporaryFile(dir='/dev/shm') as output:
                 job = subprocess.Popen([str(host), str(plugin), str(native), str(block), str(seconds), str(ready), str(schedule), '1'],
                                        env=env, stdout=output, stderr=capture.stderr)
@@ -138,12 +146,15 @@ def observe(host, plugin, state, plan, block, seconds, folder, version):
                             host_sha256=sha(host), state_sha256=hashlib.sha256(state).hexdigest(),
                             audition_sha256=sha(schedule), stdout_sha256=hashlib.sha256(raw).hexdigest(),
                             perf_view=views, underruns=views[-1]['underruns'] if views else frozen_underruns(rows))
-                live['status'] = 'MEASURED' if job.returncode == 0 and live.get('events_dispatched') == live.get('events_planned') else 'UNKNOWN'
         finally:
             if job and job.poll() is None: job.kill(); job.wait()
             activity.finish()
             capture.finish()
+        diagnostics = folder / 'plugin-diagnostics.json'
+        captured = json.loads(diagnostics.read_text()); captured['plugin_host_run'] = True
+        diagnostics.write_text(json.dumps(captured) + '\n')
         live['contention'] = json.loads((folder / 'activity.json').read_text())['status']
+        live['status'] = measured_status(live)
         (folder / 'metrics.json').write_text(json.dumps(live, indent=2) + '\n')
         return live
 
@@ -160,8 +171,11 @@ def main():
     parser.add_argument('--start', type=int, default=0)
     parser.add_argument('--count', type=int, default=2)
     args = parser.parse_args()
-    assert 2 <= args.seconds <= 30 and args.start >= 0 and 1 <= args.count <= 4
+    assert 2 <= args.seconds <= 30 and args.start >= 0 and 1 <= args.count <= 128
     assert os.environ.get('KONTRA_QUIET_OWNER') == '1', 'request a quiet window first'
+    assert (Path.home() / '.cache/kontra-quiet-request').exists(), 'quiet request absent'
+    assert (Path.home() / '.cache/kontra-quiet-granted').exists(), 'quiet grant absent'
+    os.environ['KONTRA_GATE_REQUIRE_QUIET'] = '1'
     subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=V1, check=True, stdout=subprocess.DEVNULL)
     args.out.mkdir(parents=True, exist_ok=True)
     items = [line.split('\t', 1)[1] for line in (args.gate / 'items.tsv').read_text().splitlines()]
@@ -170,13 +184,15 @@ def main():
         tmp = Path(tmp)
         # Bootstrap only the native envelope with the existing frozen export command.
         first = next(path for path in items if path.lower().endswith('.nki'))
+        state_env = dict(os.environ, XDG_CONFIG_HOME=str(tmp / 'config'), XDG_DATA_HOME=str(tmp / 'data'),
+                         XDG_CACHE_HOME='/proc/self/kontra-gate-no-cache', KONTRA_DISABLE_NETWORK='1', KONTRA_LOG_DIR=str(tmp / 'logs'))
         common = {'port': 0, 'channel': -1, 'output': 0, 'aux': -1, 'aux_gain': -60.,
                   'output_manual': True, 'mic_buses': [], 'mic_names': []}
         multi = tmp / 'bootstrap.kontra-multi'
         multi.write_text(json.dumps({'format': 'kontra-multi', 'version': 1, 'name': 'Live host probe', 'parts': [dict(common, path=first)]}))
         template = tmp / 'bootstrap.state'
         subprocess.run([str(V1 / 'bin/kontakto-v1'), 'export-multi-state', str(multi), str(template)],
-                       env=dict(os.environ, KONTRA_LOG_DIR=str(tmp / 'logs'), XDG_CACHE_HOME='/dev/null'),
+                       env=state_env,
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for path in items[args.start:args.start + args.count]:
             identity = hashlib.sha256(path.encode()).hexdigest()
@@ -191,7 +207,7 @@ def main():
                 mapping.write_text(json.dumps({'format': 'kontra-multi', 'version': 2, 'name': 'Live host probe',
                                               'parts': [dict(common, path=path, program=int(program))]}))
                 subprocess.run([str(args.v2_cli), 'export-multi-state', str(mapping), str(native)],
-                               env=dict(os.environ, KONTRA_LOG_DIR=str(tmp / 'logs')), check=True)
+                               env=state_env, check=True)
                 for version, plugin, blob in [('v1', V1 / 'plugin/KONTRA.clap', v1_state(template.read_bytes(), path, int(program))),
                                               ('v2', args.v2_plugin, native.read_bytes())]:
                     cell = observe(args.host, plugin, blob, plan, args.block, args.seconds,
@@ -200,6 +216,7 @@ def main():
                     cells.append(cell)
                     print(json.dumps({k: v for k, v in cell.items() if k != 'perf_view'}), flush=True)
     receipt = {'scope': 'loaded-exported-CLAP-realtime-editor-closed', 'cells': cells,
+               'v2_source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).parents[2], text=True).strip(),
                'gate_sha': json.loads((args.gate / 'manifest.json').read_text())['sha'],
                'host_source_sha256': sha(Path(__file__).parents[2] / 'vendor/moose-clap/tests/live_performance.cpp'),
                'driver_sha256': sha(__file__), 'frozen_v1_perf_view': 'UNKNOWN: frozen binary has no numeric readback export',
