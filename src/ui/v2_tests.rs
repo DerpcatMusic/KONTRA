@@ -1869,4 +1869,51 @@ fn native_ladder_editor_uses_hertz_for_readout_typing_and_graph() {
     let scripted = super::editor_model::Model::new(&instrument,0,&Edits::default(),&with_gain,
         &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2),(ir::ControlId(12),0.5)],48000.);
     assert!(scripted.base.magnitude(100.) > model.base.magnitude(100.) * 1.8,"graph includes the current native gain lane");
+    // Kontakt's group insert rack is a shared voice chain referenced by zones.
+    instrument.groups[0].chain = None;
+    instrument.chains[0].scope = I::Scope::Voice;
+    let mut zone = I::Zone::new(I::AssetRef(0));
+    zone.group = Some(I::GroupRef(0)); zone.chain = Some(I::ChainRef(0));
+    instrument.zones.extend([zone.clone(), zone]);
+    let voice = super::editor_model::Model::new(&instrument,0,&Edits::default(),&bindings,
+        &[(ir::ControlId(10),0.5),(ir::ControlId(11),0.2)],48000.);
+    assert_eq!(voice.display(param,0.5),model.display(param,0.5),"native zone voice-chain cutoff uses the same Hz law");
+    assert_eq!(voice.base.magnitude(1000.),model.base.magnitude(1000.),"a shared voice chain appears once, not once per zone");
+}
+
+#[test]
+fn native_voice_group_filter_graphs_deduplicate_and_keep_control_owners() {
+    use sampler_ir as I;
+    use sampler_core::{EngineParameterAddress, EngineParameterBinding, EngineParameterLaw};
+    use crate::sound::edits::{Edits, Override, Param};
+    let mut i = I::Instrument::default();
+    i.groups.push(I::Group { chain:Some(I::ChainRef(1)), ..Default::default() });
+    let filter = |hz| I::Processor::Filter(I::Filter { kind:I::FilterKind::LowPass { poles:2 },
+        cutoff:I::Frequency::Hertz(hz), resonance:I::Resonance::Q(std::f64::consts::FRAC_1_SQRT_2) });
+    for (scope, hz) in [(I::Scope::Voice,1000.),(I::Scope::Group(I::GroupRef(0)),2000.)] {
+        i.chains.push(I::Chain { scope, pre_amplitude:vec![filter(hz)], post_amplitude:vec![] });
+    }
+    let mut zone = I::Zone::new(I::AssetRef(0));
+    zone.group = Some(I::GroupRef(0)); zone.chain = Some(I::ChainRef(0));
+    i.zones.extend([zone.clone(),zone]);
+    let key = "native-group-filter".to_string();
+    let control = sampler_core::lower::ir_control_id(&key);
+    i.controls.push(I::Control { key, label:String::new(), value:I::ControlValue::Continuous {
+        min:20., max:20000., default:2000., unit:I::ControlUnit::Hertz }, automation:I::Automation::None });
+    i.processor_controls.push(I::ProcessorControl { control:I::ControlRef(0), chain:I::ChainRef(1),
+        index:0, parameter:I::ProcessorParameter::Cutoff, ramp:I::Time::Milliseconds(0.) });
+    let law = EngineParameterLaw::Exponential { low:20., high:20000. };
+    let binding = EngineParameterBinding { control, law, address:EngineParameterAddress {
+        parameter:sampler_core::engine_parameter_id("ENGINE_PAR_CUTOFF").unwrap(), group:0, slot:4, generic:-1 } };
+    let values = [(ir::ControlId(control.0),4000.)];
+    let model = super::editor_model::Model::new(&i,0,&Edits::default(),&[binding],&values,48000.);
+    let magnitude = |cutoff| sampler_core::Biquad::new(48000,sampler_core::FilterKind::LowPass,cutoff,
+        std::f64::consts::FRAC_1_SQRT_2).unwrap().magnitude(3000.) as f32;
+    assert!((model.base.magnitude(3000.) - magnitude(1000.)*magnitude(4000.)).abs() < 1e-6,
+        "shared zone chain appears once; group control updates its own filter after voice filters");
+    let mut edits = Edits::default(); edits.set(Override { group:None, param:Param::Cutoff(4), offset:0.1 });
+    let changed = super::editor_model::Model::new(&i,0,&edits,&[binding],&values,48000.);
+    let cutoff = law.decode(law.encode(4000.)+100000);
+    assert!((changed.playing.magnitude(3000.) - magnitude(1000.)*magnitude(cutoff)).abs() < 1e-6,
+        "native edit changes the intended group filter, preserving voice-chain ownership");
 }
