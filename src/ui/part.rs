@@ -201,7 +201,7 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
     let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
         let authored=native.authored();let scale=scale_to_fit(Size::new(avail,room),authored,cx.settings.view_scale);
-        let view=native.view(ui,slot,scale,&face.face,&face.values);
+        let view=native.view(ui,slot,scale,&face.face,&face.values,&face.input);
         for edit in native.edits() {
             let widget=if edit.source==face.face.source {face.face.widgets.get(edit.widget.0)}else{face.from.iter().find(|f|f.source==edit.source).and_then(|f|f.widgets.get(edit.widget.0))};
             let admitted=if let (ir::Source::Ksp{slot:source_slot},Some(widget))=(edit.source,widget) {
