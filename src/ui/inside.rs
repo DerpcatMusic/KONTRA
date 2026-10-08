@@ -112,6 +112,7 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
         })
         .collect();
     cx.state.inside.entry(slot).or_default().view = Some(picked);
+    if picked == View::Sound && picked != view {cx.state.select(slot);}
     (picked, Some(segmented(tabs)))
 }
 
