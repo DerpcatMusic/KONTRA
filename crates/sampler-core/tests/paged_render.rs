@@ -843,3 +843,64 @@ fn tuned_serial_loops_match_resident_audio_and_demand_at_every_partition() {
         }
     }
 }
+
+#[test]
+fn cold_start_holds_the_chain_envelope_until_its_first_page_arrives_without_heap() {
+    for chained in [false, true] {
+        for voices in [1, 2] {
+            let asset = Pcm::streamed(48000, PAGE_FRAMES).unwrap();
+            let data = vec![[0.25; 2]; PAGE_FRAMES];
+            let build = || {
+                let mut mapped = region(0, Playback::default());
+                mapped.envelope = Envelope::new(512, 0, 128, 0.5, 64).unwrap();
+                let plan =
+                    Prepared::new(48000, vec![asset.clone()], vec![mapped; voices], 8).unwrap();
+                let plan = if chained {
+                    plan.with_voice_chains(
+                        vec![VoiceChain::new(vec![Processor::Gain(1.)], vec![], 0).unwrap()],
+                        vec![Some(0); voices],
+                    )
+                    .unwrap()
+                } else {
+                    plan
+                };
+                let (cache, worker) = StreamCache::new(8).unwrap();
+                let mut rt = from_plan(plan).with_stream_cache(cache);
+                rt.set_cold_starts(true);
+                support::without_heap(|| {
+                    rt.trigger(input(), 60, 1.).unwrap();
+                });
+                (rt, worker)
+            };
+            let (mut delayed, mut delayed_worker) = build();
+            let (mut immediate, mut immediate_worker) = build();
+            // Both are admitted cold and take the same one-millisecond fade-in.
+            load(
+                immediate.stream_cache_mut().unwrap(),
+                &mut immediate_worker,
+                &asset,
+                &data,
+                0,
+            );
+            let mut silence = [[0.; 2]; 128];
+            support::without_heap(|| delayed.render(&mut silence).unwrap());
+            assert_eq!(silence, [[0.; 2]; 128]);
+            load(
+                delayed.stream_cache_mut().unwrap(),
+                &mut delayed_worker,
+                &asset,
+                &data,
+                0,
+            );
+            let (mut actual, mut expected) = ([[0.; 2]; 256], [[0.; 2]; 256]);
+            support::without_heap(|| {
+                delayed.render(&mut actual).unwrap();
+                immediate.render(&mut expected).unwrap();
+            });
+            assert!(expected.iter().flatten().any(|x| *x != 0.));
+            assert_eq!(actual, expected, "chained {chained}, voices {voices}");
+            assert_eq!(delayed.stream_underruns(), 0);
+            assert_eq!(immediate.stream_underruns(), 0);
+        }
+    }
+}

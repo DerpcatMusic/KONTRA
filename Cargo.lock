@@ -3805,6 +3805,8 @@ dependencies = [
  "sampler-ir",
  "sampler-pool",
  "sampler-simd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

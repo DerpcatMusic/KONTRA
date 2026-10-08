@@ -363,3 +363,26 @@ The97-voice PCM oracle now passes on the working lane change for resident and st
 The separate delayed-page regression fails at chained=true/voices=1: resumed first frame0.0013020821 versus the immediate-cold oracle0, confirming envelope consumption during the hold. No-chain controls pass. This is a runtime assertion failure, not a compilation failure. Receipt:~/.cache/kontakto-fix-cpu/cold-chain-red.log. W6 has published verified bbb143bf with implementation0af58a6d and fixture78af0703; merge and W9’s delayed-page green check follow the isolated lane timing.
 
 Own idle incremental cleanup after the build removed1,005,699,072 allocated bytes;25 frozen ELFs outside target were hash-verified first. No foreign target or frozen v1 artifact was changed.
+
+## Completed isolated lane pairs and verified cold-hold merge
+
+Lane checkpoint c94661b8, before4cdc8920. Three alternating same-window original-audit64 pairs, all24event/render heap counters zero and all12 cold evictions pages_after=0. Values are median/p99µs; all repeats retained.
+
+| Cell | Repeat | Before median / p99 | After median / p99 | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 26.681 / 47.251 | 27.210 / 49.611 | 0 / 0 |
+| piano-64-cold | 2 | 27.280 / 52.371 | 26.880 / 49.581 | 0 / 0 |
+| piano-64-cold | 3 | 28.191 / 55.141 | 26.480 / 45.831 | 0 / 0 |
+| piano-64-warm | 1 | 26.111 / 46.980 | 26.431 / 52.731 | 0 / 0 |
+| piano-64-warm | 2 | 26.570 / 47.111 | 26.500 / 45.751 | 0 / 0 |
+| piano-64-warm | 3 | 27.551 / 49.351 | 28.310 / 51.731 | 0 / 0 |
+| fx-64-cold | 1 | 53.481 / 111.612 | 55.951 / 127.812 | 1 / 0 |
+| fx-64-cold | 2 | 52.521 / 123.342 | 54.181 / 114.312 | 0 / 0 |
+| fx-64-cold | 3 | 54.061 / 118.083 | 51.631 / 108.632 | 0 / 0 |
+| fx-64-warm | 1 | 53.861 / 110.612 | 54.391 / 122.093 | 0 / 0 |
+| fx-64-warm | 2 | 53.361 / 119.612 | 52.151 / 112.302 | 0 / 0 |
+| fx-64-warm | 3 | 53.051 / 113.172 | 55.561 / 112.892 | 0 / 0 |
+
+**HOLD.** Aggregates: piano cold27.280/52.371→26.880/49.581, warm26.570/47.111→26.500/51.731(p99 worse). FX cold53.481/118.083→54.181/114.312(median worse), warm53.361/113.172→54.391/112.892(median worse). Underruns before1/after0 across these24runs; this does not resolve the earlier two after underruns or prove robust streaming. The lane capability is PCM/heap-correct, but these cells show no substantial uniform CPU improvement. Piano still misses1ed baseline23.380/43.701 and the v1 gate remains unmet. Evidence:~/.cache/kontakto-fix-cpu/lane-ramps-pairs/.
+
+Verified W6 checkpoint bbb143bf is merged into the CPU worktree, retaining W9 amp ramps, prepared pitch, bounded reservations, addressed factors and lock-free residency. Adapted the shared amp helper to levels(v,len,0), with waiting voices excluded from lane admission. W9 delayed-page regression goes semantic RED→GREEN.62 area tests plus publication and eligibility units pass(one unrelated ignored); default root cargo test --no-run passes. Fresh binary admission-cold-hold SHA25616878c71327ee0b1b1d4578177d6f1f8a5435ee3f4194072612fcfaf1901b9ca includes W6’s trace infrastructure and cold fix; its timing comparison is a merged-checkpoint comparison, not an isolated attribution to the hold alone. New FX cold diagnostics/pairs follow.
