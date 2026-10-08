@@ -159,8 +159,24 @@ pub struct LoadRequest {
     pub dynamics_start: Option<u8>,
     /// Voice-rendering threads (`None`: one, the audio thread alone).
     pub threads: Option<ThreadChoice>,
+    pub streaming: Streaming,
+    /// MPE manager on channel 16 instead of channel 1.
+    pub mpe_upper: bool,
+    /// Snapshot applied to an explicit base instrument.
+    pub snapshot: Option<std::path::PathBuf>,
     /// Host-saved Kontakt UI values (menus carry item values, not positions).
     pub control_values: Vec<(sampler_ui_ir::ControlId, f64)>,
+}
+
+/// Where sample data plays from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Streaming {
+    /// Preload sample starts and stream the rest from disk.
+    #[default]
+    Auto,
+    /// Load every sample whole: no disk reads or streaming while playing.
+    /// Samples that do not fit the free RAM stream as with `Auto`.
+    RamOnly,
 }
 
 /// A request for voice-rendering threads.
@@ -229,7 +245,7 @@ pub struct KeyLook {
 pub struct ScriptUi {
     pub uvi: Option<std::sync::Arc<sampler_uvi::scripted::UiBridge>>,
     pub uvi_revision: u64,
-    pub uvi_source: Option<(String, u32)>,
+    pub uvi_source: Option<(String, u32, String)>,
     /// By script instance ([`sampler_core::ScriptInstanceId`]).
     pub views: Vec<sampler_ksp::ScriptView>,
     pub resources: Option<sampler_kontakt::Resources>,

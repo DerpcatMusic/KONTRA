@@ -412,12 +412,15 @@ impl Program {
         self
     }
 
-    /// Whether it sets runtime effect slot parameters ([`Instruction::WriteSlot`]).
+    /// Whether it may set runtime effect slot parameters. Shared engine
+    /// addresses are computed in registers, so writes conservatively retain
+    /// live FX lanes even when their eventual address is not an effect.
     pub fn writes_slots(&self) -> bool {
         self.code.iter().any(|op| {
             matches!(
                 op,
                 Instruction::WriteSlot { .. } | Instruction::WriteGroupBus { .. }
+                    | Instruction::Op(super::ops::Op::EngineParameter { write: true, .. })
             )
         })
     }

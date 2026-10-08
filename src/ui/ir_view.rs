@@ -731,11 +731,13 @@ pub(super) fn widget_state(
         Binding::Control(c) => Some(c),
         _ => None,
     };
-    let default = match &wd.kind {
-        Kind::Knob { range, .. } | Kind::Slider { range, .. } | Kind::ValueEdit { range, .. } => {
-            range.default
-        }
-        _ => wd.initial_value,
+    let initial = match wd.value.as_ref() {
+        Some(ir::Value::Integer(value)) => f64::from(*value),
+        Some(ir::Value::Real(value)) => *value,
+        _ => match &wd.kind {
+            Kind::Knob {range,..}|Kind::Slider {range,..}|Kind::ValueEdit {range,..} => range.default,
+            _ => wd.initial_value,
+        },
     };
     let mut enabled = wd.enabled;
     let mut opacity = wd.opacity;
@@ -751,7 +753,7 @@ pub(super) fn widget_state(
     let can_edit = enabled && wd.intercepts_mouse;
     let mut v = control
         .and_then(|c| values.get(&c).copied())
-        .unwrap_or(default);
+        .unwrap_or(initial);
     let state = usize::from(v > 0.5) + if ui.get(id.as_str()).held { 2 } else if hovered { 4 } else { 0 };
     let style = if matches!(wd.kind, Kind::Button { .. } | Kind::Switch | Kind::Menu { .. }) {
         wd.state_styles[state].or(wd.style)
@@ -1374,7 +1376,19 @@ pub(super) fn widget_state(
             input.peaks.get(&n).cloned().unwrap_or_default(), wd.waveform.clone(),
             input.wave_duration_us.get(&n).copied(), wd.colors, wd.hide.background,
         ),
-        Kind::Panel | Kind::Image | Kind::MouseArea => block(w, h),
+        Kind::MouseArea => {
+            let response=ui.get(id.as_str());
+            if can_edit && (response.pressed||response.released) {
+                let value=match input.values.get(&n).or(wd.value.as_ref()) {
+                    Some(ir::Value::Integer(value))=>*value,
+                    Some(ir::Value::Integers(values))=>values.first().copied().unwrap_or(v.round() as i32),
+                    _=>v.round() as i32,
+                };
+                input.edits.push(Edit {widget:n,index:0,value:ir::Value::Integer(value),mods:response.mods,mouse_over:response.hovered,cursor:0,event:if response.released {1}else{0}});
+            }
+            block(w,h)
+        }
+        Kind::Panel | Kind::Image => block(w, h),
     };
     if let Some(c) = control
         && wd.components.is_empty()
