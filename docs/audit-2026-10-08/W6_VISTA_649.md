@@ -1,6 +1,6 @@
 # Vista block-size failure at frozen 64919587
 
-Holding note-end retirement restores Vista's missing final-note replay at 64 frames. Restoring authored bound envelopes does not change the failing result. This is a causal diagnostic of the lifecycle seam, not a production fix or CPU acceptance.
+At frozen649, holding note-end retirement restores Vista's missing final-note replay at 64 frames. Restoring authored bound envelopes does not change the failing result. The verified follow-up below establishes recovery from W7's shared deferred-attack ownership fix, with normal end_block at32/64/256. CPU and native-parity acceptance remain separate gates.
 
 ## Checkpoint and plan
 
@@ -37,3 +37,27 @@ Frozen diagnostic executable: `~/.cache/kontakto-w6/bin/vista-649-probe`, SHA256
 The library area cargo test --no-run passes in `hold-build.log`; each reported targeted witness passes. The trace-disabled original CPU example independently reproduces the64-frame loss of steady voices (peak0.0033577466, peak64voices). Trace-enabled original example also reproduces it. No shared scanner was rebuilt or collected.
 
 W9's original paired649→3a288897 cells remain unscorable at32/64 because steady voices disappear. Its256 cold cell has141 steady blocks but approximately14ms p50 and22ms p99 before retirement optimization, already beyond its deadline. These diagnostic runs provide no CPU, heap, cold-load, native-level or RR-parity acceptance. After W7 repairs the shared lifecycle, rerun the unchanged original CPU matrix with functional output checks before accepting performance.
+
+## Verified deferred-attack fix follow-up
+
+Only W7's `99e4e0c86e4596bab6c228fd0c7f1dfe41399254` was cherry-picked onto `fab0d5cf`, producing tested checkpoint `f667bcf2d09877ea6a5cbfa265c9a0e644357c40`. Its parent is already an ancestor of649. The witness and CPU example sources are unchanged fromfab0d5cf. No W5 envelope seed, DSP, KSP, host or loader change was added.
+
+W7 identified missing work ownership for a generated attack pending callback completion. Duration-zero play marks that generated note for retirement when silent; before deferred commit, host flush_ended could therefore reclaim it during fuel preemption. Deferred commit then found a stale note ID. The fix pins each deferred attack until commit or abort cleanup, rather than retaining every physical input. W7's failing-first ownership regression and cancel/panic/fault tests are documented in `w7-selection/README.md`.
+
+The unchanged four-second Vista witness was rerun with normal end_block, both restoration flags unset and the hold flag unset. Trace-disabled functional results:
+
+| Host frames | Output peak | Peak voices | Blocks with voices in .25–1s | Both key59 replays | Last live-voice block |
+|---:|---:|---:|---:|---:|---:|
+|32|0.10827232152223587|80|1125|288|151168|
+|64|0.10827232152223587|80|562|576|151104|
+|256|0.10827232152223587|68|141|640|150784|
+
+Each row accepts80 regions, reports36 Finished callbacks, and has zero underruns, voice drops and refused starts. Each key59 replay pair has velocities17/127 and127/127 and eight accepted regions per replay. The64 result exactly matches the previous hold64 control while draining note ends normally;256 preserves its prior functional result. This establishes sustained playback recovery at32/64 and preservation at256 for this event plan.
+
+A separate complete64 trace with the same normal lifecycle also passes: output peak0.10827232152223587,80 peak voices,562 steady-window blocks,36 Finished callbacks and zero underruns. Its graph is complete, with240809 records and zero drops. Key59 has26144 amplifier records, amplifier peak0.07967179425803117, and last amplifier timestamp215168 (151168 audition-relative). Tracing therefore preserves the recovered functional result.
+
+Receipts: `~/.cache/kontakto-w6/vista-649/{fixed32-complete,fixed64-off,fixed256-off,fixed64-trace}` and adjacent logs. Completed elapsed times are339.44s,178.83s,101.99s and182.49s respectively, in unoptimized debug; these elapsed times are not CPU cells. The initial32 trace-on and trace-off attempts timed out at240s and are not passes. The trace-on partial graph was incomplete; its output through1.54s was already audible. The complete trace-disabled32 retry resolves the functional timeout limitation.
+
+Frozen corrected executable: `~/.cache/kontakto-w6/bin/vista-649-deferred-probe`, SHA256 `1e6edd12d6e51b0d39fb218b216abdd11ac06664d7bdcbae745a62386dffc0c2`. The baseline executable remains separate. Ledger with witness hashes: `~/.cache/kontra-runs/w6-vista-deferred-f667bcf2/manifest.json`. The root library area no-run gate passes in `fixed-build.log`; diff check passes.
+
+Merge only W7's production commit, not this diagnostic branch. W9 must rerun the unchanged original cold/warm CPU matrix after integration. Full corpus/scanner, heap, native level/timing parity and release/install were not repeated or accepted by this follow-up.
