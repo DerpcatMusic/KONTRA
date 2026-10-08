@@ -106,3 +106,9 @@ The UVI J sidecar uses production Worker::start after the metadata/assets prepas
 On this checkpoint Native consumer attempts and decoded package font files are observed directly; failed paint is independent of whether a frontend was entered. Native pages are rendered even without legacy widget declarations. Legacy widget/geometry/strip counts describe the retained bridge model, not the separate Native scene tree. Native font-file counts are not live typography/gesture certification.
 
 The exporter treats a Native loading/error caption as authored UI failure even when its framebuffer paints successfully. A pending/unavailable Native package keeps asset/font counters unknown. `reason` appends only fixed UI categories and positive resource-failure counts. Missing first-frame timing is `unknown` in TSV, including a null sidecar field. These exporter rules apply to resumed cached metrics without rerunning a library.
+
+## KSP keyboard classifier correction
+
+The scanner-only correction on `audit/ui-census-20261008` uses a shared classifier in `metrics.rs`: KSP CONTROL alone is a hard declaration exclusion; type NONE and colour INACTIVE/NONE are resets, resolved against mapped coverage. Optional properties merge in slot order. Pinned-v1 probes read the final host keyboard and normalize fixed symbolic constants. `keyboard_reason_counts` exports fixed category/exclusion counts at post-load/pre-audition; null means unavailable. UVI's RGBA policy is unchanged.
+
+The exact 348-pair targeted rerun and separate probe receipts are documented in [UI_CENSUS_KEYBOARD.md](../../docs/audit-2026-10-08/UI_CENSUS_KEYBOARD.md). Existing frozen binaries/results are retained separately. The new probe build does not change the installed plugin or the frozen v1 reference.
