@@ -1308,25 +1308,24 @@ fn render_threads(request: &LoadRequest) -> Threads {
 /// (`RuntimeStats::voice_drops`).
 const VOICE_BUDGET: usize = 256 << 20;
 const MIN_VOICES: usize = 512;
-const MAX_VOICES: usize = 16384;
+// port from v1 0cb7a8a0:src/engine/mod.rs; growth remains off audio.
+const MAX_VOICES: usize = 1024;
 const GROWTH: usize = 8;
-// v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY; grow past it off audio.
+// port from v1 0cb7a8a0:src/ksp/runtime.rs EVENT_CAPACITY.
 const INITIAL_NOTE_PARAMS: usize = 4096;
 /// Per-voice bytes beyond the plan's state: voice slot, activity bit, parallel scratch.
 const VOICE_OVERHEAD: usize = 4096;
 
 /// Capacities of a part, sized for its plan's script state and voice cost, and
-/// the voice count the pool may grow to. Notes, families and decisions are
-/// sized for that ceiling so growing voices is not capped by them.
+/// the voice count the pool may grow to. Event ownership is bounded by v1
+/// capacity; multiple voices can still share each event.
 fn limits(plan: &Prepared) -> (Limits, usize) {
     let voices = (VOICE_BUDGET / plan.voice_state_bytes().max(1)).clamp(MIN_VOICES, MAX_VOICES);
     let ceiling = voices * GROWTH;
-    // Notes outlive their voices only in release, and each holds a few voices.
-    // Capped: script cells are allocated per note.
-    let notes = (ceiling / 4).clamp(NOTES, 16384);
+    let notes = INITIAL_NOTE_PARAMS;
     let limits = Limits {
-        families: (ceiling / 2).clamp(256, 32768),
-        decisions: (ceiling / 2).clamp(256, 32768),
+        families: (ceiling / 2).clamp(256, notes),
+        decisions: (ceiling / 2).clamp(256, notes),
         ..Limits::for_plan(plan, notes, voices)
     };
     (limits, ceiling)
@@ -2554,6 +2553,19 @@ mod tests {
         sine(&path);
         let part = load(&path).unwrap();
         assert_eq!(part.runtime.note_params_capacity(), 4096);
+        assert_eq!(part.runtime.voice_capacity(), 1024);
+    }
+
+    #[test]
+    fn production_ownership_limits_use_v1_event_capacity() {
+        let plan = Prepared::new(48000, vec![], vec![], 1).unwrap();
+        let (limits, ceiling) = limits(&plan);
+        assert_eq!(limits.notes, 4096);
+        assert_eq!(limits.expressions, 4096);
+        assert_eq!(limits.families, 4096);
+        assert_eq!(limits.decisions, 4096);
+        assert_eq!(limits.voices, 1024);
+        assert_eq!(ceiling, 8192);
     }
 
     /// Set `KONTRA_KONTAKT_LIBRARIES` to library roots to run; skips otherwise.
