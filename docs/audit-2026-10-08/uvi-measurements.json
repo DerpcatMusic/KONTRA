@@ -1258,6 +1258,11 @@
     "latest_budget_filter": {
       "targeted_runaway_test": "1 passed",
       "root_no_run": "passed;13.24s"
+    },
+    "current_scanner_report_gate": {
+      "command": "kontakto-heavy cargo test --profile ci --no-run",
+      "result": "pass",
+      "build_seconds": 52.73
     }
   },
   "branch_single_program_resource_scene": {
@@ -1666,7 +1671,8 @@
       "font_declared": 0,
       "font_success": 0,
       "local_pick_source": "native_declared"
-    }
+    },
+    "status": "historical9dcf05e5; pending rerun under e340c39a"
   },
   "shared_scanner_extension": {
     "source": "9dcf05e59cbc67e45c56872e1418817693150085",
@@ -1676,12 +1682,44 @@
     "canonical_results": "~/.cache/kontra-scan/results/{v1,v2}/cache",
     "paired_sweep_owner": "shared census",
     "own_duplicate_runner": "stopped before collecting rows",
-    "coverage": "partial; do not extrapolate"
+    "coverage": "partial; do not extrapolate",
+    "status": "historical; superseded by e340c39a"
   },
   "budget_measurement_boundary": {
     "historical_production_budget_findings_zero": "invalid filter; not absence evidence",
     "ui_branch_whole_editor": "200/200 AO scenes actual layout budget errors",
     "frozen_authored_page_scanner": "successful AO paints with missing182 resources; different root tree",
     "v1_sidecar_budget_hit": "unknown"
+  },
+  "current_shared_scanner": {
+    "source": "e340c39a6666752866015b5ee8f06a3cc978c416",
+    "v2_product_base": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
+    "v2_sha256": "742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4",
+    "pinned_v1_adapter": "788f41fafa7e21ddf7b1917bc4cf43e0a83876b8",
+    "v1_dispatcher_sha256": "ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08",
+    "v1_uvi_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "observed_canonical_data_rows": {
+      "v1": 0,
+      "v2": 0
+    },
+    "observed_at_utc": "2026-10-08T08:56:11.802189+00:00",
+    "coverage_status": "restarted; pending shared owner",
+    "audio_comparison_policy": [
+      "matching actual key and velocity required",
+      "fallback excluded from parity",
+      "no safe key: plays_note=no",
+      "old null-pick audio discarded"
+    ],
+    "sidecar_changed": false,
+    "missing_sidecar_fields": "unknown, not zero",
+    "unchanged_uvi_note_helper": {
+      "accepts": [
+        "key",
+        "velocity"
+      ],
+      "keyswitch_execution": "unknown; not read by compiled helper",
+      "explicit_no_audition_command": "not implemented in sidecar",
+      "without_numeric_override": "local selection fallback; require paired actual-pick checks"
+    }
   }
 }

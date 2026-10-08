@@ -2,6 +2,8 @@
 
 ## Verdict and reference identities
 
+**Current shared-sweep revision:** `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`. The prior9dcf05e5/18fe63fe/a4b3f8c7 smoke records below are historical revision-scoped evidence, not rows in the restarted current census. Canonical TSVs were reset and contained0 data rows when this handoff was verified. Old null-pick audio is discarded for parity; current comparisons require matching actual notes and exclude fallback auditions.
+
 **v2 is worse than the UVI development implementation on `codex/uvi-latest-integration` in interactive UI, scoped live parameters, graph routing, persistence and identified verified DSP surfaces.** v2 has real protected-bank streaming, so “UVI disk streaming is missing” is incorrect. The shared Clarinet A smoke now proves audible output on the same declared native note in both, with lower observed v2 process RSS (140.36 vs418.60 MiB) and sample residency (26,175,632 vs218,923,526 B). Corpus-wide load/CPU/memory superiority remains unproved; scanner load stages differ. Admission is a v2 advantage in the stopped sample: its offline loader admits80/80 matched AO IDs while v1 rejects all80 before Ready. That is not native parity. Successful import, exported widgets and finite nonzero PCM are separate milestones; none establishes native Falcon parity.
 
 Frozen integration under audit: `integrate/core-v2@7e82b152b46b31e8b9fd85c2ac01d01dad669ddd`. This audit branch adds only probes, original authored checks recovered from the prior audit, and this report. Product implementation was not changed. A fresh fetch verifies `origin/integrate/core-v2@be4c5c21928b462d7a604f4e07b05eac13931616`: no changes relative to the frozen revision in `crates/sampler-uvi`, `src/sound/v2.rs`, `src/ui/part.rs`, `src/ui/ir_view.rs` or the audited plugin snapshot path. The shared scanner glue changed; no runtime finding is claimed fixed by those merges.
@@ -227,15 +229,15 @@ The census owner pushed `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150
 Baseline `ScriptHost::findings()` (`script.rs:1232`) returns `Finding {feature,value,count}` (`:238`); `Shared::find` (`:284`) aggregates by feature and retains its first value. Fault feature is exactly `lua error` (`resume` at`:1246`). Deadline text is `time budget exceeded` (`:575`) in **value**, not feature. The original production probe's budget filter incorrectly inspected feature; it is corrected to inspect value. Historic `budget_findings:0` fields cannot establish absence of budget faults. Typed counts are available on the host before `attach_script` folds count into `Unsupported.value` as `(xN)` (`lib.rs:1007`). The worker publishes only the init snapshot (`scripted/thread.rs:85`); baseline runtime first-message/count is unavailable. The shared extension's phase hooks are needed for actual runtime fault statistics. Sanitize retained values with the existing shared `metrics::message`/`metrics::budget` helpers, never dump authored diagnostic strings. A lexical findings vector is not chronological global first-fault order.
 
 
-### Exact shared Clarinet A paired smoke
+### Historical exact shared Clarinet A paired smoke (9dcf05e5)
 
-Item: `VWinds-AClarinet.ufs::Presets/Clarinet A.uvip`, under `VWinds - Clarinets`. Current-signature canonical cache records use v2 digest18fe63fe, pinned-v1 dispatcher digest a4b3f8c7 and unchanged UVI sidecar digestd565661a, base4bffbb18/source1c198e60. Both records report `matched-note-plan`, select60/64 and play audibly. Both expose exactly the same26 declared native valid keys and native preference60/64. Preserve **common-plan origin** `native_declared` separately from v1's **local application route** `shared-note-plan`; the override is not a zone-selection/native-valid claim.
+Item: `VWinds-AClarinet.ufs::Presets/Clarinet A.uvip`, under `VWinds - Clarinets`. At the time of that smoke, matching-signature canonical cache records used v2 digest18fe63fe, pinned-v1 dispatcher digest a4b3f8c7 and unchanged UVI sidecar digestd565661a, base4bffbb18/source1c198e60. Both records report `matched-note-plan`, select60/64 and play audibly. Both expose exactly the same26 declared native valid keys and native preference60/64. Preserve **common-plan origin** `native_declared` separately from v1's **local application route** `shared-note-plan`; the override is not a zone-selection/native-valid claim.
 
 | Observation | v1 UVI sidecar | v2 frozen baseline + shared instrumentation |
 | --- | ---: | ---: |
 | Loads / audible at60/64 | Yes / yes | Yes / yes |
 | Original UI classification | original-ok | missing-images |
-| Actual authored-page CPU paint | Yes | Yes |
+| Actual Original CPU paint (different root trees) | Yes | Yes |
 | Visible controls bound |21/21|0/21|
 | Published root load_ms |1,912.94|704.51|
 | Whole worker process_ms |2,707.75|1,402.75|
@@ -249,3 +251,23 @@ Item: `VWinds-AClarinet.ufs::Presets/Clarinet A.uvip`, under `VWinds - Clarinets
 These are one warm/cache-affected pair, not660-program results or native PCM parity. v1 root load time includes bank metadata/UI-assets opening and wait-until-worker-Ready (`src/uvi/scan.rs:20–114`); v2 root time covers `V2Loader.prepare` (`tools/kontra-scan:src/ui/scan.rs:295–341`). v2 `programs[0].load_ms=1,296.59` also includes later UI/audition work (`:517`), so it is not another prepare-to-Ready metric. Keep the stages explicit instead of asserting a precise load speedup.
 
 **v1 diagnostic precision:** installedd565661a exports `asset_failures`, `font_failures`, `asset_limit` from `UiAssets::diagnostics()` (`src/uvi/scan.rs:198–215`) and generic `runtime_errors` from `Worker::stats().errors` (`:301`). These are safe aggregate fields, not lookup/decode/font-request counts, Lua init/runtime phase faults, or an actual layout/Lua budget-hit accessor. `asset_limit` is an asset cache limit, not a tree/VM budget. The extended columns remain **unknown**, not0. No existing adapter export can fill the requested missing fields accurately. New v1 baseline instrumentation would be required; the installed sidecar/source and common CLI are unchanged.
+
+
+### Restarted shared sweep: e340c39a
+
+Installed binaries were SHA-256 verified after the census owner's handoff:
+
+| Component | Frozen source/base | Binary SHA-256 |
+| --- | --- | --- |
+| Shared v2 | `tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`, product7e82b152 | `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4` |
+| Pinned Kontakt v1 dispatcher | adapter788f41fafa7e21ddf7b1917bc4cf43e0a83876b8, product0cb7a8a0 | `ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08` |
+| Separate UVI v1 sidecar | source1c198e60, product4bffbb18 | `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1` |
+
+The scanner owner reports both optimized builds, three checks per scanner and wrapper release/no-run gates passed. This audit verified installed digests and read the updated README; it did not rebuild or change the common collector. Both canonical TSVs contained only headers at this check. The owner restarts the serial <=235-second paired1494-ID sweep, Conflux/Clarinet first. This audit's duplicate UVI runner remains stopped.
+
+Current schema adds strict saved-record framing/parse classification and separate actual init/persistence telemetry, `bound_typed`, `sample_zone_count`/`zero_zone_reason`, and actual fallback/keyswitch observations. The generated fixed symbol whitelist has246 entries including29 missing names per the owner; incidence aggregates are `results/v2/symbol-aggregates.tsv`, authored-UI regression output is `~/.cache/kontra-scan/v1ok-v2missing.tsv`. New fields remain unknown when the observed UVI sidecar path does not expose them; frozen `phantom_free_controls` is unknown rather than inferred by library-specific subtraction.
+
+For new audio comparisons, use actual `note_picked`/`note_policy`/`audition_status` with the common per-item numeric plan. No safe key means `plays_note=no` with its explicit reason. A fallback audition can test whether script callbacks enable zones, but is excluded from parity; neither no-audition nor old null-pick output is a silence regression. Native declarations, zone coverage and fallback remain distinct. The historical Clarinet pair proves the earlier matching native keys/note and audible outcome, but must be rerun under the new collector signature before inclusion in the new matched census.
+
+
+**Unchanged UVI sidecar note-plan boundary:** source1c198e60's compiled `metrics::note(program)` (`tools/kontra-scan/metrics.rs:59–66`) returns only `Option<(u8,u8)>`; it reads key/velocity and has no optional keyswitch or explicit no-audition command. `src/uvi/scan.rs:189–194` falls back to its local selection when no numeric override exists. Thus common valid numeric plans are honored, but a keyswitch in the new plan does not establish that the old sidecar sent it; keep v1 keyswitch execution unknown. Likewise, when v2 has no safe pick, do not regard an independent sidecar fallback as a matched safe audition. Require both actual picks/statuses and compatible keyswitch evidence before parity claims; the audit does not modify the frozen adapter.
