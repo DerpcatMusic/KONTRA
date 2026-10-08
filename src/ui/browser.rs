@@ -1047,14 +1047,8 @@ fn empty_state(ui: &mut Ui, cx: &mut Cx) -> El {
     }
     col![
         body("No libraries yet").text_size(TEXT).lines(1),
-        caption(
-            "Add the folder that holds your Kontakt libraries: each library in it is found, \
-             with or without a library file. Or add one library's own folder."
-        )
-        .fill(secondary())
-        .lines(5),
-        many_el,
-        one_el,
+        many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
+        one_el.tip("Add one library's own folder."),
     ]
     .gap(SPACE)
     .align(Align::Start)

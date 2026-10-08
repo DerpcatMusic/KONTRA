@@ -199,16 +199,6 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
             .shrink(0),
         );
     }
-    if cx.settings.roots.is_empty() {
-        rows.push(
-            col![caption("No library folders yet. Add the folder that holds your Kontakt libraries, or one library's own folder.")
-                .fill(secondary())
-                .lines(2)]
-            .align(Align::Start)
-            .pad(edges(0., INSET, 0., INSET))
-            .shrink(0),
-        );
-    }
     // Typed, for a desktop with no file dialog.
     let field = text_input(ui, "root", &mut cx.state.root);
     let (add, add_el) = action(ui, "root-add", "Add", false);
@@ -235,7 +225,9 @@ pub fn settings(ui: &mut Ui, cx: &mut Cx) -> El {
         cx.state.settings = false;
     }
     let mut body = vec![
-        row![section("Library folders").flex(1), many_el, one_el, import_el, scan_el, close_el]
+        row![section("Library folders").flex(1),
+            many_el.tip("Add the folder that holds your libraries; each library is found, with or without a library file."),
+            one_el.tip("Add one library's own folder."), import_el, scan_el, close_el]
             .gap(SPACE)
             .align(Align::Center)
             .pad(edges(SPACE, SPACE, 0., INSET))
