@@ -326,14 +326,14 @@ impl<S: Script> Driver<S> {
                     voice,
                     at_ms,
                 } => self.modulate(rt, id, value, glide_ms, voice, at_ms)?,
-                Command::Change { id, what, value, relative, .. } => {
+                Command::Change { id, what, value, relative, immediate, .. } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let target = match what {
                             Change::Decibels => ModTarget::Decibels,
                             Change::Pan => ModTarget::Pan,
                             Change::Tune => ModTarget::Pitch,
                         };
-                        match rt.set_note_param(note, target, value, relative) {
+                        match rt.set_note_param_with_immediate(note, target, value, relative, immediate) {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
@@ -341,10 +341,13 @@ impl<S: Script> Driver<S> {
                         }
                     }
                 }
-                Command::Fade { id, from, to, ms, kill, .. } => {
+                Command::Fade { id, from, to, ms, kill, layer, .. } => {
                     if let Some(note) = self.notes.get(&id).copied() {
                         let frames = self.frames(ms);
-                        match rt.fade_note(note, from, to, frames, kill && to <= 0.0) {
+                        let result=if layer==0 { rt.fade_note(note,from,to,frames,kill && to<=0.0) } else {
+                            self.groups.iter().filter(|g|g.layer==layer).try_for_each(|g|rt.fade_note_group(note,g.group,from,to,frames,kill && to<=0.0))
+                        };
+                        match result {
                             Err(Error::StaleHandle) => {
                                 self.notes.remove(&id);
                             }
