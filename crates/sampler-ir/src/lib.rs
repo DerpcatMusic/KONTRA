@@ -72,6 +72,8 @@ pub struct Instrument {
     /// Impulse responses bus convolutions refer to.
     pub impulses: Vec<Impulse>,
     pub controls: Vec<Control>,
+    /// Actual processor lanes driven by authored controls; indices span pre then post.
+    pub processor_controls: Vec<ProcessorControl>,
     pub behaviors: Vec<Behavior>,
     /// Polyphony of the whole instrument.
     pub voice_limit: Option<VoiceLimit>,
@@ -915,6 +917,7 @@ pub enum Target {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorParameter {
+    Response,
     Cutoff,
     Resonance,
     Gain,
@@ -1119,6 +1122,18 @@ pub enum SendPosition {
     PostChain,
 }
 
+/// Format-neutral binding of one authored control to an actual processor field.
+/// The control's Continuous range is in the field's native units (Hz, linear
+/// gain, Q or normalized Daft units). Ramping uses the engine sample clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProcessorControl {
+    pub control: ControlRef,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub parameter: ProcessorParameter,
+    pub ramp: Time,
+}
+
 // ---------------------------------------------------------------- controls
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1196,6 +1211,7 @@ pub enum Saved {
     Ints(Vec<i64>),
     /// A real array (`?name`), in element order.
     Reals(Vec<f64>),
+    Texts(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
