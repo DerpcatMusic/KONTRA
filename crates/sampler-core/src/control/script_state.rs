@@ -108,7 +108,7 @@ impl Runtime {
     ) -> Result<ScriptStateValue, Error> {
         Ok(match address {
             ScriptStateAddress::Control(id) => {
-                ScriptStateValue::Control(self.control_value(plan, id)?)
+                ScriptStateValue::Control(self.control_base_value(plan, id)?)
             }
             ScriptStateAddress::Cell { instance, index } => {
                 ScriptStateValue::Cell(self.script_cell(plan, instance, index)?)
@@ -236,10 +236,10 @@ impl Runtime {
             match (entry.address, entry.value) {
                 (ScriptStateAddress::Control(id), ScriptStateValue::Control(value)) => {
                     let index = generation.prepared.control_index(id).unwrap();
-                    generation.controls.values[index] = value;
-                    generation
-                        .dsp
-                        .edit_control(&generation.prepared, index, value, self.now);
+                    generation.controls.base[index] = value;
+                    let playing = generation.controls.playing(&generation.prepared, index);
+                    generation.controls.values[index] = playing;
+                    generation.dsp.edit_control(&generation.prepared, index, playing, self.now);
                 }
                 (ScriptStateAddress::Cell { instance, index }, ScriptStateValue::Cell(value)) => {
                     generation.scripts[usize::from(instance.0)].cells[index as usize] = value
