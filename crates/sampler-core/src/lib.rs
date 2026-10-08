@@ -64,6 +64,8 @@ pub use stages::Stage;
 mod diagnose;
 pub use diagnose::{ScriptFault, SilentNote, why_silent};
 mod stream;
+mod voice_stream;
+pub use voice_stream::VoiceStreamJob;
 pub use stream::{
     DecodeFailure, DecodeJob, PAGE_FRAMES, PageKey, PageStatus, PageUpdate, RejectedDecode,
     StreamCache, StreamError, StreamWorker,
@@ -442,6 +444,7 @@ struct Voice {
     siblings: Siblings,
     sample: usize,
     cursor: source::Cursor,
+    stream: Option<voice_stream::Binding>,
     base_step: f64,
     chain: Option<usize>,
     bus: Option<usize>,
@@ -1541,6 +1544,7 @@ impl Runtime {
             },
             sample,
             cursor: if cold && !self.offline { cursor.cold() } else { cursor },
+            stream: None,
             base_step,
             chain: None,
             bus: None,
@@ -1567,6 +1571,10 @@ impl Runtime {
         let family_state = self.families.get_mut(family.0).unwrap();
         family_state.voices = count;
         family_state.first_voice = Some(index);
+        if let Err(error) = self.bind_voice_ring(id.0.index) {
+            self.end_voice(id);
+            return Err(error);
+        }
         if at > self.now {
             self.queue(at, Action::Start(id));
         }

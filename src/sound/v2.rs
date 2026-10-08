@@ -1279,8 +1279,9 @@ fn stream_policy(request: &LoadRequest) -> sampler_kontakt::StreamPolicy {
     });
     sampler_kontakt::StreamPolicy {
         resident_budget,
-        lazy: request.streaming == super::Streaming::Auto,
-        head_budget: resident_budget.unwrap_or(8 << 20),
+        // Port v1 0cb7a8a0:src/engine/bank.rs: eager, budgeted resident onsets.
+        lazy: false,
+        head_budget: resident_budget.unwrap_or(1 << 30),
         block_frames: super::MAX_BLOCK,
         max_step: 16.0,
         ..Default::default()
