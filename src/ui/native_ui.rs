@@ -1400,6 +1400,41 @@ mod tests {
         assert!(!seen.is_empty(),"Edit graph reads published selector parameters");
     }
 
+    #[cfg(all(target_os = "linux", feature = "shots"))]
+    #[test]
+    #[ignore = "requires locally owned NativeUI program; graph stays in RAM"]
+    fn native_program_stack_watermark() {
+        let path = std::path::PathBuf::from(std::env::var_os("KONTRA_AUDIT_WIDGET_PATCH").unwrap());
+        let program = std::env::var("KONTRA_AUDIT_PROGRAM").ok().map_or(0, |n| n.parse().unwrap());
+        let mut source = if path.extension().is_some_and(|e| e == "nkm") {
+            sampler_kontakt::read_program(&path, program).unwrap().instrument
+        } else {
+            sampler_kontakt::read(&path).unwrap().instrument
+        };
+        source.retain_zones(|_| false);
+        source.assets.clear();
+        let loaded = sampler_kontakt::prepare(source, vec![], &sampler_kontakt::Options {
+            library: Some(path.clone()), ..Default::default()
+        }).unwrap();
+        let entry = loaded.interfaces.iter().find_map(|f| f.native_ui.as_ref()).unwrap().entry.clone();
+        let controls = loaded.interfaces.iter().flat_map(|f| f.widgets.iter().enumerate()
+            .map(move |(n, w)| (f.source, n, w.clone()))).collect();
+        let package = Arc::new(Package::load(&path).unwrap());
+        let session = Session::new(package.clone(), &entry, controls).unwrap();
+        let graph = session.render().unwrap();
+        let mut ui = super::super::theme::ui();
+        let mut drafts = HashMap::new();
+        let watermark = stack_watermark();
+        for _ in 0..4 {
+            let el = draw(&mut ui, &graph, &package, &session, 0, 1., Style::default(), &mut drafts).unwrap();
+            ui.frame(el, Some(authored_size(&graph)), Input::default(), 1. / 60.).unwrap();
+        }
+        let peak = stack_peak(watermark);
+        assert!(peak < watermark.2 - watermark.0 - 4096, "stack watermark saturated");
+        println!("NATIVE_STACK program={program} depth={} draw_and_layout_peak_bytes={peak} unmarked_top_bytes={}",
+            graph_depth(&graph).unwrap(), watermark.2 - watermark.1);
+    }
+
     #[test]
     #[ignore = "requires locally owned NativeUI library; text stays in RAM"]
     fn native_saved_text_reaches_authored_field_without_host_insets() {
