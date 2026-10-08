@@ -369,8 +369,17 @@ impl Instrument {
             if let Some(end) = zone.playback.end {
                 check.range(zone.playback.start, end, "playback")?;
             }
-            if let Looping::Continuous(range) | Looping::UntilRelease(range) = zone.playback.looping
-            {
+            let ranges = match zone.playback.looping {
+                Looping::Continuous(range) | Looping::UntilRelease(range) => vec![range],
+                Looping::Slots(slots) => {
+                    for slot in slots.iter().flatten() {
+                        check.within(slot.tuning, f64::MIN_POSITIVE..=f64::MAX, "loop tuning")?;
+                    }
+                    slots.iter().flatten().map(|slot| slot.range).collect()
+                }
+                _ => Vec::new(),
+            };
+            for range in ranges {
                 check.range(range.start, range.end, "loop")?;
                 if let crate::Span::Time(time) = range.crossfade {
                     check.time(time, "loop crossfade")?;
