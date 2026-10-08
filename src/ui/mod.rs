@@ -53,7 +53,7 @@ pub(crate) mod picker;
 mod rack;
 mod spectrum;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod v2_tests;
 mod theme;
