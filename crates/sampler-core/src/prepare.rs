@@ -2,8 +2,8 @@
 mod predicates;
 mod selection;
 use super::{Envelope, Error, Frame, NotePitch, Playback};
-use predicates::Matching;
 pub use predicates::{AXIS_BASE, ControllerCondition, MAX_AXES, PREVIOUS_KEY};
+use predicates::Matching;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
@@ -133,30 +133,15 @@ impl Pcm {
             .into_iter()
             .map(|(start, frames)| (start, crate::Packed::new(&frames)))
             .collect();
-        Ok(std::mem::replace(
-            &mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()),
-            ranges,
-        ))
+        Ok(std::mem::replace(&mut *self.0.head.write().unwrap_or_else(|e| e.into_inner()), ranges))
     }
     /// Frames in resident ranges.
     pub fn head_frames(&self) -> usize {
-        self.0
-            .head
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|(_, f)| f.len())
-            .sum()
+        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.len()).sum()
     }
     /// Bytes resident ranges hold, packed.
     pub fn head_bytes(&self) -> usize {
-        self.0
-            .head
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|(_, f)| f.bytes())
-            .sum()
+        self.0.head.read().unwrap_or_else(|e| e.into_inner()).iter().map(|(_, f)| f.bytes()).sum()
     }
     /// Whether a start was refused for a missing head since the last call.
     pub fn take_cold(&self) -> bool {

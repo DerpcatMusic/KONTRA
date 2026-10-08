@@ -135,10 +135,7 @@ pub enum Processor {
     /// `x * (dry + g)` where `g` follows `gain` through a one-pole of time
     /// constant [`GAINER_TAU`] seconds, starting at its first target. Constant
     /// or control targets only; per-voice scalar path.
-    Gainer {
-        dry: f64,
-        gain: Parameter,
-    },
+    Gainer { dry: f64, gain: Parameter },
     /// Kontakt Daft filter; per-voice scalar path.
     Daft(DaftSettings),
     /// WaveShaper rectification (stateless).
@@ -205,16 +202,16 @@ mod reverb;
 mod shaping;
 pub(super) mod svf;
 pub use compressor::CompressorSettings;
+pub use daft::DaftSettings;
+pub use shaping::{Decimator, Rectifier};
 pub(super) use control::ControlRamp;
 pub use control::{ControlRange, Parameter};
 pub use convolution::ConvolutionUpload;
 pub(super) use convolution::{Convolution, tail_frames as impulse_tail_frames};
 pub use convolution::{Impulse, MAX_IMPULSE_FRAMES};
-pub use daft::DaftSettings;
 pub use delay::Delay;
 pub(super) use reverb::Reverb;
 pub use reverb::ReverbSettings;
-pub use shaping::{Decimator, Rectifier};
 pub use svf::{StateVariableFilter, SvfMode};
 
 pub(super) enum PreparedProcessor {
@@ -592,17 +589,21 @@ impl PreparedVoiceChain {
 
     /// Whether every stage has a lane kernel (delay lines and compressors stay per voice).
     pub(super) fn batches(&self) -> bool {
-        !self.pre.iter().chain(&self.post).any(|stage| {
-            matches!(
-                stage,
-                PreparedProcessor::Delay { .. }
-                    | PreparedProcessor::Compressor(_)
-                    | PreparedProcessor::Decimate(_)
-                    | PreparedProcessor::Gainer { .. }
-                    | PreparedProcessor::Daft(_)
-                    | PreparedProcessor::Branch { .. }
-            )
-        })
+        !self
+            .pre
+            .iter()
+            .chain(&self.post)
+            .any(|stage| {
+                matches!(
+                    stage,
+                    PreparedProcessor::Delay { .. }
+                        | PreparedProcessor::Compressor(_)
+                        | PreparedProcessor::Decimate(_)
+                        | PreparedProcessor::Gainer { .. }
+                        | PreparedProcessor::Daft(_)
+                        | PreparedProcessor::Branch { .. }
+                )
+            })
     }
 
     pub(super) fn pre(&self) -> &[PreparedProcessor] {
