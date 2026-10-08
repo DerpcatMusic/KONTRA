@@ -1,0 +1,2 @@
+[ perf record: Woken up 1 times to write data ]
+[ perf record: Captured and wrote 0.066 MB /home/derpcat/.cache/kontakto-fix-cpu/worker-queue-profile/after/v2-piano-64-cold-perf.perf.data (1564 samples) ]
