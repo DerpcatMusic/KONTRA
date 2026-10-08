@@ -84,8 +84,9 @@ assert 'opaque' not in partial['reason']
 
 # Actual requested font failures are separate from unrequested style inventory.
 for status in ['original-ok','missing-images']:
-    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'renders':[{'ok':True}]}]}]})
+    font_only=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':3,'font_success':2,'missing_fonts':1,'missing_images':0,'asset_failure_reasons':{'font-service-unavailable':1},'renders':[{'ok':True}]}]}]})
     assert font_only['ui']=='missing_font'
+    assert 'font-service-unavailable=1' in font_only['reason']
 for status in ['error','blank','budget-hit','missing-images']:
     unchanged=scanner.extra_columns({'ui':status,'programs':[{'views':[{'font_declared':2,'font_success':2,'renders':[{'ok':True}]}]}]})
     assert unchanged['ui']==status
