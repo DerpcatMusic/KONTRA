@@ -107,3 +107,100 @@ fn offline_waits_after_delayed_starts_and_script_pitch_changes() {
     assert!(got == expected, "delayed onset and changed pitch must preserve every frame");
     assert_eq!(streamed.stream_underruns(), 0);
 }
+
+#[test]
+fn storage_capacity_refuses_an_incompatible_voice_without_heap_or_live_eviction() {
+    let a = Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap();
+    let b = Pcm::streamed(48000, PAGE_FRAMES * 2).unwrap();
+    let plan = Prepared::new(48000, vec![a, b], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, mut worker) = StreamCache::new(1).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let note = rt.note_on(input(1), 60, 1.).unwrap();
+    let live = rt.start(note, 0, 0, 1.).unwrap();
+    assert_eq!(rt.service_streaming(64), Ok(false));
+    let mut job = worker.next_job().unwrap();
+    job.frames_mut().fill([0.25; 2]);
+    worker.complete(job, Ok(())).unwrap();
+    assert_eq!(rt.service_streaming(64), Ok(true));
+    rt.render(&mut [[0.; 2]; 64]).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    support::without_heap(|| {
+        assert_eq!(rt.start(second, 1, rt.now(), 1.), Err(Error::Capacity));
+        assert!(rt.voice_active(live));
+        assert_eq!(rt.voice_count(), 1);
+        rt.stop_voice(live).unwrap();
+        rt.start(second, 1, rt.now(), 1.).unwrap();
+        assert_eq!(rt.voice_count(), 1);
+    });
+}
+
+#[test]
+fn storage_admission_precedes_stealing_and_counts_refusals() {
+    let pcm = || Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap();
+    let plan = Prepared::new(48000, vec![pcm(), pcm()], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 1);
+    let (cache, mut worker) = StreamCache::new(1).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    rt.set_stream_horizon(64).unwrap();
+    rt.set_voice_stealing(Some(Stealing::for_limits(48000, 1))).unwrap();
+    let input = |id| Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(id) };
+    let first = rt.note_on(input(1), 60, 1.).unwrap();
+    let live = rt.start(first, 0, 0, 1.).unwrap();
+    let mut job = worker.next_job().unwrap();
+    job.frames_mut().fill([0.25; 2]);
+    worker.complete(job, Ok(())).unwrap();
+    rt.service_streaming(64).unwrap();
+    let second = rt.note_on(input(2), 60, 1.).unwrap();
+    support::without_heap(|| {
+        assert_eq!(rt.start(second, 1, 0, 1.), Err(Error::Capacity));
+        assert!(rt.voice_active(live));
+        assert_eq!(rt.steals(), 0);
+        assert_eq!(rt.stats().stream_capacity_refusals, 1);
+    });
+}
+
+#[test]
+fn admission_accounts_for_pitch_and_crossfade_source_windows() {
+    let pcm = Pcm::headed(48000, PAGE_FRAMES * 8, &[[0.25; 2]; 32]).unwrap();
+    let plan = Prepared::new(48000, vec![pcm], vec![], 0).unwrap();
+    let limits = Limits::for_plan(&plan, 8, 8);
+    let (cache, _worker) = StreamCache::new(1).unwrap();
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_cold_starts(true);
+    rt.set_stream_horizon(1024).unwrap();
+    let note = rt.note_on(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(1) }, 60, 1.).unwrap();
+    let family = rt.create_family(note).unwrap();
+    support::without_heap(|| {
+        assert_eq!(rt.start_family(family, 0, 0, 1., Envelope::default(), Playback { transpose_semitones: 48., ..Default::default() }), Err(Error::Capacity));
+        assert_eq!(rt.voice_count(), 0);
+        assert_eq!(rt.start_family(family, 0, 0, 1., Envelope::default(), Playback {
+            start: PAGE_FRAMES - 512,
+            loop_range: Some(Loop { start: PAGE_FRAMES, end: PAGE_FRAMES * 2, mode: LoopMode::Continuous, shape: LoopShape::Crossfade { frames: 512 }, passes: None }),
+            ..Default::default()
+        }), Err(Error::Capacity));
+        assert_eq!(rt.voice_count(), 0);
+    });
+}
+
+#[test]
+fn shared_storage_budget_allows_more_than_256_distinct_live_sources() {
+    let assets = (0..300).map(|_| Pcm::headed(48000, PAGE_FRAMES * 2, &[[0.25; 2]; 32]).unwrap()).collect();
+    let plan = Prepared::new(48000, assets, vec![], 0).unwrap();
+    let limits = Limits { families: 512, ..Limits::for_plan(&plan, 512, 512) };
+    let (cache, _worker) = StreamCache::new(900).unwrap();
+    assert_eq!(cache.voice_budget(), 300);
+    let mut rt = Runtime::new(plan, limits).unwrap().with_stream_cache(cache);
+    rt.set_stream_horizon(64).unwrap();
+    support::without_heap(|| {
+        for sample in 0..300 {
+            let note = rt.note_on(Input { protocol: Protocol::Native, port: 0, group: 0, channel: 0, key: 60, external_id: Some(sample as i32) }, 60, 1.).unwrap();
+            rt.start(note, sample, 0, 1.).unwrap();
+        }
+        assert_eq!(rt.voice_count(), 300);
+        assert_eq!(rt.stats().stream_capacity_refusals, 0);
+    });
+}

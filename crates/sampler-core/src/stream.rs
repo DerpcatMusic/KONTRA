@@ -148,6 +148,10 @@ pub struct StreamWorker {
 }
 impl StreamCache {
     /// Bytes of page buffers this cache owns once its worker has filled them.
+    /// Nominal streaming polyphony; exact horizon admission also checks shared
+    /// demand because pitch and crossfade windows can exceed three pages.
+    pub fn voice_budget(&self) -> usize { (self.entries.len() / 3).max(1) }
+
     pub fn bytes(&self) -> usize {
         self.entries.len() * PAGE_FRAMES * size_of::<Frame>()
     }
@@ -594,6 +598,13 @@ impl crate::Runtime {
     pub fn stream_cache_mut(&mut self) -> Option<&mut StreamCache> {
         self.stream_cache.as_mut()
     }
+    /// The horizon admitted with each start, matched to the frontend's service
+    /// horizon. Setup side; changing it does not allocate.
+    pub fn set_stream_horizon(&mut self, frames: u32) -> Result<(), Error> {
+        if frames == 0 { return Err(Error::InvalidInput); }
+        self.stream_horizon = frames;
+        Ok(())
+    }
     pub fn stream_underruns(&self) -> u64 {
         self.stream_underruns
     }
@@ -628,6 +639,44 @@ impl crate::Runtime {
             if std::time::Instant::now() >= until { return Err(StreamError::Timeout); }
             std::thread::sleep(std::time::Duration::from_micros(100));
         }
+    }
+
+    /// Reserve an incoming cursor before DSP admission can steal a live voice.
+    /// Current demand is protected first; incoming pages then protect each other.
+    pub(crate) fn admit_streaming(&mut self, plan: crate::PlanId, sample: usize,
+        cursor: crate::source::Cursor, envelope: crate::Envelope, at: u64,
+    ) -> Result<(), StreamError> {
+        at.checked_add(u64::from(self.stream_horizon)).ok_or(StreamError::ClockOverflow)?;
+        let mut cache = self.stream_cache.take().ok_or(StreamError::NotConfigured)?;
+        let result = (|| {
+            match self.service_cache(&mut cache, self.stream_horizon) {
+                Ok(_) | Err(StreamError::DecodeFailed(_)) => {},
+                Err(error) => return Err(error),
+            }
+            let asset = &self.plans.get(plan.0).unwrap().prepared.pcm[sample];
+            let head = asset.try_head();
+            let head = head.as_deref().map_or(&[][..], |h| h);
+            let mut failure = None;
+            cursor.visit_demand(self.stream_horizon, crate::envelope::EnvelopeState::new(envelope), |offset, frames| {
+                crate::prepare::uncovered(head, frames, |frames| {
+                    for page in frames.start / PAGE_FRAMES..=(frames.end - 1) / PAGE_FRAMES {
+                        let start = page * PAGE_FRAMES;
+                        cache.protect(asset, start..(start + PAGE_FRAMES).min(asset.frame_count()))
+                            .expect("validated source demand");
+                        if let Err(error) = cache.request_retry(asset, page, at + u64::from(offset)) {
+                            failure = Some(error);
+                            return false;
+                        }
+                    }
+                    true
+                });
+                failure.is_none()
+            });
+            failure.map_or(Ok(()), Err)
+        })();
+        cache.wake();
+        self.stream_cache = Some(cache);
+        result
     }
 
     pub fn service_streaming(&mut self, frames: u32) -> Result<bool, StreamError> {
