@@ -354,7 +354,11 @@ impl Runtime {
         while let Some(index) = voice {
             let state = self.voices.at_mut(index);
             voice = state.siblings.next;
-            state.envelope.release();
+            if state.cursor.holding_onset() {
+                state.envelope.release_onset();
+            } else {
+                state.envelope.release();
+            }
             state.cursor.release();
             let g = self.plans.get_mut(plan.0).unwrap();
             g.modulation
@@ -363,7 +367,7 @@ impl Runtime {
                 || state.envelope.done(),
                 |chain| self.plans.get(plan.0).unwrap().prepared.voice_chains[chain].done(state),
             );
-            if !state.started || state.cursor.holding_onset() || done {
+            if !state.started || done {
                 self.end_voice(VoiceId(self.voices.id(index.get())));
             }
         }
