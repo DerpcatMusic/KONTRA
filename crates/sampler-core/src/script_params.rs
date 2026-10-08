@@ -48,6 +48,12 @@ impl Prepared {
 }
 
 impl Prepared {
+    /// Name buses by source address so a script can route groups to them.
+    pub fn with_bus_addresses(mut self, addresses: Vec<(i32, usize)>) -> Self {
+        self.bus_addresses = addresses.into_boxed_slice();
+        self
+    }
+
     /// Move groups' volume from their voices to a bus fader (one entry per
     /// group, after [`Prepared::with_buses`]): script volume writes then set
     /// the fader at run time, scaling the bus's output and the sends in
@@ -217,6 +223,9 @@ pub(crate) struct EngineLayers {
     fader: Box<[Option<usize>]>,
     /// Per group, script envelope stages indexed like `EnvelopeStage`.
     envelopes: Box<[[Option<u32>; 6]]>,
+    /// Per group, the bus a script routed it to (`Some(None)`: the master).
+    route: Box<[Option<Option<usize>>]>,
+    addresses: Box<[(i32, usize)]>,
 }
 
 impl EngineLayers {
@@ -246,7 +255,28 @@ impl EngineLayers {
                 .collect(),
             authored,
             envelopes: vec![[None; 6]; count].into_boxed_slice(),
+            route: vec![None; count].into_boxed_slice(),
+            addresses: prepared.bus_addresses.clone(),
         }
+    }
+
+    /// Route `group` to the bus at source `address`; a bus the plan lacks is the master.
+    pub fn set_route(&mut self, group: usize, address: i64) {
+        let bus = self
+            .addresses
+            .iter()
+            .find(|(a, _)| i64::from(*a) == address)
+            .map(|&(_, bus)| bus);
+        if let Some(slot) = self.route.get_mut(group) {
+            *slot = Some(bus);
+        }
+    }
+
+    /// The bus voices of `group` start on: the script's routing, else `authored`.
+    pub fn bus(&self, group: Option<u32>, authored: Option<usize>) -> Option<usize> {
+        group
+            .and_then(|g| self.route.get(g as usize).copied().flatten())
+            .unwrap_or(authored)
     }
 
     /// `envelope` with the group's script stages applied.

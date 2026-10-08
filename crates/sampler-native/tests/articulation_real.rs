@@ -856,6 +856,22 @@ fn full_note_runtime_trace_probe() {
             sampler_kontakt::finish(d.instrument.clone(), d.pcm.clone(), d.labels.clone(), &d.options)
                 .unwrap();
         let names: Vec<String> = loaded.instrument.groups.iter().map(|g| g.name.clone()).collect();
+        if let Some(z) = std::env::var("KONTRA_TRACE_ZONE").ok().and_then(|v| v.parse::<usize>().ok()) {
+            let ir = &loaded.instrument;
+            for r in &ir.zones[z].routes {
+                let route = &ir.routes[r.0];
+                println!("ZONE {z} route {:?} src {:?} shape {:?}", route, ir.modulators[route.source.0].source, route.shape.map(|s| ir.shapes[s.0].points.clone()));
+            }
+        }
+        if std::env::var_os("KONTRA_TRACE_UNS").is_some() {
+            let mut seen: std::collections::BTreeMap<String, usize> = Default::default();
+            for u in &loaded.instrument.unsupported {
+                *seen.entry(format!("{} | {:.90}", u.feature, u.value)).or_default() += 1;
+            }
+            for (k, n) in seen {
+                println!("UNS {n} {k}");
+            }
+        }
         let scripts = loaded.scripts.clone();
         let plan = loaded.plan;
         let limits = Limits {
@@ -911,6 +927,18 @@ fn full_note_runtime_trace_probe() {
                         format!("{g} z{} {:?}", c.region, loaded.instrument.zones[c.region].velocities)
                     })
                     .collect();
+                if let Ok(pat) = std::env::var("KONTRA_TRACE_REJ") {
+                    let mut by: std::collections::BTreeMap<String, usize> = Default::default();
+                    for c in r.candidates.iter().filter(|c| c.rejected.is_some()) {
+                        let g = c.group.map_or("?".into(), |g| names.get(g as usize).cloned().unwrap_or_default());
+                        if g.contains(&pat) {
+                            *by.entry(format!("{g} {:?}", c.rejected)).or_default() += 1;
+                        }
+                    }
+                    for (k, n) in by.iter().take(40) {
+                        println!("step {i} REJ {n} {k}");
+                    }
+                }
                 println!(
                     "step {i} SEL key {} vel {} {:?} suppressed {} candidates {} sounded {} {:?}",
                     r.key,
@@ -1035,6 +1063,32 @@ fn una_solo_probe() {
             let wins: Vec<String> = (0..12).map(|w| { let seg = &out[w * 4800..(w + 1) * 4800]; let p = seg.iter().flatten().fold(0f32, |p, x| p.max(x.abs())); format!("{:.0}", 20.0 * f64::from(p).log10()) }).collect();
             eprintln!("PROBE windows {}", wins.join(" "));
             eprintln!("PROBE {name} zones {zones} vel {vel}: pk {:.1}/{:.1} rms {:.1}/{:.1}", l.peak[0], l.peak[1], r.rms[0], r.rms[1]);
+        }
+    }
+}
+
+/// Diagnostic: `KONTRA_SAVED=<nki>` prints a summary of each saved variable
+/// whose name contains `KONTRA_SAVED_FILTER` (default: all arrays).
+#[test]
+#[ignore = "probe"]
+fn saved_state_probe() {
+    let Some(path) = std::env::var_os("KONTRA_SAVED") else {
+        return;
+    };
+    let filter = std::env::var("KONTRA_SAVED_FILTER").unwrap_or_default();
+    let ir = sampler_kontakt::read(std::path::Path::new(&path)).unwrap().instrument;
+    for b in &ir.behaviors {
+        for (name, value) in &b.state {
+            if !name.contains(&filter) {
+                continue;
+            }
+            match value {
+                ir::Saved::Ints(v) => {
+                    let ones: Vec<usize> = v.iter().enumerate().filter(|(_, x)| **x != 0).map(|(i, _)| i).take(12).collect();
+                    println!("slot {:?} {name} ints len {} nonzero {} first {ones:?} last {:?}", b.slot, v.len(), v.iter().filter(|x| **x != 0).count(), v.last());
+                }
+                other => println!("slot {:?} {name} {:.80?}", b.slot, other),
+            }
         }
     }
 }
