@@ -1998,6 +1998,9 @@ impl PluginLogic for Sampler {
         s.audition.fill((0, 0));
         s.playing = false;
         p.shared.reset_midi();
+        p.shared.voices.store(0, Ordering::Relaxed);
+        p.shared.audible.store(0, Ordering::Relaxed);
+        p.shared.engine_keys.store(false, Ordering::Release);
     }
 
     fn process(
