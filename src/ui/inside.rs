@@ -176,7 +176,7 @@ struct Edit {
 struct ArtDrag { slot: usize, source: String }
 
 
-fn mode(cx: &Cx, slot: usize, inst: &ir::Instrument) -> ir::Driver {
+pub(super) fn mode(cx: &Cx, slot: usize, inst: &ir::Instrument) -> ir::Driver {
     let p = &cx.selection.parts[slot];
     p.articulation_overlay.driver.map(crate::sound::articulation::driver).unwrap_or_else(|| {
         if p.switching & 0x80 != 0 { crate::sound::articulation::driver(p.switching >> 1 & 7) } else { inst.switching.driver }
