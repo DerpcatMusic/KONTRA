@@ -1,0 +1,200 @@
+{
+  "binary": "/home/derpcat/.wine/drive_c/Program Files/Common Files/VST3/Portapotty/Kontakt 8/x64/Kontakt 8.exe",
+  "sha256": "0fe6356e0879d058b6e5b73507c54c5e345cea451b35287c974e438291d4dae8",
+  "version": "8.13.1",
+  "image_base": "0x140000000",
+  "ranges": [
+    {
+      "name": "symbol_registration",
+      "va": "0x14045ab80",
+      "bytes": 112,
+      "sha256": "b1f533f2318f5cd240b63d505462cb0a4a4cd3174f6c7ea025ed3bba149e49cb"
+    },
+    {
+      "name": "join_menu",
+      "va": "0x14061c1a2",
+      "bytes": 82,
+      "sha256": "ca5bb59d08fac7aa8e17447091e9e7d3ea9296005345254219aba9465c7227a6"
+    },
+    {
+      "name": "join_diagnostic",
+      "va": "0x140878025",
+      "bytes": 122,
+      "sha256": "5acab69e75aab27059d5a7bb44deb1e98dd817b572b0ee621028c2cb827b8d02"
+    },
+    {
+      "name": "criteria_reader",
+      "va": "0x140d04400",
+      "bytes": 283,
+      "sha256": "359c4269e0a4115a4bc0b6108def2c2101912bfebdf46195837417555981dfdf"
+    },
+    {
+      "name": "criteria_writer",
+      "va": "0x140d12ec0",
+      "bytes": 260,
+      "sha256": "1d4cc70bf8acf3fb6684f68fcf9fbab79d349d5b0d07e1bc68a49c3448d1de4f"
+    },
+    {
+      "name": "loop_reader",
+      "va": "0x140cff510",
+      "bytes": 296,
+      "sha256": "4adb863a010a761fa35131b46025519dfad9c34354574ee26c0491ebf661efd5"
+    },
+    {
+      "name": "loop_writer",
+      "va": "0x140d0faa0",
+      "bytes": 294,
+      "sha256": "3043d1d253a34f65cc97c9ccaa4a8fedf3862e3322cb752eaf077f192f04348a"
+    },
+    {
+      "name": "automation_reader",
+      "va": "0x140cfec70",
+      "bytes": 355,
+      "sha256": "c0b3a6aca45fd7fbfcb1e029e67bf7abaadd7cda95ad5ee9ab52b7da13352da5"
+    },
+    {
+      "name": "automation_writer",
+      "va": "0x140d0f570",
+      "bytes": 190,
+      "sha256": "5bc163302b2024f9c8ea6a9c14b548ecc2993938cc6a71e80ad9efa15553e520"
+    },
+    {
+      "name": "automation_mode_reader",
+      "va": "0x140cf0360",
+      "bytes": 96,
+      "sha256": "b9dee7e900413b264b3dbd241b835fda1cc111b22a2b05de207154e76f26f341"
+    },
+    {
+      "name": "automation_tag_reader",
+      "va": "0x140cf0710",
+      "bytes": 171,
+      "sha256": "c2912e28fef4fa8996ef438e437a3c7855c609f5cdfa36b4a19df59e69ed7076"
+    },
+    {
+      "name": "automation_sertype",
+      "va": "0x14051b380",
+      "bytes": 6,
+      "sha256": "2db31f4e09597946e56e859813bfdad7046d457c32332c3a882654d1e3ffdf67"
+    },
+    {
+      "name": "automation_version",
+      "va": "0x1406b10f0",
+      "bytes": 6,
+      "sha256": "a58a135412db7935e8c860ea407de5ebd382aa1a29ecef8615d3853d02013691"
+    },
+    {
+      "name": "automation_text_reader",
+      "va": "0x14091f1b0",
+      "bytes": 1339,
+      "sha256": "1ce1f4c731ac72607a44c638d3c3772295e1414f470976862a9bff4cd2b75d18"
+    },
+    {
+      "name": "automation_runtime_index",
+      "va": "0x14096e6b0",
+      "bytes": 1562,
+      "sha256": "cfedb5c7a4cbd19d1aadc357f26b1fbcb5dd236315166033e21c925891ff0ff9"
+    },
+    {
+      "name": "automation_host_callback",
+      "va": "0x140958d50",
+      "bytes": 1058,
+      "sha256": "ec2dd7b39cf82759e41abe1e5bb3d2d18199da32bdcc290ca563238a5ba2ce52"
+    },
+    {
+      "name": "program_private_reader",
+      "va": "0x140d0a2c0",
+      "bytes": 12288,
+      "sha256": "95850f570479a411dabe77a73826064d299969370c9409c9e959e41a29396bd8"
+    },
+    {
+      "name": "prefix_array_A_reader",
+      "va": "0x140cf0ad0",
+      "bytes": 752,
+      "sha256": "10c68256c219e3e4b794f7729f8b6d181b556fd16227ad90908b2bbf115fe8ce"
+    },
+    {
+      "name": "prefix_array_B_reader",
+      "va": "0x140cf0dc0",
+      "bytes": 751,
+      "sha256": "0e7f702a35326c0dace0710548a68b2268acaca1373924a533e89ccda68f17e1"
+    },
+    {
+      "name": "prefix_A_public",
+      "va": "0x140cfedf0",
+      "bytes": 170,
+      "sha256": "af412a1a41b85c86c9bd596986b7d2674c7f7649f87b6848a950a0a75fc5df47"
+    },
+    {
+      "name": "prefix_B_public",
+      "va": "0x140cfeea0",
+      "bytes": 309,
+      "sha256": "4ab51faed75d8d73da30888f89dca28a283712b03a002c75b59eea37bd7d3a75"
+    },
+    {
+      "name": "wide_string_reader",
+      "va": "0x142a784b0",
+      "bytes": 665,
+      "sha256": "abb0c9cdad3a3e69a9d2e1c2d07b98620366b02f22bc34b4593e3b0ae2052676"
+    },
+    {
+      "name": "automation_array_modern_gate",
+      "va": "0x140cf14f0",
+      "bytes": 40,
+      "sha256": "ec44619394f99b108cccf937d34956f515d4fd10330e35f7ad5bf7e80ceabe81"
+    },
+    {
+      "name": "automation_array_modern_records",
+      "va": "0x140cf08b0",
+      "bytes": 536,
+      "sha256": "f0ab40495d354335888f6249f6336394733e3d78bf61c3547560f67ff13bc13c"
+    },
+    {
+      "name": "automation_array_legacy",
+      "va": "0x140cefcf0",
+      "bytes": 344,
+      "sha256": "dc34143955a34b631f4288dd8e76a011fd16534b2b44f230908d66c297f03521"
+    },
+    {
+      "name": "automation_array_writer",
+      "va": "0x140cf25a0",
+      "bytes": 439,
+      "sha256": "f8cc3e6d663fcca35fc8bc6215506fc6b60df8faa86ee55b80ac0cd1cc329df5"
+    },
+    {
+      "name": "slider40_tag_pair",
+      "va": "0x1409b695c",
+      "bytes": 40,
+      "sha256": "bc26c27e9b5134d138ea5c63fdc0750c03b249cdb604e5f721e4343e0b71ee67"
+    },
+    {
+      "name": "slider_tag_ordinal",
+      "va": "0x140993fc0",
+      "bytes": 96,
+      "sha256": "edc167ed3353020892f899e440cce276c16a54c6d4d9ac65fee68bb8ce6735a5"
+    },
+    {
+      "name": "typed_control_lookup",
+      "va": "0x1407a3ba0",
+      "bytes": 448,
+      "sha256": "2e629ebad816936b600a25b4d653358aaf4adedf32d7e4d1a5e84eaea51f7733"
+    },
+    {
+      "name": "automation_creation_address_gate",
+      "va": "0x1408f3479",
+      "bytes": 23,
+      "sha256": "72ac6be6df8674d60569a9423a3fd11e624d2981c57b1a561b5b85f3f5df48d7"
+    },
+    {
+      "name": "automation_host_address_remap",
+      "va": "0x1409ab730",
+      "bytes": 432,
+      "sha256": "2e8a6ae1bccc44768a463990248bab34baba795b839b8a6fcbfdbfaf604b0f6a"
+    },
+    {
+      "name": "automation_host_limit_initial",
+      "va": "0x144fd4c80",
+      "bytes": 4,
+      "sha256": "99af6dc6473511efb28cff7f7496d802e26d96e78eaa315caaedc2268611cd3b"
+    }
+  ]
+}

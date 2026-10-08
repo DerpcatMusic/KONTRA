@@ -1,0 +1,13 @@
+reader	version	input	consumed_bytes	verified_output
+criteria	0x70	join=0	31	object+0x28=0
+criteria	0x70	join=1	31	object+0x28=1
+criteria	0x70	join=2	31	object+0x28=2
+loop	0x60	mode=0,start=8192,len=4096,count=2,alt=1,tune=.5,fade=512	25	internal_mode=0;fields_preserved
+loop	0x60	mode=1,start=8192,len=4096,count=2,alt=1,tune=.5,fade=512	25	internal_mode=3;fields_preserved
+loop	0x60	mode=2,start=8192,len=4096,count=2,alt=1,tune=.5,fade=512	25	internal_mode=4;fields_preserved
+loop	0x60	mode=3,start=8192,len=4096,count=2,alt=1,tune=.5,fade=512	25	internal_mode=1;fields_preserved
+automation	0x71	mode=1,takeover=0,address=1,obj=0,chain=-1,range=0..1,slider_0_40	49	fields_preserved;tag_lookup_stub=0x17db
+automation	0x71	mode=2,takeover=0,address=10,obj=0,chain=-1,range=0..1,slider_0_40	49	fields_preserved;tag_lookup_stub=0x17db
+automation	0x71	mode=2,takeover=0,address=65535,obj=0,chain=-1,range=0..1,slider_0_40	49	fields_preserved;tag_lookup_stub=0x17db
+prefix_array_A	0x50	UTF16_units=4	31	23+2*N_bytes
+prefix_array_B	0x50	UTF16_units=4,K=3	36	16+2*N+4*K_bytes
