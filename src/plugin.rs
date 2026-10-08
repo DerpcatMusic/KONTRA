@@ -289,6 +289,10 @@ impl SamplerParams {
 
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(test)]
+#[path = "plugin/loop_audit.rs"]
+mod loop_audit;
+
 /// Stable per-part atoms shared with the editor/loader. Audio keeps its own
 /// prepared Arc vector and never locks the growable registry.
 #[derive(Default)]
