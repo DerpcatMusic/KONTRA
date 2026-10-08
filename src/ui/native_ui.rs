@@ -38,10 +38,12 @@ pub(super) struct State {
     seed: Vec<(ir::Source, usize, ir::Widget)>,
     size: Size,
 }
-fn failure(error: &anyhow::Error) -> String {
+fn failure(error: &anyhow::Error, phase: &str) -> String {
     fn category(error: &mlua::Error) -> String {
         match error {
-            mlua::Error::CallbackError { cause, .. } => category(cause),
+            mlua::Error::CallbackError { cause, .. } | mlua::Error::BadArgument { cause, .. } => {
+                category(cause)
+            }
             mlua::Error::FromLuaConversionError { from, to, .. } => {
                 let allowed = [
                     "nil", "boolean", "integer", "number", "string", "table", "function",
@@ -62,7 +64,29 @@ fn failure(error: &anyhow::Error) -> String {
                 )
             }
             mlua::Error::SyntaxError { .. } => "NativeUI Lua syntax".into(),
-            mlua::Error::ExternalError(_) => "NativeUI host operation".into(),
+            mlua::Error::ExternalError(error) => {
+                let message = error.to_string();
+                if let Some(site) = message.strip_prefix("NativeUI interrupt budget exceeded; site ")
+                    && site.bytes().all(|c| c.is_ascii_hexdigit() || c == b':')
+                {
+                    return message;
+                }
+                [
+                    "NativeUI module absent",
+                    "NativeUI meter unavailable",
+                    "NativeUI control unavailable",
+                    "NativeUI syntax translation",
+                    "Invalid NativeUI module path",
+                    "NativeUI interrupt budget exceeded",
+                    "NativeUI time budget exceeded",
+                    "NativeUI value type unsupported",
+                    "invalid utf-8 sequence",
+                ]
+                .into_iter()
+                .find(|class| message.contains(class))
+                .unwrap_or("NativeUI host operation")
+                .into()
+            }
             mlua::Error::RuntimeError(_) => "NativeUI Lua runtime".into(),
             _ => "NativeUI Lua operation".into(),
         }
@@ -71,7 +95,7 @@ fn failure(error: &anyhow::Error) -> String {
         .downcast_ref::<mlua::Error>()
         .map(category)
         .unwrap_or_else(|| "NativeUI package".into());
-    format!("{category}: {error}")
+    format!("{phase}, {category}: {error}")
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -172,40 +196,11 @@ impl State {
     #[cfg(feature = "shots")]
     pub fn diagnostic(&self) -> Option<String> {
         self.failure.as_ref().map(|raw| {
-            let class = [
-                "NativeUI meter unavailable",
-                "NativeUI module absent",
-                "No readable legacy .nui resources",
-                "NativeUI control unavailable",
-                "error converting Lua table to string",
-                "error converting Lua nil",
-                "error converting Lua string",
-                "NativeUI interrupt budget exceeded",
-                "NativeUI time budget exceeded",
-                "Expected identifier",
-                "Expected '('",
-                "Expected expression",
-                "Unknown NativeUI primitive",
-                "NativeUI conversion boolean to string",
-                "NativeUI conversion table to string",
-                "NativeUI conversion table to String",
-                "NativeUI conversion table to Function",
-                "NativeUI conversion nil to Function",
-                "NativeUI Lua syntax",
-                "NativeUI Lua runtime",
-                "NativeUI host operation",
-                "NativeUI package",
-            ]
-            .into_iter()
-            .find(|class| raw.contains(class));
-            class.map_or_else(
-                || crate::scan_metrics::message(raw),
-                |class| {
-                    format!(
-                        "{class}; hash {}",
-                        &blake3::hash(raw.as_bytes()).to_hex()[..16]
-                    )
-                },
+            format!(
+                "{}; {}",
+                raw.split_once(": ")
+                    .map_or("NativeUI failure", |(category, _)| category),
+                crate::scan_metrics::message(raw)
             )
         })
     }
@@ -227,7 +222,7 @@ impl State {
                 Ok(package) => self.package = Some(package),
                 Err(error) => {
                     self.failed = true;
-                    self.failure = Some(failure(&error));
+                    self.failure = Some(failure(&error, "NativeUI resource preparation"));
                 }
             }
         }
@@ -291,7 +286,7 @@ impl State {
             Ok(el) => el,
             Err(error) => {
                 self.failed = true;
-                self.failure = Some(failure(&error));
+                self.failure = Some(failure(&error, if self.started { "NativeUI graph" } else { "NativeUI module initialization" }));
                 caption("The authored native interface could not render.")
                     .lines(2)
                     .pad(12.)
