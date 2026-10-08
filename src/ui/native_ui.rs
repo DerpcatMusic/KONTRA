@@ -190,6 +190,10 @@ impl State {
             .map_or(Default::default(), |p| p.images.scan())
     }
     #[cfg(feature = "shots")]
+    pub fn font_success(&self) -> Option<usize> {
+        self.package.as_ref().map(|p| p.fonts.len())
+    }
+    #[cfg(feature = "shots")]
     pub fn failures(&self) -> Vec<String> {
         self.package
             .as_ref()
