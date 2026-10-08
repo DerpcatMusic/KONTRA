@@ -13,6 +13,8 @@ pub mod audit;
 mod container;
 mod header_cache;
 mod effects;
+#[cfg(feature = "scan")]
+mod coverage;
 pub mod keyswitch;
 mod keyswitch_ui;
 mod library;

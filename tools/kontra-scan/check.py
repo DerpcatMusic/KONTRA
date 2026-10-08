@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runnable check for shard timeout, per-item reuse, TSV escaping and changed-input invalidation."""
 import importlib.util
+import os
 import json
 from pathlib import Path
 import subprocess
@@ -97,3 +98,20 @@ unrequested=scanner.extra_columns({'ui':'original-ok','programs':[{'views':[{'fo
 assert unrequested['ui']=='original-ok'
 
 print('shared scanner checks passed')
+# A complete zero-slot inventory is zero, absent/partial evidence is unknown.
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':True,'counts':{'fx_slots_dropped':{'enabled':2,'bypassed':3},'filter_slots_dropped':{'enabled':0,'bypassed':1},'mod_slots_dropped':{'enabled':4,'bypassed':0}}}}]})['fx_slots_dropped']=='{"enabled":2,"bypassed":3}'
+assert scanner.extra_columns({'programs':[{'dsp_slots':{'complete':False}}]})['mod_slots_dropped']=='unknown'
+assert scanner.extra_columns({'programs':[]})['filter_slots_dropped']=='unknown'
+
+assert scanner.extra_columns({"programs":[]})["family_match"]=="UNKNOWN"
+scripted={"programs":[{"family_native":{"basis":"native-reader","script_driven":["allow_group"]},"family_takes":[]}]}
+scanner.extra_columns(scripted)
+assert scripted["family_match"]=="UNKNOWN" and scripted["family_script_driven_count"]==1
+# Repeated family evidence cannot reuse a timing-only cached worker.
+old_repeats=os.environ.get('KONTRA_SCAN_FAMILY_REPEATS')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='0'
+timing_signature=scanner.signature('absent-instrument','r')
+os.environ['KONTRA_SCAN_FAMILY_REPEATS']='32'
+assert scanner.signature('absent-instrument','r')!=timing_signature
+if old_repeats is None:os.environ.pop('KONTRA_SCAN_FAMILY_REPEATS')
+else:os.environ['KONTRA_SCAN_FAMILY_REPEATS']=old_repeats

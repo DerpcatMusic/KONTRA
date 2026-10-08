@@ -266,62 +266,77 @@ impl Prepared {
     /// physical modulator slot. Defaults are authored native values, never a
     /// script-write mirror. Values are consumed when a voice starts.
     pub fn with_group_envelope_parameters(
-        mut self,
+        self,
         group: u32,
         physical_group: i32,
         slot: i32,
         authored: crate::Envelope,
     ) -> Result<Self, Error> {
-        if group >= self.group_count || physical_group < 0 || slot < 0 {
-            return Err(Error::InvalidInput);
+        self.with_group_envelope_parameters_batch([(group, physical_group, slot, authored)])
+    }
+
+    /// Port v1 bank::Builder's single control-thread group construction pass;
+    /// validate the completed schema once rather than once per envelope.
+    pub fn with_group_envelope_parameters_batch(
+        mut self,
+        envelopes: impl IntoIterator<Item = (u32, i32, i32, crate::Envelope)>,
+    ) -> Result<Self, Error> {
+        let mut envelopes = envelopes.into_iter().peekable();
+        if envelopes.peek().is_none() {
+            return Ok(self);
         }
         let mut controls = self.controls.to_vec();
         let mut bindings = self.engine_parameters.to_vec();
         let mut lanes = self.envelope_controls.to_vec();
         lanes.resize(self.group_count as usize, [None; 6]);
-        for (index, stage) in ENVELOPE_STAGES.into_iter().enumerate() {
-            if lanes[group as usize][index].is_some() {
+        for (group, physical_group, slot, authored) in envelopes {
+            if group >= self.group_count || physical_group < 0 || slot < 0 {
                 return Err(Error::InvalidInput);
             }
-            let parameter = engine_parameter_id(
-                [
-                    "ENGINE_PAR_ATTACK",
-                    "ENGINE_PAR_HOLD",
-                    "ENGINE_PAR_DECAY",
-                    "ENGINE_PAR_SUSTAIN",
-                    "ENGINE_PAR_RELEASE",
-                    "ENGINE_PAR_ATK_CURVE",
-                ][index],
-            )
-            .unwrap();
-            let id = ControlId(
-                (0x454e56u128 << 104)
-                    | (u128::from(index as u8) << 96)
-                    | (u128::from(physical_group as u32) << 64)
-                    | (u128::from(slot as u32) << 32),
-            );
-            let law = EngineParameterLaw::envelope(stage, self.rate);
-            let (min, max) = match stage {
-                crate::EnvelopeStage::Sustain => (0., 1.),
-                crate::EnvelopeStage::AttackCurve => (-32., 32.),
-                _ => (0., u32::MAX as f64),
-            };
-            controls.push(crate::ControlDefinition {
-                id,
-                domain: crate::ControlDomain::Real { min, max },
-                default: ControlValue::Real(authored.control_value(stage)),
-            });
-            lanes[group as usize][index] = Some(id);
-            bindings.push(EngineParameterBinding {
-                address: EngineParameterAddress {
-                    parameter,
-                    group: physical_group,
-                    slot,
-                    generic: -1,
-                },
-                control: id,
-                law,
-            });
+            for (index, stage) in ENVELOPE_STAGES.into_iter().enumerate() {
+                if lanes[group as usize][index].is_some() {
+                    return Err(Error::InvalidInput);
+                }
+                let parameter = engine_parameter_id(
+                    [
+                        "ENGINE_PAR_ATTACK",
+                        "ENGINE_PAR_HOLD",
+                        "ENGINE_PAR_DECAY",
+                        "ENGINE_PAR_SUSTAIN",
+                        "ENGINE_PAR_RELEASE",
+                        "ENGINE_PAR_ATK_CURVE",
+                    ][index],
+                )
+                .unwrap();
+                let id = ControlId(
+                    (0x454e56u128 << 104)
+                        | (u128::from(index as u8) << 96)
+                        | (u128::from(physical_group as u32) << 64)
+                        | (u128::from(slot as u32) << 32),
+                );
+                let law = EngineParameterLaw::envelope(stage, self.rate);
+                let (min, max) = match stage {
+                    crate::EnvelopeStage::Sustain => (0., 1.),
+                    crate::EnvelopeStage::AttackCurve => (-32., 32.),
+                    _ => (0., u32::MAX as f64),
+                };
+                controls.push(crate::ControlDefinition {
+                    id,
+                    domain: crate::ControlDomain::Real { min, max },
+                    default: ControlValue::Real(authored.control_value(stage)),
+                });
+                lanes[group as usize][index] = Some(id);
+                bindings.push(EngineParameterBinding {
+                    address: EngineParameterAddress {
+                        parameter,
+                        group: physical_group,
+                        slot,
+                        generic: -1,
+                    },
+                    control: id,
+                    law,
+                });
+            }
         }
         let lookups = self.engine_lookups.to_vec();
         self = self.with_controls(controls)?;
@@ -465,6 +480,9 @@ impl Runtime {
             .map(|peak| peak[address.channel as usize])
             .ok_or(Error::InvalidInput)
     }
+    pub fn engine_parameter_bindings(&self, plan: PlanId) -> Result<&[EngineParameterBinding], Error> {
+        Ok(&self.plans.get(plan.0).ok_or(Error::StaleHandle)?.prepared.engine_parameters)
+    }
     /// Replace the player's complete offset layer without allocating. Scripts
     /// continue to read/write base values; DSP consumes the base plus offsets.
     pub fn set_engine_offsets(&mut self, offsets: &[EngineParameterOffset]) -> Result<(), Error> {
@@ -473,15 +491,18 @@ impl Runtime {
         }
         let generation = self.plans.get_mut(self.active_plan.0).ok_or(Error::StaleHandle)?;
         let prepared = &generation.prepared;
-        let matches = |a: EngineParameterAddress, b: EngineParameterAddress| {
-            a.parameter == b.parameter && a.slot == b.slot && a.generic == b.generic
+        let matches = |a: EngineParameterAddress, binding: &EngineParameterBinding| {
+            let b = binding.address;
+            // User-layer amplitude selector across different physical modulator slots.
+            // -2 is never admitted as a script address; match only actual amplitude lanes.
+            a.parameter == b.parameter && (a.slot == b.slot || a.slot == -2 && binding.control.0 >> 104 == 0x454e56) && a.generic == b.generic
                 && (a.group == -1 || a.group == b.group)
         };
         // Missing controls are ignored, like v1 offsets for a group without that parameter.
         let mut changed = false;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
             if !offset.is_finite() { return Err(Error::InvalidInput); }
             changed |= generation.controls.offsets[index] != offset;
         }
@@ -490,7 +511,7 @@ impl Runtime {
             .filter(|r| r.checked_add(generation.controls.pending as u64).is_some()).ok_or(Error::Capacity)?;
         for binding in &prepared.engine_parameters {
             let index = prepared.control_index(binding.control).unwrap();
-            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding.address)).map(|o| o.offset).sum();
+            let offset: f32 = offsets.iter().filter(|o| matches(o.address, binding)).map(|o| o.offset).sum();
             if generation.controls.offsets[index] != offset {
                 generation.controls.offsets[index] = offset;
                 let value = generation.controls.playing(prepared, index);

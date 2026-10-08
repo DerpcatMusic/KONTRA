@@ -11,6 +11,18 @@ pub struct LadderSettings {
 }
 
 impl LadderSettings {
+    /// Native normalized cutoff in hertz, for the control-thread editor.
+    pub fn cutoff_hz(normalized: f32) -> f32 {
+        ladder_kernel::prepare();
+        ladder_kernel::cutoff(normalized)
+    }
+
+    /// Small-signal response of the same LP4 kernel used by playback.
+    pub fn magnitude(knobs: [f32; 3], hz: f32, rate: u32) -> f32 {
+        ladder_kernel::prepare();
+        ladder_kernel::Ladder::magnitude(knobs, hz, rate as f32)
+    }
+
     pub(super) fn valid(self) -> bool {
         [self.cutoff, self.resonance].iter().all(|p| {
             p.valid() && !matches!(p, Parameter::Expression { .. })

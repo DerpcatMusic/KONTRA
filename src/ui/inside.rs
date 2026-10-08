@@ -3,7 +3,6 @@
 //! velocities, its envelopes, filters and modulation, and what it is.
 
 use super::{Cx, theme::*};
-use moose::mui::mui::geometry::Path as DrawPath;
 use moose::mui::mui::prelude::*;
 use sampler_ir as ir;
 use std::collections::HashSet;
@@ -107,11 +106,13 @@ pub fn bar(ui: &mut Ui, cx: &mut Cx, slot: usize) -> (View, Option<El>) {
             let (hit, el) = latch(ui, format!("view-{slot}-{}", v.label()), v.label(), v.label(), v == view);
             if hit {
                 picked = v;
+                if v == View::Sound { cx.state.select(slot); }
             }
             el
         })
         .collect();
     cx.state.inside.entry(slot).or_default().view = Some(picked);
+    if picked == View::Sound && picked != view {cx.state.select(slot);}
     (picked, Some(segmented(tabs)))
 }
 
@@ -121,7 +122,13 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
     let el = match (view, inst) {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
         (View::Mapping, Some(i)) => mapping(ui, cx, slot, &i),
-        (View::Sound, Some(i)) => sound(&i),
+        (View::Sound, Some(_)) if cx.state.selected == slot && cx.p.shared.editor_watch.load(Ordering::Relaxed)==usize::MAX => super::editor::view(ui, cx, slot),
+        (View::Sound, Some(_)) => {
+            let (hit,button)=super::theme::action(ui,format!("edit-open-{slot}"),"Edit sound",false);
+            if hit {cx.state.select(slot);}
+            col![caption("Select this part to edit its sound.").fill(secondary()),button].gap(SPACE)
+        },
+
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
@@ -488,11 +495,6 @@ fn mapping(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -> El {
 
 // Sound -----------------------------------------------------------------
 
-fn ms(t: ir::Time) -> String {
-    let s = t.seconds();
-    if s >= 1. { format!("{s:.2} s") } else { format!("{:.0} ms", s * 1000.) }
-}
-
 fn hz(f: ir::Frequency) -> String {
     match f {
         ir::Frequency::Hertz(h) if h >= 1000. => format!("{:.1} kHz", h / 1000.),
@@ -501,99 +503,13 @@ fn hz(f: ir::Frequency) -> String {
     }
 }
 
-fn source_name(s: &ir::ModulationSource) -> String {
+pub(super) fn source_name(s: &ir::ModulationSource) -> String {
     match s {
         ir::ModulationSource::Envelope(_) => "Envelope".into(),
         ir::ModulationSource::Lfo(l) => format!("LFO {}", hz(l.rate)),
         ir::ModulationSource::Controller(c) => format!("CC {c}"),
         other => format!("{other:?}").split(['(', ' ', '{']).next().unwrap_or_default().to_owned(),
     }
-}
-
-/// An envelope's outline: attack up, decay to sustain, release down.
-fn envelope_shape(e: ir::Envelope) -> El {
-    canvas(move |s| {
-        let (a, d, r) = (e.attack.seconds(), e.decay.seconds(), e.release.seconds());
-        let total = (a + d + r).max(1e-3) * 1.25;
-        let x = |t: f64| t / total * s.width;
-        let top = 2.;
-        let sus = top + (1. - e.sustain) * (s.height - top - 1.);
-        let pts = [(0., s.height - 1.), (x(a), top), (x(a + d), sus), (x(a + d + total * 0.2), sus), (s.width - 1., s.height - 1.)];
-        vec![
-            Draw::fill(rect(0., 0., s.width, s.height), Role::Field),
-            Draw::stroke(DrawPath::polyline(pts.iter().map(|&(x, y)| Point::new(x, y)), false), Role::Ink.alpha(0.7), 1.5),
-        ]
-    })
-    .w(TEXT * 8.)
-    .h(CONTROL * 1.5)
-    .shrink(0)
-}
-
-fn sound(inst: &ir::Instrument) -> El {
-    let line = |t: String| caption(t).fill(secondary()).lines(1).min_w(0);
-    // Each distinct amplitude envelope, with how many zones use it.
-    let mut envs: Vec<(ir::Envelope, usize)> = Vec::new();
-    for m in inst.zones.iter().filter_map(|z| z.amplitude) {
-        if let Some(ir::ModulationSource::Envelope(e)) = inst.modulators.get(m.0).map(|m| &m.source) {
-            match envs.iter_mut().find(|(x, _)| x == e) {
-                Some((_, n)) => *n += 1,
-                None => envs.push((*e, 1)),
-            }
-        }
-    }
-    envs.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    let mut rows = vec![section("Amplitude")];
-    if envs.is_empty() {
-        rows.push(line("Gate: on with the key, off with its release".into()));
-    }
-    for (e, n) in envs.iter().take(4) {
-        rows.push(
-            row![
-                envelope_shape(*e),
-                line(format!("A {} · D {} · S {:.0}% · R {} · {n} zones", ms(e.attack), ms(e.decay), e.sustain * 100., ms(e.release)))
-            ]
-            .gap(SPACE)
-            .align(Align::Center)
-            .shrink(0),
-        );
-    }
-    let mut filters = Vec::new();
-    for c in &inst.chains {
-        for p in c.pre_amplitude.iter().chain(&c.post_amplitude) {
-            if let ir::Processor::Filter(f) = p {
-                let kind = format!("{:?}", f.kind).replace(" { poles: ", " ").replace(" }", "-pole");
-                let text = format!("{kind} · {} · {:?}", hz(f.cutoff), f.resonance);
-                if !filters.contains(&text) {
-                    filters.push(text);
-                }
-            }
-        }
-    }
-    let mut more = vec![section("Filters")];
-    more.extend(filters.iter().take(4).cloned().map(line));
-    if filters.is_empty() {
-        more.push(line("None".into()));
-    }
-    let mut routes: Vec<String> = Vec::new();
-    for r in &inst.routes {
-        let from = inst.modulators.get(r.source.0).map_or("?".into(), |m| source_name(&m.source));
-        let to = format!("{:?}", r.target).split(['(', ' ', '{']).next().unwrap_or_default().to_owned();
-        let text = format!("{from} → {to}");
-        if !routes.contains(&text) {
-            routes.push(text);
-        }
-    }
-    more.push(section("Modulation"));
-    more.extend(routes.iter().take(6).cloned().map(line));
-    if routes.is_empty() {
-        more.push(line("None".into()));
-    }
-    row![
-        col(rows).gap(TIGHT).align(Align::Start).flex(1).min_w(0),
-        col(more).gap(TIGHT).align(Align::Start).flex(1).min_w(0)
-    ]
-    .gap(INSET * 2.)
-    .align(Align::Start)
 }
 
 // Info ------------------------------------------------------------------
