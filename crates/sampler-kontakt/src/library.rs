@@ -292,7 +292,15 @@ fn translate(
     out.dynamic = dynamic;
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
+        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+        out.ir.source_indices.groups.push(Some(runtime));
+    }
+    for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
+        if let Some(slot) = behavior.slot {
+            out.ir.source_indices.slots.resize(usize::from(slot) + 1, None);
+            out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
+        }
     }
     let parent = path
         .parent()
@@ -352,6 +360,7 @@ fn translate(
     if count > data.len() / 8 {
         return Err(invalid("zone count exceeds the zone list"));
     }
+    out.ir.source_indices.zones.resize(count, None);
     for index in 0..count {
         let zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
@@ -393,7 +402,11 @@ fn translate(
                     .saturating_sub(u64::from(end.unsigned_abs())),
             ),
         };
+        let before = out.ir.zones.len();
         out.zone(index, zone, end, group, &params, location.clone());
+        if out.ir.zones.len() > before {
+            out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
+        }
     }
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
@@ -568,6 +581,22 @@ impl Translation {
             v.reverse = state.reverse;
         }
         let at = format!("group {index} {:?}", v.name);
+        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
+            if let Some(chunk) = group.0.find_first(id) {
+                let names: Vec<_> = if external {
+                    ExternalModArray32::try_from(chunk)?.slots()?.into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name))).collect::<Result<_, _>>()?
+                } else {
+                    InternalModArray16::try_from(chunk)?.slots()?.into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name))).collect::<Result<_, _>>()?
+                };
+                for (slot, name) in names {
+                    self.ir.source_indices.modulators.push(ir::SourceModulator {
+                        group: index, slot: usize::from(slot), external, name, runtime: None,
+                    });
+                }
+            }
+        }
         if v.muted {
             // Empty source groups retain their numeric address for KSP and DSP writes.
             self.ir.groups.push(ir::Group { name: v.name, ..Default::default() });
@@ -845,6 +874,10 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                if let Some(address) = self.ir.source_indices.modulators.iter_mut()
+                    .find(|m| m.group == index && m.slot == usize::from(slot) && m.external) {
+                    address.runtime = Some(modulator);
+                }
                 for target in &params.targets {
                     routes.extend(self.route(
                         &at,

@@ -53,6 +53,9 @@ pub struct Instrument {
     pub source: SourceFormat,
     pub assets: Vec<Asset>,
     pub groups: Vec<Group>,
+    pub default_keyswitch: Option<u8>,
+    /// Physical source indices, retained across omissions and key-range filtering.
+    pub source_indices: SourceIndices,
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
@@ -82,6 +85,23 @@ pub struct Instrument {
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceIndices {
+    pub groups: Vec<Option<GroupRef>>,
+    pub zones: Vec<Option<ZoneRef>>,
+    pub modulators: Vec<SourceModulator>,
+    pub slots: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceModulator {
+    pub group: usize,
+    pub slot: usize,
+    pub external: bool,
+    pub name: String,
+    pub runtime: Option<ModulatorRef>,
 }
 
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
@@ -147,6 +167,7 @@ pub enum Encoding {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
     pub name: String,
+    pub start: Vec<GroupStart>,
     pub gain: Gain,
     pub pan: Pan,
     pub tune: Pitch,
@@ -164,6 +185,24 @@ pub struct Group {
     /// Set by [`Instrument::tap_group`]: the bus that carries this group's
     /// fader and sends.
     pub tap: Option<GroupTap>,
+}
+
+/// Physical row and the logical operator connecting it to the following row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupStart {
+    pub slot: u8,
+    pub test: StartTest,
+    pub next: StartJoin,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartJoin { And, AndNot, Or }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartTest {
+    Key { low: u8, high: u8 },
+    Controller { controller: u8, low: u8, high: u8 },
+    /// One-based authored position in the instrument's native RR cycle.
+    RoundRobin(u32),
+    Random,
 }
 
 /// Where a group's fader lives once it is tapped: `bus` outputs at the bus's
@@ -317,7 +356,18 @@ impl Instrument {
     /// assets in their original order. Returns the original index of each
     /// remaining asset, so a caller can load just those.
     pub fn retain_zones(&mut self, mut keep: impl FnMut(&Zone) -> bool) -> Vec<usize> {
-        self.zones.retain(|zone| keep(zone));
+        let mut remap = vec![None; self.zones.len()];
+        let mut old = 0;
+        let mut next = 0;
+        self.zones.retain(|zone| {
+            let retained = keep(zone);
+            if retained { remap[old] = Some(ZoneRef(next)); next += 1; }
+            old += 1;
+            retained
+        });
+        for zone in &mut self.source_indices.zones {
+            *zone = zone.and_then(|z| remap[z.0]);
+        }
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
             if let Some(used) = used.get_mut(zone.asset.0) {

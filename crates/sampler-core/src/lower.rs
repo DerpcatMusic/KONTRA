@@ -315,6 +315,13 @@ pub fn lower_with(
     }
     let mut plan = Prepared::new(rate, pcm.clone(), regions, candidates)
         .map_err(core(Stage::Regions, "zones"))?;
+    if !instrument.source_indices.zones.is_empty() {
+        let mut ids: Vec<u32> = (1..=instrument.zones.len() as u32).collect();
+        for (source, runtime) in instrument.source_indices.zones.iter().enumerate() {
+            if let Some(zone) = runtime { ids[zone.0] = source as u32 + 1; }
+        }
+        plan = plan.with_source_zones(ids).map_err(core(Stage::Regions, "source zones"))?;
+    }
     // Before the voice chains, which validate the controls they bind.
     let slots = lowering.slot_controls();
     if !slots.is_empty() {
