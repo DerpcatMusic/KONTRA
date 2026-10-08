@@ -45,6 +45,26 @@ fn compiled(source: &str, setup: &Setup, inherited: &BTreeSet<String>, instrumen
     Ok(program)
 }
 
+pub fn frozen_numeric_code_receipt() {
+    let path = std::env::var("PROBE_PATH").expect("PROBE_PATH");
+    let instrument = crate::import::read(std::path::Path::new(&path))
+        .unwrap_or_else(|_| panic!("instrument read failed; source diagnostics omitted"));
+    let setup = Setup { groups: instrument.groups.len(), zones: instrument.zones.len(), outputs: crate::fx::OUTS };
+    let mut inherited = BTreeSet::new();
+    let mut retained = Vec::new();
+    for (slot, source) in instrument.scripts.iter().enumerate() {
+        let Ok(p) = compiled(source, &setup, &inherited, Some(std::path::Path::new(&path))) else {
+            println!("V1_CODE {{\"slot\":{slot},\"source_bytes\":{},\"op_bytes\":{},\"ops\":0,\"functions\":0,\"errors\":1}}", source.len(), std::mem::size_of::<compile::Op>());
+            continue;
+        };
+        println!("V1_CODE {{\"slot\":{slot},\"source_bytes\":{},\"op_bytes\":{},\"ops\":{},\"functions\":{},\"errors\":{}}}",
+            source.len(), std::mem::size_of::<compile::Op>(), p.code.len(), p.functions.len(), p.errors.len());
+        assert!(Arc::ptr_eq(&p, &compiled(source, &setup, &inherited, Some(std::path::Path::new(&path))).unwrap()));
+        inherited = p.conditions.clone();
+        retained.push(p);
+    }
+}
+
 /// MIDI RP-015 mandatory defaults; None preserves a controller and parameter values.
 /// Extra controllers restore their authored on-init device default, or zero if
 /// unspecified. Scripts use these extra CCs for internal dynamics and expression.
