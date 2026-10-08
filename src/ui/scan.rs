@@ -38,6 +38,15 @@ pub(crate) fn strict_table(data: &[u8], version: u16) -> (&'static str,BTreeMap<
     }
 }
 
+// Preparation publishes the current page; scanner success spans every painted page.
+fn observed_font_styles(styles:&[ir::TextStyle],ready:&std::collections::BTreeSet<usize>)->usize {
+    styles.iter().filter(|s| match s.font {
+        ir::Font::Stock(_) => true,
+        ir::Font::Default | ir::Font::Named(_) => false,
+        ir::Font::Bitmap(a) | ir::Font::File(a) => ready.contains(&a.0),
+    }).count()
+}
+
 fn render(
     face: &ir::Interface,
     path: &Path,
@@ -164,6 +173,7 @@ fn render(
     let typed_refs=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(w.binding,ir::Binding::Variable{..})).count();
     let typed_bound=face.widgets.iter().enumerate().filter(|(n,w)|face.visible(ir::WidgetRef(*n)) && matches!(&w.binding,ir::Binding::Variable{script,name} if typed_targets.contains(&(*script,name.clone())))).count();
     let mut renders = Vec::new();
+    let mut ready_fonts = std::collections::BTreeSet::new();
     let initial = values.clone();
     for p in 0..face.pages.len() {
         let start = Instant::now();
@@ -275,6 +285,15 @@ fn render(
             }
             Err(_) => json!({"ok":false,"budget_hit":false,"reason":"Original renderer panic"}),
         });
+        missing.extend(native.as_ref().map_or_else(|| assets.failures(),|n|n.failures()));
+        for (i,asset) in face.assets.iter().enumerate() {
+            let ready=match asset.kind {
+                ir::AssetKind::TrueTypeFont => assets.font(&ir::AssetRef(i)).is_some(),
+                ir::AssetKind::BitmapFont => assets.get(ir::AssetRef(i)).is_some(),
+                _ => false,
+            };
+            if ready { ready_fonts.insert(i); }
+        }
     }
     let passive = values
         .iter()
@@ -286,39 +305,33 @@ fn render(
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
     let scan = native.as_ref().map_or_else(|| assets.scan(), |n| n.scan());
-    missing.extend(
-        native
-            .as_ref()
-            .map_or_else(|| assets.failures(), |n| n.failures()),
-    );
     missing.sort();
     missing.dedup();
-    let font_success = face
-        .styles
-        .iter()
-        .filter(|s| match s.font {
-            ir::Font::Stock(_) => true,
-            ir::Font::Default | ir::Font::Named(_) => false,
-            ir::Font::Bitmap(a) => assets.get(a).is_some(),
-            ir::Font::File(a) => assets.font(&a).is_some(),
-        })
-        .count();
+    let font_success = observed_font_styles(&face.styles,&ready_fonts);
+    // The worker hashes asset identity, including its kind. Separate font requests.
+    let font_hashes: std::collections::BTreeSet<_> = face.assets.iter()
+        .filter(|a| matches!(a.kind,ir::AssetKind::TrueTypeFont|ir::AssetKind::BitmapFont))
+        .map(|a| blake3::hash(format!("{}:{:?}",a.path,a.kind).as_bytes()).to_hex().to_string())
+        .collect();
+    let missing_font_hashes:Vec<_>=missing.iter().filter(|h|font_hashes.contains(*h)).cloned().collect();
+    missing.retain(|h| !font_hashes.contains(h));
+    let missing_fonts=scan.fonts.saturating_sub(scan.font_ok).max(missing_font_hashes.len());
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
         "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
         "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
-        "font_declared":fonts_declared,"font_success":font_success,
+        "font_declared":fonts_declared,"font_success":font_success,"font_unresolved_styles":fonts_declared.saturating_sub(font_success),
 
         "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
         "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
-            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
+            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":missing_fonts},
         "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
         "native_frontend_consumed":native.as_ref().map(|_|renders.iter().any(|r|r["ok"]==true)),
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
-        "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
+        "missing_images":missing.len(),"missing_image_hashes":missing,"missing_fonts":missing_fonts,"missing_font_hashes":missing_font_hashes,"assets":face.assets.len(),
         "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
 }
 
@@ -365,10 +378,11 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut any_heard,
         mut ui_error,
         mut ui_missing,
+        mut ui_missing_font,
         mut any_ui,
         mut any_blank,
         mut budget_hit,
-    ) = (true, 0, 0, false, false, false, false, false, false);
+    ) = (true, 0, 0, false, false, false, false, false, false, false);
     let mut load_ms = 0.;
     let load_started=Instant::now();
     result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
@@ -598,6 +612,7 @@ pub fn one(id: &str, out: &Path) -> Value {
             total_bound += view["bound"].as_u64().unwrap_or(0);
             total_interactive += view["interactive"].as_u64().unwrap_or(0);
             ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
+            ui_missing_font |= view["missing_fonts"].as_u64().unwrap_or(0) > 0;
             for r in view["renders"].as_array().unwrap() {
                 ui_error |= r["ok"] != true;
                 budget_hit |= r["budget_hit"] == true;
@@ -629,6 +644,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         "error"
     } else if any_blank {
         "blank"
+    } else if ui_missing_font {
+        "missing_font"
     } else if ui_missing {
         "missing-images"
     } else if !any_ui {
@@ -705,4 +722,17 @@ fn ksp_observations() -> Value {
         "compile_fault":o.error.as_ref().filter(|e|!matches!(e.phase,"init"|"persistence_changed")).map(&diagnostic),
         "init":phase(&o.init),"persistence_changed":phase(&o.persistence_changed)})).collect();
     json!({"compile_ok":compile,"init_ok":init,"first_error":first,"scripts":obs.len(),"slots":slots,"attempts":attempts.iter().map(|o|json!({"attempt":o.attempt,"wire_slot":o.slot,"compile_admitted":o.compile_ok,"init":phase(&o.init),"persistence_changed":phase(&o.persistence_changed),"error":o.error.as_ref().map(&diagnostic)})).collect::<Vec<_>>()})
+}
+
+#[cfg(test)]
+mod font_observation_tests {
+    use super::*;
+    #[test]
+    fn font_success_spans_pages_and_keeps_unrequested_fonts_unsuccessful() {
+        let styles:Vec<_>=(0..3).map(|i|ir::TextStyle {font:ir::Font::File(ir::AssetRef(i)),size:None,color:ir::Rgba::rgb(0xffffff),align:ir::Align::Center}).collect();
+        let mut ready=std::collections::BTreeSet::new();
+        ready.insert(0); // First page.
+        ready.insert(1); // Second page, whose preparation no longer holds font 0.
+        assert_eq!(observed_font_styles(&styles,&ready),2);
+    }
 }
