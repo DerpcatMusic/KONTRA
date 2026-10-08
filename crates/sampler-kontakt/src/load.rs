@@ -697,7 +697,7 @@ pub fn compile_ui(
             }),
         }
     }
-    super::keyswitch_ui::normalize(&mut instrument, &interfaces, &compiled);
+    super::keyswitch_ui::normalize(instrument, &interfaces, &compiled);
     (
         compiled,
         interfaces,
