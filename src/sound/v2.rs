@@ -54,6 +54,8 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 /// One playable part: its runtime, the MIDI zone in front of it and its tree.
 pub struct Part {
     runtime: Runtime,
+    pub(crate) epoch: u64,
+    pub(crate) ui_controls: Option<ControlIngress>,
     mpe: Mpe,
     tune: f32,
     /// Per tree node, its runtime bus (none for the root).
@@ -155,13 +157,19 @@ impl Drop for Grower {
 }
 
 impl Part {
-    fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
+    pub(crate) fn new(runtime: Runtime, tree: MixTree) -> Result<Self, CoreError> {
         let core = |e: sampler_core::Error| CoreError::Invalid(format!("{e:?}"));
         let mpe = Mpe::new(&runtime, WIRE.port, WIRE.group, Zone::Lower, 15, NOTES).map_err(core)?;
         // Plans without articulations have nothing to drive.
         let articulator = runtime.performance(0).and_then(|p| Articulator::new(&runtime, p, WIRE.port)).ok();
         let count = tree.nodes.len();
+        let definitions = runtime.control_definitions(runtime.active_plan()).unwrap_or_default().to_vec();
+        let plan = runtime.active_plan();
+        let context = ControlContext { performance: runtime.performance(0).map_err(core)?, origin: WIRE, channels: 1 };
+        let (runtime, client) = runtime.with_control_updates(256, 256).map_err(core)?;
         Ok(Self {
+            epoch: 0,
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, pending: Default::default() }),
             runtime,
             mpe,
             tune: 0.0,
@@ -274,6 +282,60 @@ pub struct V2Core {
     tap: Option<usize>,
     tapped: Box<[f32; MAX_BLOCK]>,
     peaks: Peaks,
+}
+
+/// Off-audio producer for the native admission/reply service; never retargeted on replacement.
+pub(crate) struct ControlIngress {
+    pub(crate) client: sampler_core::ControlClient,
+    plan: sampler_core::PlanId,
+    context: ControlContext,
+    definitions: Vec<ControlDefinition>,
+    pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
+}
+
+impl ControlIngress {
+    pub(crate) fn submit(&mut self, id: sampler_ui_ir::ControlId, value: f64) -> bool {
+        if !value.is_finite() { return false; }
+        let Some(d) = self.definitions.iter().find(|d| d.id.0 == id.0) else { return false };
+        let value = match d.domain {
+            ControlDomain::Integer { min, max } if value.round() >= min as f64 && value.round() <= max as f64 => ControlValue::Integer(value.round() as i64),
+            ControlDomain::Real { min, max } if (min..=max).contains(&value) => ControlValue::Real(value),
+            ControlDomain::Toggle if value == 0. || value == 1. => ControlValue::Toggle(value == 1.),
+            _ => return false,
+        };
+        let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::Invoke(self.context, ControlWrite { id: d.id, value }) };
+        match self.client.submit(command) {
+            Ok(request) => { self.pending.insert(id, (request, number(value))); true }
+            Err(_) => false,
+        }
+    }
+
+    pub(crate) fn settle(&mut self) {
+        while let Some(reply) = self.client.reply() {
+            if let sampler_core::ControlOperation::Invoke(_, write) = reply.command.operation {
+                let id = sampler_ui_ir::ControlId(write.id.0);
+                if self.pending.get(&id).is_some_and(|(request, _)| *request == reply.request) {
+                    self.pending.remove(&id);
+                }
+            }
+            if let Err(error) = reply.result {
+                crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
+            }
+        }
+    }
+
+    pub(crate) fn overlay(&mut self, values: &mut Vec<(sampler_ui_ir::ControlId, f64)>) {
+        self.settle();
+        for (id, value) in values { if let Some((_, pending)) = self.pending.get(id) { *value = *pending; } }
+    }
+}
+
+impl V2Core {
+    pub(crate) fn epoch(&self, slot: usize) -> u64 { self.parts.get(slot).and_then(Option::as_ref).map_or(0, |p| p.epoch) }
+    pub(crate) fn ui_revision(&self, slot: usize) -> u64 {
+        self.parts.get(slot).and_then(Option::as_ref).and_then(|p| p.runtime.control_revision(p.runtime.active_plan()).ok()).unwrap_or(0)
+    }
 }
 
 impl Default for V2Core {
@@ -582,6 +644,10 @@ impl Core for V2Core {
         let solo = self.mix.parts.iter().take(self.parts.len()).any(|c| c.solo);
         for (index, part) in self.parts.iter_mut().enumerate() {
             let Some(part) = part else { continue };
+            // Native replies apply backpressure; bounded ingress is serviced before rendering.
+            for _ in 0..256 {
+                if !matches!(part.runtime.poll_control_update(), Ok(Some(_))) { break; }
+            }
             let pairs = |direct: u32| (0..BUSES).filter(move |pair| direct & 1 << pair != 0);
             for pair in pairs(part.direct) {
                 self.direct[pair][..n].fill([0.0; 2]);
@@ -1763,6 +1829,39 @@ mod tests {
         assert_eq!(applied, 2);
         assert_ne!(ui.interfaces(), before, "the label is hidden");
         assert_eq!(ui.keys()[60].color, Some(0), "red");
+    }
+
+    #[test]
+    fn w1_script_label_alias_reaches_the_interface() {
+        let source = "on init\n declare ui_knob $k(0, 100, 1)\n declare ui_label $l(1, 1)\n\
+                      set_key_type(36, $NI_KEY_TYPE_CONTROL)\nend on\n\
+                      on ui_control($k)\n set_control_par(get_ui_id($l), $CONTROL_PAR_HIDE, $HIDE_WHOLE_CONTROL)\n\
+                      set_knob_label($k, \"changed\")\nend on\n";
+        let script = sampler_ksp::compile(source, 48000, sampler_ksp::Limits::LIBRARY, &[]).unwrap();
+        let k = script.controls().iter().find(|c| c.variable.ends_with("$k")).unwrap().definition.id.0;
+        let mut ui = ScriptUi { views: vec![script.view()], resources: None };
+        let before = ui.interfaces();
+        assert!(ui.keys()[36].control && ui.keys()[60].color.is_none());
+        let pcm = Pcm::new(48000, vec![[0.0; 2]; 512].into_boxed_slice()).unwrap();
+        let region = Region {
+            sample: 0, key_low: 60, key_high: 60, root_key: Some(60), velocity_low: 0.0, velocity_high: 1.0, gain: 1.0,
+            envelope: Envelope::default(), playback: Playback::default(),
+        };
+        let plan = script.bind(Prepared::new(48000, vec![pcm], vec![region], 1).unwrap()).unwrap();
+        let limits = limits(&plan).0;
+        let part = Part::new(Runtime::new(plan, limits).unwrap(), MixTree::instrument("s")).unwrap();
+        let mut core = V2Core::with_parts(1, 48000.0);
+        core.install(0, Some(Box::new(part)));
+        assert!(core.set_control(0, sampler_ui_ir::ControlId(k), 1.0));
+        core.render(16);
+        let mut applied = 0;
+        core.take_effects(0, &mut |instance, effect| {
+            applied += usize::from(ui.apply(instance, effect));
+            true
+        });
+        assert_eq!(applied, 2);
+        assert_ne!(ui.interfaces(), before, "the label is hidden");
+        assert_eq!(ui.interfaces()[0].widgets.iter().find(|w| w.name.ends_with("$k")).unwrap().value_text.as_deref(), Some("changed"));
     }
 
     #[test]

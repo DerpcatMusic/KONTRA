@@ -615,6 +615,13 @@ fn prepare_inner(
         };
         match result {
             Ok(script) => {
+                if script.model().requests.iter().any(|r| r.command == "load_native_ui") {
+                    instrument.unsupported.push(ir::Unsupported {
+                        location: behavior.name.clone(), feature: "native interface".into(),
+                        value: "The requested native performance view is unavailable; showing the script controls.".into(),
+                        reason: ir::Reason::NotModeled,
+                    });
+                }
                 instrument
                     .unsupported
                     .extend(script.warnings().iter().map(|w| ir::Unsupported {
