@@ -322,7 +322,7 @@ fn articulations_switch_by_their_keys() {
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
         inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
         for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
             let mut z = sir::Zone::new(sir::AssetRef(0));
             z.group = Some(sir::GroupRef(n));
@@ -374,7 +374,7 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
     }
     inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
     assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
@@ -425,7 +425,7 @@ fn imported_switching_survives_the_first_ui_sync() {
                 let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
                 inst.switching = sir::Switching { owner, driver, keys };
                 for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
-                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                    inst.articulations.push(sir::Articulation { source: String::new(), control: None, name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
                 }
                 inst.assign_alternatives(32);
                 let p = Arc::new(crate::plugin::SamplerParams::new());
@@ -1073,4 +1073,37 @@ fn widget_table_fast_stroke_edits_crossed_columns_as_one_frame_batch() {
     let indices=state.edits.iter().map(|e|e.index).collect::<std::collections::BTreeSet<_>>();assert_eq!(indices,(0..8).collect());
     assert!(state.edits.iter().all(|e|e.cursor==7&&e.event==2));
     assert!(matches!(&state.values[&ir::WidgetRef(0)],ir::Value::Reals(v) if *v==vec![20.,30.,40.,50.,60.,70.,80.,90.]));
+}
+
+#[test]
+fn widget_ksp_global_z_hit_order_crosses_parent_boundaries() {
+    let script=sampler_ksp::compile("on init declare ui_panel $p declare ui_knob $child(0,100,1) declare ui_knob $other(0,100,1) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    for w in &mut face.widgets {w.rect=ir::Rect::new(10,10,80,80);}
+    face.widgets[0].rect=ir::Rect::new(10,10,100,100);
+    face.widgets[1].rect=ir::Rect::new(0,0,80,80);face.widgets[1].parent=Some(ir::WidgetRef(0));face.widgets[1].z=9;face.widgets[2].z=5;
+    let (delta,captured)=audit_motion(&face,1,0.,-30.);assert!(captured&&delta>0.,"child with higher global layer captures over later foreign sibling");
+    face.widgets[0].hidden=true;
+    let (delta,captured)=audit_motion(&face,2,0.,-30.);assert!(captured&&delta>0.,"hidden parent removes child hit target");
+}
+
+#[test]
+fn widget_authored_label_overflow_owns_nested_wheel_and_yields_at_boundary() {
+    let script=sampler_ksp::compile("on init declare ui_label $label(1,1) end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let mut face=ir_view::resolved(&script.ui(&|_|None).unwrap());
+    face.widgets[0].rect=ir::Rect::new(0,0,120,60);face.widgets[0].text=(0..50).map(|n|format!("Label line {n}")).collect::<Vec<_>>().join("\n");
+    let mut ui=theme::ui();let mut values=ir_view::Values::default();let mut state=ir_view::InputState::default();let assets=ir_view::Assets::default();
+    let mut tick=|ui:&mut Ui,input:Input| {let authored=ir_view::view_state(ui,"label-test",&face,ir::PageRef(0),&assets,ir::Presentation::Vector,1.,&mut values,&mut state);let el=col![authored,block(200.,500.)].w(200.).h(120.).scroll().id("label-parent");ui.frame(el,Some(Size::new(200.,120.)),input,1./60.).unwrap();};
+    for _ in 0..4 {tick(&mut ui,Input::default());}
+    let wheel=|delta:f64|Input {pointer:PointerInput {pos:Some(Point::new(50.,30.)),..Default::default()},wheel:Vec2::new(0.,delta),..Default::default()};
+    tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!(ui.scroll("/label-test-ir-0")[1]>0.,"authored label scrolls its own overflow");assert_eq!(ui.scroll("label-parent"),[0.,0.]);
+    tick(&mut ui,wheel(-30.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert_eq!(ui.scroll("/label-test-ir-0")[1],20.);assert_eq!(ui.scroll("label-parent"),[0.,0.]);
+    ui.set_scroll("/label-test-ir-0",[0.,100000.]);for _ in 0..20 {tick(&mut ui,Input::default());}
+    let end=ui.scroll("/label-test-ir-0");tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!((ui.scroll("/label-test-ir-0")[1]-end[1]).abs()<1e-6);
+    // One native-layout tick may settle a subpixel content extent at the boundary.
+    tick(&mut ui,wheel(50.));for _ in 0..20 {tick(&mut ui,Input::default());}
+    assert!(ui.scroll("label-parent")[1]>0.,"exhausted label yields wheel to parent");
 }

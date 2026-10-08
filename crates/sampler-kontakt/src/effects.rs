@@ -1692,6 +1692,7 @@ mod tests {
         }
         let mut instrument = ir::Instrument {
             groups: vec![ir::Group {
+                start: Vec::new(),
                 name: "g".into(),
                 gain: ir::Gain::UNITY,
                 pan: ir::Pan::default(),

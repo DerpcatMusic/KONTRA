@@ -60,6 +60,7 @@ pub(super) struct ReleaseTimes {
     pub groups_forwarded: bool,
     pub held: bool,
     pub admitted_at: u64,
+    pub counter_at: Option<u64>,
     pub key_at: u64,
     pub gate_at: u64,
     pub velocity: Option<f64>,
@@ -70,9 +71,11 @@ pub(super) struct ReleaseTimes {
 }
 
 impl ReleaseTimes {
-    pub(super) fn held(&self, key_down: bool, now: u64) -> u64 {
-        if key_down { now } else { self.key_at }.saturating_sub(self.admitted_at)
+    pub(super) fn counter(&self, key_down: bool, now: u64) -> u64 {
+        if key_down { now } else { self.key_at }.saturating_sub(self.counter_at.unwrap_or(self.admitted_at))
     }
+
+
 }
 
 pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
@@ -84,10 +87,15 @@ pub(super) fn validate_velocity(velocity: Option<f64>) -> Result<(), Error> {
 }
 
 impl Runtime {
-    /// Frames the note's key has been held: admission to key-up, or to now.
-    pub(super) fn held_frames(&self, id: NoteId) -> u64 {
-        let down = self.notes.get(id.0).is_none_or(Note::key_down);
-        self.release_times[id.0.index].held(down, self.now)
+    pub fn release_counter_frames(&self, id: NoteId) -> Result<u64, Error> {
+        let note = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+        Ok(self.release_times[id.0.index].counter(note.key_down(), self.now))
+    }
+
+    pub fn reset_release_counter(&mut self, id: NoteId) -> Result<(), Error> {
+        let note = self.notes.get(id.0).ok_or(Error::StaleHandle)?;
+        self.release_times[id.0.index].counter_at = Some(if note.key_down() { self.now } else { self.release_times[id.0.index].key_at });
+        Ok(())
     }
 
     pub(super) fn release_key(

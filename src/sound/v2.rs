@@ -55,6 +55,7 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 pub struct Part {
     runtime: Runtime,
     pub(crate) epoch: u64,
+    pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
     mpe: Mpe,
     tune: f32,
@@ -182,6 +183,7 @@ impl Part {
         let (runtime, client) = runtime.with_control_updates(256, sampler_core::WIDGET_EDIT_CAPACITY).map_err(core)?;
         Ok(Self {
             epoch: 0,
+            waveform_sources: Default::default(),
             ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
             runtime,
             mpe,
@@ -313,6 +315,13 @@ pub(crate) struct ControlIngress {
 }
 
 impl ControlIngress {
+    pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
+    pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        self.client.submit(sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
+            operation: sampler_core::ControlOperation::HostParameter(self.context, address, value) }).is_ok()
+    }
+
     pub(crate) fn submit_ui_widgets(&mut self, source_slot: u8, widget: &sampler_ui_ir::Widget, edits: Vec<(u32, sampler_ui_ir::Value)>, interaction: sampler_core::WidgetInteraction) -> bool {
         let definition = self.widgets.iter().find(|w| w.source_slot == source_slot && Some(w.ui_id) == widget.source_id)
             .or_else(|| self.widgets.iter().find(|w| matches!(widget.binding, sampler_ui_ir::Binding::Control(id) if matches!(w.storage, sampler_core::WidgetStorage::Control(control) if control.0 == id.0))));
@@ -330,6 +339,14 @@ impl ControlIngress {
                     sampler_core::WidgetStorage::Control(id) if self.definitions.iter().any(|d| d.id == id && matches!(d.domain, ControlDomain::Integer { .. } | ControlDomain::Toggle)) => sampler_core::WidgetValue::Integer(value.round() as i64),
                     _ => sampler_core::WidgetValue::Real(value),
                 },
+                sampler_ui_ir::Value::DropPath { kind, path } => {
+                    let Ok(path) = sampler_core::Text::try_new(&path) else { return false };
+                    sampler_core::WidgetValue::DropPath { kind: match kind {
+                        sampler_ui_ir::DropKind::Audio => sampler_core::WidgetDropKind::Audio,
+                        sampler_ui_ir::DropKind::Midi => sampler_core::WidgetDropKind::Midi,
+                        sampler_ui_ir::DropKind::Array => sampler_core::WidgetDropKind::Array,
+                    }, path }
+                }
                 sampler_ui_ir::Value::Text(value) => { let text = sampler_core::Text::new(&value); if text.as_str() != value { return false; } sampler_core::WidgetValue::Text(text) },
                 _ => return false,
             };
@@ -367,7 +384,7 @@ impl ControlIngress {
         let Some(widget) = self.widgets.iter().find(|w| w.id == first.id) else { return false };
         if edits.len() > sampler_core::WIDGET_EDIT_CAPACITY || edits.iter().any(|e| e.id != first.id || ui_value(e.value).is_none()) { return false; }
         let id = sampler_ui_ir::ControlId(first.id.0);
-        let preview: Vec<_> = edits.iter().map(|e| (e.index, ui_value(e.value).unwrap())).collect();
+        let preview: Vec<_> = edits.iter().filter(|e| !matches!(e.value, sampler_core::WidgetValue::DropPath { .. })).map(|e| (e.index, ui_value(e.value).unwrap())).collect();
         let scalar = match widget.storage { sampler_core::WidgetStorage::Control(control) => Some(sampler_ui_ir::ControlId(control.0)), _ => None };
         let command = sampler_core::ControlRequest { plan: self.plan, expected_revision: None,
             operation: sampler_core::ControlOperation::InvokeWidget(self.context, edits) };
@@ -435,6 +452,7 @@ impl ControlIngress {
     }
 
     fn accept_value(&mut self, edit: &sampler_core::WidgetEdit) -> bool {
+        if matches!(edit.value, sampler_core::WidgetValue::DropPath { .. }) { return false; }
         let Some(value) = ui_value(edit.value) else { return false };
         let Some(current) = self.widget_values.get_mut(&sampler_ui_ir::ControlId(edit.id.0)) else { return false };
         match (current, value) {
@@ -475,6 +493,11 @@ fn ui_value(value: sampler_core::WidgetValue) -> Option<sampler_ui_ir::Value> {
         sampler_core::WidgetValue::Integer(value) => sampler_ui_ir::Value::Integer(value.try_into().ok()?),
         sampler_core::WidgetValue::Real(value) if value.is_finite() => sampler_ui_ir::Value::Real(value),
         sampler_core::WidgetValue::Text(value) => sampler_ui_ir::Value::Text(value.as_str().into()),
+        sampler_core::WidgetValue::DropPath { kind, path } => sampler_ui_ir::Value::DropPath { kind: match kind {
+            sampler_core::WidgetDropKind::Audio => sampler_ui_ir::DropKind::Audio,
+            sampler_core::WidgetDropKind::Midi => sampler_ui_ir::DropKind::Midi,
+            sampler_core::WidgetDropKind::Array => sampler_ui_ir::DropKind::Array,
+        }, path: path.as_str().into() },
         _ => return None,
     })
 }
@@ -489,6 +512,24 @@ fn widget_value(runtime: &Runtime, plan: sampler_core::PlanId, widget: &sampler_
 }
 
 impl V2Core {
+    /// Called at the DAW event's sample boundary, on the runtime owner.
+    pub(crate) fn host_parameter(&mut self, address: u16, value: f64) -> bool {
+        if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
+        let mut accepted = true;
+        for part in self.parts.iter_mut().flatten() {
+            let rt = &mut part.runtime;
+            let Ok(performance) = rt.performance(0) else { accepted = false; continue };
+            let context = ControlContext { performance, origin: WIRE, channels: 1 };
+            accepted &= rt.dispatch_host_parameter(context, address, value).is_ok();
+        }
+        accepted
+    }
+
+    pub(crate) fn widget_meter(&self, slot: usize, address: sampler_core::EngineMeterAddress) -> Option<f32> {
+        let part = self.parts.get(slot)?.as_ref()?;
+        part.runtime.engine_meter(part.runtime.active_plan(), address).ok()
+    }
+
     pub(crate) fn epoch(&self, slot: usize) -> u64 { self.parts.get(slot).and_then(Option::as_ref).map_or(0, |p| p.epoch) }
     pub(crate) fn ui_revision(&self, slot: usize) -> u64 {
         self.parts.get(slot).and_then(Option::as_ref).and_then(|p| p.runtime.control_revision(p.runtime.active_plan()).ok()).unwrap_or(0)
@@ -1460,6 +1501,16 @@ impl V2Loader {
             }
             report.decoded.mpe = super::report::mpe_summary(&defaults);
         }
+        for binding in prepared.automation_bindings() {
+            if let sampler_core::AutomationSource::HostParameter(address) = binding.source
+                && address >= super::HOST_AUTOMATION_SLOTS {
+                report.missing.push(super::report::Missing {
+                    location: format!("script slot {} UI {}", binding.source_slot, binding.ui_id),
+                    feature: "standalone-derived host automation capacity".into(), value: address.to_string(),
+                    reason: super::report::MissingReason::NotModeled,
+                });
+            }
+        }
         let mut controls: Vec<_> = prepared
             .controls()
             .iter()
@@ -1470,6 +1521,19 @@ impl V2Loader {
         let per_voice = prepared.voice_state_bytes() + VOICE_OVERHEAD;
         report.decoded.script_callbacks = limits.behaviors;
         let voices = limits.voices;
+        let mut waveform_sources = std::collections::HashMap::new();
+        if interfaces.iter().any(|face| face.widgets.iter().any(|w| matches!(w.kind, sampler_ui_ir::Kind::Waveform))) {
+            if let Some(inst) = &instrument {
+                for id in 1..=inst.source_indices.zones.len() {
+                    let Some(id) = u32::try_from(id).ok() else { break; };
+                    if let Some(pcm) = prepared.source_zone_region(id).and_then(|region| prepared.region_asset(region)) {
+                        waveform_sources.insert(id, super::waveform::Source {
+                            pcm: pcm.clone(), stream: stream.as_ref().and_then(|stream| stream.streamer.source(pcm.asset_id())),
+                        });
+                    }
+                }
+            }
+        }
         let (runtime, control) = Runtime::with_plan_updates(prepared, limits, 2, 1).map_err(core)?;
         let mut runtime = runtime.with_threads(render_threads(request));
         // A source whose first window is not resident starts silent and fades in
@@ -1496,6 +1560,7 @@ impl V2Loader {
         let grower = Grower::start(&mut runtime, control, ceiling, per_voice)
             .map_err(|e| CoreError::Invalid(e.to_string()))?;
         let mut part = Part::new(runtime, tree.clone())?;
+        part.waveform_sources = waveform_sources;
         part.mpe.set_timbre_controller(timbre);
         part.grower = Some(grower);
         part.script = script.map(Box::new);
