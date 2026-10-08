@@ -94,6 +94,10 @@ pub struct CachedInit {
     slot: u8,
     performance_view: crate::model::PerformanceView,
     state: Box<serde_json::value::RawValue>,
+    cells: u32,
+    texts: u32,
+    controls: usize,
+    entries: usize,
     persistence: Vec<crate::hir::Persistence>,
     model: crate::model::Model,
     engine: Vec<([i32; 4], i32)>,
@@ -119,6 +123,17 @@ fn controls(
 }
 
 struct NativeValues<'a>(&'a Initialized);
+impl NativeValues<'_> {
+    fn len(&self) -> usize {
+        let init = &self.0.init;
+        controls(&self.0.hir, self.0.environment.slot)
+            .values()
+            .filter(|&&i| init.controls[i] != 0)
+            .count()
+            + init.cells.iter().filter(|&&v| v != 0).count()
+            + init.texts.iter().filter(|v| !v.is_empty()).count()
+    }
+}
 impl Serialize for NativeValues<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use sampler_core::{
@@ -127,9 +142,11 @@ impl Serialize for NativeValues<'_> {
         use serde::ser::SerializeSeq;
         let init = &self.0.init;
         let controls = controls(&self.0.hir, self.0.environment.slot);
-        let mut seq =
-            serializer.serialize_seq(Some(controls.len() + init.cells.len() + init.texts.len()))?;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
         for (id, i) in controls {
+            if init.controls[i] == 0 {
+                continue;
+            }
             seq.serialize_element(&Entry {
                 address: A::Control(id),
                 value: V::Control(sampler_core::ControlValue::Integer(i64::from(
@@ -139,6 +156,9 @@ impl Serialize for NativeValues<'_> {
         }
         let instance = sampler_core::ScriptInstanceId(0);
         for (index, &value) in init.cells.iter().enumerate() {
+            if value == 0 {
+                continue;
+            }
             seq.serialize_element(&Entry {
                 address: A::Cell {
                     instance,
@@ -148,6 +168,9 @@ impl Serialize for NativeValues<'_> {
             })?;
         }
         for (index, value) in init.texts.iter().enumerate() {
+            if value.is_empty() {
+                continue;
+            }
             let text = sampler_core::Text::try_new(value)
                 .map_err(|_| serde::ser::Error::custom("cached text exceeds native capacity"))?;
             seq.serialize_element(&Entry {
@@ -171,6 +194,10 @@ impl Initialized {
             slot: self.environment.slot,
             performance_view: self.environment.performance_view.clone(),
             state: serde_json::value::to_raw_value(&NativeValues(self)).ok()?,
+            cells: self.hir.cells,
+            texts: self.hir.texts,
+            controls: controls(&self.hir, self.environment.slot).len(),
+            entries: NativeValues(self).len(),
             persistence: self.init.persistence.clone(),
             model: self.init.model.clone(),
             engine: self.init.engine.iter().map(|(k, v)| (*k, *v)).collect(),
@@ -206,6 +233,7 @@ impl Initialized {
 
 struct RestoreValues<'a> {
     initial: &'a mut crate::eval::Initial,
+    entries: usize,
     controls: std::collections::BTreeMap<sampler_core::ControlId, usize>,
 }
 impl<'de> serde::de::DeserializeSeed<'de> for RestoreValues<'_> {
@@ -223,7 +251,7 @@ impl<'de> serde::de::Visitor<'de> for RestoreValues<'_> {
         use sampler_core::{
             ScriptStateAddress as Address, ScriptStateEntry, ScriptStateValue as Value,
         };
-        let expected = self.controls.len() + self.initial.cells.len() + self.initial.texts.len();
+        let expected = self.entries;
         let mut count = 0;
         let mut prior = None;
         while let Some(entry) = seq.next_element::<ScriptStateEntry>()? {
@@ -259,7 +287,7 @@ impl<'de> serde::de::Visitor<'de> for RestoreValues<'_> {
             }
             count += 1;
         }
-        if count != expected || !self.controls.is_empty() {
+        if count != expected {
             return Err(serde::de::Error::custom("incomplete cached state"));
         }
         Ok(())
@@ -301,6 +329,16 @@ pub fn restore_initialized(
     if cached.persistence.len() != hir.vars.len() {
         return Err(error("cached persistence shape mismatch"));
     }
+    let ids = controls(&hir, cached.slot);
+    if cached.cells != hir.cells
+        || cached.texts != hir.texts
+        || cached.controls != ids.len()
+        || cached.entries > cached.cells as usize + cached.texts as usize + cached.controls
+    {
+        return Err(error("cached native shape mismatch"));
+    }
+    // Every restored initializer owns fresh zero/empty banks. Native entry
+    // addresses therefore need only describe the nonzero post-init values.
     let mut init = crate::eval::Initial {
         cells: vec![0; hir.cells as usize],
         texts: vec![String::new(); hir.texts as usize],
@@ -316,7 +354,8 @@ pub fn restore_initialized(
     use serde::de::DeserializeSeed;
     let mut d = serde_json::Deserializer::from_str(cached.state.get());
     RestoreValues {
-        controls: controls(&hir, cached.slot),
+        controls: ids,
+        entries: cached.entries,
         initial: &mut init,
     }
     .deserialize(&mut d)
@@ -401,5 +440,17 @@ mod tests {
             cached.state = serde_json::value::RawValue::from_string(malformed.into()).unwrap();
             assert!(super::restore_initialized(source, crate::Limits::LIBRARY, cached).is_err());
         }
+    }
+    #[test]
+    fn native_cache_omits_zero_initialized_banks_without_losing_state() {
+        let source = "on init\ndeclare %bank[100000]\n%bank[42] := 9\nend on";
+        let cold = crate::initialize(source, crate::Limits::LIBRARY, &Default::default()).unwrap();
+        let cached = cold.capture_initialized().unwrap();
+        assert!(
+            cached.state.get().len() < 512,
+            "zero banks need no owned entry payload"
+        );
+        let warm = super::restore_initialized(source, crate::Limits::LIBRARY, cached).unwrap();
+        assert_eq!(warm.init.cells, cold.init.cells);
     }
 }
