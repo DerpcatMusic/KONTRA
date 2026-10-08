@@ -1409,3 +1409,6 @@ impl Cx<'_> {
         self.state.analyser.update(&self.p.shared.scope, source, rate)
     }
 }
+
+#[cfg(all(feature="shots",feature="uvi"))]
+pub(crate) mod scan_uvi;

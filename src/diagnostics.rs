@@ -359,6 +359,7 @@ pub fn snapshot() -> DiagnosticSnapshot {
     }
 }
 pub fn log_path() -> Option<PathBuf> {
+    if std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return None; }
     Some(session().path.clone())
 }
 
@@ -418,6 +419,8 @@ fn text(value: &Value, key: &str) -> Option<String> {
     value[key].as_str().map(str::to_owned)
 }
 fn emit(value: Value) -> Option<String> {
+    // Scanner-only: do not journal native graph values or Lua fault excerpts.
+    if std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return None; }
     let session = session();
     emit_to(&session, value)
 }
@@ -1550,6 +1553,7 @@ impl LoadTrace {
     /// Actual trace stage, including a transition that ended before failure.
     pub(crate) fn current_stage(&self) -> &'static str { self.stage }
     fn record(&mut self, event: &str, data: Value) {
+        if std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return; }
         let stage = data["stage"].as_str().unwrap_or(self.stage);
         let module = match stage {
             "scripts" => "ksp",

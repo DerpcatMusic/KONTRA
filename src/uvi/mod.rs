@@ -646,3 +646,6 @@ mod aftertouch_tests {
         assert!(omni[1] > targeted[1] + 1e-4);
     }
 }
+
+#[cfg(feature="shots")]
+pub(crate) mod scan;
