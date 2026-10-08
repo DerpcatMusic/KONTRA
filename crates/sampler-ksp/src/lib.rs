@@ -230,19 +230,21 @@ impl ScriptView {
     /// The callback of this script's `local` program (`"on note"`...), if it
     /// is one of its entry points.
     pub fn callback(&self, local: usize) -> Option<&'static str> {
-        Some(match self.entries.iter().find(|e| e.program == local)?.kind {
-            EntryKind::Note => "on note",
-            EntryKind::Release => "on release",
-            EntryKind::Controller => "on controller",
-            EntryKind::PolyAt => "on poly_at",
-            EntryKind::UiControl(_) => "on ui_control",
-            EntryKind::Listener => "on listener",
-            EntryKind::PgsChanged => "on pgs_changed",
-            EntryKind::PersistenceChanged => "on persistence_changed",
-            EntryKind::AsyncComplete => "on async_complete",
-            EntryKind::Rpn => "on rpn",
-            EntryKind::Nrpn => "on nrpn",
-        })
+        Some(
+            match self.entries.iter().find(|e| e.program == local)?.kind {
+                EntryKind::Note => "on note",
+                EntryKind::Release => "on release",
+                EntryKind::Controller => "on controller",
+                EntryKind::PolyAt => "on poly_at",
+                EntryKind::UiControl(_) => "on ui_control",
+                EntryKind::Listener => "on listener",
+                EntryKind::PgsChanged => "on pgs_changed",
+                EntryKind::PersistenceChanged => "on persistence_changed",
+                EntryKind::AsyncComplete => "on async_complete",
+                EntryKind::Rpn => "on rpn",
+                EntryKind::Nrpn => "on nrpn",
+            },
+        )
     }
 
     /// The script slot.
@@ -384,13 +386,9 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
     let mut instances = Vec::new();
     let mut resources = Vec::new();
     // The plan's effect slot controls stay beside the scripts' own.
-    let mut controls: Vec<_> = plan
-        .controls()
-        .iter()
-        .filter(|c| sampler_core::is_slot_control(c.id))
-        .copied()
-        .collect();
+    let mut controls = plan.controls().to_vec();
     let mut callbacks = Vec::new();
+    let mut widgets = Vec::new();
     let mut stages = Vec::new();
     let mut starts = Vec::new();
     let mut signals = Vec::new();
@@ -413,6 +411,49 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
             release: script.routed(EntryKind::Release).map(|p| base + p),
             controller: script.routed(EntryKind::Controller).map(|p| base + p),
         });
+        for w in &script.model.interface.widgets {
+            use model::{Location, WidgetValue};
+            let storage = if let Some(id) = w.control {
+                Some(sampler_core::WidgetStorage::Control(id))
+            } else {
+                w.location.as_ref().and_then(|location| match *location {
+                    Location::Cells { offset, len } => Some(sampler_core::WidgetStorage::Cells {
+                        offset,
+                        len,
+                        real: matches!(w.value, WidgetValue::Reals(_)),
+                        min: if matches!(w.value, WidgetValue::Reals(_)) {
+                            0.
+                        } else {
+                            -(w.params.get(2).copied().unwrap_or(i32::MAX).unsigned_abs() as f64)
+                        },
+                        max: if matches!(w.value, WidgetValue::Reals(_)) {
+                            1.
+                        } else {
+                            w.params.get(2).copied().unwrap_or(i32::MAX).unsigned_abs() as f64
+                        },
+                    }),
+                    Location::Texts { offset, len } => {
+                        Some(sampler_core::WidgetStorage::Texts { offset, len })
+                    }
+                    _ => None,
+                })
+            };
+            if let Some(storage) = storage {
+                widgets.push(sampler_core::WidgetDefinition {
+                    id: derived_control_id(script.slot, &w.name),
+                    source_slot: script.slot,
+                    ui_id: w.ui_id,
+                    instance,
+                    storage,
+                    program: script
+                        .routed(EntryKind::UiControl(
+                            (w.ui_id - builtins::FIRST_UI_ID) as usize,
+                        ))
+                        .map(|p| base + p),
+                    stage: index,
+                });
+            }
+        }
         for control in script.controls {
             if let Some(program) = control.callback {
                 callbacks.push(ControlCallback {
@@ -464,6 +505,7 @@ pub fn bind_modules(scripts: Vec<Script>, plan: Prepared) -> Result<Prepared, sa
         .with_control_programs(callbacks)?
         .with_plan_programs(starts)?
         .with_signal_programs(signals)?
+        .with_widgets(widgets)?
         // ponytail: fixed headroom for keys created at runtime, like the script stores.
         .with_shared_store(shared, capacity)
 }
@@ -726,6 +768,30 @@ pub fn compile_with(
             }
         }
     }
+    // Replay init through the same addressed service as every callback.
+    let mut start: Vec<_> = init
+        .engine
+        .iter()
+        .map(|(&key, &value)| (key, value))
+        .collect();
+    start.sort_by_key(|(key, _)| *key);
+    let purges: Vec<_> = init
+        .model
+        .requests
+        .iter()
+        .filter(|r| r.command == "purge_group")
+        .filter_map(|r| match r.args.as_slice() {
+            [Value::Int(group), Value::Int(value)] => Some((*group, *value)),
+            _ => None,
+        })
+        .collect();
+    if !start.is_empty() || !purges.is_empty() {
+        starts.push(programs.len());
+        programs.push(
+            unit.engine_start(&start, &purges)
+                .map_err(|f| f.locate(source))?,
+        );
+    }
     for (ui, control) in &mut host {
         control.callback = entries
             .iter()
@@ -754,8 +820,10 @@ pub fn compile_with(
             }
         }
     }
-    for (&key, &value) in &init.engine {
-        store.push((key, i64::from(value)));
+    for (&(id, par, index), value) in &init.indexed_properties {
+        if let Value::Int(value) = value {
+            store.push(([id, par, index, PROPERTY_TAG], i64::from(*value)));
+        }
     }
     for (&signal, &value) in &init.model.listeners {
         store.push(([LISTENER_TAG, signal, 0, LISTENER_TAG], i64::from(value)));
@@ -771,6 +839,11 @@ pub fn compile_with(
     let store_capacity = store.len() + 4096;
     let resources = ScriptResources {
         texts,
+        text_properties: init
+            .text_properties
+            .iter()
+            .map(|(&(id, par), text)| ([id, par, PROPERTY_TAG, PROPERTY_TAG], text.clone()))
+            .collect(),
         store,
         store_capacity,
         controls: ids.clone(),
@@ -795,7 +868,21 @@ pub fn compile_with(
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
     Ok(Script {
-        programs,
+        programs: programs
+            .into_iter()
+            .map(|p| {
+                p.with_engine_symbols(
+                    hir.symbols
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, name)| {
+                            sampler_core::engine_parameter_id(name)
+                                .map(|parameter| (hir::OPAQUE_BASE + i as i32, parameter))
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
         entries,
         starts,
         shared,

@@ -634,8 +634,14 @@ fn nested_selectors_are_independent_axes() {
         pitch: ir::KeyTracking::Fixed,
         velocity: ir::VelocityResponse::None,
         axes: vec![
-            ir::AxisPick { axis: 0, choice: outer },
-            ir::AxisPick { axis: 1, choice: inner },
+            ir::AxisPick {
+                axis: 0,
+                choice: outer,
+            },
+            ir::AxisPick {
+                axis: 1,
+                choice: inner,
+            },
         ],
         ..ir::Zone::new(ir::AssetRef(asset))
     };
@@ -661,4 +667,152 @@ fn nested_selectors_are_independent_axes() {
     assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 8); // outer B keeps inner y
     sound(&mut rt, 20);
     assert_eq!((sound(&mut rt, 60) * 10.0).round() as i32, 4); // inner x under outer B
+}
+
+#[test]
+fn addressed_gain_and_filter_controls_drive_real_audio_lanes() {
+    use sampler_core::{
+        ControlValue, EngineParameterAddress, EngineParameterBinding, EngineParameterLaw,
+        engine_parameter_id,
+    };
+    let key = "authored/group0/insert9/gain";
+    let mut instrument = ir::Instrument {
+        assets: vec![asset("test")],
+        zones: vec![ir::Zone {
+            keys: ir::KeyRange { low: 60, high: 60 },
+            chain: Some(ir::ChainRef(0)),
+            velocity: ir::VelocityResponse::None,
+            ..ir::Zone::new(ir::AssetRef(0))
+        }],
+        controls: vec![ir::Control {
+            key: key.into(),
+            label: "gain".into(),
+            value: ir::ControlValue::Continuous {
+                min: 0.,
+                max: 1.,
+                default: 1.,
+                unit: ir::ControlUnit::None,
+            },
+            automation: ir::Automation::None,
+        }],
+        processor_controls: vec![ir::ProcessorControl {
+            control: ir::ControlRef(0),
+            chain: ir::ChainRef(0),
+            index: 0,
+            parameter: ir::ProcessorParameter::Gain,
+            ramp: ir::Time::ZERO,
+        }],
+        chains: vec![ir::Chain {
+            scope: ir::Scope::Voice,
+            pre_amplitude: vec![ir::Processor::Gain(ir::Gain::UNITY)],
+            post_amplitude: vec![],
+        }],
+        ..Default::default()
+    };
+    let address = EngineParameterAddress {
+        parameter: engine_parameter_id("$ENGINE_PAR_VOLUME").unwrap(),
+        group: 0,
+        slot: 9,
+        generic: 1,
+    };
+    let id = sampler_core::lower::ir_control_id(key);
+    let prepare = |ir: &ir::Instrument, pcm| {
+        lower(ir, 48000, vec![pcm], no_behaviors)
+            .unwrap()
+            .with_engine_parameters(
+                vec![EngineParameterBinding {
+                    address,
+                    control: id,
+                    law: EngineParameterLaw::Linear { low: 0., high: 1. },
+                }],
+                vec![],
+            )
+            .unwrap()
+    };
+    let plan = prepare(&instrument, constant(0.5));
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut out = [[0.; 2]; 64];
+    rt.render(&mut out).unwrap();
+    let before = out[32][0];
+    rt.set_engine_parameter(address, 250000).unwrap();
+    rt.render(&mut out).unwrap();
+    assert!((out[32][0] / before - 0.25).abs() < 0.001);
+    assert_eq!(rt.engine_parameter(address), Ok(250000));
+    assert_eq!(
+        rt.control_value(rt.active_plan(), id),
+        Ok(ControlValue::Real(0.25))
+    );
+    instrument.controls[0].value = ir::ControlValue::Continuous {
+        min: 100.,
+        max: 12000.,
+        default: 100.,
+        unit: ir::ControlUnit::None,
+    };
+    instrument.processor_controls[0].parameter = ir::ProcessorParameter::Cutoff;
+    instrument.chains[0].pre_amplitude[0] = ir::Processor::Filter(ir::Filter {
+        kind: ir::FilterKind::LowPass { poles: 1 },
+        cutoff: ir::Frequency::Hertz(100.),
+        resonance: ir::Resonance::Q(0.7),
+    });
+    let pcm = Pcm::new(
+        48000,
+        (0..4096)
+            .map(|i| [(i as f32 * std::f32::consts::TAU / 8.).sin(); 2])
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
+    .unwrap();
+    let plan = lower(&instrument, 48000, vec![pcm], no_behaviors)
+        .unwrap()
+        .with_engine_parameters(
+            vec![EngineParameterBinding {
+                address,
+                control: id,
+                law: EngineParameterLaw::Linear {
+                    low: 100.,
+                    high: 12000.,
+                },
+            }],
+            vec![],
+        )
+        .unwrap();
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    let mut out = [[0.; 2]; 1024];
+    rt.render(&mut out).unwrap();
+    let low: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    rt.set_engine_parameter(address, 1000000).unwrap();
+    rt.render(&mut out).unwrap();
+    let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    assert!(high > low * 100., "{low} {high}");
+    instrument.controls[0].value = ir::ControlValue::Continuous {
+        min: 0.,
+        max: 1.,
+        default: 0.,
+        unit: ir::ControlUnit::None,
+    };
+    instrument.chains[0].pre_amplitude[0] = ir::Processor::Daft(ir::Daft {
+        gain: 0.,
+        cutoff: 0.,
+        resonance: 0.,
+        highpass: false,
+    });
+    let pcm = Pcm::new(
+        48000,
+        (0..4096)
+            .map(|i| [(i as f32 * std::f32::consts::TAU / 8.).sin(); 2])
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
+    .unwrap();
+    let plan = prepare(&instrument, pcm);
+    let mut rt = Runtime::new(plan, limits()).unwrap();
+    rt.trigger(input(60), 60, 1.).unwrap();
+    rt.render(&mut out).unwrap();
+    let low: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    rt.set_engine_parameter(address, 1000000).unwrap();
+    rt.render(&mut out).unwrap();
+    let high: f32 = out[512..].iter().map(|f| f[0] * f[0]).sum();
+    assert!(high > low * 100., "Daft {low} {high}");
 }

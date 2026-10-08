@@ -16,6 +16,7 @@ mod mapping;
 mod metadata;
 pub mod nis;
 mod nks;
+mod persistence;
 mod resource_container;
 mod resources;
 mod samples;
@@ -37,6 +38,7 @@ pub use metadata::{
     QuickBrowse, SaveSettings, SlotList,
 };
 pub use nks::Nks42;
+pub use persistence::{ArrayTail, SavedEntry, SavedNumbers, SavedTexts, SavedValue};
 pub use resource_container::ResourceContainer;
 pub use resources::Resources;
 pub use samples::{Decoded, Samples, Source, decode};
@@ -235,6 +237,7 @@ pub enum ErrorKind {
     Truncated,
     TrailingData,
     InvalidBoolean,
+    InvalidSavedValue,
     UnsupportedLayout,
     UnsupportedVersion(u32),
     IncorrectId { expected: u16, actual: u16 },
