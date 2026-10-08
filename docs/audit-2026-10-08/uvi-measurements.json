@@ -1262,7 +1262,7 @@
     "current_scanner_report_gate": {
       "command": "kontakto-heavy cargo test --profile ci --no-run",
       "result": "pass",
-      "build_seconds": 52.73
+      "build_seconds": 17.24
     }
   },
   "branch_single_program_resource_scene": {
@@ -1692,6 +1692,37 @@
     "v1_sidecar_budget_hit": "unknown"
   },
   "current_shared_scanner": {
+    "source": "2355155b56a5ae26add8bdbc287d46d42e7825f2",
+    "v2_product_base": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
+    "v2_sha256": "f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a",
+    "pinned_v1_adapter": "788f41fafa7e21ddf7b1917bc4cf43e0a83876b8",
+    "v1_dispatcher_sha256": "ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08",
+    "v1_uvi_sha256": "d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1",
+    "coverage_status": "restarted after Conflux-first smoke; pending owner",
+    "audio_comparison_policy": [
+      "matching actual key and velocity required",
+      "fallback excluded from parity",
+      "no safe key: plays_note=no",
+      "old null-pick audio discarded"
+    ],
+    "sidecar_changed": false,
+    "missing_sidecar_fields": "unknown, not zero",
+    "unchanged_uvi_note_helper": {
+      "accepts": [
+        "key",
+        "velocity"
+      ],
+      "keyswitch_execution": "unknown; not read by compiled helper",
+      "explicit_no_audition_command": "not implemented in sidecar",
+      "without_numeric_override": "local selection fallback; require paired actual-pick checks"
+    },
+    "verified_at_utc": "2026-10-08T09:02:19.778748+00:00",
+    "sample_zone_count": "retained instrument IR count; unknown if unavailable",
+    "decoded_zone_count": "raw decoded count; separate JSON",
+    "runtime_purge_gating": "not inferred from mapping counts",
+    "no_safe_key": "not auditioned"
+  },
+  "shared_scanner_e340c39a": {
     "source": "e340c39a6666752866015b5ee8f06a3cc978c416",
     "v2_product_base": "7e82b152b46b31e8b9fd85c2ac01d01dad669ddd",
     "v2_sha256": "742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4",
@@ -1720,6 +1751,7 @@
       "keyswitch_execution": "unknown; not read by compiled helper",
       "explicit_no_audition_command": "not implemented in sidecar",
       "without_numeric_override": "local selection fallback; require paired actual-pick checks"
-    }
+    },
+    "status": "superseded by2355155b"
   }
 }
