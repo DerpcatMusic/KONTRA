@@ -5,7 +5,7 @@ use crate::{
 };
 use std::fmt::Write;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct EngineParameterAddress {
     pub parameter: u16,
     pub group: i32,
@@ -62,7 +62,7 @@ pub fn engine_parameter_name(id: u16) -> Option<&'static str> {
 }
 
 /// Module owners bind the same controls the DSP reads. No private write mirror.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub enum EngineParameterLaw {
     /// Native signed filter Gain: -1M..1M maps to -1..1 (±12 dB in the kernel).
     SignedNormalized,

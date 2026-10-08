@@ -418,6 +418,7 @@ struct Candidate {
 }
 
 pub struct Prepared {
+    pub(super) signal_trace: Option<crate::trace::TracePrepared>,
     pub(super) rate: u32,
     pub(super) pcm: Box<[Pcm]>,
     pub(super) buses: super::bus::PreparedBuses,
@@ -625,6 +626,7 @@ impl Prepared {
             buses: super::bus::PreparedBuses::default(),
             impulses: Vec::new(),
             voice_chains: Box::new([]),
+            signal_trace: None,
             dsp_bindings: Box::new([]),
             filters: Box::new([]),
             dsp_controls: Box::new([]),
@@ -1405,5 +1407,48 @@ mod fade_tests {
         assert_eq!(ramp(40, 1, 100, 0, 60), 1.0);
         assert_eq!(ramp(100, 1, 100, 0, 60), 1.0 / 61.0);
         assert_eq!(ramp(80, 1, 100, 0, 60), 21.0 / 61.0);
+    }
+}
+
+impl Prepared {
+    pub(crate) fn trace_region_take(&self,region:usize) -> Option<crate::Take> {self.regions[region].take}
+    pub(crate) fn trace_region_gains(&self, region: usize, key: u8, velocity: f64) -> [f64;3] {
+        let r=&self.regions[region]; [f64::from(r.gain),f64::from(r.velocity_curve.amplitude(velocity)),f64::from(r.fade_gain(key,velocity))]
+    }
+    /// Build all signal identities and fixed diagnostic storage off audio.
+    /// This opt-in builder leaves ordinary plans/rendering unchanged.
+    pub fn with_signal_trace(mut self, records: usize) -> Result<Self, Error> {
+        self.enable_signal_trace(records)?; Ok(self)
+    }
+    pub(crate) fn enable_signal_trace(&mut self, records:usize) -> Result<(),Error> {
+        if self.signal_trace.is_some() { return Err(Error::InvalidInput); }
+        if self.regions.iter().any(|r| r.chain.is_none()) {
+            let index = self.voice_chains.len();
+            let empty = crate::VoiceChain::new(vec![], vec![], 0)?.compile(self.rate, &mut vec![], &mut vec![])?;
+            let mut chains = std::mem::take(&mut self.voice_chains).into_vec(); chains.push(empty); self.voice_chains = chains.into_boxed_slice();
+            for region in &mut self.regions { if region.chain.is_none() { region.chain = Some(index); } }
+        }
+        let mut graph = crate::trace::TraceGraph::new(self.rate);
+        self.buses.trace_graph(&self, &mut graph);
+        let initial = crate::dsp::control::initial_parameters(&self, &self.dsp_bindings);
+        for (index, region) in self.regions.iter().enumerate() {
+            let zone = self.region_zone_ids.get(index).copied().unwrap_or(index as u32 + 1);
+            let group = self.region_groups.get(index).copied().flatten();
+            let chain = &self.voice_chains[region.chain.unwrap()];
+            let mut nodes = chain.trace_graph(&self, &mut graph, zone, group, region.bus, &initial);
+            nodes.region=index;
+            graph.nodes[nodes.amp].parameters = std::iter::once(crate::trace::TraceParameter::constant("region_gain",f64::from(region.gain)))
+                .chain(std::iter::once(crate::trace::TraceParameter::constant("velocity_exponent",match region.velocity_curve {VelocityCurve::Constant=>0.,VelocityCurve::Linear=>1.,VelocityCurve::Power(p)=>p})))
+                .chain(region.envelope.trace_parameters().into_iter().map(|(n,v)| {
+                    let stage=match n {"attack_frames"=>Some(0),"hold_frames"=>Some(1),"decay_frames"=>Some(2),"sustain"=>Some(3),"release_frames"=>Some(4),"attack_curvature"=>Some(5),_=>None};
+                    let control=group.and_then(|g|self.envelope_controls.get(g as usize)).and_then(|lanes|stage.and_then(|s|lanes[s]));
+                    let binding=control.and_then(|control|self.engine_parameters.iter().find(|b|b.control==control));
+                    crate::trace::TraceParameter::envelope(n,v,binding)
+                })).collect();
+            graph.voices.insert(zone, nodes);
+        }
+        graph.order=graph.topological_order();
+        if graph.order.len()!=graph.nodes.len() {return Err(Error::InvalidInput);}
+        self.signal_trace = Some(crate::trace::TracePrepared::new(graph, records)?); Ok(())
     }
 }
