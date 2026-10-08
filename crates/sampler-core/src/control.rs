@@ -97,6 +97,7 @@ impl ControlEvent {
 
 pub(super) struct ControlState {
     values: Box<[ControlValue]>,
+    pub(super) automation: Box<[crate::automation::AutomationState]>,
     pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
     pub(super) pending: usize,
@@ -105,6 +106,7 @@ impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
+            automation: vec![crate::automation::AutomationState::default(); plan.automation.len()].into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
