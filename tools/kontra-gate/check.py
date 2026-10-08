@@ -83,10 +83,12 @@ with tempfile.TemporaryDirectory() as tmp:
         cache = run/'v2/cold/cache'; cache.mkdir()
         cache.joinpath('signature.json').write_text('{"path":"fixture"}')
         item.joinpath('plugin-diagnostics.json').write_text('{"files":[]}')
-        item.joinpath('signal-trace.json').write_text(json.dumps({'schema':1,'graph':{'nodes':[{'id':7,'kind':'master','processor':'sum'}]},'records':[{'node':7,'frames':64,'enabled':True,'output':{'peak':[peak,peak],'rms':[peak,peak],'dc':[0,0]}}],'complete':True,'dropped':0}))
+        item.joinpath('signal-trace.json').write_text(json.dumps({'schema':1,'graph':{'nodes':[{'id':7,'kind':'master','processor':'sum','gain_measurement':'scalar_multiplier'}]},'records':[{'node':7,'frames':64,'enabled':True,'gain':[peak,peak],'output':{'peak':[peak,peak],'rms':[peak,peak],'dc':[-peak,0]}}],'complete':True,'dropped':0}))
     gate.diff(after, before)
     result=after.joinpath('diff.md').read_text()
     assert '/node/7/master/sum/coherent/peak/0' in result and '0.2 | 0.4' in result
+    assert '/coherent/dc/0 | -0.2 | -0.4' in result
+    assert '/coherent/gain/scalar_multiplier/0 | 0.2 | 0.4' in result
 print('signal trace retention and per-stage diff checks passed')
 assert gate.compare(0, 0, optimum=0) == 'PASS'
 assert gate.compare(1, 1, optimum=0) == 'FAIL'
@@ -184,3 +186,14 @@ with tempfile.TemporaryDirectory() as tmp:
         assert (root/'results/items'/key/'signal-trace.json').exists()
     finally: scanner.probe=saved_probe;sys.argv=saved_argv;scanner.NOTE_ROOT=saved_notes
 print('first-load note-plan signature retains matching diagnostics checks passed')
+
+with tempfile.TemporaryDirectory() as tmp:
+    run=Path(tmp); folder=run/'v2/cold'; (folder/'cache').mkdir(parents=True)
+    folder.joinpath('cache/key.json').write_text('{"path":"fixture"}')
+    item=folder/'items/key'; item.mkdir(parents=True)
+    assert gate.trace_statuses(run,'v2','cold')=={}
+    item.joinpath('signal-traces.json').write_text('{"traces":[{"status":"VALID"}]}')
+    assert gate.trace_statuses(run,'v2','cold')['fixture']=='complete'
+    item.joinpath('signal-traces.json').write_text('{"traces":[{"status":"VALID"},{"status":"UNKNOWN"}]}')
+    assert gate.trace_statuses(run,'v2','cold')['fixture']=='unknown'
+print('observed complete zero-drop trace column checks passed')
