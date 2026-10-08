@@ -1,0 +1,24 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 533  of event 'cycles:u'
+# Event count (approx.): 531506112
+#
+# Overhead  Command         Shared Object     Symbol
+# ........  ..............  ................  ..................................................................................................................................................................................................................................................................................................................................................................................
+#
+    44.14%  cpu_audit       cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::end_block
+    17.52%  cpu_audit       cpu_audit         [.] sampler_core::dsp::process
+    13.88%  cpu_audit       cpu_audit         [.] <kontakto::sound::v2::V2Core as kontakto::sound::Core>::render
+    10.27%  cpu_audit       libc.so.6         [.] 0x00000000001b7d1e
+     3.77%  cpu_audit       cpu_audit         [.] <sampler_core::resample::Kernel>::sample_window
+     3.30%  cpu_audit       cpu_audit         [.] <sampler_core::bus::BusState>::render
+     2.06%  sampler-reload  cpu_audit         [.] sampler_kontakt::stream::reload
+     1.13%  cpu_audit       cpu_audit         [.] sampler_core::render::render_source::<sampler_core::source::PagedFrames>
+
+
+#
+# (Tip: To measure approximate function latency with Processor Trace use perf record -e intel_pt// ... ; perf script --call-ret-trace)
+#
