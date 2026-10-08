@@ -10,12 +10,24 @@ use std::{path::Path, sync::Arc};
 pub struct Source {
     kontakt: sampler_kontakt::Resources,
     uvi: Option<sampler_uvi::Resources>,
+    #[cfg(feature = "shots")] pub scan: Scan,
+}
+#[cfg(feature = "shots")] pub Scan);
+
+#[cfg(feature = "shots")]
+#[derive(Clone, Copy, Default)]
+pub struct Scan {
+    pub lookups: usize,
+    pub lookup_ok: usize,
+    pub decodes: usize,
+    pub decode_ok: usize,
+    pub fonts: usize,
 }
 
 impl Source {
     pub fn of(instrument: &Path) -> Self {
         let uvi = instrument.ancestors().any(|p|p.extension().is_some_and(|e|e.eq_ignore_ascii_case("ufs")||e.eq_ignore_ascii_case("uvip"))).then(||sampler_uvi::Resources::of(instrument));
-        Self {kontakt:sampler_kontakt::Resources::of(instrument),uvi}
+        Self {kontakt:sampler_kontakt::Resources::of(instrument),uvi, #[cfg(feature="shots")] scan: Scan::default()}
     }
 
     fn read(&mut self, path: &str) -> Option<Vec<u8>> {
@@ -27,8 +39,18 @@ impl Source {
 
     /// `asset` decoded and cut into its frames.
     pub fn load(&mut self, asset: &ir::Asset) -> Option<Arc<Picture>> {
-        let ir::AssetKind::Image(meta) = &asset.kind else { return None };
-        let image = crate::artwork::decode(&self.read(&asset.path)?)?;
+        let ir::AssetKind::Image(meta) = &asset.kind else {
+            #[cfg(feature = "shots")]
+            { self.scan.fonts += 1; }
+            return None;
+        };
+        let bytes = self.read(&asset.path);
+        #[cfg(feature = "shots")]
+        { self.scan.lookups += 1; self.scan.lookup_ok += usize::from(bytes.is_some()); }
+        let image = crate::artwork::decode(&bytes?);
+        #[cfg(feature = "shots")]
+        { self.scan.decodes += 1; self.scan.decode_ok += usize::from(image.is_some()); }
+        let image = image?;
         let n = meta.frames.max(1);
         let vertical = meta.axis == ir::Orientation::Vertical;
         let (fw, fh) = if vertical { (image.width, image.height / n) } else { (image.width / n, image.height) };
