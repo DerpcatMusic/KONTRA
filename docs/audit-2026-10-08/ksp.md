@@ -296,7 +296,31 @@ The UI and binding populations differ between renderers; 78 versus 113 is not a 
 
 The canonical v2 JSON also records ignored engine-display queries (441 ordinary / 474 extended), event-status, menu/control string getters, event enumeration and other KSP warnings. Its successful production load therefore confirms the main distinction in this report: admission/audio can succeed while substantial script semantics remain incomplete.
 
-Evidence: `~/.cache/kontra-scan/results/v2/results.tsv` and its digest-keyed JSON cache; own shared-v1 output `~/.cache/kontakto-audit-ksp/shared-scanner/v1/{results.tsv,cache/}`; `shared-v1.log`. At inspection the canonical v2 TSV had **one row** and the full sweep was still in progress. Requested additions through the coordinator: active/cleanly compiled script slots, init completion, load-time fault records, and separate init/persistence callback outcomes. Until those arrive, the shared scanner cannot supply a fresh whole-corpus KSP compile/init rate.
+Evidence: `~/.cache/kontra-scan/results/v2/results.tsv` and its digest-keyed JSON cache; own shared-v1 output `~/.cache/kontakto-audit-ksp/shared-scanner/v1/{results.tsv,cache/}`; `shared-v1.log`. At inspection the canonical v2 TSV had **one row** and the full sweep was still in progress. Requested additions through the coordinator: active/cleanly compiled script slots, init completion, load-time fault records, and separate init/persistence callback outcomes. That initial scanner could not supply a fresh whole-corpus KSP compile/init rate; the extension below supersedes its field-availability limitation.
+
+### Extended shared scanner: partial production witness
+
+The installed extension is `tools/kontra-scan@9dcf05e59cbc67e45c56872e1418817693150085`. Verified installed SHA-256: v2 `18fe63fe07e62ea3c012ce29fc2d01b08f518ea808459446478cc46aca924b6d`, v1 `a4b3f8c76483ea06b36b9fef46911093d7e8df8021bd9e54e711018dbf700399`. Kontakt product baselines remain unchanged. The shared collector now records the requested raw slot partition, ownership/wire/runtime mapping, compile cleanliness, actual callback phases and safe fault categories, and raw/admitted saved sigils. The [accessor handoff](ksp-scanner-fields.md) explains why these measures differ from importer success.
+
+At inspection, current-digest `results/v2/results.tsv` contained **three smoke rows: one Kontakt Conflux NKI and two UVI programs**. V1 had zero rows. The top-level published `results/{v1,v2}.tsv` both contained headers only at that moment; consume the detailed current-digest cache/local TSV for this witness and the completed publication for final corpus rates. This is partial coverage of the planned paired 1,494 IDs (834 Kontakt, 660 UVI), with no new v1/v2 paired result yet. Historical scanner digests and timings above describe the previous witness rather than this extension.
+
+| Extended v2 Conflux observation | Result |
+|---|---|
+| Raw Script slots | 5: 2 empty, 3 nonempty inline; 0 bypassed, linked-only or decode-failed |
+| Admitted / clean compiled slots | 3 / 3; original wire slots 2, 3, 4 |
+| Actual init completion | 3 completed of 3 present |
+| Actual persistence_changed completion | 2 completed of 2 present; absent in slot 4 |
+| Retained load / audition runtime fault records | 0 / 0 |
+| Raw saved entries | `$` 223, `%` 15, `@` 6, `!` 13 |
+| Admitted saved entries | `$` 223, `%` 15, `@` 6; **all 13 `!` entries dropped** |
+| Load / selected audition | admitted / audible, matched note plan |
+| Visible interactive bindings / images | 107/113; one lookup failure |
+
+The init/persistence counts exclude the three import-harvest attempts and the one short-circuited dynamic-rack attempt. An absent callback is not a failed completion. These are actual phase observations for one production instrument, replacing the old return-value proxy for this witness; the report's whole-corpus frontend rates remain unchanged until completed shared data arrives. Zero terminal faults does not establish correct engine/UI/host effects or saved-value restoration. The raw/admitted histogram directly confirms the existing text-array gap in a production load, with no saved names or values exported.
+
+The instantiated UI inventory contains 242 knobs, 20 menus, 6 tables, 2 sliders, 34 labels, 41 switches, 16 buttons, 6 level meters, 46 panels, 6 text edits and 15 value edits. These total 434 authored widgets across three views; they include hidden controls and differ from the 113 visible interactive population. The same witness observes six declared fonts with the font service unavailable. Its original main page has declared RGBA `[240,239,228,255]` covering 93.90% of rendered pixels; this is a measured authored cream background, not a blank-page defect classification.
+
+Evidence: shared `results/v2/cache/70c67b9c5e48dfa082f09f49941b681d89ff920179ae6911a0d781c7dad8b8f2.json` and its 63-column local TSV, filtered to the installed v2 digest. No independent collector or new sweep was started. Unsupported-command exposure ranking and completed-phase corpus denominators will use the shared per-slot data after the coordinator publishes completed coverage.
 
 ## Unknowns and concrete measurement plan
 
