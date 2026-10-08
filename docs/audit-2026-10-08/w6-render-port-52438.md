@@ -70,8 +70,10 @@ scalar-repeat and cubic PCM hashes at block 64. All 384,000 float samples per
 cell match exactly; max absolute and RMS errors are zero. The comparison
 receipts are `wav/<item>/comparison.json`; all generated WAVs were deleted.
 
-Status: HOLD for quiet CPU acceptance. No READY or CPU acceptance claim. CPU acceptance must use unprofiled ci/default-feature binaries
-against the frozen v1 in a quiet A/B. No release or install.
+Status: targeted correctness checks are green and the stack is pushed for alpha
+integration under the coordinator's resumed release policy. Quiet CPU acceptance
+remains UNKNOWN: no timing result is claimed. Acceptance must use unprofiled
+matching binaries against frozen v1 in a quiet A/B. W0 owns release and install.
 
 ## Follow-up: unchanged pitch ratio
 
@@ -92,4 +94,33 @@ and cubic binaries remain frozen. Cotton, Analog Strings and Areia pitch-cache P
 scalar baseline exactly (zero sample error); generated WAVs were deleted.
 Quiet CPU acceptance remains pending.
 
-NEXT: follow-up signal witness and unprofiled same-cell quiet CPU.
+## Follow-up: settled modulation results
+
+Port the settled-result reuse in
+`0cb7a8a0:src/engine/voice.rs::Voice::plan` and its convergence check in
+`src/engine/params.rs::Mods::modulate` into v2's existing flat source values.
+V1 invalidates with a global input stamp; v2 compares the exact raw source
+bits before repeating route transforms and output conversions. Only programs
+whose sources have no clocks and whose routes have zero lag qualify. Changes
+to controllers, pressure, timbre, bend and script values still reevaluate.
+Every voice onset forces evaluation, including reuse with another program.
+
+Age and control-grid clocks advance on cache hits. Addressed processor values
+copy to their previous endpoints before returning, so a held filter does not
+repeat the prior transition. There is no new voice storage or allocation and
+no public or kernel-facing API change. The targeted fixture covers changed and
+held cutoff, then reuses a voice with the same input and a different route.
+
+Validation: 22 targeted unit, voice-modulation and expression checks pass
+(one timing benchmark ignored), and root locked no-run passes. Matching ci/default
+feature binaries are recorded in `settled-BUILD.json`. Cotton, Analog Strings
+and Areia each match the original scalar PCM hash bit-for-bit: 384,000 samples
+per cell, zero unequal samples and zero max/RMS error. Receipts are
+`settled-wav/<item>/comparison.json`; all generated WAVs were deleted.
+No CPU benefit is claimed.
+The original stage profile and all witnesses above predate W15's prepared-filter
+registry. Quiet CPU acceptance must include that registry and its additional
+native-address scratch work in the combined stack, rather than score this old
+base in isolation. Current quiet order is W13 then W9; W6 has no request.
+
+NEXT: combined-stack quiet CPU including W15 registry after W13 and W9.
