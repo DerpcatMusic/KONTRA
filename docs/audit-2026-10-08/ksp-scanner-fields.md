@@ -2,7 +2,7 @@
 
 Handoff for `tools/kontra-scan@54f7ea57` extension. Source references below use v2 `7e82b152` or pinned v1 `0cb7a8a0`; measurement evidence is on `audit/ksp-20261008`. This specifies scanner instrumentation, not product fixes. All counters belong to the shared collector.
 
-Current installed implementation: `tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`, superseding `e340c39a`/`9dcf05e5`. Current section J evidence and the v1 raw saved-table observation defect are recorded in [ksp.md](ksp.md#current-shared-scanner-section-j-f7b2a8cd). Await validated completed shared coverage for corpus rates.
+Current installed implementation: `tools/kontra-scan@abf248cd0b99d884b9f2456914362a7bd8e81869`. It resolves the source-slot counting defect by separating successful parameter decoding from independent saved-table integrity; incomplete raw histograms export `unknown`. The validated first 100 shared NKI IDs and current paired Conflux witness are recorded in [ksp.md](ksp.md#shared-scanner-production-follow-up). Await completed shared coverage for whole-corpus production rates.
 
 ## Slot admission and ownership
 
