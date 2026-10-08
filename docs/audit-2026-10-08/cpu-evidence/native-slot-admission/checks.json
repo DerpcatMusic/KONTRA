@@ -1,0 +1,14 @@
+{
+  "integration": "9993db691a5f69d31980357694a678e358785e5e",
+  "red": {
+    "exit_code": 101,
+    "reserved_pages": 3,
+    "actual_pages": 15
+  },
+  "green_native_tests": 14,
+  "targeted_source_stream_tests": 46,
+  "kontakt_no_run": true,
+  "root_default_no_run": true,
+  "cpu_candidate_sha256": "8e264ab72e60495206af8749ea9e4668faec0649f5e1af953db5c48612003fb3",
+  "acceptance": "HOLD"
+}

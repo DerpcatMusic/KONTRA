@@ -1,7 +1,7 @@
 use crate::{read_bytes::ReadBytesExt, Error};
 
 /// BVoiceLimit (SerType 0x2b), retaining names and signed scalar values.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct VoiceLimit {
     pub name: String,
     /// Method to decide which voices will be killed.

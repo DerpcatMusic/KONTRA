@@ -8,6 +8,7 @@
 //! than dropped.
 #![forbid(unsafe_code)]
 
+pub mod kontakt;
 pub mod units;
 mod validate;
 
@@ -53,6 +54,9 @@ pub struct Instrument {
     pub source: SourceFormat,
     pub assets: Vec<Asset>,
     pub groups: Vec<Group>,
+    pub default_keyswitch: Option<u8>,
+    /// Physical source indices, retained across omissions and key-range filtering.
+    pub source_indices: SourceIndices,
     pub zones: Vec<Zone>,
     pub sequences: Vec<Sequence>,
     pub articulations: Vec<Articulation>,
@@ -72,16 +76,54 @@ pub struct Instrument {
     /// Impulse responses bus convolutions refer to.
     pub impulses: Vec<Impulse>,
     pub controls: Vec<Control>,
+    /// Actual processor lanes driven by authored controls; indices span pre then post.
+    pub processor_controls: Vec<ProcessorControl>,
+    /// Ordered per-voice sends at authored processor boundaries.
+    pub voice_send_taps: Vec<VoiceSendTap>,
     pub behaviors: Vec<Behavior>,
+    /// Saved source automation, addressed by slider declaration ordinal per slot.
+    pub script_automation: Vec<ScriptAutomation>,
     /// Polyphony of the whole instrument.
     pub voice_limit: Option<VoiceLimit>,
     /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
     pub voice_limits: Vec<VoiceLimit>,
     /// A host controller that sets the instrument volume once it arrives.
     pub host_volume: Option<HostVolume>,
+    /// Original Kontakt settings, including values not yet admitted by playback.
+    pub kontakt_objects: Option<Box<kontakt::Objects>>,
     /// Source meaning this description does not carry. Lowering never reads it;
     /// it exists so a caller can show or reject what was not translated.
     pub unsupported: Vec<Unsupported>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceIndices {
+    pub groups: Vec<Option<GroupRef>>,
+    pub zones: Vec<Option<ZoneRef>>,
+    pub modulators: Vec<SourceModulator>,
+    /// Authored native mod/target names and physical lookup addresses, including omitted DSP.
+    pub engine_lookups: Vec<SourceEngineLookup>,
+    pub slots: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceModulator {
+    pub group: usize,
+    pub slot: usize,
+    pub external: bool,
+    pub name: String,
+    pub runtime: Option<ModulatorRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceEngineLookup {
+    pub group: i32,
+    /// -1 for a modulator; physical modulator slot for a target.
+    pub owner: i32,
+    pub target: bool,
+    pub name: String,
+    /// Physical modulator slot or authored target ordinal, never a runtime DSP index.
+    pub index: i32,
 }
 
 /// Instrument volume as a host parameter (Kontakt's CC7): it starts at the
@@ -147,6 +189,7 @@ pub enum Encoding {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Group {
     pub name: String,
+    pub start: Vec<GroupStart>,
     pub gain: Gain,
     pub pan: Pan,
     pub tune: Pitch,
@@ -164,6 +207,35 @@ pub struct Group {
     /// Set by [`Instrument::tap_group`]: the bus that carries this group's
     /// fader and sends.
     pub tap: Option<GroupTap>,
+}
+
+/// Physical row and the logical operator connecting it to the following row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupStart {
+    pub slot: u8,
+    pub test: StartTest,
+    pub next: StartJoin,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartJoin {
+    And,
+    AndNot,
+    Or,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartTest {
+    Key {
+        low: u8,
+        high: u8,
+    },
+    Controller {
+        controller: u8,
+        low: u8,
+        high: u8,
+    },
+    /// One-based authored position in the instrument's native RR cycle.
+    RoundRobin(u32),
+    Random,
 }
 
 /// Where a group's fader lives once it is tapped: `bus` outputs at the bus's
@@ -317,7 +389,21 @@ impl Instrument {
     /// assets in their original order. Returns the original index of each
     /// remaining asset, so a caller can load just those.
     pub fn retain_zones(&mut self, mut keep: impl FnMut(&Zone) -> bool) -> Vec<usize> {
-        self.zones.retain(|zone| keep(zone));
+        let mut remap = vec![None; self.zones.len()];
+        let mut old = 0;
+        let mut next = 0;
+        self.zones.retain(|zone| {
+            let retained = keep(zone);
+            if retained {
+                remap[old] = Some(ZoneRef(next));
+                next += 1;
+            }
+            old += 1;
+            retained
+        });
+        for zone in &mut self.source_indices.zones {
+            *zone = zone.and_then(|z| remap[z.0]);
+        }
         let mut used = vec![false; self.assets.len()];
         for zone in &self.zones {
             if let Some(used) = used.get_mut(zone.asset.0) {
@@ -523,6 +609,10 @@ pub struct AxisPick {
 /// A selectable articulation, switched by keys and/or an alternative driver.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Articulation {
+    /// Stable source axis/group/control identity, independent of display order.
+    pub source: String,
+    /// Optional authored selection control (stable engine control ID).
+    pub control: Option<u128>,
     pub name: String,
     /// The source's keyswitch keys. Under [`SwitchOwner::Behavior`] a behavior
     /// reads them, and the first is the key a driver taps to select this.
@@ -669,6 +759,8 @@ pub enum Looping {
     Continuous(LoopRange),
     /// Loops while the note is held, then plays past the loop end.
     UntilRelease(LoopRange),
+    /// Eight authored physical slots, including unoccupied holes.
+    Slots([Option<LoopSlot>; 8]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -678,6 +770,16 @@ pub struct LoopRange {
     pub end: SourceFrames,
     pub crossfade: Span,
     pub alternating: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopSlot {
+    pub range: LoopRange,
+    /// Zero repeats indefinitely; positive values are total outward passes.
+    pub count: u32,
+    /// Source-rate multiplier on repeated passes.
+    pub tuning: f64,
+    pub until_release: bool,
 }
 
 // ---------------------------------------------------------------- modulation
@@ -915,6 +1017,9 @@ pub enum Target {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorParameter {
+    Response,
+    Width,
+    Pan,
     Cutoff,
     Resonance,
     Gain,
@@ -942,6 +1047,17 @@ pub struct Chain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Processor {
     Gain(Gain),
+    /// Native smoothed gain with a dry input contribution.
+    Gainer {
+        gain: Gain,
+        dry: f64,
+    },
+    /// Native width 0..1 (.5 identity), balance -1..1 and optional pseudo stereo.
+    StereoModeller {
+        width: f64,
+        pan: f64,
+        pseudo: bool,
+    },
     Pan(Pan),
     Filter(Filter),
     Delay {
@@ -960,6 +1076,11 @@ pub enum Processor {
     Rectify(Rectifier),
     /// Kontakt's Daft filter: normalized controls, laws in the engine.
     Daft(Daft),
+    /// Native Ladder LP4. Values are normalized; the engine owns the laws.
+    LadderLP4(LadderLP4),
+    /// Mute a send return when its paired Mix slot is bypassed. Uses that
+    /// slot's existing bypass control; insert bypass still passes dry audio.
+    SendReturnGate { address: SlotAddress },
     /// One parallel branch of an effect rack. The next `count` processors (nested
     /// ones included) run on the signal that entered the group's first branch;
     /// `gain` times their output joins the sum, which the `last` branch leaves
@@ -998,6 +1119,16 @@ pub struct Daft {
     pub cutoff: f64,
     pub resonance: f64,
     pub highpass: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LadderLP4 {
+    /// Physical native owner; absent for an authored standalone processor.
+    pub address: Option<SlotAddress>,
+    pub gain: f64,
+    pub cutoff: f64,
+    pub resonance: f64,
+    pub record_version: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1119,6 +1250,39 @@ pub enum SendPosition {
     PostChain,
 }
 
+/// Format-neutral binding of one authored control to an actual processor field.
+/// The control's Continuous range is in the field's native units (Hz, linear
+/// gain, Q or normalized Daft units). Ramping uses the engine sample clock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProcessorControl {
+    pub control: ControlRef,
+    pub chain: ChainRef,
+    pub index: usize,
+    pub parameter: ProcessorParameter,
+    pub ramp: Time,
+}
+
+/// Completed authored stages on the named side of the voice amplitude split.
+/// Lowering preserves this boundary when one stage expands to several kernels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceSendPosition {
+    BeforeAmplitude(usize),
+    AfterAmplitude(usize),
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceSendTap {
+    pub chain: ChainRef,
+    pub position: VoiceSendPosition,
+    pub bus: BusRef,
+    pub gain: Gain,
+    pub bypass: bool,
+    /// Optional controls use existing native Continuous ranges (linear gain,
+    /// bypass 0..1), and bind real DSP lanes rather than a parameter mirror.
+    pub gain_control: Option<ControlRef>,
+    pub bypass_control: Option<ControlRef>,
+    pub ramp: Time,
+}
+
 // ---------------------------------------------------------------- controls
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1170,6 +1334,19 @@ pub enum Automation {
     Controller(u8),
 }
 
+/// Saved Kontakt script-slider assignment. Ordinals count only sliders, not all UI controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptAutomation {
+    pub source: ScriptAutomationSource,
+    pub source_slot: u8,
+    pub slider: u32,
+    pub low: f64,
+    pub high: f64,
+    pub soft_takeover: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptAutomationSource { Controller(u8), HostParameter(u16) }
+
 // ---------------------------------------------------------------- behavior
 
 /// A script that reacts to events. The IR carries it in its source language;
@@ -1196,6 +1373,7 @@ pub enum Saved {
     Ints(Vec<i64>),
     /// A real array (`?name`), in element order.
     Reals(Vec<f64>),
+    Texts(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1311,4 +1489,14 @@ mod ranking_tests {
         assert_eq!(ranked[1], ("effect".to_string(), 2));
         assert_eq!(ranked[2], ("zero <path>".to_string(), 1));
     }
+}
+
+/// A Kontakt note name: MIDI 60 = C3, 0 = C-2. Strict bounds; no wrapping.
+pub fn parse_note(text: &str) -> Option<u8> {
+    let mut chars = text.trim().chars();
+    let base = match chars.next()?.to_ascii_uppercase() { 'C' => 0, 'D' => 2, 'E' => 4, 'F' => 5, 'G' => 7, 'A' => 9, 'B' => 11, _ => return None };
+    let rest = chars.as_str();
+    let (offset, octave) = match rest.as_bytes().first() { Some(b'#') => (1, &rest[1..]), Some(b'b' | b'B') => (-1, &rest[1..]), _ => (0, rest) };
+    let note = (i32::from(octave.parse::<i16>().ok()?) + 2) * 12 + base + offset;
+    u8::try_from(note).ok().filter(|n| *n < 128)
 }
