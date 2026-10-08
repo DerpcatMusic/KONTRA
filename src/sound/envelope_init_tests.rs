@@ -44,6 +44,7 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
         core.install(0, loaded.part);
         core.begin_block(&BlockInfo {
             frames: 128,
+            offline: true,
             ..Default::default()
         });
         if case == 4 {
@@ -58,9 +59,11 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
         core.event(0, Event::midi1(0x90, key, 64));
         let mut peak = 0f64;
         let mut voices = 0;
-        for _ in 0..180 {
+        // Offline host waits run after callbacks and delayed starts, before PCM reads.
+        for block in 0..180 {
             core.begin_block(&BlockInfo {
                 frames: 128,
+                offline: true,
                 ..Default::default()
             });
             let rendered = core.render(128);
@@ -73,7 +76,19 @@ fn dolce_authored_envelope_init_reaches_production_pcm() {
             }
             voices = voices.max(core.parts[0].as_ref().unwrap().runtime.voice_count());
             core.end_block(128, &mut |_| true);
-            std::thread::sleep(std::time::Duration::from_millis(3));
+            let problems = core.problems(0);
+            assert_eq!(
+                [
+                    problems.offline_failures,
+                    problems.stream_capacity,
+                    problems.stream_disconnected,
+                    problems.stream_failed,
+                    problems.stream_errors,
+                    problems.underruns,
+                ],
+                [0; 6],
+                "case {case} block {block}: offline host must service required pages without failure"
+            );
         }
         if case == 4 {
             let selections = core.parts[0]
