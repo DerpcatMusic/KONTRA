@@ -100,6 +100,8 @@ pub struct Part {
     pub group: u32,
     pub edits: crate::sound::edits::Edits,
     pub timing: crate::timing::Timing,
+    pub script_state: String,
+    pub script_state_source: String,
 }
 
 impl Default for Part {
@@ -137,6 +139,8 @@ impl Default for Part {
             group: 0,
             edits: Default::default(),
             timing: Default::default(),
+            script_state: String::new(),
+            script_state_source: String::new(),
         }
     }
 }
@@ -339,6 +343,8 @@ impl SamplerParams {
                 part.control_values = captured.control_values;
                 part.uvi_state = captured.uvi_state;
                 part.uvi_state_source = captured.uvi_state_source;
+                part.script_state = captured.script_state;
+                part.script_state_source = captured.script_state_source;
             }
         }
     }
@@ -1140,6 +1146,11 @@ impl Shared {
                     part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
                     part.uvi_state = state;
                 }
+                if let Some(state) = atoms.ingress.lock().unwrap().as_ref().and_then(|client|client.save_script_state()) {
+                    part.script_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.script_state = state;
+                }
+
             }
         }
     }
@@ -1648,7 +1659,16 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
         },
     };
     let mut progress = |p: Progress| atoms.load_progress.store(u32::from(p.0), Ordering::Relaxed);
-    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) });
+    let result = state.and_then(|_| match prepared { Some(loaded) if !canceled() => Ok(loaded), Some(_) => Err(CoreError::Canceled), None => V2Loader.prepare(&request, &mut progress, &canceled) }).and_then(|mut loaded| {
+        if let Some(runtime) = loaded.part.as_mut() {
+            let saved = if part.script_state_source == serde_json::to_string(&source).unwrap() { part.script_state.as_str() } else { "" };
+            runtime.prepare_persistence(&loaded.scripts.views, saved)?;
+            for (id, value) in &mut loaded.controls {
+                if let Some(current) = runtime.persistent_control_value(*id) { *value = current; }
+            }
+        }
+        Ok(loaded)
+    });
     let mut view = shared.view.lock().unwrap();
     let v = &mut view.parts[slot];
     v.loading = false;
@@ -2651,6 +2671,8 @@ pub(crate) mod tests {
 mod loop_audit;
 #[cfg(test)]
 mod pressed_tests;
+#[cfg(test)]
+mod persistence_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {

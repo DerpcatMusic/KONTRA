@@ -44,6 +44,7 @@ use super::{
 
 #[cfg(test)]
 mod pressed_tests;
+mod persistence;
 
 /// Host notes tracked for ownership and NOTE_END across the rack.
 const HELD: usize = 1024;
@@ -58,6 +59,7 @@ const WIRE: ChannelAddress = ChannelAddress { protocol: Protocol::Midi1, port: 0
 /// One playable part: its runtime, the MIDI zone in front of it and its tree.
 pub struct Part {
     runtime: Runtime,
+    persistence: Option<persistence::Persistence>,
     pub(crate) epoch: u64,
     pub(crate) waveform_sources: std::collections::HashMap<u32, super::waveform::Source>,
     pub(crate) ui_controls: Option<ControlIngress>,
@@ -204,9 +206,10 @@ impl Part {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default() }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
             editor_offsets:None,
+            persistence: None,
             mpe,
             force_articulation_once: false,
             tune: 0.0,
@@ -368,9 +371,11 @@ pub(crate) struct ControlIngress {
     captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing:bool,
     revision:u64,
+    persistence: Option<Arc<persistence::Snapshot>>,
 }
 
 impl ControlIngress {
+    pub(crate) fn save_script_state(&self) -> Option<String> { self.persistence.as_ref().map(|state|state.save()) }
     pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -1032,6 +1037,9 @@ impl V2Core {
                 }
                 *m = m.max(peak(&signal[..n]));
             }
+        }
+        for part in self.parts.iter_mut().flatten() {
+            if let Some(state) = part.persistence.as_mut() { state.publish(&part.runtime); }
         }
         Rendered { buses: &self.buses, live: self.written }
     }
