@@ -15,8 +15,33 @@ fn main() {
             program.0.private_data.len(),
             program.0.public_data.len()
         );
-        automation_candidates("program_private", &program.0.private_data);
-        automation_candidates("program_public", &program.0.public_data);
+        match sampler_kontakt::program_automation(
+            &program.0.private_data,
+            program.version(),
+            sampler_kontakt::Limits {
+                bytes: 64 << 20,
+                records: 65536,
+            },
+        ) {
+            Ok(records) => {
+                for record in records {
+                    println!(
+                        "automation offset={} version={:#x} mode={} address={} soft_takeover={} ids={}/{:?} range={}..{} tag={:?}",
+                        record.offset,
+                        record.version,
+                        record.mode,
+                        record.address,
+                        record.soft_takeover,
+                        record.id,
+                        record.secondary_id,
+                        record.low,
+                        record.high,
+                        std::str::from_utf8(record.tag.data())
+                    );
+                }
+            }
+            Err(error) => println!("automation_layout {error}"),
+        }
         for chunk in program.children() {
             println!(
                 "program_child id={:#x} length={}",
@@ -156,64 +181,4 @@ fn main() {
             group.start
         );
     }
-}
-
-// Bounded RE inventory only: meanings and array framing remain unverified.
-// Report decoded metadata, never retain the underlying library bytes.
-fn automation_candidates(name: &str, bytes: &[u8]) {
-    let mut count = 0;
-    for offset in 0..bytes.len().saturating_sub(26) {
-        if bytes[offset] > 1 || bytes[offset + 2] != 0 {
-            continue;
-        }
-        let version = bytes[offset + 1];
-        let fields = &bytes[offset + 3..];
-        let (id_at, second_at, floats_at, tag_at) = match version {
-            0x70 => (8, None, 12, 20),
-            0x71 => (7, Some(11), 15, 23),
-            _ => continue,
-        };
-        let u32_at = |at: usize| {
-            fields
-                .get(at..at + 4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-        };
-        let Some(mode @ 0..=2) = u32_at(0) else {
-            continue;
-        };
-        let Some(length) = u32_at(tag_at).filter(|n| *n <= 256) else {
-            continue;
-        };
-        let Some(tag) = fields.get(tag_at + 4..tag_at + 4 + length as usize) else {
-            continue;
-        };
-        let Ok(tag) = std::str::from_utf8(tag) else {
-            continue;
-        };
-        if !tag.bytes().all(|b| b.is_ascii_graphic() || b == b' ') {
-            continue;
-        }
-        let Some(a) = u32_at(floats_at)
-            .map(f32::from_bits)
-            .filter(|f| f.is_finite())
-        else {
-            continue;
-        };
-        let Some(b) = u32_at(floats_at + 4)
-            .map(f32::from_bits)
-            .filter(|f| f.is_finite())
-        else {
-            continue;
-        };
-        let word_at = if version == 0x70 { 6 } else { 5 };
-        let word = u16::from_le_bytes(fields[word_at..word_at + 2].try_into().unwrap());
-        println!(
-            "automation_candidate block={name} offset={offset} version={version:#x} mode={mode} byte={} word={word} id={:?} second={:?} range={a},{b} tag={tag:?}",
-            fields[4],
-            u32_at(id_at).map(|v| v as i32),
-            second_at.and_then(u32_at).map(|v| v as i32)
-        );
-        count += 1;
-    }
-    println!("automation_inventory block={name} candidates={count}");
 }

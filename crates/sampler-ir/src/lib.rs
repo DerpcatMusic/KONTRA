@@ -78,6 +78,8 @@ pub struct Instrument {
     /// Actual processor lanes driven by authored controls; indices span pre then post.
     pub processor_controls: Vec<ProcessorControl>,
     pub behaviors: Vec<Behavior>,
+    /// Saved source automation, addressed by slider declaration ordinal per slot.
+    pub script_automation: Vec<ScriptAutomation>,
     /// Polyphony of the whole instrument.
     pub voice_limit: Option<VoiceLimit>,
     /// Polyphony of voice groups; [`Group::voice_limit`] indexes this.
@@ -1277,6 +1279,19 @@ pub enum Automation {
     Host,
     Controller(u8),
 }
+
+/// Saved Kontakt script-slider assignment. Ordinals count only sliders, not all UI controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptAutomation {
+    pub source: ScriptAutomationSource,
+    pub source_slot: u8,
+    pub slider: u32,
+    pub low: f64,
+    pub high: f64,
+    pub soft_takeover: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptAutomationSource { Controller(u8), HostParameter(u16) }
 
 // ---------------------------------------------------------------- behavior
 
