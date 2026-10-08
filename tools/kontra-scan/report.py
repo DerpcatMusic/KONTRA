@@ -32,6 +32,7 @@ for v in records:
   p=r['path'];m=mechanisms[v]
   if r.get('timed_out'):m['bounded worker timeout'].add(p)
   if r.get('ui') in ['blank','missing-images','error','budget-hit']:m['UI '+r['ui']].add(p)
+  if r.get('loads')=='yes' and r.get('plays_note')=='silent':m['selected-note audition silent in 0.5-second probe'].add(p)
   for token_counts in symbols(r,False):
    for token,count in token_counts.items():incidence[v][token].add(p);occ[v][token]+=count
   for slot in r.get('metadata',{}).get('slots',[]):
@@ -78,7 +79,12 @@ lines+=['','```sh','~/.cache/kontakto-heavy ~/.cache/kontra-scan/bin/kontra-scan
 lines+=['']+table(['Build','Rows / 1494','Kontakt / 834','UVI / 660','Loads yes','Loads no','Original OK','Missing images','Blank','No UI','Error','Budget hit','Audible','Silent'],[(v,len(rows[v]),sum('::' not in r['path'] for r in rows[v]),sum('::' in r['path'] for r in rows[v]),*(Counter(r.get('loads') for r in rows[v])[x] for x in ['yes','no']),*(Counter(r.get('ui') for r in rows[v])[x] for x in ['original-ok','missing-images','blank','no-ui','error','budget-hit']),*(Counter(r.get('plays_note') for r in rows[v])[x] for x in ['yes','silent'])) for v in records])
 paired=set(records['v1'])&set(records['v2']);regressions=[p for p in paired if records['v1'][p]['loads']=='yes' and records['v2'][p]['loads']=='no'];improvements=[p for p in paired if records['v1'][p]['loads']=='no' and records['v2'][p]['loads']=='yes'];fallbacks=[p for p in paired if records['v1'][p].get('fallback_note') or records['v2'][p].get('fallback_note')]
 mismatch=[p for p in paired if records['v1'][p].get('note_picked')!=records['v2'][p].get('note_picked') and all(records[v][p]['loads']=='yes' for v in records)]
+sound_comparable=paired-set(fallbacks)-set(mismatch)
+sound_differences={v:sorted(p for p in sound_comparable if all(records[w][p]['loads']=='yes' for w in records) and records[v][p].get('plays_note')=='silent' and records['v2' if v=='v1' else 'v1'][p].get('plays_note')=='yes') for v in records}
+sound_counts=Counter(records['v2'][p]['library'] for p in sound_differences['v2'])
 lines+=['',f'Paired coverage: **{len(paired)}/1494**. V1 loads / v2 does not: **{len(regressions)}** ([complete observed list](/home/derpcat/.cache/kontra-scan/results/v1-loads-v2-doesnt.tsv)). V2 loads / v1 does not: **{len(improvements)}**. Fallback-note comparisons: **{len(fallbacks)}**, excluded from parity. Both-loaded note mismatches: **{len(mismatch)}**, excluded from sound-regression claims. Counts are exhaustive only when the coverage marker is COMPLETE.','',
+f'Same-note auditions among fully admitted, non-fallback pairs: **{len(sound_differences["v2"])} v1 audible / v2 silent**, and **{len(sound_differences["v1"])} v2 audible / v1 silent**. These are observed half-second probe differences, not native-host sound certification or permanent silence. Both versions used the same recorded note; resource residency, callback state and signal-graph stages require diagnosis before assigning a root cause. The per-item TSVs retain every note and result. No-safe-key programs remain unmeasured and are excluded.','',
+*table(['Library','Same-note v1 audible / v2 silent'],sorted(sound_counts.items())),'',
 'The UVI auditor’s prior stopped sample admitted AO **0/80 on v1 vs 80/80 on v2**, with v1 graph-preflight rejection and no timeouts. That earlier observation is separate from the current paired census. V1’s stronger typed UI/state does not imply stronger format/graph admission. The paired table above is the reproducible comparison at the declared baselines.','',
 '### Load onset and first authored frame (section J)','',
 'Numeric timing fields observe actual output/paint from the first production program import, with Original painting and audition concurrent. The lexical metadata prepass, process spawn and PNG/hash work are outside this clock. A multi shares the item clock. first_audio_ms observes the first finite, exactly nonzero output block; the audible result separately requires amplitude above1e-5. Missing/silent/no-safe-key output remains unknown, never a zero onset. These one-shot CPU-scanner wall times include machine contention and are not matched native-host or warm-cache performance acceptance.','']
@@ -150,9 +156,9 @@ fixes=[
 ('Remaining authored resource resolution','M/L','observed lookup/decode failures',lambda r:any(v.get('missing_images',0) for v in views(r)),
  'Repair existing source-family lookup/decoder paths for the remaining requested resources; retain successful Native package routing.',
  'Same item/page/value/DPI resolves every requested asset and produces an improved matched Original render.'),
-('Playable-range and audition qualification','M','admitted without safe audition',lambda r:r.get('loads')=='yes' and r.get('plays_note')=='no',
- 'Establish why initialized declarations exclude every mapped key; inspect script/state/range contracts. This condition is unmeasured sound, not proof of failed PCM.',
- 'Declared-valid keys intersect non-purged/non-bypassed velocity64 coverage; both versions use the same recorded key and keyswitch. No invented per-library notes.'),
+('Playable-range and same-note sound qualification','M','admitted unselected or silent audition',lambda r:r.get('loads')=='yes' and r.get('plays_note') in ['no','silent'],
+ 'Resolve unselected programs using authored key/state contracts; diagnose equal-note audible/silent differences with per-node signal-graph traces before assigning a DSP or streaming repair. Unselected sound remains unmeasured.',
+ 'Declared-valid keys intersect non-purged/non-bypassed velocity64 coverage; both versions use the same recorded key and keyswitch. Trace the differing stages; no invented per-library notes.'),
 ('KSP callback/compiler gaps remaining after integration','M','observed phase/runtime failures',script_failure,
  'Repair the measured static builtin/category at exact slot ownership; preserve actual init and persistence phase boundaries.',
  'A failing-first fixture completes the repaired callback, then the same item loses its measured fault or compiler rejection.'),
