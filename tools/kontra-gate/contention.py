@@ -11,10 +11,12 @@ HEAVY_NAMES = {'cargo', 'rustc', 'kontakto-heavy', 'kontakto-v1', 'kontra_scan',
                'cpu_audit', 'cpu_audit_v1', 'cpu-audit-v1', 'cpu-audit-v2',
                'kontra-scan-v1', 'kontra-scan-v2', 'kontra-scan-v1-uvi',
                'audit-load.py', 'run-shards.py', 'v1-stage-probe', 'v1-uvi-onset-probe', 'clap-cpu-host'}
+QUEUE = Path.home() / '.cache/kontakto-heavy.d/queue'
+WAIT_HELPERS = {'sleep', 'find', 'ls', 'sort', 'head', 'grep', 'awk', 'seq', 'flock', 'tr', 'tail', 'df', 'date', 'mkdir', 'rm'}
 
 
 def status(sample):
-    if any(not row['owned'] for row in sample['units'] + sample['processes']):
+    if any(not row['owned'] and not row.get('waiting', False) for row in sample['units'] + sample['processes']):
         return 'CONTENDED'
     return 'UNKNOWN' if sample['errors'] else 'QUIET'
 
@@ -22,7 +24,7 @@ def status(sample):
 def snapshot():
     result = {'wall_ns': time.time_ns(), 'monotonic_ns': time.monotonic_ns(),
               'units': [], 'processes': [], 'loadavg': [], 'disk_io': {}, 'errors': []}
-    parents, kinds, groups = {}, {}, {}
+    parents, kinds, groups, commands = {}, {}, {}, {}
     try:
         for folder in Path('/proc').iterdir():
             if not folder.name.isdigit(): continue
@@ -31,6 +33,7 @@ def snapshot():
                 pid = int(folder.name); parents[pid] = int(fields[1])
                 if fields[0] == 'Z': continue
                 names = [Path(arg.decode(errors='replace')).name for arg in folder.joinpath('cmdline').read_bytes().split(b'\0')[:3]]
+                commands[pid] = names[0]
                 kind = next((name for name in names if name in HEAVY_NAMES), None)
                 if kind: kinds[pid] = kind
                 groups[pid] = folder.joinpath('cgroup').read_text()
@@ -46,15 +49,35 @@ def snapshot():
         if grown == descendants: break
         descendants = grown
     owned = ancestors | descendants
+    waiting = set()
+    try:
+        queued = {int(ticket.name.rsplit('.', 1)[1]) for ticket in QUEUE.iterdir()}
+        for pid in queued:
+            if kinds.get(pid) != 'kontakto-heavy': continue
+            children = {pid}
+            while True:
+                grown = children | {child for child, parent in parents.items() if parent in children and child in commands}
+                if grown == children: break
+                children = grown
+            # A queue ticket is removed before a slot's workload starts. Check
+            # children too, so a stale ticket cannot hide a running workload.
+            if all(commands[child] in WAIT_HELPERS for child in children - {pid}):
+                waiting |= children
+    except FileNotFoundError: pass
+    except (OSError, ValueError, IndexError): result['errors'].append('heavy-queue')
     own_units = {part for pid in ancestors for part in groups.get(pid, '').split('/') if part.strip().endswith('.service')}
     own_units = {name.strip() for name in own_units}
-    result['processes'] = [{'pid': pid, 'kind': kind, 'owned': pid in owned} for pid, kind in sorted(kinds.items())]
+    result['processes'] = [{'pid': pid, 'kind': kind, 'owned': pid in owned, **({'waiting': True} if pid in waiting else {})}
+                           for pid, kind in sorted(kinds.items())]
     try:
         units = subprocess.run(['systemctl', '--user', 'list-units', '--state=active,activating',
                                 '--plain', '--no-legend', '--no-pager', 'kontakto-*', '*census*'],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
         result['units'] = [{'name': line.split()[0], 'owned': line.split()[0] in own_units}
                            for line in units.stdout.splitlines() if line.strip()]
+        for unit in result['units']:
+            members = {pid for pid, group in groups.items() if unit['name'] in group.strip().split('/')}
+            if members and members <= waiting: unit['waiting'] = True
     except (OSError, subprocess.SubprocessError): result['errors'].append('systemctl')
     try:
         result['loadavg'] = [float(n) for n in Path('/proc/loadavg').read_text().split()[:3]]
