@@ -14,6 +14,9 @@ pub enum WidgetStorage {
         min: f64,
         max: f64,
     },
+    FileSelection {
+        offset: u32,
+    },
     Texts {
         offset: u32,
         len: u32,
@@ -41,6 +44,31 @@ pub struct WidgetEdit {
     pub index: u32,
     pub value: WidgetValue,
     pub interaction: WidgetInteraction,
+}
+/// Service event codes resolved by the KSP compiler and UI producer together.
+/// These encode named event semantics; they are not opaque per-script symbols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum WidgetEventType {
+    LeftButtonDown = 0,
+    LeftButtonUp = 1,
+    Drag = 2,
+    Drop = 3,
+    DndDrag = 4,
+    DndDrop = 5,
+}
+impl WidgetEventType {
+    pub fn ksp_constant(name: &str) -> Option<Self> {
+        Some(match name.trim_start_matches('$') {
+            "NI_MOUSE_EVENT_TYPE_LEFT_BUTTON_DOWN" => Self::LeftButtonDown,
+            "NI_MOUSE_EVENT_TYPE_LEFT_BUTTON_UP" => Self::LeftButtonUp,
+            "NI_MOUSE_EVENT_TYPE_DRAG" => Self::Drag,
+            "NI_MOUSE_EVENT_TYPE_DROP" => Self::Drop,
+            "NI_MOUSE_EVENT_TYPE_DND_DRAG" => Self::DndDrag,
+            "NI_MOUSE_EVENT_TYPE_DND_DROP" => Self::DndDrop,
+            _ => return None,
+        })
+    }
 }
 /// Metadata retained by the callback, including across waits. `index` is the
 /// edited cell; `cursor` is the producer's cursor/selection position. Modifiers
@@ -98,6 +126,11 @@ impl Prepared {
                         return Err(Error::InvalidInput);
                     }
                 }
+                WidgetStorage::FileSelection { offset } => {
+                    if offset as usize >= bank.texts.len() {
+                        return Err(Error::InvalidInput);
+                    }
+                }
                 WidgetStorage::Texts { offset, len } => {
                     if len == 0
                         || offset
@@ -145,6 +178,25 @@ impl Runtime {
             .map(|w| w.id)
             .ok_or(Error::InvalidInput)
     }
+    /// Capture on the audio owner into producer-owned storage. Validate the whole
+    /// request before touching the buffer; one coherent revision covers it.
+    pub fn capture_widgets(
+        &self,
+        plan: PlanId,
+        output: &mut [WidgetEdit],
+    ) -> Result<(usize, u64), Error> {
+        if output.len() > WIDGET_EDIT_CAPACITY {
+            return Err(Error::InvalidInput);
+        }
+        let revision = self.control_revision(plan)?;
+        for edit in output.iter() {
+            self.widget_value(plan, edit.id, edit.index)?;
+        }
+        for edit in output.iter_mut() {
+            edit.value = self.widget_value(plan, edit.id, edit.index)?;
+        }
+        Ok((output.len(), revision))
+    }
     pub fn widget_value(
         &self,
         plan: PlanId,
@@ -176,6 +228,9 @@ impl Runtime {
                 } else {
                     WidgetValue::Integer(v)
                 }
+            }
+            WidgetStorage::FileSelection { offset } if index == 0 => {
+                WidgetValue::Text(bank.texts[offset as usize])
             }
             WidgetStorage::Texts { offset, len } if index < len => {
                 WidgetValue::Text(bank.texts[(offset + index) as usize])
@@ -233,7 +288,13 @@ impl Runtime {
                 {
                     scalar = Some(ControlWrite {
                         id,
-                        value: ControlValue::Integer(v),
+                        value: match self.control_definition(plan, id)?.domain {
+                            crate::ControlDomain::Toggle if v == 0 || v == 1 => {
+                                ControlValue::Toggle(v != 0)
+                            }
+                            crate::ControlDomain::Integer { .. } => ControlValue::Integer(v),
+                            _ => return Err(Error::InvalidInput),
+                        },
                     })
                 }
                 (WidgetStorage::Control(id), WidgetValue::Real(v))
@@ -264,6 +325,8 @@ impl Runtime {
                     },
                     WidgetValue::Real(v),
                 ) if e.index < len && v.is_finite() && v >= min && v <= max => {}
+                (WidgetStorage::FileSelection { .. }, WidgetValue::Text(_))
+                    if e.index == 0 && edits.len() == 1 => {}
                 (WidgetStorage::Texts { len, .. }, WidgetValue::Text(_)) if e.index < len => {}
                 _ => return Err(Error::InvalidInput),
             }
@@ -294,6 +357,9 @@ impl Runtime {
                     }
                     (WidgetStorage::Cells { offset, .. }, WidgetValue::Real(v)) => {
                         bank.cells[(offset + e.index) as usize] = v.to_bits() as i64
+                    }
+                    (WidgetStorage::FileSelection { offset }, WidgetValue::Text(v)) => {
+                        bank.texts[offset as usize] = v
                     }
                     (WidgetStorage::Texts { offset, .. }, WidgetValue::Text(v)) => {
                         bank.texts[(offset + e.index) as usize] = v
