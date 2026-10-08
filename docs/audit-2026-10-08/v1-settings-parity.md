@@ -165,3 +165,11 @@ Direct ports from `0cb7a8a0:src/engine/mod.rs` (`audible_voices`), `src/plugin.r
 `red-voices.log`: **2 expected failures** for audible=running and omitted command loss. `red-voices-bus2.log`: the nested group fader remains incorrectly audible before the adapter. `green-voices-final.log`: **13 passed**, including gain-expression mute/unmute, live script mute/unmute, nested group-fader mute and dropout aggregation. The voice counter walks occupied slots and allocates nothing. W9 should measure the gain-cache stores (two floats per voice) and the occupied-voice walk under script-heavy mic layering. Editor and timing remain open.
 
 `voices-no-run.log`: pre-push compile gate passed. No additional full-suite gate was run, following the user's batch-gate directive.
+
+### Shared parameter offset seam (editor foundation)
+
+The branch now includes landed integration `0f62e503` (W5/W7 shared parameter service and W1/W2/W3 native views). Direct v1 `engine/overrides.rs` base/playing semantics are adapted inside that single control service: a normalized global offset and a per-group offset add, scripts continue to read/write the unedited base, and reset restores the exact unrounded value. Direct native control writes use the same layer. Unsupported binding addresses remain unapplied; this does not invent a module consumer.
+
+Failing-first `red-editor-offsets.log` records the missing service. `green-editor-offsets2.log`: **2 passed** for composition, live script movement, exact reset, clamping and atomic rejection. `green-editor-audio.log`: **1 passed** and verifies an existing physical gain lane renders at 0.35 under a +0.1 offset while its script base stays 0.25; resetting restores 0.25. `editor-core-no-run.log`: the area compile-only gate passed. W9: base/offset/index arrays are allocated during preparation; writes and offset application allocate nothing on audio. The editor UI port and timing remain in progress.
+
+`green-editor-offsets-final.log`: 2 passed after host/script-state capture was adapted to save the base and restore through the layer. `editor-root-no-run-final.log`: root compile-only gate passed. The shared service and gain render witness are ready; no editor controls are claimed restored by this foundation checkpoint.

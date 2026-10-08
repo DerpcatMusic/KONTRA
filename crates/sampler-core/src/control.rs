@@ -99,7 +99,11 @@ impl ControlEvent {
 }
 
 pub(super) struct ControlState {
-    values: Box<[ControlValue]>,
+    pub(super) values: Box<[ControlValue]>,
+    // Port v1 Bank::base/settings: scripts own base, player offsets affect DSP.
+    pub(super) base: Box<[ControlValue]>,
+    pub(super) offsets: Box<[f32]>,
+    pub(super) engine_index: Box<[usize]>,
     pub(super) automation: Box<[crate::automation::AutomationState]>,
     pub(super) revision: u64,
     /// Future writes reserve both this generation and one revision increment each.
@@ -107,12 +111,36 @@ pub(super) struct ControlState {
 }
 impl ControlState {
     pub(super) fn new(plan: &Prepared) -> Self {
+        let mut engine_index = vec![usize::MAX; plan.controls.len()];
+        for (binding, b) in plan.engine_parameters.iter().enumerate() {
+            engine_index[plan.control_index(b.control).unwrap()] = binding;
+        }
         Self {
             values: plan.controls.iter().map(|c| c.default).collect(),
+            base: plan.controls.iter().map(|c| c.default).collect(),
+            offsets: vec![0.; plan.controls.len()].into_boxed_slice(),
+            engine_index: engine_index.into_boxed_slice(),
             automation: vec![crate::automation::AutomationState::default(); plan.automation.len()].into_boxed_slice(),
             revision: 0,
             pending: 0,
         }
+    }
+}
+
+impl ControlState {
+    pub(super) fn playing(&self, prepared: &Prepared, index: usize) -> ControlValue {
+        let base = self.base[index];
+        let offset = self.offsets[index];
+        if offset == 0. { return base; }
+        let ControlValue::Real(base) = base else { return base };
+        let binding = &prepared.engine_parameters[self.engine_index[index]];
+        let norm = binding.law.encode(base);
+        let to = (f64::from(norm) + f64::from(offset) * 1e6).round().clamp(0., 1e6) as i32;
+        let mut value = binding.law.decode(to);
+        if let ControlDomain::Real { min, max } = prepared.controls[index].domain {
+            value = value.clamp(min, max);
+        }
+        ControlValue::Real(value)
     }
 }
 
@@ -258,6 +286,13 @@ impl Runtime {
         Ok(generation.controls.values[generation.prepared.control_index(id)?])
     }
 
+    /// The authored/script value before the player's editor offsets. Use this
+    /// for host persistence so recalling an offset cannot apply it twice.
+    pub fn control_base_value(&self, plan: PlanId, id: ControlId) -> Result<ControlValue, Error> {
+        let generation = self.plans.get(plan.0).ok_or(Error::StaleHandle)?;
+        Ok(generation.controls.base[generation.prepared.control_index(id)?])
+    }
+
     /// The control's id, domain and default in `plan`.
     /// The immutable schema of an addressed generation, for an off-audio producer.
     pub fn control_definitions(&self, plan: PlanId) -> Result<&[ControlDefinition], Error> {
@@ -391,10 +426,10 @@ impl Runtime {
         for write in writes {
             // All lookups/values validated above; one writer, no reentrancy.
             let index = definitions.control_index(write.id).unwrap();
-            generation.controls.values[index] = write.value;
-            generation
-                .dsp
-                .edit_control(definitions, index, write.value, self.now);
+            generation.controls.base[index] = write.value;
+            let playing = generation.controls.playing(definitions, index);
+            generation.controls.values[index] = playing;
+            generation.dsp.edit_control(definitions, index, playing, self.now);
         }
         generation.controls.revision = revision;
         Ok(revision)
