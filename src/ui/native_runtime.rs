@@ -16,6 +16,7 @@ mod syntax;
 pub(super) struct Package {
     members: BTreeMap<String, Arc<[u8]>>,
     pub fonts: BTreeMap<String, Font>,
+    font_names: Vec<(String, u16, Font)>,
     pub images: Images,
 }
 struct ImageCache {
@@ -74,10 +75,23 @@ impl Images {
     }
 }
 impl Package {
+    pub fn font(&self, name: &str, bold: bool) -> Option<Font> {
+        let name = name.to_lowercase();
+        self.fonts.iter().find(|(path, _)| {
+            *path == &name || path.rsplit('/').next().is_some_and(|p|
+                p == name || p.strip_suffix(".ttf") == Some(name.as_str())
+                || p.strip_suffix(".otf") == Some(name.as_str()))
+        }).map(|(_, f)| f.clone()).or_else(|| {
+            self.font_names.iter().filter(|(family, _, _)|family.eq_ignore_ascii_case(&name))
+                .min_by_key(|(_, weight, _)|weight.abs_diff(if bold {700} else {400}))
+                .map(|(_, _, font)|font.clone())
+        })
+    }
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let mut source = Source::of(path);
         let mut members = BTreeMap::new();
         let mut fonts = BTreeMap::new();
+        let mut font_names = Vec::new();
         let mut total = 0;
         let mut resource_paths = BTreeMap::new();
         for name in source.native_names() {
@@ -104,9 +118,14 @@ impl Package {
             if relative.ends_with(".nui") {
                 members.insert(relative, Arc::from(bytes));
             } else {
+                let font = Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?;
+                let (names, weight) = font_metadata(&font);
+                total += names.iter().map(|n|n.len()+std::mem::size_of::<(String,u16,Font)>()).sum::<usize>();
+                anyhow::ensure!(total <= 16 << 20, "NativeUI sources and fonts exceed 16 MiB");
+                font_names.extend(names.into_iter().map(|name|(name,weight,font.clone())));
                 fonts.insert(
                     relative,
-                    Font::new(bytes).map_err(|_| anyhow::anyhow!("NativeUI font invalid"))?,
+                    font,
                 );
             }
         }
@@ -171,6 +190,7 @@ impl Package {
         Ok(Self {
             members,
             fonts,
+            font_names,
             images: Images { cache, request },
         })
     }
@@ -193,6 +213,55 @@ impl Package {
             .ok_or_else(|| anyhow::anyhow!("NativeUI module absent"))?;
         Ok(std::str::from_utf8(bytes)?)
     }
+}
+
+// Read names only from the already validated, bounded supplied font. This does
+// not discover system fonts or substitute a family absent from the package.
+fn font_metadata(font: &Font) -> (Vec<String>, u16) {
+    let bytes = font.as_ref();
+    let u16_at = |at:usize| -> Option<u16> {Some(u16::from_be_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?))};
+    let u32_at = |at:usize| -> Option<usize> {Some(u32::from_be_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)};
+    let read = || -> Option<(Vec<String>,u16)> {
+        let base = if bytes.starts_with(b"ttcf") {u32_at(12 + font.index() as usize * 4)?} else {0};
+        let table = |tag:&[u8]| -> Option<(usize,usize)> {
+            for n in 0..usize::from(u16_at(base.checked_add(4)?)?) {
+                let at=base.checked_add(12)?.checked_add(n.checked_mul(16)?)?;
+                if bytes.get(at..at.checked_add(4)?)? == tag {
+                    let (start,len)=(u32_at(at+8)?,u32_at(at+12)?);
+                    bytes.get(start..start.checked_add(len)?)?;
+                    return Some((start,len));
+                }
+            }
+            None
+        };
+        let weight=table(b"OS/2").and_then(|(at,len)|(len>=6).then(||u16_at(at+4)).flatten()).unwrap_or(400);
+        let (at,len)=table(b"name")?;
+        if len<6 {return None;}
+        let count=usize::from(u16_at(at+2)?);
+        let strings=usize::from(u16_at(at+4)?);
+        if 6usize.checked_add(count.checked_mul(12)?)? > len {return None;}
+        let mut names=Vec::new();
+        for n in 0..count {
+            let record=at+6+n*12;
+            if !matches!(u16_at(record+6)?,1|4|6|16) {continue;}
+            let start=strings.checked_add(usize::from(u16_at(record+10)?))?;
+            let end=start.checked_add(usize::from(u16_at(record+8)?))?;
+            if end>len {return None;}
+            let data=bytes.get(at+start..at+end)?;
+            let name=match u16_at(record)? {
+                0|3 if data.len()%2==0 => String::from_utf16(&data.chunks_exact(2).map(|c|u16::from_be_bytes([c[0],c[1]])).collect::<Vec<_>>()).ok(),
+                1 if data.is_ascii()=>String::from_utf8(data.to_vec()).ok(),
+                _=>None,
+            };
+            if let Some(name)=name.filter(|s|!s.is_empty()&&s.len()<=1024) {
+                if !names.contains(&name) {names.push(name);}
+                // ponytail: 32 supplied aliases per face; no unbounded localized-name cache.
+                if names.len()==32 {break;}
+            }
+        }
+        names.sort();names.dedup();Some((names,weight))
+    };
+    read().unwrap_or_default()
 }
 
 #[derive(Clone, Debug)]
@@ -715,7 +784,16 @@ mod tests {
             return function()
                 p:set_value(0.75)
                 return @ui.ZStack { @ui.Text {text="Authored",}, @ui.Rectangle {color=ui.Color(12,24,48)}.frame(width=10,height=20) }.frame(width=80,height=60)
-            end"#.as_slice()))]),fonts:BTreeMap::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
+            end"#.as_slice()))]),fonts:BTreeMap::new(),font_names:Vec::new(),images:Images{request,cache:Arc::new(Mutex::new(ImageCache{loaded:HashMap::new(),pending:BTreeSet::new(),touch:HashMap::new(),tick:0,bytes:0,#[cfg(feature="shots")] scan:Default::default()}))}});
+        let font=Font::new(super::super::theme::NOTO_SANS).unwrap();
+        let (names,weight)=font_metadata(&font);
+        assert!(names.iter().any(|n|n=="Noto Sans"));
+        let mut package=package;
+        let supplied=Arc::get_mut(&mut package).unwrap();
+        supplied.fonts.insert("unrelated-file.ttf".into(),font.clone());
+        supplied.font_names=names.into_iter().map(|n|(n,weight,font.clone())).collect();
+        assert_eq!(supplied.font("Noto Sans",false).unwrap().id(),font.id());
+        assert!(supplied.font("an absent authored family",false).is_none());
         let mut widget = ir::Widget::new(
             "$gain",
             ir::PageRef(0),
