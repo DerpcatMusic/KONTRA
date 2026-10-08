@@ -9,6 +9,7 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reference {
     Asset(usize),
+    Zone(usize),
     Group(usize),
     Sequence(usize),
     Articulation(usize),
@@ -89,6 +90,7 @@ impl Check<'_> {
         let ir = self.ir;
         let present = match reference {
             Reference::Asset(i) => i < ir.assets.len(),
+            Reference::Zone(i) => i < ir.zones.len(),
             Reference::Group(i) => i < ir.groups.len(),
             Reference::Sequence(i) => i < ir.sequences.len(),
             Reference::Articulation(i) => i < ir.articulations.len(),
@@ -282,6 +284,12 @@ impl Instrument {
             ir: self,
             owner: String::new(),
         };
+        for (source, zone) in self.source_indices.zones.iter().enumerate() {
+            check.owner = format!("source zone {source}");
+            if let Some(zone) = zone {
+                check.exists(Reference::Zone(zone.0))?;
+            }
+        }
         for (i, impulse) in self.impulses.iter().enumerate() {
             check.owner = format!("impulse {i}");
             check.within(f64::from(impulse.rate), 1.0..=f64::from(u32::MAX), "rate")?;
