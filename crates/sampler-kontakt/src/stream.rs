@@ -838,12 +838,6 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
-        // v1 Bank::limits uses authored polyphony; prepare matching pages off audio.
-        if let Some(limit) = loaded.instrument.voice_limit {
-            let pages = (limit.voices as usize).checked_mul(PAGES_PER_VOICE)
-                .ok_or_else(|| invalid("stream polyphony capacity overflow".into()))?;
-            report.pool_pages = report.pool_pages.max(pages);
-        }
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
@@ -929,6 +923,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "fixed pool trial 56f1822b rejected: storage underruns and RSS; retained as trial evidence"]
     fn authored_polyphony_sizes_new_stream_pools_without_shrinking_the_policy_floor() {
         use sampler_ir::{Instrument, Kill, Time, VoiceLimit};
         // Rebuilding a source with a changed limit allocates its new pool here,
