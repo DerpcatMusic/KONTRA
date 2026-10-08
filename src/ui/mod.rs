@@ -200,7 +200,7 @@ impl Watch {
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
-            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); } });
+            p.shared.with_parts(|parts| { for part in parts { part.scalar_revision.load(Ordering::Acquire).hash(&mut h); part.native_revision.load(Ordering::Acquire).hash(&mut h); } });
             self.readouts = h.finish();
         }
         let mut h = DefaultHasher::new();
