@@ -113,12 +113,18 @@ minutes; each shard releases its slot before the next begins.
   V1 padded zlib offset, V2 zlib, exact expansion budgets and malformed UTF-8.
 - `legacy_health /mnt/MAIN_STORAGE/Libraries/Kontakt`: per-file authoring
   version from the NIS sound header; snapshot state parse; complete named
-  resource reads for NKR/NICNT; NKX directory indexing. Its TSV contains only
+  resource reads for NKR/NICNT; NKX directory indexing; IR translation of every
+  program in each multi. Its TSV contains only
   filenames, header versions, counts and errors. It writes no payloads.
 - `corpus-health run BEFORE.jsonl --tier parse --workers 4 /mnt/MAIN_STORAGE/Libraries/Kontakt`
   and the same command for AFTER: explicit roots bypass cached items and avoid
   modifying the shared corpus cache. They test every installed NKI and NKM,
   with dummy sample audio, script compile and IR lowering.
+
+The parse tier lowers only the first program of each multi. The supplemental
+probe translates every program and reports total program/zone counts, but does
+not compile or execute every multi program's scripts. Neither measurement
+establishes native Kontakt playback parity.
 
 Snapshot/resource results are separate from instrument load counts: a snapshot
 is state for a parent instrument, a NICNT/NKR is resources and an NKX is sample
