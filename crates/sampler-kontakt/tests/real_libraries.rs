@@ -849,3 +849,90 @@ fn big_screen_embedded_program_one_remains_audible_after_script_init() {
         "authored init must preserve audible output"
     );
 }
+
+#[test]
+#[ignore = "requires installed Morphology; run through kontakto-heavy"]
+fn w15_authored_pan_offline_ab_changes_channel_balance() {
+    use sampler_ir as ir;
+    let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki") else { return; };
+    let render = |enabled| {
+        let library = sampler_kontakt::read(&path).unwrap();
+        let (zone, route) = library.instrument.zones.iter().find_map(|z| {
+            z.routes.iter().find_map(|r| {
+                let route = library.instrument.routes[r.0];
+                (route.target == ir::Target::Pan
+                    && matches!(route.depth, ir::Depth::Normalized(d) if d.abs() > 0.01)
+                    && matches!(library.instrument.modulators[route.source.0].source, ir::ModulationSource::Envelope(_)))
+                    .then(|| (z.clone(), *r))
+            })
+        }).expect("gate item must retain its authored AHDSR -> Pan route");
+        let mut isolated = zone;
+        isolated.routes = if enabled { vec![route] } else { vec![] };
+        isolated.chain = None;
+        reference::levels(&w15_render_one_authored_zone(library, isolated), 0.1, 0.45)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let balance_delta = (wet.rms[1] - wet.rms[0]) - (dry.rms[1] - dry.rms[0]);
+    println!("W15 pan dry_rms={:?} wet_rms={:?} balance_delta_db={balance_delta}", dry.rms, wet.rms);
+    assert!(dry.max_peak() > -80. && wet.max_peak() > -80.);
+    assert!(balance_delta.abs() > 0.05, "the retained route must reach actual audio");
+}
+
+fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone: sampler_ir::Zone) -> Vec<[f32; 2]> {
+    use sampler_ir as ir;
+    let key = 60u8.clamp(zone.keys.low, zone.keys.high);
+    zone.selection = None;
+    zone.articulation = None;
+    zone.axes.clear();
+    zone.conditions.clear();
+    zone.trigger = ir::Trigger::Attack;
+    zone.velocities = ir::VelocityRange { low: 0, high: 127 };
+    let original = &library.instrument;
+    let mut modulators = Vec::new();
+    let mut routes = Vec::new();
+    for route in &mut zone.routes {
+        let mut r = original.routes[route.0];
+        modulators.push(original.modulators[r.source.0].clone());
+        r.source = ir::ModulatorRef(modulators.len() - 1);
+        if let Some(scale) = &mut r.scale {
+            modulators.push(original.modulators[scale.source.0].clone());
+            scale.source = ir::ModulatorRef(modulators.len() - 1);
+        }
+        *route = ir::RouteRef(routes.len());
+        routes.push(r);
+    }
+    if let Some(amplitude) = &mut zone.amplitude {
+        modulators.push(original.modulators[amplitude.0].clone());
+        *amplitude = ir::ModulatorRef(modulators.len() - 1);
+    }
+    let chains = zone.chain.map(|chain| {
+        zone.chain = Some(ir::ChainRef(0));
+        original.chains[chain.0].clone()
+    }).into_iter().collect();
+    let groups = zone.group.map(|group| {
+        let mut g = original.groups[group.0].clone();
+        zone.group = Some(ir::GroupRef(0));
+        g.chain = None;
+        g.start.clear();
+        g.tap = None;
+        g.output = ir::Output::Master;
+        g.sends.clear();
+        g.voice_limit = None;
+        g
+    }).into_iter().collect();
+    library.instrument = ir::Instrument {
+        name: original.name.clone(), assets: original.assets.clone(),
+        shapes: original.shapes.clone(), zones: vec![zone], groups,
+        chains, routes, modulators, ..Default::default()
+    };
+    let loaded = sampler_kontakt::load_read(library, &sampler_kontakt::Options {
+        keys: key..=key, scripts: false, mpe: None, ..Default::default()
+    }, |_| {}, || false).unwrap();
+    let mut rt = Runtime::new(loaded.plan, limits()).unwrap();
+    rt.trigger(input(key), key, 1.).unwrap();
+    let mut out = vec![[0.; 2]; 24_000];
+    rt.render(&mut out).unwrap();
+    out
+}
+
