@@ -254,6 +254,26 @@ fn generated_specimen(p: &Arc<SamplerParams>) {
     p.selection.write().unwrap().parts[0].view = 2;
 }
 
+fn envelope_specimen(p: &Arc<SamplerParams>) {
+    use sampler_ir as ir;
+    let mut view = p.shared.view.lock().unwrap();
+    let mut inst = (**view.parts[0].instrument.as_ref().unwrap()).clone();
+    inst.modulators.push(ir::Modulator {
+        scope: ir::Scope::Voice,
+        source: ir::ModulationSource::Envelope(ir::Envelope {
+            attack: ir::Time::Seconds(9.999),
+            decay: ir::Time::Seconds(9.999),
+            release: ir::Time::Seconds(9.999),
+            sustain: 0.57,
+            ..Default::default()
+        }),
+    });
+    for zone in &mut inst.zones {
+        zone.amplitude = Some(ir::ModulatorRef(0));
+    }
+    view.parts[0].instrument = Some(Arc::new(inst));
+}
+
 #[test]
 #[cfg(feature = "shots")]
 fn chrome_extended_shots() {
@@ -309,6 +329,38 @@ fn chrome_extended_shots() {
         h.idle(30);
         save("settings-controls", &mut h);
         h.press("settings-close");
+        envelope_specimen(&p);
+        h.press("view-0-Sound");
+        save("sound-envelope", &mut h);
+        h.press("output-0");
+        let at = tests::center(&h.ui, "menu-item-2");
+        for _ in 0..60 {
+            h.tick(Input {
+                pointer: PointerInput {
+                    pos: Some(at),
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        moose::core::screenshot::save_png(
+            &out.join(format!("output-tooltip-{w}.png")),
+            &pixels(&h.ui, w, height),
+            w.into(),
+            height.into(),
+        );
+        h.tick(Input {
+            keys: vec![KeyPress {
+                key: Key::Escape,
+                mods: Mods::default(),
+            }],
+            ..Default::default()
+        });
+        h.press("app-menu");
+        h.press("menu-item-3");
+        save("about", &mut h);
+        h.press("logs-close-about");
+        h.press("tab-rack");
         generated_specimen(&p);
         h.press("view-0-Interface");
         save("generated-editor", &mut h);
@@ -329,4 +381,184 @@ fn trigger_conflicts_keep_fixed_control_labels_readable() {
         widths(1180., 900.),
         "Swap and trigger mode retain their text width during long-name conflicts"
     );
+}
+
+#[test]
+fn output_menu_keeps_the_complete_bus_label_inspectable() {
+    let p = specimen();
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("output-0");
+    let item = h.ui.scene().unwrap().surface("menu-item-2").unwrap();
+    assert!(
+        item.tip
+            .as_deref()
+            .is_some_and(|tip| tip.ends_with("deliberately long instrument title")),
+        "truncated menu labels retain their complete text"
+    );
+}
+
+#[test]
+fn about_text_uses_the_panel_inset() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = specimen();
+        let mut h = Harness::new(&p, width, height);
+        h.press("app-menu");
+        h.press("menu-item-3");
+        let scene = h.ui.scene().unwrap();
+        let panel = scene.surface("logs-panel").unwrap().frame;
+        let text = scene
+            .surfaces()
+            .find(|surface| surface.text_value.as_deref() == Some(crate::build_info::SUMMARY))
+            .unwrap()
+            .frame;
+        assert!(
+            (text.x - panel.x - INSET).abs() < 0.5,
+            "About body aligns with its section heading: {text:?} in {panel:?}"
+        );
+        assert!(
+            text.x + text.size.width <= panel.x + panel.size.width - INSET + 0.5,
+            "About text stays inside its panel"
+        );
+    }
+}
+
+#[test]
+fn generated_controls_wrap_inside_the_minimum_face() {
+    for (width, height) in [(900., 600.), (1180., 900.)] {
+        let p = specimen();
+        generated_specimen(&p);
+        let mut h = Harness::new(&p, width, height);
+        h.press("view-0-Interface");
+        h.idle(20);
+        let scene = h.ui.scene().unwrap();
+        let face = scene.surface("face-0").unwrap().frame;
+        for n in 0..8 {
+            let control = scene
+                .surface(&format!("part-0-epoch-0-script-0-ir-{n}"))
+                .unwrap()
+                .frame;
+            assert!(
+                control.x >= face.x + INSET - 0.5
+                    && control.x + control.size.width <= face.x + face.size.width - INSET + 0.5,
+                "generated control {n} fits its face: {control:?} in {face:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sound_readouts_keep_the_full_envelope_description() {
+    let p = specimen();
+    envelope_specimen(&p);
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("view-0-Sound");
+    let readout =
+        h.ui.scene()
+            .unwrap()
+            .surfaces()
+            .find(|surface| {
+                surface
+                    .text_value
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("A ") && text.ends_with("12 zones"))
+            })
+            .unwrap();
+    assert_eq!(
+        readout.tip.as_deref(),
+        readout.text_value.as_deref(),
+        "truncated Sound readouts retain their full description"
+    );
+}
+
+#[test]
+fn info_values_stay_inside_the_shared_panel_inset() {
+    let p = specimen();
+    let path = p.selection.read().unwrap().parts[0].path.clone();
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("view-0-Info");
+    let scene = h.ui.scene().unwrap();
+    let panel = scene.surface("inside-0").unwrap().frame;
+    let text = scene
+        .surfaces()
+        .find(|surface| surface.text_value.as_deref() == Some(path.as_str()))
+        .unwrap()
+        .frame;
+    assert!(
+        text.x + text.size.width <= panel.x + panel.size.width - INSET + 0.5,
+        "Info values stay inside the shared panel inset: {text:?} in {panel:?}"
+    );
+}
+
+fn hover_text(h: &mut Harness, prefix: &str) {
+    let frame =
+        h.ui.scene()
+            .unwrap()
+            .surfaces()
+            .find(|surface| {
+                surface
+                    .text_value
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with(prefix))
+                    && surface.tip.is_some()
+            })
+            .unwrap()
+            .frame;
+    let at = Point::new(
+        frame.x + frame.size.width / 2.,
+        frame.y + frame.size.height / 2.,
+    );
+    for _ in 0..60 {
+        h.tick(Input {
+            pointer: PointerInput {
+                pos: Some(at),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    }
+    let tip =
+        h.ui.scene()
+            .unwrap()
+            .surface("/tip")
+            .expect("full text tooltip must appear after a real hover")
+            .frame;
+    assert!(
+        tip.x >= -0.5 && tip.x + tip.size.width <= 900.5,
+        "hover tooltip fits the minimum window: {tip:?}"
+    );
+}
+
+#[test]
+fn sound_hover_displays_the_full_readout() {
+    let p = specimen();
+    envelope_specimen(&p);
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("view-0-Sound");
+    hover_text(&mut h, "A ");
+}
+
+#[test]
+fn info_hover_displays_the_complete_path() {
+    let p = specimen();
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("view-0-Info");
+    hover_text(&mut h, "/virtual/");
+}
+
+#[test]
+fn generated_caption_hover_displays_the_full_name() {
+    let p = specimen();
+    generated_specimen(&p);
+    let mut h = Harness::new(&p, 900., 600.);
+    h.press("view-0-Interface");
+    h.idle(20);
+    hover_text(&mut h, "Extended parameter caption 0");
+}
+
+#[test]
+fn trigger_conflict_hover_displays_the_full_name() {
+    let p = specimen();
+    let mut h = Harness::new(&p, 900., 600.);
+    trigger_conflict(&mut h, &p);
+    hover_text(&mut h, "Used by ");
 }

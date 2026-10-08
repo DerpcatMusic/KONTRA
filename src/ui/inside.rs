@@ -121,7 +121,7 @@ pub fn view(ui: &mut Ui, cx: &mut Cx, slot: usize, view: View) -> Option<El> {
     let el = match (view, inst) {
         (View::Articulations, Some(i)) => articulations(ui, cx, slot, &i),
         (View::Mapping, Some(i)) => mapping(ui, cx, slot, &i),
-        (View::Sound, Some(i)) => sound(&i),
+        (View::Sound, Some(i)) => sound(slot, &i),
         (View::Info, i) => info(cx, slot, i.as_deref()),
         _ => return None,
     };
@@ -332,17 +332,17 @@ fn articulations(ui: &mut Ui, cx: &mut Cx, slot: usize, inst: &ir::Instrument) -
     let edit = cx.state.inside.entry(slot).or_default().edit.clone();
     let error = edit.as_ref().and_then(|e| e.error.clone()).or_else(|| capacity.map(String::from));
     let mut head = vec![section("Articulations").shrink(0), caption(arts.len().to_string()).fill(secondary()).lines(1).shrink(0), spacer(), driver_el.h(CONTROL).shrink(0), more_el];
-    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter"))); }
+    if let Some(error) = error { head.insert(2, caption(error.clone()).fill(Role::Danger).lines(1).min_w(0).tip(format!("{error}\nCorrect the trigger and press Enter")).id(format!("art-error-{slot}"))); }
     if let Some(edit) = edit.as_ref().filter(|e| e.learn) {
         let message = format!("Learn {}…", arts[ids.iter().position(|id| id == &edit.source).unwrap_or(0)].name);
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-learn-{slot}")));
     }
     if let Some(edit) = edit.as_ref() && let Some((proposal, other)) = &edit.conflict {
         let other_name = ids.iter().position(|id| id == other).map(|n| arts[n].name.as_str()).unwrap_or("other row");
         let (swap, swap_el) = latch(ui, format!("art-swap-{slot}"), "Swap", &format!("Swap triggers with {other_name}"), false);
         let (cancel, cancel_el) = icon_button(ui, format!("art-cancel-{slot}"), Icon::Close, "Cancel trigger swap", false);
         let message = format!("Used by {other_name}");
-        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message));
+        head.insert(2, caption(message.clone()).lines(1).min_w(0).tip(message).id(format!("art-conflict-{slot}")));
         head.insert(3, swap_el.h(CONTROL).shrink(0)); head.insert(4, cancel_el);
         if swap {
             let n = ids.iter().position(|id| id == &edit.source).unwrap();
@@ -534,8 +534,8 @@ fn envelope_shape(e: ir::Envelope) -> El {
     .shrink(0)
 }
 
-fn sound(inst: &ir::Instrument) -> El {
-    let line = |t: String| caption(t).fill(secondary()).lines(1).min_w(0);
+fn sound(slot: usize, inst: &ir::Instrument) -> El {
+    let line = |id: &str, t: String| caption(t.clone()).fill(secondary()).lines(1).min_w(0).tip(t).id(format!("sound-{slot}-{id}"));
     // Each distinct amplitude envelope, with how many zones use it.
     let mut envs: Vec<(ir::Envelope, usize)> = Vec::new();
     for m in inst.zones.iter().filter_map(|z| z.amplitude) {
@@ -549,13 +549,13 @@ fn sound(inst: &ir::Instrument) -> El {
     envs.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     let mut rows = vec![section("Amplitude")];
     if envs.is_empty() {
-        rows.push(line("Gate: on with the key, off with its release".into()));
+        rows.push(line("gate", "Gate: on with the key, off with its release".into()));
     }
-    for (e, n) in envs.iter().take(4) {
+    for (index, (e, n)) in envs.iter().take(4).enumerate() {
         rows.push(
             row![
                 envelope_shape(*e),
-                line(format!("A {} · D {} · S {:.0}% · R {} · {n} zones", ms(e.attack), ms(e.decay), e.sustain * 100., ms(e.release)))
+                line(&format!("envelope-{index}"), format!("A {} · D {} · S {:.0}% · R {} · {n} zones", ms(e.attack), ms(e.decay), e.sustain * 100., ms(e.release)))
             ]
             .gap(SPACE)
             .align(Align::Center)
@@ -575,9 +575,9 @@ fn sound(inst: &ir::Instrument) -> El {
         }
     }
     let mut more = vec![section("Filters")];
-    more.extend(filters.iter().take(4).cloned().map(line));
+    more.extend(filters.iter().take(4).enumerate().map(|(index, text)| line(&format!("filter-{index}"), text.clone())));
     if filters.is_empty() {
-        more.push(line("None".into()));
+        more.push(line("filters-none", "None".into()));
     }
     let mut routes: Vec<String> = Vec::new();
     for r in &inst.routes {
@@ -589,9 +589,9 @@ fn sound(inst: &ir::Instrument) -> El {
         }
     }
     more.push(section("Modulation"));
-    more.extend(routes.iter().take(6).cloned().map(line));
+    more.extend(routes.iter().take(6).enumerate().map(|(index, text)| line(&format!("route-{index}"), text.clone())));
     if routes.is_empty() {
-        more.push(line("None".into()));
+        more.push(line("routes-none", "None".into()));
     }
     row![
         col(rows).gap(TIGHT).align(Align::Start).flex(1).min_w(0),
@@ -606,7 +606,7 @@ fn sound(inst: &ir::Instrument) -> El {
 fn info(cx: &Cx, slot: usize, inst: Option<&ir::Instrument>) -> El {
     let v = &cx.view.parts[slot];
     let pair = |k: &str, val: String| {
-        row![caption(k.to_owned()).fill(secondary()).w(TEXT * 8.).shrink(0), body(val.clone()).lines(1).min_w(0).tip(val)].gap(SPACE).align(Align::Center).shrink(0)
+        row![caption(k.to_owned()).fill(secondary()).w(TEXT * 8.).shrink(0), body(val.clone()).lines(1).min_w(0).tip(val).id(format!("info-{slot}-{k}"))].gap(SPACE).align(Align::Center).shrink(0)
     };
     let mut rows = Vec::new();
     rows.push(pair("Instrument", super::rack::name(cx, slot)));
