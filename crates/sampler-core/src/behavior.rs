@@ -2355,6 +2355,7 @@ impl Runtime {
                     let _ = self.suppress_attack(note);
                 }
             }
+            self.notes.get_mut(note.0).unwrap().work -= 1;
         }
     }
 
