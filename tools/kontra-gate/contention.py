@@ -11,12 +11,13 @@ HEAVY_NAMES = {'cargo', 'rustc', 'kontakto-heavy', 'kontakto-v1', 'kontra_scan',
                'cpu_audit', 'cpu_audit_v1', 'cpu-audit-v1', 'cpu-audit-v2',
                'kontra-scan-v1', 'kontra-scan-v2', 'kontra-scan-v1-uvi',
                'audit-load.py', 'run-shards.py', 'v1-stage-probe', 'v1-uvi-onset-probe', 'clap-cpu-host'}
-QUEUE = Path.home() / '.cache/kontakto-heavy.d/queue'
 WAIT_HELPERS = {'sleep', 'find', 'ls', 'sort', 'head', 'grep', 'awk', 'seq', 'flock', 'tr', 'tail', 'df', 'date', 'mkdir', 'rm'}
+UNIT_COUNTERS = {}
 
 
 def status(sample):
-    if any(not row['owned'] and not row.get('waiting', False) for row in sample['units'] + sample['processes']):
+    if any(not row['owned'] and (row.get('cpu_io_active', False) or not row.get('waiting', False))
+           for row in sample['units'] + sample['processes']):
         return 'CONTENDED'
     return 'UNKNOWN' if sample['errors'] else 'QUIET'
 
@@ -50,21 +51,17 @@ def snapshot():
         descendants = grown
     owned = ancestors | descendants
     waiting = set()
-    try:
-        queued = {int(ticket.name.rsplit('.', 1)[1]) for ticket in QUEUE.iterdir()}
-        for pid in queued:
-            if kinds.get(pid) != 'kontakto-heavy': continue
-            children = {pid}
-            while True:
-                grown = children | {child for child, parent in parents.items() if parent in children and child in commands}
-                if grown == children: break
-                children = grown
-            # A queue ticket is removed before a slot's workload starts. Check
-            # children too, so a stale ticket cannot hide a running workload.
-            if all(commands[child] in WAIT_HELPERS for child in children - {pid}):
-                waiting |= children
-    except FileNotFoundError: pass
-    except (OSError, ValueError, IndexError): result['errors'].append('heavy-queue')
+    for pid, kind in kinds.items():
+        if kind != 'kontakto-heavy': continue
+        children = {pid}
+        while True:
+            grown = children | {child for child, parent in parents.items() if parent in children and child in commands}
+            if grown == children: break
+            children = grown
+        # Quiet-request waiters deliberately drop their FIFO tickets. Only
+        # wrapper bookkeeping/sleep descendants qualify, never a workload.
+        if all(commands[child] in WAIT_HELPERS for child in children - {pid}):
+            waiting |= children
     own_units = {part for pid in ancestors for part in groups.get(pid, '').split('/') if part.strip().endswith('.service')}
     own_units = {name.strip() for name in own_units}
     result['processes'] = [{'pid': pid, 'kind': kind, 'owned': pid in owned, **({'waiting': True} if pid in waiting else {})}
@@ -78,6 +75,22 @@ def snapshot():
         for unit in result['units']:
             members = {pid for pid, group in groups.items() if unit['name'] in group.strip().split('/')}
             if members and members <= waiting: unit['waiting'] = True
+            paths = {line.split(':', 2)[2] for pid in members for line in groups[pid].splitlines()
+                     if line.startswith('0::')}
+            paths = {path[:path.index(unit['name']) + len(unit['name'])] for path in paths}
+            if len(paths) == 1:
+                try:
+                    cgroup = Path('/sys/fs/cgroup') / paths.pop().lstrip('/')
+                    cpu = dict(line.split() for line in (cgroup / 'cpu.stat').read_text().splitlines())
+                    usage = int(cpu['usage_usec'])
+                    io = sum(int(field.split('=')[1]) for line in (cgroup / 'io.stat').read_text().splitlines()
+                             for field in line.split()[1:] if field.startswith(('rbytes=', 'wbytes=')))
+                    previous = UNIT_COUNTERS.get(unit['name'])
+                    unit.update(cpu_usage_us=usage, io_bytes=io,
+                                cpu_io_active=previous is not None and (usage > previous[0] or io > previous[1]))
+                    UNIT_COUNTERS[unit['name']] = (usage, io)
+                except FileNotFoundError: pass  # Unit exited after the process snapshot.
+                except (OSError, ValueError, KeyError): result['errors'].append('unit-cgroup')
     except (OSError, subprocess.SubprocessError): result['errors'].append('systemctl')
     try:
         result['loadavg'] = [float(n) for n in Path('/proc/loadavg').read_text().split()[:3]]
