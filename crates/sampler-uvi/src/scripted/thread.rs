@@ -69,6 +69,24 @@ pub struct ScriptThread {
     time_ms: f64,
 }
 
+enum UiRequest {
+    Edit(ControlId, f64),
+    Save(mpsc::SyncSender<Result<UiState, String>>),
+}
+
+fn process_ui_requests(host: &mut ScriptHost, requests: &mpsc::Receiver<UiRequest>) {
+    while let Ok(request) = requests.try_recv() {
+        match request {
+            UiRequest::Edit(id, value) => {
+                let _ = host.set_control(id, value);
+            }
+            UiRequest::Save(reply) => {
+                let _ = reply.send(host.save_ui_state());
+            }
+        }
+    }
+}
+
 impl ScriptThread {
     /// Load the scripts of program `xml` on a new thread; returns once they
     /// have loaded (their `onInit` has run).
@@ -149,9 +167,7 @@ impl ScriptThread {
                                 }
                             }
                         }
-                        while let Ok((id, value)) = ui_receive.try_recv() {
-                            let _ = host.set_control(id, value);
-                        }
+                        process_ui_requests(&mut host, &ui_receive);
                         host.advance(f64::from_bits(clock.load(Ordering::Acquire)));
                         let current = host.ui_revision();
                         if current != revision {
@@ -176,6 +192,7 @@ impl ScriptThread {
                                         if stop.load(Ordering::Acquire) {
                                             return;
                                         }
+                                        process_ui_requests(&mut host, &ui_receive);
                                         std::thread::sleep(POLL);
                                     }
                                 }
@@ -297,11 +314,10 @@ impl Drop for ScriptThread {
 /// UI-thread edits and presentation snapshots. The audio side reads immutable
 /// cell identities plus atomics; Lua and the interface mutex stay on the worker.
 pub struct UiBridge {
-    edits: mpsc::SyncSender<(ControlId, f64)>,
+    edits: mpsc::SyncSender<UiRequest>,
     owner: std::thread::Thread,
     values: Vec<(ControlId, AtomicU64)>,
     face: Mutex<Arc<Interface>>,
-    state: Mutex<Result<UiState, String>>,
     revision: AtomicU64,
     findings: Mutex<Vec<Finding>>,
     faults: Mutex<FaultCounts>,
@@ -311,10 +327,10 @@ pub struct UiBridge {
 impl UiBridge {
     fn new(
         host: &ScriptHost,
-        edits: mpsc::SyncSender<(ControlId, f64)>,
+        edits: mpsc::SyncSender<UiRequest>,
         owner: std::thread::Thread,
     ) -> Self {
-        let state = host.save_ui_state();
+        let _ = host.save_ui_state();
         let face = host.interface();
         let mut values = ScriptHost::control_values_from(&face);
         values.sort_by_key(|(id, _)| *id);
@@ -326,7 +342,6 @@ impl UiBridge {
                 .map(|(id, v)| (id, AtomicU64::new(v.to_bits())))
                 .collect(),
             face: Mutex::new(Arc::new(face)),
-            state: Mutex::new(state),
             revision: AtomicU64::new(1),
             findings: Mutex::new(host.findings()),
             faults: Mutex::new(host.fault_counts()),
@@ -349,7 +364,6 @@ impl UiBridge {
         (self.runtime_faults.load(Ordering::Acquire), self.runtime_budgets.load(Ordering::Acquire))
     }
     fn publish(&self, host: &ScriptHost) {
-        *self.state.lock().unwrap() = host.save_ui_state();
         let next = host.interface();
         for (id, v) in ScriptHost::control_values_from(&next) {
             if let Ok(i) = self.values.binary_search_by_key(&id, |(id, _)| *id) {
@@ -367,7 +381,7 @@ impl UiBridge {
         if !value.is_finite() || self.value(id).is_none() {
             return false;
         }
-        if self.edits.try_send((id, value)).is_err() {
+        if self.edits.try_send(UiRequest::Edit(id, value)).is_err() {
             return false;
         }
         self.owner.unpark();
@@ -386,8 +400,15 @@ impl UiBridge {
     pub fn interface(&self) -> Arc<Interface> {
         self.face.lock().unwrap().clone()
     }
+    /// Host/background thread only: execute authored onSave on the Lua owner.
     pub fn state(&self) -> Result<UiState, String> {
-        self.state.lock().unwrap().clone()
+        let (reply, state) = mpsc::sync_channel(1);
+        self.owner.unpark();
+        self.edits.send(UiRequest::Save(reply))
+            .map_err(|_| "UVI save worker stopped".to_string())?;
+        self.owner.unpark();
+        state.recv_timeout(Duration::from_secs(2))
+            .map_err(|_| "UVI save worker did not reply".to_string())?
     }
     pub fn revision(&self) -> u64 {
         self.revision.load(Ordering::Acquire)
