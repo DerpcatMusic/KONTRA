@@ -8,6 +8,8 @@
 //! audio thread replaces goes back to the loader to be dropped.
 
 mod automation;
+mod host_probe;
+pub(crate) use host_probe::export_multi_state;
 pub(crate) mod automation_ids;
 
 use crate::sound::{
@@ -95,6 +97,9 @@ pub struct Part {
     pub snapshot: String,
     /// Kontakt control identities and semantic values, independent of presentation.
     pub control_values: Vec<SavedControl>,
+    pub group: u32,
+    pub edits: crate::sound::edits::Edits,
+    pub timing: crate::timing::Timing,
 }
 
 impl Default for Part {
@@ -129,6 +134,9 @@ impl Default for Part {
             mpe_upper: false,
             snapshot: String::new(),
             control_values: Vec::new(),
+            group: 0,
+            edits: Default::default(),
+            timing: Default::default(),
         }
     }
 }
@@ -166,6 +174,9 @@ impl Part {
 
     pub(crate) fn select_snapshot(&mut self, path: String) {
         self.snapshot = path;
+        self.control_values.clear();
+        self.uvi_state.clear();
+        self.uvi_state_source.clear();
     }
 }
 
@@ -264,6 +275,8 @@ pub struct Selection {
     pub memory_budget_mb: u32,
     /// Ported v1 rack sample mode; changing it reloads affected parts.
     pub streaming: Streaming,
+    pub auto_align: bool,
+    pub align_transport_only: bool,
 }
 
 /// Seconds a streamed sample goes unplayed before the memory budget may drop it.
@@ -317,11 +330,16 @@ pub(crate) use SamplerParamsParamId as P;
 
 impl SamplerParams {
     fn capture_ui_controls(&self) {
+        self.shared.refresh_uvi(self);
         let mut selection = self.selection.read().unwrap().clone();
         self.shared.capture_ui_controls(&mut selection);
         let mut current = self.selection.write().unwrap();
         for (part, captured) in current.parts.iter_mut().zip(selection.parts) {
-            if part.source() == captured.source() { part.control_values = captured.control_values; }
+            if part.source() == captured.source() {
+                part.control_values = captured.control_values;
+                part.uvi_state = captured.uvi_state;
+                part.uvi_state_source = captured.uvi_state_source;
+            }
         }
     }
 
@@ -400,6 +418,8 @@ pub(crate) struct PartShared {
     /// The loaded part's controls; the audio thread refreshes their values.
     pub(crate) controls: Mutex<Arc<[ControlCell]>>,
     engine_meters: Mutex<Vec<EngineMeterCell>>,
+    pub(crate) editor_taps: [AtomicU64;16],
+    pub(crate) engine_bindings: Mutex<Arc<[sampler_core::EngineParameterBinding]>>,
     waveforms: Mutex<Option<crate::sound::waveform::Provider>>,
     /// Per node of the loaded part's tree, its level like [`Self::meter`]
     /// (node 0, the instrument, is the part's own meter).
@@ -427,6 +447,7 @@ pub(crate) struct ControlCell {
 }
 
 impl ControlCell {
+    pub(crate) fn new(id:sampler_ui_ir::ControlId,value:f64)->Self {Self{id,value:AtomicU64::new(value.to_bits())}}
     pub(crate) fn value(&self) -> f64 {
         f64::from_bits(self.value.load(Ordering::Relaxed))
     }
@@ -569,12 +590,15 @@ pub struct Shared {
     pending_ready: Mutex<std::collections::VecDeque<Ready>>,
     discard: ArrayQueue<Retired>,
     /// Host sample rate (`f64` bits) parts are prepared for.
+    pub(crate) editor_watch: AtomicUsize,
+    pub(crate) reported: AtomicU32,
     pub(crate) rate: AtomicU64,
     pub(crate) key_owners: [AtomicU64; 128],
     /// The velocity each key sounds at, 0 when silent: `played` on screen
     /// or from the computer keyboard, `heard` from the host's MIDI.
     pub(crate) played: [AtomicU8; 128],
     pub(crate) heard: [AtomicU8; 128],
+    pub(crate) engine_keys: AtomicBool,
     pub(crate) learn_target: AtomicU32,
     pub(crate) learned_note: AtomicU64,
     /// What the on-screen keyboard and wheels play, by rack slot.
@@ -632,6 +656,8 @@ pub struct Shared {
     port_names: Mutex<routing::PortNames>,
     /// Bumped with each publication: format wrappers poll it and tell the host.
     port_names_revision: AtomicU64,
+    measure: crate::timing::Measure,
+    published: Mutex<(Option<Arc<crate::timing::Plan>>, Option<(f32, Instant)>)>,
     // Last: workers retire before the logging worker.
     _diagnostics: crate::diagnostics::DiagnosticLease,
     // The crash marker retires after every retained worker and diagnostics lease.
@@ -647,6 +673,7 @@ pub(crate) struct PartView {
     /// The source and sample rate (bits) last prepared or being prepared.
     pub(crate) attempted: Option<(String, u32, String, u64, bool, bool, i16, Streaming)>,
     pub(crate) status: String,
+    pub(crate) timing_status: String,
     /// The loaded instrument's name.
     pub(crate) active: String,
     /// Samples are being read for this slot.
@@ -711,10 +738,15 @@ impl Default for Shared {
             ready: ArrayQueue::new(64),
             pending_ready: Mutex::default(),
             discard: ArrayQueue::new(64),
+            editor_watch: AtomicUsize::new(usize::MAX),
+            reported: AtomicU32::new(0),
+            measure: Default::default(),
+            published: Mutex::default(),
             rate: AtomicU64::new(48000f64.to_bits()),
             key_owners: std::array::from_fn(|_| AtomicU64::new(0)),
             played: std::array::from_fn(|_| AtomicU8::new(0)),
             heard: std::array::from_fn(|_| AtomicU8::new(0)),
+            engine_keys: AtomicBool::new(false),
             keyboard: ArrayQueue::new(256),
             bend: AtomicU32::new(8192),
             modulation: AtomicU32::new(0),
@@ -871,6 +903,8 @@ pub(crate) fn mix(selection: &Selection) -> Mix {
     Mix {
         parts: rack_controls(selection),
         articulation_routes: Vec::new(),
+        editor_offsets: selection.parts.iter().map(|p|p.edits.native()).collect(),
+        timing: std::sync::Arc::new(timing_plan(selection)),
         buses: std::array::from_fn(|n| {
             let b = selection.bus(n);
             BusControls {
@@ -1097,6 +1131,15 @@ impl Shared {
             if sources.get(slot).and_then(Option::as_ref) != Some(&part.source()) { continue; }
             if let Some(atoms) = self.part(slot) {
                 part.control_values = atoms.control_values().into_iter().filter(|(_, value)| value.is_finite()).map(|(id, value)| SavedControl::new(id, value)).collect();
+                let scripts = atoms.scripts.lock().unwrap();
+                if scripts.uvi_source.as_ref() == Some(&part.source())
+                    && let Some(uvi) = &scripts.uvi
+                    && let Ok(state) = uvi.state()
+                    && let Ok(state) = serde_json::to_string(&state)
+                {
+                    part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
+                    part.uvi_state = state;
+                }
             }
         }
     }
@@ -1192,6 +1235,9 @@ impl Shared {
             let Some(uvi) = scripts.uvi.clone() else {
                 continue;
             };
+            if scripts.uvi_source != params.selection.read().unwrap().parts.get(slot).map(Part::source) {
+                continue;
+            }
             let revision = uvi.revision();
             if revision == scripts.uvi_revision {
                 continue;
@@ -1199,14 +1245,6 @@ impl Shared {
             scripts.uvi_revision = revision;
             if let Some(view) = self.view.lock().unwrap().parts.get_mut(slot) {
                 view.publish_interface(&uvi.interface());
-            }
-            if let Ok(state) = uvi.state()
-                && let Ok(state) = serde_json::to_string(&state)
-                && let Some(part) = params.selection.write().unwrap().parts.get_mut(slot)
-                && scripts.uvi_source.as_ref() == Some(&part.source())
-            {
-                part.uvi_state_source = serde_json::to_string(&part.source()).unwrap();
-                part.uvi_state = state;
             }
         }
     }
@@ -1449,9 +1487,11 @@ impl BackgroundTask for Load {
         shared.midi_thru.store(selection.midi_thru, Ordering::Release);
         poll_libraries(shared);
         route(params);
+        align(params);
         let push_mix = || {
             let selection = params.selection.read().unwrap();
             let mut mix = mix(&selection);
+            if let Some(plan) = &shared.published.lock().unwrap().0 { mix.timing = plan.clone(); }
             let view = shared.view.lock().unwrap();
             mix.articulation_routes = selection.parts.iter().enumerate().map(|(slot, p)| {
                 let instrument = view.parts.get(slot)?.instrument.as_deref()?;
@@ -1468,6 +1508,7 @@ impl BackgroundTask for Load {
             loaded |= load_part(params, slot, prepared);
         }
         if loaded {
+            align(params);
             // New trees: route their nodes and size their settings.
             route(params);
             push_mix();
@@ -1637,6 +1678,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             v.interfaces = loaded.interfaces.into();
             if let Some(part) = loaded.part.as_mut() {
                 part.epoch = generation;
+                *atoms.engine_bindings.lock().unwrap() = part.engine_bindings.clone();
                 if !part.waveform_sources.is_empty() && let Some(ingress) = &part.ui_controls {
                     let wake = Arc::downgrade(&atoms);
                     *atoms.waveforms.lock().unwrap() = crate::sound::waveform::Provider::start(ingress.plan(), std::mem::take(&mut part.waveform_sources), move || {
@@ -1652,7 +1694,7 @@ fn load_part(params: &SamplerParams, slot: usize, prepared: Option<crate::sound:
             *atoms.controls.lock().unwrap() = loaded
                 .controls
                 .iter()
-                .map(|&(id, value)| ControlCell { id, value: AtomicU64::new(value.to_bits()) })
+                .map(|&(id, value)| ControlCell::new(id,value))
                 .collect();
             v.instrument = loaded.instrument;
             v.keys = loaded.scripts.keys();
@@ -1913,6 +1955,7 @@ pub struct Dsp {
     shared_parts: Vec<Arc<PartShared>>,
     unsupported: u64,
     end_rejections: u64,
+    playing: bool,
 }
 
 impl Default for Dsp {
@@ -1926,6 +1969,7 @@ impl Default for Dsp {
             shared_parts: Vec::new(),
             unsupported: 0,
             end_rejections: 0,
+            playing: false,
         }
     }
 }
@@ -1976,7 +2020,11 @@ impl PluginLogic for Sampler {
         p.shared.rate.store(c.sample_rate.to_bits(), Ordering::Release);
         s.until_poll = 0;
         s.audition.fill((0, 0));
+        s.playing = false;
         p.shared.reset_midi();
+        p.shared.voices.store(0, Ordering::Relaxed);
+        p.shared.audible.store(0, Ordering::Relaxed);
+        p.shared.engine_keys.store(false, Ordering::Release);
     }
 
     fn process(
@@ -2052,9 +2100,15 @@ impl PluginLogic for Sampler {
                 signature: (cx.transport.time_sig_num, cx.transport.time_sig_den),
             },
         });
+        let stopped = s.playing && !cx.transport.playing;
+        s.playing = cx.transport.playing;
         if shared.panic.swap(false, Ordering::AcqRel) {
             shared.reset_midi();
             s.core.panic();
+            s.audition.fill((0, 0));
+        } else if stopped {
+            shared.reset_midi();
+            s.core.release_all_notes();
             s.audition.fill((0, 0));
         }
         while let Some((slot, articulation)) = shared.articulation_edits.pop() {
@@ -2175,6 +2229,11 @@ impl PluginLogic for Sampler {
         for slot in 0..s.core.parts() {
             let epoch = s.core.epoch(slot);
             let atoms = part_atoms(&s.shared_parts, shared, slot).unwrap();
+            if shared.editor_watch.load(Ordering::Relaxed)==slot && atoms.generation.load(Ordering::Acquire)==epoch {
+                for (to,tap) in atoms.editor_taps.iter().zip(s.core.voice_taps(slot)) {
+                    to.store(tap.map_or(0,|t|crate::sound::edits::Tap::from_native(t).pack()),Ordering::Relaxed);
+                }
+            }
             let revision = s.core.ui_revision(slot);
             if atoms.generation.load(Ordering::Acquire) == epoch && revision != atoms.native_revision.load(Ordering::Relaxed) {
                 atoms.refresh_controls(|id| s.core.control_value(slot, id));
@@ -2185,6 +2244,10 @@ impl PluginLogic for Sampler {
         let offset = frames.saturating_sub(1) as u32;
         let refused = s.core.end_block(frames, &mut |note| end_host_note(cx, note, offset));
         s.end_rejections += refused;
+        let mut keys = [0; 128];
+        let loaded = s.core.pressed_keys(&mut keys);
+        for (cell, value) in shared.heard.iter().zip(keys) { cell.store(value, Ordering::Relaxed); }
+        shared.engine_keys.store(loaded, Ordering::Release);
         shared.blocks.fetch_add(1, Ordering::Relaxed);
         cx.set_meter(P::Level, peak[0].max(peak[1]).min(1.0));
         if frames > 0 && rate > 0. {
@@ -2586,6 +2649,8 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+mod pressed_tests;
 
 #[cfg(test)]
 mod settings_parity_tests {
@@ -2642,3 +2707,123 @@ mod settings_parity_tests {
         assert!(part == restored);
     }
 }
+
+// Port v1 0cb7a8a0:src/plugin.rs:3286+: source-guarded completed jobs,
+// manual controls, readiness checks, fresh scripts and latency settling.
+const LATENCY_SETTLE:std::time::Duration=std::time::Duration::from_millis(1500);
+fn align(params:&SamplerParams) {
+    let shared=&params.shared;
+    let done=shared.measure.take();
+    if !done.is_empty() {
+        let mut statuses=Vec::new();let mut current=params.selection.write().unwrap();
+        for (slot,generation,source,result) in done {
+            if !shared.part(slot).is_some_and(|p| p.generation.load(Ordering::Acquire) == generation) { continue; }
+            let Some(p)=current.parts.get_mut(slot).filter(|p|crate::timing::source(&p.path,p.program,&p.snapshot)==source)else{continue};
+            let Some(result) = result else { statuses.push((slot, String::new())); continue; };
+            match result {
+                Ok(t)=>{p.timing=crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..t};statuses.push((slot,String::new()));}
+                Err(e)=>{p.timing=crate::timing::Timing{source,override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()};statuses.push((slot,format!("Timing not measured: {e}")));}
+            }
+        }
+        drop(current);let mut view=shared.view.lock().unwrap();for (slot,status)in statuses{if let Some(v)=view.parts.get_mut(slot){v.timing_status=status;}}
+    }
+    let selection=params.selection.read().unwrap().clone();
+    if !selection.auto_align {shared.measure.cancel();}
+    if selection.auto_align&&!shared.measure.busy() {
+        for (slot,part) in selection.parts.iter().enumerate() {
+            if part.path.is_empty()||part.timing.measured(&part.path,part.program,&part.snapshot){continue;}
+            let ready={let view=shared.view.lock().unwrap();view.parts.get(slot).is_some_and(|v|!v.loading&&v.attempted.as_ref().is_some_and(|(path,program,snapshot,..)|path==&part.path&&*program==part.program&&snapshot==&part.snapshot)&&v.report.is_some())};
+            if !ready {continue;}
+            let Some(atoms)=shared.part(slot)else{continue};let generation=atoms.generation.load(Ordering::Acquire);
+            let request=LoadRequest {
+                path:part.path.clone().into(),program:part.program,sample_rate:shared.rate(),snapshot:(!part.snapshot.is_empty()).then(||part.snapshot.clone().into()),
+                control_values:part.control_values.iter().map(|c|(c.id(),c.value)).collect(),
+                uvi_state:serde_json::from_str(&part.uvi_state).ok(),
+                dynamics_start:u8::try_from(part.dynamics).ok().filter(|v|*v<128),
+                // Like v1's fresh measuring engine: manager-channel takes;
+                // disk pages wait offline, and rendering uses one worker.
+                mpe:false,mpe_upper:false,streaming:Streaming::Auto,threads:Some(crate::sound::ThreadChoice::Fixed(1)),
+            };
+            let result=shared.measure.start(slot,generation,request,part.edits.clone(),move||atoms.generation.load(Ordering::Acquire)!=generation);
+            shared.view.lock().unwrap().parts[slot].timing_status=match result {Ok(())=>"Measuring timing…".into(),Err(e)=>format!("Timing not measured: {e}")};
+            break;
+        }
+    }
+    let plan=timing_plan(&selection);let mut published=shared.published.lock().unwrap();
+    let (sent,waiting)=&mut *published;
+    if sent.as_ref().is_some_and(|old|old.as_ref()==&plan){*waiting=None;return;}
+    let told=|p:&crate::timing::Plan|if p.on{p.latency_ms}else{0.};let now=Instant::now();
+    let settled=match (&sent,&waiting) {
+        (None,_)=>true,
+        (Some(s),_)if told(s)==told(&plan)=>true,
+        (_,Some((ms,since)))if *ms==told(&plan)=>now.duration_since(*since)>=LATENCY_SETTLE,
+        _=>{*waiting=Some((told(&plan),now));false}
+    };
+    if settled {*sent=Some(Arc::new(plan));*waiting=None;shared.reported.store(told(sent.as_ref().unwrap()).to_bits(),Ordering::Relaxed);}
+}
+
+/// Port v1 timing_for/plan; stale patch and snapshot measurements are excluded.
+pub(crate) fn timing_for(p:&Part)->std::borrow::Cow<'_,crate::timing::Timing>{
+    if p.timing.measured(&p.path,p.program,&p.snapshot){std::borrow::Cow::Borrowed(&p.timing)}else{std::borrow::Cow::Owned(crate::timing::Timing{override_ms:p.timing.override_ms,exclude:p.timing.exclude,..Default::default()})}
+}
+fn timing_plan(s:&Selection)->crate::timing::Plan{
+    let latency_ms=crate::timing::reported_ms(s.parts.iter().filter(|p|!p.path.is_empty()).map(|p|timing_for(p).latest()));
+    crate::timing::Plan{on:s.auto_align,transport_only:s.align_transport_only,latency_ms,
+        parts:(0..s.parts.len().max(RACK_SLOTS)).map(|n|std::sync::Arc::new(s.parts.get(n).filter(|p|!p.path.is_empty()).map_or_else(crate::timing::Holds::default,|p|{
+            let names:Vec<&str>=p.timing.arts.iter().map(|a|a.identity.as_str()).collect();
+            crate::timing::Holds::of(&timing_for(p),&names,latency_ms)
+        }))).collect()}
+}
+
+#[cfg(test)]
+mod timing_loader_tests {
+    use super::*;
+    #[test]
+    fn v1_auto_align_finished_jobs_reject_stale_generations_and_snapshots() {
+        let p=SamplerParams::new();
+        let atoms=p.shared.part(0).unwrap();atoms.generation.store(7,Ordering::Release);
+        let source=crate::timing::source("synthetic.nki",2,"saved.nksn");
+        p.selection.write().unwrap().parts=vec![Part{path:"synthetic.nki".into(),program:2,snapshot:"saved.nksn".into(),timing:crate::timing::Timing{override_ms:Some(95.),exclude:true,..Default::default()},..Default::default()}];
+        let result=crate::timing::Timing{source:source.clone(),declared:Some(47.),..Default::default()};
+        for (generation,identity) in [(6,source.clone()),(7,crate::timing::source("synthetic.nki",2,"other.nksn"))] {
+            p.shared.measure.done.lock().unwrap().push((0,generation,identity,Some(Ok(result.clone()))));
+            align(&p);assert!(p.selection.read().unwrap().parts[0].timing.source.is_empty(),"stale result changed this part");
+        }
+        p.shared.measure.done.lock().unwrap().push((0,7,source.clone(),Some(Ok(result))));
+        align(&p);let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        assert_eq!(t.source,source);assert_eq!(t.declared,Some(47.));assert_eq!(t.override_ms,Some(95.));assert!(t.exclude);
+    }
+    #[test]
+    fn v1_auto_align_publishes_changed_latency_only_after_settling() {
+        let p=SamplerParams::new();{
+            let mut s=p.selection.write().unwrap();s.auto_align=true;
+            s.parts=vec![Part{path:"synthetic.nki".into(),timing:crate::timing::Timing{override_ms:Some(10.),..Default::default()},..Default::default()}];
+        }
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
+        p.selection.write().unwrap().parts[0].timing.override_ms=Some(20.);
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),10.);
+        p.shared.published.lock().unwrap().1=Some((20.,Instant::now()-LATENCY_SETTLE));
+        align(&p);assert_eq!(f32::from_bits(p.shared.reported.load(Ordering::Relaxed)),20.);
+        assert_eq!(p.shared.published.lock().unwrap().0.as_ref().unwrap().latency_ms,20.);
+    }
+    #[test]
+    fn v1_auto_align_loader_measures_a_fresh_generated_wave_and_persists_it() {
+        let dir=std::env::temp_dir().join(format!("kontra-timing-{}",std::process::id()));std::fs::create_dir_all(&dir).unwrap();let path=dir.join("C3.wav");
+        let data:Vec<u8>=(0..72000).flat_map(|n|(((std::f64::consts::TAU*261.625565*n as f64/48000.).sin()*12000.)as i16).to_le_bytes()).collect();
+        let mut wav=Vec::new();wav.extend(b"RIFF");wav.extend((36+data.len()as u32).to_le_bytes());wav.extend(b"WAVEfmt ");wav.extend(16u32.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(1u16.to_le_bytes());wav.extend(48000u32.to_le_bytes());wav.extend(96000u32.to_le_bytes());wav.extend(2u16.to_le_bytes());wav.extend(16u16.to_le_bytes());wav.extend(b"data");wav.extend((data.len()as u32).to_le_bytes());wav.extend(data);std::fs::write(&path,wav).unwrap();
+        let p=SamplerParams::new();{let mut s=p.selection.write().unwrap();s.auto_align=true;s.parts.push(Part{path:path.to_string_lossy().into(),timing:crate::timing::Timing{override_ms:Some(12.),..Default::default()},..Default::default()});s.order.push(0);}
+        let began=Instant::now();
+        loop {
+            Load.run(&p);
+            if p.selection.read().unwrap().parts[0].timing.measured(&path.to_string_lossy(),0,""){break;}
+            assert!(began.elapsed().as_secs()<15,"auto-align never measured a loaded part");std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let s=p.selection.read().unwrap();let t=&s.parts[0].timing;
+        assert_eq!(t.override_ms,Some(12.));assert!(t.loaded.first.iter().all(Option::is_some),"all velocity buckets were actually rendered");
+        let restored=Selection::deserialize(&s.serialize()).unwrap();assert_eq!(restored.parts[0].timing,*t);
+        drop(s);drop(p);std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests;
