@@ -132,7 +132,7 @@ Baseline v2 SHA-25618fe63fe…, pinned Kontakt v1a4b3f8c7…, UVI v1d565661a…,
 |VWinds-Clarinet|498.8|574.8|1550.4|140.7→144.1|420.2|yes/yes/yes|
 |VWinds-Flute|1160.7|5302.9|3303.8|146.2→152.4|548.8|yes/yes/yes|
 
-All14 baseline and W8 loads are admitted. v1 rejects the selected Augmented Orchestra program, so its0ms failed-load field is not a fast load or first-sound result. Barbarian has no mapped audition note and is `not-auditioned`, not a confirmed audio regression. Other admitted audible rows match their shared note plans. W8 improves load_ms on12/14 vs frozen v2, but Clarinet A and Alto Flute regress in this pass. Peak RSS improves14/14 vs frozen v2; it remains worse than pinned v1 on10/11 Kontakt rows. Scanner peak is a whole-worker metric and cannot be mixed with plugin settled-editor RSS or summed with W3/W9 independent savings.
+All14 baseline and W8 loads are admitted. v1 rejects the selected Augmented Orchestra program, so its0ms failed-load field is not a fast load or first-sound result. Barbarian has no mapped audition note and is `not-auditioned`, not a confirmed audio regression. Other admitted audible rows match their shared note plans. W8 improves load_ms on12/14 vs frozen v2, but Clarinet A and Alto Flute regress in this pass. Peak RSS improves12/14 vs frozen v2; Clarinet A and Alto Flute also increase. It remains worse than pinned v1 on all11 Kontakt rows. Scanner peak is a whole-worker metric and cannot be mixed with plugin settled-editor RSS or summed with W3/W9 independent savings.
 
 ## Memory attribution and newly found audio failure
 
@@ -154,3 +154,18 @@ Big Screen has two embedded programs. Controller0 is silent in all versions. Pro
 Opt-in `KONTRA_AUDIT_LOWER` records numeric context, emitted instruction count and duration only. Conflux301 Plan/UI callback programs emit1,366,942 instructions in31.0 ms;3note programs3318ops/0.088ms,3release1579/.036ms,2controller329/.009ms. `lower::Unit::program` appends reached user functions separately for each callback. Pinned v1 compiles each function unit once into one script code vector, uses `Program.functions` entry offsets, and `Op::Call(f)` jumps through that table (`src/ksp/compile.rs:595`,724; `vm.rs:770`).
 
 Coordinator assigned shared-function lowering to W5 coordination. W8 sent direct evidence and a request for W5 ownership; no competing shared-function rewrite was started. Caller context, callback_type, UI identity, program indices and saved state must remain correct. The current compiler bakes some caller context into function bodies, so blind reuse of one UI callback code is invalid. W8 only removes redundant name/text clones and non-control double folding, plus the opt-in probe; full KSP tests and rootno-run pass. No callbacks are dropped, and no compilation is moved onto audio.
+
+## Big Screen native-init isolation (temporary probe only)
+
+The identical single-real-NCKP initializer produces274 engine writes,49 zero values and44 zero effect-slot values (zero bus-volume writes0). Four controlled runs keep the same scripts, note,24 MiB streaming pool and8 MiB lazy head policy:
+
+| Controlled native-IR change | First audio ms | Peak audio | Outcome |
+|---|---:|---:|---|
+| None |—|0|silent|
+| Omit harvested init writes |372.0|0.02729|audible|
+| Disable dynamic group rack admission only |—|0|silent|
+| Both controls |399.4|0.02729|audible|
+
+This causally identifies application of the harvested init writes as the muting path, rather than preload/onset handling. It does not yet identify the exact bad parameter. The temporary bypass controls have been removed and were never pushed as a product fix; omitting valid init writes would break authored behavior.
+
+The old W8 evaluator reads `get_engine_par` only from writes made during the current init, returning0 otherwise. W5's current Environment has `engine_values` and `engine_lookups`, but its Kontakt load-side environment currently initializes both empty. Saved native-state readback is therefore a concrete candidate. W8 notified W5 and requested a saved-native parameter seeding/query API; W8 owns the load ordering/field population and will initialize once at the correct backed-state boundary. W5 owns engine semantics. Shared-function lowering is coordinated separately with W5. Combined W3/W5/W8 acceptance remains open.
