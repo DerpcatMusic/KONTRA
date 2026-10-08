@@ -171,6 +171,7 @@ pub fn load_read(
         mut instrument,
         locations,
         mut samples,
+        initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
@@ -209,7 +210,7 @@ pub fn load_read(
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    finish(instrument, pcm, labels, options)
+    finish_kept(instrument, pcm, labels, options, initialized).map(|(loaded, _)| loaded)
 }
 
 /// Load the Kontakt instrument at `path` streamed: only the frames where
@@ -234,12 +235,24 @@ pub fn load_read_streamed(
     kontakt: Kontakt,
     options: &Options,
     policy: &crate::StreamPolicy,
+    progress: impl FnMut(Progress),
+) -> Result<crate::Streamed, LoadError> {
+    load_read_streamed_cancelable(kontakt, options, policy, progress, &|| false)
+}
+
+/// Streamed load with cancellation polled during source/header startup.
+pub fn load_read_streamed_cancelable(
+    kontakt: Kontakt,
+    options: &Options,
+    policy: &crate::StreamPolicy,
     mut progress: impl FnMut(Progress),
+    canceled: &(dyn Fn() -> bool + Sync),
 ) -> Result<crate::Streamed, LoadError> {
     let Kontakt {
         mut instrument,
         locations,
         mut samples,
+        initialized,
     } = kontakt;
     let (low, high) = (*options.keys.start(), *options.keys.end());
     let kept = instrument.retain_zones(|z| z.keys.low <= high && z.keys.high >= low);
@@ -250,6 +263,9 @@ pub fn load_read_streamed(
     let span = crate::audit::Span::new("sample_source_resolve");
     let mut sources = Vec::with_capacity(kept.len());
     for &asset in &kept {
+        if canceled() {
+            return Err(LoadError::Canceled);
+        }
         let location = &locations[asset];
         sources.push((
             std::sync::Arc::new(
@@ -261,14 +277,17 @@ pub fn load_read_streamed(
         ));
     }
     drop(span);
-    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32)?;
+    let opened = crate::stream::Streamer::open(sources, options.rate, policy, 32, canceled)?;
+    if canceled() {
+        return Err(LoadError::Canceled);
+    }
     let pcm = opened.assets.clone();
     progress(Progress::Lowering);
     let labels = kept
         .iter()
         .map(|&a| locations[a].display().to_string())
         .collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, initialized)?;
     crate::Streamed::new(loaded, opened, kept)
 }
 
@@ -288,10 +307,10 @@ pub fn stream_instrument(
         .iter()
         .map(|&asset| (sources[asset].clone(), Path::new(labels[asset].as_str())))
         .collect();
-    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32)?;
+    let opened = crate::stream::Streamer::open(listed, options.rate, policy, 32, &|| false)?;
     let pcm = opened.assets.clone();
     let labels = kept.iter().map(|&a| labels[a].clone()).collect();
-    let (loaded, kept) = finish_kept(instrument, pcm, labels, options)?;
+    let (loaded, kept) = finish_kept(instrument, pcm, labels, options, None)?;
     crate::Streamed::new(loaded, opened, kept)
 }
 
@@ -304,7 +323,7 @@ pub fn finish(
     labels: Vec<String>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
-    finish_kept(instrument, pcm, labels, options).map(|(loaded, _)| loaded)
+    finish_kept(instrument, pcm, labels, options, None).map(|(loaded, _)| loaded)
 }
 
 /// [`finish`], also returning the assets the plan kept, in its order.
@@ -313,6 +332,7 @@ fn finish_kept(
     pcm: Vec<Pcm>,
     labels: Vec<String>,
     options: &Options,
+    initialized: Option<ScriptInit>,
 ) -> Result<(Loaded, Vec<Pcm>), LoadError> {
     let mut playable = vec![true; instrument.zones.len()];
     for (index, zone) in instrument.zones.iter_mut().enumerate() {
@@ -346,7 +366,11 @@ fn finish_kept(
         .map(|(_, p)| p)
         .collect::<Vec<_>>();
     let kept = pcm.clone();
-    Ok((prepare(instrument, pcm, options)?, kept))
+    Ok((
+        prepare_inner(instrument, pcm, options, initialized)
+            .map_err(|e| e.at(crate::Stage::Prepare))?,
+        kept,
+    ))
 }
 
 /// The instrument volume as a host parameter: zones lose the saved volume and
@@ -523,7 +547,7 @@ pub fn prepare(
     pcm: Vec<Pcm>,
     options: &Options,
 ) -> Result<Loaded, LoadError> {
-    prepare_inner(instrument, pcm, options).map_err(|e| e.at(crate::Stage::Prepare))
+    prepare_inner(instrument, pcm, options, None).map_err(|e| e.at(crate::Stage::Prepare))
 }
 
 /// What a script may query while its `on init` runs.
@@ -565,15 +589,82 @@ pub(crate) fn script_environment(
     }
 }
 
+pub(crate) struct ScriptInit {
+    pub states: Vec<Option<Result<sampler_ksp::Initialized, String>>>,
+    pub resources: Option<Resources>,
+}
+
+pub(crate) fn initialize_scripts(
+    instrument: &mut ir::Instrument,
+    library: Option<&Path>,
+    groups: Vec<String>,
+) -> ScriptInit {
+    let resources = library.map(Resources::of).map(std::cell::RefCell::new);
+    let mut views = Vec::new();
+    let states = instrument
+        .behaviors
+        .iter()
+        .enumerate()
+        .map(|(index, behavior)| {
+            let mut performance_view = Default::default();
+            if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
+                let path = format!("Resources/performance_view/{name}.nckp");
+                let parsed = match resources.as_ref().and_then(|r| r.borrow_mut().read(&path)) {
+                    Some(bytes) => sampler_ksp::nckp::parse(&bytes),
+                    None => Err("not found in the library".into()),
+                };
+                match parsed {
+                    Ok((view, skipped)) => {
+                        performance_view = view;
+                        views.extend(skipped.into_iter().map(|value| ir::Unsupported {
+                            location: path.clone(),
+                            feature: "performance view control".into(),
+                            value,
+                            reason: ir::Reason::NotModeled,
+                        }));
+                    }
+                    Err(value) => views.push(ir::Unsupported {
+                        location: behavior.name.clone(),
+                        feature: "performance view".into(),
+                        value: format!("{path}: {value}"),
+                        reason: ir::Reason::InvalidValue,
+                    }),
+                }
+            }
+            let environment = script_environment(behavior, index, groups.clone(), performance_view);
+            (behavior.language == ir::Language::Ksp).then(|| {
+                sampler_ksp::initialize(
+                    &behavior.source,
+                    sampler_ksp::Limits::LIBRARY,
+                    &environment,
+                )
+                .map_err(|e| e.to_string())
+            })
+        })
+        .collect();
+    instrument.unsupported.append(&mut views);
+    ScriptInit {
+        states,
+        resources: resources.map(std::cell::RefCell::into_inner),
+    }
+}
+
 fn prepare_inner(
     mut instrument: ir::Instrument,
     pcm: Vec<Pcm>,
     options: &Options,
+    initialized: Option<ScriptInit>,
 ) -> Result<Loaded, LoadError> {
     let (rate, scripts) = (options.rate, options.scripts);
     host_volume(&mut instrument);
     let span = crate::audit::Span::new("resource_index");
-    let resources = options.library.as_deref().map(Resources::of);
+    let ScriptInit {
+        mut states,
+        resources,
+    } = initialized.unwrap_or_else(|| {
+        let groups = instrument.groups.iter().map(|g| g.name.clone()).collect();
+        initialize_scripts(&mut instrument, options.library.as_deref(), groups)
+    });
     drop(span);
     let span = crate::audit::Span::new("ksp_compile_init");
     let lower_options = sampler_core::lower::Options { mpe: options.mpe };
@@ -581,41 +672,16 @@ fn prepare_inner(
     let mut compiled = Vec::new();
     let mut names = Vec::new();
     let resources = resources.map(std::cell::RefCell::new);
-    let groups: Vec<String> = instrument.groups.iter().map(|g| g.name.clone()).collect();
-    let mut views = Vec::new();
     for (index, behavior) in instrument.behaviors.iter().enumerate() {
-        let mut performance_view = Default::default();
-        if let Some(name) = sampler_ksp::nckp::view_name(&behavior.source) {
-            let path = format!("Resources/performance_view/{name}.nckp");
-            let parsed = match resources.as_ref().and_then(|r| r.borrow_mut().read(&path)) {
-                Some(bytes) => sampler_ksp::nckp::parse(&bytes),
-                None => Err("not found in the library".into()),
-            };
-            match parsed {
-                Ok((view, skipped)) => {
-                    performance_view = view;
-                    views.extend(skipped.into_iter().map(|value| ir::Unsupported {
-                        location: path.clone(),
-                        feature: "performance view control".into(),
-                        value,
-                        reason: ir::Reason::NotModeled,
-                    }));
-                }
-                Err(value) => views.push(ir::Unsupported {
-                    location: behavior.name.clone(),
-                    feature: "performance view".into(),
-                    value: format!("{path}: {value}"),
-                    reason: ir::Reason::InvalidValue,
-                }),
-            }
-        }
-        let environment = script_environment(behavior, index, groups.clone(), performance_view);
         let result = match behavior.language {
             _ if !scripts => Err("scripts disabled".to_string()),
-            ir::Language::Ksp => {
-                sampler_ksp::compile_with(&behavior.source, rate, limits, &[], &environment)
-                    .map_err(|e| e.to_string())
-            }
+            ir::Language::Ksp => states[index]
+                .take()
+                .expect("KSP initialized")
+                .and_then(|init| {
+                    sampler_ksp::compile_initialized(&behavior.source, rate, limits, &[], init)
+                        .map_err(|e| e.to_string())
+                }),
             ref other => Err(format!("{other:?} has no frontend")),
         };
         match result {
@@ -644,7 +710,6 @@ fn prepare_inner(
     }
     drop(span);
     let span = crate::audit::Span::new("ui_ir_resource_metadata");
-    instrument.unsupported.append(&mut views);
     let picture = |path: &str| resources.as_ref()?.borrow_mut().picture(path);
     let mut interfaces = Vec::new();
     for (script, name) in compiled.iter().zip(&names) {

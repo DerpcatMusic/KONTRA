@@ -230,19 +230,21 @@ impl ScriptView {
     /// The callback of this script's `local` program (`"on note"`...), if it
     /// is one of its entry points.
     pub fn callback(&self, local: usize) -> Option<&'static str> {
-        Some(match self.entries.iter().find(|e| e.program == local)?.kind {
-            EntryKind::Note => "on note",
-            EntryKind::Release => "on release",
-            EntryKind::Controller => "on controller",
-            EntryKind::PolyAt => "on poly_at",
-            EntryKind::UiControl(_) => "on ui_control",
-            EntryKind::Listener => "on listener",
-            EntryKind::PgsChanged => "on pgs_changed",
-            EntryKind::PersistenceChanged => "on persistence_changed",
-            EntryKind::AsyncComplete => "on async_complete",
-            EntryKind::Rpn => "on rpn",
-            EntryKind::Nrpn => "on nrpn",
-        })
+        Some(
+            match self.entries.iter().find(|e| e.program == local)?.kind {
+                EntryKind::Note => "on note",
+                EntryKind::Release => "on release",
+                EntryKind::Controller => "on controller",
+                EntryKind::PolyAt => "on poly_at",
+                EntryKind::UiControl(_) => "on ui_control",
+                EntryKind::Listener => "on listener",
+                EntryKind::PgsChanged => "on pgs_changed",
+                EntryKind::PersistenceChanged => "on persistence_changed",
+                EntryKind::AsyncComplete => "on async_complete",
+                EntryKind::Rpn => "on rpn",
+                EntryKind::Nrpn => "on nrpn",
+            },
+        )
     }
 
     /// The script slot.
@@ -514,40 +516,7 @@ pub fn init_engine_pars(
     limits: Limits,
     environment: &Environment,
 ) -> Result<Vec<EnginePar>, Error> {
-    let mut syms = lexer::Interner::default();
-    (|| {
-        let mut toks = lexer::lex(source, &mut syms)?;
-        lexer::preprocess(&mut toks, &syms, &Default::default())?;
-        let ast = parser::parse(&toks, &syms)?;
-        let budget = sema::Budget {
-            variables: limits.variables,
-            array_cells: limits.array_cells,
-        };
-        let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        let init = eval::run(&hir, environment)?;
-        let mut writes: Vec<_> = init
-            .engine
-            .iter()
-            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
-                parameter: eval::symbol_name(&hir, parameter)
-                    .unwrap_or_else(|| parameter.to_string()),
-                value,
-                group,
-                slot,
-                generic,
-            })
-            .collect();
-        writes.sort_by(|a, b| {
-            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
-                &b.parameter,
-                b.group,
-                b.slot,
-                b.generic,
-            ))
-        });
-        Ok(writes)
-    })()
-    .map_err(|f: diag::Fault| f.locate(source))
+    initialize(source, limits, environment).map(|initialized| initialized.engine_pars())
 }
 
 /// Compile a script. `on init` runs here on the control thread against
@@ -560,7 +529,6 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
-    let audit_begin = std::time::Instant::now();
     let error = |message: &str| Error {
         offset: 0,
         line: 1,
@@ -582,12 +550,83 @@ pub fn compile_with(
     if controls.len() > limits.variables {
         return Err(error("control binding budget exceeded"));
     }
-    let mut bindings = BTreeMap::new();
-    let mut identities = BTreeSet::new();
-    for &(name, id) in controls {
-        if bindings.insert(name, id).is_some() || !identities.insert(id) {
-            return Err(error("duplicate control name or persistent identity"));
+    let initialized = initialize(source, limits, environment)?;
+    compile_initialized(source, rate, limits, controls, initialized)
+}
+
+/// Rate-independent frontend state after one resource-aware `on init`.
+/// Consumed by `compile_initialized`; it is never shared between instances.
+pub struct Initialized {
+    hir: hir::Hir,
+    init: eval::Initial,
+    conditions: BTreeSet<String>,
+    environment: Environment,
+}
+
+impl Initialized {
+    pub fn engine_pars(&self) -> Vec<EnginePar> {
+        let mut writes: Vec<_> = self
+            .init
+            .engine
+            .iter()
+            .map(|(&[parameter, group, slot, generic], &value)| EnginePar {
+                parameter: eval::symbol_name(&self.hir, parameter)
+                    .unwrap_or_else(|| parameter.to_string()),
+                value,
+                group,
+                slot,
+                generic,
+            })
+            .collect();
+        writes.sort_by(|a, b| {
+            (&a.parameter, a.group, a.slot, a.generic).cmp(&(
+                &b.parameter,
+                b.group,
+                b.slot,
+                b.generic,
+            ))
+        });
+        writes
+    }
+
+    /// Conservatively retain addressable effect slots when runtime code writes
+    /// engine parameters. No initializer or callback lowering is run to query it.
+    pub fn writes_effect_slots(&self) -> bool {
+        fn writes(body: &[hir::Stmt]) -> bool {
+            body.iter().any(|s| match &s.kind {
+                hir::StmtKind::Builtin(builtins::Builtin::SetEnginePar, _) => true,
+                hir::StmtKind::If(_, yes, no) => writes(yes) || writes(no),
+                hir::StmtKind::While(_, body) => writes(body),
+                hir::StmtKind::Select(_, cases) => cases.iter().any(|c| writes(&c.body)),
+                _ => false,
+            })
         }
+        // Functions can be called by runtime callbacks. Conservative admission
+        // avoids dropping a slot reached indirectly or through a variable.
+        self.hir
+            .callbacks
+            .iter()
+            .filter(|c| c.kind != hir::CallbackKind::Init)
+            .any(|c| writes(&c.body))
+            || self.hir.functions.iter().any(|f| writes(&f.body))
+    }
+}
+
+pub fn initialize(
+    source: &str,
+    limits: Limits,
+    environment: &Environment,
+) -> Result<Initialized, Error> {
+    let audit_begin = std::time::Instant::now();
+    if source.len() > limits.source_bytes {
+        return Err(Error {
+            offset: 0,
+            line: 1,
+            column: 1,
+            kind: diag::Kind::Error,
+            builtin: None,
+            message: "source byte budget exceeded".into(),
+        });
     }
     let mut syms = lexer::Interner::default();
     let (hir, init, conditions) = (|| {
@@ -599,13 +638,66 @@ pub fn compile_with(
             array_cells: limits.array_cells,
         };
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
-        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"ksp_frontend\",\"ms\":{}}}", audit_begin.elapsed().as_secs_f64()*1000.); }
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_frontend\",\"ms\":{}}}",
+                audit_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
         let init_begin = std::time::Instant::now();
         let init = eval::run(&hir, environment)?;
-        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}", init_begin.elapsed().as_secs_f64()*1000.); }
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}",
+                init_begin.elapsed().as_secs_f64() * 1000.
+            );
+        }
         Ok((hir, init, conditions))
     })()
     .map_err(|f: diag::Fault| f.locate(source))?;
+    Ok(Initialized {
+        hir,
+        init,
+        conditions,
+        environment: environment.clone(),
+    })
+}
+
+/// Lower callbacks at the actual host rate, consuming the initialized state.
+pub fn compile_initialized(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    initialized: Initialized,
+) -> Result<Script, Error> {
+    let error = |message: &str| Error {
+        offset: 0,
+        line: 1,
+        column: 1,
+        kind: diag::Kind::Error,
+        builtin: None,
+        message: message.into(),
+    };
+    if rate == 0 {
+        return Err(error("sample rate must be positive"));
+    }
+    if controls.len() > limits.variables {
+        return Err(error("control binding budget exceeded"));
+    }
+    let mut bindings = BTreeMap::new();
+    let mut identities = BTreeSet::new();
+    for &(name, id) in controls {
+        if bindings.insert(name, id).is_some() || !identities.insert(id) {
+            return Err(error("duplicate control name or persistent identity"));
+        }
+    }
+    let Initialized {
+        hir,
+        init,
+        conditions,
+        environment,
+    } = initialized;
 
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];

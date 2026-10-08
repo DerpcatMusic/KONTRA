@@ -143,6 +143,7 @@ struct Eval<'h> {
     st: Initial,
     fuel: u64,
     depth: usize,
+    profile: Option<HashMap<&'static str, (u64, u128)>>,
 }
 
 pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
@@ -164,6 +165,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         },
         fuel: INIT_FUEL,
         depth: 0,
+        profile: std::env::var_os("KONTRA_AUDIT_KSP_PROFILE").map(|_| HashMap::new()),
     };
     // Kontakt's defaults: knobs/sliders start at their minimum when 0 is outside.
     for (index, ui) in hir.uis.iter().enumerate() {
@@ -191,6 +193,22 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             f.span,
             format!("on persistence_changed at load: {}", f.message),
         );
+    }
+    if let Some(profile) = &e.profile {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_eval_profile\",\"fuel_used\":{},\"widgets\":{},\"requests\":{},\"properties\":{},\"warnings\":{}}}",
+            INIT_FUEL - e.fuel,
+            hir.uis.len(),
+            e.st.model.requests.len(),
+            e.st.properties.len(),
+            e.st.warnings.len()
+        );
+        for (builtin, (calls, ns)) in profile {
+            eprintln!(
+                "AUDIT {{\"stage\":\"ksp_builtin_profile\",\"builtin\":\"{}\",\"calls\":{},\"ns\":{}}}",
+                builtin, calls, ns
+            );
+        }
     }
     Ok(e.st)
 }
@@ -713,6 +731,22 @@ impl Eval<'_> {
     }
 
     fn builtin(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
+        let begin = self.profile.as_ref().map(|_| std::time::Instant::now());
+        let result = self.builtin_inner(builtin, args, span);
+        if let Some(begin) = begin {
+            let entry = self
+                .profile
+                .as_mut()
+                .unwrap()
+                .entry(builtin.name())
+                .or_default();
+            entry.0 += 1;
+            entry.1 += begin.elapsed().as_nanos();
+        }
+        result
+    }
+
+    fn builtin_inner(&mut self, builtin: Builtin, args: &[Arg], span: Span) -> Result<V> {
         use Builtin::*;
         if let Some(Arg::SysArray(array)) = args.first() {
             // Runtime-maintained arrays are all zero while initializing.
@@ -1255,9 +1289,9 @@ impl Eval<'_> {
             // No host consumes zone writes (FindZone finds nothing at init), and
             // Conflux issues three million of them: logging each cost ~1 GB.
             SetZonePar => V::I(0),
-            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray
-            | LoadArrayStr | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty
-            | FsNavigate | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
+            PurgeGroup | SetVoiceLimit | LoadIrSample | LoadArray | SaveArray | LoadArrayStr
+            | SaveArrayStr | AttachLevelMeter | AttachZone | SetUiWfProperty | FsNavigate
+            | LoadNativeUi | SetNksNavName | SetNksNavPar | ResetNksNav => {
                 self.request(builtin, args)?;
                 V::I(0)
             }
