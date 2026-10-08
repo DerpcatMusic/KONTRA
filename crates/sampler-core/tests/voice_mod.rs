@@ -539,3 +539,40 @@ fn pitch_bend_drives_non_pitch_routes_from_its_raw_position() {
     let full = render(&mut rt, 192, 64);
     assert!((full[191][1] - 0.5).abs() < 1e-6, "{:?}", full[191]);
 }
+
+#[test]
+fn release_counter_reset_retargets_live_modulation_and_pedals_preserve_release_age() {
+    let program = program(
+        vec![ModSource::ReleaseCounter { frames: 256 }],
+        vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+    );
+    let gate = Envelope::new(0, 0, 0, 1., 512).unwrap().with_curves(
+        EnvelopeCurve::default(),
+        EnvelopeCurve::default(),
+        EnvelopeCurve::step(),
+    );
+    let mut rt = Runtime::new(
+        modulated(plan(4096, gate), program, 0),
+        Limits {
+            channels: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let note = rt.trigger(input(1), 60, 1.).unwrap();
+    render(&mut rt, 128, 64);
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 128);
+    rt.reset_release_counter(note).unwrap();
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 0);
+    let channel = rt.register_channel(input(1).channel_address()).unwrap();
+    rt.sustain(channel, true).unwrap();
+    render(&mut rt, 64, 16);
+    rt.note_off(input(1), None).unwrap();
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 64);
+    let tail = render(&mut rt, 128, 16);
+    assert!(tail[64..].iter().all(|f| (f[1] - 0.375).abs() < 1e-6));
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 64);
+    rt.sustain(channel, false).unwrap();
+    assert_eq!(rt.release_context(note).unwrap().gate.unwrap().at, 320);
+    assert_eq!(rt.release_context(note).unwrap().key.unwrap().at, 192);
+}

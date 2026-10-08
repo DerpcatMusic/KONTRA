@@ -26,6 +26,7 @@ pub mod mix;
 pub mod report;
 pub mod tree;
 pub mod v2;
+pub(crate) mod waveform;
 
 use std::fmt;
 
@@ -35,6 +36,7 @@ pub const MAX_BLOCK: usize = 128;
 pub const BUSES: usize = 16;
 /// Initial rack storage for existing sessions; this is not a part-count limit.
 pub const RACK_SLOTS: usize = 16;
+pub use crate::plugin::automation_ids::HOST_AUTOMATION_SLOTS;
 /// How far a part tunes, in semitones either way.
 pub const TUNE_RANGE: f32 = 36.0;
 /// One stereo block: `[left, right]`.

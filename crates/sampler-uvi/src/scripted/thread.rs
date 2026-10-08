@@ -100,14 +100,15 @@ impl ScriptThread {
                 #[cfg(feature = "scan")]
                 let scan = scan.clone();
                 move || {
-                    let mut host = match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
-                        Ok(host) => host,
-                        Err(e) => {
+                    let mut host =
+                        match ScriptHost::new_with_ui_state(&xml, files, config, state.as_ref()) {
+                            Ok(host) => host,
+                            Err(e) => {
                             #[cfg(feature = "scan")]
                             crate::script::scan_failed_load(&e);
                             return drop(ready.send(Err(e)));
                         }
-                    };
+                        };
                     let handles = host.handles_notes();
                     let ui = Arc::new(UiBridge::new(&host, ui_send, std::thread::current()));
                     #[cfg(feature = "scan")]
