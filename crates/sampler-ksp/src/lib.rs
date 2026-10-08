@@ -778,6 +778,7 @@ pub fn compile_initialized(
     }
 
     // Lowering.
+    let lower_begin = std::time::Instant::now();
     let mut unit = lower::Unit {
         hir: &hir,
         controls: &ids,
@@ -860,6 +861,13 @@ pub fn compile_initialized(
             .map(|e| e.program);
     }
 
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_callback_lower\",\"ms\":{}}}",
+            lower_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let state_begin = std::time::Instant::now();
     // Initial instance state: texts plus lowering scratch, the property /
     // engine / PGS mirror, and the dense control table.
     let mut texts = init.texts.clone();
@@ -903,17 +911,44 @@ pub fn compile_initialized(
         controls: ids.clone(),
     };
 
-    let mut warnings: Vec<Error> = hir
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_state_mirror\",\"ms\":{}}}",
+            state_begin.elapsed().as_secs_f64() * 1000.
+        );
+    }
+    let warnings_begin = std::time::Instant::now();
+    let mut findings: Vec<_> = hir
         .warnings
         .iter()
         .chain(&init.warnings)
         .map(|f| (f, diag::Kind::Warning))
         .chain(unit.warnings.iter().map(|(f, k)| (f, *k)))
-        .map(|(f, kind)| f.clone().locate_as(source, kind))
         .collect();
     // Builtin findings first so the cap never hides an unsupported builtin.
-    warnings.sort_by_key(|w| (w.kind == Kind::Warning, w.offset));
-    warnings.truncate(1000);
+    // Cap before positioning; one source scan serves all retained findings.
+    findings.sort_by_key(|(f, kind)| (*kind == Kind::Warning, f.span.start));
+    findings.truncate(1000);
+    let line_starts: Vec<_> = std::iter::once(0)
+        .chain(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+        )
+        .collect();
+    let warnings: Vec<Error> = findings
+        .into_iter()
+        .map(|(f, kind)| f.clone().locate_indexed(source, kind, &line_starts))
+        .collect();
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_diagnostics\",\"ms\":{},\"warnings\":{}}}",
+            warnings_begin.elapsed().as_secs_f64() * 1000.,
+            warnings.len()
+        );
+    }
+    let model_begin = std::time::Instant::now();
     let services = unit.services.iter().map(|b| b.name()).collect();
     let coverage = unit
         .coverage
@@ -921,6 +956,14 @@ pub fn compile_initialized(
         .map(|(&(name, c), &n)| (name, c, n))
         .collect();
     let model = model::assemble(&hir, &init, &ids, &entries);
+    if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
+        eprintln!(
+            "AUDIT {{\"stage\":\"ksp_model_assemble\",\"ms\":{},\"widgets\":{},\"instructions\":{}}}",
+            model_begin.elapsed().as_secs_f64() * 1000.,
+            model.interface.widgets.len(),
+            limits.instructions - unit.budget
+        );
+    }
     Ok(Script {
         programs,
         entries,

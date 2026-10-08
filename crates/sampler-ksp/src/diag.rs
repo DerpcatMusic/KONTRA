@@ -77,13 +77,24 @@ impl Fault {
         self.locate_as(source, Kind::Error)
     }
     pub fn locate_as(self, source: &str, kind: Kind) -> Error {
+        self.locate_indexed(source, kind, &[])
+    }
+    /// A shared newline index avoids rescanning the source for every warning.
+    pub(crate) fn locate_indexed(self, source: &str, kind: Kind, starts: &[usize]) -> Error {
         let mut offset = (self.span.start as usize).min(source.len());
         while !source.is_char_boundary(offset) {
             offset -= 1;
         }
         let before = &source[..offset];
-        let line = before.bytes().filter(|&b| b == b'\n').count() as u32 + 1;
-        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        let (line, line_start) = if starts.is_empty() {
+            (
+                before.bytes().filter(|&b| b == b'\n').count() as u32 + 1,
+                before.rfind('\n').map_or(0, |i| i + 1),
+            )
+        } else {
+            let line = starts.partition_point(|&start| start <= offset);
+            (line as u32, starts[line - 1])
+        };
         let column = source[line_start..offset].chars().count() as u32 + 1;
         Error {
             offset,
@@ -112,5 +123,28 @@ mod tests {
         .locate(source);
         assert_eq!((error.line, error.column, error.offset), (2, 5, at));
         assert_eq!(error.to_string(), "2:5: m");
+    }
+    #[test]
+    fn indexed_positions_match_single_errors_including_unicode_and_truncation() {
+        let source = "on init\n  é $x\nend on\n";
+        let starts: Vec<_> = std::iter::once(0)
+            .chain(
+                source
+                    .bytes()
+                    .enumerate()
+                    .filter_map(|(i, b)| (b == b'\n').then_some(i + 1)),
+            )
+            .collect();
+        for offset in 0..source.len() + 4 {
+            let fault = Fault {
+                span: Span::new(offset, offset),
+                builtin: None,
+                message: "m".into(),
+            };
+            assert_eq!(
+                fault.clone().locate_as(source, Kind::Warning),
+                fault.locate_indexed(source, Kind::Warning, &starts)
+            );
+        }
     }
 }
