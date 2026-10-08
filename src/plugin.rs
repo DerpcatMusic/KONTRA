@@ -2244,8 +2244,14 @@ impl PluginLogic for Sampler {
 
 moose::plugin! { logic:Sampler, params:SamplerParams, tasks:[Load] }
 
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[path = "allocation_audit.rs"]
+mod allocation_audit;
+
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    use super::allocation_audit;
     use super::*;
 
     #[test]
@@ -2295,6 +2301,8 @@ pub(crate) mod tests {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             count();
             let ptr = unsafe { System.alloc(layout) };
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            allocation_audit::record(ptr, layout.size(), false);
             if !ptr.is_null() && COUNTING.with(Cell::get) {
                 ALLOCATED.with(|n| n.set(n.get() + layout.size()));
                 LIVE.with(|n| { n.set(n.get() + layout.size() as isize); PEAK.with(|peak| peak.set(peak.get().max(n.get()))); });
@@ -2303,6 +2311,8 @@ pub(crate) mod tests {
         }
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
             count();
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            allocation_audit::record(ptr, layout.size(), true);
             if COUNTING.with(Cell::get) {
                 FREED.with(|n| n.set(n.get() + layout.size()));
                 LIVE.with(|n| n.set(n.get() - layout.size() as isize));
@@ -2495,6 +2505,10 @@ pub(crate) mod tests {
         let rss0 = proc_kb("VmRSS:");
         let mut dsp = Dsp::default(); dsp.core.set_mix(&mix(&params.selection.read().unwrap()));
         let t0 = Instant::now();
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        let allocation_output = std::env::var_os("PROBE_ALLOCS");
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if allocation_output.is_some() { allocation_audit::start(); }
         let worker = { let p = params.clone(); std::thread::spawn(move || { Load.run(&p); t0.elapsed() }) };
         let mut publication_ms = None;
         let mut first_audio_ms = None;
@@ -2524,6 +2538,8 @@ pub(crate) mod tests {
             std::thread::sleep(std::time::Duration::from_micros(1333));
         }
         let total = worker.join().unwrap();
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if let Some(output) = allocation_output { allocation_audit::finish(std::path::Path::new(&output)); }
         let rss_done = proc_kb("VmRSS:");
         let hwm_done = proc_kb("VmHWM:");
         let ui = crate::ui::audit_frames(&params);
