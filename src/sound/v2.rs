@@ -73,6 +73,9 @@ pub struct Part {
     /// [`PartControls::switching`] byte is applied.
     drivers: Vec<(sampler_core::Switching, Vec<sampler_core::Keyswitch>)>,
     switching: u8,
+    user_route: Option<Arc<super::articulation::Routing>>,
+    source_actions: Vec<Option<sampler_core::Switch>>,
+    consumed_hosts: Vec<HostNote>,
     /// The instrument's own driver, for [`Self::drivers`].
     inherited: usize,
     /// The instrument's default articulation, when the runtime holds the
@@ -182,6 +185,9 @@ impl Part {
             articulator,
             drivers: Vec::new(),
             switching: 0,
+            user_route: None,
+            source_actions: Vec::new(),
+            consumed_hosts: Vec::with_capacity(128),
             inherited: 0,
             articulations: None,
             tap_keys: None,
@@ -195,17 +201,22 @@ impl Part {
     }
 
     /// Follow the part's tuning, MPE and bend range settings.
-    fn configure(&mut self, c: &PartControls) {
+    fn configure(&mut self, c: &PartControls, route: Option<&Arc<super::articulation::Routing>>) {
         if self.tune != c.tune && self.mpe.transpose(&mut self.runtime, f64::from(c.tune)).is_ok() {
             self.tune = c.tune;
         }
-        if c.switching != self.switching && !self.drivers.is_empty() {
+        if let Some(route) = route {
+            if self.user_route.as_deref() != Some(route.as_ref()) {
+                let _ = self.runtime.set_switching_table(route.switching.clone(), &route.keys);
+                self.user_route = Some(route.clone());
+            }
+            self.switching = c.switching;
+        } else if c.switching != self.switching && !self.drivers.is_empty() {
             self.switching = c.switching;
             // The instrument's own driver until the player remaps.
             let driver = if c.switching & 0x80 != 0 { usize::from(c.switching >> 1 & 7) } else { self.inherited };
             if let Some((switching, keys)) = self.drivers.get(driver) {
-                // ponytail: set_switching frees its key table on this thread; a few hundred bytes per remap.
-                let _ = self.runtime.set_switching(switching.clone(), keys.clone());
+                let _ = self.runtime.set_switching_table(switching.clone(), keys);
             }
         }
         self.mpe_zone = c.mpe;
@@ -222,13 +233,19 @@ impl Part {
         if instrument.articulations.is_empty() {
             return;
         }
-        let mut with_alternatives = instrument.clone();
-        with_alternatives.assign_alternatives(32);
+
         self.inherited = instrument.switching.driver as usize;
+        let default = instrument.articulations.iter().position(|a| a.default).unwrap_or(0);
+        self.source_actions = instrument.articulations.iter().enumerate().map(|(n, a)| {
+            let id = if n == default { 0 } else if n < default { n as u32 + 1 } else { n as u32 };
+            if instrument.switching.owner == ir::SwitchOwner::Native { Some(sampler_core::Switch::Articulation(id)) }
+            else if let Some(&key) = a.switch_keys.first() { Some(sampler_core::Switch::Tap(key)) }
+            else { a.control.map(|control| sampler_core::Switch::Control { id: control, articulation: id }) }
+        }).collect();
         self.drivers.clear();
         for driver in [ir::Driver::Keys, ir::Driver::Velocity, ir::Driver::Channel, ir::Driver::Controller, ir::Driver::Program] {
             let switching = ir::Switching { driver, ..instrument.switching };
-            let Ok((keys, switching)) = sampler_core::lower::switching(&with_alternatives, switching) else { break };
+            let Ok((keys, switching)) = sampler_core::lower::switching(instrument, switching) else { break };
             self.drivers.push((switching, keys));
         }
     }
@@ -379,12 +396,10 @@ fn wire_event(part: &mut Part, status: u8, a: u8, b: u8) {
 /// A channel voice packet into `part`'s zone on its group, and on its manager
 /// channel unless the zone is MPE.
 fn wire_packet(part: &mut Part, words: &[u32]) {
+    if !articulated(part, words) { return; }
     let mut words = [words[0], words.get(1).copied().unwrap_or(0)];
     words[0] &= if part.mpe_zone { 0xf0ff_ffff } else { 0xf0f0_ffff };
     let words = &words[..if words[0] >> 28 == 4 { 2 } else { 1 }];
-    if !articulated(part, words) {
-        return;
-    }
     if let Some(Ok(packet)) = Packets::new(words).next()
         && let Err(ApplyError::Core(sampler_core::Error::Capacity)) = part.mpe.apply(&mut part.runtime, packet)
     {
@@ -470,9 +485,9 @@ fn packet(part: &mut Part, index: usize, held: &[Held], words: [u32; 2]) {
         (2 | 4, 0xb0) if a == 123 => {
             let _ = part.runtime.all_notes_off(WIRE);
         }
-        (2, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0) => wire_event(part, status | channel, a, b),
+        (2, 0x80 | 0x90 | 0xb0 | 0xc0 | 0xd0 | 0xe0) => wire_event(part, status | channel, a, b),
         // Notes, controllers, registered controllers (bend range), pressure, bend.
-        (4, 0x80 | 0x90 | 0xb0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word, data]),
+        (4, 0x80 | 0x90 | 0xb0 | 0xc0 | 0xd0 | 0xe0 | 0x20) => wire_packet(part, &[word, data]),
         _ => part.problems.ignored_input += 1,
     }
 }
@@ -488,6 +503,8 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             // The driver sees the note as MIDI on its own channel.
             let key = u32::from(note.key & 127) << 8 | (velocity.clamp(0.0, 1.0) * 127.0).round().max(1.0) as u32;
             if !articulated(part, &[0x2090_0000 | u32::from(note.channel & 15) << 16 | key]) {
+                if part.consumed_hosts.len() < part.consumed_hosts.capacity() { part.consumed_hosts.push(note); }
+                else { *overflow += 1; }
                 return;
             }
             let input = host_input(note, part.mpe_zone);
@@ -521,6 +538,15 @@ fn deliver(part: &mut Part, index: usize, held: &mut Vec<Held>, overflow: &mut u
             }
         }
         Event::NoteOff(pattern) | Event::Choke(pattern) => {
+            // Release consumed presses by the exact host identity captured at onset,
+            // even if the mapping or driver changed while that key was down.
+            let mut at = 0;
+            while at < part.consumed_hosts.len() {
+                if pattern.matches(part.consumed_hosts[at]) {
+                    let note = part.consumed_hosts.swap_remove(at);
+                    let _ = articulated(part, &[0x2080_0000 | u32::from(note.channel & 15) << 16 | u32::from(note.key & 127) << 8]);
+                } else { at += 1; }
+            }
             for h in held.iter().filter(|h| h.part == index && pattern.matches(h.note)) {
                 if let Some(script) = part.script.as_mut() {
                     let _ = script.note_off(&mut part.runtime, h.note.key);
@@ -541,6 +567,7 @@ impl V2Core {
     pub fn with_parts(parts: usize, sample_rate: f64) -> Self {
         let mut mix = Mix::default();
         mix.parts.resize(parts.max(mix.parts.len()), Default::default());
+        mix.articulation_routes.resize(parts.max(mix.parts.len()), None);
         let mut peaks = Peaks::default();
         peaks.parts.resize(parts.max(peaks.parts.len()), [0.0; 2]);
         Self {
@@ -570,6 +597,7 @@ impl V2Core {
             *new = *old;
         }
         std::mem::swap(&mut self.mix.parts, &mut grown.mix.parts);
+        std::mem::swap(&mut self.mix.articulation_routes, &mut grown.mix.articulation_routes);
         for (old, new) in self.peaks.parts.iter().zip(&mut grown.peaks.parts) {
             *new = *old;
         }
@@ -629,7 +657,7 @@ impl Core for V2Core {
             held.part = ORPHAN;
         }
         if let (Some(p), Some(c)) = (prepared.as_mut(), self.mix.parts.get(part)) {
-            p.configure(c);
+            p.configure(c, self.mix.articulation_routes.get(part).and_then(Option::as_ref));
         }
         Retired(std::mem::replace(slot, prepared))
     }
@@ -824,9 +852,10 @@ impl Core for V2Core {
             *to = *from;
         }
         self.mix.buses = mix.buses;
+        for (to, from) in self.mix.articulation_routes.iter_mut().zip(mix.articulation_routes.iter().chain(std::iter::repeat(&None))) { *to = from.clone(); }
         for (index, (p, c)) in self.parts.iter_mut().zip(&self.mix.parts).enumerate() {
             let Some(p) = p else { continue };
-            p.configure(c);
+            p.configure(c, mix.articulation_routes.get(index).and_then(Option::as_ref));
             p.mix_nodes(mix.nodes.get(index).map_or(&[], Vec::as_slice));
         }
     }
@@ -883,6 +912,10 @@ impl Core for V2Core {
     fn articulation(&self, part: usize) -> Option<usize> {
         let p = self.parts.get(part)?.as_ref()?;
         let default = p.articulations?;
+        if let Some(id) = p.articulator.as_ref().and_then(Articulator::selected_articulation) {
+            let id = id as usize;
+            return Some(if id == 0 { default } else if id <= default { id - 1 } else { id });
+        }
         if let Some(keys) = &p.tap_keys {
             // A script holds the selection: the last switch key, tapped or pressed.
             let tapped = p.articulator.as_ref().and_then(Articulator::selected);
@@ -903,6 +936,12 @@ impl Core for V2Core {
 
     fn latency(&self) -> u32 {
         0
+    }
+
+    fn select_articulation(&mut self, part: usize, articulation: usize) -> bool {
+        let Some(Some(p)) = self.parts.get_mut(part) else { return false };
+        let Some(Some(switch)) = p.source_actions.get(articulation) else { return false };
+        p.articulator.as_mut().is_some_and(|a| a.select(&mut p.runtime, *switch).is_ok())
     }
 
     fn set_control(&mut self, part: usize, control: sampler_ui_ir::ControlId, value: f64) -> bool {
@@ -1686,7 +1725,7 @@ mod tests {
             root_key: None,
             loops: Vec::new(),
         };
-        let instrument = ir::Instrument {
+        let mut instrument = ir::Instrument {
             assets: (0..3).map(asset).collect(),
             zones: (0..3).map(|a| zone(a, a)).collect(),
             articulations: (0..3u8)
@@ -1694,6 +1733,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
+        instrument.assign_alternatives(32);
         let pcm = (0..3).map(|_| Pcm::new(48000, vec![[0.5; 2]; 4800].into_boxed_slice()).unwrap()).collect();
         let plan = sampler_kontakt::prepare(instrument.clone(), pcm, &Default::default()).unwrap().plan;
         let limits = limits(&plan).0;
@@ -2448,3 +2488,7 @@ mod send_tests {
         assert_eq!(routed.groups[0].output, ir::Output::Bus(ir::BusRef(1)));
     }
 }
+
+#[cfg(test)]
+#[path = "keyswitch_tests.rs"]
+mod keyswitch_tests;
