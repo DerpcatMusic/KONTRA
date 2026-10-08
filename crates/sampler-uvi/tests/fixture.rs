@@ -489,3 +489,18 @@ fn one_pole_frequency_connections_keep_the_native_three_decade_law() {
     assert!(ir.zones.iter().any(|zone| zone.routes.contains(&sampler_ir::RouteRef(index))));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn one_pole_connections_address_each_stage_in_a_shared_voice_chain() {
+    let dir = std::env::temp_dir().join(format!("sampler-uvi-cutoff-stages-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("samples")).unwrap();
+    std::fs::write(dir.join("samples/sine.wav"), wav(48000, &[0; 64])).unwrap();
+    let xml = insert_program(None).replace("<Oscillators>", r#"<Inserts><OnePole Name="Low" Freq="1000"><Connections><SignalConnection Source="@MIDI CC 1" Destination="Freq" Ratio="0.5"/></Connections></OnePole><OnePole Name="High" Freq="2000" Mode="1"><Connections><SignalConnection Source="@MIDI CC 2" Destination="Freq" Ratio="0.25"/></Connections></OnePole></Inserts><Oscillators>"#);
+    let ir = sampler_uvi::translate(&xml, &dir).unwrap().instrument;
+    let stages: Vec<_> = ir.routes.iter().filter_map(|r| match r.target {
+        ir::Target::Processor { index, parameter: ir::ProcessorParameter::Cutoff, .. } => Some(index),
+        _ => None,
+    }).collect();
+    assert_eq!(stages, vec![0, 1]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
