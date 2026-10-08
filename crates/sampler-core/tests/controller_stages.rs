@@ -302,7 +302,7 @@ fn unused_stage_reservations_return_on_consumption_completion_fault_and_cancella
             2 => vec![
                 I::SetLocal {
                     local: 0,
-                    value: 128,
+                    value: 130,
                 },
                 I::SetLocal { local: 1, value: 1 },
                 I::WriteController {

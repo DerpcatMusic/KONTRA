@@ -719,7 +719,7 @@ fn controller_timeline_preserves_boundaries_precision_and_rejection_atomicity() 
         let domain = rt.performance(1).unwrap();
         let foreign = other.performance(1).unwrap();
         assert_eq!(rt.set_controller(foreign, 1, 5), Err(Error::StaleHandle));
-        assert_eq!(rt.set_controller(domain, 128, 5), Err(Error::InvalidInput));
+        assert_eq!(rt.set_controller(domain, 130, 5), Err(Error::InvalidInput));
         assert_eq!(rt.controller(domain, 255), Err(Error::InvalidInput));
         rt.schedule_event(2, Event::Controller(domain, 1, 0x12345678))
             .unwrap();
@@ -924,7 +924,7 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
             vec![
                 I::SetLocal {
                     local: 0,
-                    value: 128,
+                    value: 130,
                 },
                 I::ReadInputController {
                     controller: 0,
@@ -998,7 +998,7 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
         );
         assert_eq!(rt.input_controller(domain, 64), Ok(0));
         assert_eq!(
-            rt.dispatch_controller(domain, origin, 1 << origin.channel, 128, 0),
+            rt.dispatch_controller(domain, origin, 1 << origin.channel, 130, 0),
             Err(Error::InvalidInput)
         );
         assert_eq!(
@@ -1021,5 +1021,45 @@ fn controller_faults_cancellation_and_pedal_capacity_never_publish_pending_input
             );
         }
         assert_eq!(rt.input_controller(domain, 1), Ok(0));
+    });
+}
+
+#[test]
+fn script_virtual_controllers_do_not_alias_native_selector_axes() {
+    let plan = Prepared::new(
+        48000,
+        vec![Pcm::new(48000, Box::from([[1.; 2]; 2])).unwrap()],
+        vec![region(0)],
+        1,
+    )
+    .unwrap()
+    .with_controllers(
+        vec![vec![
+            ControllerCondition {
+                controller: sampler_core::PREVIOUS_KEY,
+                low: 0,
+                high: 0,
+            },
+            ControllerCondition {
+                controller: sampler_core::AXIS_BASE,
+                low: 0,
+                high: 0,
+            },
+        ]],
+        2,
+    )
+    .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.set_controller(domain, 128, u32::MAX).unwrap();
+        rt.set_controller(domain, 129, u32::MAX).unwrap();
+        rt.trigger(input(1), 60, 1.).unwrap();
+        let mut out = [[0.; 2]; 1];
+        rt.render(&mut out).unwrap();
+        assert_eq!(out, [[1.; 2]; 1]);
+        assert_eq!(rt.controller(domain, 128), Ok(u32::MAX));
+        assert_eq!(rt.controller(domain, 129), Ok(u32::MAX));
     });
 }

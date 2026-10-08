@@ -184,3 +184,51 @@ state, which remains **unknown**, or complete native DSP parity. The saved
 controller-automation inventory contains no MIDI-CC bindings, so this evidence
 does not support a CC-binding explanation. No gain/default/bypass patch is justified
 from this single static diagnostic.
+
+## Lifecycle audit follow-up on W5 f040122b
+
+Merged W5 `f040122b`, including the production physical-envelope service fix,
+into `v2/fix-selection`. No service implementation was forked. Failing-first
+log `~/.cache/kontakto-w7/lifecycle-red.log` reproduced marked-note release,
+all-event release, and virtual pitch-bend admission failures (26 green, 3 red).
+
+Ported the selector rules from `0cb7a8a0:src/ksp/runtime.rs::targets`: a plain
+source ID, a union of marks, or `$ALL_EVENTS`. `KeyUpEvent` scans only notes in
+its owning plan and retains the existing delay, fixed-duration, release-stage,
+and pedal semantics. The bounded scan does not allocate; nested release
+callbacks remain queued until the instruction ends. Other builtins' multi-event
+selectors are outside this follow-up and retain their existing diagnostics.
+
+The existing controller event path now admits script virtual controllers128
+(pitch bend) and129 (mono pressure), including raw input, projected slot banks,
+consumption, generated next-slot writes, and immutable note snapshots. Copied
+v1's signed pitch units (-8192..8191) for `%CC[128]`, `$PITCH_BEND`, and
+`set_controller(128, value)`; pressure remains0..127. Full-resolution native
+values retain min/center/max. These script values are separate from native
+`PREVIOUS_KEY`/axis selectors128/129; a PCM regression proves neither aliases.
+Controller130 is rejected. Existing invalid-input fixtures now use130.
+
+Validation: core lib62; controller stages5, controllers12, lower21, native
+start2, note service2, release4, release selection18, source10. KSP lib5,
+automation4, controllers10, selection32, typed widgets9. Allocation-free
+contracts cover mark unions/zero masks, unmatched notes, original source IDs,
+virtual signed extrema, consumed input, next-slot generated writes, and
+snapshot retention. The original audit improves from37/43 to39/43: both W7
+cases pass; the remaining async IR, global UI callback, PGS init ordering,
+and MIDI-file buffer cases remain with W5. Logs are in
+`~/.cache/kontakto-w7/lifecycle-{core,core-integration,ksp,audit}.log`.
+Root `cargo test --no-run` passed; the compile receipt is
+`lifecycle-root-no-run.log`.
+
+The MIDI ingress/MPE pitch and pressure adapters currently update expressions
+directly; routing those inputs through script callbacks and enforcing consumed
+expression updates remains a W1 transport follow-up. W1 has the128/129 seam;
+this receipt establishes the Runtime dispatch path, not adapter parity.
+
+No Areia rerender was performed for this lifecycle change: the last measured
+family agreement remains40/48 in `areia-automation-family.tsv`, with the
+remaining key60 VFMp/VFM split deferred. All five native criteria/loop playback
+gates remain **pending native vectors**, as stated by RE branch
+[`re/w7-vectors-20261008@d773d214`](https://github.com/DerpcatMusic/KONTRA/tree/d773d214/docs/research/w7-native-20261008).
+The Analog static compressor witness and unknown native full-grid switch
+state caveat above are unchanged.

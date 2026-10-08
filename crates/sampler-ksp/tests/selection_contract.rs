@@ -552,3 +552,126 @@ fn affected_group_search_uses_dynamic_length() {
     });
     assert_eq!([cell(&rt, 0, 0), cell(&rt, 0, 1)], [0, -1]);
 }
+
+#[test]
+fn note_off_by_marks_releases_matching_event() {
+    let mut rt = runtime(
+        "on note if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1) end if end on on controller note_off(by_marks($MARK_1)) end on",
+    );
+    let matching = note(&mut rt);
+    let other = rt
+        .trigger(
+            Input {
+                key: 61,
+                ..input(2)
+            },
+            61,
+            1.,
+        )
+        .unwrap();
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+            .unwrap();
+        assert_eq!(rt.key_down(matching), Ok(false));
+        assert_eq!(rt.key_down(other), Ok(true));
+    });
+}
+
+#[test]
+fn pitch_bend_can_trigger_controller_callback() {
+    let mut rt = runtime(
+        "on init declare $out declare $value declare $touched end on on controller $out := $CC_NUM $value := %CC[$CC_NUM] $touched := %CC_TOUCHED[$CC_NUM] end on",
+    );
+    support::without_heap(|| {
+        let domain = rt.performance(0).unwrap();
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, 0x80000000)
+            .unwrap();
+        assert_eq!(
+            (cell(&rt, 0, 0), cell(&rt, 0, 1), cell(&rt, 0, 2)),
+            (128, 0, 1)
+        );
+        assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
+        assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
+        assert_eq!(
+            rt.dispatch_controller(domain, input(1).channel_address(), 1, 130, 0),
+            Err(Error::InvalidInput)
+        );
+    });
+}
+
+#[test]
+fn note_off_all_events_releases_unaliased_notes() {
+    let mut rt = runtime("on controller note_off($ALL_EVENTS) end on");
+    let a = note(&mut rt);
+    let b = rt.trigger(input(2), 61, 1.).unwrap();
+    let domain = rt.performance(0).unwrap();
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+            .unwrap();
+    });
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(false), Ok(false)));
+}
+
+#[test]
+fn virtual_controllers_keep_signed_script_units_and_consumed_input() {
+    let mut rt = runtime(
+        "on init declare $bend declare $pressure end on on controller $bend := $PITCH_BEND $pressure := %CC[129] ignore_controller end on",
+    );
+    let domain = rt.performance(0).unwrap();
+    for (value, expected) in [(0, -8192), (0x80000000, 0), (u32::MAX, 8191)] {
+        support::without_heap(|| {
+            rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, value)
+                .unwrap();
+            assert_eq!(cell(&rt, 0, 0), expected);
+            assert_eq!(rt.input_controller(domain, 128), Ok(value));
+            assert_eq!(rt.controller(domain, 128), Ok(0x80000000));
+        });
+        rt.flush_behaviors(|_, _, _| true);
+    }
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 129, u32::MAX)
+        .unwrap();
+    assert_eq!(cell(&rt, 0, 1), 127);
+    assert_eq!(rt.controller(domain, 129), Ok(0));
+}
+
+#[test]
+fn generated_pitch_bend_projects_into_the_next_script_stage() {
+    let mut rt = runtime_scripts(vec![
+        compile("on controller set_controller(128, 8191) ignore_controller end on"),
+        compile_in(
+            "on init declare $bend declare $number end on on controller $bend := $PITCH_BEND $number := $CC_NUM end on",
+            &Environment {
+                slot: 1,
+                ..Default::default()
+            },
+        ),
+    ]);
+    let domain = rt.performance(0).unwrap();
+    let n = note(&mut rt);
+    support::without_heap(|| {
+        rt.dispatch_controller(domain, input(1).channel_address(), 1, 128, 0x80000000)
+            .unwrap();
+        assert_eq!((cell(&rt, 1, 0), cell(&rt, 1, 1)), (8191, 128));
+        assert_eq!(rt.input_controller(domain, 128), Ok(0x80000000));
+        assert_eq!(rt.controller(domain, 128), Ok(u32::MAX));
+        assert_eq!(rt.note_controller(n, 128), Ok(0x80000000));
+    });
+}
+
+#[test]
+fn mark_selection_is_a_union_and_zero_mask_has_no_targets() {
+    let mut rt = runtime(
+        "on init declare $marks end on on note if ($EVENT_NOTE = 60) set_event_mark($EVENT_ID, $MARK_1) else set_event_mark($EVENT_ID, $MARK_2) end if end on on controller note_off(by_marks($marks)) $marks := $MARK_1 .or. $MARK_2 end on",
+    );
+    let a = note(&mut rt);
+    let b = rt.trigger(input(2), 61, 1.).unwrap();
+    let domain = rt.performance(0).unwrap();
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+        .unwrap();
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(true), Ok(true)));
+    rt.flush_behaviors(|_, _, _| true);
+    rt.dispatch_controller(domain, input(1).channel_address(), 1, 1, 1)
+        .unwrap();
+    assert_eq!((rt.key_down(a), rt.key_down(b)), (Ok(false), Ok(false)));
+}
