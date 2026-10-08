@@ -1,0 +1,4 @@
+lifecycle: end notifications 0 before callback flush, 1 after
+idle_flush notes=64: {"blocks":1000,"max_us":0.26,"p50_us":0.02,"p99_us":0.02}
+idle_flush notes=16384: {"blocks":1000,"max_us":0.15,"p50_us":0.02,"p99_us":0.03}
+ok
