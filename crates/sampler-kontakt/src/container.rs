@@ -95,7 +95,11 @@ pub fn read_chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
             reason: "instrument exceeds 128 MiB".into(),
         });
     }
-    let bytes = match NIFile::read(&mut file).map_err(|e| decode("container", e))? {
+    let span = crate::audit::Span::new("file_read_ni_container");
+    let container = NIFile::read(&mut file).map_err(|e| decode("container", e))?;
+    drop(span);
+    let span = crate::audit::Span::new("decrypt_expand");
+    let bytes = match container {
         NIFile::NKSContainer(nks) => nks
             .decompressed_preset()
             .map_err(|e| decode("NKS preset", e))?,
@@ -107,6 +111,8 @@ pub fn read_chunks(path: &Path) -> Result<KontaktChunks, LoadError> {
             });
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("ni_chunk_parse");
     KontaktChunks::read(Cursor::new(bytes)).map_err(|e| decode("Kontakt chunks", e))
 }
 
