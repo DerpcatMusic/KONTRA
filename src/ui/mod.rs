@@ -44,6 +44,8 @@ mod spectrum;
 mod tests;
 #[cfg(test)]
 mod v2_tests;
+#[cfg(test)]
+mod render_audit;
 mod theme;
 
 use crate::library;
