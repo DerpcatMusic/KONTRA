@@ -218,6 +218,8 @@ struct Program {
     filter: bool,
     tone: bool,
     start: bool,
+    /// v1 settled-result reuse, restricted to sources without clocks or lag.
+    cacheable: bool,
 }
 
 /// Immutable per-plan programs and region bindings.
@@ -361,6 +363,13 @@ impl VoiceModulation {
                 |targets: &[ModTarget]| program.routes.iter().any(|r| targets.contains(&r.target));
             compiled.push(Program {
                 bipolar: program.sources.iter().map(ModSource::bipolar).collect(),
+                cacheable: sources.iter().all(|s| {
+                    matches!(s,
+                        Prepared::Velocity | Prepared::Key | Prepared::Controller(_)
+                        | Prepared::Pressure | Prepared::Timbre | Prepared::Random
+                        | Prepared::Constant | Prepared::Script(_) | Prepared::PitchBend
+                    )
+                }) && program.routes.iter().all(|r| r.lag == 0),
                 sources,
                 envelopes: envelopes.into_boxed_slice(),
                 breakpoints: program.breakpoints.into_boxed_slice(),
@@ -939,8 +948,9 @@ impl VoiceModState {
         self.age[voice] = age;
         let values = &mut self.values[voice * self.sources..][..p.sources.len()];
         let phases = &mut self.phase[voice * self.sources..][..p.sources.len()];
+        let mut changed = onset;
         for (i, source) in p.sources.iter().enumerate() {
-            values[i] = match *source {
+            let value = match *source {
                 Prepared::Lfo(lfo) if lfo.shape == LfoShape::Zero => 0.,
                 Prepared::Lfo(lfo) => {
                     let hz = match lfo.rate {
@@ -980,6 +990,17 @@ impl VoiceModState {
                 ),
                 other => other.input(inputs, seed, i),
             };
+            if p.cacheable {
+                changed |= values[i].to_bits() != value.to_bits();
+            }
+            values[i] = value;
+        }
+        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
+        let previous_processor_values =
+            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
+        previous_processor_values.copy_from_slice(processor_values);
+        if p.cacheable && !changed {
+            return self.outputs[voice];
         }
         let mut gain = 1.0;
         let mut decibels = 0.0;
@@ -988,10 +1009,6 @@ impl VoiceModState {
         let mut resonance = 0.0;
         let mut cutoff = 0.0;
         let lagged = &mut self.lagged[voice * self.routes..][..p.routes.len()];
-        let processor_values = &mut self.processor_values[voice * self.routes..][..p.routes.len()];
-        let previous_processor_values =
-            &mut self.previous_processor_values[voice * self.routes..][..p.routes.len()];
-        previous_processor_values.copy_from_slice(processor_values);
         for (i, (route, lagged)) in p.routes.iter().zip(lagged).enumerate() {
             let bipolar = p.bipolar[route.source];
             let mut v = p.transform(route, values[route.source], bipolar);
@@ -1169,6 +1186,53 @@ mod tests {
         assert_eq!(actual, [[0., 0.25, 0., 7.], [0.; 4]]);
         state.fill_filter_factors(&modulation, 1, &mut actual, |_| true);
         assert_eq!(actual, [[0.; 4]; 2]);
+    }
+
+    #[test]
+    fn held_controller_updates_addressed_filter_ramp_after_transition() {
+        let program = ModProgram {
+            sources: vec![ModSource::Controller(1)],
+            routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 12.0)],
+            ..Default::default()
+        };
+        let other = ModProgram {
+            routes: vec![ModRoute::new(0, ModTarget::ProcessorCutoff(0), 6.0)],
+            ..program.clone()
+        };
+        let modulation = VoiceModulation::new(
+            vec![program, other], vec![Some(0), Some(1)], vec![0, 0],
+        ).unwrap();
+        let mut state = VoiceModState::new(&modulation, 1).unwrap();
+        let low = [0; 128];
+        let mut high = low;
+        high[1] = u32::MAX;
+        let script = Default::default();
+        let low_inputs = Inputs {
+            velocity: 1.0, key: 0.5, pressure: 0, timbre: 0,
+            controllers: &low, held: 0, script: &script, bend: 0.0,
+        };
+        let clock = |now| Clock { rate: 48000.0, tempo: 120.0, now };
+        state.start(&modulation, 0, 0, &low_inputs, clock(0), 7);
+        // A CC transition moves half an octave in its first cell, then holds
+        // the complete octave. A cache hit must not repeat the transition.
+        for (now, controls, factor) in [
+            (0, &low, 1.0), (64, &high, 2f64.sqrt()), (128, &high, 2.0),
+            (192, &low, 2f64.sqrt()), (256, &low, 1.0),
+        ] {
+            let inputs = Inputs { controllers: controls, ..low_inputs };
+            state.advance(&modulation, 0, &inputs, clock(now));
+            let mut factors = [[0.0; 4]; 1];
+            state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+            assert!((factors[0][0] - factor).abs() < 1e-15, "{now}: {factors:?}");
+            assert_eq!(factors[0][1], 1.0);
+        }
+        let high_inputs = Inputs { controllers: &high, ..low_inputs };
+        state.start(&modulation, 0, 0, &high_inputs, clock(320), 7);
+        // Reusing a voice with the same source but another route resets its result.
+        state.start(&modulation, 0, 1, &high_inputs, clock(384), 7);
+        let mut factors = [[0.0; 4]; 1];
+        state.fill_filter_factors(&modulation, 0, &mut factors, |_| false);
+        assert!((factors[0][0] - 2f64.sqrt()).abs() < 1e-15);
     }
 
     #[test]
