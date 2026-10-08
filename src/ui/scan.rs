@@ -309,7 +309,13 @@ fn render(
     let resources_known=native.is_none()||native_fonts.is_some();
     let mut failures=BTreeMap::new();
     if resources_known {
-        failures.insert("lookup-not-found",scan.lookups-scan.lookup_ok);
+        failures.insert("lookup-not-found",scan.lookup_missing);
+        failures.insert("lookup-invalid",scan.lookup_invalid);
+        failures.insert("lookup-ambiguous",scan.lookup_ambiguous);
+        failures.insert("lookup-corrupt",scan.lookup_corrupt);
+        failures.insert("lookup-limit",scan.lookup_limit);
+        failures.insert("lookup-read",scan.lookup_read);
+        failures.insert("lookup-unavailable",scan.lookup_unavailable);
         failures.insert("decode-failed",scan.decodes-scan.decode_ok);
     }
     if let Some((declared,success))=fonts_declared.zip(font_success) {
