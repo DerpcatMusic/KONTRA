@@ -1183,7 +1183,7 @@ impl BackgroundTask for Load {
         shared.flush_ready();
         shared.apply_effects();
         shared.with_parts(|parts| { for part in parts {
-            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.settle() {
+            if let Some(ingress) = part.ingress.lock().unwrap().as_mut() && ingress.refresh() {
                 part.scalar_revision.fetch_add(1, Ordering::Release);
             }
         } });

@@ -308,3 +308,53 @@ fn w1_picture_menu_has_three_persisted_modes_and_defaults_ignore_diagnostics() {
         s.instrument_views.remove(&path);
     });
 }
+
+#[test]
+fn w1_two_parts_keep_same_widget_ordinal_focus_wheel_and_drag_separate() {
+    let script=sampler_ksp::compile("on init make_perfview declare ui_knob $k(0,1000,1) $k := 500 end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+    let face=script.ui(&|_|None).unwrap();
+    let id=sampler_ui_ir::ControlId(script.controls()[0].definition.id.0);
+    let p=Arc::new(SamplerParams::new());
+    p.shared.ensure_parts(2);
+    let mut owners=Vec::new();
+    for slot in 0..2 {
+        p.selection.write().unwrap().parts.push(crate::plugin::Part{path:format!("/missing/part-{slot}.nki"),..Default::default()});
+        let compiled=sampler_ksp::compile("on init make_perfview declare ui_knob $k(0,1000,1) $k := 500 end on",48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=compiled.bind(sampler_core::Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let limits=sampler_core::Limits::for_plan(&plan,8,0);
+        let mut owner=crate::sound::v2::Part::new(sampler_core::Runtime::new(plan,limits).unwrap(),crate::sound::tree::MixTree::instrument("synthetic")).unwrap();
+        let part=p.shared.part(slot).unwrap();
+        part.generation.store(7,Ordering::Release);
+        *part.controls.lock().unwrap()=vec![crate::plugin::ControlCell::loop_audit_new(id,500.)].into();
+        part.loop_audit_install_ingress(owner.ui_controls.take());
+        let mut view=p.shared.view.lock().unwrap();
+        view.parts[slot].generation=7;
+        view.parts[slot].interfaces=vec![face.clone()].into();
+        owners.push(owner);
+    }
+    let mut h=Harness::new(&p,1180.,1200.);
+    let target=|slot|format!("part-{slot}-epoch-7-script-0-ir-0");
+    h.idle(8);
+    let value=|slot|p.shared.part(slot).unwrap().display_values().into_iter().find(|(control,_)|*control==id).unwrap().1;
+    h.ui.focus(&target(1));
+    h.tick(Input{keys:vec![KeyPress{key:Key::Up,mods:Mods::default()}],..Default::default()});
+    h.idle(3);
+    assert_eq!((value(0),value(1)),(500.,501.));
+    let at=center(&h.ui,&target(0));
+    h.tick(Input{pointer:PointerInput{pos:Some(at),..Default::default()},wheel:Vec2::new(0.,-1.),..Default::default()});
+    h.idle(3);
+    assert!(value(0)>500.);
+    assert_eq!(value(1),501.);
+    let before=value(0);
+    for (point,down) in [(at,false),(at,true),(Point::new(at.x,at.y-30.),true),(Point::new(at.x,at.y-30.),false)] {
+        for _ in 0..2 {h.tick(pointer(point,down));}
+    }
+    h.idle(3);
+    assert!(value(0)>before);
+    assert_eq!(value(1),501.);
+    let mut current=face.clone();current.widgets[0].text="Published label".into();
+    p.shared.view.lock().unwrap().parts[0].publish_interface(&current);
+    h.idle(3);
+    assert_eq!(value(1),501.);
+    assert!(h.ui.scene().unwrap().surface(&target(0)).is_some());
+}

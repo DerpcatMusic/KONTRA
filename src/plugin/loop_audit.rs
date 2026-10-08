@@ -1,4 +1,10 @@
 //! Retained UI-loop admission and source-generation regression witnesses.
+impl PartShared {
+    pub(crate) fn loop_audit_install_ingress(&self, ingress:Option<crate::sound::v2::ControlIngress>) {
+        *self.ingress.lock().unwrap()=ingress;
+    }
+}
+
 use super::*;
 
 impl ControlCell {
