@@ -743,6 +743,10 @@ impl<V: View> Handler<V> {
                     d.wheel(wheel, mods(modifiers));
                 }
                 MouseEvent::CursorLeft | MouseEvent::DragLeft => {
+                    if matches!(mouse, MouseEvent::DragLeft) {
+                        let s = &mut *lock(&self.shared);
+                        d.drop_files(s, mui::prelude::Point::new(-1., -1.), mui::prelude::Mods::default(), &[], false);
+                    }
                     // KONTAKTO patch: a release may still be waiting for a
                     // frame. Do not restore an already-outside pointer.
                     self.pointer_at = None;

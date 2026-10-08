@@ -20,7 +20,7 @@ V2_SHA = hashlib.sha256(V2_ENGINE.read_bytes()).hexdigest() if V2_ENGINE.is_file
 
 def note_path(item): return NOTE_ROOT/(hashlib.sha256(item.encode()).hexdigest()+'.json')
 
-COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls']
+COLUMNS = ['path', 'library', 'loads', 'ui', 'controls_bound', 'plays_note', 'load_ms', 'peak_rss_mb', 'reason', 'lua_init_faults', 'lua_init_first', 'lua_runtime_faults', 'lua_runtime_first', 'lua_budget_hits', 'controls_declared', 'controls_bound_declared', 'asset_lookup_requested', 'asset_lookup_ok', 'asset_decode_requested', 'asset_decode_ok', 'font_declared', 'font_success', 'paint_ok', 'paint_error', 'load_path', 'sample_resident_bytes', 'underruns', 'ksp_compile_ok', 'ksp_init_ok', 'first_script_error', 'active_script_slots', 'compiled_script_slots', 'clean_compiled_slots', 'init_callbacks_completed', 'persistence_changed_completed', 'load_fault_records', 'disabled_block_errors', 'widget_kind_counts', 'ui_api_refs', 'bypassed_ui_api_refs', 'saved_entry_sigils', 'custom_font_uses', 'picture_strips', 'picture_frames', 'picture_margins', 'resource_failure_reasons', 'page_background_rgba', 'plain_background_fraction', 'note_picked', 'note_policy', 'audition_status', 'pick_source', 'native_valid_keys', 'native_key_conflicts', 'native_preferred_note', 'slots_seen', 'slots_decode_failed', 'slots_bypassed', 'slots_inline_nonempty', 'slots_linked_only', 'slots_empty', 'admitted_saved_entry_sigils', 'ksp_runtime_fault_records', 'sample_zone_count', 'zero_zone_reason', 'fallback_note', 'keyswitch_picked', 'bound_typed', 'phantom_free_controls', 'first_audio_ms', 'ui_first_frame_ms', 'cache_state']
 
 
 def library(item):
@@ -91,6 +91,10 @@ def extra_columns(r):
     views = [v for p in programs for v in p.get('views', [])]
     renders = [x for v in views for x in v.get('renders', [])]
     renders += [v['render'] for v in views if isinstance(v.get('render'),dict)]
+    r['first_audio_ms']=r.get('first_audio_ms') if isinstance(r.get('first_audio_ms'),(int,float)) else 'unknown'
+    first_frames=[x['ui_first_frame_ms'] for x in renders if isinstance(x.get('ui_first_frame_ms'),(int,float))]
+    r['ui_first_frame_ms']=min(first_frames) if first_frames else r.get('ui_first_frame_ms','unknown')
+    r['cache_state']=r.get('cache_state','unknown')
     for render in renders:
         if 'error_hash' in render: render.update(ok=False,reason=render.get('stage','paint failure'))
         elif 'pixels' in render: render.setdefault('ok',True)
