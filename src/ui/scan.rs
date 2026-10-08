@@ -427,7 +427,7 @@ pub fn one(id: &str, out: &Path) -> Value {
                         .unwrap()
                         .last_mut()
                         .unwrap();
-                    p["lua"] = json!({"init_faults":1,"runtime_faults":0,"init_first":metrics::message(&e),"budget_hits":usize::from(e.contains("time budget exceeded"))});
+                    p["lua"] = json!({"init_faults":1,"runtime_faults":0,"init_first":metrics::message(&e),"budget_hits":usize::from(e.contains("budget exceeded"))});
                     p["load_path"] = json!("scripted-worker");
                 }
                 continue;
