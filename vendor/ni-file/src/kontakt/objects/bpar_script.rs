@@ -40,23 +40,32 @@ impl BParScript {
         let mut params = BParScriptParams {
             text: {
                 let length = reader.read_u32_le()?;
-                if length == u32::MAX { None } else {
+                if length == u32::MAX {
+                    None
+                } else {
                     let bytes = reader.read_bytes(length as usize)?;
                     Some(match String::from_utf8(bytes) {
                         Ok(text) => text,
-                        Err(error) => encoding_rs::WINDOWS_1252.decode_without_bom_handling(error.as_bytes()).0.into_owned(),
+                        Err(error) => encoding_rs::WINDOWS_1252
+                            .decode_without_bom_handling(error.as_bytes())
+                            .0
+                            .into_owned(),
                     })
                 }
             },
             source_editor_open: reader.read_bool()?,
             touched_but_not_applied: reader.read_bool()?,
             bypass: reader.read_bool()?,
-            password_hash: { let length = reader.read_u32_le()?; reader.read_bytes(length as usize)? },
+            password_hash: {
+                let length = reader.read_u32_le()?;
+                reader.read_bytes(length as usize)?
+            },
             description: reader.read_optional_sized_utf8()?,
             textfile_name: reader.read_optional_sized_utf8()?,
             persistent: Vec::new(),
         };
-        // Older scripts end here; a damaged table is dropped rather than failing the script.
+        // Older scripts end here. A present but malformed table is a parse fault.
+        let has_table = (reader.position() as usize) < reader.get_ref().len();
         let mut entries = || -> Result<Vec<String>, Error> {
             let count = reader.read_u32_le()? as usize;
             let mut out = Vec::with_capacity(count.min(65536));
@@ -67,7 +76,9 @@ impl BParScript {
             }
             Ok(out)
         };
-        params.persistent = entries().unwrap_or_default();
+        if has_table {
+            params.persistent = entries()?;
+        }
         Ok(params)
     }
 }

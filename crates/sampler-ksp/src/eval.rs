@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// Instrument facts the script may query while initializing.
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
+    /// Optional control-thread evaluation budget; default is the library profile.
+    pub evaluation_budget: Option<u64>,
     /// Group names in instrument order (`$NUM_GROUPS`, `group_name`, `find_group`).
     pub groups: Vec<String>,
     /// Saved values by variable name, applied by `read_persistent_var`.
@@ -170,7 +172,7 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
             text_properties: HashMap::new(),
             indexed_properties: BTreeMap::new(),
         },
-        fuel: INIT_FUEL,
+        fuel: env.evaluation_budget.unwrap_or(INIT_FUEL),
         depth: 0,
         consumed: BTreeSet::new(),
         pending_menus: BTreeMap::new(),
@@ -203,12 +205,23 @@ pub fn run(hir: &Hir, env: &Environment) -> Result<Initial> {
         .callbacks
         .iter()
         .find(|c| c.kind == CallbackKind::PersistenceChanged)
-        && let Err(f) = e.block(&cb.body)
     {
-        e.warn(
-            f.span,
-            format!("on persistence_changed at load: {}", f.message),
-        );
+        e.st.model.persistence_completion = match e.block(&cb.body) {
+            Ok(_) => model::PersistenceCompletion::Completed,
+            Err(f) => {
+                let category = if e.fuel == 0 {
+                    model::EvaluationFailure::Budget
+                } else {
+                    model::EvaluationFailure::InvalidValue
+                };
+                e.warn(f.span, "on persistence_changed did not complete".to_owned());
+                model::PersistenceCompletion::Failed {
+                    category,
+                    offset: f.span.start,
+                    builtin: f.builtin,
+                }
+            }
+        };
     }
     Ok(e.st)
 }
@@ -1172,9 +1185,19 @@ impl Eval<'_> {
                 }
                 V::I(0)
             }
+            SetSnapshotType => {
+                let value = self.int(args, 0)?;
+                self.st.model.snapshot_mode =
+                    model::SnapshotMode::from_native(value).ok_or_else(|| Fault {
+                        span,
+                        builtin: Some("set_snapshot_type"),
+                        message: "invalid snapshot mode".into(),
+                    })?;
+                V::I(0)
+            }
             DisableLogging | WatchVar | WatchArrayIdx | ExposeControls | ShowLibraryTab
-            | SetSnapshotType | SetUiColor | ResetKspTimer => {
-                if matches!(builtin, SetSnapshotType | SetUiColor) {
+            | SetUiColor | ResetKspTimer => {
+                if builtin == SetUiColor {
                     self.request(builtin, args)?;
                 }
                 V::I(0)

@@ -125,6 +125,67 @@ fn typed_text_and_xy_values_are_live() {
 }
 
 #[test]
+fn init_indexed_values_reach_typed_bank_readback() {
+    let rt = runtime(
+        "on init declare ui_table %t[4](1,1,100) declare ui_xy ?xy[2] set_control_par_arr(get_ui_id(%t),$CONTROL_PAR_VALUE,42,2) set_control_par_real_arr(get_ui_id(?xy),$CONTROL_PAR_VALUE,0.75,1) end on",
+    );
+    let plan = rt.active_plan();
+    assert_eq!(
+        rt.widget_value(plan, sampler_ksp::derived_control_id(0, "%t"), 2),
+        Ok(WidgetValue::Integer(42))
+    );
+    assert_eq!(
+        rt.widget_value(plan, sampler_ksp::derived_control_id(0, "?xy"), 1),
+        Ok(WidgetValue::Real(0.75))
+    );
+}
+
+#[test]
+fn typed_toggle_preserves_native_domain_validation() {
+    let id = ControlId(42);
+    let plan = Prepared::new(48000, vec![], vec![], 1)
+        .unwrap()
+        .with_controls(vec![ControlDefinition {
+            id,
+            domain: ControlDomain::Toggle,
+            default: ControlValue::Toggle(false),
+        }])
+        .unwrap()
+        .with_script_instances(vec![vec![]])
+        .unwrap()
+        .with_widgets(vec![WidgetDefinition {
+            id,
+            source_slot: 0,
+            ui_id: 1,
+            instance: ScriptInstanceId(0),
+            storage: WidgetStorage::Control(id),
+            program: None,
+            stage: 0,
+        }])
+        .unwrap();
+    let limits = Limits::for_plan(&plan, 1, 1);
+    let mut rt = Runtime::new(plan, limits).unwrap();
+    let plan = rt.active_plan();
+    let mut edit = WidgetEdit {
+        id,
+        index: 0,
+        value: WidgetValue::Integer(1),
+        interaction: WidgetInteraction::default(),
+    };
+    rt.invoke_widget(context(&rt), plan, None, &[edit]).unwrap();
+    assert_eq!(rt.control_value(plan, id), Ok(ControlValue::Toggle(true)));
+    assert_eq!(rt.widget_value(plan, id, 0), Ok(WidgetValue::Integer(1)));
+    let revision = rt.control_revision(plan).unwrap();
+    edit.value = WidgetValue::Integer(2);
+    assert_eq!(
+        rt.invoke_widget(context(&rt), plan, None, &[edit]),
+        Err(Error::InvalidInput)
+    );
+    assert_eq!(rt.control_revision(plan), Ok(revision));
+    assert_eq!(rt.control_value(plan, id), Ok(ControlValue::Toggle(true)));
+}
+
+#[test]
 fn native_widget_reply_retains_payload_and_reports_authoritative_revision() {
     let rt = runtime("on init declare ui_xy ?xy[2] end on");
     let context = context(&rt);
@@ -168,4 +229,69 @@ fn native_widget_reply_retains_payload_and_reports_authoritative_revision() {
         Err(Error::RevisionConflict)
     );
     assert_eq!(rt.widget_value(plan, id, 0), Ok(WidgetValue::Real(0.25)));
+}
+
+#[test]
+fn selected_file_keeps_selector_handle_and_fires_native_callback() {
+    let mut rt = runtime(
+        "on init declare ui_file_selector $files declare @name declare @stem declare @path declare $event end on on ui_control($files) @name:=fs_get_filename(get_ui_id($files),1) @stem:=fs_get_filename(get_ui_id($files),0) @path:=fs_get_filename(get_ui_id($files),2) $event:=($NI_MOUSE_EVENT_TYPE=$NI_MOUSE_EVENT_TYPE_DROP) end on",
+    );
+    let plan = rt.active_plan();
+    let id = rt.widget_id(plan, 0, 32768).unwrap();
+    let before = rt.script_cell(plan, ScriptInstanceId(0), 0).unwrap();
+    let selected = Text::try_new("/library/MIDI/Phrase.mid").unwrap();
+    rt.invoke_widget(
+        context(&rt),
+        plan,
+        None,
+        &[WidgetEdit {
+            id,
+            index: 0,
+            value: WidgetValue::Text(selected),
+            interaction: WidgetInteraction {
+                event: WidgetEventType::Drop as i32,
+                ..Default::default()
+            },
+        }],
+    )
+    .unwrap();
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 0), Ok(before));
+    assert_eq!(
+        rt.script_text(plan, ScriptInstanceId(0), 0)
+            .unwrap()
+            .as_str(),
+        "Phrase.mid"
+    );
+    assert_eq!(
+        rt.script_text(plan, ScriptInstanceId(0), 1)
+            .unwrap()
+            .as_str(),
+        "Phrase"
+    );
+    assert_eq!(rt.script_text(plan, ScriptInstanceId(0), 2), Ok(selected));
+    assert_eq!(rt.script_cell(plan, ScriptInstanceId(0), 1), Ok(1));
+    let (mut rt, mut client) = rt.with_control_updates(1, WIDGET_EDIT_CAPACITY).unwrap();
+    let request = client
+        .submit(ControlRequest {
+            plan,
+            expected_revision: None,
+            operation: ControlOperation::CaptureWidget(vec![WidgetEdit {
+                id,
+                index: 0,
+                value: WidgetValue::Integer(0),
+                interaction: Default::default(),
+            }]),
+        })
+        .unwrap();
+    assert_eq!(rt.poll_control_update(), Ok(Some(request)));
+    let reply = client.reply().unwrap();
+    assert_eq!(reply.result, Ok((1, 1)));
+    let ControlOperation::CaptureWidget(values) = reply.command.operation else {
+        panic!()
+    };
+    assert_eq!(values[0].value, WidgetValue::Text(selected));
+    assert_eq!(
+        Text::try_new(&"x".repeat(TEXT_CAPACITY + 1)),
+        Err(Error::Capacity)
+    );
 }
