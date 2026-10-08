@@ -44,5 +44,18 @@ fn main() {
             });
         }
         report(pages, "churn", &mut times);
+        // One replaceable page behind a full protected working set. Clock
+        // scans used to walk every protected slot on each replacement.
+        for page in 0..pages {
+            support::without_heap(|| {
+                cache.begin_epoch().unwrap();
+                assert_eq!(cache.protect(&pcm, pages * PAGE_FRAMES..(2 * pages - 1) * PAGE_FRAMES), Ok(true));
+                let start = Instant::now();
+                assert_eq!(black_box(cache.request(&pcm, 2 * pages + page, 0)), Ok(PageStatus::Pending));
+                times[page] = start.elapsed().as_nanos();
+                complete(&mut cache, &mut worker);
+            });
+        }
+        report(pages, "protected_churn", &mut times);
     }
 }
