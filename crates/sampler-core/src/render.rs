@@ -319,8 +319,9 @@ impl Runtime {
         let f = self.families.get(v.family.0).unwrap();
         let plan = self.notes.get(f.note.0).unwrap().plan.0;
         let generation = self.plans.get(plan).unwrap();
-        // A modulated or script-layered voice mixes through its own ramp.
-        if self.script_params || generation.modulation.program(i).is_some() {
+        if generation.modulation.program(i).is_some_and(|p| {
+            !generation.prepared.voice_modulation.batches(p)
+        }) {
             return None;
         }
         let prepared = &generation.prepared;
@@ -350,16 +351,18 @@ impl Runtime {
         };
         let mut begun = [None; VOICES];
         let mut gains = [[0.; 2]; VOICES];
+        let mut preps = [None; VOICES];
+        let mut stream_steps = [0.; VOICES];
         let mut starved = [false; VOICES];
         let mut plan_id = None;
         for (lane, &i) in voices.iter().enumerate() {
+            preps[lane] = self.prepare_voice(i, at, output.len());
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let f = self.families.get(v.family.0).unwrap();
             let n = self.notes.get(f.note.0).unwrap();
             let expression = self.expressions.get(n.expression.0).unwrap();
             gains[lane] = expression.rendered.gains;
-            v.last_gains = gains[lane].map(|g| g * v.gain);
-            v.cursor = v.cursor.with_step(v.base_step * expression.rendered.ratio);
+            stream_steps[lane] = v.base_step * expression.rendered.ratio;
             let plan = self.plans.get(n.plan.0).unwrap();
             plan_id = Some(n.plan.0);
             let chain = &plan.prepared.voice_chains[v.chain.unwrap()];
@@ -410,6 +413,8 @@ impl Runtime {
         let mut cells: lanes::Cells<'_> =
             std::array::from_fn(|lane| voices.get(lane).map(|&i| dsp.cells.claim(i)));
         let bank = &mut dsp.filters.as_mut_slice()[0];
+        bank.modulation = [1.0; 2];
+        bank.set_addressed_modulation(&plan.prepared.voice_modulation, &plan.modulation, voices[0]);
         sampler_simd::dispatch(
             #[inline(always)]
             || {
@@ -428,7 +433,7 @@ impl Runtime {
         for (lane, &i) in voices.iter().enumerate() {
             let v = self.voices.slots[i].value.as_mut().unwrap();
             let len = batch.ends[2 * lane];
-            lanes::scale(&mut block, lane, &super::dsp::levels(v, len, 0), len);
+            amplify_lane(&mut block, lane, v, len, preps[lane].and_then(|p| p.points), at);
         }
         sampler_simd::dispatch(
             #[inline(always)]
@@ -469,15 +474,17 @@ impl Runtime {
             if let Some(bus) = v.bus {
                 dsp.buses.fed(bus, produced);
             }
-            done[lane] = chain.done(v) || inaudible(v, produced, gains[lane]);
+            let applied = applied_gains(gains[lane], preps[lane].and_then(|p| p.points));
+            v.last_gains = applied.map(|g| g * v.gain);
+            done[lane] = chain.done(v) || preps[lane].is_some_and(|p| p.stop)
+                || inaudible(v, produced, applied);
         }
         drop(cells);
         for (lane, &i) in voices.iter().enumerate() {
             if done[lane] {
                 self.end_voice(VoiceId(self.voices.id(i)));
             } else {
-                let step = self.voices.slots[i].value.as_ref().unwrap().cursor.step();
-                self.refresh_stream_reservation(i, step);
+                self.refresh_stream_reservation(i, stream_steps[lane]);
             }
         }
     }
@@ -716,10 +723,7 @@ impl Runtime {
                 }
             }
         }
-        let applied = points.map_or(gains, |r| {
-            let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
-            [gains[0] * m(0), gains[1] * m(1)]
-        });
+        let applied = applied_gains(gains, points);
         v.last_gains = applied.map(|g| g * v.gain);
         let done = done || stop || inaudible(v, produced, applied);
         self.nonfinite_frames = self.nonfinite_frames.saturating_add(faults);
@@ -732,6 +736,29 @@ impl Runtime {
         } else {
             self.refresh_stream_reservation(i, stream_step);
         }
+    }
+}
+
+pub(super) fn applied_gains(gains: Frame, points: Option<super::voice_mod::Ramp>) -> Frame {
+    points.map_or(gains, |r| {
+        let m = |c: usize| r.from.gains[c].abs().max(r.to.gains[c].abs());
+        [gains[0] * m(0), gains[1] * m(1)]
+    })
+}
+
+pub(super) fn amplify_lane(
+    block: &mut super::dsp::lanes::LaneBlock, lane: usize, voice: &mut super::Voice,
+    len: usize, points: Option<super::voice_mod::Ramp>, at: u64,
+) {
+    let levels = super::dsp::levels(voice, len, 0);
+    if let Some(ramp) = points {
+        for (i, (x, level)) in block[..len].iter_mut().zip(&levels).enumerate() {
+            let gains = ramp.gains_at(at + i as u64 + 1);
+            x[2 * lane] *= level * f64::from(gains[0]);
+            x[2 * lane + 1] *= level * f64::from(gains[1]);
+        }
+    } else {
+        super::dsp::lanes::scale(block, lane, &levels, len);
     }
 }
 
@@ -789,5 +816,113 @@ impl Runtime {
     /// Clone the control-side drain endpoint; never call file I/O from render.
     pub fn signal_trace_reader(&self) -> Option<crate::trace::TraceReader> {
         self.plans.get(self.active_plan.0)?.prepared.signal_trace_reader()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::*;
+
+    #[test]
+    fn script_and_gain_pitch_programs_admit_lanes_but_voice_filters_do_not() {
+        for (target, eligible) in [
+            (ModTarget::Decibels, true),
+            (ModTarget::Pan, true),
+            (ModTarget::Pitch, true),
+            (ModTarget::SampleStart, true),
+            (ModTarget::Cutoff, false),
+            (ModTarget::Resonance, false),
+            (ModTarget::Tone, false),
+            (ModTarget::ProcessorCutoff(0), false),
+            (ModTarget::ProcessorResonance(0), false),
+        ] {
+            let prepared = Prepared::new(
+                48000,
+                vec![Pcm::new(48000, vec![[0.25; 2]; 256].into_boxed_slice()).unwrap()],
+                vec![Region {
+                    sample: 0,
+                    key_low: 60,
+                    key_high: 60,
+                    root_key: None,
+                    velocity_low: 0.,
+                    velocity_high: 1.,
+                    gain: 1.,
+                    envelope: Envelope::default(),
+                    playback: Playback::default(),
+                }],
+                1,
+            )
+            .unwrap()
+            .with_voice_chains(
+                vec![
+                    VoiceChain::new(
+                        vec![
+                            Processor::StateVariable(StateVariableFilter {
+                                mode: SvfMode::LowPass,
+                                cutoff_hz: Parameter::Constant(1000.),
+                                q: Parameter::Constant(0.7),
+                            }),
+                            Processor::Gainer {
+                                dry: 0.,
+                                gain: Parameter::Constant(0.8),
+                            },
+                            Processor::StereoModeller(StereoSettings {
+                                width: Parameter::Constant(0.7),
+                                pan: Parameter::Constant(-0.2),
+                                pseudo: false,
+                            }),
+                        ],
+                        vec![],
+                        0,
+                    )
+                    .unwrap(),
+                ],
+                vec![Some(0)],
+            )
+            .unwrap()
+            .with_voice_modulation(
+                vec![ModProgram {
+                    sources: vec![ModSource::Velocity],
+                    routes: vec![ModRoute::new(0, target, 1.)],
+                    ..ModProgram::default()
+                }],
+                vec![Some(0)],
+                vec![0],
+            )
+            .unwrap();
+            let limits = Limits {
+                notes: 2,
+                channels: 0,
+                performances: 1,
+                families: 2,
+                expressions: 2,
+                voices: 2,
+                decisions: 0,
+                commands: 4,
+                behaviors: 0,
+                behavior_fuel: 0,
+                behavior_cells: 0,
+                note_cells: 0,
+            };
+            let mut rt = Runtime::new(prepared, limits).unwrap();
+            let note = rt
+                .trigger(
+                    Input {
+                        protocol: Protocol::Clap,
+                        port: 0,
+                        group: 0,
+                        channel: 0,
+                        key: 60,
+                        external_id: Some(1),
+                    },
+                    60,
+                    1.,
+                )
+                .unwrap();
+            rt.set_note_param(note, ModTarget::Decibels, -6., false)
+                .unwrap();
+            let voice = rt.voices.first.unwrap();
+            assert_eq!(rt.batch_key(voice, 64).is_some(), eligible, "{target:?}");
+        }
     }
 }
