@@ -1063,7 +1063,7 @@ fn scalar_fields(s: &mut Survey, id: &str, v: &str, chunk: &OwnedChunk) {
                 s.field(id, v, "reserved2", p.reserved2.is_some_and(|n| n != 0));
                 s.field(id, v, "root_note", p.root_note != 0);
                 s.field(id, v, "tuning", p.tuning != 0.0);
-                s.field(id, v, "reserved3", p.reserved3);
+                s.field(id, v, "reserved3", p.reserved3 != 0);
                 s.field(id, v, "reserved4", p.reserved4 != 0);
             }
         }
