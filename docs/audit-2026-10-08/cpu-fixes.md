@@ -386,3 +386,36 @@ Lane checkpoint c94661b8, before4cdc8920. Three alternating same-window original
 **HOLD.** Aggregates: piano cold27.280/52.371→26.880/49.581, warm26.570/47.111→26.500/51.731(p99 worse). FX cold53.481/118.083→54.181/114.312(median worse), warm53.361/113.172→54.391/112.892(median worse). Underruns before1/after0 across these24runs; this does not resolve the earlier two after underruns or prove robust streaming. The lane capability is PCM/heap-correct, but these cells show no substantial uniform CPU improvement. Piano still misses1ed baseline23.380/43.701 and the v1 gate remains unmet. Evidence:~/.cache/kontakto-fix-cpu/lane-ramps-pairs/.
 
 Verified W6 checkpoint bbb143bf is merged into the CPU worktree, retaining W9 amp ramps, prepared pitch, bounded reservations, addressed factors and lock-free residency. Adapted the shared amp helper to levels(v,len,0), with waiting voices excluded from lane admission. W9 delayed-page regression goes semantic RED→GREEN.62 area tests plus publication and eligibility units pass(one unrelated ignored); default root cargo test --no-run passes. Fresh binary admission-cold-hold SHA25616878c71327ee0b1b1d4578177d6f1f8a5435ee3f4194072612fcfaf1901b9ca includes W6’s trace infrastructure and cold fix; its timing comparison is a merged-checkpoint comparison, not an isolated attribution to the hold alone. New FX cold diagnostics/pairs follow.
+
+## Paired verified cold-hold checkpoint
+
+Before c94661b8 frozen admission-lane-ramps; after 765a7db7 frozen admission-cold-hold (SHA25616878c71327ee0b1b1d4578177d6f1f8a5435ee3f4194072612fcfaf1901b9ca). Three same-window AB/BA/AB original-audit64 pairs. W6 trace is disabled during timing; this comparison includes the merged infrastructure and does not isolate the hold alone. All24 runs exit0 with event/render heap0; all12 cold evictions pages_after0.
+
+| Cell | Repeat | Before median / p99 µs | After median / p99 µs | Underruns before / after |
+|---|---:|---:|---:|---:|
+| piano-64-cold | 1 | 26.380 / 48.151 | 27.360 / 50.501 | 0 / 0 |
+| piano-64-cold | 2 | 27.100 / 47.041 | 26.531 / 46.711 | 0 / 0 |
+| piano-64-cold | 3 | 27.241 / 48.211 | 28.600 / 57.291 | 0 / 0 |
+| piano-64-warm | 1 | 25.711 / 45.061 | 27.611 / 48.601 | 0 / 0 |
+| piano-64-warm | 2 | 26.220 / 48.461 | 26.561 / 46.520 | 0 / 0 |
+| piano-64-warm | 3 | 27.920 / 56.961 | 27.581 / 51.911 | 0 / 0 |
+| fx-64-cold | 1 | 52.401 / 105.782 | 53.961 / 112.782 | 0 / 0 |
+| fx-64-cold | 2 | 52.641 / 114.502 | 52.131 / 114.072 | 0 / 0 |
+| fx-64-cold | 3 | 51.501 / 105.242 | 52.831 / 116.382 | 0 / 0 |
+| fx-64-warm | 1 | 55.701 / 119.883 | 54.081 / 124.203 | 0 / 0 |
+| fx-64-warm | 2 | 51.081 / 114.982 | 51.401 / 104.722 | 0 / 0 |
+| fx-64-warm | 3 | 54.171 / 115.652 | 52.041 / 124.383 | 0 / 0 |
+
+**HOLD.** Median-of-run aggregates: piano cold27.100/48.151→27.360/50.501, warm26.220/48.461→27.581/48.601; FX cold52.401/105.782→52.831/114.072, warm54.171/115.652→52.041/124.203. Cold piano misses1ed23.380/43.701, FX cold p99 exceeds113.413; warm FX p99 also worsens. Zero underruns on both sides does not prove the earlier sparse-factor after0→2 regression resolved; separately tagged timing diagnostics follow. Evidence:~/.cache/kontakto-fix-cpu/cold-hold-pairs/. Remaining32/256/Vista and matched frozen-v1 gates remain open.
+
+Own idle incrementals removed1,187,184,640 allocated bytes after the merged build;26 frozen ELFs outside target were verified first. No foreign targets or v1 artifacts changed.
+
+The separately tagged cold FX recheck compares sparse-factor4cdc8920→verified hold765a7db7, AB/BA/AB three repeats. All6exit0, event/render heap0, coldpages_after0 and underruns0; diagnostic_stream_trace is empty on both sides. The earlier two misses were not reproduced, so no robustness acceptance follows. Diagnostic-only p50/p99µs: before53.701/120.072,53.361/124.792,51.621/113.502; after53.601/128.862,56.021/119.552,55.311/121.642. Evidence:~/.cache/kontakto-fix-cpu/cold-hold-stream-diags/.
+
+## Settled mix coefficients candidate
+
+Port from v1 0cb7a8a0:src/fx/processor.rs Slot::process: evaluate fixed wet/dry coefficients once for a block. Adapt to v2's ramped bypass and controls by using this path only after all three trajectories settle, preserving the current blend arithmetic including the zero dry term, fault result, trace records and inner-state bypass policy. Active ramps keep the existing per-frame path. No new processor state, locks or allocations. This is a performance candidate; no semantic failing-before claim.
+
+New independent blend-equation fixture checks settled/ramping/retargeted/fully-bypassed states on bus and scalar/lane voice paths, block sizes1/7/64, with heap guards. It and49 area integration tests pass(one unrelated ignored; the signal-trace test's filtered child is included in the outer count), including97-voice exactPCM resident/streamed and parallel rendering. Default root cargo test --no-run passes. Frozen candidate admission-mix-settled SHA2564e7139880c3ba2ac822a55706e431801c1475a2eb027ded581ed38c03a1d321a. Before is frozen admission-cold-hold765a7db7. Original-cell A/B measurements are pending; no acceptance claim.
+
+Own idle incremental cleanup removed1,032,077,312 allocated bytes after hash-verifying all27 frozen ELFs; no other artifacts changed.

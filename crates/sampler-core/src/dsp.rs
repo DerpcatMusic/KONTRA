@@ -851,16 +851,26 @@ pub(super) fn process<const TRACE: bool>(
                             recorder: &mut *t.recorder, graph: t.graph, nodes: &t.nodes[inner.clone()], identity: t.identity }) } else { None },
                     );
                 }
-                for c in 0..2 {
-                    for i in 0..len {
-                        let t = at + i as u64;
-                        let b = bypass.value(t);
-                        let wet_part = if off {
-                            0.
-                        } else {
-                            wet.value(t) * (1. - b) * block[c][i]
-                        };
-                        block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
+                if let [Some(d), Some(w), Some(b)] = [dry, wet, bypass].map(|r| r.settled(at)) {
+                    let (direct, through) = (d * (1. - b) + b, w * (1. - b));
+                    for c in 0..2 {
+                        for i in 0..len {
+                            let wet_part = if off { 0. } else { through * block[c][i] };
+                            block[c][i] = direct * dry_block[c][i] + wet_part;
+                        }
+                    }
+                } else {
+                    for c in 0..2 {
+                        for i in 0..len {
+                            let t = at + i as u64;
+                            let b = bypass.value(t);
+                            let wet_part = if off {
+                                0.
+                            } else {
+                                wet.value(t) * (1. - b) * block[c][i]
+                            };
+                            block[c][i] = (dry.value(t) * (1. - b) + b) * dry_block[c][i] + wet_part;
+                        }
                     }
                 }
             }
