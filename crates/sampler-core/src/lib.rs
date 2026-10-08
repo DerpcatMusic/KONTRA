@@ -88,7 +88,7 @@ mod script_params;
 pub use engine_parameter_names::ENGINE_PARAMETER_NAMES;
 pub use engine_parameters::{
     EngineLookup, EngineMeterAddress, EngineParameterAddress, EngineParameterBinding,
-    EngineParameterLaw, engine_parameter_id, engine_parameter_name,
+    EngineParameterLaw, EngineParameterOutcome, engine_parameter_id, engine_parameter_name,
 };
 mod steal;
 mod voice_mod;
@@ -437,6 +437,7 @@ struct Voice {
     bus: Option<usize>,
     tail_remaining: Option<u32>,
     dsp_fade: Option<(u32, f32)>,
+    script_fade: Option<script_params::Fade>,
     envelope: EnvelopeState,
     gain: f32,
     started: bool,
@@ -1438,6 +1439,7 @@ impl Runtime {
             bus: None,
             tail_remaining: None,
             dsp_fade: None,
+            script_fade: None,
             envelope: EnvelopeState::new(envelope),
             gain,
             started: at == self.now,
