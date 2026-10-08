@@ -202,6 +202,14 @@ impl Check<'_> {
         for processor in chain.pre_amplitude.iter().chain(&chain.post_amplitude) {
             match *processor {
                 Processor::Gain(gain) => self.gain(gain, "gain")?,
+                Processor::Gainer { gain, dry } => {
+                    self.gain(gain, "gainer gain")?;
+                    self.finite(dry, "gainer dry")?;
+                }
+                Processor::StereoModeller { width, pan, .. } => {
+                    self.within(width, 0.0..=1.0, "stereo width")?;
+                    self.within(pan, -1.0..=1.0, "stereo pan")?;
+                }
                 Processor::Pan(pan) => self.pan(pan, "pan")?,
                 Processor::Rectify(_) => {}
                 Processor::Branch { gain, .. } => self.gain(gain, "branch gain")?,
