@@ -445,6 +445,26 @@ impl Instrument {
                 Depth::Normalized(value) => check.finite(value, "depth")?,
             }
         }
+        for (i, binding) in self.processor_controls.iter().enumerate() {
+            check.owner = format!("processor control {i}");
+            if self.processor_controls[..i].iter().any(|p| {
+                p.chain == binding.chain
+                    && p.index == binding.index
+                    && p.parameter == binding.parameter
+            }) {
+                return Err(ValidationError::OutOfRange {
+                    owner: check.owner.clone(),
+                    field: "duplicate processor control",
+                    value: i as f64,
+                });
+            }
+            check.exists(Reference::Control(binding.control.0))?;
+            check.exists(Reference::Processor {
+                chain: binding.chain.0,
+                index: binding.index,
+            })?;
+            check.time(binding.ramp, "ramp")?;
+        }
         for (i, chain) in self.chains.iter().enumerate() {
             check.owner = format!("chain {i}");
             check.chain(chain)?;

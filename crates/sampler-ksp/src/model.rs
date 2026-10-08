@@ -110,6 +110,7 @@ pub struct Widget {
     /// Entry point of `on ui_control`, an index into `Script::entries`.
     pub callback: Option<usize>,
     pub persistence: Persistence,
+    pub location: Option<Location>,
 }
 impl Widget {
     pub fn int(&self, property: &str) -> Option<i32> {
@@ -201,8 +202,54 @@ pub struct Interface {
     pub fonts: Vec<String>,
 }
 
+/// Snapshot policy is shared across script slots. Modes 1/3 preserve the live
+/// script setup; modes 2/3 save only script state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SnapshotMode {
+    #[default]
+    NativeWithInit,
+    NativeWithoutInit,
+    ScriptWithInit,
+    ScriptWithoutInit,
+}
+impl SnapshotMode {
+    pub fn from_native(value: i32) -> Option<Self> {
+        Some(match value {
+            0 => Self::NativeWithInit,
+            1 => Self::NativeWithoutInit,
+            2 => Self::ScriptWithInit,
+            3 => Self::ScriptWithoutInit,
+            _ => return None,
+        })
+    }
+    pub fn reruns_init(self) -> bool {
+        matches!(self, Self::NativeWithInit | Self::ScriptWithInit)
+    }
+    pub fn saves_engine(self) -> bool {
+        matches!(self, Self::NativeWithInit | Self::NativeWithoutInit)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvaluationFailure {
+    Budget,
+    InvalidValue,
+}
+/// Safe observable callback result: no fault text is retained or serialized.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PersistenceCompletion {
+    #[default]
+    NotPresent,
+    Completed,
+    Failed {
+        category: EvaluationFailure,
+        offset: u32,
+        builtin: Option<&'static str>,
+    },
+}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Model {
+    pub snapshot_mode: SnapshotMode,
+    pub persistence_completion: PersistenceCompletion,
     pub interface: Interface,
     pub persistent: Vec<Persistent>,
     /// `set_listener` signals and their parameters.
@@ -294,6 +341,14 @@ pub(crate) fn assemble(
                 .iter()
                 .position(|e| e.kind == crate::EntryKind::UiControl(i)),
             persistence: var.persistence,
+            location: match var.home {
+                Home::Control(ui) => controls[ui as usize].map(Location::Control),
+                Home::Cell(c) => Some(Location::Cells { offset: c, len: 1 }),
+                Home::Cells { offset, len } => Some(Location::Cells { offset, len }),
+                Home::Text(c) => Some(Location::Texts { offset: c, len: 1 }),
+                Home::Texts { offset, len } => Some(Location::Texts { offset, len }),
+                _ => None,
+            },
         });
     }
     model.interface.widgets = widgets;
