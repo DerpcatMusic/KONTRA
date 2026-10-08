@@ -30,8 +30,9 @@ fn visible_authored_images_resolve_and_count_missing_inactive_resources() {
         let mut failed_images = 0;
         let mut failed_visible_images = 0;
         let members = bank.members();
+        let resources=sampler_uvi::Resources::of(&std::path::Path::new(path).join(&program));
         for asset in &face.assets {
-            let result = bank.ui_resource_result(&program, &asset.path);
+            let result = resources.read_result(&asset.path);
             let found = matches!(&result, Ok(Some(_)));
             if asset.kind == sampler_ui_ir::AssetKind::TrueTypeFont {
                 missing_fonts += usize::from(!found);
@@ -105,6 +106,7 @@ fn visible_authored_images_resolve_and_count_missing_inactive_resources() {
             }
         }
         assert!(images > 0);
+        assert_eq!(missing_fonts,0,"authored host fonts must resolve");
         assert_eq!(failed_visible_images, 0, "visible image authority failed");
         eprintln!(
             "widgets={} images={images} missing_inactive_images={failed_images} missing_fonts={missing_fonts}",
