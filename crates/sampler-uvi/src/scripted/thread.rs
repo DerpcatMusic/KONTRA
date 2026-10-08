@@ -116,7 +116,7 @@ impl ScriptThread {
                     let report = Loaded {
                         insert_overrides: host.insert_overrides(),
                         findings: host.findings(),
-                        interface: host.interface(),
+                        interface: ui.interface().as_ref().clone(),
                         ui: ui.clone(),
                     };
                     let _ = ready.send(Ok((handles, report)));
@@ -314,7 +314,9 @@ impl UiBridge {
         edits: mpsc::SyncSender<(ControlId, f64)>,
         owner: std::thread::Thread,
     ) -> Self {
-        let mut values = host.control_values();
+        let state = host.save_ui_state();
+        let face = host.interface();
+        let mut values = ScriptHost::control_values_from(&face);
         values.sort_by_key(|(id, _)| *id);
         Self {
             edits,
@@ -323,8 +325,8 @@ impl UiBridge {
                 .into_iter()
                 .map(|(id, v)| (id, AtomicU64::new(v.to_bits())))
                 .collect(),
-            face: Mutex::new(Arc::new(host.interface())),
-            state: Mutex::new(host.save_ui_state()),
+            face: Mutex::new(Arc::new(face)),
+            state: Mutex::new(state),
             revision: AtomicU64::new(1),
             findings: Mutex::new(host.findings()),
             faults: Mutex::new(host.fault_counts()),
@@ -348,12 +350,12 @@ impl UiBridge {
     }
     fn publish(&self, host: &ScriptHost) {
         *self.state.lock().unwrap() = host.save_ui_state();
-        for (id, v) in host.control_values() {
+        let next = host.interface();
+        for (id, v) in ScriptHost::control_values_from(&next) {
             if let Ok(i) = self.values.binary_search_by_key(&id, |(id, _)| *id) {
                 self.values[i].1.store(v.to_bits(), Ordering::Release);
             }
         }
-        let next = host.interface();
         let mut face = self.face.lock().unwrap();
         if **face != next {
             *face = Arc::new(next);
