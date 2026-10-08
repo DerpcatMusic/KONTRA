@@ -49,6 +49,27 @@ pub(super) struct Channel {
 }
 
 impl Runtime {
+    /// Transport stop is musical key-up, including generated gates, followed by pedal-up.
+    pub fn release_all_notes(&mut self) {
+        self.apply_due();
+        for index in 0..self.notes.slots.len() {
+            if self.notes.slots[index].value.is_some_and(|n| n.input_down || n.key_down()) {
+                let note = NoteId(self.notes.id(index));
+                if let Some(input) = self.notes.get(note.0).and_then(|n| n.input) {
+                    self.input_keys &= !(1 << (input.key & 127));
+                }
+                let _ = self.key_up_now(note, None);
+            }
+        }
+        for index in 0..self.channels.slots.len() {
+            if self.channels.slots[index].value.is_some() {
+                let channel = ChannelId(self.channels.id(index));
+                self.pedal_now(channel, false, false);
+                self.pedal_now(channel, false, true);
+            }
+        }
+    }
+
     /// Register a controller domain before admitting its control traffic. Registration
     /// is idempotent and bounded; addresses remain stable for this runtime's lifetime.
     /// Panic resets values, not identity. No dynamic allocation occurs here.
@@ -131,6 +152,15 @@ impl Runtime {
         )
     }
 
+    pub(super) fn missing_pedal_channels(&self, scope: ChannelScope) -> Result<u16, Error> {
+        let existing = self.channels.slots.iter().filter_map(|slot| slot.value)
+            .filter(|channel| scope.contains(channel.address))
+            .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
+        let missing = scope.channels & !existing;
+        if missing.count_ones() as usize > self.channels.available() { return Err(Error::Capacity); }
+        Ok(missing)
+    }
+
     fn pedal_scope(
         &mut self,
         scope: ChannelScope,
@@ -143,17 +173,7 @@ impl Runtime {
         }
         self.apply_due();
         if down {
-            let existing = self
-                .channels
-                .slots
-                .iter()
-                .filter_map(|slot| slot.value)
-                .filter(|channel| scope.contains(channel.address))
-                .fold(0u16, |mask, channel| mask | (1 << channel.address.channel));
-            let mut missing = scope.channels & !existing;
-            if missing.count_ones() as usize > self.channels.available() {
-                return Err(Error::Capacity);
-            }
+            let mut missing = self.missing_pedal_channels(scope)?;
             while missing != 0 {
                 let channel = missing.trailing_zeros() as u8;
                 missing &= missing - 1;

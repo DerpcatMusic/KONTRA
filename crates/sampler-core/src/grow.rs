@@ -46,6 +46,7 @@ pub(crate) struct Growth {
     activity: Box<[u64]>,
     scratch: Option<parallel::Scratch>,
     plans: Vec<PlanStorage>,
+    note_params: Option<crate::script_params::NoteParamsGrowth>,
 }
 
 impl Growth {
@@ -71,7 +72,13 @@ impl Growth {
             activity: vec![0; voices.div_ceil(64)].into_boxed_slice(),
             scratch: parallel.then(|| parallel::Scratch::new(voices)),
             plans,
+            note_params: None,
         })
+    }
+
+    pub fn note_params(growth: crate::script_params::NoteParamsGrowth) -> Self {
+        Self { voices: 0, slots: Box::new([]), free: Box::new([]), activity: Box::new([]),
+            scratch: None, plans: Vec::new(), note_params: Some(growth) }
     }
 }
 
@@ -88,6 +95,8 @@ impl Runtime {
     pub fn voice_capacity(&self) -> usize {
         self.voices.slots.len()
     }
+
+    pub fn note_params_capacity(&self) -> usize { self.note_params.capacity() }
 
     /// Control side: wake `thread` (an unpark, which is allocation free) when
     /// the voice pool fills up and when a growth comes back, so it can sleep
@@ -108,7 +117,7 @@ impl Runtime {
             return;
         };
         if self.grow_with(&mut growth) {
-            self.voice_growths += 1;
+            if growth.voices != 0 { self.voice_growths += 1; }
         } else {
             self.growth_failures += 1;
         }
@@ -123,6 +132,11 @@ impl Runtime {
     }
 
     fn grow_with(&mut self, g: &mut Growth) -> bool {
+        if let Some(params) = &mut g.note_params {
+            let adopted = self.note_params.adopt(params);
+            if adopted { self.note_pressure.store(0, Ordering::Relaxed); }
+            return adopted;
+        }
         let old = self.voices.slots.len();
         if g.voices <= old {
             return false;
@@ -173,6 +187,17 @@ impl Runtime {
             thread.unpark();
         }
     }
+
+    pub(super) fn note_note_pressure(&self) {
+        let capacity = self.note_params.capacity();
+        if self.notes.occupied * 4 >= capacity * 3
+            && self.note_pressure.swap(capacity, Ordering::Relaxed) != capacity
+            && let Some(thread) = self.growth.as_ref().and_then(|q| q.waker.as_ref())
+        { thread.unpark(); }
+    }
 }
 
 pub(crate) type Pressure = Arc<AtomicBool>;
+
+/// Capacity against which audio observed note pressure; zero means none.
+pub(crate) type NotePressure = Arc<std::sync::atomic::AtomicUsize>;

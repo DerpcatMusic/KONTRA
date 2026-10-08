@@ -131,7 +131,141 @@ fn una_corda_pure_renders_from_its_encrypted_monolith() {
     used.sort();
     assert_eq!(used, [0, 1]);
     assert_eq!(ir.voice_limit.map(|l| l.voices), Some(240));
+    let authored = ir.kontakt_objects.as_ref().unwrap();
+    let voices = authored.voice_groups.as_ref().unwrap();
+    assert_eq!(voices.program.max_num_voices, 240);
+    assert_eq!(voices.groups.len(), 128);
+    assert_eq!(voices.groups.iter().flatten().count(), 2);
+    for slot in 0..2 {
+        let limit = voices.groups[slot].as_ref().unwrap();
+        assert_eq!((limit.max_num_voices, limit.ms_fade_time), (20, 50));
+    }
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 1));
+    assert!(authored.groups.iter().any(|g| g.voice_group_index == 2));
+    assert!(authored.zones.len() >= ir.zones.len());
+    println!(
+        "Una Corda: authored_groups={} authored_zones={} active_zones={} peak={peak}",
+        authored.groups.len(),
+        authored.zones.len(),
+        ir.zones.len()
+    );
     assert!(peak > 0.01, "audible: peak {peak}");
+}
+
+/// Isolate the production source path; decoded PCM and output stay in memory.
+/// This proves the reflection implementation, not Kontakt interpolation parity.
+#[test]
+#[ignore = "requires installed Una Corda; run through kontakto-heavy"]
+fn actual_una_corda_alternating_slots_match_independently_unrolled_pcm() {
+    use sampler_ir as ir;
+    for preset in ["Pure", "Felt", "Cotton"] {
+        let path = find(&format!(
+            "Una Corda Library/Instruments/Una Corda {preset}.nki"
+        ))
+        .expect("installed Una Corda is required for this proof");
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (index, original, slot) = library
+            .instrument
+            .zones
+            .iter()
+            .enumerate()
+            .find_map(|(i, z)| {
+                let ir::Looping::Slots(slots) = z.playback.looping else {
+                    return None;
+                };
+                let active: Vec<_> = slots.iter().flatten().copied().collect();
+                (active.len() == 1 && active[0].range.alternating
+                    && active[0].range.start == 33761 && active[0].range.end == 462673)
+                    .then(|| (i, z.clone(), active[0]))
+            })
+            .unwrap();
+        assert_eq!(
+            (slot.count, slot.tuning, slot.until_release),
+            (0, 1., false)
+        );
+        assert_eq!((slot.range.start, slot.range.end), (33761, 462673));
+        assert_eq!(slot.range.crossfade.frames(48000.), 0);
+        assert!(!original.playback.reverse);
+        let decoded = library
+            .samples
+            .decode(&library.locations[original.asset.0])
+            .unwrap();
+        assert_eq!((decoded.rate, decoded.frames.len()), (48000, 475512));
+        let start = slot.range.start as usize;
+        let end = slot.range.end as usize;
+        // Independent PCM oracle: initial forward pass, then endpoint-once
+        // reverse/forward legs. Four periods provide the interpolation guards.
+        let mut unrolled = decoded.frames[..end].to_vec();
+        for _ in 0..4 {
+            unrolled.extend(decoded.frames[start..end - 1].iter().rev().copied());
+            unrolled.extend_from_slice(&decoded.frames[start + 1..end]);
+        }
+        unrolled.extend_from_slice(&decoded.frames[end..]);
+        let mut zone = original.clone();
+        zone.asset = ir::AssetRef(0);
+        zone.group = Some(ir::GroupRef(0));
+        zone.trigger = ir::Trigger::Attack;
+        zone.selection = None;
+        zone.articulation = None;
+        zone.axes.clear();
+        zone.conditions.clear();
+        zone.routes.clear();
+        zone.chain = None;
+        zone.amplitude = None;
+        let authored_group = &library.instrument.groups[original.group.unwrap().0];
+        let mut isolated = ir::Instrument {
+            assets: vec![library.instrument.assets[original.asset.0].clone()],
+            groups: vec![ir::Group {
+                gain: authored_group.gain,
+                pan: authored_group.pan,
+                tune: authored_group.tune,
+                ..Default::default()
+            }],
+            zones: vec![zone],
+            ..Default::default()
+        };
+        let prepare = |ir: &ir::Instrument, pcm| {
+            sampler_core::lower::lower(ir, 48000, vec![pcm], |_, p| Ok(p)).unwrap()
+        };
+        let actual = prepare(
+            &isolated,
+            sampler_core::Pcm::new(decoded.rate, decoded.frames.into_boxed_slice()).unwrap(),
+        );
+        isolated.zones[0].playback.looping = ir::Looping::None;
+        isolated.zones[0].playback.end = Some(unrolled.len() as u64);
+        let expected = prepare(
+            &isolated,
+            sampler_core::Pcm::new(48000, unrolled.into_boxed_slice()).unwrap(),
+        );
+        let mut actual = Runtime::new(actual, limits()).unwrap();
+        let mut expected = Runtime::new(expected, limits()).unwrap();
+        let key = match original.pitch {
+            ir::KeyTracking::Tracked { root } => root,
+            _ => original.keys.low,
+        };
+        actual.trigger(input(key), key, 1.).unwrap();
+        expected.trigger(input(key), key, 1.).unwrap();
+        let frames = end + 3 * 2 * (end - start - 1);
+        let mut a = [[0.; 2]; 257];
+        let mut b = a;
+        let mut peak = 0f32;
+        for at in (0..frames).step_by(a.len()) {
+            let count = (frames - at).min(a.len());
+            actual.render(&mut a[..count]).unwrap();
+            expected.render(&mut b[..count]).unwrap();
+            assert_eq!(
+                a[..count],
+                b[..count],
+                "{preset} source zone {index}, output frame {at}"
+            );
+            peak = a[..count]
+                .iter()
+                .flatten()
+                .fold(peak, |p, x| p.max(x.abs()));
+        }
+        assert!(peak > 0.);
+        eprintln!("loop_proof\t{preset}\t{index}\t{frames}\t{start}\t{end}\t0\t{peak}");
+    }
 }
 
 #[test]
@@ -148,6 +282,237 @@ fn conflux_renders_its_tracked_zones_within_the_runtime_pitch_range() {
             .any(|u| u.feature == "wavetable source")
     );
     assert!(peak > 0.01, "audible: peak {peak}");
+}
+
+#[test]
+fn conflux_admits_all_257_saved_values_including_13_string_arrays() {
+    let Some(path) = find("Conflux 1.1.0 [Native Instruments]/Instruments/Conflux.nki") else {
+        return;
+    };
+    use ni_file::kontakt::objects::{BParScript, Program};
+    let chunks = sampler_kontakt::read_chunks(&path).unwrap();
+    let program = Program::try_from(chunks.find_first(0x28).unwrap()).unwrap();
+    let raw: Vec<_> = program
+        .0
+        .children
+        .iter()
+        .filter(|c| c.id == 6)
+        .map(|c| BParScript::try_from(c).unwrap().params().unwrap())
+        .filter(|s| !s.bypass)
+        .flat_map(|s| s.persistent)
+        .collect();
+    assert_eq!(raw.len(), 257);
+    assert_eq!(raw.iter().filter(|s| s.starts_with('!')).count(), 13);
+    let mut translated = sampler_kontakt::read(&path).unwrap();
+    let saved: Vec<_> = translated
+        .instrument
+        .behaviors
+        .iter()
+        .flat_map(|s| &s.state)
+        .collect();
+    assert_eq!(saved.len(), 257);
+    assert_eq!(
+        saved
+            .iter()
+            .filter(|(_, v)| matches!(v, sampler_ir::Saved::Texts(_)))
+            .count(),
+        13
+    );
+    for raw in raw {
+        let name = raw.split_once(' ').unwrap().0;
+        assert!(
+            saved.iter().any(|(n, _)| n == name),
+            "saved value was not admitted"
+        );
+    }
+    // Use the production compiler and capture the actual native text banks.
+    #[cfg(feature = "scan")]
+    sampler_ksp::scan::begin();
+    let (scripts, _, _) = sampler_kontakt::compile_ui(
+        &mut translated.instrument,
+        &sampler_kontakt::Options {
+            library: Some(path),
+            mpe: None,
+            ..Default::default()
+        },
+    );
+    println!(
+        "CONFLUX_NATIVE scripts={} persistent={} text_arrays={}",
+        scripts.len(),
+        scripts
+            .iter()
+            .map(|s| s.model().persistent.len())
+            .sum::<usize>(),
+        scripts
+            .iter()
+            .map(|s| s
+                .model()
+                .persistent
+                .iter()
+                .filter(|p| p.name.starts_with('!'))
+                .count())
+            .sum::<usize>()
+    );
+    #[cfg(feature = "scan")]
+    for observation in sampler_ksp::scan::take() {
+        println!("CONFLUX_SCRIPT_PHASE {observation:?}");
+    }
+    let views: Vec<_> = scripts.iter().map(|s| s.view()).collect();
+    let mut capture = sampler_ksp::persistent_state_buffer(&views).unwrap();
+    let plan = sampler_ksp::bind_modules(
+        scripts,
+        sampler_core::Prepared::new(48000, vec![], vec![], 0).unwrap(),
+    )
+    .unwrap();
+    let limits = Limits::for_plan(&plan, 4, 4);
+    let runtime = Runtime::new(plan, limits).unwrap();
+    runtime
+        .capture_script_state(runtime.active_plan(), &mut capture)
+        .unwrap();
+    let mut restored = 0;
+    for (instance, view) in views.iter().enumerate() {
+        let behavior = translated
+            .instrument
+            .behaviors
+            .iter()
+            .find(|b| b.slot.unwrap_or(0) == view.slot())
+            .unwrap();
+        for persistent in view
+            .model()
+            .persistent
+            .iter()
+            .filter(|p| p.name.starts_with('!'))
+        {
+            let sampler_ksp::model::Location::Texts { offset, len } = persistent.location else {
+                panic!("text array needs native text storage")
+            };
+            let Some(sampler_ir::Saved::Texts(expected)) = behavior
+                .state
+                .iter()
+                .find(|(name, _)| name == &persistent.name)
+                .map(|(_, v)| v)
+            else {
+                panic!("saved text array missing")
+            };
+            for (index, text) in expected.iter().take(len as usize).enumerate() {
+                let address = sampler_core::ScriptStateAddress::Text {
+                    instance: sampler_core::ScriptInstanceId(instance as u16),
+                    index: offset + index as u32,
+                };
+                let value = capture
+                    .values
+                    .iter()
+                    .find(|v| v.address == address)
+                    .unwrap()
+                    .value;
+                assert!(
+                    value
+                        == sampler_core::ScriptStateValue::Text(
+                            sampler_core::Text::try_new(text).unwrap()
+                        ),
+                    "authored text array must reach native storage"
+                );
+            }
+            restored += 1;
+        }
+    }
+    assert_eq!(
+        restored, 13,
+        "all saved string arrays restored into native banks"
+    );
+}
+
+#[test]
+fn dolce_init_getter_feedback_preserves_authored_envelope_lanes() {
+    let Some(path) = find(
+        "Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki",
+    ) else {
+        return;
+    };
+    let streamed = sampler_kontakt::load_streamed(
+        &path,
+        &sampler_kontakt::Options {
+            keys: 60..=60,
+            mpe: None,
+            ..Default::default()
+        },
+        &Default::default(),
+        |_| {},
+    )
+    .unwrap_or_else(|_| panic!("production load failed; authored diagnostics omitted"));
+    let plan = streamed.loaded.plan;
+    let addresses: Vec<_> = plan
+        .engine_parameter_bindings()
+        .iter()
+        .filter(|binding| {
+            binding.address.slot == 1
+                && [
+                    "$ENGINE_PAR_ATTACK",
+                    "$ENGINE_PAR_RELEASE",
+                    "$ENGINE_PAR_SUSTAIN",
+                ]
+                .contains(&sampler_core::engine_parameter_name(binding.address.parameter).unwrap())
+        })
+        .map(|binding| {
+            (
+                binding.address,
+                binding.law.encode(
+                    match plan
+                        .controls()
+                        .iter()
+                        .find(|control| control.id == binding.control)
+                        .unwrap()
+                        .default
+                    {
+                        sampler_core::ControlValue::Real(value) => value,
+                        _ => panic!("envelope lane requires a native real value"),
+                    },
+                ),
+            )
+        })
+        .collect();
+    assert!(
+        !addresses.is_empty(),
+        "physical envelope bindings must be installed"
+    );
+    let limits = Limits::for_plan(&plan, 128, 16);
+    let mut runtime = Runtime::new(plan, limits).unwrap();
+    for (address, authored) in &addresses {
+        assert!(*authored > 0);
+        assert!(
+            (runtime.engine_parameter(*address).unwrap() - authored).abs() <= 1,
+            "init getter feedback must retain authored envelope at physical group {} slot {} parameter {}",
+            address.group,
+            address.slot,
+            address.parameter
+        );
+    }
+    println!("DOLCE_AUTHORED_ENVELOPE retained_lanes={}", addresses.len());
+}
+
+#[test]
+fn streamed_real_instrument_installs_physical_engine_bindings_and_lookups() {
+    let Some(path) = find("Una Corda Library/Instruments/Una Corda Pure.nki") else { return };
+    let streamed = sampler_kontakt::load_streamed(&path, &sampler_kontakt::Options {
+        keys: 60..=60, mpe: None, ..Default::default()
+    }, &Default::default(), |_| {}).unwrap();
+    let loaded = streamed.loaded;
+    let bindings = loaded.plan.engine_parameter_bindings();
+    assert!(!bindings.is_empty(), "production preparation needs authored native lanes");
+    assert!(!loaded.plan.engine_lookups().is_empty(), "production needs physical names");
+    for binding in bindings {
+        assert!(loaded.instrument.source_indices.modulators.iter().any(|source|
+            source.group as i32 == binding.address.group && source.slot as i32 == binding.address.slot
+                && source.runtime.is_some() && !source.external));
+        assert!(loaded.plan.controls().iter().any(|control|control.id == binding.control));
+    }
+    let attack = bindings.iter().find(|b|sampler_core::engine_parameter_name(b.address.parameter)==Some("$ENGINE_PAR_ATTACK")).unwrap().address;
+    let plan=loaded.plan;
+    let limits=Limits::for_plan(&plan,16,16);
+    let mut runtime=Runtime::new(plan,limits).unwrap();
+    runtime.set_engine_parameter(attack,200809).unwrap();
+    assert!((runtime.engine_parameter(attack).unwrap()-200809).abs()<=1);
+    println!("PRODUCTION_ENGINE_BINDINGS controls={} lookups={}",runtime.control_definitions(runtime.active_plan()).unwrap().len(),loaded.instrument.source_indices.engine_lookups.len());
 }
 
 #[test]
@@ -171,6 +536,7 @@ fn vista_cellos_render_from_loose_ncw_samples() {
     // -38.6 dBFS (KONTAKT_REFERENCE.md s.13; the older -45.0 is a (L+R)/2
     // mono mix). KONTRA measures +0.9 dB; the open residual is under 1 dB.
     let db = reference::levels(&out, 0.3, 3.0).max_peak();
+    println!("Vista: max_channel_peak_dbfs={db:.3} native_reference_dbfs=-38.6");
     assert!(
         (db + 38.6).abs() < 1.0,
         "{db:.1} dBFS max-channel peak against Kontakt's -38.6"
@@ -426,4 +792,216 @@ fn afflatus_remaps_to_every_driver() {
             );
         }
     }
+}
+
+/// W8's embedded-NKM witness: script init must preserve audible program 1.
+#[test]
+fn big_screen_embedded_program_one_remains_audible_after_script_init() {
+    let Some(path) = find("Conflux 1.1.0 [Native Instruments]/Multis/Big Screen.nkm") else {
+        return;
+    };
+    let translated = sampler_kontakt::read_program(&path, 1).unwrap();
+    let options = sampler_kontakt::Options {
+        keys: 60..=64,
+        library: Some(path),
+        mpe: None,
+        ..Default::default()
+    };
+    let loaded = sampler_kontakt::load_read(translated, &options, |_| {}, || false).unwrap();
+    assert!(!loaded.scripts.is_empty(), "embedded scripts must bind");
+    assert!(!loaded.plan.engine_parameter_bindings().is_empty());
+    assert!(!loaded.plan.engine_lookups().is_empty());
+    let mut limits = Limits::for_plan(&loaded.plan, 32, 256);
+    limits.behaviors = limits.behaviors.max(256);
+    limits.behavior_cells = limits.behaviors * loaded.plan.behavior_local_count();
+    let mut runtime = Runtime::new(loaded.plan, limits).unwrap();
+    let performance = runtime.performance(0).unwrap();
+    let origin = sampler_core::ChannelAddress {
+        protocol: Protocol::Native,
+        port: 0,
+        group: 0,
+        channel: 0,
+    };
+    for (cc, value) in [(1u8, 100u8), (11, 127)] {
+        runtime
+            .dispatch_controller(
+                performance,
+                origin,
+                1,
+                cc,
+                ((u64::from(value) * u64::from(u32::MAX)) / 127) as u32,
+            )
+            .unwrap();
+    }
+    for key in [60, 64] {
+        runtime.trigger(input(key), key, 100.0 / 127.0).unwrap();
+    }
+    let mut peak = 0.0f32;
+    let mut output = [[0.0; 2]; 128];
+    for _ in 0..188 {
+        runtime.render(&mut output).unwrap();
+        peak = output.iter().flatten().fold(peak, |p, x| p.max(x.abs()));
+        runtime.flush_behaviors(|_, _, _| true);
+    }
+    println!("BIG_SCREEN_PROGRAM_1 peak={peak:.8}");
+    assert!(
+        peak.is_finite() && peak > 1e-5,
+        "authored init must preserve audible output"
+    );
+}
+
+#[test]
+#[ignore = "requires installed Morphology; run through kontakto-heavy"]
+fn w15_authored_pan_offline_ab_changes_channel_balance() {
+    use sampler_ir as ir;
+    let Some(path) = find("Morphology Evolved [Zero-G] rutracker.org/Morphology Evolved.nki") else { return; };
+    let render = |enabled| {
+        let library = sampler_kontakt::read(&path).unwrap();
+        let (zone, route) = library.instrument.zones.iter().find_map(|z| {
+            z.routes.iter().find_map(|r| {
+                let route = library.instrument.routes[r.0];
+                (route.target == ir::Target::Pan
+                    && matches!(route.depth, ir::Depth::Normalized(d) if d.abs() > 0.01)
+                    && matches!(library.instrument.modulators[route.source.0].source, ir::ModulationSource::Envelope(_)))
+                    .then(|| (z.clone(), *r))
+            })
+        }).expect("gate item must retain its authored AHDSR -> Pan route");
+        let mut isolated = zone;
+        isolated.routes = if enabled { vec![route] } else { vec![] };
+        isolated.chain = None;
+        reference::levels(&w15_render_one_authored_zone(library, isolated), 0.1, 0.45)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let balance_delta = (wet.rms[1] - wet.rms[0]) - (dry.rms[1] - dry.rms[0]);
+    println!("W15 pan dry_rms={:?} wet_rms={:?} balance_delta_db={balance_delta}", dry.rms, wet.rms);
+    assert!(dry.max_peak() > -80. && wet.max_peak() > -80.);
+    assert!(balance_delta.abs() > 0.05, "the retained route must reach actual audio");
+}
+
+fn w15_render_one_authored_zone(mut library: sampler_kontakt::Kontakt, mut zone: sampler_ir::Zone) -> Vec<[f32; 2]> {
+    use sampler_ir as ir;
+    let key = 60u8.clamp(zone.keys.low, zone.keys.high);
+    zone.selection = None;
+    zone.articulation = None;
+    zone.axes.clear();
+    zone.conditions.clear();
+    zone.trigger = ir::Trigger::Attack;
+    zone.velocities = ir::VelocityRange { low: 0, high: 127 };
+    let original = &library.instrument;
+    let mut modulators = Vec::new();
+    let mut routes = Vec::new();
+    for route in &mut zone.routes {
+        let mut r = original.routes[route.0];
+        modulators.push(original.modulators[r.source.0].clone());
+        r.source = ir::ModulatorRef(modulators.len() - 1);
+        if let Some(scale) = &mut r.scale {
+            modulators.push(original.modulators[scale.source.0].clone());
+            scale.source = ir::ModulatorRef(modulators.len() - 1);
+        }
+        *route = ir::RouteRef(routes.len());
+        routes.push(r);
+    }
+    if let Some(amplitude) = &mut zone.amplitude {
+        modulators.push(original.modulators[amplitude.0].clone());
+        *amplitude = ir::ModulatorRef(modulators.len() - 1);
+    }
+    let chains = zone.chain.map(|chain| {
+        zone.chain = Some(ir::ChainRef(0));
+        original.chains[chain.0].clone()
+    }).into_iter().collect();
+    let groups = zone.group.map(|group| {
+        let mut g = original.groups[group.0].clone();
+        zone.group = Some(ir::GroupRef(0));
+        g.chain = None;
+        g.start.clear();
+        g.tap = None;
+        g.output = ir::Output::Master;
+        g.sends.clear();
+        g.voice_limit = None;
+        g
+    }).into_iter().collect();
+    library.instrument = ir::Instrument {
+        name: original.name.clone(), assets: original.assets.clone(),
+        shapes: original.shapes.clone(), zones: vec![zone], groups,
+        chains, routes, modulators, ..Default::default()
+    };
+    let loaded = sampler_kontakt::load_read(library, &sampler_kontakt::Options {
+        keys: key..=key, scripts: false, mpe: None, ..Default::default()
+    }, |_| {}, || false).unwrap();
+    let mut rt = Runtime::new(loaded.plan, limits()).unwrap();
+    rt.trigger(input(key), key, 1.).unwrap();
+    let mut out = vec![[0.; 2]; 24_000];
+    rt.render(&mut out).unwrap();
+    out
+}
+
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_formant_offline_ab_changes_the_gate_spectrum() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else { return; };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, filters) = library.instrument.zones.iter().find_map(|z| {
+            let chain = &library.instrument.chains[z.chain?.0];
+            let filters: Vec<_> = chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .filter(|p| matches!(p, ir::Processor::Filter(ir::Filter { kind: ir::FilterKind::Peak { gain: ir::Gain::Decibels(15.) }, .. })))
+                .cloned().collect();
+            (filters.len() == 3).then(|| (z.clone(), filters))
+        }).expect("gate item must execute its three-band Formant I model");
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { filters.into_iter().chain([ir::Processor::Gain(ir::Gain::Linear(0.25))]).collect() } else { vec![] },
+            post_amplitude: vec![] });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let energy = |frames: &[[f32; 2]]| frames.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let derivative = |frames: &[[f32; 2]]| frames.windows(2).map(|w| (0..2).map(|c| f64::from(w[1][c]-w[0][c]).powi(2)).sum::<f64>()).sum::<f64>();
+    let dry_shape = derivative(&dry) / energy(&dry).max(1e-30);
+    let wet_shape = derivative(&wet) / energy(&wet).max(1e-30);
+    let shape_delta_db = 10. * (wet_shape / dry_shape).log10();
+    println!("W15 formant dry_rms={:?} wet_rms={:?} normalized_hf_delta_db={shape_delta_db}",
+        reference::levels(&dry, 0.1, 0.45).rms, reference::levels(&wet, 0.1, 0.45).rms);
+    assert!(energy(&dry) > 1e-8 && energy(&wet) > 1e-8);
+    assert!(shape_delta_db.is_finite() && shape_delta_db.abs() > 0.05, "Formant must change spectral shape, independent of level");
+}
+
+#[test]
+#[ignore = "requires installed Analog Strings; run through kontakto-heavy"]
+fn w15_authored_lofi_offline_ab_measures_reduction_on_the_gate_sample() {
+    use sampler_ir as ir;
+    let Some(path) = find("ANALOG STRINGS/Instruments/ANALOG STRINGS.nki") else { return; };
+    let render = |enabled| {
+        let mut library = sampler_kontakt::read(&path).unwrap();
+        let (mut zone, mut effect) = library.instrument.zones.iter().find_map(|z| {
+            let chain = &library.instrument.chains[z.chain?.0];
+            chain.pre_amplitude.iter().chain(&chain.post_amplitude)
+                .find(|p| matches!(p, ir::Processor::LoFi { .. }))
+                .map(|p| (z.clone(), p.clone()))
+        }).expect("gate item must retain its authored Lo-Fi slot");
+        // Saved defaults are pristine; exercise the same authored slot's Bits control.
+        let ir::Processor::LoFi { ref mut bits, ref mut frequency, .. } = effect else { unreachable!() };
+        *bits = 0.1;
+        *frequency = 1.;
+        zone.routes.clear();
+        zone.chain = Some(ir::ChainRef(library.instrument.chains.len()));
+        library.instrument.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: if enabled { vec![effect] } else { vec![] }, post_amplitude: vec![] });
+        w15_render_one_authored_zone(library, zone)
+    };
+    let dry = render(false);
+    let wet = render(true);
+    let dry_levels = reference::levels(&dry, 0.1, 0.45);
+    let wet_levels = reference::levels(&wet, 0.1, 0.45);
+    let energy = |frames: &[[f32; 2]]| frames.iter().flatten().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+    let residual = dry.iter().zip(&wet).map(|(a,b)| (0..2).map(|c| f64::from(a[c]-b[c]).powi(2)).sum::<f64>()).sum::<f64>();
+    let residual_db = 10. * (residual / energy(&dry).max(1e-30)).log10();
+    println!("W15 lofi dry_rms={:?} wet_rms={:?} residual_relative_db={residual_db}", dry_levels.rms, wet_levels.rms);
+    assert!(dry_levels.max_peak() > -80.);
+    assert!(residual_db.is_finite() && residual_db > -40., "Bits must change the authored gate sample");
+    assert!(wet.iter().flatten().all(|v| v.is_finite()));
 }

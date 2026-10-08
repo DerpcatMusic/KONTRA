@@ -8,7 +8,7 @@ use ni_file::kontakt::{
     StructuredObject,
     objects::{
         BParScript, ExternalModArray32, FNTableImpl, FileNameListPreK51, Group, GroupList,
-        InternalModArray16, LoopArray, ModSource, Modulator, Program,
+        InternalModArray16, LoopArray, ModSource, Modulator, Program, VoiceGroups, Zone,
     },
 };
 use sampler_ir as ir;
@@ -34,6 +34,7 @@ pub struct Kontakt {
     /// Each asset's resolved location, in asset order.
     pub locations: Vec<PathBuf>,
     pub samples: Samples,
+    pub(crate) initialized: Option<crate::load::ScriptInit>,
 }
 
 /// Translate the NKI at `path`. Zones whose sample is missing are left out
@@ -48,7 +49,10 @@ pub fn read_with_snapshot(
     snapshot: &crate::SnapshotState,
 ) -> Result<Kontakt, LoadError> {
     let mut kontakt = read_overlaid(path, Some(snapshot))?;
-    crate::apply_snapshot(&mut kontakt, snapshot);
+    crate::apply_snapshot(&mut kontakt, snapshot).map_err(|e| LoadError::Invalid {
+        path: path.into(),
+        reason: format!("snapshot persistent values: {:?} at {}", e.kind, e.offset),
+    })?;
     Ok(kontakt)
 }
 
@@ -58,6 +62,7 @@ fn read_overlaid(
 ) -> Result<Kontakt, LoadError> {
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -83,6 +88,8 @@ fn read_overlaid(
             (t.sample_filetable, t.other_filetable)
         }
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, snapshot).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -92,6 +99,7 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
     use ni_file::kontakt::objects::Bank;
     let path = path.canonicalize().map_err(|e| LoadError::io(path, e))?;
     let chunks = crate::read_chunks(&path).map_err(|e| e.at(crate::Stage::Container))?;
+    let span = crate::audit::Span::new("ni_objects_parse");
     let invalid = |reason: &str| LoadError::Invalid {
         path: path.clone(),
         reason: reason.into(),
@@ -136,6 +144,8 @@ pub fn read_program(path: &Path, index: usize) -> Result<Kontakt, LoadError> {
             Default::default(),
         ),
     };
+    drop(span);
+    let _span = crate::audit::Span::new("translate_resolve_ir");
     translate(path, program, table, others, None).map_err(|e| e.at(crate::Stage::Translate))
 }
 
@@ -170,9 +180,18 @@ fn translate(
     let mut out = Translation {
         ir: ir::Instrument {
             name: params.name.clone(),
+            default_keyswitch: u8::try_from(params.default_key_switch)
+                .ok()
+                .filter(|&key| key <= 127),
             source: ir::SourceFormat::Kontakt {
                 version: program.version(),
             },
+            kontakt_objects: Some(Box::new(ir::kontakt::Objects {
+                program: crate::objects::program(program.version(), &params),
+                voice_groups: None,
+                groups: Vec::new(),
+                zones: Vec::new(),
+            })),
             host_volume: Some(ir::HostVolume {
                 controller: 7,
                 saved: f64::from(params.volume),
@@ -186,7 +205,33 @@ fn translate(
         snapshot_groups: snapshot.map(|s| s.groups.clone()).unwrap_or_default(),
         engine: Vec::new(),
         dynamic: false,
+        send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
     };
+    match crate::program_automation(&program.0.private_data, program.version(), crate::Limits { bytes: 64 << 20, records: 65536 }) {
+        Ok(records) => for record in records {
+            let target = std::str::from_utf8(record.tag.data()).ok().and_then(|tag| {
+                let rest = tag.strip_prefix("pts_script_slider_")?;
+                let (slot, ordinal) = rest.split_once('_')?;
+                Some((slot.parse::<u8>().ok()?, ordinal.parse::<u32>().ok()?))
+            });
+            let source = match record.mode {
+                1 if record.address < 128 => Some(ir::ScriptAutomationSource::Controller(record.address as u8)),
+                2 => Some(ir::ScriptAutomationSource::HostParameter(record.address)),
+                _ => None,
+            };
+            if let (Some((source_slot, slider)), Some(source)) = (target, source)
+                && (0.0..=1.0).contains(&record.low) && (0.0..=1.0).contains(&record.high)
+            {
+                out.ir.script_automation.push(ir::ScriptAutomation { source, source_slot, slider,
+                    low: f64::from(record.low), high: f64::from(record.high), soft_takeover: record.soft_takeover });
+            } else {
+                out.unsupported("program private", "saved automation target", format!("record {} mode {} address {}", record.offset, record.mode, record.address), ir::Reason::NotModeled);
+            }
+        },
+        Err(error) => out.unsupported("program private", "saved automation layout", error, ir::Reason::NotModeled),
+    }
     if let Some(chunk) = program.0.find_first(VOICE_GROUPS) {
         out.voice_groups(&chunk.data)
             .map_err(|e| decode("voice groups", e))?;
@@ -198,6 +243,7 @@ fn translate(
             .ok_or_else(|| invalid("missing group list"))?,
     )
     .map_err(|e| decode("group list", e))?;
+    let mut resources = None;
     for (slot, chunk) in program
         .0
         .children
@@ -205,22 +251,33 @@ fn translate(
         .filter(|c| c.id == SCRIPT)
         .enumerate()
     {
-        let script = BParScript::try_from(chunk)
+        let mut script = BParScript::try_from(chunk)
             .and_then(|s| s.params())
             .map_err(|e| decode("script", e))?;
+        if !script.bypass {
+            if let Some(link) = script
+                .textfile_name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+            {
+                if let Some(text) = resources
+                    .get_or_insert_with(|| crate::Resources::of(&path))
+                    .script(link)
+                {
+                    script.text = Some(text);
+                }
+            }
+        }
         let location = format!("script slot {slot}");
         match script.text {
             _ if script.bypass => {}
             Some(text) if !text.trim().is_empty() => {
-                let state = saved(&script.persistent);
-                if state.len() < script.persistent.len() {
-                    out.unsupported(
-                        &location,
-                        "saved persistent text arrays",
-                        script.persistent.len() - state.len(),
-                        ir::Reason::NotModeled,
-                    );
-                }
+                let state = saved(&script.persistent).map_err(|e| {
+                    invalid(&format!(
+                        "script persistent values: {:?} at {}",
+                        e.kind, e.offset
+                    ))
+                })?;
                 out.ir.behaviors.push(ir::Behavior {
                     name: script
                         .description
@@ -246,54 +303,66 @@ fn translate(
             }
         }
     }
+    // Lookup metadata precedes script init and never depends on DSP admission.
+    for (index, group) in groups.groups.iter().enumerate() {
+        out.source_modulators(index, group).map_err(|e| decode("source modulation names", e))?;
+    }
     // Scripts first: what `on init` writes with set_engine_par (effect gains,
     // bypass) is the rack's state, so racks are translated after it.
     let group_names: Vec<String> = groups
         .groups
         .iter()
-        .filter_map(|g| g.params().ok())
-        .filter(|g| !g.muted)
-        .map(|g| g.name)
-        .collect();
-    let writes: Vec<_> = out
-        .ir
-        .behaviors
+        .map(|g| g.params().map(|p| p.name))
+        .collect::<Result<_,_>>()
+        .map_err(|e| decode("source group names",e))?;
+    if let Some(snapshot) = snapshot {
+        for behavior in &mut out.ir.behaviors {
+            if let Some(entries) = behavior
+                .slot
+                .and_then(|slot| snapshot.persistent.get(usize::from(slot)))
+            {
+                for (name, value) in saved(entries).map_err(|e| invalid(&format!("snapshot persistent values: {:?} at {}", e.kind, e.offset)))? {
+                    match behavior.state.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => behavior.state.push((name, value)),
+                    }
+                }
+            }
+        }
+    }
+    let span = crate::audit::Span::new("translate_ksp_init");
+    let initialized = crate::load::initialize_scripts(&mut out.ir, Some(&path), group_names, &[]);
+    out.engine = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .filter_map(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
-            sampler_ksp::init_engine_pars(&b.source, sampler_ksp::Limits::LIBRARY, &environment)
-                .ok()
-        })
         .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .flat_map(|s| s.engine_pars())
         .collect();
-    out.engine = writes;
-    // Scripts that set slot bypass or levels while playing get runtime blocks.
-    let dynamic = out
-        .ir
-        .behaviors
+    let dynamic = initialized
+        .states
         .iter()
-        .enumerate()
-        .filter(|(_, b)| b.language == ir::Language::Ksp)
-        .any(|(index, b)| {
-            let environment =
-                crate::load::script_environment(b, index, group_names.clone(), Default::default());
-            sampler_ksp::compile_with(
-                &b.source,
-                48_000,
-                sampler_ksp::Limits::LIBRARY,
-                &[],
-                &environment,
-            )
-            .is_ok_and(|script| script.writes_effect_slots())
-        });
+        .flatten()
+        .filter_map(|s| s.as_ref().ok())
+        .any(|s| s.writes_effect_slots());
     out.dynamic = dynamic;
+    drop(span);
     let mut translated = Vec::new();
     for (index, group) in groups.groups.iter().enumerate() {
+        let runtime = ir::GroupRef(out.ir.groups.len());
         translated.push(out.group(index, group).map_err(|e| decode("group", e))?);
+        out.ir.source_indices.groups.push(Some(runtime));
     }
+    for (runtime, behavior) in out.ir.behaviors.iter().enumerate() {
+        if let Some(slot) = behavior.slot {
+            out.ir.source_indices.slots.resize(
+                out.ir.source_indices.slots.len().max(usize::from(slot) + 1),
+                None,
+            );
+            out.ir.source_indices.slots[usize::from(slot)] = Some(runtime);
+        }
+    }
+    let span = crate::audit::Span::new("translate_resource_ir_dsp");
     let parent = path
         .parent()
         .ok_or_else(|| invalid("instrument has no folder"))?;
@@ -302,7 +371,13 @@ fn translate(
         .find(|p| p.join("Samples").is_dir())
         .unwrap_or(parent);
     let mut samples = Samples::new(root);
-    let racks = crate::effects::program_racks(&program, &out.engine);
+    let mut rack_errors = Vec::new();
+    let racks = crate::effects::program_racks(&program, &out.engine, |at, error| {
+        rack_errors.push((at, error));
+    });
+    for (at, error) in rack_errors {
+        out.unsupported(&at, "effect decoding", error, ir::Reason::Unknown);
+    }
     let routes: Vec<_> = translated
         .iter()
         .flatten()
@@ -328,12 +403,15 @@ fn translate(
             let decoded = samples.decode(&at).map_err(|e| e.to_string())?;
             Ok((decoded.rate, decoded.frames))
         };
-        for (at, (slot, feature, value, reason)) in
-            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load)
-        {
+        let (notes, send_buses) =
+            crate::effects::instrument_buses(&mut out.ir, &racks, &buses, dynamic, &mut load);
+        for (at, (slot, feature, value, reason)) in notes {
             out.unsupported(&format!("{at} slot {slot}"), &feature, value, reason);
         }
+        out.resolve_send_taps(&send_buses);
     }
+    drop(span);
+    let span = crate::audit::Span::new("translate_zones_sample_resolve");
     // Racks of buses no group feeds do nothing, so they are not reported.
     let mut resolved = HashMap::new();
     let data = &program
@@ -346,9 +424,13 @@ fn translate(
     if count > data.len() / 8 {
         return Err(invalid("zone count exceeds the zone list"));
     }
+    out.ir.source_indices.zones.resize(count, None);
     for index in 0..count {
         let zone =
             raw_zone(&mut r).map_err(|reason| invalid(&format!("zone {index}: {reason}")))?;
+        if let Some(objects) = &mut out.ir.kontakt_objects {
+            objects.zones.push(zone.source.clone());
+        }
         let Some(group) = translated.get(zone.group).ok_or_else(|| {
             invalid(&format!(
                 "zone {index} refers to missing group {}",
@@ -387,15 +469,24 @@ fn translate(
                     .saturating_sub(u64::from(end.unsigned_abs())),
             ),
         };
+        let before = out.ir.zones.len();
         out.zone(index, zone, end, group, &params, location.clone());
+        if out.ir.zones.len() > before {
+            out.ir.source_indices.zones[index] = Some(ir::ZoneRef(before));
+        }
     }
+    drop(span);
+    let _span = crate::audit::Span::new("translate_keys_validate");
     crate::keyswitch::translate(&mut out.ir, &out.start_criteria);
     out.ir.unsupported.dedup();
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = crate::coverage::slots(&program, &out.ir, dynamic, &out.engine, &out.target_outcomes).ok(); out.ir.native_start_mod_groups = crate::coverage::start_mod_groups(&program).ok(); }
     out.ir.validate().map_err(|e| invalid(&e.to_string()))?;
     Ok(Kontakt {
         instrument: out.ir,
         locations: out.locations,
         samples,
+        initialized: Some(initialized),
     })
 }
 
@@ -423,7 +514,7 @@ struct Translation {
     start_criteria: Vec<(
         String,
         ir::GroupRef,
-        Vec<ni_file::kontakt::objects::StartCriteriaParams>,
+        ni_file::kontakt::objects::StartCriteriaList,
     )>,
     /// Kontakt voice group index -> `ir.voice_limits` index.
     voice_groups: Vec<Option<usize>>,
@@ -433,32 +524,18 @@ struct Translation {
     engine: Vec<sampler_ksp::EnginePar>,
     /// A script writes effect slots while playing.
     dynamic: bool,
+    send_taps: Vec<(ir::ChainRef, crate::effects::SendTap)>,
+    #[cfg(feature="scan")]
+    target_outcomes: crate::coverage::Targets,
 }
 
 const VOICE_GROUPS: u16 = 0x32;
 
-/// One `BVoiceLimit` (version 0x60): name, kill mode (Any, Oldest, Newest,
-/// Highest, Lowest), prefer released, max voices, fade ms, exclusion group.
-fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error> {
-    fn take<const N: usize>(data: &mut &[u8]) -> Result<[u8; N], ni_file::Error> {
-        let (head, rest) = data
-            .split_first_chunk::<N>()
-            .ok_or_else(|| ni_file::Error::Generic("truncated voice limit".into()))?;
-        *data = rest;
-        Ok(*head)
-    }
-    let header = take::<3>(data)?;
-    if header != [0, 0x60, 0] {
-        return Err(ni_file::Error::Generic(format!(
-            "voice limit header {header:02x?}"
-        )));
-    }
-    let chars = u32::from_le_bytes(take(data)?) as usize;
-    if data.len() < chars * 2 {
-        return Err(ni_file::Error::Generic("truncated voice limit name".into()));
-    }
-    *data = &data[chars * 2..];
-    let kill = match i16::from_le_bytes(take(data)?) {
+/// Translate only established voice-limit semantics; retain signed saved values.
+fn voice_limit(
+    v: &ni_file::kontakt::objects::VoiceLimit,
+) -> Result<ir::VoiceLimit, ni_file::Error> {
+    let kill = match v.kill_mode {
         0 => ir::Kill::Any,
         1 => ir::Kill::Oldest,
         2 => ir::Kill::Newest,
@@ -466,19 +543,12 @@ fn voice_limit(data: &mut &[u8]) -> Result<(ir::VoiceLimit, i32), ni_file::Error
         4 => ir::Kill::Lowest,
         other => return Err(ni_file::Error::Generic(format!("voice kill mode {other}"))),
     };
-    let prefer_released = take::<1>(data)?[0] != 0;
-    let voices = i32::from_le_bytes(take(data)?).max(1) as u32;
-    let fade = i32::from_le_bytes(take(data)?).max(0);
-    let exclusion = i32::from_le_bytes(take(data)?);
-    Ok((
-        ir::VoiceLimit {
-            voices,
-            kill,
-            prefer_released,
-            fade: ir::Time::Milliseconds(f64::from(fade)),
-        },
-        exclusion,
-    ))
+    Ok(ir::VoiceLimit {
+        voices: v.max_num_voices.max(1) as u32,
+        kill,
+        prefer_released: v.prefer_released,
+        fade: ir::Time::Milliseconds(f64::from(v.ms_fade_time.max(0))),
+    })
 }
 
 /// Kontakt AHDSR stage laws as native `expm1(k·t)/expm1(k)` curves (decoded
@@ -503,35 +573,64 @@ fn ahdsr_curves(curve: f32) -> (ir::Curve, ir::Curve) {
 }
 
 impl Translation {
+    fn resolve_send_taps(&mut self, buses: &[(usize, ir::BusRef)]) {
+        for (chain, tap) in std::mem::take(&mut self.send_taps) {
+            for (send, level) in tap.levels.into_iter().enumerate() {
+                if !level.is_finite() || level < 0.0 {
+                    self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                        "send level", send.to_string(), ir::Reason::InvalidValue);
+                    continue;
+                }
+                let Some(&(_, bus)) = buses.iter().find(|(slot, _)| *slot == send) else {
+                    if level != 0.0 && !tap.bypass {
+                        self.unsupported(&format!("voice chain {} slot {}", chain.0, tap.slot),
+                            "send return", send.to_string(), ir::Reason::NotModeled);
+                    }
+                    continue;
+                };
+                self.ir.voice_send_taps.push(ir::VoiceSendTap {
+                    chain, position: tap.position, bus,
+                    gain: ir::Gain::Linear(f64::from(level)), bypass: tap.bypass,
+                    gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+                });
+            }
+        }
+    }
+
     /// The `VoiceGroups` chunk: the instrument's voice limit, a 128-bit set of
     /// defined voice groups, then one voice limit per defined group.
-    fn voice_groups(&mut self, mut data: &[u8]) -> Result<(), ni_file::Error> {
-        let (instrument, _) = voice_limit(&mut data)?;
-        self.ir.voice_limit = Some(instrument);
-        let (defined, mut data) = data
-            .split_first_chunk::<16>()
-            .ok_or_else(|| ni_file::Error::Generic("truncated voice groups".into()))?;
+    fn voice_groups(&mut self, data: &[u8]) -> Result<(), ni_file::Error> {
+        let mut reader = Cursor::new(data);
+        let groups = VoiceGroups::read(&mut reader)?;
+        if reader.position() != data.len() as u64 {
+            return Err(ni_file::Error::Static("Trailing VoiceGroups chunk data"));
+        }
+        self.ir.voice_limit = Some(voice_limit(&groups.voice_limit)?);
+        if let Some(objects) = &mut self.ir.kontakt_objects {
+            objects.voice_groups = Some(ir::kontakt::VoiceGroups {
+                program: crate::objects::voice(&groups.voice_limit),
+                groups: groups
+                    .groups
+                    .iter()
+                    .map(|v| v.as_ref().map(|v| crate::objects::voice(&v.voice_limit)))
+                    .collect(),
+            });
+        }
         self.voice_groups = vec![None; 128];
-        for g in 0..128 {
-            if defined[g / 8] & (1 << (g % 8)) != 0 {
-                let (limit, exclusion) = voice_limit(&mut data)?;
-                if exclusion >= 0 {
+        for (g, group) in groups.groups.iter().enumerate() {
+            if let Some(group) = group {
+                let limit = voice_limit(&group.voice_limit)?;
+                if group.voice_limit.exclusion_group >= 0 {
                     self.unsupported(
                         &format!("voice group {g}"),
                         "voice group exclusion group",
-                        exclusion,
+                        group.voice_limit.exclusion_group,
                         ir::Reason::NotModeled,
                     );
                 }
                 self.ir.voice_limits.push(limit);
                 self.voice_groups[g] = Some(self.ir.voice_limits.len() - 1);
             }
-        }
-        if !data.is_empty() {
-            return Err(ni_file::Error::Generic(format!(
-                "{} bytes after the voice groups",
-                data.len()
-            )));
         }
         Ok(())
     }
@@ -550,9 +649,116 @@ impl Translation {
         });
     }
 
+    fn source_modulators(&mut self, index: usize, group: &Group) -> Result<(), ni_file::Error> {
+        for (external, id) in [(false, INTERNAL_MODS), (true, EXTERNAL_MODS)] {
+            if let Some(chunk) = group.0.find_first(id) {
+                let names: Vec<_> = if external {
+                    ExternalModArray32::try_from(chunk)?
+                        .slots()?
+                        .into_iter()
+                        .map(|(slot, m)| m.params().map(|p| (slot, p.name, p.targets)))
+                        .collect::<Result<_, _>>()?
+                } else {
+                    let mut names = Vec::new();
+                    for (slot, modulator) in InternalModArray16::try_from(chunk)?.slots()? {
+                        let params = modulator.params()?;
+                        if let Modulator::Ahdsr(envelope) = &params.modulator {
+                            Self::source_envelope(&mut self.ir.source_indices, index, slot, envelope);
+                        }
+                        names.push((slot, params.name, params.targets));
+                    }
+                    names
+                };
+                for (slot, name, targets) in names {
+                    self.source_modulator(index, slot, external, name, &targets);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn source_envelope(
+        source: &mut ir::SourceIndices,
+        group: usize,
+        slot: usize,
+        envelope: &ni_file::kontakt::objects::EnvelopeAhdsr,
+    ) {
+        use sampler_core::{EngineParameterLaw, EnvelopeStage};
+        let (ir::Curve::Exponential(curve), _) = ahdsr_curves(envelope.attack_curve) else {
+            unreachable!()
+        };
+        for (name, stage, native) in [
+            (
+                "ENGINE_PAR_ATTACK",
+                EnvelopeStage::Attack,
+                f64::from(envelope.attack_ms),
+            ),
+            (
+                "ENGINE_PAR_HOLD",
+                EnvelopeStage::Hold,
+                f64::from(envelope.hold_ms),
+            ),
+            (
+                "ENGINE_PAR_DECAY",
+                EnvelopeStage::Decay,
+                f64::from(envelope.decay_ms),
+            ),
+            (
+                "ENGINE_PAR_SUSTAIN",
+                EnvelopeStage::Sustain,
+                f64::from(envelope.sustain),
+            ),
+            (
+                "ENGINE_PAR_RELEASE",
+                EnvelopeStage::Release,
+                f64::from(envelope.release_ms),
+            ),
+            ("ENGINE_PAR_ATK_CURVE", EnvelopeStage::AttackCurve, curve),
+        ] {
+            source.engine_values.push(ir::SourceEngineValue {
+                parameter: sampler_core::engine_parameter_id(name).unwrap(),
+                group: group as i32,
+                slot: slot as i32,
+                generic: -1,
+                value: EngineParameterLaw::envelope(stage, 1000).encode(native),
+            });
+        }
+    }
+
+    fn source_modulator(
+        &mut self, group: usize, slot: usize, external: bool,
+        name: String, targets: &[ni_file::kontakt::objects::ModTarget],
+    ) {
+        self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
+            group: group as i32, owner: -1, target: false,
+            name: name.clone(), index: slot as i32,
+        });
+        for (index, target) in targets.iter().enumerate() {
+            self.ir.source_indices.engine_lookups.push(ir::SourceEngineLookup {
+                group: group as i32, owner: slot as i32, target: true,
+                name: target.name.clone(), index: index as i32,
+            });
+        }
+        self.ir.source_indices.modulators.push(ir::SourceModulator {
+            group, slot, external, name, runtime: None,
+        });
+    }
+
     /// A group's settings, or `None` for a muted group.
     fn group(&mut self, index: usize, group: &Group) -> Result<Option<GroupInfo>, ni_file::Error> {
         let mut v = group.params()?;
+        if let Some(objects) = &mut self.ir.kontakt_objects {
+            let source = crate::objects::group(group, &v);
+            if let Some(error) = &source.source_error {
+                self.ir.unsupported.push(ir::Unsupported {
+                    location: format!("group {index}"),
+                    feature: "source parameters".into(),
+                    value: error.clone(),
+                    reason: ir::Reason::Unknown,
+                });
+            }
+            objects.groups.push(source);
+        }
         let saved = self.snapshot_groups.get(index).cloned();
         if let Some(state) = &saved {
             v.volume = state.volume;
@@ -563,6 +769,11 @@ impl Translation {
         }
         let at = format!("group {index} {:?}", v.name);
         if v.muted {
+            // Empty source groups retain their numeric address for KSP and DSP writes.
+            self.ir.groups.push(ir::Group {
+                name: v.name,
+                ..Default::default()
+            });
             return Ok(None);
         }
         let not_modeled = ir::Reason::NotModeled;
@@ -583,7 +794,7 @@ impl Translation {
         self.start_criteria.push((
             at.clone(),
             ir::GroupRef(self.ir.groups.len()),
-            v.start_criteria.items.clone(),
+            v.start_criteria.clone(),
         ));
         match group.source_identity() {
             // v1 plays every mode but wavetable (9) as a sampler; so does this.
@@ -613,24 +824,42 @@ impl Translation {
             }),
             None => group.insert_fx(),
         };
-        if let Ok(array) = insert {
-            let mut slots = crate::effects::rack(&array);
-            crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
-            let dynamic = self.dynamic.then_some((index as i32, -1));
-            let c = crate::effects::chain_with(&slots, crate::effects::Scope::Voice, None, dynamic);
-            let processors = c.processors;
-            filter_slots = c.filter_slots;
-            for (slot, feature, value, reason) in c.notes {
-                self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
-            }
-            if !processors.is_empty() {
-                self.ir.chains.push(ir::Chain {
-                    scope: ir::Scope::Voice,
-                    pre_amplitude: processors,
-                    post_amplitude: Vec::new(),
+        match insert {
+            Ok(array) => {
+                let mut slots = crate::effects::rack(&array, |slot, error| {
+                    self.unsupported(
+                        &format!("{at} insert slot {slot}"),
+                        "effect decoding",
+                        error,
+                        ir::Reason::Unknown,
+                    )
                 });
-                chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                crate::effects::apply_writes(&mut slots, &self.engine, index as i32, -1);
+                let dynamic = self.dynamic.then_some((index as i32, -1));
+                let (c, boundary) =
+                    crate::effects::voice_chain(&slots, v.fx_idx_amp_split_point, dynamic, index as i32);
+                let mut processors = c.processors;
+                filter_slots = c.filter_slots;
+                for (slot, feature, value, reason) in c.notes {
+                    self.unsupported(&format!("{at} insert slot {slot}"), &feature, value, reason);
+                }
+                if !processors.is_empty() || !c.send_taps.is_empty() {
+                    let post_amplitude = processors.split_off(boundary);
+                    self.ir.chains.push(ir::Chain {
+                        scope: ir::Scope::Voice,
+                        pre_amplitude: processors,
+                        post_amplitude,
+                    });
+                    chain = Some(ir::ChainRef(self.ir.chains.len() - 1));
+                    self.send_taps.extend(c.send_taps.into_iter().map(|tap| (chain.unwrap(), tap)));
+                }
             }
+            Err(error) => self.unsupported(
+                &format!("{at} insert"),
+                "effect decoding",
+                error,
+                ir::Reason::Unknown,
+            ),
         }
         let mut envelope = None;
         let mut flex_release = None;
@@ -645,7 +874,7 @@ impl Translation {
                 }
                 let retrigger = params.unknown_flags[2] != 0;
                 let volume = matches!(params.targets.as_slice(), [t]
-                    if t.param == "volume" && t.intensity == 1.0 && !t.invert
+                    if t.param == "volume" && t.signed_intensity() == 1.0 && !t.invert
                         && t.slot.is_none() && t.lag_ms == 0
                         && !t.shaper.as_ref().is_some_and(|s| s.enabled));
                 let source = match params.modulator {
@@ -720,18 +949,20 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
+                if let Some(address) = self.ir.source_indices.modulators.iter_mut()
+                    .find(|m| m.group == index && m.slot == usize::from(slot) && !m.external)
+                { address.runtime = Some(modulator); }
                 if envelope_source && volume && envelope.is_none() {
                     envelope = Some(modulator);
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,0),true);
                     continue;
                 }
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        envelope_source,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,envelope_source,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),false,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -769,12 +1000,14 @@ impl Translation {
                 };
                 if let (ModSource::Velocity, [t]) = (&params.source, params.targets.as_slice())
                     && plain_volume(t)
-                    && t.intensity == 1.0
+                    && t.signed_intensity() == 1.0
                     && velocity == ir::VelocityResponse::None
                 {
                     // gain × velocity: the attenuate law at full intensity,
                     // kept on the voice so no per-voice modulation is needed.
                     velocity = ir::VelocityResponse::Linear;
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,0),true);
                     continue;
                 }
                 let source = match params.source {
@@ -821,14 +1054,20 @@ impl Translation {
                     source,
                 });
                 let modulator = ir::ModulatorRef(self.ir.modulators.len() - 1);
-                for target in &params.targets {
-                    routes.extend(self.route(
-                        &at,
-                        modulator,
-                        !bipolar,
-                        target,
-                        chain.zip(Some(&filter_slots[..])),
-                    ));
+                if let Some(address) = self
+                    .ir
+                    .source_indices
+                    .modulators
+                    .iter_mut()
+                    .find(|m| m.group == index && m.slot == usize::from(slot) && m.external)
+                {
+                    address.runtime = Some(modulator);
+                }
+                for (_ordinal,target) in params.targets.iter().enumerate() {
+                    let route=self.route(&at,modulator,!bipolar,target,chain.zip(Some(&filter_slots[..])));
+                    #[cfg(feature="scan")]
+                    self.target_outcomes.insert((index,usize::from(slot),true,_ordinal),route.is_some());
+                    routes.extend(route);
                 }
             }
         }
@@ -880,7 +1119,9 @@ impl Translation {
     /// (`$ENGINE_PAR_OUTPUT_CHANNEL` = `$NI_BUS_OFFSET` + n).
     fn script_bus(&self, index: usize) -> Option<u8> {
         let value = self.script_par("ENGINE_PAR_OUTPUT_CHANNEL", index as i32, -1, -1)?;
-        u8::try_from(value.checked_sub(1000)?).ok().filter(|&n| n < 16)
+        u8::try_from(value.checked_sub(1000)?)
+            .ok()
+            .filter(|&n| n < 16)
     }
 
     /// An instrument bus fader a script set (linear gain). Law: dB = 18 log2(v)
@@ -893,7 +1134,9 @@ impl Translation {
 
     /// The modulation intensity a script set for modulation `name` of group `index`.
     fn script_intensity(&self, index: usize, name: &str) -> Option<f32> {
-        let slot = sampler_core::name_index(name);
+        let slot = self.ir.source_indices.engine_lookups.iter()
+            .find(|lookup| lookup.group == index as i32 && lookup.owner == -1 && !lookup.target
+                && lookup.name.eq_ignore_ascii_case(name))?.index;
         let v = self.script_par("ENGINE_PAR_MOD_TARGET_INTENSITY", index as i32, slot, -1)?;
         Some(v.clamp(0, 1_000_000) as f32 / 1_000_000.0)
     }
@@ -906,11 +1149,11 @@ impl Translation {
         &mut self,
         at: &str,
         source: ir::ModulatorRef,
-        unipolar: bool,
+        _unipolar: bool,
         target: &ni_file::kontakt::objects::ModTarget,
         filters: Option<(ir::ChainRef, &[(usize, usize)])>,
     ) -> Option<ir::RouteRef> {
-        let i = f64::from(target.intensity);
+        let i = f64::from(target.signed_intensity());
         let report = |this: &mut Self, feature: &str, reason| {
             this.unsupported(
                 at,
@@ -943,11 +1186,6 @@ impl Translation {
                 ir::Reason::NotModeled,
             );
         }
-        // Flag 0x02 marks a signed (bipolar) target scaling; how a unipolar
-        // source maps onto it is not established.
-        if unipolar && target.unknown_flags & 0x02 != 0 {
-            return report(self, "signed modulation target", ir::Reason::UnknownLaw);
-        }
         let (route_target, depth) = match target.param.as_str() {
             _ if cutoff.is_some() => (
                 cutoff.unwrap_or(ir::Target::Amplitude),
@@ -959,7 +1197,7 @@ impl Translation {
                 ir::Depth::Pitch(ir::Pitch::Semitones(12.0 * i)),
             ),
             "playPos" => (ir::Target::SampleStart, ir::Depth::Normalized(i)),
-            "pan" => return report(self, "pan modulation", ir::Reason::UnknownLaw),
+            "pan" => (ir::Target::Pan, ir::Depth::Normalized(i)),
             _ => return report(self, "modulation target", ir::Reason::NotModeled),
         };
         // The invert flag does not act through an enabled shaper: Vista Full
@@ -1078,7 +1316,6 @@ impl Translation {
         location: PathBuf,
     ) {
         let at = format!("zone {index} (group {})", group.index);
-        let not_modeled = ir::Reason::NotModeled;
         let asset = match self.assets.get(&location) {
             Some(&asset) => asset,
             None => {
@@ -1113,46 +1350,47 @@ impl Translation {
             );
             return;
         }
-        let mut looping = ir::Looping::None;
-        for (slot, l) in z.loops.iter().enumerate().filter(|(_, l)| l.mode != 0) {
-            if looping != ir::Looping::None {
-                self.unsupported(
-                    &at,
-                    "additional loop",
-                    format!("slot {slot}: {l:?}"),
-                    not_modeled,
-                );
-                continue;
-            }
-            if l.loop_count != 0
-                || (l.loop_tuning - 1.0).abs() > 0.001
+        let mut slots = [None; 8];
+        for (slot, l) in z.loop_slots.iter().zip(&z.loops).filter(|(_, l)| l.mode != 0) {
+            if l.loop_count < 0
+                || !l.loop_tuning.is_finite()
+                || l.loop_tuning <= 0.0
                 || l.loop_start < 0
                 || l.loop_length <= 0
+                || l.x_fade_length < 0
             {
                 self.unsupported(
                     &at,
-                    "counted, tuned or invalid loop",
-                    format!("{l:?}"),
-                    not_modeled,
+                    "invalid loop",
+                    format!("slot {slot}: {l:?}"),
+                    ir::Reason::InvalidValue,
                 );
                 continue;
             }
-            let range = ir::LoopRange {
-                start: l.loop_start as u64,
-                end: l.loop_start as u64 + l.loop_length as u64,
-                crossfade: ir::Span::Frames(l.x_fade_length.max(0) as u64),
-                alternating: l.alternating_loop,
-            };
-            // Mode 1 is the only mode in local libraries; 2 as "until release" is unverified.
-            looping = match l.mode {
-                1 => ir::Looping::Continuous(range),
-                2 => ir::Looping::UntilRelease(range),
-                mode => {
-                    self.unsupported(&at, "loop mode", mode, ir::Reason::Unknown);
-                    continue;
-                }
-            };
+            if !matches!(l.mode, 1 | 2) {
+                self.unsupported(&at, "loop mode", l.mode, ir::Reason::Unknown);
+                continue;
+            }
+            if l.alternating_loop && l.x_fade_length > 0 {
+                self.unsupported(&at, "alternating loop crossfade law (metadata retained)", format!("slot {slot}, fade {}", l.x_fade_length), ir::Reason::UnknownLaw);
+            }
+            slots[usize::from(*slot)] = Some(ir::LoopSlot {
+                range: ir::LoopRange {
+                    start: l.loop_start as u64,
+                    end: l.loop_start as u64 + l.loop_length as u64,
+                    crossfade: ir::Span::Frames(l.x_fade_length as u64),
+                    alternating: l.alternating_loop,
+                },
+                count: l.loop_count as u32,
+                tuning: f64::from(l.loop_tuning),
+                until_release: l.mode == 2,
+            });
         }
+        let looping = if slots.iter().any(Option::is_some) {
+            ir::Looping::Slots(slots)
+        } else {
+            ir::Looping::None
+        };
         let semitones =
             12.0 * f64::from(z.tune * program.tune).log2() + f64::from(program.transpose);
         self.ir.zones.push(ir::Zone {
@@ -1232,6 +1470,8 @@ struct RawZone {
     tune: f32,
     file: i32,
     loops: Vec<ni_file::kontakt::objects::Loop>,
+    loop_slots: Vec<u8>,
+    source: ir::kontakt::Zone,
 }
 
 /// Layout from the v1 importer: the owning group, then a structured zone whose
@@ -1241,22 +1481,30 @@ struct RawZone {
 fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
     let group = u32le(r).map_err(|e| e.to_string())? as usize;
     let so = StructuredObject::read(&mut *r).map_err(|e| e.to_string())?;
-    let mut z = Cursor::new(so.public_data.as_slice());
-    let read = |z: &mut Cursor<&[u8]>| -> std::io::Result<_> {
-        // The third field is the sample-start modulation range, used only by playPos modulation.
-        let (start, end, start_mod) = (i32le(z)?, i32le(z)?, i32le(z)?);
-        let mut ranges = [0i16; 9];
-        for value in &mut ranges {
-            *value = i16le(z)?;
-        }
-        let (gain, pan, tune) = (f32le(z)?, f32le(z)?, f32le(z)?);
-        if so.version >= 0x9a {
-            z.read_exact(&mut [0; 6])?;
-        }
-        Ok((start, end, start_mod, ranges, gain, pan, tune, i32le(z)?))
-    };
-    let (start, end, start_mod, ranges, gain, pan, tune, file) =
-        read(&mut z).map_err(|e| e.to_string())?;
+    let source_zone = Zone(so);
+    let params = source_zone.params().map_err(|e| e.to_string())?;
+    let (start, end, start_mod) = (
+        params.sample_start,
+        params.sample_end,
+        params.sample_start_mod_range,
+    );
+    let ranges = [
+        params.low_velocity,
+        params.high_velocity,
+        params.low_key,
+        params.high_key,
+        params.fade_low_velocity,
+        params.fade_high_velocity,
+        params.fade_low_key,
+        params.fade_high_key,
+        params.root_key,
+    ];
+    let (gain, pan, tune, file) = (
+        params.zone_volume,
+        params.zone_pan,
+        params.zone_tune,
+        params.filename_id,
+    );
     let [lv, hv, lk, hk, f0, f1, f2, f3, root] = ranges;
     let midi = |value: i16, what| {
         u8::try_from(value)
@@ -1285,10 +1533,15 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
             "start {start}, end {end}, gain {gain}, pan {pan}, tune {tune}"
         ));
     }
-    let loops = match so.find_first(LOOPS) {
-        Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?.items,
-        None => Vec::new(),
+    let loops = match source_zone.0.find_first(LOOPS) {
+        Some(chunk) => LoopArray::try_from(chunk).map_err(|e| e.to_string())?,
+        None => LoopArray {
+            mask: 0,
+            items: Vec::new(),
+            slots: Vec::new(),
+        },
     };
+    let source = crate::objects::zone(source_zone.0.version, group as u32, params, &loops);
     Ok(RawZone {
         group,
         start: start as u64,
@@ -1302,7 +1555,9 @@ fn raw_zone(r: &mut Cursor<&[u8]>) -> Result<RawZone, String> {
         pan,
         tune,
         file,
-        loops,
+        source,
+        loop_slots: loops.slots,
+        loops: loops.items,
     })
 }
 
@@ -1311,18 +1566,6 @@ fn u32le(r: &mut impl Read) -> std::io::Result<u32> {
     r.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
-fn i32le(r: &mut impl Read) -> std::io::Result<i32> {
-    Ok(u32le(r)? as i32)
-}
-fn i16le(r: &mut impl Read) -> std::io::Result<i16> {
-    let mut b = [0; 2];
-    r.read_exact(&mut b)?;
-    Ok(i16::from_le_bytes(b))
-}
-fn f32le(r: &mut impl Read) -> std::io::Result<f32> {
-    Ok(f32::from_bits(u32le(r)?))
-}
-
 #[cfg(test)]
 mod survey {
     use super::*;
@@ -1454,37 +1697,247 @@ mod survey {
     }
 }
 
-/// A script slot's saved persistent values, from Kontakt's `"<name> <value>"`
-/// entries: `$` integers, `~` reals, `@` strings. Arrays (`%`, `?`, `!`) are
-/// left out.
-pub(crate) fn saved(entries: &[String]) -> Vec<(String, ir::Saved)> {
+/// Strict saved-entry reader. Numeric repeated tails are expanded by the KSP
+/// declaration, while LF string arrays preserve whitespace and empty cells.
+pub(crate) fn saved(entries: &[String]) -> Result<Vec<(String, ir::Saved)>, crate::Error> {
+    use crate::{SavedEntry, SavedValue};
     entries
         .iter()
-        .filter_map(|entry| {
-            let (name, rest) = entry.split_once(' ').unwrap_or((entry, ""));
-            let value = match name.as_bytes().first()? {
-                b'$' => ir::Saved::Int(rest.trim().parse().ok()?),
-                b'~' => ir::Saved::Real(rest.trim().parse().ok()?),
-                b'@' => ir::Saved::Text(rest.to_owned()),
-                b'%' => ir::Saved::Ints(
-                    rest.split_whitespace()
-                        .map(|n| n.parse().ok())
-                        .collect::<Option<_>>()?,
-                ),
-                b'?' => ir::Saved::Reals(
-                    rest.split_whitespace()
-                        .map(|n| n.parse().ok())
-                        .collect::<Option<_>>()?,
-                ),
-                _ => return None,
+        .map(|raw| {
+            let entry = SavedEntry::parse(
+                raw.as_bytes(),
+                None,
+                crate::Limits {
+                    bytes: 16 * 1024 * 1024,
+                    records: 1_000_000,
+                },
+            )?;
+            let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+            let value = match entry.value {
+                SavedValue::Int(v) | SavedValue::MenuIndex(v) => ir::Saved::Int(v.into()),
+                SavedValue::Real(v) => ir::Saved::Real(v),
+                SavedValue::Text(v) => ir::Saved::Text(text(v)),
+                SavedValue::Ints { values, .. } => {
+                    ir::Saved::Ints(values.iter().map(i64::from).collect())
+                }
+                SavedValue::Reals { values, .. } => ir::Saved::Reals(values.iter().collect()),
+                SavedValue::Texts(values) => ir::Saved::Texts(values.iter().map(text).collect()),
             };
-            Some((name.to_owned(), value))
+            Ok((entry.name.to_owned(), value))
         })
         .collect()
 }
 
 #[cfg(test)]
 mod saved_tests {
+    use super::*;
+    #[test]
+    fn authored_envelope_init_values_keep_physical_slots_and_native_laws() {
+        let mut indices = ir::SourceIndices::default();
+        let envelope = ni_file::kontakt::objects::EnvelopeAhdsr {
+            attack_ms: 80.,
+            hold_ms: 2.,
+            decay_ms: 25000.,
+            sustain: 0.4,
+            release_ms: 120.,
+            attack_curve: 0.75,
+            unknown_flag: 1,
+            unknown_tail: vec![0; 52],
+        };
+        Translation::source_envelope(&mut indices, 7, 12, &envelope);
+        let values = &indices.engine_values;
+        assert_eq!(values.len(), 6);
+        assert_eq!(
+            values
+                .iter()
+                .find(|value| sampler_core::engine_parameter_name(value.parameter)
+                    == Some("$ENGINE_PAR_SUSTAIN"))
+                .unwrap()
+                .value,
+            400000
+        );
+        assert!(
+            values
+                .iter()
+                .all(|value| value.group == 7 && value.slot == 12 && value.generic == -1)
+        );
+        let source = values
+            .iter()
+            .map(|value| {
+                format!(
+                    "set_engine_par({},get_engine_par({},7,12,-1),7,12,-1)\n",
+                    sampler_core::engine_parameter_name(value.parameter).unwrap(),
+                    sampler_core::engine_parameter_name(value.parameter).unwrap()
+                )
+            })
+            .collect::<String>();
+        let behavior = ir::Behavior {
+            name: "authored getter feedback".into(),
+            language: ir::Language::Ksp,
+            source: format!("on init\n{source}end on"),
+            slot: Some(0),
+            state: vec![],
+            requires: vec![],
+        };
+        let environment = crate::load::script_environment(
+            &behavior,
+            0,
+            vec![String::new(); 8],
+            &indices,
+            Default::default(),
+        );
+        let writes =
+            sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                .unwrap()
+                .engine_pars();
+        assert_eq!(writes.len(), 6);
+        for value in values {
+            assert!(
+                writes
+                    .iter()
+                    .any(|write| sampler_core::engine_parameter_id(&write.parameter)
+                        == Some(value.parameter)
+                        && write.group == 7
+                        && write.slot == 12
+                        && write.generic == -1
+                        && write.value == value.value)
+            );
+        }
+        for (stage, native) in [
+            (sampler_core::EnvelopeStage::Attack, 80.),
+            (sampler_core::EnvelopeStage::Decay, 25000.),
+        ] {
+            let ms = sampler_core::EngineParameterLaw::envelope(stage, 1000).encode(native);
+            let frames = sampler_core::EngineParameterLaw::envelope(stage, 48000).encode(native * 48.);
+            assert_eq!(
+                ms, frames,
+                "authored init and DSP binding must use the same law"
+            );
+        }
+    }
+
+    #[test]
+    fn dolce_sustain_getter_feedback_is_observable_without_exporting_source() {
+        let path = std::path::Path::new(
+            "/mnt/MAIN_STORAGE/Libraries/Kontakt/Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki",
+        );
+        if !path.is_file() {
+            return;
+        }
+        let kontakt = super::read(path)
+            .unwrap_or_else(|_| panic!("instrument read failed; authored diagnostics omitted"));
+        let instrument = &kontakt.instrument;
+        let parameter = sampler_core::engine_parameter_id("ENGINE_PAR_SUSTAIN").unwrap();
+        let mut changed = 0;
+        for (index, behavior) in instrument.behaviors.iter().enumerate() {
+            let mut environment = crate::load::script_environment(
+                behavior,
+                index,
+                instrument
+                    .groups
+                    .iter()
+                    .map(|group| group.name.clone())
+                    .collect(),
+                &instrument.source_indices,
+                Default::default(),
+            );
+            environment.engine_values.clear();
+            let cold =
+                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+                    .engine_pars();
+            for group in 0..instrument.groups.len() {
+                environment
+                    .engine_values
+                    .insert([i32::from(parameter), group as i32, 1, -1], 1_000_000);
+            }
+            let authored =
+                sampler_ksp::initialize(&behavior.source, sampler_ksp::Limits::LIBRARY, &environment)
+                    .unwrap_or_else(|_| panic!("init failed; authored diagnostics omitted"))
+                    .engine_pars();
+            for write in authored
+                .iter()
+                .filter(|write| write.parameter == "$ENGINE_PAR_SUSTAIN" && write.slot == 1)
+            {
+                if cold.iter().any(|prior| {
+                    prior.parameter == write.parameter
+                        && prior.group == write.group
+                        && prior.slot == write.slot
+                        && prior.generic == write.generic
+                        && prior.value == 0
+                }) && write.value == 1_000_000
+                {
+                    changed += 1;
+                }
+            }
+        }
+        assert_eq!(
+            changed, 36,
+            "changing only authored getter input must reach physical sustain setters"
+        );
+        println!("DOLCE_INIT_FEEDBACK sustain_setters_changed={changed}");
+    }
+
+    #[test]
+    fn translated_script_prefers_the_link_then_falls_back_to_saved_source() {
+        use ni_file::kontakt::{Chunk, StructuredObject, objects::Program};
+        let root =
+            std::env::temp_dir().join(format!("kontakt-linked-translation-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Resources/scripts")).unwrap();
+        let linked = "on init\nmessage(\"linked\")\nend on";
+        let saved = "on init\nmessage(\"saved\")\nend on";
+        let file = root.join("Resources/scripts/Source.txt");
+        std::fs::write(&file, linked).unwrap();
+        for expected in [linked, saved] {
+            let mut public = (saved.len() as u32).to_le_bytes().to_vec();
+            public.extend(saved.as_bytes());
+            public.extend([0; 3]);
+            public.extend(0u32.to_le_bytes());
+            public.extend(u32::MAX.to_le_bytes());
+            let name = r"C:\old\source.TXT";
+            public.extend((name.len() as u32).to_le_bytes());
+            public.extend(name.as_bytes());
+            let mut script = vec![0, 0x50, 0];
+            script.extend(public);
+            let program = Program(StructuredObject {
+                version: 0xaf,
+                public_data: vec![0; 70],
+                private_data: Vec::new(),
+                children: vec![
+                    Chunk {
+                        id: 0x33,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 0x34,
+                        data: vec![0; 4],
+                    },
+                    Chunk {
+                        id: 6,
+                        data: script,
+                    },
+                ],
+            });
+            let translated = super::translate(
+                root.join("Piano.nki"),
+                program,
+                Default::default(),
+                Default::default(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(translated.instrument.behaviors[0].source, expected);
+            if expected == linked {
+                std::fs::remove_file(&file).unwrap();
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_saved_entry_is_a_fault() {
+        assert!(super::saved(&["$bad x".into()]).is_err());
+    }
     #[test]
     fn saved_values_keep_their_types_and_arrays() {
         let entries = [
@@ -1492,10 +1945,10 @@ mod saved_tests {
             "~mix 0.5",
             "@label two words",
             "%table 1 2 3",
-            "$bad x",
+            "!strings first line\n\nthird line\n",
         ]
         .map(String::from);
-        let saved = super::saved(&entries);
+        let saved = super::saved(&entries).unwrap();
         assert_eq!(
             saved,
             [
@@ -1506,6 +1959,14 @@ mod saved_tests {
                     sampler_ir::Saved::Text("two words".into())
                 ),
                 ("%table".to_owned(), sampler_ir::Saved::Ints(vec![1, 2, 3])),
+                (
+                    "!strings".to_owned(),
+                    sampler_ir::Saved::Texts(vec![
+                        "first line".into(),
+                        "".into(),
+                        "third line".into()
+                    ])
+                ),
             ]
         );
     }
@@ -1549,7 +2010,112 @@ mod modulation {
             snapshot_groups: Vec::new(),
             engine: Vec::new(),
             dynamic: false,
+            send_taps: Vec::new(),
+        #[cfg(feature="scan")]
+        target_outcomes: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn group_send_taps_keep_physical_return_identity_and_amplifier_side() {
+        let mut out = translation();
+        out.ir.chains.push(ir::Chain { scope: ir::Scope::Voice,
+            pre_amplitude: Vec::new(), post_amplitude: Vec::new() });
+        out.send_taps.push((ir::ChainRef(0), crate::effects::SendTap {
+            slot: 5, position: ir::VoiceSendPosition::AfterAmplitude(0),
+            levels: vec![0.0, 0.0, 0.0, 0.5], bypass: false,
+        }));
+        out.resolve_send_taps(&[(3, ir::BusRef(1))]);
+        assert_eq!(out.ir.voice_send_taps, vec![ir::VoiceSendTap {
+            chain: ir::ChainRef(0), position: ir::VoiceSendPosition::AfterAmplitude(0),
+            bus: ir::BusRef(1), gain: ir::Gain::Linear(0.5), bypass: false,
+            gain_control: None, bypass_control: None, ramp: ir::Time::Seconds(0.0),
+        }]);
+        assert!(out.ir.unsupported.is_empty());
+    }
+
+    #[test]
+    fn source_mod_and_target_lookups_keep_holes_and_unmodeled_targets() {
+        let mut out = translation();
+        let mut unnamed = target("not-modeled", 1.);
+        unnamed.name.clear();
+        let mut named = target("not-modeled", 1.);
+        named.name = "Cutoff".into();
+        out.source_modulator(7, 31, true, "Controller".into(), &[unnamed, named]);
+        out.source_modulator(7, 12, false, "Envelope".into(), &[]);
+        let lookups = &out.ir.source_indices.engine_lookups;
+        assert_eq!(lookups.len(), 4);
+        assert_eq!((lookups[0].group, lookups[0].owner, lookups[0].target, lookups[0].index), (7,-1,false,31));
+        assert_eq!((lookups[2].group, lookups[2].owner, lookups[2].target, lookups[2].index), (7,31,true,1));
+        assert_eq!(lookups[2].name,"Cutoff");
+        assert_eq!(lookups[3].index,12);
+        assert_eq!(out.ir.source_indices.modulators[0].slot,31);
+        assert!(out.ir.source_indices.modulators[0].external);
+        assert_eq!(out.ir.source_indices.modulators[0].runtime,None);
+    }
+
+    #[test]
+    fn authored_init_intensity_uses_the_same_physical_modulator_slot() {
+        let mut out=translation();
+        out.source_modulator(7,31,true,"Controller".into(),&[]);
+        out.engine.push(sampler_ksp::EnginePar { parameter:"$ENGINE_PAR_MOD_TARGET_INTENSITY".into(), group:7, slot:31, generic:-1, value:500000 });
+        assert_eq!(out.script_intensity(7,"controller"),Some(0.5));
+    }
+
+    #[test]
+    fn fx_decode_group_insert_errors_reach_the_ir_report() {
+        let mut public = 0u32.to_le_bytes().to_vec();
+        for value in [1f32, 0.0, 1.0] {
+            public.extend(value.to_le_bytes());
+        }
+        public.extend([1, 0, 0, 0]);
+        public.extend(0i32.to_le_bytes());
+        public.extend((-1i16).to_le_bytes());
+        public.extend([0; 10]); // Voice group, amplifier split, mute/solo.
+        public.extend(0i32.to_le_bytes());
+        let mut group = Group(ni_file::kontakt::StructuredObject {
+            version: 0x95,
+            private_data: vec![],
+            public_data: public,
+            children: vec![ni_file::kontakt::Chunk {
+                id: 0x38,
+                data: vec![0],
+            }],
+        });
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        let notes: Vec<_> = out
+            .ir
+            .unsupported
+            .iter()
+            .filter(|n| n.feature == "effect decoding")
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].location, "group 0 \"\" insert");
+        assert_eq!(notes[0].reason, ir::Reason::Unknown);
+        assert!(notes[0].value.contains("Unrecognized group private data"));
+        for _ in 0..136 {
+            group.0.private_data.extend(8u32.to_le_bytes());
+            group.0.private_data.extend([0; 8]);
+        }
+        group.0.private_data.extend([0; 24]);
+        group.0.private_data.extend([0, 0xff, 0xff]);
+        let raw = group.0.private_data.clone();
+        let mut out = translation();
+        assert!(out.group(0, &group).unwrap().is_some());
+        assert!(
+            out.ir
+                .unsupported
+                .iter()
+                .any(|n| n.feature == "effect decoding"
+                    && n.location == "group 0 \"\" insert"
+                    && n.value.contains("ffff"))
+        );
+        assert_eq!(group.0.private_data, raw);
+        group.0.public_data[34] = 1; // Muted groups do not enter FX translation.
+        let mut muted = translation();
+        assert!(muted.group(0, &group).unwrap().is_none());
+        assert!(muted.ir.unsupported.is_empty());
     }
 
     fn target(param: &str, intensity: f32) -> ModTarget {
@@ -1597,6 +2163,20 @@ mod modulation {
         let rise = |t: f64| ((a * t).exp() - 1.0) / (a.exp() - 1.0);
         for (t, measured) in [(0.125, 0.12), (0.375, 0.35), (0.625, 0.59), (0.875, 0.84)] {
             assert!((rise(t) - measured).abs() < 0.04, "t {t}: {}", rise(t));
+        }
+    }
+
+    #[test]
+    fn authored_pan_target_reaches_the_shared_voice_pan_route() {
+        for unipolar in [false, true] {
+            let mut t = translation();
+            let pan = ModTarget { lag_ms: 15, invert: true, ..target("pan", 0.5) };
+            t.route("g", ir::ModulatorRef(0), unipolar, &pan, None)
+                .expect("authored pan must execute");
+            assert_eq!(t.ir.routes[0].target, ir::Target::Pan);
+            assert_eq!(t.ir.routes[0].depth, ir::Depth::Normalized(0.5));
+            assert!(t.ir.routes[0].invert);
+            assert_eq!(t.ir.routes[0].smoothing, ir::Time::Milliseconds(15.));
         }
     }
 
@@ -1658,13 +2238,10 @@ mod modulation {
         t.route("g", source, true, &target("playPos", 1.0), None)
             .unwrap();
         assert_eq!(t.ir.routes[2].target, ir::Target::SampleStart);
+        t.route("g", source, true, &target("pan", 1.0), None).unwrap();
+        assert_eq!(t.ir.routes[3].target, ir::Target::Pan);
         for unknown in [
-            target("pan", 1.0),
             target("cutoff", 1.0),
-            ModTarget {
-                unknown_flags: 0x12,
-                ..target("pitch", 1.0)
-            },
             ModTarget {
                 slot: Some(0),
                 ..target("cutoff", 1.0)
@@ -1672,17 +2249,28 @@ mod modulation {
         ] {
             assert!(t.route("g", source, true, &unknown, None).is_none());
         }
-        assert_eq!(t.ir.routes.len(), 3);
+        assert_eq!(t.ir.routes.len(), 4);
         let reasons: Vec<_> = t.ir.unsupported.iter().map(|u| u.reason).collect();
         assert_eq!(
             reasons,
             [
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled,
-                ir::Reason::UnknownLaw,
                 ir::Reason::NotModeled
             ]
         );
+    }
+
+    #[test]
+    fn saved_depth_sign_is_independent_of_invert_and_source_polarity() {
+        for unipolar in [false, true] {
+            for invert in [false, true] {
+                let mut t = translation();
+                let signed = ModTarget { unknown_flags: 0x12, invert, ..target("pitch", 0.25) };
+                t.route("g", ir::ModulatorRef(0), unipolar, &signed, None).expect("signed pitch route");
+                assert_eq!(t.ir.routes[0].depth, ir::Depth::Pitch(ir::Pitch::Semitones(-3.0)));
+                assert_eq!(t.ir.routes[0].invert, invert);
+            }
+        }
     }
 
     #[test]

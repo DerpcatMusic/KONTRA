@@ -161,6 +161,59 @@ fn pitch_and_pan_routes_reach_the_voice() {
 }
 
 #[test]
+fn changing_and_held_controller_pitch_matches_expression_without_heap() {
+    let build = |source, depth| {
+        Runtime::new(
+            modulated(
+                plan(1024, Envelope::default()),
+                program(
+                    vec![source],
+                    vec![ModRoute::new(0, ModTarget::Pitch, depth)],
+                ),
+                0,
+            ),
+            limits(),
+        )
+        .unwrap()
+    };
+    let mut actual = build(ModSource::Controller(1), 12.0);
+    let mut reference = build(ModSource::Constant, 0.0);
+    actual.trigger(input(1), 60, 1.0).unwrap();
+    let note = reference.trigger(input(1), 60, 1.0).unwrap();
+    let expression = reference.expression_id(note).unwrap();
+    let performance = actual.performance(0).unwrap();
+    // The first cell after a CC change holds the old/new pitch midpoint.
+    for (cc, pitch) in [
+        (0, 0.0),
+        (u32::MAX, 6.0),
+        (u32::MAX, 12.0),
+        (0, 6.0),
+        (0, 0.0),
+    ] {
+        let mut got = [[0.0; 2]; 64];
+        let mut expected = got;
+        support::without_heap(|| {
+            actual.set_controller(performance, 1, cc).unwrap();
+            reference
+                .set_expression(
+                    expression,
+                    Expression {
+                        pitch_semitones: pitch,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            actual.render(&mut got).unwrap();
+            reference.render(&mut expected).unwrap();
+        });
+        assert_eq!(
+            got.map(|f| f.map(f32::to_bits)),
+            expected.map(|f| f.map(f32::to_bits))
+        );
+    }
+}
+
+#[test]
 fn modulated_cutoff_equals_the_static_filter_at_the_modulated_frequency() {
     let svf = |hz| {
         Processor::StateVariable(StateVariableFilter {
@@ -538,4 +591,41 @@ fn pitch_bend_drives_non_pitch_routes_from_its_raw_position() {
     .unwrap();
     let full = render(&mut rt, 192, 64);
     assert!((full[191][1] - 0.5).abs() < 1e-6, "{:?}", full[191]);
+}
+
+#[test]
+fn release_counter_reset_retargets_live_modulation_and_pedals_preserve_release_age() {
+    let program = program(
+        vec![ModSource::ReleaseCounter { frames: 256 }],
+        vec![ModRoute::new(0, ModTarget::Attenuate, 1.)],
+    );
+    let gate = Envelope::new(0, 0, 0, 1., 512).unwrap().with_curves(
+        EnvelopeCurve::default(),
+        EnvelopeCurve::default(),
+        EnvelopeCurve::step(),
+    );
+    let mut rt = Runtime::new(
+        modulated(plan(4096, gate), program, 0),
+        Limits {
+            channels: 1,
+            ..limits()
+        },
+    )
+    .unwrap();
+    let note = rt.trigger(input(1), 60, 1.).unwrap();
+    render(&mut rt, 128, 64);
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 128);
+    rt.reset_release_counter(note).unwrap();
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 0);
+    let channel = rt.register_channel(input(1).channel_address()).unwrap();
+    rt.sustain(channel, true).unwrap();
+    render(&mut rt, 64, 16);
+    rt.note_off(input(1), None).unwrap();
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 64);
+    let tail = render(&mut rt, 128, 16);
+    assert!(tail[64..].iter().all(|f| (f[1] - 0.375).abs() < 1e-6));
+    assert_eq!(rt.release_counter_frames(note).unwrap(), 64);
+    rt.sustain(channel, false).unwrap();
+    assert_eq!(rt.release_context(note).unwrap().gate.unwrap().at, 320);
+    assert_eq!(rt.release_context(note).unwrap().key.unwrap().at, 192);
 }

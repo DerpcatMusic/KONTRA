@@ -21,8 +21,8 @@ use objc2::rc::Weak;
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::{msg_send, sel, AllocAnyThread, ClassType, MainThreadMarker};
 use objc2_app_kit::{
-    NSApplication, NSDragOperation, NSDraggingInfo, NSEvent, NSFilenamesPboardType, NSScreen,
-    NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
+    NSApplication, NSDragOperation, NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventType,
+    NSFilenamesPboardType, NSScreen, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindow,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSPoint, NSPointInRect, NSRect, NSRunLoop, NSRunLoopCommonModes,
@@ -204,6 +204,16 @@ impl BaseviewView {
         if let Some(app) = this.lifetime_tied_to_app.take() {
             if let Some(app) = app.load() {
                 app.stop(Some(&app));
+                // stop() from a display link/timer only sets a flag; run()
+                // checks it after dispatching an NSEvent. Never stop the host's loop.
+                if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                    NSEventType::ApplicationDefined,
+                    NSPoint::new(0., 0.),
+                    NSEventModifierFlags::empty(),
+                    0., 0, None, 0, 0, 0,
+                ) {
+                    app.postEvent_atStart(&event, true);
+                }
             }
         }
 

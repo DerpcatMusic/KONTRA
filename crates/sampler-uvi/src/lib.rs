@@ -19,11 +19,16 @@ mod bank;
 #[cfg(feature = "library-access")]
 mod crypto;
 mod inserts;
+#[cfg(feature = "scan")]
+mod coverage;
+mod engine_parameters;
 pub use inserts::InsertNode;
 mod modulation;
 #[cfg(not(feature = "library-access"))]
 mod no_access;
 pub mod script;
+mod resources;
+pub use resources::{Resources, ResourceError};
 pub mod scripted;
 mod stream;
 #[cfg(feature = "library-access")]
@@ -234,6 +239,10 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
         shape_index: HashMap::new(),
         shared_sources: std::collections::HashSet::new(),
         used: Vec::new(),
+        #[cfg(feature="scan")]
+        dropped_connections: Default::default(),
+        #[cfg(feature="scan")]
+        native_player_ids: program.descendants().filter(|n|n.has_tag_name("SamplePlayer")).enumerate().map(|(i,n)|(n.id(),i)).collect(),
         osc_groups: Vec::new(),
         insert_nodes: Vec::new(),
         split: None,
@@ -261,6 +270,9 @@ fn translate_full(text: &str, source: Source) -> Result<FullTranslation, Transla
             );
         }
     }
+    engine_parameters::register(&mut out.ir, &doc, &out.insert_nodes);
+    #[cfg(feature = "scan")]
+    { out.ir.dsp_slots = Some(coverage::slots(&out, program)); out.ir.native_family = Some(coverage::native_family(program)); }
     out.ir
         .validate()
         .map_err(|e| Translate::Invalid(e.to_string()))?;
@@ -354,6 +366,10 @@ struct Translation {
     shared_sources: std::collections::HashSet<roxmltree::NodeId>,
     /// Nodes whose meaning was carried into the IR.
     used: Vec<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    dropped_connections: std::collections::HashSet<roxmltree::NodeId>,
+    #[cfg(feature="scan")]
+    native_player_ids: HashMap<roxmltree::NodeId, usize>,
     osc_groups: Vec<OscGroup>,
     /// Where each insert element's processors sit, for script writes.
     insert_nodes: Vec<InsertNode>,
@@ -368,6 +384,8 @@ pub struct OscGroup {
     pub layer: u32,
     pub osc: u32,
     pub group: u32,
+    pub keygroup: usize,
+    pub oscillator: usize,
 }
 
 impl Translation {
@@ -385,6 +403,8 @@ impl Translation {
         for connection in connections(scope) {
             if number(connection, "Bypass", 0.0)? == 0.0 && number(connection, "Ratio", 1.0)? != 0.0
             {
+                #[cfg(feature="scan")]
+                self.dropped_connections.insert(connection.id());
                 self.unsupported(
                     &path(connection),
                     "program or layer modulation",
@@ -400,16 +420,7 @@ impl Translation {
     }
 
     fn program(&mut self, program: Node) -> Result<(), String> {
-        let mut gain = number(program, "Gain", 1.0)?;
-        for insert in program
-            .children()
-            .filter(|n| n.has_tag_name("Inserts"))
-            .flat_map(|i| i.children().filter(|n| n.has_tag_name("Gain")))
-            .filter(|n| number(*n, "Bypass", 0.0).is_ok_and(|b| b == 0.0))
-        {
-            gain *= number(insert, "Volume", 1.0)?;
-            self.used.push(insert.id());
-        }
+        let gain = number(program, "Gain", 1.0)?;
         for processor in program
             .descendants()
             .filter(|n| n.has_tag_name("ScriptProcessor"))
@@ -466,6 +477,10 @@ impl Translation {
             });
             auxes.push((name, bus));
         }
+        let program_output = self.insert_bus(program, ir::Output::Master)?;
+        for (_, bus) in &auxes {
+            self.ir.buses[bus.0].output = program_output;
+        }
         for (ordinal, layer) in program
             .descendants()
             .filter(|n| n.has_tag_name("Layer"))
@@ -475,6 +490,7 @@ impl Translation {
                 continue;
             }
             self.scope_connections(layer)?;
+            let output = self.insert_bus(layer, program_output)?;
             let pan = number(layer, "Pan", 0.0)?;
             let mut base = ir::Group {
                 name: layer.attribute("Name").unwrap_or_default().into(),
@@ -483,6 +499,7 @@ impl Translation {
                     position: pan.clamp(-1.0, 1.0),
                     law: ir::PanLaw::Balance,
                 },
+                output,
                 ..Default::default()
             };
             // The layer's sends to aux buses, either side of its fader.
@@ -506,22 +523,11 @@ impl Translation {
                     pre_fader: number(router, "PreFader", 0.0)? != 0.0,
                 });
             }
-            // Oscillators get groups of their own only where a keygroup stacks
-            // several; otherwise the layer's group is oscillator 1.
-            let stacked = layer
-                .descendants()
-                .filter(|n| n.has_tag_name("Keygroup"))
-                .any(|k| k.descendants().filter(|n| n.has_tag_name("SamplePlayer")).count() > 1);
-            self.split = (scripted && stacked).then(|| (ordinal + 1, base.clone()));
+            // Scripts address individual keygroups/oscillators, including
+            // single-oscillator keygroups; no two original nodes may alias.
+            self.split = scripted.then(|| (ordinal + 1, base.clone()));
             if self.split.is_none() {
                 self.ir.groups.push(base);
-            }
-            if scripted && !stacked {
-                self.osc_groups.push(OscGroup {
-                    layer: ordinal as u32 + 1,
-                    osc: 1,
-                    group: self.ir.groups.len() as u32 - 1,
-                });
             }
             if pan != 0.0 {
                 self.unsupported(
@@ -639,6 +645,15 @@ impl Translation {
             self.place(chain, placed);
             chain
         });
+        if let Some(chain) = chain {
+            for insert in keygroup.children().filter(|n| n.has_tag_name("Inserts")).flat_map(|n| n.descendants()).filter(|n| n.has_tag_name("OnePole")) {
+                if let Some(placed) = self.insert_nodes.iter().find(|p| p.node == insert.id().get_usize() && p.count > 0).copied() {
+                    for connection in connections(insert) {
+                        self.connect_frequency(connection, chain, placed.first, &mut shared)?;
+                    }
+                }
+            }
+        }
         for (oscillator, player) in keygroup
             .descendants()
             .filter(|n| n.has_tag_name("SamplePlayer"))
@@ -647,7 +662,7 @@ impl Translation {
             if number(player, "Bypass", 0.0)? != 0.0 {
                 continue;
             }
-            let group = self.oscillator_group(group, oscillator as u32 + 1);
+            let group = self.oscillator_group(group, oscillator as u32 + 1, keygroup.id().get_usize(), player.id().get_usize());
             let at = path(player);
             let Some(sample) = player.attribute("SamplePath").filter(|p| !p.is_empty()) else {
                 self.unsupported(&at, "sample player without a sample", "");
@@ -709,6 +724,11 @@ impl Translation {
                     "",
                 );
             }
+            #[cfg(feature="scan")]
+            {
+                self.ir.source_indices.zones.resize(self.native_player_ids.len(), None);
+                self.ir.source_indices.zones[self.native_player_ids[&player.id()]] = Some(ir::ZoneRef(self.ir.zones.len()));
+            }
             self.ir.zones.push(ir::Zone {
                 group: Some(group),
                 keys: ir::KeyRange {
@@ -745,9 +765,9 @@ impl Translation {
     }
 
     /// The group a zone of oscillator `osc` goes to: the layer's own, or in a
-    /// scripted program one group per (layer, oscillator) so that `playNote`'s
-    /// `oscIndex` can select it.
-    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32) -> ir::GroupRef {
+    /// scripted program one group per original oscillator so that scoped
+    /// parameter writes and `playNote` selection share the same identity.
+    fn oscillator_group(&mut self, layer_group: ir::GroupRef, osc: u32, keygroup: usize, oscillator: usize) -> ir::GroupRef {
         let Some((layer, base)) = &self.split else {
             return layer_group;
         };
@@ -755,7 +775,7 @@ impl Translation {
         if let Some(found) = self
             .osc_groups
             .iter()
-            .find(|g| g.layer == layer && g.osc == osc)
+            .find(|g| g.oscillator == oscillator)
         {
             return ir::GroupRef(found.group as usize);
         }
@@ -767,6 +787,8 @@ impl Translation {
             layer,
             osc,
             group: index as u32,
+            keygroup,
+            oscillator,
         });
         ir::GroupRef(index)
     }
@@ -974,6 +996,8 @@ pub struct Translated {
 
 /// A program's scripts loaded on a script thread for a host that owns the runtime.
 pub struct AttachedScript {
+    /// Typed initial findings; runtime findings are published through the driver UI bridge.
+    pub findings: Vec<script::Finding>,
     pub driver: scripted::Driver<scripted::ScriptThread>,
     /// The script's widgets.
     pub interface: sampler_ui_ir::Interface,
@@ -989,31 +1013,38 @@ impl Translated {
         rate: u32,
         config: script::Config,
     ) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
+        self.attach_script_with_ui_state(rate, config, None)
+    }
+
+    pub fn attach_script_with_ui_state(&mut self, rate: u32, mut config: script::Config, state: Option<script::UiState>) -> Result<Option<AttachedScript>, sampler_kontakt::LoadError> {
         if self.instrument.behaviors.is_empty() {
             return Ok(None);
         }
+        config.rate = f64::from(rate);
         let (thread, loaded) =
-            scripted::ScriptThread::spawn(self.text.clone(), self.lua.clone(), config).map_err(
+            scripted::ScriptThread::spawn_with_ui_state(self.text.clone(), self.lua.clone(), config, state).map_err(
                 |reason| {
                     sampler_kontakt::LoadError::Invalid { path: "script".into(), reason }
                         .at(sampler_kontakt::Stage::ScriptCompile)
                 },
             )?;
+        engine_parameters::initialize(&mut self.instrument, &loaded.insert_overrides);
         let unsupported = &mut self.instrument.unsupported;
         if scripted::Script::handles_notes(&thread) {
             unsupported.retain(|u| !u.feature.starts_with("keygroup oscillators all play"));
         }
         unsupported.retain(|u| !(u.feature == "script" && u.value.contains("no frontend")));
-        for finding in loaded.findings {
+        for finding in &loaded.findings {
             unsupported.push(ir::Unsupported {
                 location: "script".into(),
-                feature: finding.feature,
-                value: format!("{} (x{})", finding.value, finding.count),
+                feature: finding.feature.clone(),
+                value: finding.value.clone(),
                 reason: ir::Reason::NotModeled,
             });
         }
         let groups = self.groups.clone();
         Ok(Some(AttachedScript {
+            findings: loaded.findings,
             driver: scripted::Driver::new(thread, groups, rate),
             interface: loaded.interface,
         }))
@@ -1067,7 +1098,9 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         .ancestors()
         .find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ufs")))
     {
+        let span = sampler_kontakt::audit::Span::new("uvi_bank_open");
         let bank = Bank::open(bank_path)?;
+        drop(span);
         let member = path
             .strip_prefix(bank_path)?
             .to_string_lossy()
@@ -1083,10 +1116,16 @@ fn translate_untagged(path: &Path) -> Result<Translated, Box<dyn std::error::Err
         } else {
             member
         };
+        let span = sampler_kontakt::audit::Span::new("uvi_program_read_decrypt");
         let (text, program_path) = bank.program(&member)?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_xml_translate_ir");
         let (instrument, locations, groups, inserts) = translate_full(&text, Source::Bank)
             .map_err(|e| describe(Path::new(&member), e))?;
+        drop(span);
+        let span = sampler_kontakt::audit::Span::new("uvi_script_resources");
         let lua = bank.scripts();
+        drop(span);
         return Ok(Translated {
             instrument,
             locations,
@@ -1270,7 +1309,10 @@ fn assemble_streamed(
         scripts: true,
         ..Default::default()
     };
-    Ok(sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut streamed = sampler_kontakt::stream_instrument(instrument, sources, labels, &options, policy)?;
+    streamed.loaded.plan = streamed.loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(streamed)
 }
 
 /// Load a program inside an installed UVI bank. `bank` is an open [`Bank`]; `program`
@@ -1410,7 +1452,7 @@ fn note_script(host: &script::ScriptHost, instrument: &mut ir::Instrument) {
         instrument.unsupported.push(ir::Unsupported {
             location: "script".into(),
             feature: finding.feature,
-            value: format!("{} (x{})", finding.value, finding.count),
+            value: finding.value,
             reason: ir::Reason::NotModeled,
         });
     }
@@ -1514,7 +1556,10 @@ fn assemble(
         pcm.push(sampler_core::Pcm::new(d.rate, d.frames.into_boxed_slice())?);
     }
     let labels: Vec<String> = kept.iter().map(|&a| locations[a].clone()).collect();
-    Ok(sampler_kontakt::finish(instrument, pcm, labels, options)?)
+    let bindings = engine_parameters::bindings(&instrument);
+    let mut loaded = sampler_kontakt::finish(instrument, pcm, labels, options)?;
+    loaded.plan = loaded.plan.with_engine_parameters(bindings, Vec::new())?;
+    Ok(loaded)
 }
 
 #[cfg(all(test, feature = "library-access"))]
@@ -2214,4 +2259,3 @@ mod survey {
         }
     }
 }
-

@@ -1963,6 +1963,901 @@
       ],
       "validation": "Commit af77fb29 changes src/library.rs; integrate/core-v2 workspace suite (kontakto, sampler-core, sampler-ksp, sampler-uvi, sampler-native, sampler-kontakt, sampler-midi, sampler-ir, sampler-ui-ir, corpus-health) passes the full suite with 0 failures.",
       "accepted": true
+    },
+    {
+      "id": "kontakt-complete-versioned-program-public-reader",
+      "summary": "Decode the verified complete Program public record with versioned strings, SoundData and neutral F1/F2 fields",
+      "source_commits": [
+        "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "nis-complete-typed-preset-readers",
+      "summary": "Read versioned NIS preset items and sound header/preset records with their verified payload layouts",
+      "source_commits": [
+        "f94d3993c60db61b44eaffa2fb234698fbeb5d22"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-occupied-fx-slot-failure-diagnostics",
+      "summary": "Report failed occupied FX slots while retaining valid siblings and current routing/wet-dry behavior",
+      "source_commits": [
+        "d3f95c9ceaf89dbbd6a78fea0470f7e3218eb70d"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-program-resource-reader-unification",
+      "summary": "Use the verified public Program reader for resource metadata instead of four guessed consecutive words",
+      "source_commits": [
+        "29ad88a727c08994002a0d00ebbb873ce7e6e989"
+      ],
+      "validation": "Verified synthetic reader tests15/15, compatibility32/32, Program metadata tests5/5, full integration shards and shared quick15 regression passed; no native semantic meaning is inferred for F1/F2.",
+      "accepted": true
+    },
+    {
+      "id": "live-note-callback-owner-traversal",
+      "summary": "Traverse only live note and callback owners while retaining safe removal and slot reuse",
+      "source_commits": [
+        "ffd858c4665b98e0f446dc359cc44ff80bcca599"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "sound-callback-flush-once-per-host-block",
+      "summary": "Flush completed sound callback outcomes once at host-block end instead of every render fragment",
+      "source_commits": [
+        "ffd858c4665b98e0f446dc359cc44ff80bcca599"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "offline-exact-stream-step-readiness",
+      "summary": "Wait for exact offline render-step sample readiness with a bounded diagnosed failure",
+      "source_commits": [
+        "87b23907a493a34aed63a87111794ca5e5ff427d"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "transient-stream-page-retry-and-storage-reporting",
+      "summary": "Retry protected transient sample pages with backoff, reopen decoders and surface storage failure counters",
+      "source_commits": [
+        "87b23907a493a34aed63a87111794ca5e5ff427d"
+      ],
+      "validation": "W9 failing-first storage/lifecycle tests and full integration shards passed at cd93997d; new shared scanner quick15 admissions and14 matched auditions show zero regressions. Original pre-existing picker race receipt is retained; retry passed.",
+      "accepted": true
+    },
+    {
+      "id": "original-default-persisted-view-selection",
+      "summary": "Default to Original and resolve rack, instrument and global view preferences consistently in both selectors",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "incremental-authored-ui-publication",
+      "summary": "Publish sparse changed-script overrides and preserve script, page, mode, values and cached picture identities",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "native-scalar-edit-admission-readback",
+      "summary": "Separate pending native widget edits from authoritative control admission and readback",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "native-widget-source-generation-guards",
+      "summary": "Guard widget submission, scalar readback and effect replay against replaced source generations",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "runtime-ui-alias-identity-and-effects",
+      "summary": "Lower UI aliases to widget identity and apply their existing label, text, movement and property effects",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "authored-view-two-axis-fit-and-exact-zoom",
+      "summary": "Fit authored pages to both available axes and retain exact explicit zoom factors",
+      "source_commits": [
+        "42cba1ba727fa46a67ffa93025e38d98fc7bbefe"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "picker-completion-after-worker-close",
+      "summary": "Expose picker completion only after the owned operation releases its open flag",
+      "source_commits": [
+        "f2f1a9791a9bdb3b46e156a2c84e0ab90399f978"
+      ],
+      "validation": "Pinned W1 f2f1a979 readiness: no-run, five isolated picker runs, seven loop probes, three callback checks, quick15; integration61d519b3 no-run,213 root library tests including both picker tests, and full KSP/UI IR suites pass. Equal-canvas A/B is performance-neutral.",
+      "accepted": true
+    },
+    {
+      "id": "linux-release-glibc-235-baseline",
+      "summary": "Package Linux on Ubuntu22.04 and reject staged artifacts requiring glibc newer than2.35",
+      "source_commits": [
+        "f954a6cb5d74762c0e680db131a608fc443c592b"
+      ],
+      "validation": "Eight CI unit checks,24 nightly publication scenarios and actionlint pass; real readelf accepts GLIBC2.34 and rejects the installed GLIBC2.39 plugin. Actual packaged KONTRA ABI is enforced by CI; the user local release intentionally uses the host toolchain.",
+      "accepted": true
+    },
+    {
+      "id": "program-change-selector-input-accounting",
+      "summary": "Route MIDI 1 and MIDI 2 Program Change through authored selectors and count unhandled input as ignored",
+      "source_commits": [
+        "27b51c6d6ccdf17a394115737311e7ac0cf1fd14",
+        "76f5469487cb3278de3922a9bb9e588290f9574f"
+      ],
+      "validation": "Integration 67dafc61 root no-run, all three test shards, NI reader15/compat32, thirteen keyswitch tests and App-menu pixel check pass. MIDI1/MIDI2 selectors change selection with ignored_input zero; absent selectors increment ignored_input. Fresh final-scanner quick15 versus frozen f1105599 has zero load/UI/binding/audio regressions across fourteen matched auditions; Afflatus is not auditioned. The keyswitch panel is a feature and adds no second defect count.",
+      "accepted": true
+    },
+    {
+      "id": "authored-ui-input-state",
+      "summary": "Retain authored widget input and typed edit state",
+      "source_commits": [
+        "ad27ae94ddfa7d1a364b416f3fd8ed83c526cdc8"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-widget-capture-and-drag",
+      "summary": "Preserve widget capture, drag units and view identity",
+      "source_commits": [
+        "8278b1e0c4a4e1d86c14154003ac4c03b65bef42"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-font-and-sliced-art",
+      "summary": "Restore authored fonts, contrast and sliced artwork",
+      "source_commits": [
+        "662645689f0637b0e7bb6ffc979181ec6434b8ce"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "sparse-native-frame-preparation",
+      "summary": "Prepare sparse authored frames away from the editor thread",
+      "source_commits": [
+        "02906792cd3e14283772ffa9b8c0a5749e01d4dd"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-authored-runtime-consumption",
+      "summary": "Consume the authored Native UI through its published interface",
+      "source_commits": [
+        "d44d7d54457d12003592d9b850e0a492bcf2067e"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-global-widget-layers",
+      "summary": "Preserve global widget layers across authored parents",
+      "source_commits": [
+        "56c92894deb6b66aa368f311c9687899d146b35d"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-mousearea-callbacks",
+      "summary": "Deliver ordinary MouseArea input and bounded drop callbacks",
+      "source_commits": [
+        "9205c7852bb337419cc393da23c7efbc06df2692",
+        "4c4da3a028aa7be562baf865dc9731886373e77c"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-widget-hit-order",
+      "summary": "Keep global hit order and nested label wheel ownership",
+      "source_commits": [
+        "6fecfdf35aeda8baffaae67d000c44781ad1c382"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-xy-and-table-strokes",
+      "summary": "Respect XY cursor modes and interpolate table strokes",
+      "source_commits": [
+        "4f3db733ff9f5ec156b5aaa403a8005455d4806c"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-typed-current-publication",
+      "summary": "Publish authored current values and typed widget readback",
+      "source_commits": [
+        "b722c0939cd1b5ec5daaf8758cb703bad0dd4594",
+        "630e82f10743c6a1b71ca61e79d10d413d486602"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-source-slot-bindings",
+      "summary": "Resolve Native bindings by physical script slot and source identity",
+      "source_commits": [
+        "d0354672b03a2bbb53a58e421a512cda834f8686",
+        "f862106178f9de273de30e01eb9820ce05ebaa2c"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-meter-readback",
+      "summary": "Read exact native meter values through shared admission",
+      "source_commits": [
+        "dacffc7b385602d7215c53af162f592bc910bad3"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-live-text-preservation",
+      "summary": "Keep text and array values under scalar telemetry",
+      "source_commits": [
+        "4b9039e3587ffd63137988093f6e9665d825745b"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-unmatched-bindings",
+      "summary": "Keep unmatched requested-face controls disconnected and inert",
+      "source_commits": [
+        "4b9039e3587ffd63137988093f6e9665d825745b"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-deferred-canvas-budget",
+      "summary": "Give each deferred Canvas paint its bounded callback budget",
+      "source_commits": [
+        "dd943398abbd2b9397c30baade36ab2f8beabd54"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-caption-property-types",
+      "summary": "Return typed empty strings for disconnected caption properties",
+      "source_commits": [
+        "f3c96317f88662bc39272af44a4b6a7428976644"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-iterative-graph-lowering",
+      "summary": "Lower native graphs iteratively on bounded host stacks",
+      "source_commits": [
+        "16acebb8e56bf54281ca984e6e1ce60adf8d298d"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-resource-cancellation",
+      "summary": "Bound image requests and cancel stale package loads",
+      "source_commits": [
+        "0fe7d5b6cf3a22978a36f805614ba2e9d6a3f022"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-saved-depth-signs",
+      "summary": "Preserve saved modulation signs independently of source polarity",
+      "source_commits": [
+        "b33ddb2a9f65786b381f279416357d191360250e"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-amplifier-boundaries",
+      "summary": "Keep native amplifier boundaries and gain ramps",
+      "source_commits": [
+        "22d5b2ed2746f2466baa356dada6b644d930f811",
+        "c44a44b00f0c36b69abd2cc23981fee4199e21de"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-ordered-send-taps",
+      "summary": "Preserve ordered authored voice and instrument sends",
+      "source_commits": [
+        "f4f9b0967cbc6b404a273e472509466ca7864d23",
+        "5c9e18e6188ab0609671d2bf633983614a6a56e8"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-bypassed-send-returns",
+      "summary": "Retain bypassed send return behavior from v1",
+      "source_commits": [
+        "4a49033f2a670071295794a81187642b5535f83d"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-native-ladder-controls",
+      "summary": "Import Ladder LP4 and bind its physical controls",
+      "source_commits": [
+        "130f0fe94a912f5624df28662a0be9e3392262e4",
+        "e003f66d18bd80274acbea75a17a6eb2fcf2574c"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-physical-envelope-controls",
+      "summary": "Bind physical amplitude envelopes to native voice lanes",
+      "source_commits": [
+        "f6a18451814a1ab7c5fad1614a2f5f1ee373df92"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-physical-engine-lookups",
+      "summary": "Install physical native engine lookup inventory",
+      "source_commits": [
+        "d60e13c295fef2834c6720189381c5057a2bfdf1"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-authored-init-envelopes",
+      "summary": "Seed authored envelope parameters before script feedback",
+      "source_commits": [
+        "1c55f279a182b8c54944f9164b100afe1b6d0615"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-stale-source-map-validation",
+      "summary": "Reject stale physical source-zone maps before lowering",
+      "source_commits": [
+        "9f4176d47a7108b5146b6dbcf17585506b075586"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-deferred-attack-ownership",
+      "summary": "Retain deferred attacks through callback preemption",
+      "source_commits": [
+        "99e4e0c86e4596bab6c228fd0c7f1dfe41399254"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-exact-ignore-event",
+      "summary": "Discard other source events and callbacks without fabricated note-off",
+      "source_commits": [
+        "b4ae3c088fcf024b7fbbee5fe173b952daf2daeb"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-event-query-contracts",
+      "summary": "Complete native event query and parameter contracts",
+      "source_commits": [
+        "e7f7bca1daf27d92b2a5e2a6675b6969716e8066"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-event-selectors-and-virtual-cc",
+      "summary": "Honor marked event selectors and virtual controllers",
+      "source_commits": [
+        "a39da8fa1133159e4eadb9828a715f2de389e0d5"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-init-persistent-arrays",
+      "summary": "Restore init-loaded persistent array values",
+      "source_commits": [
+        "f040122b1db8887593f2a9e955a01d5681351e01"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-strict-snapshot-values",
+      "summary": "Propagate malformed saved snapshot values before init",
+      "source_commits": [
+        "6f8049d9263a527c82b3db4e7a77b48da60f6bc1"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-shared-immutable-code",
+      "summary": "Share function code and remove padded constant storage",
+      "source_commits": [
+        "799d6a3b3eb40548ba7210454711ccaabd1dbccf"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "ksp-bounded-call-return",
+      "summary": "Use bounded local Call Return and borrowed constant append",
+      "source_commits": [
+        "c46143393375a840238205d980e9bef83f27ada0"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "stream-cold-onset-state",
+      "summary": "Preserve voice state through bounded cold startup holds",
+      "source_commits": [
+        "0af58a6d5658c72bf56685bc98e185a1f62a04f6"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "stream-late-onset-offset",
+      "summary": "Keep requested onset offsets and released staccato notes through delayed data",
+      "source_commits": [
+        "aaa789184c579c74a083ef7eafaf9e0ae83d200b",
+        "1d4e2911ccc7212435c27049c411ba5d950115d8"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "startup-note-parameter-pages",
+      "summary": "Use v1 startup note capacity with off-audio paged growth",
+      "source_commits": [
+        "bf18a290a55a3dca7864b0c11d6fa1dbc5ff1afe",
+        "4417ba4e66e98ef09d7b650de0b25b70ce224139"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "shared-initial-script-text",
+      "summary": "Share immutable initial script text without audio copy-on-write",
+      "source_commits": [
+        "6f51d817dc389e33d92208ea6a12fbc29caa785d"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "startup-voice-arena-sizing",
+      "summary": "Restore v1 voice and event startup sizing",
+      "source_commits": [
+        "5e7071d505322c6b5e174e3c6ed93fd73da12e44"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "compact-region-playback-templates",
+      "summary": "Keep immutable region playback templates compact",
+      "source_commits": [
+        "4ef0d62d8f34e3c14352f9bfa09cc3fdc47710ca"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "batch-authored-envelope-construction",
+      "summary": "Construct shared group envelopes once",
+      "source_commits": [
+        "7956e97e0e255ea75e210f6dcc57029706210da7"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "neutral-filter-factor-conversion",
+      "summary": "Skip neutral modulation exponent conversions",
+      "source_commits": [
+        "8b2929cd953038a9f4faf98717d826d53c0da0f0"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "vector-cubic-resampling",
+      "summary": "Port v1 cubic vector columns with identical PCM",
+      "source_commits": [
+        "4c26a197ea7a99f0108b5e50e4f06583caa2242c"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "unchanged-pitch-ratio-cache",
+      "summary": "Reuse unchanged pitch ratios with controller invalidation",
+      "source_commits": [
+        "44ba9d2c60539f1803baf206043cc4f007eeb4df"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-typed-widget-contracts",
+      "summary": "Honor typed UVI widget and Lua setter contracts",
+      "source_commits": [
+        "6cfcad4b10f4c5c9307389a1bda5a5afefd6deb1",
+        "b4380fc218de4bc79c0418c6b8e401cf94d8819b"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-authored-resource-origins",
+      "summary": "Resolve authored UVI resource paths from their native origins",
+      "source_commits": [
+        "4f033c79ac2b6ccce754343c7a5760c186259c29"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-processor-scope-routing",
+      "summary": "Keep summed UVI insert scopes and independent OnePole routes",
+      "source_commits": [
+        "60e82623d44f211ffb03df6332cb5b50c0523839",
+        "f8c709eb4d4b3aec736b17f144a17104ce566adc"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-runtime-fault-publication",
+      "summary": "Publish typed UVI runtime faults independently of widget updates",
+      "source_commits": [
+        "87a5d188426ef8d5010496fe050d01b4fbfb47db"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-bounded-init",
+      "summary": "Reject UVI init that exceeds one bounded deadline",
+      "source_commits": [
+        "0c69feead4e73886792cd6d676a74886d4f2ac75"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-direct-host-lookups",
+      "summary": "Use direct typed host lookups and one ready snapshot",
+      "source_commits": [
+        "baccabfceccf9c6054ea5b6e0485bba827b7a60e"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-sparse-host-collections",
+      "summary": "Use sparse host leaves and shared metatables",
+      "source_commits": [
+        "1bb07045c02209c9041e47c5e13cbd1ea42dd663"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-requested-assistant-font",
+      "summary": "Supply Assistant Regular only when its exact face is requested",
+      "source_commits": [
+        "0d8b84c74aa79f97ef8661502630a6e7be057643"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-immediate-host-save",
+      "summary": "Capture live UVI controls before immediate host save",
+      "source_commits": [
+        "323d744cba56174462d3ce469d913ffc9a68ea71"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "keyboard-live-engine-gates",
+      "summary": "Clear pressed visuals from live engine gates and release normally on transport stop",
+      "source_commits": [
+        "602c80b4971d9c5784b13362265576fa68070459"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "host-deactivation-hard-reset",
+      "summary": "Hard reset held notes on CLAP and VST3 deactivation",
+      "source_commits": [
+        "0be454d67923747ac643db84ded641268ee1e2b7"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "sound-editor-native-control-parity",
+      "summary": "Restore native Sound controls and select their rack owner",
+      "source_commits": [
+        "a6a5166d7e5f771959b72581f9e216cae8bfdbc1",
+        "30580d3f29ffff0f0526d49af78baa87fd2dc872"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "sound-editor-offset-owner",
+      "summary": "Adopt latest offset owners and clear rejected caches",
+      "source_commits": [
+        "fba565c917203d236696623d7e95c50a2d5e8ff0"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "sound-editor-native-ladder-law",
+      "summary": "Use native ladder hertz laws and deduplicate zone voice chains",
+      "source_commits": [
+        "f33480b73d2cfff515a48b1a5c52cf6d27971eca",
+        "24ab6d08bf2838f7682b63a0d9f9a08a803a6889"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "aligned-host-note-ownership",
+      "summary": "Preserve allocation-free alignment and exact host note ownership",
+      "source_commits": [
+        "6536c505a6616fb6ccd036eb7fc4236d5ae3c235"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "catalog-metadata-reuse",
+      "summary": "Avoid reopening unchanged library metadata on later starts",
+      "source_commits": [
+        "439e79190f210dc1c6f212d00189d8a189037402"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-falcon-browser-hierarchy",
+      "summary": "Separate Kontakt and Falcon browser hierarchy",
+      "source_commits": [
+        "1035c85bd7ac91f46e97bb98e7b7a3d7ecfb31ce"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-authored-pan-route",
+      "summary": "Admit authored native pan through the shared voice consumer",
+      "source_commits": [
+        "8f7980f5d13c348ec49ea4851f9b2c988b19dfb1"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-formant-i-processing",
+      "summary": "Process Formant I through prepared voice and bus sections",
+      "source_commits": [
+        "f6116b1bd3a46adc59a5c8112b2e78eb75fc6d30"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "kontakt-lofi-processing",
+      "summary": "Process native LoFi through prepared voice and bus stages",
+      "source_commits": [
+        "d4574125a4131e524978a07c765344cbc1db2eea"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-gpu-recovery",
+      "summary": "Recover GPU presentation failures through shared CPU presentation",
+      "source_commits": [
+        "ed444fca14a49270d084b9d9b73c0b09b2be09f4"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-terminal-gpu-diagnostics",
+      "summary": "Record terminal GPU presentation failures as errors",
+      "source_commits": [
+        "3e352f1c0146075a8b705c284f7e079133aa05be"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "native-x11-teardown-order",
+      "summary": "Finish embedded X11 teardown before releasing host parents",
+      "source_commits": [
+        "f2bf971e31d861e3a15f6e7ecc642ce42fedd734"
+      ],
+      "validation": "Owner targeted regressions passed; included in the combined alpha workspace test and quick corpus validation. Known performance, native parity and approximation limits are documented in CHANGELOG.md; the user explicitly authorized this alpha release.",
+      "accepted": true
+    },
+    {
+      "id": "host-sample-exact-automation",
+      "summary": "Preserve sample-exact host automation and native file drag leave",
+      "source_commits": [
+        "4f1abcc7f454ce31328effdd51e11f7b31932758"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "generation-bound-source-waveforms",
+      "summary": "Publish source waveform envelopes with their owning generation",
+      "source_commits": [
+        "86dfb90d510cc35c4470081f68cdd342e6c57bea"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "bounded-shared-sample-metadata",
+      "summary": "Share archive handles and bound sample metadata caching",
+      "source_commits": [
+        "3f01b47063326a039c3383eae5861df98a181369"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "single-ksp-initialization",
+      "summary": "Initialize KSP once with authored controls",
+      "source_commits": [
+        "f9cb7245b99b84cdb17b4a294bec89fdb49a578b"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "generated-menu-gesture-anchors",
+      "summary": "Anchor generated menus and emit typed scalar gestures",
+      "source_commits": [
+        "2f4a4b3ec092845a69d07d683b0b8b697f91533a"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-live-insert-controls",
+      "summary": "Bind UVI insert fields to shared live controls",
+      "source_commits": [
+        "f17ccc58972e69096736d9b6d9fa2562259e36fe"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "native-gainer-stereo-laws",
+      "summary": "Use verified native Gainer and Stereo Modeller laws",
+      "source_commits": [
+        "a4ee89ccd1790f12717b1163a809f23b88bff50a"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "safe-authored-audition-articulation",
+      "summary": "Choose enabled authored articulations and covered musical audition notes",
+      "source_commits": [
+        "cc6ac0e8689e05e19127ebe2c2cc456def1d19c5"
+      ],
+      "validation": "Owner focused checks passed; shipped in the combined alpha validation. Native capture and performance limits remain documented.",
+      "accepted": true
+    },
+    {
+      "id": "rack-growth-articulation-routes",
+      "summary": "Preserve articulation route owners through rack growth and reload",
+      "source_commits": [
+        "876309f493a0253883d6129d2ced1c0c756e349a"
+      ],
+      "validation": "Owner failing-first growth/reload regression passed with zero audio heap calls; combined alpha validation includes it.",
+      "accepted": true
+    },
+    {
+      "id": "gate-scanner-module-import",
+      "summary": "Resolve shared scanner modules in gate self-checks",
+      "source_commits": [
+        "c857c1c3c7217c2d8473837a8ec66c7ccc90ad49"
+      ],
+      "validation": "Combined gate self-check passes after W12 observer integration.",
+      "accepted": true
+    },
+    {
+      "id": "gate-gesture-null-delta",
+      "summary": "Serialize gesture evidence with an explicit unknown numeric delta",
+      "source_commits": [
+        "c39fd7b0fc3245b3087c5da7408028a9831ffbfd"
+      ],
+      "validation": "Contention self-check reproduces missing delta; fixed receipt preserves unknown and passes.",
+      "accepted": true
+    },
+    {
+      "id": "uvi-fresh-custom-host-save",
+      "summary": "Capture authored UVI custom state once per host save even without UI revision",
+      "source_commits": [
+        "b247fdfc82f6daf32ebe77bada8c7594a4fad75e"
+      ],
+      "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
+      "accepted": true
+    },
+    {
+      "id": "host-native-selection-readback",
+      "summary": "Reject live host receipts whose native keyed source or routing readback differs",
+      "source_commits": [
+        "5659d58658459606ad6efc79484c954bd057094d"
+      ],
+      "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
+      "accepted": true
     }
   ]
 }
