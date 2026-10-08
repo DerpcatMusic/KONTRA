@@ -504,6 +504,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         let declared_switch=loaded.instrument.as_ref().and_then(|i|i.articulations.iter().flat_map(|a|a.switch_keys.iter().copied()).min())
             .or_else(||loaded.scripts.views.iter().flat_map(|v|v.model().interface.keys.iter().enumerate()).find(|(_,k)|k.kind==Some(1)&&k.color!=Some(17)).map(|(key,_)|key as u8));
         let keyswitch=metrics::planned_keyswitch(program as u32).unwrap_or(declared_switch);
+        let sample_zone_count=loaded.instrument.as_ref().map(|i|i.zones.len());
         let mut runtime_faults = Vec::new();
         let mut heard = false;
         result["stage"] = json!(format!("play program {program}"));
@@ -541,8 +542,8 @@ pub fn one(id: &str, out: &Path) -> Value {
             "init_first":l.init_first.as_deref().map(metrics::message),"runtime_first":l.runtime_first.as_deref().map(metrics::message),"budget_hits":l.budget_hits}));
         result["programs"].as_array_mut().unwrap().push(json!({"authored_view_requests":view_requests,"native_frontend_consumed":if native_requested{Some(false)}else{None},"ksp":ksp,"ksp_runtime_faults":runtime_faults.iter().map(|(program,outcome)|json!({"program":program,"callback":sampler_ksp::callback_of(&loaded.scripts.views,*program),"category":match outcome{sampler_core::Outcome::FuelExhausted=>"fuel-budget",_=>"runtime-fault"},"core_error":match outcome{sampler_core::Outcome::Fault(e)=>Some(format!("{e:?}")),_=>None}})).collect::<Vec<_>>(),"lua":lua_report,"admitted_saved_entries_by_sigil":admitted,
             "load_path":if is_uvi {if lua.is_some(){"scripted-worker"}else{"offline-loader"}}else{"kontakt-v2-loader"},
-            "sample_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
-            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if loaded.report.decoded.zones==0 {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
+            "sample_zone_count":sample_zone_count,"decoded_zone_count":loaded.report.decoded.zones,"sample_count":loaded.report.decoded.samples,"sample_resident_bytes":sample_resident_bytes,"underruns":core.problems(0).underruns,
+            "keyswitch":keyswitch,"fallback_note":pick_source=="fallback","zero_zone_reason":if sample_zone_count==Some(0) {Some("unknown")} else {None},"pick_source":pick_source,"native_valid_keys":native_valid,"native_key_conflicts":native.as_ref().map(|n|n.native_key_conflicts),"native_preferred_note":candidate.filter(|(k,_)|native_valid.contains(k)),
             "program":program,"loaded":true,"source":if is_uvi {"uvi"}else{"kontakt"},"script_errors":script_errors,"symbols":symbols,"views":views,"plays_note":if heard {"yes"}else{"silent"},"pick":pick,"load_ms":start.elapsed().as_secs_f64()*1000.}));
         // Keep the streaming owner alive throughout the note probe.
         loaded.stream.take();
