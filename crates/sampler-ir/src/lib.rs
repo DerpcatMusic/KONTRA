@@ -96,6 +96,40 @@ pub struct Instrument {
     pub unsupported: Vec<Unsupported>,
     /// Complete authored DSP slot inventory, collected only by diagnostic builds.
     pub dsp_slots: Option<Vec<DspSlot>>,
+    /// Native XML records for the independent audition oracle, never consumed by playback.
+    pub native_family: Option<NativeFamily>,
+    /// Native groups with an active sample-start modulation target.
+    pub native_start_mod_groups: Option<Vec<u32>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamily {
+    pub zones: Vec<NativeFamilyZone>,
+    pub unknown: Option<&'static str>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamilyZone {
+    pub id: u32,
+    pub group: u32,
+    pub keys: KeyRange,
+    pub velocities: VelocityRange,
+    pub muted: bool,
+    pub start: i64,
+    pub end: i64,
+    pub frames: i64,
+    pub reverse: bool,
+    pub loops: Vec<NativeFamilyLoop>,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct NativeFamilyLoop {
+    pub slot: usize,
+    pub mode: i32,
+    pub start: i64,
+    pub length: i64,
+    pub count: i32,
+    pub alternating: bool,
+    pub crossfade: i64,
+    pub tuning: f64,
 }
 
 /// One occupied native slot; addresses never compact around holes.
@@ -105,6 +139,18 @@ pub struct DspSlot {
     pub scope: String,
     pub slot: usize,
     pub module: String,
+    pub enabled: bool,
+    pub disposition: DspDisposition,
+    pub targets: Vec<DspTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DspTarget {
+    pub ordinal: usize,
+    pub parameter: String,
+    pub module_slot: Option<usize>,
+    /// Physical insert lookup or XML owner; source-control slot namespaces are unverified.
+    pub module: Option<String>,
     pub enabled: bool,
     pub disposition: DspDisposition,
 }
@@ -129,6 +175,7 @@ pub enum DspSlotReason {
     ResourceUnavailable,
     SavedBypassNotInstantiated,
     MutedScopeNotInstantiated,
+    ScopeNotInstantiated,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
