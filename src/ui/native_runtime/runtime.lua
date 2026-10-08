@@ -70,10 +70,20 @@ end
 resolve=function(element,path,context,depth)
     if element==nil or element==false then return nil end
     if depth>192 then error('NativeUI component depth exceeded') end
+    _G.__native_nodes=(_G.__native_nodes or 0)+1
+    if _G.__native_nodes>16384 then error('NativeUI component budget exceeded') end
     if type(element)~='table' or not element.component then error('Invalid NativeUI element at '..path) end
     local old_path,old_index,old_context=current_path,hook_index,current_context
     current_path,hook_index,current_context=path,0,context
-    local child_context=table.shallow_copy(context)
+    local child_context=context
+    for _,m in ipairs(element.modifiers) do
+        if m.name=='context' or (m.name=='disabled' and m.value) then
+            if child_context==context then child_context=table.shallow_copy(context) end
+            if m.name=='context' then child_context[m.value.key]=m.value.value
+            else child_context.enabled=false end
+        end
+    end
+    current_context=child_context
     local props=element.properties()
     -- Conditional children leave holes in Lua's numeric table keys. ipairs
     -- stops at the first hole and would drop every following sibling.
@@ -86,10 +96,6 @@ resolve=function(element,path,context,depth)
         end
     end
     table.sort(child_keys)
-    for _,m in ipairs(element.modifiers) do
-        if m.name=='context' then child_context[m.value.key]=m.value.value end
-        if m.name=='disabled' and m.value then child_context.enabled=false end
-    end
     local out
     if type(element.component)=='function' then
         out=resolve(element.component(props),path..'/component',child_context,depth+1)
@@ -138,7 +144,7 @@ resolve=function(element,path,context,depth)
     current_path,hook_index,current_context=old_path,old_index,old_context
     return out
 end
-_G.__render=function(root) return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
+_G.__render=function(root) _G.__native_nodes=0; return resolve(node(root,function() return {} end),'root',{enabled=true},0) end
 package.loaded.native_ui=ui
 package.loaded.native_ui_util={clamp=function(x,a,b) return math.max(a,math.min(b,x)) end,
     partial=function(fn,...) local args=table.pack(...); return function(...) local values=table.pack(...); local all={}; for i=1,args.n do all[#all+1]=args[i] end; for i=1,values.n do all[#all+1]=values[i] end; return fn(table.unpack(all)) end end}

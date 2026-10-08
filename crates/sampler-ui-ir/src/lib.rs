@@ -94,6 +94,10 @@ pub struct Background {
     pub image: Option<AssetRef>,
     /// Vertical source offset into the wallpaper, in pixels (KSP skin offset).
     pub offset_y: i32,
+    /// Source/profile header rows, independent of the script's skin offset.
+    pub origin_y: u32,
+    /// The selected wallpaper strip frame.
+    pub frame: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,6 +116,8 @@ pub struct Widget {
     /// The source did not size the widget; the renderer uses its default
     /// size for the kind and source.
     pub auto_size: bool,
+    /// Default width/height independently. Explicit zero stays zero.
+    pub default_axes: [bool; 2],
     /// Higher draws later: global layers for KSP, sibling layers for Lua.
     pub z: i32,
     /// Hidden as a whole (`HIDE_WHOLE_CONTROL`, Lua `visible = false`).
@@ -127,6 +133,7 @@ pub struct Widget {
     /// Vertical offset of the text inside the widget, in pixels (KSP
     /// `TEXTPOS_Y`); `None` centres it.
     pub text_y: Option<i32>,
+    pub value_y: Option<i32>,
     /// Shown instead of the formatted value (KSP knob `LABEL`).
     pub value_text: Option<String>,
     pub tooltip: String,
@@ -136,6 +143,8 @@ pub struct Widget {
     /// Colours the source sets on its stock drawing; unset ones are the renderer's.
     pub colors: Colors,
     pub style: Option<StyleRef>,
+    /// Off/on, off/on pressed, off/on hover; absent entries inherit `style`.
+    pub state_styles: [Option<StyleRef>; 6],
     /// Bitmaps the source draws this widget with, by role.
     pub images: Vec<ImageUse>,
     /// Table cell or XY axis controls, in component order.
@@ -171,6 +180,7 @@ impl Widget {
             rect,
             placement: Placement::Pixels,
             auto_size: false,
+            default_axes: [false; 2],
             z: 0,
             hidden: false,
             hide: Parts::default(),
@@ -179,12 +189,14 @@ impl Widget {
             binding: Binding::None,
             text: String::new(),
             text_y: None,
+            value_y: None,
             value_text: None,
             tooltip: String::new(),
             automation: Automation::default(),
             drag: None,
             colors: Colors::default(),
             style: None,
+            state_styles: [None; 6],
             images: Vec::new(),
             components: Vec::new(),
             initial_value: 0.0,
