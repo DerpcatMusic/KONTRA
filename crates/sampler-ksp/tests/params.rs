@@ -146,8 +146,8 @@ fn engine_volume_and_purge_address_one_group() {
          end on",
     );
     rt.trigger(input(60), 60, 1.).unwrap();
-    // on init's write is not a runtime callback; group 0 plays at 0 dB.
-    assert!(close(level(&mut rt), [0.5; 2]));
+    // on init's write stands: group 0 starts at the volume floor.
+    assert!(close(level(&mut rt), [0.0; 2]));
     rt.trigger(input(61), 61, 1.).unwrap();
     // 500000 is -6.02 dB for group 0 (both of its notes); group 1 is purged.
     assert!(close(level(&mut rt), [0.2506; 2]), "{:?}", level(&mut rt));
