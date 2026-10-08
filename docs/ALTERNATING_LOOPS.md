@@ -28,3 +28,5 @@ Alternating crossfade retains its metadata and an `UnknownLaw` finding while
 using reflection; the exact transition must be replaced with the measured law.
 The fresh static seam verifies serialized criteria joins as AND=0, AND_NOT=1,
 OR=2, but does not yet establish mixed-operator precedence.
+
+The current reproducible ignored test `actual_una_corda_alternating_slots_match_independently_unrolled_pcm` passed on W7 `6ae82fa7`: Pure physical zone3725, Felt/Cotton3726;3,036,139 frames per preset; loop33761..462673; exact equality to independently unrolled PCM and nonzero peaks. Aggregate receipt is [una-loop-proof.tsv](audit-2026-10-08/w7-selection/una-loop-proof.tsv). Run with `KONTRA_KONTAKT_LIBRARIES=/path/to/libraries cargo test -p sampler-kontakt --test real_libraries actual_una_corda_alternating_slots_match_independently_unrolled_pcm -- --ignored --nocapture`. The check creates no output audio files. This proves the production lower/cursor path for these actual source loops; it does not establish native Kontakt interpolation, crossfade or count semantics.
