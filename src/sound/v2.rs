@@ -887,6 +887,8 @@ impl V2Core {
         std::mem::swap(&mut self.mix.parts, &mut grown.mix.parts);
         for (old,new) in self.mix.editor_offsets.iter().zip(&mut grown.mix.editor_offsets) {*new=old.clone();}
         std::mem::swap(&mut self.mix.editor_offsets,&mut grown.mix.editor_offsets);
+        // Port v1 PreparedGrowth::preserve!(routers): keep the larger storage.
+        for (old,new) in self.mix.articulation_routes.iter_mut().zip(&mut grown.mix.articulation_routes) {std::mem::swap(old,new);}
         std::mem::swap(&mut self.mix.articulation_routes, &mut grown.mix.articulation_routes);
         for (old, new) in self.peaks.parts.iter().zip(&mut grown.peaks.parts) {
             *new = *old;
