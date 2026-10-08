@@ -124,15 +124,26 @@ def extra_columns(r):
     r['first_script_error']=next((x['first_error'] for x in ksp if x.get('first_error')), next((f.get('core_error') or f.get('category','runtime-fault') for p in programs for f in p.get('ksp_runtime_faults',[])),r.get('first_script_error','')))
     paths=sorted({p['load_path'] for p in programs if p.get('load_path')})
     r['load_path']=' + '.join(paths) or 'unknown'
-    errors=[x for x in renders if x.get('ok') is False]
+    incomplete=[x for x in renders+views if x.get('incomplete')]
+    errors=[x for x in renders if x.get('ok') is False and not x.get('incomplete')]
     # v1's retained full-editor render is itself the render record.
-    errors += [v for v in views if v.get('ok') is False]
+    errors += [v for v in views if v.get('ok') is False and not v.get('incomplete')]
     if any(x.get('budget_hit') for x in errors): r['ui']='budget-hit'
+    if incomplete:
+        r['incomplete']=True
+        if not errors and r.get('ui') not in {'error','budget-hit'}: r['ui']='incomplete'
     font_failures=count(views,'missing_fonts')
     if not errors and r.get('ui') in {'original-ok','missing-images','missing_font'} and isinstance(font_failures,(int,float)) and font_failures>0:
         r['ui']='missing_font'
-    r['paint_ok']='no' if errors else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
+    r['paint_ok']='no' if errors else 'unknown' if incomplete else 'yes' if renders or any(v.get('ok') is True for v in views) else 'no-ui' if r.get('ui')=='no-ui' else 'unknown'
     r['paint_error']=next((x.get('reason','paint error') for x in errors),'')
+    native_failures=[v for v in views if v.get('native_diagnostic') or (v.get('source_presentation')=='native-package' and v.get('font_declared') is None and not v.get('incomplete') and not any(x.get('incomplete') for x in v.get('renders',[])))]
+    if native_failures:
+        r['ui']='budget-hit' if r.get('ui')=='budget-hit' or any('budget' in str(v.get('native_diagnostic','')).lower() for v in native_failures) else 'error'
+        r['paint_ok']='no'
+        r['paint_error']='native-authored-frontend-unavailable' # successfully painting an error/loading label is not authored UI success
+        authored_frames=[x['ui_first_frame_ms'] for v in views if v not in native_failures for x in (v.get('renders',[]) or [v.get('render',{})]) if x.get('ok') is not False and isinstance(x.get('ui_first_frame_ms'),(int,float))]
+        r['ui_first_frame_ms']=min(authored_frames) if authored_frames else 'unknown'
     slots=[x for p in ksp for x in p.get('slots',[])]
     inventory=r.get('metadata',{}).get('slots',[])
     raw_known=isinstance(r.get('metadata',{}).get('slots'),list)
