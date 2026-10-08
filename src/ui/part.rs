@@ -30,7 +30,7 @@ pub struct Face {
 impl Face {
     fn new(path: &std::path::Path, generation: u64, from: Arc<[ir::Interface]>, shown: usize, presentation: Presentation) -> Self {
         let face = ir_view::resolved(&from[shown]);
-        let native=face.native_ui.as_ref().map(|n|super::native_ui::State::new(path,&n.entry,from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+        let native=face.native_ui.as_ref().map(|n|super::native_ui::State::new_declared(path,&n.entry,from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect(),face.resource_container.clone()));
         let mut out = Self { from, path: path.into(), generation, revision: u64::MAX, patch: Default::default(), page: ir::PageRef(0), shown, face, assets: Default::default(), presentation, values: Default::default(), input:Default::default(), native };
         out.sync();
         out
@@ -57,9 +57,9 @@ impl Face {
     fn sync(&mut self) {
         let entry=self.face.native_ui.as_ref().map(|n|n.entry.as_str());
         if self.native.as_ref().map(|n|n.entry())!=entry {
-            self.native=entry.map(|entry|super::native_ui::State::new(&self.path,entry,self.from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect()));
+            self.native=entry.map(|entry|super::native_ui::State::new_declared(&self.path,entry,self.from.iter().flat_map(|f|f.widgets.iter().enumerate().map(move |(n,w)|(f.source,n,w.clone()))).collect(),self.face.resource_container.clone()));
         }
-        if self.native.is_some() && self.presentation==Presentation::Bitmap {return;}
+        if self.native.as_ref().is_some_and(|n| !n.container_missing()) && self.presentation==Presentation::Bitmap {return;}
         self.assets.prepare(&self.path,&self.face,self.page,self.presentation,1.,&self.values);
     }
 }
@@ -208,9 +208,9 @@ fn interface(ui: &mut Ui, cx: &mut Cx, slot: usize, lead: Option<El>) -> Option<
         face.input.wave_duration_us = waveforms.iter().map(|(widget, envelope)| (*widget, envelope.duration_us)).collect();
         face.input.peaks = waveforms.into_iter().map(|(widget, envelope)| (widget, envelope.peaks)).collect();
     }
-    if face.native.is_none() || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
+    if face.native.as_ref().is_none_or(|n| n.container_missing()) || face.presentation!=Presentation::Bitmap {face.assets.prepare(&face.path,&face.face,face.page,face.presentation,scale*ui.scale().unwrap_or(1.),&face.values);}
     let namespace = format!("part-{slot}-epoch-{generation}-script-{}", face.shown);
-    let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native {
+    let view = if mode==crate::library::ViewMode::Original && let Some(native)=&mut face.native && !native.container_missing() {
         for (index,source) in face.from.iter().enumerate() {
             let current=published.updates.get(index).filter(|patch|**patch!=Default::default()).map(|patch| {let mut current=source.clone();patch.apply(source,&Default::default(),&mut current);current});
             let current=current.as_ref().unwrap_or(source);
