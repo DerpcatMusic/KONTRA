@@ -838,6 +838,12 @@ impl Streamed {
             path: "stream cache".into(),
             reason,
         };
+        // v1 Bank::limits uses authored polyphony; prepare matching pages off audio.
+        if let Some(limit) = loaded.instrument.voice_limit {
+            let pages = (limit.voices as usize).checked_mul(PAGES_PER_VOICE)
+                .ok_or_else(|| invalid("stream polyphony capacity overflow".into()))?;
+            report.pool_pages = report.pool_pages.max(pages);
+        }
         let (mut cache, worker) =
             StreamCache::new(report.pool_pages.max(1)).map_err(|e| invalid(e.to_string()))?;
         report.pool_bytes = cache.bytes();
@@ -920,6 +926,31 @@ mod tests {
             (1..=8).collect::<Vec<_>>()
         );
         assert!((1..=8).contains(&peak.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn authored_polyphony_sizes_new_stream_pools_without_shrinking_the_policy_floor() {
+        use sampler_ir::{Instrument, Kill, Time, VoiceLimit};
+        // Rebuilding a source with a changed limit allocates its new pool here,
+        // before any runtime/audio callback owns the cache.
+        for limit in [None, Some(2), Some(12), Some(1000)] {
+            let instrument = Instrument {
+                voice_limit: limit.map(|voices| VoiceLimit {
+                    voices, kill: Kill::Oldest, prefer_released: true,
+                    fade: Time::Milliseconds(0.),
+                }),
+                ..Default::default()
+            };
+            let streamed = crate::stream_instrument(
+                instrument, vec![], vec![], &crate::Options::default(),
+                &StreamPolicy { voices: 4, lazy: true, ..Default::default() },
+            ).unwrap();
+            let pages = usize::try_from(limit.unwrap_or(4)).unwrap().max(4) * PAGES_PER_VOICE;
+            assert_eq!(streamed.report.pool_pages, pages);
+            assert_eq!(streamed.report.pool_bytes, pages * PAGE_FRAMES * size_of::<Frame>());
+            assert_eq!(streamed.cache.bytes(), streamed.report.pool_bytes);
+            assert_eq!(streamed.report.head_bytes, 0);
+        }
     }
 
     #[test]
