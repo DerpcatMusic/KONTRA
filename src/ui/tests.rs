@@ -2245,4 +2245,37 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
 
+#[test]
+fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:"/widget/synthetic.nki".into(), ..Default::default()});
+    let mut inst = sampler_ir::Instrument::default();
+    for n in 0..40 {
+        inst.articulations.push(sampler_ir::Articulation {name:format!("Technique {n}"), switch_keys:vec![n], ..Default::default()});
+    }
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(inst));
+    let mut h = Harness::new(&p,1180.,900.);
+    h.press("view-0-Articulations");
+    h.idle(8);
+    let pos = center(&h.ui,"art-0-4");
+    let before = h.ui.scroll("arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    let after = h.ui.scroll("arts-0");
+    let rack_after = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    assert!(after[1]>before[1]);
+    assert!((rack_after-rack_before).abs()<1.,"child consumed wheel, rack moved {}",rack_after-rack_before);
+    h.ui.set_scroll("arts-0",[0.,10000.]);
+    h.idle(30);
+    let at_end = h.ui.scroll("arts-0");
+    let pos = center(&h.ui,"arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    assert_eq!(h.ui.scroll("arts-0"),at_end);
+    assert!(h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y<rack_before-1.,"exhausted child yields to rack");
+}
+
 include!("viewmodel_tests.rs");
+
