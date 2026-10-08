@@ -84,12 +84,12 @@ The shared scanner independently reports `loads=yes`, `ui=missing-images`,
 `controls_bound=107/113` across the visible views, and `plays_note=yes` for its
 bounded audition. Its main-view pixel hash is identical to this witness:
 `1de618412e4997cd4436556a4f9f77da5dead3c7b130d0a00c6c41a24dd13011`.
-The installed extension records **93.90%** declared cream background with its
+The previous extension witness records **93.90%** declared cream background with its
 one-unit pixel tolerance; the supplemental **94.94%** above uses ±2. These are
 different measurement definitions, not a changed screenshot. The extension
-current-revision witness reports 5,368.33 ms load admission and 230.87 MiB peak worker RSS.
+`e340c39a` witness reports 5,368.33 ms load admission and 230.87 MiB peak worker RSS.
 These whole-worker figures include playback/asset work absent from the render-only
-probe. Shared v2 binary SHA-256:
+probe. That witness's v2 binary SHA-256:
 `742c24e295358a7631fd5ae4fb85d576e51d03ef669eaa2efbf7ed2dfa6030c4`;
 record `~/.cache/kontra-scan/results/v2/cache/8d50917a5a616f5bffbf5d207e427ad5e37612f814847b9def39bec6ed503135.json`.
 Older scanner witnesses reported 18,941.86 ms / 229.71 MiB and 17,338.28 ms /
@@ -236,29 +236,35 @@ Do not replace the working authored presentation with a generic theme.
 | R12 preparation / diagnostics / cache | `src/ui/perf_view.rs:371` off-frame picture fetch with generation check, `:418` per-control dependency cache; `src/artwork.rs:259` categorized failures; `src/ui/fitted.rs:73,79,103,116` owner generation / resize / cut / window caches | Restore worker preparation, explicit errors and reusable render assets. Do not copy v1's cache-count ceiling as a decoded-byte budget; strengthen bounds/retry/resource identity through the shared v2 asset layer. |
 
 The shared scanner extension is published at
-`tools/kontra-scan@e340c39a6666752866015b5ee8f06a3cc978c416`. Canonical measurement uses
+`tools/kontra-scan@f7b2a8cdc6773ff569799c256ad9b0d638e3a824`. Its installed v2
+digest is `2c7c50d150ef168f46924dc4f90ea3edc2d96fa9350a299922858be2031237d0`.
+Canonical measurement uses
 `~/.cache/kontra-scan/bin/kontra-scan-v1` (pinned v1) and
 `kontra-scan-v2` (integration baseline), with their adjacent README and frozen
 Kontakt manifest. Use existing census outputs and requested extra columns;
 do not build another collector. Preserve Original in both comparisons and
 record the scanner digests, installed-file identity, values and render dimensions.
 The matching Conflux v2 hash above comes from that published scanner.
-Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `788f41fa`, and its
+Pinned Kontakt v1 remains `0cb7a8a0`; adapter source is `11db26e7`, and its
 installed scanner digest is
-`ac5aed734bb7fca40d6d000ff1f3e89128436b8f38d9d674fd70466f90dcdf08`.
+`bdbd24d642aaacf4511bdf8b717db14676d2ae46dc922ef13f24b9734c4a1438`.
 The UVI sidecar is a distinct later-v1 baseline, source `1c198e60` on product
 base `4bffbb18`, digest
 `d565661afb3ae1cab3100d1e83b7f12c0f5b02c51b7593451a6fe77929af8ea1`.
+Its section J timing extension is pending; this exact sidecar is preserved
+until the owner stages its replacement.
 
 ### Shared schema and coverage update
 
-The adjacent `bin/kontra_scan.py:COLUMNS` defines **69** columns; its first nine
+The adjacent `bin/kontra_scan.py:COLUMNS` defines **72** columns; its first nine
 remain stable. Published summaries are `~/.cache/kontra-scan/results/{v1,v2}.tsv`,
-with per-ID evidence in `{v1,v2}/cache`. Summaries were reset to the current
-revision and have no data rows at this read. One completed current-v2 Conflux
-cache record is available; current symbol aggregates report coverage of one ID.
-The owner is restarting the serial paired sweep, Conflux and exact Clarinet A
-first, then all 1,494 IDs. This partial snapshot cannot supply
+with per-ID evidence in `{v1,v2}/cache`. The owner will reset summaries for section
+J and continue the paired sweep. At this read, both summaries still contain 378
+rows and symbol aggregates identify digest
+`f1105599c13b14410ed891b29a014b8af43596e238850bb8e4439596e96e013a`,
+not the newly installed section J digest. These publications are not section J
+coverage. The Conflux witness above remains explicitly tied to `e340c39a`.
+The full 1,494-ID paired sweep is pending. This partial snapshot cannot supply
 whole-corpus affected counts, regression totals or a paired Conflux rendering comparison.
 
 | Matrix evidence | Shared column / detailed JSON | Interpretation |
@@ -271,6 +277,7 @@ whole-corpus affected counts, regression totals or a paired Conflux rendering co
 | Fonts, strips and slicing | `custom_font_uses`, `font_declared`, `font_success`, `picture_strips`, `picture_frames`, `picture_margins` | Preserve lookup/decode/font-service distinctions and declared versus resolved evidence. |
 | Asset failures and paint | `asset_lookup_*`, `asset_decode_*`, `resource_failure_reasons`, `paint_ok`, `paint_error` | A successful paint is not authored frontend or native-host fidelity. |
 | Pale or empty authored page | `page_background_rgba`, `plain_background_fraction`; renders' background method | Declared colour uses one-unit tolerance; modal colour is explicitly inferred. V1 page coverage remains unknown. |
+| Load onset and first paint | `first_audio_ms`, `ui_first_frame_ms`, `cache_state` | Actual output/CPU-paint completion on one production-load clock; unknown when unobserved. Product cache condition is separate from OS or metrics caches. |
 
 `unknown` stays unknown, never zero. Lua init/runtime faults and safe categories,
 load path, sample residency/underruns and common note-plan evidence remain
@@ -293,6 +300,19 @@ reserved sample bytes are not proof of usable PCM. `fallback_note` and
 are excluded from audio parity. The superseded null-pick audio observations are
 discarded for parity. Rendering witnesses above remain tied to their exact pixel
 hashes and scanner revision.
+
+Section J starts a monotonic item clock at the first production program import;
+metadata prepass and worker spawn are outside it, and later multi programs share
+it. `ui_first_frame_ms` ends at actual CPU paint completion before hashing/PNG
+writing, concurrently with audition. `first_audio_ms` ends at the first finite,
+exactly nonzero output block; it is distinct from the audible `1e-5` criterion.
+Absent observations remain unknown. `load_ms` retains its previous admission
+meaning and is not first sound. These are scanner timings, not native plugin
+scheduling benchmarks. Frozen product caches are cold; OS page cache is
+uncontrolled. A newer product cache must expose its actual state before warm/cold
+comparisons can use `cache_state`. Section J's strict native saved-table parser
+is connected; its safe raw/admitted sigils and actual phase records remain the
+source for restoration coverage.
 
 ## Prior work to reuse, not reimplement
 
