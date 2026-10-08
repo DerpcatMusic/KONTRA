@@ -2840,6 +2840,24 @@
       ],
       "validation": "Contention self-check reproduces missing delta; fixed receipt preserves unknown and passes.",
       "accepted": true
+    },
+    {
+      "id": "uvi-fresh-custom-host-save",
+      "summary": "Capture authored UVI custom state once per host save even without UI revision",
+      "source_commits": [
+        "b247fdfc82f6daf32ebe77bada8c7594a4fad75e"
+      ],
+      "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
+      "accepted": true
+    },
+    {
+      "id": "host-native-selection-readback",
+      "summary": "Reject live host receipts whose native keyed source or routing readback differs",
+      "source_commits": [
+        "5659d58658459606ad6efc79484c954bd057094d"
+      ],
+      "validation": "Owner failing-first focused checks pass; combined UVI save and host admission selfchecks run before alpha packaging.",
+      "accepted": true
     }
   ]
 }
