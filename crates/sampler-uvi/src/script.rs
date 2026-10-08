@@ -750,7 +750,9 @@ impl ScriptHost {
             Ok(())
         })?)?;
         native.set("resourcePath", lua.create_function(|lua, path: String| {
-            if path.starts_with(['/', '$']) { return Ok(path); }
+            // v1 4bffbb18:src/uvi/host.rs retains empty artwork/font assignments.
+            // They clear a resource; resolving them to a module directory creates a phantom asset.
+            if path.is_empty() || path.starts_with(['/', '$']) { return Ok(path); }
             for level in 0..32 {
                 let Some(source) = lua.inspect_stack(level, |d| d.source().source.map(|s| s.into_owned())) else { break };
                 if let Some(source) = source {

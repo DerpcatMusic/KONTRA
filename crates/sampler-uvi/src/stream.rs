@@ -123,8 +123,11 @@ impl Read for Bytes {
                 return Err(invalid("sample data truncated"));
             }
             self.guard.check(&self.file)?;
-            if let Some(key) = self.key {
-                crate::crypto::transform_blocks(&mut self.buf, key, self.base + start);
+            if let Some(_key) = self.key {
+                #[cfg(feature = "library-access")]
+                crate::crypto::transform_blocks(&mut self.buf, _key, self.base + start);
+                #[cfg(not(feature = "library-access"))]
+                return Err(invalid("encrypted samples need the library-access feature"));
             }
             self.at = start;
             if start == 0 {
