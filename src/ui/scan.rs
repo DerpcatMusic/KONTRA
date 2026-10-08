@@ -1,5 +1,5 @@
 //! Read-only shared scanner adapter. Only the Original authored presentation is rendered.
-use super::{ir_view, pictures, theme};
+use super::{ir_view, theme};
 use crate::{
     scan_metrics as metrics,
     sound::{
@@ -40,23 +40,34 @@ pub(crate) fn strict_table(data: &[u8], version: u16) -> (&'static str,BTreeMap<
 
 fn render(
     face: &ir::Interface,
-    source: &mut pictures::Source,
+    path: &Path,
+    interfaces: &[ir::Interface],
     values: &mut ir_view::Values,
     typed_targets: &std::collections::BTreeSet<(u8,String)>,
+    load_started: Instant,
     out: &Path,
     prefix: &str,
 ) -> Value {
     let face = ir_view::resolved(face);
-    let before = source.1;
+
     let mut missing = Vec::new();
     let mut assets = ir_view::Assets::default();
-    assets.sync(&face, ir::Presentation::Bitmap, |a| {
-        let image = source.load(a);
-        if image.is_none() {
-            missing.push(blake3::hash(a.path.as_bytes()).to_hex().to_string());
-        }
-        image
+    let mut native = face.native_ui.as_ref().map(|n| {
+        super::native_ui::State::new(
+            path,
+            &n.entry,
+            interfaces
+                .iter()
+                .flat_map(|f| {
+                    f.widgets
+                        .iter()
+                        .enumerate()
+                        .map(move |(n, w)| (f.source, n, w.clone()))
+                })
+                .collect(),
+        )
     });
+    let input = ir_view::InputState::default();
     let (mut geometry, mut kinds, mut placeholders, mut properties) = (
         BTreeMap::new(),
         BTreeMap::new(),
@@ -137,18 +148,6 @@ fn render(
         ) {
             add(&mut placeholders, kind);
         }
-        if w.drag.is_some() {
-            add(
-                &mut properties,
-                "renderer ignores authored drag sensitivity",
-            );
-        }
-        if !w.enabled {
-            add(&mut properties, "renderer ignores disabled state");
-        }
-        if w.text.contains('\n') {
-            add(&mut properties, "renderer collapses multiline labels");
-        }
         let r = face.page_rect(ir::WidgetRef(n));
         let page = &face.pages[w.page.0];
         if r.width == 0 || r.height == 0 {
@@ -172,25 +171,46 @@ fn render(
         let scale = (1200. / f64::from(face.pages[p].size.width.max(1)))
             .min(900. / f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)))
             .min(1.);
-        let w = (f64::from(face.pages[p].size.width.max(1)) * scale)
+        let authored = native.as_ref().map(|n| n.authored());
+        let w = (authored.map_or(f64::from(face.pages[p].size.width.max(1)), |s| s.width) * scale)
             .ceil()
             .clamp(1., 1200.) as u16;
-        let h = (f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)) * scale)
+        let h = (authored.map_or(
+            f64::from(ir_view::height(&face, ir::PageRef(p)).max(1)),
+            |s| s.height,
+        ) * scale)
             .ceil()
             .clamp(1., 900.) as u16;
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<Value, String> {
                 let mut ui = theme::ui();
-                for _ in 0..2 {
-                    let el = ir_view::view(
-                        &mut ui,
-                        &face,
-                        ir::PageRef(p),
-                        &assets,
-                        ir::Presentation::Bitmap,
-                        scale,
-                        values,
-                    );
+                let deadline = Instant::now() + Duration::from_secs(15);
+                let mut settled = 0;
+                while settled < 2 {
+                    if Instant::now() > deadline {
+                        return Err("authored image preparation time budget exceeded".into());
+                    }
+                    let el = if let Some(native) = &mut native {
+                        native.view(&mut ui, 0, scale, &face, values, &input)
+                    } else {
+                        assets.prepare(
+                            path,
+                            &face,
+                            ir::PageRef(p),
+                            ir::Presentation::Bitmap,
+                            scale,
+                            values,
+                        );
+                        ir_view::view(
+                            &mut ui,
+                            &face,
+                            ir::PageRef(p),
+                            &assets,
+                            ir::Presentation::Bitmap,
+                            scale,
+                            values,
+                        )
+                    };
                     ui.frame(
                         el,
                         Some(Size::new(w as f64, h as f64)),
@@ -198,6 +218,18 @@ fn render(
                         1. / 60.,
                     )
                     .map_err(|e| e.to_string())?;
+                    if let Some(error) = native.as_ref().and_then(|n| n.diagnostic()) {
+                        return Err(error);
+                    }
+                    let pending = native
+                        .as_ref()
+                        .map_or_else(|| assets.pending(), |n| n.pending());
+                    if pending == 0 {
+                        settled += 1;
+                    } else {
+                        settled = 0;
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
                 }
                 let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
                 let mut resources = vello::vello_cpu::Resources::default();
@@ -214,12 +246,14 @@ fn render(
                 ctx.flush();
                 let mut pix = vello::vello_cpu::Pixmap::new(w, h);
                 ctx.render(&mut pix, &mut resources);
+                let first_frame_ms=load_started.elapsed().as_secs_f64()*1000.;
                 let rgba: Vec<_> = pix
                     .take_unpremultiplied()
                     .iter()
                     .flat_map(|p| [p.r, p.g, p.b, p.a])
                     .collect();
                 let mut report = metrics::pixels(&rgba);
+                report["ui_first_frame_ms"]=json!(first_frame_ms);
                 let color = face.pages[p].background.color.map(|c| [c.r, c.g, c.b, c.a]);
                 report["background"] = metrics::background(&rgba, color);
                 if std::env::var_os("KONTRA_SCAN_SHOTS").is_some() {
@@ -237,7 +271,7 @@ fn render(
                 r
             }
             Ok(Err(e)) => {
-                json!({"ok":false,"budget_hit":metrics::budget(&e),"reason":metrics::message(&e)})
+                json!({"ok":false,"budget_hit":metrics::budget(&e),"reason":native.as_ref().and_then(|n|n.diagnostic()).unwrap_or_else(||metrics::message(&e))})
             }
             Err(_) => json!({"ok":false,"budget_hit":false,"reason":"Original renderer panic"}),
         });
@@ -251,23 +285,45 @@ fn render(
         .iter()
         .filter(|s| !matches!(s.font, ir::Font::Default))
         .count();
+    let scan = native.as_ref().map_or_else(|| assets.scan(), |n| n.scan());
+    missing.extend(
+        native
+            .as_ref()
+            .map_or_else(|| assets.failures(), |n| n.failures()),
+    );
+    missing.sort();
+    missing.dedup();
+    let font_success = face
+        .styles
+        .iter()
+        .filter(|s| match s.font {
+            ir::Font::Stock(_) => true,
+            ir::Font::Default | ir::Font::Named(_) => false,
+            ir::Font::Bitmap(a) => assets.get(a).is_some(),
+            ir::Font::File(a) => assets.font(&a).is_some(),
+        })
+        .count();
     json!({"bound_typed":if matches!(face.source,ir::Source::FalconLua){None}else{Some(typed_bound)},"typed_binding_refs":typed_refs,"typed_binding_basis":"installed script model target; live typed edit/readback unmeasured","phantom_free_controls":null,"controls_declared":declared,"controls_bound_declared":declared_bound,
-        "asset_lookup_requested":source.1.lookups-before.lookups,"asset_lookup_ok":source.1.lookup_ok-before.lookup_ok,
-        "asset_decode_requested":source.1.decodes-before.decodes,"asset_decode_ok":source.1.decode_ok-before.decode_ok,
-        "font_declared":fonts_declared,"font_success":0,
+        "asset_lookup_requested":scan.lookups,"asset_lookup_ok":scan.lookup_ok,
+        "asset_decode_requested":scan.decodes,"asset_decode_ok":scan.decode_ok,
+        "font_declared":fonts_declared,"font_success":font_success,
+
         "custom_font_uses":face.styles.iter().filter(|s|matches!(s.font,ir::Font::Named(_)|ir::Font::Bitmap(_))).count(),
         "image_strips":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.frames>1)).count(),
         "image_frames":face.assets.iter().filter_map(|a|if let ir::AssetKind::Image(m)=&a.kind{Some(m.frames.max(1))}else{None}).sum::<u32>(),
         "image_margins":face.assets.iter().filter(|a|matches!(&a.kind,ir::AssetKind::Image(m)if m.margins!=ir::Margins::default())).count(),
-        "asset_failure_reasons":{"lookup-not-found":(source.1.lookups-before.lookups)-(source.1.lookup_ok-before.lookup_ok),
-            "decode-failed":(source.1.decodes-before.decodes)-(source.1.decode_ok-before.decode_ok),"font-service-unavailable":fonts_declared},
+        "asset_failure_reasons":{"lookup-not-found":(scan.lookups)-(scan.lookup_ok),
+            "decode-failed":(scan.decodes)-(scan.decode_ok),"font-service-unavailable":fonts_declared.saturating_sub(font_success)},
+        "native_diagnostic":native.as_ref().and_then(|n|n.diagnostic()),
+
         "widgets":face.widgets.len(),"visible":visible,"interactive":interactive,"bound":bound,
         "kinds":kinds,"placeholder_widgets":placeholders,"unsupported_params":properties,"geometry":geometry,
         "missing_images":missing.len(),"missing_image_hashes":missing,"assets":face.assets.len(),
-        "decoded_image_bytes":assets.bytes(),"passive_value_changes":passive,"renders":renders})
+        "decoded_image_bytes":native.as_ref().map_or_else(||assets.bytes(),|n|n.bytes()),"passive_value_changes":passive,"renders":renders})
 }
 
 pub fn one(id: &str, out: &Path) -> Value {
+    let mut first_audio_ms=None;
     let (path, program_name) = id
         .split_once("::")
         .map_or((id, None), |(p, n)| (p, Some(n)));
@@ -277,10 +333,10 @@ pub fn one(id: &str, out: &Path) -> Value {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("uvip"));
     let path = program_name.map_or(path.clone(), |n| path.join(n));
-    let mut result = json!({"loads":"no","ui":"error","controls_bound":"0/0","plays_note":"no","stage":"parse","programs":[]});
+    let mut result = json!({"loads":"no","ui":"error","controls_bound":"0/0","plays_note":"no","stage":"parse","programs":[],"cache_state":"cold","cache_state_basis":"frozen v2 baseline has no product metadata cache; OS page cache uncontrolled"});
     if !is_uvi {
         result["metadata"] = match sampler_kontakt::read_chunks(&path) {
-            Ok(chunks) => metrics::metadata::inspect(&chunks.0),
+            Ok(chunks) => metrics::metadata::inspect_with(&chunks.0,strict_table),
             Err(e) => metrics::error("script metadata parse", e),
         };
     }
@@ -314,6 +370,8 @@ pub fn one(id: &str, out: &Path) -> Value {
         mut budget_hit,
     ) = (true, 0, 0, false, false, false, false, false, false);
     let mut load_ms = 0.;
+    let load_started=Instant::now();
+    result["onset_basis"]=json!("monotonic from first production program import; shared collector paints Original and auditions concurrently; first output excludes lexical metadata prepass");
     for program in 0..count {
         let start = Instant::now();
         result["stage"] = json!(format!("load program {program}"));
@@ -395,31 +453,31 @@ pub fn one(id: &str, out: &Path) -> Value {
         result["stage"] = json!(format!("Original UI program {program}"));
         metrics::checkpoint(out, &result);
         let typed_targets=loaded.scripts.views.iter().flat_map(|view|view.model().interface.widgets.iter().filter(|w|matches!(w.value,sampler_ksp::model::WidgetValue::Text(_)|sampler_ksp::model::WidgetValue::Ints(_)|sampler_ksp::model::WidgetValue::Reals(_))).map(|w|(view.slot(),w.name.clone()))).collect();
-        let mut source = pictures::Source::of(&path);
+        let faces = loaded.interfaces.clone();
+        any_ui |= faces.iter().any(|face| !face.widgets.is_empty());
+        let paint_path = path.clone();
+        let paint_out = out.to_path_buf();
+        let paint = std::thread::Builder::new().stack_size(32 << 20).spawn(move || {
+
         let mut views = Vec::new();
-        for (slot, face) in loaded.interfaces.iter().enumerate() {
+        for (slot, face) in faces.iter().enumerate() {
             if face.widgets.is_empty() {
                 continue;
             }
-            any_ui = true;
             let view = render(
                 face,
-                &mut source,
+                &paint_path,
+                &faces,
                 &mut values,
                 &typed_targets,
-                out,
+                load_started,
+                &paint_out,
                 &format!("program-{program}-slot-{slot}"),
             );
-            total_bound += view["bound"].as_u64().unwrap_or(0);
-            total_interactive += view["interactive"].as_u64().unwrap_or(0);
-            ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
-            for r in view["renders"].as_array().unwrap() {
-                ui_error |= r["ok"] != true;
-                budget_hit |= r["budget_hit"] == true;
-                any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
-            }
             views.push(view);
         }
+        views
+        }).expect("paint worker start");
         // A scalar UI diagnostic does not mean the audio loader failed.
         let failed_script = script_errors.get("script").copied().unwrap_or(0) > 0
             || script_errors.get("script interface").copied().unwrap_or(0) > 0;
@@ -514,13 +572,15 @@ pub fn one(id: &str, out: &Path) -> Value {
             core.event(0, Event::midi1(0xb0, 11, 127));
             if let Some(switch)=keyswitch {
                 core.event(0, Event::midi1(0x90,switch,64));
-                let _=core.render(128);
+                let audio=core.render(128);
+                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 core.event(0, Event::midi1(0x80,switch,0));
             }
             core.event(0, Event::midi1(0x90, key, velocity));
             for _ in 0..180 {
                 std::thread::sleep(Duration::from_millis(3));
                 let audio = core.render(128);
+                if first_audio_ms.is_none() && metrics::nonzero(audio.buses.iter().flat_map(|bus|bus.iter().flat_map(|channel|channel.iter().take(128).copied()))) {first_audio_ms=Some(load_started.elapsed().as_secs_f64()*1000.);}
                 if audio.buses.iter().any(|bus| {
                     bus.iter()
                         .flatten()
@@ -529,6 +589,19 @@ pub fn one(id: &str, out: &Path) -> Value {
                     heard = true;
                 }
                 runtime_faults.extend(core.scan_runtime_faults(0));
+            }
+        }
+        result["stage"]=json!(format!("Original paint join program {program}"));
+        metrics::checkpoint(out,&result);
+        let views=paint.join().unwrap_or_else(|_|vec![json!({"renders":[{"ok":false,"budget_hit":false,"reason":"paint worker panicked"}]})]);
+        for view in &views {
+            total_bound += view["bound"].as_u64().unwrap_or(0);
+            total_interactive += view["interactive"].as_u64().unwrap_or(0);
+            ui_missing |= view["missing_images"].as_u64().unwrap_or(0) > 0;
+            for r in view["renders"].as_array().unwrap() {
+                ui_error |= r["ok"] != true;
+                budget_hit |= r["budget_hit"] == true;
+                any_blank |= r["uniform"] == true && view["visible"].as_u64().unwrap_or(0) > 0;
             }
         }
         any_heard |= heard;
@@ -571,6 +644,7 @@ pub fn one(id: &str, out: &Path) -> Value {
         "no"
     });
     result["load_ms"] = json!(load_ms);
+    result["first_audio_ms"]=json!(first_audio_ms);
     result["reason"] = json!(format!(
         "{count} programs; Original only; bound {total_bound}/{total_interactive}; audio {}",
         if any_heard {

@@ -72,7 +72,7 @@ impl Harness {
         h
     }
 
-    fn tick(&mut self, input: Input) {
+    pub(super) fn tick(&mut self, input: Input) {
         let root = (self.build)(&mut self.ui, &mut self.bridge);
         self.ui
             .frame(root, Some(self.size), input, 1. / 60.)
@@ -104,7 +104,7 @@ impl Harness {
         self.idle(3);
     }
 
-    fn drag(&mut self, from: &str, to: &str) {
+    pub(super) fn drag(&mut self, from: &str, to: &str) {
         let (from, to) = (center(&self.ui, from), center(&self.ui, to));
         for (pos, down) in [
             (from, true),
@@ -117,7 +117,7 @@ impl Harness {
         self.idle(2);
     }
 
-    fn type_into(&mut self, id: &str, text: &str) {
+    pub(super) fn type_into(&mut self, id: &str, text: &str) {
         self.ui.focus(id);
         self.tick(enter());
         self.idle(2);
@@ -691,20 +691,22 @@ fn rack_interactions() {
     assert!(s.parts[1].path.ends_with("Strings.nki"));
 
     let ui = &h.ui;
+    let drag = std::sync::Mutex::new(None);
     let files = vec![PathBuf::from("/external/Native.nki")];
     let at = Point::new(10., 10.);
-    assert!(native_files(&p, &Default::default(), ui, at, &files, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, false));
     assert!(parts(&p)[0].path.is_empty(), "hovering does not load");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[0].path.ends_with("Native.nki"),
         "a dropped file takes the free slot"
     );
-    assert!(!native_files(&p, &Default::default(), ui, at, &[PathBuf::from("notes.txt")], true));
+    assert!(!native_files(&p, &Default::default(), &drag, ui, at, &[PathBuf::from("notes.txt")], true));
     let before_append = parts(&p).len();
     assert!(native_files(
         &p,
         &Default::default(),
+        &drag,
         ui,
         at,
         &vec![PathBuf::from("full.nki"); 17],
@@ -712,16 +714,16 @@ fn rack_interactions() {
     ));
     assert_eq!(parts(&p).len(), before_append + 17, "a native drop grows the rack rather than rejecting files");
     let at = center(ui, "header-1");
-    assert!(native_files(&p, &Default::default(), ui, at, &files, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &files, true));
     assert!(
         parts(&p)[1].path.ends_with("Native.nki"),
         "a file dropped on a header replaces its part"
     );
     let multi = [PathBuf::from("/external/Multi.kontra-multi")];
     let before = p.selection.read().unwrap().clone();
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, false));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, false));
     assert!(p.shared.multi_request.lock().unwrap().is_none());
-    assert!(native_files(&p, &Default::default(), ui, at, &multi, true));
+    assert!(native_files(&p, &Default::default(), &drag, ui, at, &multi, true));
     assert_eq!(
         p.shared.multi_request.lock().unwrap().take().unwrap(),
         "/external/Multi.kontra-multi"
@@ -2245,6 +2247,66 @@ fn library_rename_edits_only_the_display_name_and_filter_follows_it() {
     p.shared.libraries.edit(|s| s.rename_library(dir, ""));
 }
 
+#[test]
+fn widget_nested_wheel_stays_in_child_then_hands_off_at_end() {
+    let p = Arc::new(SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part {path:"/widget/synthetic.nki".into(), ..Default::default()});
+    let mut inst = sampler_ir::Instrument::default();
+    for n in 0..40 {
+        inst.articulations.push(sampler_ir::Articulation {name:format!("Technique {n}"), switch_keys:vec![n], ..Default::default()});
+    }
+    let row = super::inside::row_id(0, &crate::sound::articulation::identities(&inst.articulations)[4]);
+    p.shared.view.lock().unwrap().parts[0].instrument = Some(Arc::new(inst));
+    let mut h = Harness::new(&p,1180.,900.);
+    h.press("view-0-Articulations");
+    h.idle(8);
+    let pos = center(&h.ui,&row);
+    let before = h.ui.scroll("arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    let after = h.ui.scroll("arts-0");
+    let rack_after = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    assert!(after[1]>before[1]);
+    assert!((rack_after-rack_before).abs()<1.,"child consumed wheel, rack moved {}",rack_after-rack_before);
+    h.ui.set_scroll("arts-0",[0.,10000.]);
+    h.idle(30);
+    let at_end = h.ui.scroll("arts-0");
+    let pos = center(&h.ui,"arts-0");
+    let rack_before = h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y;
+    h.tick(Input {pointer:PointerInput {pos:Some(pos), ..Default::default()}, wheel:Vec2::new(0.,80.), ..Default::default()});
+    h.idle(30);
+    assert_eq!(h.ui.scroll("arts-0"),at_end);
+    assert!(h.ui.scene().unwrap().surface("rack-content").unwrap().frame.y<rack_before-1.,"exhausted child yields to rack");
+}
+
+include!("viewmodel_tests.rs");
+
+/// Every product menu target uses menu::view, so exercise a non-articulation
+/// target too: popup paint must be opaque on entry and absent immediately on exit.
+#[test]
+fn shared_context_menu_never_fades_over_interactive_content() {
+    let p = Arc::new(SamplerParams::new());
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("app-menu");
+    let frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let first = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    let sample = ((frame.y as usize + 2) * 1180 + frame.x as usize + 20) * 4;
+    assert_eq!(&first[sample..sample+4], &settled[sample..sample+4], "shared menu must be opaque on entry");
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none());
+    let closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    for y in 80..200 {
+        let x = frame.x as usize + 10;
+        let range = (y * 1180 + x) * 4 .. (y * 1180 + x + 180) * 4;
+        assert_eq!(&closed[range.clone()], &settled[range], "shared menu must leave no ghost, scanline {y}");
+    }
+}
  pub(super) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value {
     let start = std::time::Instant::now();
     let mut h=Harness::new(p,1180.,760.);
