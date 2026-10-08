@@ -98,6 +98,9 @@ pub(super) struct State {
     pub native_tick: u64,
     pub native_seed: u64,
     pub controllers: [u32; 128],
+    /// Script pitch bend (128) and mono pressure (129) are independent of the
+    /// native previous-key/axis selectors addressed by `value`.
+    pub script_virtual: [u32; 2],
     /// The virtual controller [`crate::PREVIOUS_KEY`]: see [`previous_key_value`].
     pub previous: u32,
     /// The virtual controllers [`crate::AXIS_BASE`]`..` : the active choice of each axis.
@@ -106,6 +109,13 @@ pub(super) struct State {
 }
 
 impl State {
+    fn script_controller(&self, number: u8) -> Option<u32> {
+        if number < 128 {
+            self.controllers.get(usize::from(number)).copied()
+        } else {
+            self.script_virtual.get(usize::from(number - 128)).copied()
+        }
+    }
     /// A controller's value, including the virtual previous-key one.
     pub fn value(&self, controller: u8) -> u32 {
         self.controllers
@@ -126,7 +136,7 @@ pub fn previous_key_value(interval: Option<i16>) -> u32 {
 }
 
 pub(super) struct PerformanceState {
-    pub input_controllers: Box<[[u32; 128]]>,
+    pub input_controllers: Box<[[u32; 130]]>,
     pub states: Box<[State]>,
     pub current: Box<[usize]>,
     free: Vec<usize>,
@@ -136,7 +146,7 @@ impl PerformanceState {
     pub fn validate(notes: usize, performances: usize) -> Result<usize, Error> {
         let capacity = notes.checked_add(performances).ok_or(Error::Capacity)?;
         std::alloc::Layout::array::<State>(capacity).map_err(|_| Error::Capacity)?;
-        std::alloc::Layout::array::<[u32; 128]>(performances).map_err(|_| Error::Capacity)?;
+        std::alloc::Layout::array::<[u32; 130]>(performances).map_err(|_| Error::Capacity)?;
         std::alloc::Layout::array::<usize>(capacity).map_err(|_| Error::Capacity)?;
         Ok(capacity)
     }
@@ -149,6 +159,7 @@ impl PerformanceState {
                 native_tick: 0,
                 native_seed: 0,
                 controllers: RESET_CONTROLLERS,
+                script_virtual: [0x8000_0000, 0],
                 previous: 0,
                 axes: [0; crate::MAX_AXES],
                 owners: 0
@@ -158,7 +169,7 @@ impl PerformanceState {
         .into_boxed_slice();
         states[0].owners = performances;
         Self {
-            input_controllers: vec![RESET_CONTROLLERS; performances].into_boxed_slice(),
+            input_controllers: vec![RESET_INPUT_CONTROLLERS; performances].into_boxed_slice(),
             states,
             current: vec![0; performances].into_boxed_slice(),
             free: (1..capacity).rev().collect(),
@@ -206,9 +217,7 @@ impl Runtime {
     pub fn controller(&self, id: PerformanceId, controller: u8) -> Result<u32, Error> {
         let state = self.performance_state.current(self.performance_index(id)?);
         state
-            .controllers
-            .get(usize::from(controller))
-            .copied()
+            .script_controller(controller)
             .ok_or(Error::InvalidInput)
     }
 
@@ -218,9 +227,7 @@ impl Runtime {
         self.notes.get(note.0).ok_or(Error::StaleHandle)?;
         let state = &self.performance_state.states[self.selections[note.0.index].snapshot];
         state
-            .controllers
-            .get(usize::from(controller))
-            .copied()
+            .script_controller(controller)
             .ok_or(Error::InvalidInput)
     }
 
@@ -234,9 +241,18 @@ impl Runtime {
     }
 
     pub(super) fn controller_now(&mut self, performance: usize, controller: u8, value: u32) {
-        if self.performance_state.current(performance).controllers[usize::from(controller)] != value
+        if self
+            .performance_state
+            .current(performance)
+            .script_controller(controller)
+            != Some(value)
         {
-            self.performance_state.edit(performance).controllers[usize::from(controller)] = value;
+            let state = self.performance_state.edit(performance);
+            if controller < 128 {
+                state.controllers[usize::from(controller)] = value;
+            } else {
+                state.script_virtual[usize::from(controller - 128)] = value;
+            }
         }
     }
 
@@ -266,5 +282,12 @@ pub const AXIS_SWITCH: u32 = 0xA5 << 24;
 const RESET_CONTROLLERS: [u32; 128] = {
     let mut values = [0; 128];
     values[11] = u32::MAX;
+    values
+};
+
+const RESET_INPUT_CONTROLLERS: [u32; 130] = {
+    let mut values = [0; 130];
+    values[11] = u32::MAX;
+    values[128] = 0x8000_0000;
     values
 };
