@@ -1187,13 +1187,14 @@ impl Lowering<'_> {
                 wet,
             },
             ir::Processor::Filter(filter) => self.filter(owner, filter)?,
+            ir::Processor::Delay { time, .. } if self.frames(time) == 0 => Processor::Gain(1.),
             ir::Processor::Delay {
                 time,
                 feedback,
                 mix,
             } => Processor::Delay(
                 crate::Delay::new(
-                    self.frames(time).max(1),
+                    self.frames(time),
                     [[feedback, 0.], [0., feedback]],
                     1. - mix,
                     mix,
