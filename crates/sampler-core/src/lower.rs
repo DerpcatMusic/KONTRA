@@ -40,6 +40,7 @@ pub enum Stage {
     Releases,
     Articulations,
     Controllers,
+    Controls,
     Modulation,
 }
 
@@ -505,6 +506,9 @@ pub fn lower_with(
             .with_bend_range(range)
             .map_err(core(Stage::Modulation, "pitch-bend range"))?;
     }
+    plan = plan
+        .with_engine_parameters(Vec::new(), source_engine_lookups(&instrument.source_indices))
+        .map_err(core(Stage::Controls, "source engine lookups"))?;
     if instrument.behaviors.is_empty() {
         Ok(plan)
     } else {

@@ -814,7 +814,7 @@ impl<'a> NativeGesture<'a> {
             let value=match value {
                 sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),
                 sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),
-                sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
+                sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not stored widget readback"),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned()),
             };
             if let ir::Binding::Control(c)=w.binding {
                 let scalar=match value {ir::Value::Integer(v)=>f64::from(v),ir::Value::Real(v)=>v,_=>continue};
@@ -871,7 +871,7 @@ impl<'a> NativeGesture<'a> {
     }
     fn key(&mut self, key: Key, mods: Mods) {self.tick(Input {keys:vec![KeyPress {key,mods}],..Default::default()}); self.tick(Input::default());}
     fn restore(&mut self, n: usize, value: sampler_core::WidgetValue) {
-        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned())};
+        let value=match value {sampler_core::WidgetValue::Integer(v)=>ir::Value::Integer(v as i32),sampler_core::WidgetValue::Real(v)=>ir::Value::Real(v),sampler_core::WidgetValue::DropPath{..}=>panic!("drop payload is not stored widget readback"),sampler_core::WidgetValue::Text(v)=>ir::Value::Text(v.as_str().to_owned())};
         self.state.edits.push(ir_view::Edit {widget:ir::WidgetRef(n),index:0,value,mods:Mods::default(),cursor:0,event:0});
         self.settle();
     }

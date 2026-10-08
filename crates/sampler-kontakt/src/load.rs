@@ -959,9 +959,8 @@ mod native_lookup_tests {
         ];
         instrument.behaviors.push(ir::Behavior { name:"lookup".into(),language:ir::Language::Ksp,slot:Some(3),state:vec![],requires:vec![],
             source:"on init declare $mod := get_mod_idx(2,\"source\") declare $target := get_target_idx(2,$mod,\"cutoff\") declare $group := find_group(\"live\") declare $note_mod declare $note_target end on on note $note_mod := get_mod_idx(2,\"SOURCE\") $note_target := get_target_idx(2,$note_mod,\"CUTOFF\") end on".into() });
-        let lookups = sampler_core::lower::source_engine_lookups(&instrument.source_indices);
         let loaded = prepare(instrument,vec![],&Options::default()).unwrap();
-        let plan=loaded.plan.with_engine_parameters(vec![],lookups).unwrap();
+        let plan=loaded.plan;
         let limits=sampler_core::Limits::for_plan(&plan,4,8);
         let mut rt=sampler_core::Runtime::new(plan,limits).unwrap();
         let cell=|rt:&sampler_core::Runtime,index| rt.script_cell(rt.active_plan(),sampler_core::ScriptInstanceId(0),index);
