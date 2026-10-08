@@ -74,6 +74,9 @@ pub(crate) fn current(dependencies: &[Dependency]) -> bool {
 
 /// `~/.cache/kontra` (or the platform's cache folder).
 pub fn dir() -> Option<PathBuf> {
+    // Scanner-only: never persist imported/decrypted library records or headers.
+    #[cfg(feature = "shots")]
+    if std::env::var_os("KONTRA_SCAN_ACTIVE").is_some() { return None; }
     Some(dirs::cache_dir()?.join("kontra"))
 }
 

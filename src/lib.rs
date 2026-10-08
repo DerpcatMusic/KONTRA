@@ -9,6 +9,11 @@ mod cache;
 mod resources;
 pub mod diagnostics;
 pub mod support;
+#[cfg(feature = "shots")]
+#[path = "../tools/kontra-scan/metrics.rs"]
+pub(crate) mod scan_metrics;
+#[cfg(feature = "shots")]
+pub use ui::scan::one as scan_one;
 pub mod modulation;
 pub mod audio;
 pub mod engine;

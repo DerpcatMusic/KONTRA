@@ -152,3 +152,7 @@ resolver = "3"
 [profile.ci]
 inherits = "release"
 lto = false
+
+[[example]]
+name = "kontra_scan"
+required-features = ["shots"]

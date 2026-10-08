@@ -457,6 +457,8 @@ pub struct Program {
     pub auto_symbols: Vec<Box<str>>,
     /// Blocks that failed to compile, disabled at runtime.
     pub errors: Vec<String>,
+    #[cfg(feature="shots")]
+    pub scanner_disabled_persistence: bool,
     pub diagnostics: BTreeSet<String>,
     pub array_writes: Vec<VarId>,
     pub array_jobs: Vec<VarId>,
@@ -653,6 +655,8 @@ pub(super) fn compile_prepared(prepared: super::performance_view::Prepared, setu
                     c.name(block.name),
                     block.line
                 ));
+                #[cfg(feature="shots")]
+                if c.name(block.name)=="persistence_changed"{c.p.scanner_disabled_persistence=true;}
                 c.disable(block);
             }
         }

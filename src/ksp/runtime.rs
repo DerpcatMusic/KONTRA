@@ -1253,6 +1253,8 @@ impl Runtime {
         let program = match compiled(source, &setup, &inherited, engine.instrument_path()) {
             Ok(p) => p,
             Err(e) => {
+                #[cfg(feature="shots")]
+                crate::ui::scan::compile_phase(index,false,0,0,false);
                 self.programs.push(Arc::default());
                 let mut state = SlotState::new(index, &self.programs[index as usize]);
                 state.error = Some(format!("{e:#}"));
@@ -1260,14 +1262,18 @@ impl Runtime {
                 return Err(e);
             }
         };
+        #[cfg(feature="shots")]
+        crate::ui::scan::compile_phase(index,true,program.errors.len(),program.diagnostics.len(),program.scanner_disabled_persistence);
         self.states.push(SlotState::new(index, &program));
         self.programs.push(program);
         let staged = self.env.host.clone();
         if let Err(e) = self.run_init(engine, index) {
+
             self.env.host = staged;
             self.states[index as usize].error = Some(format!("{e:#}"));
             return Err(e);
         }
+
         self.restore_persistent(index);
         // Loading is off the audio thread: callbacks it triggers get the init budget.
         let block_fuel = std::mem::replace(&mut self.env.block_fuel, INIT_FUEL);
@@ -1287,8 +1293,10 @@ impl Runtime {
     fn run_init(&mut self, engine: &mut dyn KspEngine, slot: u8) -> Result<()> {
         let prog = &self.programs[slot as usize];
         let Some(entry) = prog.callback(Callback::Init) else {
+            #[cfg(feature="shots")] crate::ui::scan::phase_event(slot,"init","absent");
             return Ok(());
         };
+        #[cfg(feature="shots")] crate::ui::scan::phase_event(slot,"init","entered");
         let mut t = Thread {
             pc: entry,
             live: true,
@@ -1311,6 +1319,8 @@ impl Runtime {
         );
         let action = self.env.fault_action.take();
         self.env.block_fuel = saved_fuel;
+        #[cfg(feature="shots")]
+        crate::ui::scan::phase_event(slot,"init",match &result{Ok(Yield::Done)=>"completed",Ok(Yield::Wait(_))=>"faulted",Ok(Yield::OutOfFuel|Yield::OutOfTime)=>"budget_stopped",Err(_)=>"faulted"});
         match result {
             Ok(Yield::Done) => {}
             Ok(Yield::Wait(_)) => bail!(
@@ -2759,7 +2769,7 @@ impl Runtime {
                 self.spawn(engine, entry, ctx);
                 true
             }
-            None => false,
+            None => {#[cfg(feature="shots")] if cb==Callback::PersistenceChanged{crate::ui::scan::phase_event(slot,"persistence_changed","absent");} false},
         }
     }
 
@@ -2768,7 +2778,11 @@ impl Runtime {
             | Callback::Listener | Callback::PgsChanged | Callback::PersistenceChanged | Callback::AsyncComplete)) {
             ctx.channel = self.service_channel;
         }
+        #[cfg(feature="shots")]
+        if matches!(ctx.kind,Kind::Cb(Callback::PersistenceChanged)){crate::ui::scan::phase_event(ctx.slot,"persistence_changed","entered");}
         let Some(i) = self.free_threads.pop() else {
+            #[cfg(feature="shots")]
+            if matches!(ctx.kind,Kind::Cb(Callback::PersistenceChanged)){crate::ui::scan::phase_event(ctx.slot,"persistence_changed","dropped");}
             self.env
                 .note("KSP callback pool exhausted; callback dropped");
             if ctx.cleanup { self.env.note("KSP Panic cleanup callback pool full; state notification incomplete"); }
@@ -2827,6 +2841,10 @@ impl Runtime {
             if remaining.is_zero() {
                 self.env.block_fuel = 0;
             }
+        }
+        #[cfg(feature="shots")]
+        if matches!(self.threads[i as usize].ctx.kind,Kind::Cb(Callback::PersistenceChanged)) {
+            crate::ui::scan::phase_event(slot as u8,"persistence_changed",match &result{Ok(Yield::Done)=>"completed",Ok(Yield::Wait(_))=>"waiting",Ok(Yield::OutOfFuel) if self.threads[i as usize].spent>=self.fuel_cap=>"budget_stopped",Ok(Yield::OutOfFuel|Yield::OutOfTime)=>"deferred",Err(_)=>"faulted"});
         }
         match result {
             Ok(Yield::Done) => self.finish(i),
