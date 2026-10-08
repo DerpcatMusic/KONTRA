@@ -210,7 +210,7 @@ impl Part {
             epoch: 0,
             engine_bindings,
             waveform_sources: Default::default(),
-            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
+            ui_controls: Some(ControlIngress { client, plan, context, definitions, widgets, widget_values, captures, capturing:false, midi_requests:Default::default(), revision, pending_widgets: Default::default(), pending: Default::default(), persistence: None }),
             runtime,
             tone,
             tone_history: [[[0.; 2]; 2]; BUSES + 1],
@@ -378,12 +378,30 @@ pub(crate) struct ControlIngress {
     pending: std::collections::BTreeMap<sampler_ui_ir::ControlId, (u64, f64)>,
     captures:std::collections::VecDeque<Vec<sampler_core::WidgetEdit>>,
     capturing:bool,
+    midi_requests:std::collections::VecDeque<sampler_core::ControlRequest>,
     revision:u64,
     persistence: Option<Arc<persistence::Snapshot>>,
 }
 
 impl ControlIngress {
     pub(crate) fn save_script_state(&self) -> Option<String> { self.persistence.as_ref().map(|state|state.save()) }
+    pub(crate) fn service_midi(&mut self,effect:&sampler_core::Effect)->bool {
+        if effect.service!=sampler_core::MIDI_SERVICE {return false;}
+        let Some(instance)=effect.instance else {return false;};
+        let mut output=if effect.args[0]==4 {sampler_core::MidiCompletion::capture(effect.args[1] as i32,instance)}
+            else {sampler_core::MidiCompletion::empty(effect.args[1] as i32,instance)};
+        output.path=effect.text.unwrap_or_default();
+        if effect.args[0]==3 {let path=output.path;output.read_file(path.as_str());}
+        let operation=if effect.args[0]==4 {sampler_core::ControlOperation::MidiCapture(output)} else {sampler_core::ControlOperation::MidiComplete(output)};
+        self.midi_requests.push_back(sampler_core::ControlRequest {plan:effect.plan,expected_revision:None,operation});
+        self.flush_midi();true
+    }
+    fn flush_midi(&mut self) {
+        while let Some(command)=self.midi_requests.pop_front() {
+            if let Err(rejected)=self.client.submit(command) {self.midi_requests.push_front(rejected.command);break;}
+        }
+    }
+
     pub(crate) fn plan(&self) -> sampler_core::PlanId { self.plan }
     pub(crate) fn submit_host_parameter(&mut self, address: u16, value: f64) -> bool {
         if address >= super::HOST_AUTOMATION_SLOTS || !value.is_finite() || !(0.0..=1.0).contains(&value) { return false; }
@@ -488,6 +506,15 @@ impl ControlIngress {
     pub(crate) fn settle(&mut self) -> bool {
         let mut changed = false;
         while let Some(reply) = self.client.reply() {
+            if matches!(&reply.command.operation,sampler_core::ControlOperation::MidiCapture(_) | sampler_core::ControlOperation::MidiComplete(_)) {
+                if reply.result==Err(sampler_core::Error::Capacity) {self.midi_requests.push_back(reply.command);continue;}
+                if let sampler_core::ControlOperation::MidiCapture(mut output)=reply.command.operation {
+                    output.success=reply.result.is_ok() && output.save_file(output.path.as_str()).is_ok();
+                    self.midi_requests.push_back(sampler_core::ControlRequest {plan:reply.command.plan,expected_revision:None,operation:sampler_core::ControlOperation::MidiComplete(output)});
+                }
+                continue;
+            }
+
             if let Ok((_,revision))=reply.result {self.revision=revision;}
             if let sampler_core::ControlOperation::Invoke(_, write) = &reply.command.operation {
                 let id = sampler_ui_ir::ControlId(write.id.0);
@@ -517,6 +544,7 @@ impl ControlIngress {
                 crate::diagnostics::event(crate::diagnostics::LogLevel::Warning, "ui", "control_rejected", serde_json::json!({"request": reply.request, "reason": format!("{error:?}")}));
             }
         }
+        self.flush_midi();
         changed
     }
 
@@ -2740,6 +2768,34 @@ mod tests {
         core.render(16);
         assert_eq!(core.control_value(0, k), Some(100.0), "clamped");
         assert!(!core.set_control(0, sampler_ui_ir::ControlId(7), 1.0), "no such control");
+    }
+
+    #[test]
+    fn midi_file_service_uses_the_host_control_queue_and_completes_its_source_slot() {
+        let dir=tempfile::tempdir().unwrap();let path=dir.path().join("own-fixture.mid");
+        let source=format!(r#"on init mf_set_buffer_size(1)
+          declare $event:=mf_insert_event(0,0,$MIDI_COMMAND_NOTE_ON,60,100)
+          mf_set_event_par($event,$EVENT_PAR_NOTE_LENGTH,96)
+          declare $job declare $status end on
+          on note $job:=save_midi_file("{}") end on
+          on async_complete $status:=$NI_ASYNC_EXIT_STATUS end on"#,path.display());
+        let script=sampler_ksp::compile(&source,48000,sampler_ksp::Limits::LIBRARY,&[]).unwrap();
+        let plan=script.bind(Prepared::new(48000,vec![],vec![],1).unwrap()).unwrap();
+        let runtime_limits=limits(&plan).0;
+        let runtime=Runtime::new(plan,runtime_limits).unwrap();
+        let mut part=Part::new(runtime,MixTree::instrument("midi")).unwrap();
+        let mut ingress=part.ui_controls.take().unwrap();
+        part.runtime.trigger(sampler_core::Input {protocol:sampler_core::Protocol::Native,port:0,group:0,channel:0,key:60,external_id:None},60,1.).unwrap();
+        let mut effects=Vec::new();part.runtime.drain_effects(|e|{effects.push(*e);true});
+        assert_eq!(effects.len(),1);assert!(ingress.service_midi(&effects[0]));
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert!(path.exists());
+        while part.runtime.poll_control_update().unwrap().is_some() {}
+        ingress.settle();
+        assert_eq!(part.runtime.script_cell(part.runtime.active_plan(),sampler_core::ScriptInstanceId(0),2),Ok(1));
+        let mut loaded=sampler_core::MidiObject::default();loaded.insert_file(path.to_str().unwrap(),[0,0,0]).unwrap();
+        loaded.first(0);assert_eq!(loaded.apply(sampler_core::MidiAction::Get(sampler_core::midi_par::LENGTH),&[],None),Ok(96));
     }
 
     #[test]
