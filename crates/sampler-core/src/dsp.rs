@@ -509,14 +509,18 @@ impl PreparedVoiceChain {
                 break;
             };
             let len = begun.len;
+            if begun.held == len {
+                rendered += len;
+                continue;
+            }
             if TRACE { if let Some(t) = context.trace.as_mut() {
                 t.identity.source_metrics=crate::trace::metrics(&block,len);
                 t.record(t.nodes.source, &block, &block, len, [1.; 2], context.parameters);
             } }
             let at = context.at + (chunk_index * BLOCK) as u64;
             let (pre, post) = states.split_at_mut(self.pre.len());
-            let mut fault = self.process_section::<TRACE>(true, pre, &mut block, len, at, &mut context);
-            let levels = levels(voice, len);
+            let mut fault = self.process_section::<TRACE>(true, pre, &mut block, len, begun.held, at, &mut context);
+            let levels = levels(voice, len, begun.held);
             let before_amp = if TRACE { block } else { [[0.; BLOCK]; 2] };
             let [left, right] = &mut block;
             for (i, ((l, r), level)) in left[..len].iter_mut().zip(&mut right[..len]).zip(&levels).enumerate() {
@@ -528,7 +532,7 @@ impl PreparedVoiceChain {
                 t.record(t.nodes.amp, &before_amp, &block, len,
                     std::array::from_fn(|c| levels[..len].iter().enumerate().map(|(i,l)| l * f64::from(context.amplifier.map_or([1.;2],|r|r.gains_at(at+i as u64+1))[c])).sum::<f64>() / len.max(1) as f64), context.parameters);
             } }
-            fault |= self.process_section::<TRACE>(false, post, &mut block, len, at, &mut context);
+            fault |= self.process_section::<TRACE>(false, post, &mut block, len, begun.held, at, &mut context);
             let finish_fault = self.finish(
                 voice,
                 begun,
@@ -541,10 +545,10 @@ impl PreparedVoiceChain {
             faults += u64::from(finish_fault);
             if TRACE { if let Some(t) = context.trace.as_mut() {
                 let mut final_block = block;
-                for c in 0..2 { for i in 0..len {
+                for c in 0..2 { for i in begun.held..len {
                     let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
-                        // finish has advanced the remaining tail by len.
-                        let remaining = voice.tail_remaining.unwrap_or(0) + len as u32 - i as u32;
+                        // Held startup frames do not consume the fade clock.
+                        let remaining = voice.tail_remaining.unwrap_or(0) + (len - i) as u32;
                         f64::from(initial) * f64::from(remaining) / f64::from(total)
                     });
                     final_block[c][i] *= f64::from(context.expression[c]) * fade;
@@ -576,10 +580,17 @@ impl PreparedVoiceChain {
             return None;
         }
         let mut raw = [[0.; 2]; BLOCK];
-        let mut unity = EnvelopeState::new(Envelope::default());
-        let count = frames
-            .min(voice.envelope.remaining())
+        let waiting = voice.cursor.waiting();
+        let active = voice.envelope.remaining()
             .min(voice.tail_remaining.map_or(usize::MAX, |n| n as usize));
+        // A finite unity hold clocks only frames the cursor advances, including silent misses.
+        let mut unity = EnvelopeState::new(if waiting {
+            Envelope::one_shot(0, active.min(BLOCK + 1) as u32, 0)
+        } else {
+            Envelope::default()
+        });
+        let remaining = unity.remaining();
+        let count = if waiting { frames } else { frames.min(active) };
         let produced = if voice.cursor.done() || voice.envelope.done() {
             0
         } else {
@@ -592,11 +603,12 @@ impl PreparedVoiceChain {
                 kernel,
             )
         };
+        let held = if waiting { produced - (remaining - unity.remaining()) } else { 0 };
         let tail = voice
             .tail_remaining
             .or_else(|| (produced < frames).then_some(self.tail_frames));
         let len = match (voice.tail_remaining, tail) {
-            (Some(t), _) => frames.min(t as usize),
+            (Some(t), _) => held + (frames - held).min(t as usize),
             (None, Some(t)) => produced + (frames - produced).min(t as usize),
             (None, None) => frames,
         };
@@ -607,6 +619,7 @@ impl PreparedVoiceChain {
         Some(Begun {
             produced,
             len,
+            held,
             tail,
         })
     }
@@ -620,6 +633,7 @@ impl PreparedVoiceChain {
         Begun {
             produced,
             len,
+            held,
             tail,
         }: Begun,
         block: &Planar,
@@ -629,14 +643,14 @@ impl PreparedVoiceChain {
         output: &mut [Frame],
     ) -> bool {
         let mut result = [[0f32; 2]; BLOCK];
-        for (i, frame) in result[..len].iter_mut().enumerate() {
+        for (i, frame) in result[held..len].iter_mut().enumerate() {
             // A DSP fade exists only with a running tail: its count at frame i.
             let fade = voice.dsp_fade.map_or(1., |(total, initial)| {
                 let remaining = voice.tail_remaining.expect("fading tail") - i as u32;
                 f64::from(initial) * f64::from(remaining) / f64::from(total)
             });
             *frame = std::array::from_fn(|channel| {
-                (block[channel][i] * f64::from(expression[channel]) * fade) as f32
+                (block[channel][held + i] * f64::from(expression[channel]) * fade) as f32
             });
         }
         let fault = fault
@@ -652,7 +666,7 @@ impl PreparedVoiceChain {
             }
         }
         voice.tail_remaining = match voice.tail_remaining {
-            Some(t) => Some(t - len as u32),
+            Some(t) => Some(t - (len - held) as u32),
             None => tail.map(|t| t - (len - produced) as u32),
         };
         fault
@@ -693,13 +707,15 @@ impl PreparedVoiceChain {
 pub(super) struct Begun {
     pub produced: usize,
     pub len: usize,
+    /// Silent startup prefix whose source, envelope and processor state rest.
+    pub held: usize,
     tail: Option<u32>,
 }
 
 /// The voice envelope's level for each of `len` frames.
-pub(super) fn levels(voice: &mut Voice, len: usize) -> [f64; BLOCK] {
+pub(super) fn levels(voice: &mut Voice, len: usize, held: usize) -> [f64; BLOCK] {
     let mut levels = [0.; BLOCK];
-    for level in &mut levels[..len] {
+    for level in &mut levels[held..len] {
         *level = f64::from(voice.gain) * f64::from(
             voice
                 .envelope
