@@ -213,9 +213,6 @@ impl Holds {
     /// Holds for a part with `timing` whose articulation list names `arts`
     /// (in routing order), against `reported` ms.
     pub fn of(timing: &Timing, arts: &[&str], reported: f32) -> Self {
-        if timing.exclude {
-            return Self::default();
-        }
         let loaded = arts.len();
         let mut holds = Self(vec![[[0; 3]; 2]; loaded + 1], vec![false; loaded + 1]);
         for (row, h) in holds.0.iter_mut().enumerate() {
@@ -405,7 +402,7 @@ impl Scheduler {
 
     /// Hold `ev`, arriving at frame `now`, back by its articulation's hold.
     /// Returns it when it must play at once (the queue is full).
-    pub fn arrive(
+    pub(crate) fn arrive(
         &mut self,
         original: Event,
         now: u64,
