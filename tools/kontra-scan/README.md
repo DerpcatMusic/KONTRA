@@ -2,7 +2,7 @@
 
 Optimized release builds; the installed README records the frozen source commits, binary digests and build date.
 
-- `kontra-scan-v2`: integration checkpoint base `0f62e503e8b7e7db395a9012d5ace81341d92483` plus scanner-only instrumentation.
+- `kontra-scan-v2`: integration checkpoint base `9993db691a5f69d31980357694a678e358785e5e` plus scanner-only instrumentation.
 - `kontra-scan-v1`: pinned v1 base `0cb7a8a0` plus scanner-only instrumentation; no product fixes. V1 parsed/source and header caches are disabled for scanner workers to prevent decrypted records being written.
 - Both binaries invoke ONE adjacent stdlib Python CLI, `kontra_scan.py`; keep it beside them. Python 3 and Linux /proc are required.
 

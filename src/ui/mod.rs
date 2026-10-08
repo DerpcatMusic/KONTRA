@@ -157,6 +157,7 @@ fn write<T>(l: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 struct Meters {
     /// Audio thread load, 0..1.
     cpu: AtomicU32,
+    disk: AtomicU32,
     /// A view moves on its own (a spectrum or a peak hold falling): the
     /// last frame built says so, and frames keep coming until one does not.
     animating: AtomicBool,
@@ -174,6 +175,9 @@ struct Watch {
     /// they are looked at ten times a second, not every tick.
     readouts: u64,
     cpu: f32,
+    disk: f32,
+    disk_read: u64,
+    disk_counter: Option<&'static AtomicU64>,
     /// The audio thread's render and rendered time when last sampled.
     busy: (u64, u64),
     /// When the readouts were last sampled.
@@ -193,6 +197,7 @@ impl Watch {
             at.is_none_or(|t| now - t >= Duration::from_millis(every))
         };
         if due(self.cpu_at, READOUT_MS) {
+            let since = self.cpu_at.map_or(0., |t| (now - t).as_secs_f32());
             self.cpu_at = Some(now);
             // Mean load since the last look, as Kontakt shows it. The peak
             // block's wall time read 20-80% at idle: one preempted block in
@@ -206,8 +211,24 @@ impl Watch {
                 self.cpu = 0.;
             }
             meters.cpu.store(self.cpu.to_bits(), Ordering::Relaxed);
+            // Disk throughput since the last look, eased; idle settles on 0.
+            let counter = self.disk_counter.unwrap_or(&sampler_kontakt::DISK_READ);
+            let read = counter.load(Ordering::Relaxed);
+            let rate = if since > 0. {
+                read.saturating_sub(self.disk_read) as f32 / 1_048_576. / since
+            } else {
+                0.
+            };
+            self.disk_read = read;
+            self.disk = self.disk * 0.5 + rate * 0.5;
+            if self.disk < 0.05 {
+                self.disk = 0.;
+            }
+            meters.disk.store(self.disk.to_bits(), Ordering::Relaxed);
             let mut h = DefaultHasher::new();
             ((self.cpu * 100.).round() as u32).hash(&mut h);
+            ((self.disk * 10.).round() as u32).hash(&mut h);
+            p.shared.memory_snapshot().hash(&mut h);
             p.shared.voices.load(Ordering::Relaxed).hash(&mut h);
             p.shared.audible.load(Ordering::Relaxed).hash(&mut h);
             p.shared.dropouts.load(Ordering::Relaxed).hash(&mut h);
@@ -366,7 +387,6 @@ struct EditorState {
     /// A part's name while it is being edited.
     renaming: Option<(usize, String)>,
     /// The master spectrum shows under the mixer.
-    spectrum: bool,
     /// Each library's color, thumbnail, banner and backdrop, made from its
     /// artwork off the frame.
     art: Arc<art::Art>,
@@ -581,6 +601,14 @@ impl Cx<'_> {
         self.show(slot);
     }
 
+    /// Apply to an explicit base, leaving the part intact until validation.
+    fn snapshot(&mut self, slot: usize, path: String) {
+        let accepted = self.selection.parts.get(slot)
+            .is_some_and(|part| self.p.shared.queue_snapshot(slot, part, path));
+        if accepted { self.show(slot); }
+        else { self.state.notice = "Select a base NKI instrument before loading a snapshot.".into(); }
+    }
+
     /// Put another instrument (or a multi) in `slot`.
     fn replace(&mut self, slot: usize, path: String) {
         self.remember(&path);
@@ -642,6 +670,7 @@ fn library_of(shelf: &crate::library::Shelf, path: &Path) -> String {
 fn replace_part(part: &mut Part, path: String) {
     part.path = path;
     part.program = 0;
+    part.snapshot.clear();
     part.view = 0;
     part.name.clear();
     // Another instrument has another output tree, switching and dynamics.
@@ -823,6 +852,13 @@ fn native_files(p: &SamplerParams, picker: &picker::Picker, drag: &std::sync::Mu
         }
         return true;
     }
+    if paths.len() == 1 && paths[0].extension().is_some_and(|e| e.eq_ignore_ascii_case("nksn")) {
+        let selection = read(&p.selection);
+        let target = (0..selection.parts.len()).find(|n| inside(&format!("header-{n}")));
+        let Some(slot) = target.filter(|&n| selection.parts[n].snapshot_base()) else { return false; };
+        if dropped { p.shared.queue_snapshot(slot, &selection.parts[slot], paths[0].to_string_lossy().into_owned()); }
+        return true;
+    }
     if paths.is_empty() || !paths.iter().all(|p| library::is_instrument(p)) {
         return false;
     }
@@ -893,7 +929,6 @@ fn build(
         browse: Default::default(),
         logs: Default::default(),
         renaming: None,
-        spectrum: false,
         art,
         libraries: Default::default(),
         rack_y: 0.,
@@ -1022,11 +1057,21 @@ fn picked(cx: &mut Cx) {
         Some(picker::Picked::Revealed(result)) => {
             if let Err(error) = result { cx.state.notice = error; }
         }
+        Some(picker::Picked::Created(Ok(path))) => {
+            cx.p.shared.libraries.add_root(&path, true);
+            cx.state.notice = format!("Library created in {}", path.display());
+        }
+        Some(picker::Picked::Created(Err(e))) => cx.state.notice = format!("No library was created: {e}"),
         Some(picker::Picked::Folder(path, single)) => cx.p.shared.libraries.add_root(&path, single),
         Some(picker::Picked::Artwork { library, picture }) => {
             if let Err(e) = cx.p.shared.libraries.set_artwork(&library, &picture) {
                 cx.state.notice = format!("The picture was not used: {e}");
             }
+        }
+        Some(picker::Picked::Snapshot { slot, source, path }) => {
+            if cx.selection.parts.get(slot).is_some_and(|p| p.source() == source) {
+                cx.snapshot(slot, path.to_string_lossy().into_owned());
+            } else { cx.state.notice = "Snapshot ignored: the base instrument changed while its dialog was open.".into(); }
         }
         Some(picker::Picked::Multi(mut path)) => {
             if !library::is_multi(&path) {
@@ -1213,20 +1258,46 @@ fn mixer_view(ui: &mut Ui, cx: &mut Cx) -> El {
     if outputs_hit {
         menu::open_under(ui, cx, menu::Target::Routing, "mix-outputs");
     }
-    let (spectrum_hit, spectrum) = latch(ui, "mix-spectrum", "Spectrum", "Everything sent to the host", cx.state.spectrum);
-    if spectrum_hit {
-        cx.state.spectrum = !cx.state.spectrum;
+    let m = &mut cx.state.mix_tree;
+    let (narrow_hit, narrow) = latch(ui, "mix-narrow", "Narrow", "Narrow strips: level and routing", !m.wide);
+    let (wide_hit, wide) = latch(ui, "mix-wide", "Wide", "Wide strips: with the instrument's inserts", m.wide);
+    if narrow_hit || wide_hit {
+        m.wide = wide_hit;
     }
-    let bar = strip(vec![section("Mixer"), spacer(), spectrum, section("Outputs"), outputs]).pad((INSET, TIGHT)).fill(Role::Surface);
+    let (off_hit, off) = latch(ui, "mix-spectrum-off", "Off", "No spectrum", m.spectrum == mix_tree::Spectrum::Off);
+    let (part_hit, part) = latch(ui, "mix-spectrum-part", "Part", "The selected part's output", m.spectrum == mix_tree::Spectrum::Part);
+    let (master_hit, master) = latch(ui, "mix-spectrum-master", "Master", "Everything sent to the host", m.spectrum == mix_tree::Spectrum::Master);
+    for (hit, to) in [(off_hit, mix_tree::Spectrum::Off), (part_hit, mix_tree::Spectrum::Part), (master_hit, mix_tree::Spectrum::Master)] {
+        if hit {
+            m.spectrum = to;
+        }
+    }
+    let bar = strip(vec![section("Strips"), segmented(vec![narrow, wide]), spacer(),
+        section("Spectrum"), segmented(vec![off, part, master]), section("Outputs"), outputs])
+        .pad((INSET, TIGHT)).fill(Role::Surface);
     let mut tree = bridge::tree(cx);
     let levels = bridge::levels(cx.p, &tree);
     let height = ui.scene().and_then(|s| s.surface("mix-tree")).map_or(TEXT * 36., |s| s.frame.size.height - 2. * SPACE);
     let body = mix_tree::view(ui, &mut tree, &mut cx.state.mix_tree, crate::sound::BUSES as u8, height, levels);
     bridge::apply(cx, &tree);
+    for node in &tree.nodes {
+        let id = node.id;
+        if id >> 16 != 0 && id & 0xffff == 0 {
+            let anchor = format!("mt-aux-{id}");
+            if ui.get(anchor.as_str()).activated() { menu::open_under(ui, cx, menu::Target::Aux((id >> 16) as usize - 1), &anchor); }
+        }
+        if (id >> 16 == 0 || id & 0xffff == 0) && [format!("mt-strip-{id}"), format!("mt-name-{id}"), format!("mt-fader-{id}"), format!("mt-pan-{id}")].iter().any(|s| ui.get(s.as_str()).clicked_with(Button::Secondary)) {
+            menu::open(ui, cx, menu::Target::Mixer(id));
+        }
+    }
     cx.state.meters.animating.store(true, Ordering::Relaxed);
     let mut rows = vec![bar, rule(), body];
-    if cx.state.spectrum {
-        let shape = cx.spectrum(crate::plugin::SCOPE_MASTER);
+    if cx.state.mix_tree.spectrum != mix_tree::Spectrum::Off {
+        let source = match cx.state.mix_tree.spectrum {
+            mix_tree::Spectrum::Part => cx.state.chosen().map_or(crate::plugin::SCOPE_MASTER, |slot| slot + 1),
+            _ => crate::plugin::SCOPE_MASTER,
+        };
+        let shape = cx.spectrum(source);
         rows.push(spectrum::panel(shape, "mix-spectrum-graph").h(TEXT * 10.).flex(0).pad(INSET).shrink(0));
     }
     col(rows).gap(0).flex(1).min_h(0).min_w(0)
@@ -1256,3 +1327,7 @@ impl Cx<'_> {
 pub use ir_view::uvi_ui_health;
 #[cfg(test)]
 mod loop_audit;
+#[cfg(test)]
+ pub(crate) fn audit_frames(p: &Arc<SamplerParams>) -> serde_json::Value { tests::audit_frames(p) }
+#[cfg(all(test, feature = "library-access"))]
+mod uvi_audit;
