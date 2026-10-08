@@ -19,7 +19,7 @@ clap = ["plugin", "dep:moose-clap", "dep:clap-sys"]
 vst3 = ["plugin", "dep:moose-vst3"]
 standalone = ["plugin", "dep:moose-standalone"]
 # `audit-ui --shots`: draws views with the CPU renderer (kept out of the plugin).
-shots = ["plugin", "dep:mui"]
+shots = ["plugin", "dep:mui", "sampler-ksp/scan", "sampler-kontakt/scan", "sampler-uvi/scan"]
 
 [dependencies]
 sampler-core = { path = "crates/sampler-core" }
