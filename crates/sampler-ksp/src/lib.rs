@@ -21,6 +21,8 @@ pub mod model;
 pub mod nckp;
 mod parser;
 mod sema;
+#[cfg(feature = "scan")]
+pub mod scan;
 pub mod ui;
 
 pub use diag::{Error, Kind};
@@ -529,6 +531,21 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
+    #[cfg(feature = "scan")]
+    scan::reset_script();
+    let result = compile_inner(source, rate, limits, controls, environment);
+    #[cfg(feature = "scan")]
+    scan::record(&result, source, environment.slot);
+    result
+}
+
+fn compile_inner(
+    source: &str,
+    rate: u32,
+    limits: Limits,
+    controls: &[(&str, ControlId)],
+    environment: &Environment,
+) -> Result<Script, Error> {
     let error = |message: &str| Error {
         offset: 0,
         line: 1,
@@ -631,12 +648,18 @@ pub fn initialize(
     let mut syms = lexer::Interner::default();
     let (hir, init, conditions) = (|| {
         let mut toks = lexer::lex(source, &mut syms)?;
+        #[cfg(feature="scan")]
+        scan::stage("preprocess");
         let conditions = lexer::preprocess(&mut toks, &syms, &Default::default())?;
+        #[cfg(feature="scan")]
+        scan::stage("parse");
         let ast = parser::parse(&toks, &syms)?;
         let budget = sema::Budget {
             variables: limits.variables,
             array_cells: limits.array_cells,
         };
+        #[cfg(feature="scan")]
+        scan::stage("sema");
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
         if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() {
             eprintln!(
@@ -699,6 +722,8 @@ pub fn compile_initialized(
         environment,
     } = initialized;
 
+    #[cfg(feature="scan")]
+    scan::stage("lower");
     // Control identities and definitions.
     let mut ids = vec![None; hir.uis.len()];
     let mut host = Vec::new();
