@@ -322,7 +322,7 @@ fn articulations_switch_by_their_keys() {
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate() {
         inst.groups.push(sir::Group { name: name.into(), ..Default::default() });
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default(), ..Default::default() });
         for (v, (lo, hi)) in [(1, 63), (64, 127)].into_iter().enumerate() {
             let mut z = sir::Zone::new(sir::AssetRef(0));
             z.group = Some(sir::GroupRef(n));
@@ -345,19 +345,20 @@ fn articulations_switch_by_their_keys() {
     h.idle(4);
     h.press("view-0-Articulations");
     h.idle(2);
-    let lit = |h: &Harness, n: usize| h.ui.scene().unwrap().surface(&format!("art-0-{n}")).is_some();
-    assert!(lit(&h, 4), "every articulation has a row");
-    while p.shared.keyboard.pop().is_some() {}
-    h.press("art-0-2");
+    let source = p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap();
+    let ids = crate::sound::articulation::identities(&source.articulations);
+    let row_id = |n: usize| super::inside::row_id(0, &ids[n]);
+    assert!(h.ui.scene().unwrap().surface(&row_id(4)).is_some(), "every articulation has a row");
+    h.press(&format!("{}-name", row_id(2)));
     h.idle(2);
-    let sent: Vec<String> = std::iter::from_fn(|| p.shared.keyboard.pop()).map(|(slot, play)| format!("{slot} {play:?}")).collect();
-    assert_eq!(sent, ["0 Note(26, 1)", "0 Note(26, 0)"], "a row taps its key and lets it go");
+    assert_eq!(p.shared.articulation_edits.pop(), Some((0, 2)), "name selection targets source identity independently of remapped inputs");
     p.shared.heard[27].store(90, Ordering::Relaxed);
     h.idle(2);
     p.shared.heard[27].store(0, Ordering::Relaxed);
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-articulations.png");
-    h.press("remap-0-Channel");
+    h.press("art-driver-0");
+    h.press("menu-item-2");
     h.idle(2);
     shoot(&h.ui, 1180, 780, "app/synthetic-articulations-channel.png");
     h.press("view-0-Mapping");
@@ -374,7 +375,7 @@ fn the_performance_line_shows_articulation_volume_dynamics_and_mpe() {
     use sampler_ir as sir;
     let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
     for (n, name) in ["Legato", "Staccato"].into_iter().enumerate() {
-        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default() });
+        inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, alternatives: Default::default(), ..Default::default() });
     }
     inst.host_volume = Some(sir::HostVolume { controller: 7, saved: 0.5 });
     assert_eq!(super::part::volume_text(&inst).as_deref(), Some("CC7 -6.0 dB"));
@@ -425,7 +426,7 @@ fn imported_switching_survives_the_first_ui_sync() {
                 let mut inst = sir::Instrument { name: "Imported".into(), ..Default::default() };
                 inst.switching = sir::Switching { owner, driver, keys };
                 for (n, name) in ["Sustain", "Staccato", "Tremolo"].into_iter().enumerate() {
-                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default() });
+                    inst.articulations.push(sir::Articulation { name: name.into(), switch_keys: vec![24 + n as u8], default: n == 1, alternatives: Default::default(), ..Default::default() });
                 }
                 inst.assign_alternatives(32);
                 let p = Arc::new(crate::plugin::SamplerParams::new());
@@ -461,4 +462,160 @@ fn replacing_the_instrument_drops_the_old_remap_and_dynamics_start() {
     super::replace_part(&mut part, "/x/New.nki".into());
     assert_eq!(part.switching, 0, "the old remap would override the import's own switching");
     assert_eq!(part.dynamics, -1);
+}
+
+/// Interaction evidence from OUR editor, including its compact narrow layout.
+#[test]
+fn keyswitch_panel_edits_swaps_learns_reorders_and_keeps_source() {
+    use crate::sound::articulation::{Input as Trigger, identities};
+    use sampler_ir as sir;
+    let mut inst = sir::Instrument { name: "Strings".into(), ..Default::default() };
+    inst.articulations = ["Legato", "Sustain", "Staccato", "Pizzicato", "Tremolo"].into_iter().enumerate().map(|(n, name)| sir::Articulation { source: format!("axis:main:{name}"), name: name.into(), switch_keys: vec![24 + n as u8], default: n == 0, ..Default::default() }).collect();
+    inst.assign_alternatives(32);
+    inst.articulations[0].alternatives.controller = Some(sir::ControllerRange { controller: 12, low: 3, high: 3 });
+    let source = Arc::new(inst);
+    let ids = identities(&source.articulations);
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: "/synthetic/Strings.nki".into(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].instrument = Some(source.clone());
+        view.parts[0].active = "Strings".into();
+        view.parts[0].keys = (0..128).map(|key| crate::sound::KeyLook { color: (key == 24).then_some(0), ..Default::default() }).collect::<Vec<_>>().into();
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Articulations");
+    let row = |n: usize| super::inside::row_id(0, &ids[n]);
+    let cell = |n: usize| format!("{}-trigger", row(n));
+    for n in 0..5 {
+        let surface = h.ui.scene().unwrap().surface(&row(n)).unwrap();
+        assert_eq!(surface.frame.size.height, 24., "one compact row");
+    }
+    h.type_into(&cell(0), "C#2");
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[0], &source.articulations[0], sir::Driver::Keys), Trigger::Keys(vec![49]));
+    assert!(p.shared.articulation_edits.pop().is_none(), "editing never auditions");
+    h.type_into(&cell(1), "C#2");
+    assert!(h.ui.scene().unwrap().surface("art-swap-0").is_some(), "conflict offers a swap");
+    h.press("art-swap-0");
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.input(&ids[0], &source.articulations[0], sir::Driver::Keys), Trigger::Keys(vec![25]));
+    assert_eq!(overlay.input(&ids[1], &source.articulations[1], sir::Driver::Keys), Trigger::Keys(vec![49]));
+    let header_text = |h: &Harness| h.ui.scene().unwrap().surfaces()
+        .filter(|s| s.parent.as_ref().is_some_and(|p| p.as_str() == "perf-art-0"))
+        .filter_map(|s| s.text_value.as_deref()).collect::<Vec<_>>().join(" ");
+    assert_eq!(header_text(&h), "Articulation Legato · C#0", "header uses the row's effective trigger after a swap");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "swap preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
+    h.type_into(&cell(2), "G#8");
+    assert!(h.ui.scene().unwrap().surface(&format!("{}-edit", row(2))).is_some(), "invalid input stays editable");
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![26]));
+    // Escape without changing the source or inputs.
+    h.ui.focus(format!("{}-edit", row(2)));
+    h.tick(Input { keys: vec![KeyPress { key: Key::Escape, mods: Mods::default() }], ..Default::default() });
+    h.idle(2);
+    h.press(&format!("{}-more", row(2)));
+    assert!(h.ui.scene().unwrap().surface("menu-item-0").is_some(), "row menu opened; focus {:?}", h.ui.focus_key());
+    h.press("menu-item-0");
+    assert!(h.ui.scene().unwrap().surface(&format!("{}-edit", row(2))).is_some(), "learn editor opened; focus {:?}", h.ui.focus_key());
+    p.shared.record_learn(1, 0, 51); // Other part port is ignored.
+    p.shared.record_learn(0, 0, 50); // On and off before a frame still learns.
+    h.idle(2);
+    assert_eq!(p.selection.read().unwrap().parts[0].articulation_overlay.input(&ids[2], &source.articulations[2], sir::Driver::Keys), Trigger::Keys(vec![50]));
+    let before = p.selection.read().unwrap().parts[0].articulation_overlay.inputs.clone();
+    h.press(&format!("{}-more", row(2)));
+    let menu_frame = h.ui.scene().unwrap().surface("context-menu").unwrap().frame;
+    let menu_just_opened = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let menu_settled = pixels(&h.ui, 1180, 780);
+    let sample = ((menu_frame.y as usize + 2) * 1180 + menu_frame.x as usize + 20) * 4;
+    assert_eq!(&menu_just_opened[sample..sample+4], &menu_settled[sample..sample+4], "open menu is immediately opaque");
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-menu-open.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+    }
+    h.press("menu-item-5"); // Move down (rule occupies item 3).
+    assert!(h.ui.scene().unwrap().surface("context-menu").is_none(), "closed menu has no surface");
+    let just_closed = pixels(&h.ui, 1180, 780);
+    h.idle(45);
+    let settled = pixels(&h.ui, 1180, 780);
+    // Below the list, where no row/focus animation occurs, a closing menu
+    // used to leave its text painted as a fading ghost above the editor.
+    for y in 360..445 {
+        let range = (y * 1180 + 970) * 4 .. (y * 1180 + 1150) * 4;
+        assert_eq!(&just_closed[range.clone()], &settled[range], "closed menu must disappear immediately, scanline {y}");
+    }
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.display_order(&source.articulations), vec![0, 1, 3, 2, 4]);
+    assert_eq!(overlay.inputs, before);
+    assert_eq!(*p.shared.view.lock().unwrap().parts[0].instrument.clone().unwrap(), *source);
+    h.drag(&format!("{}-drag", row(4)), &row(0));
+    let overlay = p.selection.read().unwrap().parts[0].articulation_overlay.clone();
+    assert_eq!(overlay.display_order(&source.articulations), vec![4, 0, 1, 3, 2]);
+    assert_eq!(overlay.inputs, before, "drag changes display order only");
+    for n in 3..5 {
+        assert_eq!(overlay.input(&ids[n], &source.articulations[n], sir::Driver::Keys), Trigger::Keys(vec![24 + n as u8]), "reorder preserves other rows");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(n)).unwrap().text_value.as_deref(), Some(super::theme::note_name(24 + n as u8).as_str()));
+    }
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+        let mut narrow = Harness::new(&p, 900., 640.);
+        narrow.press("view-0-Articulations");
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-panel-narrow.png"), &pixels(&narrow.ui, 900, 640), 900, 640);
+    }
+    for (driver, input, label) in [
+        (1, Trigger::Velocity(Some((19, 36))), "19–36"),
+        (2, Trigger::Channel(Some(7)), "ch 8"),
+        (3, Trigger::Controller(Some((12, 3, 3))), "CC12 3"),
+        (4, Trigger::Program(Some(90)), "prog 91"),
+        (0, Trigger::Keys(vec![]), "—"),
+    ] {
+        {
+            let mut selection = p.selection.write().unwrap();
+            selection.parts[0].articulation_overlay.driver = Some(driver);
+            selection.parts[0].articulation_overlay.set(&ids[0], input);
+        }
+        h.idle(3);
+        assert_eq!(header_text(&h), format!("Articulation Legato · {label}"), "header follows the effective input family");
+        assert_eq!(h.ui.scene().unwrap().surface(&cell(0)).unwrap().text_value.as_deref(), Some(label));
+    }
+}
+
+#[test]
+fn keyswitch_real_afflatus_panel_uses_normalized_rows_and_authored_colours() {
+    use crate::sound::{CoreLoader, LoadRequest, v2::V2Loader};
+    let path = Path::new("/mnt/MAIN_STORAGE/Libraries/Kontakt/Afflatus Chapter II Brass/Instruments/1. Ensembles/Multi Instruments/2 Horns KS.nki");
+    if !path.is_file() { eprintln!("SKIP: Afflatus missing"); return; }
+    let loaded = V2Loader.prepare(&LoadRequest { path: path.into(), sample_rate: 48000., ..Default::default() }, &mut |_| {}, &|| false).unwrap();
+    let inst = loaded.instrument.unwrap();
+    let p = Arc::new(crate::plugin::SamplerParams::new());
+    p.selection.write().unwrap().parts.push(crate::plugin::Part { path: path.to_string_lossy().into_owned(), ..Default::default() });
+    {
+        let mut view = p.shared.view.lock().unwrap();
+        view.parts[0].active = inst.name.clone();
+        view.parts[0].instrument = Some(inst.clone());
+        view.parts[0].keys = loaded.scripts.keys();
+    }
+    let mut h = Harness::new(&p, 1180., 780.);
+    h.press("view-0-Articulations");
+    for source in crate::sound::articulation::identities(&inst.articulations) {
+        assert_eq!(h.ui.scene().unwrap().surface(&super::inside::row_id(0, &source)).unwrap().frame.size.height, 24.);
+    }
+    if let Ok(dir) = std::env::var("KONTRA_KEYSWITCH_SHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        moose::core::screenshot::save_png(&Path::new(&dir).join("keyswitch-afflatus.png"), &pixels(&h.ui, 1180, 780), 1180, 780);
+    }
+}
+
+#[test]
+fn keyswitch_replacing_a_preset_clears_its_user_overlay() {
+    use crate::sound::articulation::Input as Trigger;
+    let mut part = crate::plugin::Part { path: "/old.nki".into(), ..Default::default() };
+    part.articulation_overlay.set("native:groups:0:rows:0:keys:24-24#0", Trigger::Keys(vec![49]));
+    part.articulation_overlay.keep_originals = true;
+    part.articulation_overlay.driver = Some(3);
+    super::replace_part(&mut part, "/new.nki".into());
+    assert_eq!(part.articulation_overlay, Default::default());
 }

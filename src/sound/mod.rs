@@ -20,6 +20,7 @@
 //! lock or touch files. Preparation and dropping happen on workers: [`Core::install`]
 //! hands the replaced part back as [`Core::Retired`] instead of dropping it.
 
+pub mod articulation;
 pub mod event;
 pub mod mics;
 pub mod mix;
@@ -328,6 +329,9 @@ pub trait Core: Send {
     /// `part`'s tree nodes below the root, each with its peak since the last
     /// call (after the node's own fader); taking them resets them.
     fn take_node_peaks(&mut self, part: usize, each: &mut dyn FnMut(usize, [f32; 2]));
+
+    /// Select the immutable source articulation independently of its input mapping.
+    fn select_articulation(&mut self, part: usize, articulation: usize) -> bool;
 
     /// Edit one of `part`'s controls as its widget would: the value is
     /// clamped to the control's range (integers rounded, toggles at 0.5) and
