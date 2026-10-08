@@ -4,6 +4,8 @@ Baseline: integration `7e82b152`. v1: pinned `0cb7a8a0`, not a current v1 branch
 
 Shared scanner accessor definitions and phase instrumentation evidence: [ksp-scanner-fields.md](ksp-scanner-fields.md).
 
+Current production checkpoint: the completed paired 834-ID Kontakt census at `9993db69` is reported separately below. It improves load admission to 834/834, but exposes 60 matched-note Dolce audition regressions. The earlier source/contract rankings remain measurements of `7e82`, not fresh failure confirmations at `9993`.
+
 ## Verdict at the 7e82 baseline
 
 **v2 is worse in runtime fidelity; NKI frontend admission is equal with resources supplied, and multi-script compilation remains incomplete in both engines.** A high compile rate is not a high compatibility rate. v2 admits commands which become unconsumed effects, zero/default queries, or no-ops. Several corresponding v1 paths have actual scheduler/UI/host implementations. Neither implementation is certified against native Kontakt by this audit.
@@ -372,11 +374,38 @@ There is a separate host-read fidelity boundary: v2 `eval.rs:1203` returns a per
 
 Sent the shared owner a generic correction/test handoff: reset NONE/inactive appearance with mapped coverage must not exclude every key; explicit CONTROL/keyswitch exclusions must remain; all-CONTROL state must still produce no safe key; NONE colour alone must not certify playability. Requested only fixed kind/colour category counts, presence and exclusion reasons at a documented phase boundary, without authored names/text/values. No shared policy change, library-specific note override, extra collector or native audio-parity claim was made here.
 
+## Completed paired Kontakt census at 9993db69
+
+The shared census now covers exactly the frozen 834 IDs (781 NKI and 53 NKM) in both versions. All 1,668 JSON records were located using the installed shared driver's full `signature(path, binary_sha)` and checked against their path/revision. Product v2 is `9993db691a5f69d31980357694a678e358785e5e`, scanner SHA-256 `19e2f2c76771ceeb1f5db47956d404a290e16ef61dabb6e34909176b362b6751`; pinned Kontakt v1 scanner SHA-256 `870cea2140b5c9db5361831664966848302a2f57e82fcb6c7ed1b3534545ce5e`. This consumes the completed shared collector; no additional corpus collector or rebuild was run. UVI coverage is still separate and in progress.
+
+| Observed production metric | Pinned v1 | v2 9993 |
+|---|---:|---:|
+| Fully admitted containers | 804/834 (96.40%) | 834/834 (100%) |
+| Observed clean compiled runtime slots | 1,053/1,053 observed | 1,098/1,143 (96.06%) |
+| Actual init completion | 1,053 completed; 90 active slots unobserved after failed admission | 1,098 completed; 45 not started |
+| Present persistence callbacks | 460 completed; 44 waiting | 519 completed |
+| Absent persistence callbacks | 549 observed | 579 |
+
+Both metadata populations contain 4,715 decoded source slots: 1,143 inline nonempty and 3,572 empty, with zero bypassed, linked-only or decode-failed slots. Those raw slots are not all executed runtime slots. V1's 30 failed containers prevent observation of 90 active slots; its row-level `ksp_compile_ok=yes` default cannot establish compile success for those slots. V2's 45 rejected slots affect 30 containers and report the safe category `sema/stage-error`, with builtin unknown; their init/persistence phases are not started. Successful container admission therefore does not mean every embedded script was admitted. V1's 44 waiting persistence callbacks are distinct from its 1,053 completed init callbacks. Retained load-fault records (1,719 v1, zero v2) are also distinct from terminal callback failure. Neither engine reports note-time KSP fault records in this sweep.
+
+| Paired audition outcome | IDs | Interpretation |
+|---|---:|---|
+| Audible in both | 422 | Above the shared 1e-5 threshold in the probe; no native PCM certification |
+| Audible v1, silent v2 | 60 | Audio Imperia Dolce; matched covered note, no fallback |
+| Silent in both | 4 | Pacific trill patches; separate from the Dolce regression |
+| No audition in both | 348 | Afflatus; no safe selected key, not evidence of silent playback |
+
+There are zero actual-note mismatches among both-loaded IDs. **P0, 60 observed Dolce audition regressions; root cause unassigned, effort pending diagnosis.** Every affected ID has `matched-note-plan`, `pick_source=zone_coverage`, fallback false, successful compile/init, completed persistence callback, zero underruns and zero note-time KSP fault records in both engines. Notes/velocity are 60/64 for 56 IDs, 48/64 for one, 72/64 for one and 73/64 for two. Sorted affected IDs with a trailing LF hash to SHA-256 `8d60a151acb8a77fff65ac3162bb887c2efc235091a81065182fc47a54408cbb`. The 60 comprise a measured sound regression in the approximately 0.5-second audition, rather than a diagnosed scheduler, KSP, FX or streaming defect. Seventeen additional Dolce IDs are audible in both; family membership alone is not a failure classifier.
+
+The first sorted witness is `Audio Imperia Dolce/Instruments/01 7 1st Violins/Dolce - 03 7 1st Violins - Sustained Con Sordino.nki`. Shared v1 cache `218c3671e677751586d6cd3e362d38319974eeee3e4c52def08e6000f1953c8d.json` and v2 cache `27f561979efb17ac91194b0377ee465e6bd151a2762a1b55c5339a66c81100f0.json` both retain 1,224 mappings. V1 reports zero missing samples and skipped zones; v2 reports 1,224 decoded zones and sample sources. V2's 25,165,824 resident bytes are a reserved-memory observation, not proof that usable PCM reached a voice; v1's zero residency metric despite audible output is not proof of absent sample data. Init and persistence complete in both. V1 retained load faults do not prevent its audible result.
+
+Sent this evidence directly to W6 (FX/modulation) and W9 (voice/streaming) for signal-graph diagnosis at the frozen checkpoint. Their next task is to distinguish actual sample readiness, mapped group/voice selection and gain/FX/modulation behavior using the shared witnesses. No DSP root cause, native parity, longer-duration silence or library-specific audition override is inferred. The 348 Afflatus exclusions remain subject to the independent keyboard-classification investigation above.
+
 ## Unknowns and concrete measurement plan
 
 - **Native audio fidelity:** no fresh Kontakt reference-host PCM in this run. Record matched NKI/snapshot/key/velocity/CC/transport/UI scenarios; compare onset/release timing, group choice, engine values and audio at 44.1/48/96 kHz. Prior synthetic failures are definitive differences in KONTRA contracts, not quantified PCM error across every exposed instrument.
 - **Five-slot init semantics:** benchmark actual ordered slots including PGS, inherited preprocessor definitions, authored engine state, original group indices and real resource containers. Isolated scripts do not establish cross-slot correctness.
-- **Strict whole-corpus init completion:** the shared extension now captures actual callback phases, with 104/104 init completions verified per engine in the first 100 IDs. Await completed production coverage before replacing the old whole-corpus return-value proxy. Retained bounds/PGS fault records remain distinct from stopped callbacks. `LogEngine` cannot validate resource completion, modulator existence or sample/IR installation; native service outcomes still need reference-host checks.
+- **Strict whole-corpus init completion:** completed shared Kontakt coverage now supplies the actual phase counts above. V1's 90 active slots behind failed container admissions remain unobserved, and native service outcomes remain unchecked. Retained bounds/PGS fault records remain distinct from stopped callbacks. `LogEngine` cannot validate resource completion, modulator existence or sample/IR installation; native service outcomes still need reference-host checks.
 - **Saved-entry behavioral impact:** 422 string-array paths and 441 compressed-array paths are raw master-file exposures. Read assignments/callback reachability and chosen snapshots in memory, then verify affected UI/engine outputs. Counts of invalid native menu indices, early menu reads and assignments after explicit persistence reads remain unmeasured.
 - **Host state/timing:** inject changing BPM/signature/position/transport and verify timer/listener ordering, `stop_wait` modes, note durations, callback IDs and async failure/cancellation. Add actual audio-block adapter ingress; merely writing host slots in a synthetic test is insufficient.
 - **Parameter laws:** independently check all supported conversions at endpoints/intermediate values and while voices are active. Saved static FX translation and live scripted edits are different coverage paths. Missing enum values cannot be inferred safely from identifier spelling or hashes.
