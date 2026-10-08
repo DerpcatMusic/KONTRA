@@ -624,7 +624,7 @@ pub fn compile_ui(
         };
         match result {
             Ok(script) => {
-                if script.model().requests.iter().any(|r| r.command == "load_native_ui") {
+                if !cfg!(feature="native-ui") && script.model().requests.iter().any(|r| r.command == "load_native_ui") {
                     instrument.unsupported.push(ir::Unsupported {
                         location: behavior.name.clone(), feature: "native interface".into(),
                         value: "The requested native performance view is unavailable; showing the script controls.".into(),
