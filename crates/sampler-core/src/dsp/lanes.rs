@@ -101,6 +101,65 @@ pub(crate) fn process(
                     }
                 }
             }
+            PreparedProcessor::Gainer { dry, gain, k } => {
+                let mut current = [0.0f32; VOICES];
+                let mut initialized = [false; VOICES];
+                for v in 0..batch.count {
+                    let state = &cells[v].as_ref().expect("batch voice")[cell];
+                    current[v] = state.z[0][0] as f32;
+                    initialized[v] = state.aux[0] != 0.0;
+                }
+                for (i, x) in block[..len].iter_mut().enumerate() {
+                    let target = gain.value(parameters, at + i as u64, None) as f32;
+                    for v in 0..batch.count {
+                        if i >= batch.ends[2 * v] { continue; }
+                        if !initialized[v] { (current[v], initialized[v]) = (target, true); }
+                        let m = dry + f64::from(current[v]);
+                        x[2 * v] *= m;
+                        x[2 * v + 1] *= m;
+                        current[v] += (target - current[v]) * *k as f32;
+                    }
+                }
+                for v in 0..batch.count {
+                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
+                    state.z[0][0] = f64::from(current[v]);
+                    state.aux[0] = if initialized[v] { 1.0 } else { 0.0 };
+                }
+            }
+            PreparedProcessor::StereoModeller { stereo, .. } => {
+                assert!(stereo.batches());
+                let mut width = [0.0f32; VOICES];
+                let mut pan = [0.0f32; VOICES];
+                let mut delta = [0.0f32; VOICES];
+                let mut initialized = [false; VOICES];
+                for v in 0..batch.count {
+                    let state = &cells[v].as_ref().expect("batch voice")[cell];
+                    (width[v], pan[v]) = (state.aux[0] as f32, state.aux[1] as f32);
+                    initialized[v] = state.aux[2] != 0.0;
+                }
+                for (i, x) in block[..len].iter_mut().enumerate() {
+                    let [target_width, target_pan] = stereo.targets(parameters, at + i as u64);
+                    for v in 0..batch.count {
+                        let end = batch.ends[2 * v];
+                        if i >= end { continue; }
+                        if !initialized[v] {
+                            (width[v], pan[v], initialized[v]) = (target_width, target_pan, true);
+                        }
+                        let (l, r) = super::stereo::matrix(x[2 * v] as f32, x[2 * v + 1] as f32, width[v]);
+                        x[2 * v] = f64::from(l * (1.0 - pan[v].max(0.0)));
+                        x[2 * v + 1] = f64::from(r * (1.0 + pan[v].min(0.0)));
+                        width[v] += (target_width - width[v]) * (1.0f32 / 180.0);
+                        if i >= end / 4 * 4 || i % 4 != 3 {
+                            delta[v] = (target_pan - pan[v]) * f32::from_bits(0x3a11a2b4);
+                        }
+                        pan[v] += delta[v];
+                    }
+                }
+                for v in 0..batch.count {
+                    let state = &mut cells[v].as_mut().expect("batch voice")[cell];
+                    (state.aux[0], state.aux[1], state.aux[2]) = (f64::from(width[v]), f64::from(pan[v]), if initialized[v] { 1.0 } else { 0.0 });
+                }
+            }
             PreparedProcessor::Rectify(mode) => {
                 for x in &mut block[..len] {
                     x.iter_mut().for_each(|v| *v = mode.apply(*v));
@@ -155,8 +214,6 @@ pub(crate) fn process(
             PreparedProcessor::Delay { .. }
             | PreparedProcessor::Compressor(_)
             | PreparedProcessor::Decimate(_)
-            | PreparedProcessor::Gainer { .. }
-            | PreparedProcessor::StereoModeller { .. }
             | PreparedProcessor::Daft(_)
             | PreparedProcessor::Branch { .. } => {
                 unreachable!("delay, compressor and decimator chains render per voice")

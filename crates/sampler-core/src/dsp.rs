@@ -627,11 +627,9 @@ impl PreparedVoiceChain {
                     PreparedProcessor::Delay { .. }
                         | PreparedProcessor::Compressor(_)
                         | PreparedProcessor::Decimate(_)
-                        | PreparedProcessor::Gainer { .. }
-                        | PreparedProcessor::StereoModeller { .. }
                         | PreparedProcessor::Daft(_)
                         | PreparedProcessor::Branch { .. }
-                )
+                ) || matches!(stage, PreparedProcessor::StereoModeller { stereo, .. } if !stereo.batches())
             })
     }
 
@@ -1056,6 +1054,19 @@ impl DspState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_gain_and_non_pseudo_stereo_have_lane_kernels() {
+        for pseudo in [false, true] {
+            let chain = VoiceChain::new(vec![
+                Processor::Gainer { dry: 0.1, gain: Parameter::Constant(0.8) },
+                Processor::StereoModeller(StereoSettings {
+                    width: Parameter::Constant(0.7), pan: Parameter::Constant(-0.2), pseudo,
+                }),
+            ], Vec::new(), 0).unwrap().compile(48000, &mut Vec::new(), &mut Vec::new()).unwrap();
+            assert_eq!(chain.batches(), !pseudo);
+        }
+    }
 
     /// One frame through `stages` as a one-frame block.
     fn process(
