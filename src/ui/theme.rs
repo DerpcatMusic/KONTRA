@@ -740,7 +740,8 @@ pub fn drive_widget(ui:&mut Ui,id:&str,value:&mut f64,range:&RangeInclusive<f64>
     drag(ui, id, value, range, travel, vertical);
     if let Some(wheel) = ui.wheel(id) {
         WHEELED.with(|w| w.set(true));
-        let step = step.unwrap_or_else(|| (hi-lo).abs()/if r.mods.shift {500.} else {50.});
+        let notch = (hi-lo).abs()/if r.mods.shift {500.} else {50.};
+        let step = step.map_or(notch,|quantum| (notch/quantum).round().max(1.)*quantum);
         let dir = if wheel.y.abs() >= wheel.x.abs() {
             -wheel.y
         } else {

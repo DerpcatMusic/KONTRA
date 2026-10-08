@@ -278,6 +278,10 @@ pub struct Edit {
     pub index: u32,
     pub value: ir::Value,
     pub mods: Mods,
+    /// Even XY coordinate index, or the active table column.
+    pub cursor: u32,
+    /// W5 WidgetEventType: down=0, up=1, drag=2, drop=3.
+    pub event: i32,
 }
 
 fn target(namespace: &str, n: WidgetRef) -> String {
@@ -723,6 +727,7 @@ pub(super) fn widget_state(
         .and_then(|c| values.get(&c).copied())
         .unwrap_or(default);
     let style = wd.style.and_then(|s| face.styles.get(s.0));
+    let before = v;
     let own_face = strip.is_none() && !matches!(wd.kind, Kind::Label);
     let ink = match style {
         Some(s) if !own_face && s.color.a > 0 => Fill::from(colour(s.color)),
@@ -1137,6 +1142,8 @@ pub(super) fn widget_state(
                         index: column as u32,
                         value,
                         mods: response.mods,
+                        cursor: column as u32,
+                        event: if response.dragged { 2 } else { 0 },
                     });
                     input.values.insert(n, ir::Value::Reals(samples.clone()));
                 }
@@ -1253,6 +1260,8 @@ pub(super) fn widget_state(
                             index: index as u32,
                             value: ir::Value::Real(value),
                             mods: response.mods,
+                            cursor: (cursor * 2) as u32,
+                            event: if response.dragged { 2 } else { 0 },
                         });
                     }
                     input.values.insert(n, ir::Value::Reals(points.clone()));
@@ -1301,6 +1310,8 @@ pub(super) fn widget_state(
                     index: 0,
                     value: text.clone(),
                     mods: ui.get(id.as_str()).mods,
+                    cursor: 0,
+                    event: 1,
                 });
                 input.values.insert(n, text);
             }
@@ -1344,6 +1355,8 @@ pub(super) fn widget_state(
                             index: 0,
                             value: value.clone(),
                             mods: ui.get(item.as_str()).mods,
+                            cursor: 0,
+                            event: 0,
                         });
                         input.values.insert(n, value);
                     }
@@ -1400,6 +1413,32 @@ pub(super) fn widget_state(
     if let Some(c) = control
         && wd.components.is_empty()
     {
+        if wd.enabled && v.to_bits() != before.to_bits() {
+            let response = ui.get(id.as_str());
+            let mods = if matches!(wd.kind, Kind::Menu { .. } | Kind::ValueEdit { .. }) {
+                Mods::default()
+            } else {
+                response.mods
+            };
+            let value = match &wd.kind {
+                Kind::Knob { range, .. }
+                | Kind::Slider { range, .. }
+                | Kind::ValueEdit { range, .. }
+                    if range.step != Some(1.) =>
+                {
+                    ir::Value::Real(v)
+                }
+                _ => ir::Value::Integer(v.round() as i32),
+            };
+            input.edits.push(Edit {
+                widget: n,
+                index: 0,
+                value,
+                mods,
+                cursor: 0,
+                event: if response.dragged { 2 } else { 0 },
+            });
+        }
         values.insert(c, v);
     }
     // Our faces are light-on-dark: a control without its own picture sits on
@@ -1481,7 +1520,7 @@ pub(super) fn widget_state(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn menu_popup(
+pub(super) fn menu_popup(
     ui: &mut Ui,
     namespace: &str,
     face: &Interface,
@@ -1509,6 +1548,14 @@ fn menu_popup(
         if ui.get(id.as_str()).activated() {
             if let Binding::Control(control) = wd.binding {
                 values.insert(control, f64::from(item.value));
+                input.edits.push(Edit {
+                    widget: n,
+                    index: 0,
+                    value: ir::Value::Integer(item.value),
+                    mods: Mods::default(),
+                    cursor: 0,
+                    event: 0,
+                });
             }
             input.menu = None;
         }
@@ -1522,10 +1569,31 @@ fn menu_popup(
         );
     }
     let r = face.page_rect(n);
-    let w = (f64::from(r.width) * scale).max(120.).min(width);
+    let root = if namespace.is_empty() {
+        "ir-view".to_owned()
+    } else {
+        format!("{namespace}-ir-view")
+    };
+    let positioned = ui.scene().and_then(|scene| {
+        let anchor = scene.surface(&anchor)?.frame;
+        let root = scene.surface(&root)?.frame;
+        Some((
+            anchor.x - root.x,
+            anchor.y - root.y,
+            anchor.size.width,
+            anchor.size.height,
+        ))
+    });
+    let (ax, ay, aw, ah) = positioned.unwrap_or((
+        f64::from(r.x) * scale,
+        f64::from(r.y) * scale,
+        f64::from(r.width) * scale,
+        f64::from(r.height) * scale,
+    ));
+    let w = aw.max(120.).min(width);
     let h = (rows.len() as f64 * CONTROL * scale).min(height);
-    let x = (f64::from(r.x) * scale).clamp(0., (width - w).max(0.));
-    let y = (f64::from(r.y + r.height as i32) * scale).clamp(0., (height - h).max(0.));
+    let x = ax.clamp(0., (width - w).max(0.));
+    let y = (ay + ah).clamp(0., (height - h).max(0.));
     Some(
         col(rows)
             .gap(0)
