@@ -560,6 +560,7 @@ pub fn compile_with(
     controls: &[(&str, ControlId)],
     environment: &Environment,
 ) -> Result<Script, Error> {
+    let audit_begin = std::time::Instant::now();
     let error = |message: &str| Error {
         offset: 0,
         line: 1,
@@ -598,7 +599,10 @@ pub fn compile_with(
             array_cells: limits.array_cells,
         };
         let hir = sema::analyze(ast, &syms, budget, &environment.performance_view.controls)?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"ksp_frontend\",\"ms\":{}}}", audit_begin.elapsed().as_secs_f64()*1000.); }
+        let init_begin = std::time::Instant::now();
         let init = eval::run(&hir, environment)?;
+        if std::env::var_os("KONTRA_AUDIT_LOAD").is_some() { eprintln!("AUDIT {{\"stage\":\"ksp_on_init\",\"ms\":{}}}", init_begin.elapsed().as_secs_f64()*1000.); }
         Ok((hir, init, conditions))
     })()
     .map_err(|f: diag::Fault| f.locate(source))?;
