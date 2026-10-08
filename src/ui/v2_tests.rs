@@ -480,7 +480,7 @@ fn uvi_momentary_buttons_callback_once_per_click_or_keyboard_activation() {
     let tick = |ui: &mut Ui, face: &ir::Interface, values: &mut ir_view::Values,
                 host: &mut sampler_uvi::script::ScriptHost, input| {
         let before = values.clone();
-        let root = ir_view::view(ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., values);
+        let root = ir_view::view(ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., values);
         ui.frame(root, Some(Size::new(200.,100.)), input, 1./60.).unwrap();
         for (&id,&value) in values.iter() {
             if before.get(&id).copied().unwrap_or(0.) != value { host.set_control(id,value).unwrap(); }
@@ -518,7 +518,7 @@ fn audit_motion_readback(face: &ir::Interface, target: usize, dx: f64, dy: f64, 
     };
     values.insert(control, start);
     let mut ui = settle(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))), |ui| {
-        ir_view::view(ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
+        ir_view::view(ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values)
     });
     let id = format!("ir-{target}");
     let Some(surface) = ui.scene().unwrap().surface(&id) else {
@@ -533,7 +533,7 @@ fn audit_motion_readback(face: &ir::Interface, target: usize, dx: f64, dy: f64, 
         .chain([(Point::new(at.x + dx, at.y + dy), false)]);
     for (point, down) in events {
         for _ in 0..2 {
-            let el = ir_view::view(&mut ui, "", face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values);
+            let el = ir_view::view(&mut ui, face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values);
             ui.frame(el, Some(Size::new(f64::from(face.pages[0].size.width), f64::from(ir_view::height(face, ir::PageRef(0))))), Input {
                 pointer: PointerInput { pos: Some(point), buttons: if down { Buttons::PRIMARY } else { Buttons::default() }, ..Default::default() },
                 ..Default::default()
@@ -588,7 +588,7 @@ fn widget_menu_passive_value_is_unchanged() {
     let ir::Binding::Control(control) = face.widgets[0].binding else { panic!("binding") };
     let mut values = ir_view::Values::from([(control, -1.)]);
     let assets = ir_view::Assets::default();
-    settle(633., 100., |ui| ir_view::view(ui, "", &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
+    settle(633., 100., |ui| ir_view::view(ui, &face, ir::PageRef(0), &assets, ir::Presentation::Vector, 1., &mut values));
     assert_eq!(values[&control], -1.);
 }
 
